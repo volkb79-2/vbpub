@@ -33,6 +33,15 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("if explicit_build_date:", source)
         self.assertIn("build_date = explicit_build_date", source)
 
+    def test_release_gate_runs_from_the_candidate_repository_root(self) -> None:
+        commands = self.config["steps"]["run-tests"]["commands"]
+        self.assertEqual(commands[0]["argv"], ["./run-gate.py", "release"])
+
+    def test_vm_acceptance_resolves_the_project_and_shared_harness_roots(self) -> None:
+        source = (ROOT / "host-setup/tests/run-vm-acceptance.sh").read_text()
+        self.assertIn('MDT_ROOT="$(cd "$HERE/../.." && pwd)"', source)
+        self.assertIn('"$WORKTREE_ROOT/scripts/debian-install-v2/testing/vm"', source)
+
     def test_registry_release_uses_native_zstd_and_standard_attestations(self) -> None:
         self.assertEqual(self.env["IMAGE_COMPRESSION"], "zstd")
         self.assertEqual(self.env["IMAGE_COMPRESSION_LEVEL"], "3")

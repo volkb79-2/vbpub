@@ -1,0 +1,39 @@
+# Dynamic Traefik configuration
+#
+# This file is loaded by Traefik's file provider (see docker-compose command args).
+# Responsibilities of this file:
+#   - Define HTTP routers (mapping hostnames to services)
+#   - Define load-balanced services pointing at internal container ports
+#   - Define middlewares (e.g. basic auth) applied to routers
+#   - (Optionally) define TLS certificate references if not using ACME
+#
+# Environment variable placeholders like ${PUBLIC_FQDN} are substituted by docker-compose
+# before Traefik loads the file (compose performs interpolation). If you run Traefik
+# standalone you would need a preprocessing step for env substitution.
+#
+# Dashboard Authentication:
+#   We use a basicAuth middleware referencing a usersFile created from the secret
+#   'traefik_dashboard_password' (see docker-compose secrets). The secret is mapped
+#   to /run/secrets/traefik_dashboard_password, and we reference it here.
+#   Generate a bcrypt (recommended) htpasswd line:
+#     htpasswd -nbB admin 'YourPassword' | sed -e 's/\$/\$\$/g'
+#   Place the resulting line inside the secret file. Only ONE line is needed.
+#
+# Whisper Router:
+#   Routes external requests hitting Host(${PUBLIC_FQDN}) to the internal
+#   service whisper-service:9000 via the defined service 'whisper-svc'.
+#
+# TLS:
+#   Currently referencing certResolver 'manual' placeholder; adjust to ACME or
+#   supply a certificates block if using mounted PEM files.
+
+http:
+  middlewares:
+    dash-auth:
+      basicAuth:
+        usersFile: /run/secrets/traefik_dashboard_password
+
+tls:
+  certificates:
+    - certFile: ${PUBLIC_TLS_CRT_PEM}
+      keyFile: ${PUBLIC_TLS_KEY_PEM}

@@ -1,0 +1,36 @@
+# Development Dockerfile for FastAPI
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies for development
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    wget \
+    vim \
+    tree \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry
+RUN pip install poetry
+RUN poetry config virtualenvs.create false
+
+# Copy poetry files
+COPY pyproject.toml poetry.lock* ./
+
+# Install dependencies including development ones
+RUN poetry install
+
+# Create logs directory
+RUN mkdir -p /app/logs
+
+# Copy application code
+COPY . .
+
+# Expose port
+EXPOSE 8000
+
+# Development command with auto-reload
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--log-level", "debug"]

@@ -22,8 +22,16 @@ unsafe_symlink_omissions = [
 language = "python"
 source_roots = ["."]
 mode = "whole_target"
-targets = ["build-push.py", "scripts", "client/src"]
-fail_under = 60.0
+targets = [
+  "build-push.py",
+  "client/src/pwmcp_client/__init__.py",
+  "client/src/pwmcp_client/cli.py",
+  "client/src/pwmcp_client/contract.py",
+  "client/src/pwmcp_client/diagnostics.py",
+  "client/src/pwmcp_client/session.py",
+  "scripts/resolve-playwright-version.py",
+]
+fail_under = 100.0
 allow_excluded = false
 require_branch = true
 
@@ -53,8 +61,16 @@ unsafe_symlink_omissions = [
 language = "python"
 source_roots = ["."]
 mode = "whole_target"
-targets = ["build-push.py", "scripts", "client/src"]
-fail_under = 60.0
+targets = [
+  "build-push.py",
+  "client/src/pwmcp_client/__init__.py",
+  "client/src/pwmcp_client/cli.py",
+  "client/src/pwmcp_client/contract.py",
+  "client/src/pwmcp_client/diagnostics.py",
+  "client/src/pwmcp_client/session.py",
+  "scripts/resolve-playwright-version.py",
+]
+fail_under = 100.0
 allow_excluded = false
 require_branch = true
 

@@ -1,0 +1,53 @@
+# ============================================================================
+# SPEECH-TO-COPILOT SERVICE - PROJECT-SPECIFIC CONFIGURATION
+# This section contains ONLY project-specific settings.
+# Shared defaults are inherited from ../ciu-global.defaults.toml.j2.
+# ============================================================================
+
+[compinit]
+enable_env_expansion = true
+
+# ============================================================================
+# API SERVICE CONFIGURATION
+# ============================================================================
+
+[api]
+# API service configuration
+demo_mode = false
+log_level = "info"
+key_required = false
+cors_origins = "*"
+# NOTE: Explicitly set whisper_service_url and llm_service_url in active config or env.
+# _template fields are no longer supported in this repo.
+rate_limit_rpm = "60"
+max_audio_duration = "300"
+workspace_path = "${HOME}"
+workspace_container_path = "/workspace"
+
+[api.hostdir]
+logs = ""  # Empty = auto-generates ./vol-speech-api-logs
+
+# ============================================================================
+# REDIS CONFIGURATION
+# ============================================================================
+
+[redis]
+# Redis configuration
+
+[redis.hostdir]
+data = ""  # Empty = auto-generates ./vol-speech-redis-data
+
+# ============================================================================
+# HOOKS
+# ============================================================================
+
+[hooks]
+pre_compose = []
+post_compose = []
+
+# ============================================================================
+# ENVIRONMENT VARIABLES (Flat structure - no nesting)
+# ============================================================================
+
+[env]
+API_TOKEN = "GEN_LOCAL:voice2text/api_token"

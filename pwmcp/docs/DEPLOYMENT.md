@@ -59,7 +59,10 @@ To expose ports to the host for local debugging, set `pwmcp.unified.expose = tru
 
 ### `PWMCP_MCP_ALLOWED_HOSTS` and the HTTP 403 on container-name access
 
-`@playwright/mcp` has built-in DNS-rebinding protection: it rejects any request whose `Host` header does not match an allowed host. When bound to `0.0.0.0`, the server's default allowed host is `"0.0.0.0"` — which does **not** match `pwmcp:8931`, the `Host` header a sibling container sends when it reaches the service by name. Without an explicit allowlist this produces **HTTP 403** for every internal caller, silently breaking internal mode.
+The stream-only 8931 gateway has DNS-rebinding protection: it rejects any
+request whose `Host` header does not match an allowed host before forwarding to
+the loopback `@playwright/mcp` backend. The backend is never directly exposed;
+the gateway is the only listener on the container's 8931 interface.
 
 The ciu template fixes this by injecting `PWMCP_MCP_ALLOWED_HOSTS` into the container environment with the two ciu-derived host:port values:
 
@@ -67,7 +70,8 @@ The ciu template fixes this by injecting `PWMCP_MCP_ALLOWED_HOSTS` into the cont
 PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 ```
 
-`supervisord.conf` passes `--allowed-hosts %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s` to `playwright-mcp`.
+The gateway reads `PWMCP_MCP_ALLOWED_HOSTS` and applies the allowlist before
+forwarding to the backend.
 
 This is the secure approach: the allowlist is pinned to the known internal names rather than using `*` (which disables the check entirely). The network boundary already restricts who can reach the port; `PWMCP_MCP_ALLOWED_HOSTS` pins which `Host` header value the server honours.
 
@@ -135,58 +139,66 @@ python3 build-push.py --build
 GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> python3 build-push.py --push
 ```
 
-`build-push.py` reads `[project_metadata.builder]` from `cmru.toml`, creates or repairs the
-named `docker-container` BuildKit builder, verifies the applied Docker limits,
-and passes that builder explicitly to Bake. The defaults permit 4 GiB RAM,
-12 GiB combined RAM+swap (therefore up to 8 GiB swap), and four CPUs. Edit the
-TOML when the build needs different limits; do not bypass the wrapper for a
-release.
+`build-push.py` reads `[env]` from `cmru.toml`, verifies that the named builder
+uses the configured `remote` driver and exact managed Unix socket, and passes
+that builder explicitly to Bake. The host setup owns the BuildKit service,
+cache, and resource limits; a project release must not create a private
+`docker-container` worker or invent a second set of limits.
 
-The Docker CLI and `dockerd` remain in `system.slice`, while the expensive
-executor work is charged to the `buildx_buildkit_<builder>0` container's cgroup.
-Accordingly, some `dockerd` CPU in `top` is normal coordination, registry, and
-snapshotter work. Attribute the actual build with:
+Verify the managed service before a direct build with:
 
 ```bash
-docker stats buildx_buildkit_pwmcp-governed-v10
-docker inspect buildx_buildkit_pwmcp-governed-v10 \
-  --format '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.CpuQuota}}/{{.HostConfig.CpuPeriod}}'
-systemd-cgtop system.slice
+docker buildx inspect mdt-managed --bootstrap
+docker inspect mdt-buildkitd --format '{{.State.Status}} {{.HostConfig.CgroupParent}}'
+systemctl status mdt-buildkitd.service
+systemd-cgtop dev-buildkitd.slice
 ```
+
+The Docker CLI and `dockerd` remain separate coordination processes. The
+expensive executor work is charged to the host-managed `mdt-buildkitd` service,
+so a private `buildx_buildkit_*` container is not expected to exist. If the
+socket or builder verification fails, repair host setup before attempting the
+release; the wrapper refuses to fall back to an ungoverned builder.
 
 Or invoke the same wrapper through the release runner:
 
 ```bash
-cmru build --project pwmcp
-cmru publish --project pwmcp
+cmru build pwmcp
+cmru publish pwmcp
 ```
 
-The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`, and `PWMCP_VERSION` from environment; defaults match `ciu.defaults.toml.j2` and `cmru.vars`.
+The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`,
+`PLAYWRIGHT_IMAGE_DIGEST`, and `PWMCP_VERSION` from the prepared environment;
+defaults match `ciu.defaults.toml.j2`, the Dockerfile, and `cmru.vars`.
 
 ## Upgrading the Playwright Version
 
-Run the resolve script to auto-detect the latest npm version, update config files, and compute the next release number:
+The resolver validates the committed release projection by default without
+contacting upstreams:
 
 ```bash
 cd pwmcp
-python3 scripts/resolve-playwright-version.py
+python3 scripts/resolve-playwright-version.py --check
 ```
 
-The script updates `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, and `docker-bake.hcl`. Then complete the release:
+To deliberately refresh the projection, use the explicit upstream operation.
+It applies the configured temporary age window, updates
+`ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, `docker-bake.hcl`,
+and the Dockerfile's Playwright manifest digest. Then complete the release:
 
 ```bash
-# Build and push the new image + bundle via cmru (run from the repo root):
-cmru build --project pwmcp
-cmru publish --project pwmcp
+# Explicit upstream refresh (normally owned by CMRU FEAT-03):
+python3 scripts/resolve-playwright-version.py --refresh
 
-# Or perform the complete isolated release in one operation:
-./cmru.release.sh --project pwmcp
+# Complete isolated release from the repository root:
+cmru release pwmcp
 ```
 
-The one-shot release commits and pushes resolver-updated PWMCP inputs before
-publishing. Publication must stop if that source push cannot fast-forward;
-otherwise GitHub would create the immutable release tag from an older remote
-tree.
+For build-only inspection use `cmru build pwmcp`; for an already-reviewed
+candidate's low-level publication step use `cmru publish pwmcp`. A release
+commits and pushes the selected inputs before publishing. Publication must
+stop if that source push cannot fast-forward; otherwise GitHub could create
+the immutable release tag from an older remote tree.
 
 Development consumers should follow `pwmcp-latest/latest.json`, verify its
 bundle checksum, and rebuild their test-only layer from the bundled `client/`
@@ -199,7 +211,7 @@ when reproducibility matters more than tracking latest.
 Every published bundle has a `.sha256` sidecar in the same release:
 
 ```bash
-VERSION="1.61.0-r2"
+VERSION="1.62.0-r4"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
   -o "pwmcp-${VERSION}.tar.xz.sha256"
 sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"

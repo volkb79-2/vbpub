@@ -39,8 +39,6 @@ done
 set -- "${ARGS[@]:-}"
 if [ "${1:-}" = "" ] && [ ${#ARGS[@]} -eq 0 ]; then set --; fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PWMCP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT="${PROJECT:-pwmcp}"
 ENV="${ENV:-dev}"
 STACK_NAME="${PROJECT}-${ENV}"
@@ -163,6 +161,19 @@ mcp_initialize_assert_fail() {
     return 1
 }
 
+# The legacy HTTP+SSE transport is intentionally disabled. A disabled route
+# may answer 404 (not found) or 405 (method not allowed), but it must never
+# establish the old long-lived SSE connection or return a successful status.
+mcp_legacy_sse_assert_disabled() {
+    local url="$1"
+    local host="$2"
+    local sse_url="${url%/mcp}/sse"
+    local status
+    status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+        -H "Host: ${host}" "$sse_url") || return 1
+    [ "$status" = "404" ] || [ "$status" = "405" ]
+}
+
 # Drive a real MCP tool end-to-end over the stateful streamable-HTTP session:
 #   initialize (capture Mcp-Session-Id) -> notifications/initialized -> tools/call.
 # Args: <url> <host> <tool-name> <arguments-json>. Prints the tool-result JSON
@@ -232,6 +243,30 @@ wait_for_supervisord() {
     return 1
 }
 
+# A process can be RUNNING before its HTTP listener has completed startup
+# (mcp-proxy prints its "starting server" line after supervisor marks it up).
+# Wait for each externally exercised port so the first MCP request cannot race
+# a healthy but not-yet-listening process.
+wait_for_endpoint_ports() {
+    local port
+    for port in "$MCP_PORT" "$DEVTOOLS_PORT" "$LIGHTHOUSE_PORT"; do
+        local ready=0
+        local i=0
+        while [ $i -lt 30 ]; do
+            if curl -sS --max-time 1 -o /dev/null "http://${PWMCP_HOST}:${port}/"; then
+                ready=1
+                break
+            fi
+            sleep 1
+            i=$((i + 1))
+        done
+        if [ $ready -eq 0 ]; then
+            echo "  Timed out waiting for HTTP port ${port} to accept connections" >&2
+            return 1
+        fi
+    done
+}
+
 echo ""
 echo "============================================"
 echo " PWMCP Smoke Tests — Endpoint Validation"
@@ -283,6 +318,14 @@ else
     record_fail "supervisord did not report all four programs RUNNING within 30s"
 fi
 
+total=$((total + 1))
+echo -n "  CHECK ${total}: MCP HTTP listeners accept connections ... "
+if wait_for_endpoint_ports; then
+    record_pass
+else
+    record_fail "one or more MCP HTTP listeners did not become ready within 30s"
+fi
+
 echo ""
 
 # ── 2. MCP @playwright/mcp endpoint (port 8931) ────────────────────────────
@@ -304,6 +347,15 @@ if mcp_initialize_assert_fail "${MCP_URL}" "evil.example:${MCP_PORT}" "@playwrig
     record_pass
 else
     record_fail "Forged Host was not rejected by @playwright/mcp"
+fi
+
+# 2c: Legacy /sse endpoint is disabled; /mcp is the only supported transport.
+total=$((total + 1))
+echo -n "  CHECK ${total}: Legacy /sse endpoint is disabled ... "
+if mcp_legacy_sse_assert_disabled "${MCP_URL}" "${PWMCP_HOST}:${MCP_PORT}"; then
+    record_pass
+else
+    record_fail "Legacy /sse endpoint is still available"
 fi
 
 echo ""
@@ -333,7 +385,16 @@ else
     record_fail "DevTools MCP failed unexpectedly"
 fi
 
-# 3c: Drive Chromium end-to-end via a real tool call (new_page to a data: URL).
+# 3c: mcp-proxy is explicitly stream-only; its legacy /sse route is disabled.
+total=$((total + 1))
+echo -n "  CHECK ${total}: DevTools legacy /sse endpoint is disabled ... "
+if mcp_legacy_sse_assert_disabled "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}"; then
+    record_pass
+else
+    record_fail "DevTools legacy /sse endpoint is still available"
+fi
+
+# 3d: Drive Chromium end-to-end via a real tool call (new_page to a data: URL).
 # This proves the server actually launched and controlled the browser, not just
 # answered initialize. Uses the full stateful MCP session handshake.
 if [ "${1:-}" != "--quick" ]; then
@@ -368,7 +429,16 @@ else
     record_fail "Lighthouse MCP initialize failed or JSON-RPC body not valid"
 fi
 
-# 4b: Forged Host header → note: mcp-proxy has NO host allowlist enforcement.
+# 4b: mcp-proxy is explicitly stream-only; its legacy /sse route is disabled.
+total=$((total + 1))
+echo -n "  CHECK ${total}: Lighthouse legacy /sse endpoint is disabled ... "
+if mcp_legacy_sse_assert_disabled "${LIGHTHOUSE_URL}" "${PWMCP_HOST}:${LIGHTHOUSE_PORT}"; then
+    record_pass
+else
+    record_fail "Lighthouse legacy /sse endpoint is still available"
+fi
+
+# 4c: Forged Host header → note: mcp-proxy has NO host allowlist enforcement.
 #     Same gap as devtools-mcp (see SECURITY.md).
 total=$((total + 1))
 echo -n "  CHECK ${total}: Lighthouse MCP with forged Host header (expect SUCCESS — no host allowlist, see SECURITY.md) ... "
@@ -379,7 +449,7 @@ else
     record_fail "Lighthouse MCP failed unexpectedly"
 fi
 
-# 4c: Drive a real lighthouse_audit tool call against an in-network HTTP URL.
+# 4d: Drive a real lighthouse_audit tool call against an in-network HTTP URL.
 #
 # The MCP JSON-RPC endpoints (8931/8932/8933) are not audit-able HTML pages —
 # Lighthouse scores them null (unrenderable body), giving a false "categories
@@ -622,24 +692,22 @@ if [ "${MODE}" = "shared" ]; then
         nav_url="data:text/html,<h1>pwmcp-shared-cross-tool</h1>"
         pw_body=$(mcp_session_tool_call "${MCP_URL}" "${PWMCP_HOST}:${MCP_PORT}" \
             browser_navigate "{\"url\":\"${nav_url}\"}" 2>/dev/null) || pw_body=""
+        pages_body=$(mcp_session_tool_call "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" \
+            list_pages '{}' 2>/dev/null) || pages_body=""
+        page_id=$(printf '%s' "$pages_body" | jq -r '.result.content[0].text // empty' 2>/dev/null \
+            | awk '/^[0-9]+: / {gsub(":", "", $1); print $1; exit}')
         trace_start=$(mcp_session_tool_call "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" \
-            performance_start_trace '{}' 2>/dev/null) || trace_start=""
+            performance_start_trace "{\"pageId\":${page_id:-0}}" 2>/dev/null) || trace_start=""
         trace_stop=$(mcp_session_tool_call "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" \
-            performance_stop_trace '{}' 2>/dev/null) || trace_stop=""
-        # NOTE (self-review 2026-07-13): performance_start_trace defaults to
-        # autoStop:true, so chrome-devtools-mcp records + analyzes the trace
-        # synchronously and returns the full summary (incl. the navigated
-        # URL) from the START call; performance_stop_trace is then a no-op
-        # ack on a fresh MCP session with nothing left to stop, and returns
-        # empty. Assert on EITHER call's body, not stop_trace alone --
-        # observed empirically: with --isolated removed (see
-        # supervisord.shared.conf), trace_start now correctly shows
-        # "URL: data:text/html,...pwmcp-shared-cross-tool..." instead of
-        # "URL: chrome://new-tab-page/".
-        if [ -n "$pw_body" ] && { printf '%s' "$trace_start" | grep -qF "$nav_url" || printf '%s' "$trace_stop" | grep -qF "$nav_url"; }; then
+            performance_stop_trace "{\"pageId\":${page_id:-0}}" 2>/dev/null) || trace_stop=""
+        # performance_start_trace defaults to autoStop:true, so it records and
+        # analyzes synchronously. chrome-devtools-mcp 1.8+ requires the page ID
+        # on page-scoped tools; list_pages obtains the ID after Playwright's
+        # navigation instead of relying on an implicit selected page.
+        if [ -n "$pw_body" ] && [ -n "$page_id" ] && { printf '%s' "$trace_start" | grep -qF "$nav_url" || printf '%s' "$trace_stop" | grep -qF "$nav_url"; }; then
             record_pass
         else
-            record_fail "cross-tool trace did not reference the navigated URL" "nav=$pw_body start=$trace_start stop=$trace_stop"
+            record_fail "cross-tool trace did not reference the navigated URL" "nav=$pw_body pages=$pages_body page_id=$page_id start=$trace_start stop=$trace_stop"
         fi
     fi
 

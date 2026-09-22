@@ -1,0 +1,30 @@
+services:
+  whisper-service:
+    environment:
+      # Enhanced post-processing settings
+      - POST_PROCESSING_PROMPT_FILE=/config/post-processing-prompt.txt
+      - POST_PROCESSING_TEMPERATURE=0.1
+      - POST_PROCESSING_MAX_TOKENS=4000
+      - POST_PROCESSING_TIMEOUT=60000
+      
+      # Quality-focused transcription settings
+      - WHISPER_TEMPERATURE=0.0          # Most deterministic
+      - WHISPER_BEST_OF=5                # Multiple candidates
+      - WHISPER_BEAM_SIZE=5              # Better accuracy
+      - CONDITION_ON_PREVIOUS_TEXT=true  # Context awareness
+      
+      # Audio preprocessing
+      - VAD_FILTER=true                  # Voice activity detection
+      - VAD_THRESHOLD=0.5
+      - SILENCE_DURATION=3
+      
+    volumes:
+      - ./config:/config
+    
+    # Add startup command for optimization
+    command: >
+      sh -c "
+      echo 'Optimizing for quality transcription...' &&
+      whisper-asr-webservice --host 0.0.0.0 --port 9000
+      "
+      

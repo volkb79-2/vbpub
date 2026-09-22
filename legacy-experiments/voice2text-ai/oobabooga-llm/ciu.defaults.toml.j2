@@ -1,0 +1,49 @@
+# ============================================================================
+# OOBABOOGA LLM SERVICE - PROJECT-SPECIFIC CONFIGURATION
+# This section contains ONLY project-specific settings.
+# Shared defaults are inherited from ../ciu-global.defaults.toml.j2.
+# ============================================================================
+
+[compinit]
+enable_env_expansion = true
+
+# ============================================================================
+# LLM SERVICE CONFIGURATION
+# ============================================================================
+
+[llm]
+# LLM service configuration
+service_port = 5000
+shim_port = 8300
+model_name = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+model_threads = "6"
+model_context_length = "2048"
+shim_model_alias = "gpt-3.5-turbo"
+max_tokens = "2048"
+log_level = "info"
+prompt_system_path = "/config/system-prompt.txt"
+resource_memory_limit = "10G"
+resource_cpu_limit = "6"
+model_loader_image_name = "python"
+model_loader_image_tag = "3.11-slim"
+model_loader_name = "model-loader"
+
+# Volume host directories
+[llm.hostdir]
+models = ""  # Empty = auto-generates ./vol-oobabooga-models
+cache = ""  # Empty = auto-generates ./vol-oobabooga-cache
+
+# ============================================================================
+# HOOKS
+# ============================================================================
+
+[hooks]
+pre_compose = []
+post_compose = []
+
+# ============================================================================
+# ENVIRONMENT VARIABLES (Flat structure - no nesting)
+# ============================================================================
+
+[env]
+# Auto-detection of UID/GID handled by global config

@@ -5,9 +5,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MDT_ROOT="$(cd "$HERE/.." && pwd)"
+MDT_ROOT="$(cd "$HERE/../.." && pwd)"
 WORKTREE_ROOT="$(cd "$MDT_ROOT/.." && pwd)"
-HARNESS="$(cd "$MDT_ROOT/../scripts/debian-install-v2/testing/vm" && pwd)/run-vm-harness.sh"
+HARNESS="$(cd "$WORKTREE_ROOT/scripts/debian-install-v2/testing/vm" && pwd)/run-vm-harness.sh"
 RUN="mdt-system-$(printf '%s' "$MDT_ROOT" | sha256sum | cut -c1-10)"
 GUEST_ROOT="/home/tester/vbpub/modern-debian-tools-python-debug"
 GUEST_SHARED_SCRIPTS="/home/tester/vbpub/scripts/debian-install-v2"
