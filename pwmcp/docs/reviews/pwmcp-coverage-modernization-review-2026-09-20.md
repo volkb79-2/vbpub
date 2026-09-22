@@ -1,13 +1,13 @@
 # PWMCP coverage and upstream compatibility review
 
-Date: 2026-09-20; implementation updates: 2026-09-21
+Date: 2026-09-20; implementation updates: 2026-09-22
 Reviewed baseline: `a4bba60d`; implementation worktree: `test/pwmcp-coverage-20260920`
-Current implementation worktree: `fix/pwmcp-digest-pin-20260921`
+Current implementation worktree: `test/pwmcp-coverage-20260920`
 Reviewer: Codex
 
 ## Scope
 
-This review precedes the coverage expansion in the dedicated
+This review records the coverage expansion in the dedicated
 `test/pwmcp-coverage-20260920` worktree. It covers the Python release helper,
 the installable client, the Playwright version resolver, and the runtime
 contracts that the tests need to witness. It also checks whether the pinned
@@ -47,8 +47,11 @@ contract is Streamable HTTP at `/mcp`; the legacy `/sse` commands remain only as
 commented deprecated references, and the acceptance smoke checks both sides of
 that contract. Assay R1 and R2 are configured for whole-target 100% branch
 coverage. The earlier R1 passed at `7baef450`; the later R2 at `0f3f0406`
-killed all 76 mutation candidates and retained 100% branch coverage. A final
-R1/R2 pair is being rerun on the complete implementation at `c488571a`.
+killed all 76 mutation candidates and retained 100% branch coverage. The final
+external pair passed on `d770556c`: R1 completed in 3.998 seconds with 100%
+whole-target branch coverage, and R2 completed in 479.900 seconds with all 83
+mutation candidates killed and no survivors, crashes, hangs, or budget
+exhaustion.
 
 The old PWMCP-specific `docker-container` builder was also removed. It was
 being killed with exit 137 under host memory pressure, which surfaced to the
@@ -245,7 +248,7 @@ The implementation sequence is:
 4. add the Lighthouse lockfile and managed direct SDK coordinates;
 5. keep the PWMCP compatibility validator and live endpoint acceptance lane;
 6. run the container build and smoke lanes through `tester-unified` — complete;
-   the final external R1/R2 gate pair remains the last coverage certification.
+   the final external R1/R2 gate pair also passed on `d770556c`.
 
 ## Schema proposal
 
@@ -377,10 +380,11 @@ The version-policy backlog remains CMRU FEAT-03. The bearer-token feature is
 owned by [tls-edge/KNOWN_ISSUES_TODO_BACKLOG.md](../../../tls-edge/KNOWN_ISSUES_TODO_BACKLOG.md)
 FEAT-01; PWMCP only documents its future use.
 
-## Previous review decision
+## Final review decision
 
 The coverage work and upstream modernization are committed in the dedicated
 worktrees. Coverage tests, resolver fail-closed hardening, the enforced base
 image digest, and the CMRU gate invocation are covered by the external R1
-pass. R2 mutation evidence, a fresh image build, and live endpoint acceptance
-remain the release checks after the long-running lane completes.
+pass. R2 mutation evidence, the fresh managed BuildKit image build, and live
+endpoint acceptance are also complete. The branch is ready for serial merge
+into `main`.
