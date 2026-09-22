@@ -20,14 +20,17 @@ discard." Every dropped run of tool activity collapses into a bare
 attempt to characterize what happened.
 
 That's correct for most tool types, but not all: Claude Code's own Bash-tool
-schema REQUIRES a natural-language `description` param on every call
-("Clear, concise description of what this command does in active voice"),
-and the Task/Agent tool likewise requires a short `description`. Verified
-against a real session's subagent transcripts: 100% of sampled Bash tool_use
-blocks carried one (e.g. "Verify test-runner lane collects tests/config",
-"Confirm O2 coverage and size delta") -- a genuinely legible intent string
-sitting in the raw JSONL today, currently discarded along with everything
-else in a gap.
+schema carries a natural-language `description` param ("Clear, concise
+description of what this command does in active voice"), and the Task/Agent
+tool likewise carries a short `description`. **Not universally filled**:
+a full-corpus check (152 transcripts, this session's own top-level JSONL plus
+all 151 subagent transcripts, 16,738 total Bash tool_use blocks) found 70.6%
+(11,816) carry a non-empty `description`; 29.4% (4,922) have the field
+missing entirely (never present-but-blank -- all-or-nothing per call; no
+verified cause for the omitted fraction). Where filled, it's a genuinely
+legible intent string (e.g. "Verify test-runner lane collects tests/config",
+"Confirm O2 coverage and size delta") sitting in the raw JSONL today,
+discarded along with everything else in a gap for ~7 in 10 calls.
 
 A working precedent for "annotate intent alongside the action, mechanically
 legible" already exists in this project: dstdns's own `.vscode/copilot-cmd.sh`

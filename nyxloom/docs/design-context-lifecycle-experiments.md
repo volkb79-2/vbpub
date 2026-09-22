@@ -2874,16 +2874,22 @@ tool cannot interpret and summarize what a tool call was and its result" —
 true in general, and the deliberate reason `session_extract` draws its line
 where it does.
 
-**But it is not true for every tool call, and the signal already exists
-today, unused.** Verified against this session's own subagent transcripts
-(`~/.claude/projects/-workspaces-dstdns/<session>/subagents/*.jsonl`): every
-single Bash tool_use block carries a `description` field — Claude Code's own
-Bash-tool schema requires one ("Clear, concise description of what this
-command does in active voice") — and the Task/Agent tool likewise requires a
-short `description`. Sampled real values from this session: "Verify
-test-runner lane collects tests/config", "Confirm O2 coverage and size delta",
-etc. — genuinely legible, human-authored intent strings, sitting in the raw
-JSONL right now, that `session_extract` currently throws away along with
+**But it is not true for every tool call, and where the signal exists it is
+already unused.** Claude Code's own Bash-tool schema carries a `description`
+param ("Clear, concise description of what this command does in active
+voice") and the Task/Agent tool likewise carries a short `description` — a
+schema-level intent field is real. **Correction (operator caught an
+overclaim, 2026-09-22): this is NOT universally filled.** First pass sampled
+one transcript and found 100%; a full-corpus check (152 files — this
+session's own top-level JSONL plus all 151 subagent transcripts, 16,738
+total Bash `tool_use` blocks) found only **70.6% (11,816) carry a non-empty
+`description`; 29.4% (4,922) have the field missing entirely** — never
+present-but-blank, strictly all-or-nothing per call. Root cause not
+investigated (no verified explanation for the omitted 29.4% — do not assume
+one). Sampled real filled values: "Verify test-runner lane collects
+tests/config", "Confirm O2 coverage and size delta", etc. — genuinely
+legible, human-authored intent strings, sitting in the raw JSONL right now
+for ~7 in 10 calls, that `session_extract` currently throws away along with
 everything else in a gap.
 
 **A working precedent for the general shape already exists in this very
