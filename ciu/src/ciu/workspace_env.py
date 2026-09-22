@@ -1350,16 +1350,7 @@ def read_generated_facts(ciu_root: Path) -> dict[str, str]:
             f"[S3.1c] {path} {GENERATED_FACTS_HEADER} is "
             f"{type(table).__name__}, not a table"
         )
-    version = table.get("schema_version")
-    if (
-        not isinstance(version, int)
-        or isinstance(version, bool)
-        or version != GENERATED_FACTS_SCHEMA_VERSION
-    ):
-        raise WorkspaceEnvError(
-            f"[S3.1c] {path} has schema_version={version!r}; expected "
-            f"{GENERATED_FACTS_SCHEMA_VERSION}"
-        )
+    _require_generated_schema_version(path, GENERATED_FACTS_HEADER, table)
     facts: dict[str, str] = {}
     missing = [key for key in GENERATED_FACTS_KEYS if key not in table]
     if missing:
@@ -1400,12 +1391,7 @@ def read_generated_machine_facts(ciu_root: Path) -> dict[str, str]:
         table = table[part]
     if not isinstance(table, dict):
         raise WorkspaceEnvError(f"[S3.1c] {path} {MACHINE_FACTS_HEADER} is not a table")
-    version = table.get("schema_version")
-    if version != GENERATED_FACTS_SCHEMA_VERSION or isinstance(version, bool):
-        raise WorkspaceEnvError(
-            f"[S3.1c] {path} {MACHINE_FACTS_HEADER} has schema_version={version!r}; "
-            f"expected {GENERATED_FACTS_SCHEMA_VERSION}"
-        )
+    _require_generated_schema_version(path, MACHINE_FACTS_HEADER, table)
     missing = [key for key in MACHINE_FACTS_KEYS if key not in table]
     unknown = sorted(set(table) - {"schema_version", *MACHINE_FACTS_KEYS})
     if missing or unknown:
@@ -1421,6 +1407,22 @@ def read_generated_machine_facts(ciu_root: Path) -> dict[str, str]:
             )
         result[key] = value
     return result
+
+
+def _require_generated_schema_version(
+    path: Path, header: str, table: Mapping[str, object]
+) -> None:
+    """Reject non-integer (including bool/float) and unsupported versions."""
+    version = table.get("schema_version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version != GENERATED_FACTS_SCHEMA_VERSION
+    ):
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} {header} has schema_version={version!r}; expected "
+            f"{GENERATED_FACTS_SCHEMA_VERSION}"
+        )
 
 
 def identity_env_from_facts(facts: Mapping[str, str]) -> dict[str, str]:

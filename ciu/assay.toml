@@ -25,13 +25,16 @@ argv = [
   "/opt/tester-venv/bin/python", "-m", "pytest", "tests",
   "--cov=ciu", "-n", "0", "--dist", "loadfile", "--cov-branch",
   "--cov-report=term-missing", "--cov-report=json:coverage.json",
-  "--cov-fail-under=100", "-rs",
+  "--cov-fail-under=100", "--maxfail=1", "-rs",
 ]
 # Assay's Git boundary pins resource-affecting Git options for every child.
 # Keep the full suite in one process in the mutation container: mutation
 # already runs one candidate at a time, and even one xdist worker adds a child
 # process while snapshots are being materialized. `0` retains the same tests
-# and 100% line+branch floor without that extra process.
+# and 100% line+branch floor without that extra process. --maxfail=1 lets an
+# R2 mutant's first failure terminate that candidate before later tests can
+# cascade into resource/lock failures; passing full-suite runs still execute
+# every test.
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 # The suite genuinely reads these from the ambient environment: the four
 # governance tests read CGROUP_PARENT_DEV_BACKGROUND by design (S15.2), xdist

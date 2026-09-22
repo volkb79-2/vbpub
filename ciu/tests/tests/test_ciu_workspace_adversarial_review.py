@@ -283,11 +283,15 @@ def test_machine_facts_reject_each_invalid_key_axis_independently(
     assert diagnostic in str(exc.value)
 
 
-@pytest.mark.parametrize("version", [True, False], ids=("true-is-not-one", "false-is-not-zero"))
-def test_generated_facts_reader_rejects_bool_schema_versions(
+@pytest.mark.parametrize(
+    "version",
+    [True, False, 2.0, 3],
+    ids=("true-is-not-int", "false-is-not-int", "float-is-not-int", "unsupported"),
+)
+def test_generated_facts_reader_rejects_invalid_schema_versions(
     monkeypatch, tmp_path, version
 ):
-    """bool is an int subclass, so equality alone accepts True as schema 1."""
+    """Reject bool/float impostors and unsupported integer schema versions."""
     table = {"schema_version": version, **IDENTITY}
     monkeypatch.setattr(
         workspace_env,
@@ -297,6 +301,26 @@ def test_generated_facts_reader_rejects_bool_schema_versions(
 
     with pytest.raises(workspace_env.WorkspaceEnvError, match="schema_version"):
         workspace_env.read_generated_facts(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "version",
+    [True, False, 2.0, 3],
+    ids=("true-is-not-int", "false-is-not-int", "float-is-not-int", "unsupported"),
+)
+def test_machine_facts_reader_rejects_invalid_schema_versions(
+    monkeypatch, tmp_path, version
+):
+    """Exercise the machine table reader whose type/version guards are distinct."""
+    table = {"schema_version": version, **MACHINE}
+    monkeypatch.setattr(
+        workspace_env,
+        "generated_facts_document",
+        lambda _root: {"ciu": {"instance": {"machine": table}}},
+    )
+
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="schema_version"):
+        workspace_env.read_generated_machine_facts(tmp_path)
 
 
 def test_identity_fallback_rejects_default_repair_and_handles_partial_identity(

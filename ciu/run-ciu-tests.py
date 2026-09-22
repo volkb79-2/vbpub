@@ -43,6 +43,7 @@ def pytest_args(workers: str) -> list[str]:
         "--cov-report=term-missing",
         "--cov-report=json:coverage.json",
         f"--cov-fail-under={COV_FAIL_UNDER}",
+        "--maxfail=1",
         "-rs",
     ]
 

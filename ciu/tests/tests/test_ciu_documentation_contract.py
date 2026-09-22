@@ -189,4 +189,5 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
     assert lane["judge"]["mutation"]["liveness"] is True
     helper = runpy.run_path(str(REPO_ROOT / "run-ciu-tests.py"))
     assert lane["argv"][1:] == helper["pytest_args"]("0")
+    assert "--maxfail=1" in lane["argv"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
