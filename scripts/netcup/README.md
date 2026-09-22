@@ -104,7 +104,7 @@ recipe command.
 
 # Build a Debian-v2 hook in its own project, then let the Netcup wizard consume
 # the resulting JSON bundle (the wizard remains provider-agnostic):
-../debian-install-v2/debian-install-v2.py --action build-customscript \
+../debian-install-v2/debian-install-v2.py build-customscript \
   --config debian-v2.json --controller-ssh-placeholder > debian-v2-customscript.json
 ./install-host.py wizard --custom-script-file debian-v2-customscript.json
 
@@ -188,7 +188,7 @@ For Debian v2, build the bundle in that project and review its generated
 `config` object and `customScript` before handing it to this tool:
 
 ```bash
-../debian-install-v2/debian-install-v2.py --action build-customscript \
+../debian-install-v2/debian-install-v2.py build-customscript \
   --config debian-v2.json --controller-ssh-placeholder \
   > debian-v2-customscript.json
 ```
