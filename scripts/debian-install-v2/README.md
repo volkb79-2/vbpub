@@ -12,6 +12,23 @@ Design/status docs elsewhere in this tree, not duplicated here:
 + `zswap-shrinker-threshold-feasibility.md` (open zswap-shrinker work),
 `testing/vm/DESIGN.md` (the QEMU/TCG test-VM harness).
 
+## Build a provider customScript bundle
+
+When a provider accepts a cloud-init command, let v2 build the command and
+the strict JSON it carries:
+
+```bash
+./debian-install-v2.py --action build-customscript \
+  --config /path/to/debian-v2.json \
+  --controller-ssh-placeholder > debian-v2-customscript.json
+```
+
+The JSON output contains `config`, `customScript`, and `completionMarker`.
+The command uses `VBPUB_CONFIG_EXTRA_JSON`, so its complete configuration stays
+owned and validated by v2. A consumer such as the Netcup installer replaces
+the generic `{{CONTROLLER_SSH_PUBKEY}}` marker and may wait for the declared
+completion marker before removing its local temporary key.
+
 ## What it actually does today
 
 ### Disk / swap
@@ -102,15 +119,21 @@ through the same journal).
 ### Orchestration / observability
 
 `state.json` under `state_dir` tracks per-step status across stage1 → reboot
-→ stage2, so a re-run resumes rather than repeats. Telegram progress +
-completion notifications (`telegram_bot_token`/`telegram_chat_id`,
-`telegram_verbose_progress`) including host facts. An ephemeral controller
+→ stage2, so a re-run resumes rather than repeats. Optional Telegram or
+Mattermost progress + completion notifications (`notify_backend`, Telegram's
+`telegram_bot_token`/`telegram_chat_id`, or Mattermost's
+`mattermost_webhook_url`; `telegram_verbose_progress` also controls verbose
+progress for the selected backend) include host facts. An ephemeral controller
 SSH pubkey (`controller_ssh_pubkey`) is installed for external monitoring
-during the run and removed again only *after* the stage2-done marker is
-written (removing it earlier can strand an external poller mid-install with
+during the run. By default it is removed only *after* the stage2-done marker
+is written (removing it earlier can strand an external poller mid-install with
 no way back in — a real bug found and fixed live, 2026-09-09).
-`credential_mode` (`root-storage` / `systemd`) selects how the Telegram
-token and controller pubkey are stored on disk.
+`retain_controller_ssh_key=true` deliberately leaves that exact line in
+`authorized_keys` after successful stage2; failure paths retain it for
+diagnosis regardless of this setting. The operator's persistent account key
+is never removed.
+`credential_mode` (`root-storage` / `systemd`) selects how the selected
+notification credential and controller pubkey are stored on disk.
 
 ## Not yet in v2 (v1 had some of this)
 

@@ -40,6 +40,7 @@ def test_build_config_maps_named_env_vars(mod, monkeypatch):
     monkeypatch.setenv("AUTO_REBOOT_AFTER_STAGE1", "yes")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "456")
+    monkeypatch.setenv("NOTIFY_BACKEND", "telegram")
     config = mod.build_config()
     assert config == {
         "swap_disk_total_gb": 64,
@@ -50,6 +51,16 @@ def test_build_config_maps_named_env_vars(mod, monkeypatch):
         "auto_reboot_after_stage1": True,
         "telegram_bot_token": "123:token",
         "telegram_chat_id": "456",
+        "notify_backend": "telegram",
+    }
+
+
+def test_build_config_maps_mattermost_webhook(mod, monkeypatch):
+    monkeypatch.setenv("NOTIFY_BACKEND", "mattermost")
+    monkeypatch.setenv("MATTERMOST_WEBHOOK_URL", "https://mattermost.example.test/hooks/secret")
+    assert mod.build_config() == {
+        "notify_backend": "mattermost",
+        "mattermost_webhook_url": "https://mattermost.example.test/hooks/secret",
     }
 
 

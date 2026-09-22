@@ -1,5 +1,11 @@
 # debian-install-v2 live-test handoff — 2026-09-08
 
+> Historical handoff snapshot. The installer/key lifecycle described below
+> predates the `netcup-installer-rework` change. For the current commands and
+> safety behavior, use [`README.md`](README.md) and
+> [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md); the historical incident record is
+> retained here for context.
+
 Written at the end of a session that hit two real incidents (see below).
 Operator asked to write up everything before handing off to a fresh
 session, rather than continue in this one. This file is that write-up.
@@ -8,7 +14,7 @@ session, rather than continue in this one. This file is that write-up.
 ## Original task
 
 Operator: live-test and debug `scripts/debian-install-v2` (and
-`scripts/netcup/scp-api-install-host.py`, the Netcup SCP API driver that
+`scripts/netcup/install-host.py`, the Netcup SCP API driver that
 triggers it) against two real, disposable Netcup VPS hosts, using the two
 commented-out `NETCUP_SCP_API_SERVER_NAME` entries in `scripts/netcup/.env`
 as test targets, in parallel. Also: figure out how to verify the Telegram
@@ -117,7 +123,7 @@ forwarded ECDSA agent key, at session end ~2026-09-08T17:01Z)
   by the operator or a fresh-context reviewer yet** — do that before
   trusting them further or building on top:
   1. `59ab3077` — `identity_file` read-only-mount fix (repoints
-     `scp-api-install-host.toml`'s `ssh.identity_file` from
+     `install-host.toml`'s `ssh.identity_file` from
      `~/.ssh-host/...` to `~/.ssh/...`) + moves the `--dry-run` early
      return before `save_payload_with_comments()` so a dry-run stops
      overwriting `target-host.jsonc`. Has regression tests. **Known gap**:
@@ -155,7 +161,7 @@ identity-file bug, **none implemented yet**:
 a. The generated local keypair's filename should reflect the
    hostname/service and date it's for, not a single static shared
    filename reused across every install.
-b. `scp-api-install-host.py` should pass its own generated SSH pubkey
+b. `install-host.py` should pass its own generated SSH pubkey
    **into the JSON payload sent to Netcup** (so it lands in the fresh
    host's `authorized_keys` at provision time) rather than requiring a
    pre-registered `sshKeyIds` entry to already match — this is exactly
@@ -174,7 +180,7 @@ Reference naming/comment convention the operator pointed at:
 `/workspaces/netcup-api-filter` (a sibling project, not this repo) — look
 there for the pattern before inventing a new one.
 
-## `scp-api-install-host.py` — other operator asks, not yet implemented
+## `install-host.py` — other operator asks, not yet implemented
 
 - **Dynamic resolution instead of hardcoded payload fields**: `serverId`,
   `imageFlavourId`, and `sshKeyIds` should be determined by talking to the
@@ -187,7 +193,7 @@ there for the pattern before inventing a new one.
   thus you also need no commit. that is the usual way." — **this was
   never checked**. Confirm whether `--payload` already accepts inline
   JSON (vs. only a file path) or whether `parse_args()` needs a new flag
-  (e.g. `--payload-json`) for this. Check `scp-api-install-host.py`'s
+(e.g. `--payload-json`) for this. Check `install-host.py`'s
   `parse_args()` and `install_from_payload()` before assuming either way.
 
 ## debian-install-v2 apt sources/preferences — operator's proposed replacement content
@@ -312,7 +318,7 @@ and is likely what the current template gets wrong.
   webhook+embeds, Slack incoming webhook, Matrix/Element, Gotify,
   Pushover, Mattermost).
 - `target-host.jsonc` existing-vs-missing pytest coverage for
-  `scp-api-install-host.py`'s `--payload` handling — never added.
+  `install-host.py`'s `--payload` handling — never added.
 - io.cost calibration (`scripts/debian-install-v2/tools/iocost-calibrate.sh`
   / vendored `iocost_coef_gen.py`) was identified as relevant standalone
   tooling (NOT wired into the installer itself) but never run against

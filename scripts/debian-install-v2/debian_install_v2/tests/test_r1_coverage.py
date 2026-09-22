@@ -464,7 +464,7 @@ def test_resume_removes_controller_ssh_key_only_after_stage2_done_marker(tmp_pat
     # Regression, 2026-09-09 (v1001 round 12, the first fully successful
     # live install this whole effort): _remove_controller_ssh_key() used
     # to run INSIDE _stage2(), before the caller (resume()) ever touches
-    # the stage2_done marker file. scp-api-install-host.py's own
+    # the stage2_done marker file. install-host.py's own
     # completion poller authenticates with that exact controller key --
     # revoking it before the marker exists let a successful install
     # permanently strand its own external poller (unable to reconnect to

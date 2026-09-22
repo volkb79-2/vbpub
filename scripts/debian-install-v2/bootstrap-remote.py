@@ -19,7 +19,7 @@ Usage (root):
   curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py \\
     | SWAP_DISK_TOTAL_GB=32 SWAP_FILE_COUNT=8 ZSWAP_COMPRESSOR=zstd ZSWAP_POOL_PERCENT=25 \\
       AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no \\
-      TELEGRAM_BOT_TOKEN=123:token TELEGRAM_CHAT_ID=456 \\
+      NOTIFY_BACKEND=telegram TELEGRAM_BOT_TOKEN=123:token TELEGRAM_CHAT_ID=456 \\
       python3 -
 
 Env vars — every name below maps 1:1 to a debian_install_v2.config.Config
@@ -42,18 +42,23 @@ merged in last (wins over the named vars above):
              RUN_OOMD_CONFIG, RUN_FSTRIM, RUN_DOCKER_CLEANUP,
              RUN_APT_AUTO_UPGRADE, RUN_AUTO_REBOOT
   Reboot:    AUTO_REBOOT_AFTER_STAGE1, NEVER_REBOOT
-  Telegram:  TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CREDENTIAL_MODE
-             (root-storage|systemd), TELEGRAM_VERBOSE_PROGRESS (yes/no -
-             also notify on every internal step, not just the stage-boundary
+  Notifications:
+             NOTIFY_BACKEND (telegram|mattermost|none; default telegram),
+             Telegram: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+             Mattermost: MATTERMOST_WEBHOOK_URL (the HTTPS incoming-webhook
+             URL is the credential; use the nyxloom-installer webhook),
+             TELEGRAM_VERBOSE_PROGRESS (yes/no - also notify on every
+             internal step, not just the stage-boundary
              start/reboot/resume/success/failure messages sent by default)
+  Credentials: CREDENTIAL_MODE (root-storage|systemd)
   SSH:       CONTROLLER_SSH_PUBKEY - a one-line authorized_keys entry for the
              controller's own ephemeral, per-host bootstrap key. Installed as
              the very first stage1 step (before this key's own registration
-             with the provider is even guaranteed to have taken effect) and
-             removed again as the last stage2 step - no further controller
-             access is needed once the install is done. Leave unset to skip
-             entirely; the operator's own persistent access key is never
-             touched by this either way.
+             with the provider is even guaranteed to have taken effect).
+             RETAIN_CONTROLLER_SSH_KEY=yes leaves it after successful stage2;
+             the default no removes only this exact line. Leave the pubkey
+             unset to skip entirely; the operator's own persistent access key
+             is never touched by this either way.
   Paths:     STATE_DIR, LOG_DIR, STAGE2_OUTPUT
 
   DRY_RUN=yes    — pass --dry-run through to the installer
@@ -92,8 +97,10 @@ _STRING_FIELDS = {
     "APT_AUTO_UPGRADE_MODE": "apt_auto_upgrade_mode",
     "REBOOT_WINDOW_TIME": "reboot_window_time",
     "CREDENTIAL_MODE": "credential_mode",
+    "NOTIFY_BACKEND": "notify_backend",
     "TELEGRAM_BOT_TOKEN": "telegram_bot_token",
     "TELEGRAM_CHAT_ID": "telegram_chat_id",
+    "MATTERMOST_WEBHOOK_URL": "mattermost_webhook_url",
     "STATE_DIR": "state_dir",
     "LOG_DIR": "log_dir",
     "STAGE2_OUTPUT": "stage2_output",
@@ -124,6 +131,7 @@ _BOOL_FIELDS = {
     "RUN_APT_AUTO_UPGRADE": "run_apt_auto_upgrade",
     "RUN_AUTO_REBOOT": "run_auto_reboot",
     "TELEGRAM_VERBOSE_PROGRESS": "telegram_verbose_progress",
+    "RETAIN_CONTROLLER_SSH_KEY": "retain_controller_ssh_key",
 }
 
 
@@ -275,7 +283,10 @@ def main() -> int:
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     os.chmod(config_path, 0o600)
     if debug:
-        redacted = {key: ("<redacted>" if "token" in key else value) for key, value in config.items()}
+        redacted = {
+            key: ("<redacted>" if "token" in key or "webhook" in key else value)
+            for key, value in config.items()
+        }
         print(f"[bootstrap-remote] config: {json.dumps(redacted)}", file=sys.stderr)
 
     argv = [sys.executable, str(entrypoint), "--action", "install", "--config", str(config_path)]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -52,6 +53,7 @@ SUPPORTED_RELEASES = {"trixie", "forky"}
 SWAP_TYPE_GUID = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
 
 TELEGRAM_MESSAGE_LIMIT = 4096
+MATTERMOST_MESSAGE_LIMIT = 16383
 
 
 def _split_for_telegram(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
@@ -77,6 +79,35 @@ def _split_for_telegram(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> li
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+def _telegram_html_to_mattermost_markdown(message: str) -> str:
+    """Adapt the existing Telegram HTML message into Mattermost Markdown.
+
+    The installer deliberately keeps one message builder so Telegram's
+    established formatting and the new webhook backend report the same facts.
+    Replace only tags emitted by this package *before* HTML-unescaping: values
+    wrapped by ``_code``/``_pre`` may themselves contain literal tag-looking
+    text, which must remain data rather than becoming Markdown structure.
+    """
+    converted = (
+        message
+        .replace("<b>", "**")
+        .replace("</b>", "**")
+        .replace("<code>", "`")
+        .replace("</code>", "`")
+        .replace("<pre>", "\n```\n")
+        .replace("</pre>", "\n```")
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n")
+    )
+    return html.unescape(converted)
+
+
+def _split_for_mattermost(message: str, limit: int = MATTERMOST_MESSAGE_LIMIT) -> list[str]:
+    """Split a Mattermost Markdown post without exceeding its post limit."""
+    return _split_for_telegram(message, limit=limit)
 
 
 class Installer:
@@ -159,7 +190,13 @@ class Installer:
 
     @property
     def _notifications_enabled(self) -> bool:
-        return bool(self.config.telegram_bot_token) and bool(self.config.telegram_chat_id) and not self.actions.dry_run
+        if self.actions.dry_run:
+            return False
+        if self.config.notify_backend == "telegram":
+            return bool(self.config.telegram_bot_token) and bool(self.config.telegram_chat_id)
+        if self.config.notify_backend == "mattermost":
+            return bool(self.config.mattermost_webhook_url)
+        return False
 
     def install(self) -> None:
         self.state.save_new(StateStore.new(self.config))
@@ -194,13 +231,20 @@ class Installer:
             credential_dir = Path("/run/credentials/vbpub-bootstrap-stage2.service")
         else:
             credential_dir = Path(self.config.state_dir) / "credentials"
-        token_file = credential_dir / "telegram_bot_token"
-        chat_file = credential_dir / "telegram_chat_id"
-        if not self.actions.dry_run and token_file.is_file() and chat_file.is_file():
-            token = token_file.read_text(encoding="utf-8").strip()
-            chat_id = chat_file.read_text(encoding="utf-8").strip()
-            if token and chat_id:
-                self.config = replace(self.config, telegram_bot_token=token, telegram_chat_id=chat_id)
+        if not self.actions.dry_run and self.config.notify_backend == "telegram":
+            token_file = credential_dir / "telegram_bot_token"
+            chat_file = credential_dir / "telegram_chat_id"
+            if token_file.is_file() and chat_file.is_file():
+                token = token_file.read_text(encoding="utf-8").strip()
+                chat_id = chat_file.read_text(encoding="utf-8").strip()
+                if token and chat_id:
+                    self.config = replace(self.config, telegram_bot_token=token, telegram_chat_id=chat_id)
+        elif not self.actions.dry_run and self.config.notify_backend == "mattermost":
+            webhook_file = credential_dir / "mattermost_webhook_url"
+            if webhook_file.is_file():
+                webhook = webhook_file.read_text(encoding="utf-8").strip()
+                if webhook:
+                    self.config = replace(self.config, mattermost_webhook_url=webhook)
         thread_file = Path(self.config.state_dir) / "telegram_thread_id"
         if not self.actions.dry_run and thread_file.is_file():
             thread_id = thread_file.read_text(encoding="utf-8").strip()
@@ -217,7 +261,7 @@ class Installer:
             # exists on disk: this used to run inside _stage2() itself,
             # BEFORE this marker was ever touched. Live-confirmed
             # 2026-09-09 (v1001 round 12, the first fully successful
-            # install this whole effort): scp-api-install-host.py's own
+            # install this whole effort): install-host.py's own
             # completion poller authenticates with this exact controller
             # key, so revoking it before the marker exists created a race
             # where a successful install could permanently strand its own
@@ -226,7 +270,10 @@ class Installer:
             # up to its full timeout (an hour, by default) and then
             # reporting a spurious TimeoutError for an install that had
             # actually already succeeded.
-            self._remove_controller_ssh_key()
+            if self.config.retain_controller_ssh_key:
+                self._mark_step("controller_ssh_key_retained", "success", "configured to retain after successful stage2")
+            else:
+                self._remove_controller_ssh_key()
             if self._notifications_enabled:
                 duration = self._duration_since_start()
                 facts_html = format_facts_html(collect_host_facts(self))
@@ -1424,7 +1471,19 @@ MaxFileSec=1month
         working_directory = str(Path(__file__).resolve().parents[1])
         env_file = "/etc/vbpub/bootstrap.env"
         credentials_line = "-"
-        if self.config.telegram_bot_token and self.config.telegram_chat_id:
+        # Always publish the selected backend marker, including `none`, so a
+        # reinstall cannot leave an older Telegram/Mattermost marker active
+        # for the standalone helper. Credential files from an older run are
+        # harmless once this marker selects the new backend.
+        backend_marker = self.config.notify_backend + "\n"
+        self.actions.write_file("/etc/vbpub/credentials/notify_backend", backend_marker, 0o600)
+        if self.config.credential_mode == "root-storage":
+            self.actions.write_file(
+                str(Path(self.config.state_dir) / "credentials/notify_backend"),
+                backend_marker,
+                0o600,
+            )
+        if self.config.notify_backend == "telegram" and self.config.telegram_bot_token and self.config.telegram_chat_id:
             # /usr/local/sbin/vbpub-notify (NOTIFY_SCRIPT) is called from
             # several standalone systemd units (reboot-check, boot-notify,
             # apt-update-notify) that declare no LoadCredential= of their
@@ -1446,12 +1505,26 @@ MaxFileSec=1month
                 credential_note = "root-only Telegram credentials installed"
             else:
                 credentials_line = (
+                    f"notify_backend:/etc/vbpub/credentials/notify_backend "
                     f"telegram_bot_token:/etc/vbpub/credentials/telegram_bot_token "
                     f"telegram_chat_id:/etc/vbpub/credentials/telegram_chat_id"
                 )
                 credential_note = "systemd LoadCredential Telegram credentials configured"
+        elif self.config.notify_backend == "mattermost" and self.config.mattermost_webhook_url:
+            webhook = self.config.mattermost_webhook_url + "\n"
+            self.actions.write_file("/etc/vbpub/credentials/mattermost_webhook_url", webhook, 0o600)
+            if self.config.credential_mode == "root-storage":
+                credential_dir = Path(self.config.state_dir) / "credentials"
+                self.actions.write_file(str(credential_dir / "mattermost_webhook_url"), webhook, 0o600)
+                credential_note = "root-only Mattermost webhook credential installed"
+            else:
+                credentials_line = (
+                    f"notify_backend:/etc/vbpub/credentials/notify_backend "
+                    f"mattermost_webhook_url:/etc/vbpub/credentials/mattermost_webhook_url"
+                )
+                credential_note = "systemd LoadCredential Mattermost webhook configured"
         else:
-            credential_note = "Telegram disabled"
+            credential_note = f"{self.config.notify_backend} notifications disabled"
         env = "\n".join([
             f"VBPUB_STATE_DIR={self.config.state_dir}",
             f"VBPUB_STAGE2_OUTPUT={self.config.stage2_output}",
@@ -1477,7 +1550,7 @@ MaxFileSec=1month
 
     def _mark_step(self, name: str, status: str, detail: str = "") -> None:
         """Record a step, and - only when telegram_verbose_progress is on -
-        also send a one-line Telegram notification for it. The default
+        also send a one-line notification through the selected backend. The default
         (non-verbose) path stays silent here; the handful of stage-boundary
         messages are separate explicit _notify() calls, not routed through
         this wrapper.
@@ -1487,30 +1560,58 @@ MaxFileSec=1month
             self._notify(f"<b>{name}</b>: {status}" + (f" — {detail}" if detail else ""))
 
     def _notify(self, message: str) -> None:
-        token = self.config.telegram_bot_token
-        chat_id = self.config.telegram_chat_id
-        if not token or not chat_id or self.actions.dry_run:
+        if self.actions.dry_run:
             return
-        thread_id = None
-        try:
-            thread_id = self.state.load().get("telegram_thread_id") or None
-        except Exception:
-            pass
-        for index, chunk in enumerate(_split_for_telegram(message)):
+        if self.config.notify_backend == "telegram":
+            token = self.config.telegram_bot_token
+            chat_id = self.config.telegram_chat_id
+            if not token or not chat_id:
+                return
+            thread_id = None
+            try:
+                thread_id = self.state.load().get("telegram_thread_id") or None
+            except Exception:
+                pass
+            for index, chunk in enumerate(_split_for_telegram(message)):
+                if index > 0:
+                    time.sleep(0.3)  # basic rate-limit courtesy between multi-part sends
+                payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
+                if thread_id:
+                    payload["message_thread_id"] = thread_id
+                data = urllib.parse.urlencode(payload).encode("utf-8")
+                request = urllib.request.Request(
+                    f"https://api.telegram.org/bot{urllib.parse.quote(token)}/sendMessage", data=data
+                )
+                try:
+                    urllib.request.urlopen(request, timeout=15).close()
+                except OSError as exc:
+                    print(f"[WARN] Telegram notification failed: {exc}", flush=True)
+                    break  # don't send later chunks out of order after a failure
+            return
+        if self.config.notify_backend != "mattermost":
+            return
+        webhook = self.config.mattermost_webhook_url
+        if not webhook:
+            return
+        markdown = _telegram_html_to_mattermost_markdown(message)
+        for index, chunk in enumerate(_split_for_mattermost(markdown)):
             if index > 0:
-                time.sleep(0.3)  # basic rate-limit courtesy between multi-part sends
-            payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
-            if thread_id:
-                payload["message_thread_id"] = thread_id
-            data = urllib.parse.urlencode(payload).encode("utf-8")
+                time.sleep(0.3)
             request = urllib.request.Request(
-                f"https://api.telegram.org/bot{urllib.parse.quote(token)}/sendMessage", data=data
+                webhook,
+                data=json.dumps({"text": chunk}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
             )
             try:
-                urllib.request.urlopen(request, timeout=15).close()
-            except OSError as exc:
-                print(f"[WARN] Telegram notification failed: {exc}", flush=True)
-                break  # don't send later chunks out of order after a failure
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    if getattr(response, "status", 200) != 200:
+                        raise RuntimeError(f"HTTP {response.status}")
+            except Exception as exc:
+                # The webhook URL is the credential: never echo it or the
+                # response body into install logs.
+                print(f"[WARN] Mattermost notification failed: {type(exc).__name__}", flush=True)
+                break
 
     #: Confirmed live 2026-09-08 against a real Netcup host: a synchronous
     #: reboot from inside the still-running customScript process strands

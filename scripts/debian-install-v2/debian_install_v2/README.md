@@ -25,6 +25,32 @@ by `debian_install_v2.__version__`. Its usage and configuration diagnostics
 begin with `DEBIAN-INSTALL-V2 2 — Debian host installer` as line 1; normal
 installation output is unchanged.
 
+### Build a provider customScript bundle
+
+The installer owns the translation from its strict JSON configuration to the
+remote `bootstrap-remote.py` command. A provider integration can consume the
+JSON object and the command without knowing v2's environment-variable mapping:
+
+```bash
+./debian-install-v2.py --action build-customscript \
+  --config /path/to/debian-v2.json \
+  --controller-ssh-placeholder > debian-v2-customscript.json
+```
+
+The output is a JSON object with `config`, `customScript`, and
+`completionMarker`. `customScript` carries the complete validated v2 config
+through `VBPUB_CONFIG_EXTRA_JSON`; it does not require a second hand-maintained
+list of `KEY=VALUE` translations. `--controller-ssh-placeholder` puts the
+provider-neutral `{{CONTROLLER_SSH_PUBKEY}}` marker in the generated config.
+The consuming provider replaces that marker with its temporary controller
+public key before submission. Without that option, supply a real
+`controller_ssh_pubkey` in the v2 config if the hook needs one.
+
+The `completionMarker` is an optional consumer contract. A provider may wait
+for it before deleting its local temporary key. It is not sent as a provider
+API field. The Netcup consumer accepts this bundle with
+`install-host.py wizard --custom-script-file FILE`.
+
 `bootstrap-remote.py` is a curl-to-stdin transport adapter that fetches this
 front door and then executes it; it has no separate command-line parser or
 version identity. `inuse_partition_editor.py` is an internal partition helper
@@ -47,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian
   | SWAP_DISK_TOTAL_GB=32 SWAP_FILE_COUNT=8 \
     ZSWAP_COMPRESSOR=zstd ZSWAP_POOL_PERCENT=25 \
     AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no \
-    TELEGRAM_BOT_TOKEN=123:token TELEGRAM_CHAT_ID=456 \
+    NOTIFY_BACKEND=telegram TELEGRAM_BOT_TOKEN=123:token TELEGRAM_CHAT_ID=456 \
     python3 -
 ```
 
@@ -62,10 +88,9 @@ and `VBPUB_CONFIG_EXTRA_JSON` (a raw JSON object for any `Config` field not
 covered by a named var) are documented in `bootstrap-remote.py`'s own
 docstring.
 
-**Known gap as of this writing**: `scripts/debian-install-v2/` exists only
-on the `debian-install-update` branch, not yet on `main` — the one-liner
-above 404s until that branch merges. For pre-merge testing, add
-`REPO_BRANCH=debian-install-update` to the env vars above.
+The default one-liner follows `main`. When live-testing a feature branch,
+pass the same `REPO_URL` and `REPO_BRANCH` values to both the raw wrapper URL
+and the wrapper environment so it cannot fetch a different installer subtree.
 
 For rehearsal on an existing machine:
 
@@ -95,10 +120,26 @@ device tests through the unprivileged QEMU/TCG harness under
   "swap_disk_total_gb": 32,
   "swap_file_count": 8,
   "zswap_compressor": "zstd",
-  "telegram_bot_token": "123:token",
-  "telegram_chat_id": "123456"
+  "notify_backend": "none",
+  "telegram_bot_token": "",
+  "telegram_chat_id": ""
 }
 ```
+
+Set `notify_backend` to `telegram` and provide both Telegram values, or use
+Mattermost with an HTTPS incoming-webhook URL:
+
+```json
+{
+  "schema_version": 1,
+  "fresh_install": true,
+  "notify_backend": "mattermost",
+  "mattermost_webhook_url": "https://mattermost.example.test/hooks/REDACTED"
+}
+```
+
+The webhook is post-only and channel-bound. Keep it out of committed config;
+notification failures are warnings and do not fail installation.
 
 The known swap shape is 32 GiB split into eight native GPT swap partitions.
 Benchmarking is intentionally deferred. Obsolete v1 names such as `SWAP_ARCH`,
@@ -108,7 +149,7 @@ silently ignored.
 ## Stage behavior
 
 - `install`: validate config, configure APT/users/journald/Docker as selected,
-  persist complete JSON state and Telegram credentials outside the manifest,
+  persist complete JSON state and selected notification credentials outside the manifest,
   install stage2, then reboot when configured.
 - `resume`: internal stage2 continuation after reboot; loads state, applies the
   known partition shape, formats/activates all eight swaps, and marks success.
@@ -137,11 +178,11 @@ live `sfdisk --dump` at stage2 time — never an operator choice:
   tool itself, which is also independently runnable as a CLI
   (`inuse_partition_editor.py`, importable as
   `debian_install_v2.inuse_partition_editor`).
-- **Case B** (designed, not implemented — see
-  `CASE-B-ROOT-SHRINK-DESIGN.md`): the disk's root partition already fills
-  (most of) the disk, so free space must be created by shrinking root's
-  filesystem and partition first — a destructive, offline (unmount-required)
-  operation ext4 can't do online, needing an initramfs-tools pre-mount hook.
+- **Case B** (implemented): the disk's root partition already fills (most of)
+  the disk, so stage1 installs an initramfs-tools pre-mount hook that shrinks
+  the ext4 filesystem and partition offline before stage2 applies the known
+  swap shape. See `CASE-B-ROOT-SHRINK-DESIGN.md` for the safety boundary and
+  rollback design.
 
 ## Host tuning (incorporated from gstammtisch-guide)
 
@@ -158,11 +199,11 @@ Stage2 also configures, each behind its own `run_*` flag (all default `true`):
 | `run_apt_auto_upgrade` / `apt_auto_upgrade_mode` | `true` / `full` | `full`: `unattended-upgrades` across all four pinned origins (release/security/backports, testing, unstable). `security-only`: just the security origin. `notify-only`: installs nothing, just reports the pending-upgrade count via `vbpub-notify`. Package-manager `Automatic-Reboot` is left off — `run_auto_reboot` owns rebooting instead, so the two mechanisms can't race. |
 | `run_auto_reboot` / `reboot_window_time` | `true` / `03:00` | Daily check for `/var/run/reboot-required`; if present, notifies then reboots at the configured HH:MM. A `vbpub-boot-notify` unit sends a follow-up notice on the next boot. |
 
-`/usr/local/sbin/vbpub-notify MESSAGE` is a standalone, reusable Telegram
-sender any unit or script can call — it reads the same credential pair this
-tool already writes to `/etc/vbpub/credentials/` for either
-`credential_mode`, so there's one credential path, not a second one bolted
-on for notifications.
+`/usr/local/sbin/vbpub-notify MESSAGE` is a standalone, reusable notification
+helper any unit or script can call. It reads the selected Telegram pair or
+Mattermost webhook that this tool writes to `/etc/vbpub/credentials/` for
+either `credential_mode`, so there's one credential path, not a second one
+bolted on for notifications.
 
 ## APT policy
 

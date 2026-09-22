@@ -78,13 +78,13 @@ running Mattermost stack on main (`nyxloom/mattermost/`).
   with priority folded into a fixed `:rotating_light:`/`:warning:` Markdown
   prefix since incoming webhooks have no real priority field. ~25 lines,
   zero third-party dependencies.
-- **Why not import nyxloom as a dependency**: both `scp-api-install-host.py`
+- **Why not import nyxloom as a dependency**: both `install-host.py`
   and `debian-install-v2/bootstrap-remote.py` are deliberately single-file,
   dependency-free scripts — `bootstrap-remote.py` in particular runs via
   `curl | python3 -` on a freshly-imaged host with zero pip packages
   available, so pulling in a whole separate product's package there is a
   non-starter. (Same reasoning already applied the same session when
-  `scp-api-install-host.py`'s `_load_env_file`/`_write_env_file` were
+  `install-host.py`'s `_load_env_file`/`_write_env_file` were
   duplicated rather than imported from the sibling `telegram_setup.py`.)
 - **Where the real integration point is**: `debian_install_v2/installer.py`
   already has its own hand-rolled Telegram sender (`_split_for_telegram`,
@@ -92,22 +92,19 @@ running Mattermost stack on main (`nyxloom/mattermost/`).
   `Config.telegram_bot_token`/`telegram_chat_id`/`telegram_verbose_progress`/
   `telegram_thread_id` and its own credential-file plumbing (systemd
   `LoadCredential`, `/etc/vbpub/credentials/telegram_*`).
-  `scp-api-install-host.py` itself sends no notifications directly — it only
+  `install-host.py` itself sends no notifications directly — it only
   passes `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` through into the
   customScript for `debian_install_v2` to use on the host.
 
-**Recommendation:** borrow the pattern, don't import the package. Port a
-small, adapted Mattermost-payload translator into `installer.py`, and
-generalize its currently Telegram-only notifier into a pluggable backend
-(new `Config` field, e.g. `notify_backend`/`webhook_url`, selecting
-Telegram vs. Mattermost) — mirroring nyxloom's `NotifyBackend` shape without
-depending on nyxloom itself. This is real, moderate-scope work (new Config
-field(s), a new backend class, credential-file handling for a webhook URL
-instead of bot-token/chat-id, a new customScript env var, tests) — scoping
-it as its own follow-on task rather than folding it into the in-flight
-live-test session, which is using the existing Telegram sender unchanged
-for this round.
-
-Not designed or scoped beyond the above; no code written yet.
+**Implemented in the Netcup/Mattermost integration change:** borrow the
+pattern, don't import the package. `debian-install-v2` now has an explicit
+`notify_backend` selector (`telegram`, `mattermost`, or `none`), validates an
+HTTPS incoming-webhook URL, stores it through both credential modes, and
+translates the existing Telegram HTML messages into Mattermost Markdown.
+`bootstrap-remote.py`, `install-host.py`, `.env.example`, examples,
+and consumer/design documentation expose the same selector. The webhook
+path is best-effort and never makes installation fail. The integration uses
+the public Mattermost incoming webhook only; no PAT, REST client, or nyxloom
+runtime dependency was introduced.
 
 _Captured 2026-09-08 from the netcup live-test session per operator request._

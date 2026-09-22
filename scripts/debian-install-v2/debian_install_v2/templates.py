@@ -263,11 +263,11 @@ OnCalendar=daily
 """
 
 
-# Reusable Telegram notifier — any unit/timer/script can call this instead of
-# each owning its own HTTP call. Reads the same credential pair
+# Reusable notification helper — any unit/timer/script can call this instead of
+# each owning its own HTTP call. Reads the same credential files
 # debian-install-v2 itself already writes to /etc/vbpub/credentials/ for
 # EITHER credential_mode (root-storage: read directly; systemd: a caller unit
-# with LoadCredential= gets the same two files copied into
+# with LoadCredential= gets the selected credential files copied into
 # $CREDENTIALS_DIRECTORY at start, which this script prefers when set).
 NOTIFY_SCRIPT = """\
 #!/bin/sh
@@ -275,23 +275,59 @@ NOTIFY_SCRIPT = """\
 set -eu
 
 CRED_DIR="${CREDENTIALS_DIRECTORY:-/etc/vbpub/credentials}"
+BACKEND_FILE="$CRED_DIR/notify_backend"
 TOKEN_FILE="$CRED_DIR/telegram_bot_token"
 CHAT_FILE="$CRED_DIR/telegram_chat_id"
+WEBHOOK_FILE="$CRED_DIR/mattermost_webhook_url"
 
-if [ ! -s "$TOKEN_FILE" ] || [ ! -s "$CHAT_FILE" ]; then
-  echo "vbpub-notify: no Telegram credentials at $CRED_DIR, skipping" >&2
+# Old Telegram-only installs have no backend marker; preserve their helper
+# behaviour when the legacy pair is present. New installs always write the
+# marker alongside the selected backend's credential.
+if [ -s "$BACKEND_FILE" ]; then
+  BACKEND=$(cat "$BACKEND_FILE")
+elif [ -s "$TOKEN_FILE" ] && [ -s "$CHAT_FILE" ]; then
+  BACKEND=telegram
+else
+  echo "vbpub-notify: no notification credentials at $CRED_DIR, skipping" >&2
   exit 0
 fi
 
-TOKEN=$(cat "$TOKEN_FILE")
-CHAT_ID=$(cat "$CHAT_FILE")
 MESSAGE="${1:?usage: vbpub-notify MESSAGE}"
 
-curl -fsS --max-time 15 \\
-  --data-urlencode "chat_id=${CHAT_ID}" \\
-  --data-urlencode "text=${MESSAGE}" \\
-  "https://api.telegram.org/bot${TOKEN}/sendMessage" >/dev/null \\
-  || echo "vbpub-notify: send failed" >&2
+case "$BACKEND" in
+  telegram)
+    if [ ! -s "$TOKEN_FILE" ] || [ ! -s "$CHAT_FILE" ]; then
+      echo "vbpub-notify: Telegram credentials are incomplete, skipping" >&2
+      exit 0
+    fi
+    TOKEN=$(cat "$TOKEN_FILE")
+    CHAT_ID=$(cat "$CHAT_FILE")
+    curl -fsS --max-time 15 \\
+      --data-urlencode "chat_id=${CHAT_ID}" \\
+      --data-urlencode "text=${MESSAGE}" \\
+      "https://api.telegram.org/bot${TOKEN}/sendMessage" >/dev/null \\
+      || echo "vbpub-notify: Telegram send failed" >&2
+    ;;
+  mattermost)
+    if [ ! -s "$WEBHOOK_FILE" ]; then
+      echo "vbpub-notify: Mattermost webhook credential is missing, skipping" >&2
+      exit 0
+    fi
+    WEBHOOK=$(cat "$WEBHOOK_FILE")
+    PAYLOAD=$(printf '%s' "$MESSAGE" | /usr/bin/python3 -c \\
+      'import json, sys; print(json.dumps({"text": sys.stdin.read()}), end="")')
+    curl -fsS --max-time 15 \\
+      -H 'Content-Type: application/json' \\
+      --data "$PAYLOAD" "$WEBHOOK" >/dev/null \\
+      || echo "vbpub-notify: Mattermost send failed" >&2
+    ;;
+  none)
+    exit 0
+    ;;
+  *)
+    echo "vbpub-notify: unsupported notification backend: $BACKEND" >&2
+    ;;
+esac
 """
 
 
