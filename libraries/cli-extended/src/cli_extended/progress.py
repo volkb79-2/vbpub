@@ -81,7 +81,7 @@ class ProgressRenderer:
             return False
         if self.color is True:
             return True
-        return _is_tty(self.stream) and not os.environ.get("NO_COLOR")
+        return _is_tty(self.stream) and "NO_COLOR" not in os.environ
 
     def _event(
         self, message: str, *, current: float | None, total: float | None, done: bool
@@ -151,7 +151,10 @@ class ProgressRenderer:
             self.stream.flush()
         elif self.mode is ProgressMode.TTY:
             if self._active:
-                self.stream.write("\r\033[2K" + message + "\n")
+                rendered = f"[INFO] {message}"
+                if self._color_enabled():
+                    rendered = f"\033[36m{rendered}\033[0m"
+                self.stream.write("\r\033[2K" + rendered + "\n")
                 self.stream.flush()
         else:
             print(f"[INFO] {message}", file=self.stream, flush=True)

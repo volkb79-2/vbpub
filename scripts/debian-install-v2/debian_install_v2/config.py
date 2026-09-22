@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
 import json
+import os
 import re
+import tempfile
+from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
 from typing import Any, Literal
-import urllib.parse
-
 
 SCHEMA_VERSION = 1
 OBSOLETE_VARIABLES = {
@@ -82,13 +83,8 @@ class Config:
     docker_cleanup_max_age_hours: int = 240
     apt_auto_upgrade_mode: Literal["full", "security-only", "notify-only"] = "full"
     reboot_window_time: str = "03:00"
-    # Keep Telegram as the compatibility default for existing v2 JSON that
-    # already supplies its pair. `none` is explicit silence; Mattermost is
-    # selected deliberately because its webhook URL is itself a credential.
-    notify_backend: Literal["telegram", "mattermost", "none"] = "telegram"
     telegram_bot_token: str = field(default="", repr=False)
     telegram_chat_id: str = field(default="", repr=False)
-    mattermost_webhook_url: str = field(default="", repr=False)
     telegram_verbose_progress: bool = False
     credential_mode: Literal["root-storage", "systemd"] = "root-storage"
     # A one-line `authorized_keys` entry (type + base64 + comment) for the
@@ -100,9 +96,6 @@ class Config:
     # this feature is off; the operator's own persistent key (via sshKeyIds,
     # or however else it got there) is never touched either way.
     controller_ssh_pubkey: str = field(default="", repr=False)
-    # Keep the temporary controller access line after successful stage2.
-    # Failure paths always retain it for diagnosis.
-    retain_controller_ssh_key: bool = False
     # Runs the kernel's own official iocost calibration tool
     # (tools/cgroup/iocost_coef_gen.py, vendored -- not apt-packaged) against
     # a throwaway partition carved from the same free space swap will use,
@@ -143,7 +136,8 @@ def _reject_obsolete(data: dict[str, Any]) -> None:
         raise ConfigError(f"setting(s) are not part of minimal v2: {', '.join(unsupported)}")
 
 
-def _validate(config: Config) -> None:
+def validate_config(config: Config) -> None:
+    """Validate a Config instance with the same rules used by JSON loading."""
     if config.schema_version != SCHEMA_VERSION:
         raise ConfigError(
             f"schema_version must be {SCHEMA_VERSION}, got {config.schema_version}"
@@ -163,17 +157,20 @@ def _validate(config: Config) -> None:
             raise ConfigError(f"{name} must be an integer")
     string_names = [
         "log_dir", "state_dir", "stage2_output",
-        "notify_backend", "telegram_bot_token", "telegram_chat_id",
-        "mattermost_webhook_url",
+        "telegram_bot_token", "telegram_chat_id",
         "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
         "reboot_window_time", "controller_ssh_pubkey",
     ]
     for name in string_names:
         if not isinstance(getattr(config, name), str):
             raise ConfigError(f"{name} must be a string")
-    if config.zswap_compressor not in {"zstd", "lz4", "lzo-rle"}:
+    if any(char in config.controller_ssh_pubkey for char in "\r\n\x00"):
+        raise ConfigError(
+            "controller_ssh_pubkey must be one authorized_keys line without CR, LF, or NUL"
+        )
+    if not isinstance(config.zswap_compressor, str) or config.zswap_compressor not in {"zstd", "lz4", "lzo-rle"}:
         raise ConfigError("zswap_compressor must be zstd, lz4, or lzo-rle")
-    if config.zswap_zpool not in {"z3fold", "zbud", "zsmalloc"}:
+    if not isinstance(config.zswap_zpool, str) or config.zswap_zpool not in {"z3fold", "zbud", "zsmalloc"}:
         raise ConfigError("zswap_zpool must be z3fold, zbud, or zsmalloc")
     if not config.docker_log_driver:
         raise ConfigError("docker_log_driver must not be empty")
@@ -185,6 +182,8 @@ def _validate(config: Config) -> None:
         raise ConfigError("v2 install is restricted to fresh_install=true in this release")
     for name in ("log_dir", "state_dir", "stage2_output"):
         value = getattr(config, name)
+        if "\x00" in value:
+            raise ConfigError(f"{name} must not contain a NUL character")
         if not value.startswith("/") or value.endswith("/"):
             raise ConfigError(f"{name} must be an absolute path without a trailing slash")
     if not _SIZE_RE.fullmatch(str(config.swap_disk_total_gb)) or not 1 <= config.swap_disk_total_gb <= 10240:
@@ -207,34 +206,13 @@ def _validate(config: Config) -> None:
         raise ConfigError("io_benchmark_duration_s must be from 1 to 300")
     if not 1 <= config.io_benchmark_max_size_gb <= 1024:
         raise ConfigError("io_benchmark_max_size_gb must be from 1 to 1024")
-    if config.apt_auto_upgrade_mode not in {"full", "security-only", "notify-only"}:
+    if not isinstance(config.apt_auto_upgrade_mode, str) or config.apt_auto_upgrade_mode not in {"full", "security-only", "notify-only"}:
         raise ConfigError("apt_auto_upgrade_mode must be full, security-only, or notify-only")
     if not _HHMM_RE.fullmatch(config.reboot_window_time):
         raise ConfigError("reboot_window_time must be 24h HH:MM (e.g. '03:00')")
-    if config.notify_backend not in {"telegram", "mattermost", "none"}:
-        raise ConfigError("notify_backend must be telegram, mattermost, or none")
-    telegram_configured = bool(config.telegram_bot_token) or bool(config.telegram_chat_id)
     if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
         raise ConfigError("telegram_bot_token and telegram_chat_id must be supplied together")
-    if config.mattermost_webhook_url:
-        parsed_webhook = urllib.parse.urlparse(config.mattermost_webhook_url)
-        if (
-            parsed_webhook.scheme != "https"
-            or not parsed_webhook.netloc
-            or any(char.isspace() for char in config.mattermost_webhook_url)
-        ):
-            raise ConfigError("mattermost_webhook_url must be an https:// URL without whitespace")
-    if config.notify_backend == "telegram":
-        if config.mattermost_webhook_url:
-            raise ConfigError("mattermost_webhook_url requires notify_backend=mattermost")
-    elif config.notify_backend == "mattermost":
-        if telegram_configured:
-            raise ConfigError("Telegram credentials require notify_backend=telegram")
-        if not config.mattermost_webhook_url:
-            raise ConfigError("notify_backend=mattermost requires mattermost_webhook_url")
-    elif telegram_configured or config.mattermost_webhook_url:
-        raise ConfigError("notify_backend=none cannot have notification credentials")
-    if config.credential_mode not in {"root-storage", "systemd"}:
+    if not isinstance(config.credential_mode, str) or config.credential_mode not in {"root-storage", "systemd"}:
         raise ConfigError("credential_mode must be root-storage or systemd")
     if config.credential_mode == "root-storage" and not (config.state_dir.startswith("/var/lib/") or config.state_dir == "/var/lib/vbpub/bootstrap"):
         raise ConfigError("credential_mode=root-storage requires state_dir under /var/lib")
@@ -243,8 +221,10 @@ def _validate(config: Config) -> None:
 def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     if bool(path) == bool(raw_json):
         raise ConfigError("supply exactly one of --config FILE or --config-json JSON")
+    if path is not None and "\x00" in path:
+        raise ConfigError("configuration path must not contain a NUL character")
     try:
-        data = json.loads(open(path, encoding="utf-8").read() if path else raw_json or "")
+        data = json.loads(Path(path).read_text(encoding="utf-8") if path else raw_json or "")
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"cannot read configuration as JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -255,5 +235,53 @@ def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     if unknown:
         raise ConfigError(f"unknown configuration key(s): {', '.join(unknown)}")
     config = Config(**data)
-    _validate(config)
+    validate_config(config)
     return config
+
+
+def save_config(path: str, config: Config, *, overwrite: bool = False) -> None:
+    """Atomically write a validated install configuration with mode 0600."""
+    validate_config(config)
+    if "\x00" in path:
+        raise ConfigError("configuration output path must not contain a NUL character")
+    destination = Path(path).expanduser()
+    if destination.is_symlink():
+        raise ConfigError(f"refusing to write configuration through a symlink: {destination}")
+    if destination.exists() and not destination.is_file():
+        raise ConfigError(f"configuration output is not a regular file: {destination}")
+    if destination.exists() and not overwrite:
+        raise ConfigError(f"configuration already exists: {destination}")
+    if not destination.parent.is_dir():
+        raise ConfigError(f"configuration output directory does not exist: {destination.parent}")
+
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            delete=False,
+        ) as handle:
+            temporary = handle.name
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(json.dumps(asdict(config), indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        if overwrite:
+            os.replace(temporary, destination)
+            temporary = None
+        else:
+            # link() is an atomic no-clobber commit on the same filesystem.
+            os.link(temporary, destination)
+            os.unlink(temporary)
+            temporary = None
+    except FileExistsError as exc:
+        raise ConfigError(f"configuration appeared while writing: {destination}") from exc
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass

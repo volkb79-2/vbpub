@@ -29,9 +29,14 @@ belong on stderr. This makes ordinary output composable in a pipe and keeps
 `--json` usable without stripping banners from a stream.
 
 Severity tags are plain-text data (`[INFO]`, `[WARN]`, `[ERROR]`, `[DEBUG]`),
-not colour-dependent UI. Colour is added only for a human terminal and has
-explicit `NO_COLOR`, `--color`, and `--no-color` controls. Hints are separate
-from severity because an actionable remedy is not a logging level.
+not colour-dependent UI. The normal CLI boundary applies restrained colour to
+generated terminal help, severity tags, hints, and shared progress. It uses
+the destination stream's TTY state, honors `NO_COLOR` and `--no-color`, and
+lets explicit `--color` force presentation. Primary result values, JSON,
+version output, and generated Markdown remain plain. Hints are separate from
+severity because an actionable remedy is not a logging level. Keeping ANSI
+generation in the shared output layer prevents one consumer from coloring
+warnings differently or leaking escapes into another consumer's JSON/pipes.
 
 The core package implements this with the standard library. Rich can be used
 by a consumer that wants a more elaborate spinner or table, but the contract
@@ -75,6 +80,28 @@ The top-level catalog may need a shorter line than command-specific help.
 `VerbSpec.summary_description` supplies that concise discovery label without
 discarding the full `description` shown for the verb itself.
 
+`VerbSpec.description` is the full description of an individual command. The
+registry passes it to argparse and places it after the generated usage line,
+separated by blank lines; it is not the overall product description (which is
+provided to `CliRegistry`). Keep `synopsis` unset for ordinary commands. The
+library derives syntax from positional arguments and required option metadata,
+including required mutually-exclusive alternatives, so the help grammar and
+parser constraints have one source of truth. Explicit synopsis text is an
+exception for syntax that the structured metadata cannot represent.
+
+The top-level catalog is for choosing an operation, not reconstructing its
+full invocation syntax: it shows the verb name and short summary, with one
+description column aligned across semantic groups. Detailed options and
+arguments remain in command help. `CliRegistry.description` gives that catalog
+its overall purpose statement, which follows the generic usage syntax. Keeping
+these layers separate avoids a dense, uneven command map while preserving exact
+syntax where the operator needs it.
+
+Help-bearing invocation failures put the concise error first, then a blank
+line, then the normal product identity and complete command help. This gives
+operators the reason before the longer discovery content without weakening
+the required identity header on help/version output.
+
 The consumer still decides the public vocabulary, behavior labels, examples,
 argument constraints, and mutation policy. A registry is a source of truth for
 the interface, not a source of domain truth. `configure(parser)` remains an
@@ -92,6 +119,24 @@ has distinct operator actions, explicit verbs make those differences
 discoverable and testable rather than hiding them behind a positional UUID or
 mode flag.
 
+## Prove the shared contract at each rigor level
+
+The package gate separates ordinary behavior and coverage (R0/R1), mutation
+testing (R2), and an independent known-bad-code check (R3). R1 judges the full
+shipped package, not only changed lines, and requires both statement and branch
+coverage. Its command emits a coverage artifact without imposing its own
+failure threshold so the judge remains the owner of the result. R3 uses a
+separate disposable source copy and disables a real JSON-redaction guard; the
+focused regression test must fail. This keeps a test suite that passes on
+correct code from being mistaken for evidence that it detects the defect it
+claims to prevent.
+
+The gate is an in-repo consumer and uses the current checkout's Assay source
+through `run-gate.py`; it does not pin a stale zipapp. All three lanes execute
+inside `tester-unified`. The project gate is reproducible from the same source
+and environment used for adoption, while remaining outside the interactive
+development cockpit.
+
 ## Make long operations automation-safe
 
 Progress is a presentation policy, not the operation's result. `auto` chooses
@@ -107,11 +152,15 @@ transitions.
 and common options used by terminal help into a README-friendly reference,
 including examples, behavior labels, arguments, parser choices/defaults, and
 grouped options. This avoids a second hand-written command list in
-documentation. It is not the default terminal format: shell help stays plain
-text, while generated Markdown is intended for repository docs and operator
-guides.
+documentation. It is not the default terminal format: generated Markdown is
+always plain and is intended for repository docs and operator guides;
+terminal help is styled by the normal CLI boundary only when its color policy
+allows it.
 
 The shared confirmation method is default-no and handles non-interactive stdin
 and EOF without tracebacks. It cannot know what a mutation means, so consumers
 must validate first and call it immediately before performing the exact
-validated change.
+validated change. Multi-step prompt flows use the public
+`CliOutput.is_interactive` property, which checks both injectable input and
+output streams; keeping that test in the shared output object avoids consumers
+reaching into terminal-detection internals.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -55,6 +56,67 @@ _ANSI = {
     LogLevel.DEBUG: "\033[2m",
 }
 _RESET = "\033[0m"
+_BOLD = "\033[1m"
+_BLUE = "\033[34m"
+_CYAN_BOLD = "\033[1;36m"
+_HELP_OPTION_RE = re.compile(r"(?<![\w-])(--[A-Za-z0-9][A-Za-z0-9-]*)")
+_HELP_TAG_RE = re.compile(r"\[(INFO|WARN|ERROR|DEBUG)\]")
+_HELP_TAG_COLOR = {label: _ANSI[level] for level, label in _LEVEL_LABEL.items()}
+
+
+def _colorize_help(
+    text: str,
+    *,
+    identity: CliIdentity,
+    command_names: Sequence[str] = (),
+) -> str:
+    """Apply restrained ANSI styling to generated terminal help only."""
+    rendered: list[str] = []
+    command_names = tuple(command_names)
+    command_pattern = None
+    if command_names:
+        command_pattern = re.compile(
+            r"^(\s{2})("
+            + "|".join(re.escape(name) for name in command_names)
+            + r")(?=\s|$)"
+        )
+    for raw_line in text.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
+        ending = raw_line[len(line) :]
+        stripped = line.strip()
+        if stripped == identity.headline:
+            line = f"{_CYAN_BOLD}{line}{_RESET}"
+        elif re.fullmatch(r"[A-Z][A-Z0-9 /&()_-]*", stripped) or re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9 /&()_-]*:", stripped
+        ):
+            line = f"{_BOLD}{_BLUE}{line}{_RESET}"
+        else:
+            if stripped.lower().startswith(("usage:", "usage ")):
+                line = re.sub(
+                    r"(?i)(usage:?)",
+                    lambda match: f"{_BOLD}{_CYAN_BOLD}{match.group(0)}{_RESET}",
+                    line,
+                    count=1,
+                )
+            if command_pattern is not None:
+                line = command_pattern.sub(
+                    lambda match: (
+                        f"{match.group(1)}{_CYAN_BOLD}{match.group(2)}{_RESET}"
+                    ),
+                    line,
+                    count=1,
+                )
+            line = _HELP_OPTION_RE.sub(
+                lambda match: f"{_CYAN_BOLD}{match.group(1)}{_RESET}", line
+            )
+            line = _HELP_TAG_RE.sub(
+                lambda match: (
+                    f"{_HELP_TAG_COLOR[match.group(1)]}{match.group(0)}{_RESET}"
+                ),
+                line,
+            )
+        rendered.append(line + ending)
+    return "".join(rendered)
 
 
 def redact_text(value: object, secrets: Sequence[str] = ()) -> str:
@@ -133,7 +195,33 @@ class CliOutput:
             return False
         if self.color is True:
             return True
-        return self._is_tty(stream) and not os.environ.get("NO_COLOR")
+        return self._is_tty(stream) and "NO_COLOR" not in os.environ
+
+    def format_help(
+        self,
+        text: str,
+        *,
+        stream: TextIO | None = None,
+        command_names: Sequence[str] = (),
+    ) -> str:
+        """Style generated terminal help using this invocation's color policy.
+
+        Help and primary results are written to stdout; diagnostics use stderr.
+        The caller supplies the destination stream so automatic TTY detection
+        follows the stream that will actually receive the text.
+        """
+        # Parser diagnostics can echo a rejected token. Redact them even on
+        # early-help paths that have not constructed the full runtime yet.
+        text = redact_text(text, self.secrets)
+        if not self.color_enabled(stream):
+            return text
+        return _colorize_help(text, identity=self.identity, command_names=command_names)
+
+    @property
+    def is_interactive(self) -> bool:
+        """Whether both input and output are terminals suitable for prompts."""
+
+        return self._is_tty(self.stdin) and self._is_tty(self.stdout)
 
     def _tag(self, level: LogLevel) -> str:
         label = f"[{_LEVEL_LABEL[level]}]"
@@ -166,12 +254,14 @@ class CliOutput:
         self.emit(LogLevel.DEBUG, message)
 
     def error(self, message: object, *, hint: object | None = None) -> None:
-        if not self._identity_written:
-            print(self.identity.headline, file=self.stderr, flush=True)
-            self._identity_written = True
-        self.emit(LogLevel.ERROR, message, force=True)
+        self.emit(LogLevel.ERROR, message)
         if hint is not None:
             self.hint(hint)
+        if not self._identity_written:
+            self.stderr.write("\n")
+            headline = self.format_help(self.identity.headline, stream=self.stderr)
+            print(headline, file=self.stderr, flush=True)
+            self._identity_written = True
 
     def hint(self, message: object) -> None:
         """Write an actionable hint without pretending it is a log level."""

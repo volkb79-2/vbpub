@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import json
-
 from debian_install_v2.actions import HostActions
 from debian_install_v2.config import Config
-from debian_install_v2.installer import (
-    Installer,
-    _split_for_mattermost,
-    _split_for_telegram,
-    _telegram_html_to_mattermost_markdown,
-)
+from debian_install_v2.installer import Installer, _split_for_telegram
 from debian_install_v2.state import StateStore
 
 
@@ -42,13 +35,6 @@ def test_split_hard_splits_when_no_boundary_exists():
     assert all(len(c) <= limit for c in chunks)
 
 
-def test_mattermost_translation_preserves_escaped_data():
-    message = "<b>Host</b><br><code>&lt;tag&gt;</code><pre>literal &lt;b&gt;</pre>"
-    translated = _telegram_html_to_mattermost_markdown(message)
-    assert translated == "**Host**\n`<tag>`\n```\nliteral <b>\n```"
-    assert all(len(chunk) <= 20 for chunk in _split_for_mattermost("A" * 40, limit=20))
-
-
 # --- _notify: chunking + thread_id ----------------------------------------
 
 def make_installer(tmp_path, **config_overrides):
@@ -56,6 +42,7 @@ def make_installer(tmp_path, **config_overrides):
         "state_dir": str(tmp_path / "state"), "log_dir": str(tmp_path / "logs"),
         "telegram_bot_token": "123:abc", "telegram_chat_id": "456",
         "auto_reboot_after_stage1": False, "never_reboot": True,
+        "credential_mode": "systemd",
     }
     fields.update(config_overrides)
     config = Config(**fields)
@@ -119,38 +106,6 @@ def test_notify_skips_entirely_without_credentials(tmp_path, monkeypatch):
     installer._notify("hello")  # must not raise, must not call urlopen
 
 
-def test_mattermost_notify_posts_markdown_json_without_leaking_webhook(tmp_path, monkeypatch):
-    installer = make_installer(
-        tmp_path,
-        notify_backend="mattermost",
-        telegram_bot_token="",
-        telegram_chat_id="",
-        mattermost_webhook_url="https://mattermost.example.test/hooks/secret",
-    )
-    installer.actions.dry_run = False
-    captured = {}
-
-    class FakeResp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            return False
-
-    def fake_urlopen(request, timeout=15):
-        captured["url"] = request.full_url
-        captured["body"] = request.data.decode("utf-8")
-        return FakeResp()
-
-    monkeypatch.setattr("debian_install_v2.installer.urllib.request.urlopen", fake_urlopen)
-    installer._notify("<b>Hello</b><br>world")
-    assert captured["url"] == "https://mattermost.example.test/hooks/secret"
-    assert "secret" in captured["url"]  # the request target is never printed
-    assert json.loads(captured["body"]) == {"text": "**Hello**\nworld"}
-
-
 # --- Hook-point wiring: install()/resume() call _notify at the right times
 
 def test_install_and_resume_send_expected_stage_boundary_messages(tmp_path, monkeypatch):
@@ -186,7 +141,7 @@ def test_install_failure_sends_exactly_one_failure_notification(tmp_path, monkey
     assert "boom" in sent[-1]
 
 
-def test_initial_report_failure_does_not_abort_install(tmp_path, monkeypatch, capsys):
+def test_initial_report_failure_does_not_abort_install(tmp_path, monkeypatch, caplog):
     """Adversarial-review regression, 2026-09-08: building/sending the
     initial "Starting debian-install-v2" report happens BEFORE install()'s
     own try/except around _stage1() -- a real bug there (show_plan()
@@ -209,9 +164,8 @@ def test_initial_report_failure_does_not_abort_install(tmp_path, monkeypatch, ca
     installer.install()  # must not raise
 
     assert stage1_calls == [True]
-    out = capsys.readouterr().out
-    assert "could not build/send initial report notification" in out
-    assert "boom in plan preview" in out
+    assert "could not build/send initial report notification" in caplog.text
+    assert "boom in plan preview" in caplog.text
 
 
 def test_verbose_progress_notifies_every_mark_step(tmp_path, monkeypatch):

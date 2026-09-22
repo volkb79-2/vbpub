@@ -4,8 +4,9 @@
 Python tools in `vbpub`. Its Python import name is `cli_extended`.
 
 The library keeps `argparse` and the standard `logging` package familiar while
-owning repetitive shell behavior: identity/version output, grouped help,
-parser registration, common options, clean cancellation/errors, confirmation
+owning repetitive shell behavior: identity/version output, grouped help with
+the overall CLI description and aligned verb summaries, parser registration,
+common options, clean cancellation/errors, confirmation
 prompts, output streams, redaction, and progress presentation. It has no
 runtime dependencies.
 
@@ -69,7 +70,6 @@ cli = CliRegistry(
 cli.register(
     VerbSpec(
         name="status",
-        synopsis="[server_id]",
         description="show current state",
         group=VerbGroup.EXPLORATION.value,
         examples=("example status node-1",),
@@ -95,7 +95,6 @@ cli.register(
 cli.register(
     VerbSpec(
         name="apply",
-        synopsis="FILE",
         description="apply a validated change",
         group=VerbGroup.MODIFICATION.value,
         mutating=True,
@@ -114,7 +113,15 @@ handler map, exposes `--yes` only for the mutating command, scopes standard
 logging to the selected logger, and validates that command/help registration
 cannot drift. `OptionSpec` carries argparse's own `action`, `choices`, `type`,
 `nargs`, and related options in `parser_kwargs`; `ArgumentSpec` does the same
-for positionals. Use `VerbSpec.configure` only for genuinely custom parser
+for positionals. `VerbSpec.synopsis` is optional: by default the library derives
+the command synopsis from required positionals, required options, and required
+or optional mutually-exclusive option groups. Set it only when a public syntax
+shape cannot be represented by those declarations. For example, options that
+accept either a file or inline JSON can declare the same
+`mutually_exclusive_group="configuration-source"` and
+`mutually_exclusive_required=True`; the parser then both enforces the choice
+and displays `(--config FILE | --config-json JSON)` without a second, drifting
+usage string. Use `VerbSpec.configure` only for genuinely custom parser
 structures such as nested sub-actions.
 
 Put options that apply before command selection (for example, a config-file
@@ -128,9 +135,15 @@ an unsupported selector is refused with command-specific help, independent of
 placement. Conflicting verbosity or colour selectors are rejected across
 parser levels. Each `OptionSpec` names its help group, so the registry places
 and renders options from metadata rather than maintaining a second
-hand-written usage block. A verb may set `summary_description` when its full
-command description is too long for the one-line top-level catalog;
-command-specific help keeps the full `description`. The command parser uses a
+hand-written usage block. The top-level catalog lists only verb names, aligns
+their concise descriptions across groups, and includes the `CliRegistry`
+description of the overall tool. Detailed invocation syntax remains in
+per-verb help. `VerbSpec.description` is the full command
+description: it appears after the generated usage syntax, separated by blank
+lines, and is passed to argparse as that verb's help description. A verb may
+set `summary_description` when its full command description is too long for the
+one-line top-level catalog; command-specific help keeps the full `description`.
+The command parser uses a
 terminal-width-aware formatter too, with a 120-column fallback when no usable
 terminal width is reported.
 
@@ -138,6 +151,9 @@ terminal width is reported.
 handles EOF/decline cleanly, and honors `--yes`; call it only after domain
 validation and immediately before the exact mutation. The library cannot
 decide whether a firewall, deployment, or account change is safe.
+For multi-prompt flows, `runtime.output.is_interactive` reports whether both
+injected stdin and stdout are TTYs; use it to refuse wizard mode cleanly when
+the invocation is redirected or piped.
 
 For a CLI with one command and no verb token, register one `VerbSpec` with
 `CliRegistry(single_command=True)`. That supports transitional tools; a tool
@@ -162,8 +178,19 @@ structured argparse attributes:
 markdown = app.catalog.render(output_format="markdown")
 ```
 
-Terminal help remains plain text. For a real executable, the package provides
-a black-box contract assertion:
+For an executable, generated terminal help uses the same color policy as
+diagnostics. Color is automatic only when the destination stream is a TTY and
+`NO_COLOR` is unset; `--color` forces it, while `--no-color` disables it.
+Explicit `--color` may override `NO_COLOR`, but supplying both switches is an
+invocation error. This applies to bare-invocation help, `--help`, `help VERB`,
+and help accompanying parser/runtime refusals. Markdown help, version output,
+and primary results remain plain; JSON is never decorated with ANSI. The CLI
+boundary applies the policy, so use `app.run()` rather than printing parser
+help directly. Consumers should use `runtime.output.info/warn/error/hint()` for
+diagnostics and should not add ANSI sequences or a second color library for
+severity tags.
+
+For a real executable, the package provides a black-box contract assertion:
 
 ```python
 import subprocess
@@ -202,3 +229,17 @@ responsibility guidance; [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) for
 the design rationale; and the repository-wide
 [CLI standard](../../docs/CLI-STANDARD.md) for the complete behavioral
 contract.
+
+## Test and gate
+
+The package gate covers R0/R1/R2 plus an independent R3 canary. R1 requires
+100% statement and branch coverage for every shipped `cli_extended` module.
+The tests and canary run in `tester-unified`, not in the devcontainer cockpit:
+
+```bash
+cd libraries/cli-extended
+./run-gate.py gate
+```
+
+The Debian installer and the Netcup entrypoints are the current first-party
+adopters in this scoped migration.

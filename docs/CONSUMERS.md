@@ -18,7 +18,6 @@ Create `/root/install.json` on the target:
   "swap_disk_total_gb": 32,
   "swap_file_count": 8,
   "zswap_compressor": "zstd",
-  "notify_backend": "none",
   "telegram_bot_token": "",
   "telegram_chat_id": "",
   "auto_reboot_after_stage1": true,
@@ -28,39 +27,24 @@ Create `/root/install.json` on the target:
 
 The committed equivalent is
 [`scripts/debian-install-v2/known-shape.json`](../scripts/debian-install-v2/known-shape.json).
-The committed shape explicitly disables notifications. For Telegram, set
-`notify_backend` to `telegram` and fill both Telegram values. Mattermost uses
-an incoming webhook instead:
-
-```json
-{
-  "schema_version": 1,
-  "fresh_install": true,
-  "notify_backend": "mattermost",
-  "mattermost_webhook_url": "https://mattermost.example.test/hooks/REDACTED"
-}
-```
-
-Do not commit a real webhook URL. The Mattermost webhook is post-only and
-bound to its configured channel; the installer uses the public Mattermost URL
-from outside the Mattermost host. Telegram and Mattermost credentials are
-mutually exclusive, and notification failures are warnings rather than
-installer failures.
+Fill both Telegram values only if notifications are wanted; supply neither or
+both. The minimal Debian v2 configuration does not accept the older
+`notify_backend` or Mattermost keys.
 
 ### Install and rehearse
 
 ```bash
 # Rehearsal: prints/plans actions; executes no commands and writes no files.
-./debian-install-v2.py --action install --config /root/install.json --dry-run
+./debian-install-v2.py install --config /root/install.json --dry-run
 
 # Fresh-host install: stage1 runs, installs stage2, then reboots automatically.
-sudo ./debian-install-v2.py --action install --config /root/install.json
+sudo ./debian-install-v2.py install --config /root/install.json
 ```
 
 Stage2 appends stdout/stderr to `/root/custom_script.output2`. Read state with:
 
 ```bash
-sudo ./debian-install-v2.py --action status --config /root/install.json
+sudo ./debian-install-v2.py status --config /root/install.json
 ```
 
 ### Compatibility boundary

@@ -11,7 +11,7 @@ class VersionLookupError(RuntimeError):
     """The requested distribution does not expose an installed version."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CliIdentity:
     """The single identity used by a CLI's help, diagnostics, and version output.
 

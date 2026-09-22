@@ -382,7 +382,7 @@ def test_verify_refuses_checksum_mismatch(tmp_path):
     backup = backup_dir / "old.sfdisk"
     backup.write_text(CURRENT_DUMP, encoding="utf-8")
     checksum = backup_dir / "old.sfdisk.sha256"
-    checksum.write_text("bad  old.sfdisk\n", encoding="utf-8")
+    checksum.write_text(f"{'0' * 64}  old.sfdisk\n", encoding="utf-8")
     (transaction_dir / "disk-transaction.json").write_text(json.dumps({
         "backup": str(backup),
         "checksum": str(checksum),

@@ -37,10 +37,8 @@ ciu 7.15.0
 ```
 
 The long name belongs in help/usage, not in the output of `version` or
-`--version`. Version and help must work without application configuration,
-credentials, network access, or external services such as Docker and SSH. The
-CLI's packaged dependencies must be installed, but discovery must not load
-domain configuration or initialize those services.
+`--version`. Version and help must work without a config file, credentials,
+network access, Docker, SSH, or other runtime dependencies.
 
 ## 2. Invocation and help
 
@@ -79,17 +77,26 @@ such as “the following arguments are required”. The only exception is a CLI
 whose documented purpose is specifically a no-argument action; that action must
 still have a separate `--help` path.
 
-Unknown verbs, missing required values, and malformed options print a concise,
-identity-headed diagnostic to stderr and exit `2`. They may include the
-relevant usage synopsis, but must not print a raw traceback.
+Unknown verbs, missing required values, and malformed options print a concise
+`[ERROR]` diagnostic as the first block on stderr, followed by a blank line and
+the product identity plus relevant help; they exit `2` and must not print a raw
+traceback. This makes the failure immediately visible without displacing the
+identity heading from the help itself.
 
 Once a known verb has been identified, a command-local invocation error also
 prints that verb's complete help immediately. This includes missing required
 positional arguments, missing required options, invalid choices, invalid
 values, and invalid option combinations. The operator should not have to type
 the same command again with `--help` to discover the remedy. The output must
-contain the failed-operation diagnostic and the same command help available
-from `tool <verb> --help`, and must still exit `2`.
+contain the failed-operation diagnostic first, a blank line, and the same
+command help available from `tool <verb> --help`, and must still exit `2`.
+
+Every usage synopsis must match the parser's real constraints. In particular,
+required mutually exclusive alternatives must be shown as required alternatives
+(for example, `(--config FILE | --config-json JSON)`), not as separate optional
+flags. Prefer deriving usage from structured argument/option declarations; an
+overridden synopsis is exceptional and must remain consistent with parser
+validation.
 
 An error before a known verb can be identified prints the top-level help. A
 parser must not let argument ordering hide a more useful command-local error;
@@ -110,6 +117,8 @@ TOOL 1.2.3 — Long Tool Name
 Usage: tool <verb> [options]
        tool help [verb]
        tool version
+
+One-sentence description of the overall CLI and the job it performs.
 
 GETTING STARTED
   ...the shortest useful workflow...
@@ -141,22 +150,23 @@ discovery. Group order should follow the operator's likely workflow, with
 alphabetical order inside a group unless a documented workflow order is more
 useful.
 
-An entry has the form:
+Top-level entries list the verb name only, followed by a concise description.
+The description column is calculated once across all semantic groups so every
+entry starts at the same horizontal position. Positional arguments, options,
+and alternative syntax belong in that verb's detailed `--help` output, not in
+the catalog line. For example:
 
 ```text
-  verb [required arguments] [important options]
-      one-line explanation of the observable operation
+  status       show installation state and recent logs
+  configure    create or update validated settings [interactive]
+  install      run the two-stage installation [mutating; potentially expensive]
 ```
 
 Top-level entries should say whether they are read-only, mutating, interactive,
 or potentially expensive. A mixed verb appears once under `MIXED OPERATIONS`;
-its help entry lists its read-only default and its mutating actions together.
-For example:
-
-```text
-  firewall SERVER [MAC] get|set
-      inspect or replace the interface assignment; set is confirmed
-```
+its concise summary identifies that it also has mutating actions. Detailed
+help for `firewall` can show `firewall SERVER [MAC] get|set` and explain which
+action is confirmed.
 
 Nested actions are actions, not top-level verbs and not boolean options. They
 are written as positional action names (`snapshots SERVER create`), not as
@@ -197,13 +207,7 @@ derive or accept.
 ## 5. Common options
 
 Common options are shown in semantic sections rather than one undifferentiated
-list. Command-specific help advertises only options supported by that command.
-Because no verb is selected in top-level help, a CLI may list the union of
-common output options used by any verb. That top-level list is an inventory,
-not a promise that every option applies to every command. An option supplied
-to an unsupported verb must be rejected with that verb's help; it must never
-be silently ignored. The same rule applies whether the option appears before
-or after the verb.
+list. A CLI only advertises options that apply to the selected command.
 
 ### Help and version
 
@@ -388,12 +392,14 @@ hard-wrapping all prose at `80` columns. Long option descriptions should wrap
 at word boundaries and preserve indentation.
 
 Colours are optional presentation. Automatic colour must be disabled when
-stdout is not a TTY, when `NO_COLOR` is set, or when the CLI provides
-`--no-color`. Semantic meaning must remain available in plain text. If both
-explicit colour controls are exposed, `--no-color` wins over automatic colour
-and `--color` may explicitly override `NO_COLOR`; JSON output never uses ANSI
-colour. Supplying both explicit controls is an invocation error rather than a
-last-option-wins rule.
+the destination stream is not a TTY, when `NO_COLOR` is set, or when the CLI
+provides `--no-color`. Generated terminal help follows this policy just like
+diagnostics and progress; the automatic check uses stdout for help and stderr
+for diagnostics/progress. Semantic meaning must remain available in plain
+text. If both explicit colour controls are exposed, `--no-color` disables
+automatic colour and `--color` may explicitly override `NO_COLOR`; JSON,
+version output, and primary result data never use ANSI colour. Supplying both
+explicit controls is an invocation error rather than a last-option-wins rule.
 
 ### Progress
 
@@ -446,8 +452,6 @@ The test suite for every adopted CLI must prove at least:
 11. JSON mode keeps stdout machine-readable and diagnostics on stderr; and
 12. help/version paths work without credentials, configuration, network, or
     runtime services.
-13. `-h` is rejected unless the CLI documents a compatibility exception, and
-    known-verb parse errors include that verb's complete help.
 
 Tests should exercise the real entrypoint or module invocation, not only helper
 functions. A controlled bad input must demonstrate that each safety/error
@@ -482,15 +486,14 @@ statuses. A CLI should not acquire multiple overlapping parser/rendering
 frameworks merely because each project chose a different one.
 
 The repository has enough repeated behavior across CIU, CMRU, nyxloom, and the
-Netcup tools to justify a small custom library. `libraries/cli-extended/` is
-the focused contract layer, not a replacement for every possible CLI
-framework. It may use or adapt an established parser/renderer, but its narrow
-API covers:
+Netcup tools that a small custom library is worthwhile. It is a focused
+contract layer, not a replacement for every possible CLI framework. It may use
+or adapt an established parser/renderer, but its narrow API covers:
 
-The shared implementation lives in `libraries/cli-extended/`, with
-distribution name `cli-extended` and Python import name `cli_extended`. It is
-independently packageable so installed CLIs do not depend on importing from
-the repository root.
+The recommended home is `libraries/cli-extended/`, with distribution name
+`cli-extended` and Python import name `cli_extended`. It must be independently
+packageable so installed CLIs do not depend on importing from the repository
+root.
 
 1. `CliIdentity` and authoritative version resolution;
 2. a declarative verb/argument/option registry that generates parsers, grouped
@@ -516,8 +519,8 @@ checkout.
 Existing project-local helpers (`ciu.cli_utils`, `cmru.cli_support`, and
 nyxloom's parser classes) remain useful migration evidence, but keeping three
 independent implementations would recreate the drift this standard is
-intended to prevent. The helper is implemented and the Netcup entrypoints use
-it; the larger CLIs remain follow-on adopters and should migrate with
+intended to prevent. The Debian installer and the three Netcup entrypoints are
+the first adopted consumers; larger CLIs remain follow-on migrations with
 compatibility tests.
 
 ## 11. Further contract areas
@@ -550,20 +553,18 @@ tool-specific before a CLI is considered fully adopted:
 ## 12. Adoption inventory
 
 This is an adoption plan, not a claim that all current tools already conform.
+The current scoped review covers the Debian installer and the Netcup tools;
+other rows remain future work and were not re-audited here.
 
 | CLI | Main adoption work |
 |---|---|
+| `debian-install-v2.py` | adopted through `cli-extended` for registry, help/version, common options, output, and dispatch; `bootstrap-remote.py` is the documented stdlib-only bootstrap exception |
+| Netcup `scp-api.py`, `install-host.py`, `monitor-task.py` | adopted through `cli-extended` for generated verbs/help, identity/version, common diagnostics, and clean cancellation; Netcup retains API, confirmation, denylist, and install policy |
 | `ciu` | align `help` verb and remove `-h`; retain its strong grouped/help model |
 | `cmru` | scope options to the selected verb; align `help`, `--yes`, and exception behavior |
 | `nyxloom` | make bare invocation exit `0`; remove flat parser list; align version output and `help` |
-| Netcup `scp-api.py`, `install-host.py`, `monitor-task.py` | all three use `cli-extended` for generated verbs/help, identity/version, config-free discovery, common diagnostics, and clean cancellation; each retains ownership of its API/installer/task domain behavior |
-| `debian-install-v2.py` | audit its action model separately; any shared-helper adoption must preserve offline/bootstrap delivery and unattended `resume` semantics |
 | other `scripts/` CLIs | audit and adopt the same contract when they are user-facing |
 
-The Netcup tools are the first adopted family: `monitor-task.py` separates
-one-shot inspection from polling, `scp-api.py` owns account API operations,
-and `install-host.py` owns installation and SSH attachment workflows. The
-Debian installer needs its own delivery-boundary review before it imports this
-library: its remote bootstrap must not assume the repository checkout or an
-online package install exists. The standard itself is repository-wide and does
-not require every CLI to be migrated in one change.
+The Debian installer and Netcup tools are the current first-party consumers.
+The standard itself is repository-wide; this scoped migration does not claim
+or require that every repository CLI is converted at once.

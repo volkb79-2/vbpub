@@ -57,8 +57,12 @@ def assert_cli_contract(
     else:
         _assert(short_help.returncode == 2, "-h must be rejected by default")
         _assert(
-            short_help.stderr.startswith(identity.headline),
-            "rejected -h lacks an identity-headed diagnostic",
+            short_help.stderr.startswith("[ERROR]"),
+            "rejected -h lacks an error heading",
+        )
+        _assert(
+            f"\n\n{identity.headline}\n\n" in short_help.stderr,
+            "rejected -h lacks separated identity-headed help",
         )
         _assert("[ERROR]" in short_help.stderr, "rejected -h lacks an error diagnostic")
         _assert("usage:" in short_help.stderr.lower(), "rejected -h lacks usage")
@@ -104,8 +108,12 @@ def assert_cli_contract(
             f"invalid invocation {label!r} exited {result.returncode}",
         )
         _assert(
-            result.stderr.startswith(identity.headline),
-            f"invalid invocation {label!r} lacks an identity-headed diagnostic",
+            result.stderr.startswith("[ERROR]"),
+            f"invalid invocation {label!r} lacks an error heading",
+        )
+        _assert(
+            f"\n\n{identity.headline}\n\n" in result.stderr,
+            f"invalid invocation {label!r} lacks separated identity-headed help",
         )
         _assert(
             "[ERROR]" in result.stderr,

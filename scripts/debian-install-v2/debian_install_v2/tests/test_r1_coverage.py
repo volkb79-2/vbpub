@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from debian_install_v2.actions import ActionError, HostActions
-from debian_install_v2.bootstrap import build_parser, main
+from debian_install_v2.bootstrap import build_cli, main
 from debian_install_v2.config import Config, ConfigError, load_config
 from debian_install_v2.installer import Installer
 from debian_install_v2.state import StateError, StateStore
@@ -42,10 +42,8 @@ def write_config(tmp_path, **overrides):
 # --- bootstrap.py CLI ---
 
 def test_cli_top_level_version_is_clean(capsys):
-    with pytest.raises(SystemExit) as exc_info:
-        build_parser().parse_args(["--version"])
+    assert main(["--version"]) == 0
     captured = capsys.readouterr()
-    assert exc_info.value.code == 0
     assert captured.out == "debian-install-v2 2\n"
     assert captured.err == ""
 
@@ -60,18 +58,19 @@ def test_documented_wrapper_top_level_version_is_clean():
     assert proc.stderr == ""
 
 
-def test_cli_parser_diagnostics_start_with_headline(capsys):
-    with pytest.raises(SystemExit) as exc_info:
-        build_parser().parse_args(["--unknown"])
+def test_cli_parser_diagnostics_are_separated_from_help(capsys):
+    assert main(["--unknown"]) == 2
     captured = capsys.readouterr()
-    assert exc_info.value.code == 2
     assert captured.out == ""
-    assert captured.err.splitlines()[0] == "DEBIAN-INSTALL-V2 2 — Debian host installer"
+    assert captured.err.startswith(
+        "[ERROR] debian-install-v2.py: the following arguments are required: VERB"
+        "\n\nDEBIAN-INSTALL-V2 2 — Debian host installer\n\nUsage:"
+    )
 
 
 def test_cli_install_dry_run(tmp_path, capsys):
     cfg = write_config(tmp_path)
-    rc = main(["--action", "install", "--config", cfg, "--dry-run"])
+    rc = main(["install", "--config", cfg, "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     plan = json.loads(out)
@@ -85,7 +84,7 @@ def test_cli_install_dry_run_via_inline_config_json(tmp_path, capsys):
     data = {**BASE_CONFIG,
             "state_dir": str(tmp_path / "state"),
             "log_dir": str(tmp_path / "logs")}
-    rc = main(["--action", "install", "--config-json", json.dumps(data), "--dry-run"])
+    rc = main(["install", "--config-json", json.dumps(data), "--dry-run"])
     assert rc == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["result"] == "planned"
@@ -93,18 +92,17 @@ def test_cli_install_dry_run_via_inline_config_json(tmp_path, capsys):
 
 def test_cli_config_and_config_json_mutually_exclusive(tmp_path):
     cfg = write_config(tmp_path)
-    with pytest.raises(SystemExit):
-        main(["--action", "install", "--config", cfg, "--config-json", "{}", "--dry-run"])
+    assert main(["install", "--config", cfg, "--config-json", "{}", "--dry-run"]) == 2
 
 
 def test_cli_status_requires_state(tmp_path):
     cfg = write_config(tmp_path)
-    rc = main(["--action", "status", "--config", cfg, "--dry-run"])
+    rc = main(["status", "--config", cfg])
     assert rc == 1
 
 
 def test_cli_missing_config_refused():
-    rc = main(["--action", "install"])
+    rc = main(["install"])
     assert rc == 2
 
 
@@ -113,14 +111,33 @@ def test_cli_resume_uses_state_config(tmp_path, monkeypatch):
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     installer = Installer(config, HostActions(dry_run=True))
     StateStore(config.state_dir).save_new(StateStore.new(config))
     monkeypatch.setenv("VBPUB_STATE_DIR", config.state_dir)
-    assert main(["--action", "resume", "--dry-run"]) == 0
+    assert main(["resume", "--dry-run"]) == 0
 
 
-def test_cli_verify_after_manifest(tmp_path):
+def test_resume_refuses_manifest_with_different_state_dir(tmp_path):
+    current = Config(
+        state_dir=str(tmp_path / "current"),
+        log_dir=str(tmp_path / "logs"),
+        credential_mode="systemd",
+    )
+    persisted = Config(
+        state_dir=str(tmp_path / "other"),
+        log_dir=str(tmp_path / "logs"),
+        credential_mode="systemd",
+    )
+    store = StateStore(current.state_dir)
+    store.save_new(StateStore.new(persisted))
+    installer = Installer(current, HostActions(dry_run=True), inspect_host=False)
+    with pytest.raises(StateError, match="does not match the loaded state directory"):
+        installer.resume()
+
+
+def test_cli_verify_after_manifest_is_read_only(tmp_path, monkeypatch):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
@@ -137,13 +154,56 @@ def test_cli_verify_after_manifest(tmp_path):
     (state_dir / "disk-transaction.json").write_text(json.dumps({
         "backup": str(backup), "checksum": str(checksum)
     }))
-    assert main(["--action", "verify", "--config", write_config(tmp_path), "--dry-run"]) == 0
+    state_path = state_dir / "state.json"
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+    before_state = state_path.read_bytes()
+    monkeypatch.setattr(Installer, "_health_gate_swap_devices", lambda self, **kwargs: None)
+    assert main(["verify", "--config", write_config(tmp_path)]) == 0
+    assert state_path.read_bytes() == before_state
 
 
-def test_cli_disable_and_show_plan(tmp_path):
+def test_verify_does_not_claim_a_dry_run_is_a_live_check(tmp_path):
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="", credential_mode="systemd",
+    )
+    installer = Installer(config, HostActions(dry_run=True))
+    state_dir = Path(config.state_dir)
+    backup_dir = state_dir / "backups"
+    backup_dir.mkdir(parents=True)
+    backup = backup_dir / "ptable.sfdisk"
+    backup.write_text("label: gpt\n")
+    checksum = backup_dir / "ptable.sfdisk.sha256"
+    checksum.write_text(
+        f"{hashlib.sha256(backup.read_bytes()).hexdigest()}  ptable.sfdisk\n"
+    )
+    (state_dir / "disk-transaction.json").write_text(json.dumps({
+        "backup": str(backup), "checksum": str(checksum)
+    }))
+    with pytest.raises(RuntimeError, match="requires live host checks"):
+        installer.verify()
+
+
+def test_cli_disable_and_show_plan(tmp_path, monkeypatch):
     cfg = write_config(tmp_path)
-    assert main(["--action", "disable-stage2", "--config", cfg, "--dry-run"]) == 0
-    assert main(["--action", "show-plan", "--config", cfg, "--dry-run"]) == 0
+    assert main(["disable-stage2", "--config", cfg, "--dry-run"]) == 0
+    plan = {
+        "release": "trixie",
+        "root_device": "/dev/vda3",
+        "new_root_size_sectors": 1024,
+        "swap_partitions": [],
+        "sfdisk_plan": "label: gpt\n",
+    }
+
+    class PlanOnly:
+        def show_plan(self):
+            return plan
+
+    monkeypatch.setattr(
+        "debian_install_v2.bootstrap._make_installer",
+        lambda args, runtime: PlanOnly(),
+    )
+    assert main(["plan", "--config", cfg]) == 0
 
 
 def test_module_invocation_help():
@@ -154,11 +214,11 @@ def test_module_invocation_help():
         capture_output=True, text=True,
     )
     assert result.returncode == 0
-    assert "--action" in result.stdout
+    assert "<verb>" in result.stdout
 
 
 def test_cli_resume_without_env():
-    rc = main(["--action", "resume"])
+    rc = main(["resume"])
     assert rc == 2
 
 
@@ -424,6 +484,7 @@ def _make_with_state(tmp_path):
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -464,7 +525,7 @@ def test_resume_removes_controller_ssh_key_only_after_stage2_done_marker(tmp_pat
     # Regression, 2026-09-09 (v1001 round 12, the first fully successful
     # live install this whole effort): _remove_controller_ssh_key() used
     # to run INSIDE _stage2(), before the caller (resume()) ever touches
-    # the stage2_done marker file. install-host.py's own
+    # the stage2_done marker file. scp-api-install-host.py's own
     # completion poller authenticates with that exact controller key --
     # revoking it before the marker exists let a successful install
     # permanently strand its own external poller (unable to reconnect to
@@ -476,6 +537,7 @@ def test_resume_removes_controller_ssh_key_only_after_stage2_done_marker(tmp_pat
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = FakeHostActions()
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
@@ -501,17 +563,19 @@ def test_resume_loads_credentials_and_thread(tmp_path, monkeypatch):
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     state_dir = Path(config.state_dir)
-    cred_dir = state_dir / "credentials"
+    cred_dir = tmp_path / "systemd-credentials"
     cred_dir.mkdir(parents=True)
     (cred_dir / "telegram_bot_token").write_text("123:token\n")
     (cred_dir / "telegram_chat_id").write_text("456\n")
-    (state_dir / "telegram_thread_id").write_text("789\n")
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(cred_dir))
     actions = FakeHostActions()
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))
+    (state_dir / "telegram_thread_id").write_text("789\n")
     monkeypatch.setattr(installer, "_stage2", lambda: None)
     installer.resume()
     assert installer.config.telegram_bot_token == "123:token"
@@ -528,6 +592,7 @@ def test_resume_failure_records_state(tmp_path, monkeypatch):
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = FakeHostActions()
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"

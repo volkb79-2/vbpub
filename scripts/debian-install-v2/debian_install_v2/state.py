@@ -11,9 +11,6 @@ from typing import Any
 from .config import Config
 
 
-_SECRET_CONFIG_FIELDS = {"telegram_bot_token", "mattermost_webhook_url"}
-
-
 class StateError(RuntimeError):
     pass
 
@@ -48,10 +45,7 @@ class StateStore:
             "run_id": os.urandom(8).hex(),
             "phase": "stage1",
             "status": "running",
-            "config": {
-                key: value for key, value in asdict(config).items()
-                if key not in _SECRET_CONFIG_FIELDS
-            },
+            "config": {key: value for key, value in asdict(config).items() if not key.startswith("telegram_bot_token")},
             "steps": {},
             "telegram_thread_id": "",
             "started_at": datetime.now(timezone.utc).isoformat(),
@@ -64,18 +58,19 @@ class StateStore:
             state = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise StateError(f"cannot load state manifest: {exc}") from exc
+        if not isinstance(state, dict):
+            raise StateError("state manifest root must be a JSON object")
         if state.get("schema_version") != 1 or not isinstance(state.get("config"), dict):
             raise StateError("state manifest has an unsupported or corrupt schema")
+        if "steps" in state and not isinstance(state["steps"], dict):
+            raise StateError("state manifest steps must be a JSON object")
         return state
 
     @staticmethod
     def _without_secrets(state: dict[str, Any]) -> dict[str, Any]:
         config = state.get("config")
         if isinstance(config, dict):
-            state["config"] = {
-                key: value for key, value in config.items()
-                if key not in _SECRET_CONFIG_FIELDS
-            }
+            state["config"] = {key: value for key, value in config.items() if not key.startswith("telegram_bot_token")}
         return state
 
     def save_new(self, state: dict[str, Any]) -> None:

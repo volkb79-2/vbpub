@@ -31,24 +31,34 @@ classify each as exploration, modification, mixed, setup, or maintenance.
 Mark whether it mutates state, prompts, or can take a long time. Then express
 each interface element once:
 
-- `VerbSpec`: name, synopsis, user-facing description, semantic group,
+- `VerbSpec`: name, optional synopsis override, full user-facing command
+  description, semantic group,
   optional shorter `summary_description` for the top-level catalog, examples,
   behavior attributes, handler, positional arguments, and options;
 - `ArgumentSpec`: positional name, metavar, description, and argparse
   attributes such as `nargs`, `choices`, or `type`;
-- `OptionSpec`: flags, display metavar, help group, description, and argparse
-  attributes such as `action`, `choices`, `default`, or `required`.
+- `OptionSpec`: flags, display metavar, help group, description, argparse
+  attributes such as `action`, `choices`, or `default`, and structured
+  required/exclusive-group metadata.
 
 `CliRegistry` turns those declarations into argparse parsers, grouped terminal
 help, full Markdown reference help, a dispatch map, and common shell options.
+The registry's `description` is the overall CLI purpose shown after usage in
+the top-level catalog; it is distinct from each verb's `description`.
 It also checks duplicate command names and catalog/parser consistency. The
 consumer should not separately hand-maintain a command list, parser map, and
 help list.
 
-Use `VerbSpec.configure(parser)` only for genuinely custom structures—for
-example, nested positional actions or a mutually exclusive argument group.
-Keep common simple positionals/options in the structured `arguments` and
-`options` fields so they appear in generated Markdown too.
+The library derives usage syntax from declared positionals and option
+requirements. Leave `VerbSpec.synopsis` unset for this derived grammar; use an
+override only for a public syntax shape the metadata cannot express. For
+example, declare two `OptionSpec`s with a shared
+`mutually_exclusive_group="configuration-source"` and
+`mutually_exclusive_required=True` to enforce and render exactly one required
+config source. Do not separately write a usage string that can drift from the
+parser. Use `VerbSpec.configure(parser)` only for genuinely custom structures
+such as nested positional actions. Keep common arguments/options in the
+structured fields so they appear in generated Markdown too.
 
 Place options according to when they can be used: invocation-wide options
 that must precede a verb belong in `CliRegistry.global_options`; command-local
@@ -61,6 +71,15 @@ examples. The same metadata drives terminal and Markdown help; avoid a
 parallel manually formatted epilog for ordinary options. Custom parser
 callbacks are an escape hatch for syntax argparse cannot express through the
 structured fields, not the default registration path.
+
+`VerbSpec.description` is the full description of one verb, not the overall
+CLI description. It is passed to argparse as the command parser description and
+appears after that command's generated usage line, with blank lines separating
+the sections. Use `summary_description` only for a shorter top-level catalog
+entry. The overall CLI description is supplied once to `CliRegistry`.
+The top-level grouped list shows verb names without syntax fragments, and
+calculates one aligned description column across all groups. Full argument and
+option syntax is kept in `tool VERB --help`.
 
 Supported common output/debugging controls are accepted before or after the
 selected verb with the same meaning. A CLI may support `--json` or
@@ -85,18 +104,16 @@ distinct from `watch`. Keep cancellation in the API-owning CLI if it already
 owns task mutations; do not create two interfaces for the same operation by
 default.
 
-The Netcup task monitor was the first consumer of this split. The account API
-CLI and installer now use the same registry and shell boundary while retaining
-their own operation vocabularies and provider logic. In particular, the API
-CLI disables JSON for interactive `login`, and the installer disables JSON and
-progress for its workflow commands; unsupported common selectors are refused
-with the selected verb's help. `install-host.py attach` is an SSH-only
-operation, not an API-backed install mode. See the
+The `show`/`watch` example is the shape used by the Netcup task monitor. The
+Netcup `scp-api.py`, `install-host.py`, and `monitor-task.py` entrypoints now
+use `cli-extended` for parser setup, grouped help, common options, dispatch,
+and error/cancellation handling while retaining provider-specific vocabulary
+and safety policy. See the
 [`Netcup quickstart`](../../../scripts/netcup/README.md) and
 [`Netcup design guide`](../../../scripts/netcup/DESIGN-GUIDE.md) for their
-command-level workflows.
+current command-level workflows and the remaining domain-owned behavior.
 
-The task monitor's operation split is:
+The proposed task-monitor operation split is:
 
 | Operation | Netcup command |
 | --- | --- |
@@ -105,11 +122,11 @@ The task monitor's operation split is:
 | Inspect secret-bearing response fields | `show TASK_UUID --json --debug-raw`; this prints a warning and disables response redaction |
 | Cancel a task | keep under `scp-api.py tasks cancel`, which owns API mutations |
 
-Bare invocation prints generated help. Help and version discovery do not load
-credentials or API settings. The consumer validates UUID syntax and the API's
-top-level response type, but retains ownership of Netcup task fields and
-terminal-state meaning. Do not add a separate `check` verb for a one-fetch
-preflight: `show` already provides that operation.
+On adoption, bare invocation should print generated help, and help/version
+discovery must not load credentials or API settings. The consumer validates
+UUID syntax and the API's top-level response type, but retains ownership of
+Netcup task fields and terminal-state meaning. Do not add a separate `check`
+verb for a one-fetch preflight: `show` already provides that operation.
 
 The registry uses one width-aware formatter for generated top-level and
 command-specific help. Terminal output follows the detected terminal width,
@@ -117,6 +134,40 @@ with a 120-column fallback, while generated Markdown is a full reference
 format rather than terminal output pasted into a document. Structured
 choice/default attributes are rendered there too; keep ordinary argparse
 options in `OptionSpec` so they are not lost from generated docs.
+
+### Color and terminal presentation
+
+The normal `app.run()` boundary applies one color policy; consumers should not
+write ANSI escapes, add Colorama just for CLI output, or recolor the library's
+severity tags themselves:
+
+| Invocation/output | Behavior |
+|---|---|
+| No explicit switch | Color only when the stream receiving the text is a TTY and `NO_COLOR` is unset |
+| `--color` | Force color, including when output is redirected or `NO_COLOR` is set |
+| `--no-color` | Disable color |
+| Both switches | Refuse the invocation; do not let argument order decide |
+
+This covers generated terminal help (including error help), severity tags,
+hints, and the shared progress renderer. Help color detection uses stdout;
+diagnostics/progress use stderr. `app.catalog.render(output_format="markdown")`,
+version output, `runtime.output.primary()` results, and JSON remain plain so
+they can be copied, piped, or parsed. Use `runtime.output.info()`, `warn()`,
+`error()`, and `hint()` for human diagnostics; keep domain result tables
+uncolored unless the product has a separately documented, tested rendering
+contract.
+
+The standard recipe is simply to let `RegisteredCli.run()` own dispatch and
+rendering:
+
+```python
+app = cli.build()
+raise SystemExit(app.run(expected_exceptions=(OSError,)))
+```
+
+Do not print `app.parser.format_help()` as the executable's help path: that
+method returns plain text for introspection and documentation tooling, while
+`app.run()` applies the invocation's terminal and color policy.
 
 Bare invocation prints help by default. Set `no_args_action=True` only when
 the command's explicitly documented purpose is to act with no arguments; it
@@ -141,6 +192,9 @@ invocation is help, so do not use it unchanged for that deliberate exception.
 validation before asking for consent. The helper cannot decide whether a
 Netcup firewall update, server reinstall, database migration, or deployment is
 safe, and it does not bypass deny-lists or other domain guards.
+For a multi-step prompt flow, use `runtime.output.is_interactive`; it requires
+both input and output to be TTYs and works with the runtime's injectable test
+streams.
 
 Expected failures should be passed as specific types to `app.run()`:
 
@@ -184,6 +238,9 @@ compatibility promise is documented), every registered verb's paired help,
 and selected invalid invocations. For each selected known-verb failure, pass
 `known_verb_errors={label: verb}` so the helper checks that the complete
 verb-specific help accompanies the diagnostic, not just a usage synopsis.
+The failure diagnostic is the first block; a blank line then separates it from
+the product identity and complete help. This keeps the cause easy to spot while
+preserving the identity-headed help document.
 Also test facts the helper cannot observe:
 
 - no credentials, API calls, file changes, or mutations on help/version paths;
@@ -195,10 +252,14 @@ Also test facts the helper cannot observe:
 - known secrets are absent from normal diagnostics, logging, JSON, and progress;
 - Ctrl-C at prompts and long-running operations exits `130` without traceback.
 
-Package self-tests:
+Package gate (R0/R1/R2 plus the independent R3 canary):
 
 ```bash
-PYTHONPATH=libraries/cli-extended/src pytest -q libraries/cli-extended/tests
-ruff check libraries/cli-extended
-ruff format --check libraries/cli-extended
+cd libraries/cli-extended
+./run-gate.py gate
 ```
+
+All gate lanes execute in `tester-unified`. R1 enforces 100% statement and
+branch coverage over every shipped `cli_extended` module. R3 deliberately
+breaks JSON redaction in a disposable copy and requires the focused regression
+test to reject it. Ruff remains a separate static check: `ruff check src tests`.

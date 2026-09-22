@@ -1,26 +1,14 @@
-"""Build the Debian-install-v2 remote bootstrap contract.
+"""Build a provider-neutral command/config bundle for remote bootstrap."""
 
-The Netcup installer is deliberately not the owner of this code.  This module
-validates a v2 JSON configuration and renders the two things a provider
-integration needs: the JSON configuration object and the cloud-init command
-which feeds that object to ``bootstrap-remote.py``.
-
-The command can optionally contain the generic
-``{{CONTROLLER_SSH_PUBKEY}}`` marker.  A provider integration may replace that
-marker with the public half of a temporary controller key immediately before
-submitting its own API request; v2 itself does not know anything about that
-provider or its API.
-"""
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 import shlex
-from typing import Any
 import urllib.parse
+from dataclasses import asdict
+from typing import Any
 
-from .config import Config
-
+from .config import Config, validate_config
 
 REPO_URL_DEFAULT = "https://github.com/volkb79-2/vbpub"
 REPO_BRANCH_DEFAULT = "main"
@@ -29,7 +17,6 @@ BOOTSTRAP_URL_TEMPLATE = (
     "{branch}/scripts/debian-install-v2/bootstrap-remote.py"
 )
 CONTROLLER_SSH_PUBKEY_MARKER = "{{CONTROLLER_SSH_PUBKEY}}"
-COMPLETION_MARKER = "/var/lib/vbpub/bootstrap/stage2_done"
 
 
 def _validate_source(value: str, name: str, *, url: bool = True) -> str:
@@ -41,16 +28,42 @@ def _validate_source(value: str, name: str, *, url: bool = True) -> str:
     return value
 
 
+def _bootstrap_launcher_source(bootstrap_url: str) -> str:
+    """Return a Python launcher that downloads and executes the bootstrap.
+
+    Keep download errors concise and nonzero; unlike a shell pipeline, Python
+    propagates the fetch failure instead of returning the last command's status.
+    """
+    return (
+        "import sys\n"
+        "import urllib.request\n"
+        f"url = {bootstrap_url!r}\n"
+        "try:\n"
+        "    with urllib.request.urlopen(url, timeout=60) as response:\n"
+        "        source = response.read()\n"
+        "    if not source.strip():\n"
+        "        raise ValueError('downloaded bootstrap source was empty')\n"
+        "except Exception as exc:\n"
+        "    print(\n"
+        "        f'debian-install-v2: bootstrap download failed: {exc}',\n"
+        "        file=sys.stderr,\n"
+        "    )\n"
+        "    raise SystemExit(1)\n"
+        "namespace = {'__name__': '__main__', '__file__': url}\n"
+        "exec(compile(source, url, 'exec'), namespace)\n"
+    )
+
+
 def resolve_bootstrap_url(
     *,
     repo_url: str = REPO_URL_DEFAULT,
     repo_branch: str = REPO_BRANCH_DEFAULT,
     bootstrap_url: str | None = None,
 ) -> str:
-    """Resolve and validate the wrapper URL used by the generated command."""
+    """Resolve a real bootstrap URL; custom repositories must supply one."""
     repo_url = _validate_source(repo_url, "repo_url").rstrip("/")
     repo_branch = _validate_source(repo_branch, "repo_branch", url=False)
-    if bootstrap_url:
+    if bootstrap_url is not None:
         return _validate_source(bootstrap_url, "bootstrap_url")
     if repo_url != REPO_URL_DEFAULT:
         raise ValueError(
@@ -64,17 +77,17 @@ def resolve_bootstrap_url(
 def build_customscript_bundle(
     config: Config,
     *,
-    repo_url: str = REPO_URL_DEFAULT,
-    repo_branch: str = REPO_BRANCH_DEFAULT,
+    repo_url: str | None = None,
+    repo_branch: str | None = None,
     bootstrap_url: str | None = None,
     controller_ssh_placeholder: bool = False,
 ) -> dict[str, Any]:
-    """Return a JSON-serializable config/customScript bundle.
-
-    ``VBPUB_CONFIG_EXTRA_JSON`` is used intentionally: it is the remote
-    wrapper's escape hatch for every strict v2 field, so this renderer does
-    not need a second, drifting list of environment-variable mappings.
-    """
+    """Return validated v2 settings and a paste-ready cloud-init command."""
+    validate_config(config)
+    if repo_url is None:
+        repo_url = REPO_URL_DEFAULT
+    if repo_branch is None:
+        repo_branch = REPO_BRANCH_DEFAULT
     repo_url = _validate_source(repo_url, "repo_url").rstrip("/")
     repo_branch = _validate_source(repo_branch, "repo_branch", url=False)
     remote_url = resolve_bootstrap_url(
@@ -98,13 +111,16 @@ def build_customscript_bundle(
         f"REPO_BRANCH={shlex.quote(repo_branch)}",
         f"VBPUB_CONFIG_EXTRA_JSON={shlex.quote(config_json)}",
     ]
-    custom_script = (
-        f"curl -fsSL {shlex.quote(remote_url)} | "
-        + " ".join(env_parts)
-        + " python3 -"
+    custom_script = " ".join(
+        (
+            *env_parts,
+            "python3",
+            "-c",
+            shlex.quote(_bootstrap_launcher_source(remote_url)),
+        )
     )
     return {
         "config": config_data,
         "customScript": custom_script,
-        "completionMarker": COMPLETION_MARKER,
+        "completionMarker": f"{config.state_dir}/stage2_done",
     }

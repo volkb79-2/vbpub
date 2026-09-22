@@ -409,6 +409,7 @@ def test_stage1_and_stage2_still_dry_run_clean_with_root_shrink_wired_in(tmp_pat
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="",
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)

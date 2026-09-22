@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 import platform
 import urllib.parse
@@ -57,6 +58,21 @@ def test_stage2_config_missing_config_dict(tmp_path):
     monkeypatch.undo()
 
 
+def test_stage2_config_refuses_state_dir_mismatch(tmp_path, monkeypatch):
+    from debian_install_v2.bootstrap import _stage2_config
+
+    saved_config = Config(
+        state_dir=str(tmp_path / "saved-state"), credential_mode="systemd"
+    )
+    monkeypatch.setattr(
+        StateStore,
+        "load",
+        lambda self: {"schema_version": 1, "config": asdict(saved_config)},
+    )
+    with pytest.raises(StateError, match="does not match state_dir"):
+        _stage2_config(str(tmp_path / "different-state"))
+
+
 def test_cli_status_success(tmp_path, capsys):
     installer = make_installer(tmp_path)
     cfg = tmp_path / "config.json"
@@ -68,7 +84,7 @@ def test_cli_status_success(tmp_path, capsys):
         "credential_mode": "systemd",
         "state_dir": str(tmp_path / "state"), "log_dir": str(tmp_path / "logs"),
     }))
-    assert main(["--action", "status", "--config", str(cfg), "--dry-run"]) == 0
+    assert main(["status", "--config", str(cfg), "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["schema_version"] == 1
 
@@ -76,7 +92,7 @@ def test_cli_status_success(tmp_path, capsys):
 def test_module_main_exit():
     import subprocess, sys
     result = subprocess.run(
-        [sys.executable, "-m", "debian_install_v2.bootstrap", "--action", "resume"],
+        [sys.executable, "-m", "debian_install_v2.bootstrap", "resume"],
         cwd=str(Path(__file__).resolve().parents[2]),
         capture_output=True, text=True,
     )
@@ -110,6 +126,27 @@ def test_verify_missing_backup(tmp_path):
         "checksum": str(state_dir / "nope.sha256"),
     }))
     with pytest.raises(RuntimeError, match="backup or checksum is missing"):
+        installer.verify()
+
+
+def test_verify_rejects_malformed_transaction_manifest(tmp_path):
+    installer = make_installer(tmp_path)
+    state_dir = Path(installer.config.state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "disk-transaction.json").write_text("[]\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="must be a JSON object"):
+        installer.verify()
+
+
+def test_verify_rejects_transaction_manifest_path_with_nul(tmp_path):
+    installer = make_installer(tmp_path)
+    state_dir = Path(installer.config.state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "disk-transaction.json").write_text(json.dumps({
+        "backup": "/tmp/backup\u0000.sfdisk",
+        "checksum": "/tmp/backup.sha256",
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="no valid backup path"):
         installer.verify()
 
 
@@ -397,13 +434,14 @@ def test_install_stage2_systemd_credentials(tmp_path):
     assert (Path(installer.config.state_dir) / "stage1_done").exists()
 
 
-def test_notify_failure(tmp_path, monkeypatch, capsys):
+def test_notify_failure(tmp_path, monkeypatch, caplog):
     installer = make_installer(tmp_path, dry_run=False, telegram_bot_token="tok", telegram_chat_id="cid")
     def boom(*a, **kw):
         raise OSError("network down")
     monkeypatch.setattr(urllib.request, "urlopen", boom)
     installer._notify("hello")
-    assert "WARN" in capsys.readouterr().out
+    assert "Telegram notification failed" in caplog.text
+    assert "network down" in caplog.text
 
 
 def test_reboot_real(tmp_path):
@@ -430,7 +468,7 @@ def test_module_main_block():
     import runpy, sys
     old_argv = sys.argv
     saved_module = sys.modules.pop("debian_install_v2.bootstrap", None)
-    sys.argv = ["bootstrap", "--action", "resume"]
+    sys.argv = ["bootstrap", "resume"]
     try:
         with pytest.raises(SystemExit):
             runpy.run_module("debian_install_v2.bootstrap", run_name="__main__",

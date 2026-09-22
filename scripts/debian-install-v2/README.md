@@ -12,22 +12,36 @@ Design/status docs elsewhere in this tree, not duplicated here:
 + `zswap-shrinker-threshold-feasibility.md` (open zswap-shrinker work),
 `testing/vm/DESIGN.md` (the QEMU/TCG test-VM harness).
 
-## Build a provider customScript bundle
+## Operator CLI
 
-When a provider accepts a cloud-init command, let v2 build the command and
-the strict JSON it carries:
+`debian-install-v2.py` is the operator entry point. It has grouped verbs for
+configuration, installation, status, verification, planning, and generating a
+provider-neutral cloud-init custom-script bundle. Run it without a verb for the
+usage map, or use `--help` for details:
 
-```bash
-./debian-install-v2.py --action build-customscript \
-  --config /path/to/debian-v2.json \
-  --controller-ssh-placeholder > debian-v2-customscript.json
+```text
+./debian-install-v2.py --help
+./debian-install-v2.py wizard --help
 ```
 
-The JSON output contains `config`, `customScript`, and `completionMarker`.
-The command uses `VBPUB_CONFIG_EXTRA_JSON`, so its complete configuration stays
-owned and validated by v2. A consumer such as the Netcup installer replaces
-the generic `{{CONTROLLER_SSH_PUBKEY}}` marker and may wait for the declared
-completion marker before removing its local temporary key.
+The usage map explains the CLI's overall job and lists each verb by name with
+an aligned one-line description. Use `debian-install-v2.py VERB --help` for
+that operation's required settings and full invocation syntax.
+
+The settings wizard writes a validated mode-0600 JSON file. The same shipped
+configuration loader validates both wizard output and hand-authored files; the
+wizard is not a second schema. Adoption, safe install examples, and remote
+bootstrap steps are in [docs/CONSUMERS.md](docs/CONSUMERS.md); command and
+wizard design rationale is in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+Verbs that consume settings require exactly one of `--config FILE` and
+`--config-json JSON`; their generated usage shows that required choice.
+The generated remote custom-script launcher uses Python’s standard-library
+HTTPS client and fails nonzero if it cannot retrieve the bootstrap.
+
+Terminal help and diagnostic tags use `cli-extended`'s shared color policy:
+automatic color on a TTY, `NO_COLOR`/`--no-color` to disable, and `--color` to
+force it. JSON and primary status/plan results remain uncolored. The installer
+does not add its own ANSI formatting.
 
 ## What it actually does today
 
@@ -119,21 +133,15 @@ through the same journal).
 ### Orchestration / observability
 
 `state.json` under `state_dir` tracks per-step status across stage1 → reboot
-→ stage2, so a re-run resumes rather than repeats. Optional Telegram or
-Mattermost progress + completion notifications (`notify_backend`, Telegram's
-`telegram_bot_token`/`telegram_chat_id`, or Mattermost's
-`mattermost_webhook_url`; `telegram_verbose_progress` also controls verbose
-progress for the selected backend) include host facts. An ephemeral controller
+→ stage2, so a re-run resumes rather than repeats. Telegram progress +
+completion notifications (`telegram_bot_token`/`telegram_chat_id`,
+`telegram_verbose_progress`) including host facts. An ephemeral controller
 SSH pubkey (`controller_ssh_pubkey`) is installed for external monitoring
-during the run. By default it is removed only *after* the stage2-done marker
-is written (removing it earlier can strand an external poller mid-install with
+during the run and removed again only *after* the stage2-done marker is
+written (removing it earlier can strand an external poller mid-install with
 no way back in — a real bug found and fixed live, 2026-09-09).
-`retain_controller_ssh_key=true` deliberately leaves that exact line in
-`authorized_keys` after successful stage2; failure paths retain it for
-diagnosis regardless of this setting. The operator's persistent account key
-is never removed.
-`credential_mode` (`root-storage` / `systemd`) selects how the selected
-notification credential and controller pubkey are stored on disk.
+`credential_mode` (`root-storage` / `systemd`) selects how the Telegram
+token and controller pubkey are stored on disk.
 
 ## Not yet in v2 (v1 had some of this)
 

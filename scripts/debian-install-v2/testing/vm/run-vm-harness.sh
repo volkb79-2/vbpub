@@ -130,6 +130,9 @@ EOF
     fi
     HOST_TESTING_DIR="$host_mount_src$host_suffix"
     HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
+    # Keep the default source bind in the same mapped host namespace. This
+    # value was initialized from the container path before the translation.
+    HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
 
     # MDT and future consumers can provide a project source below any of the
     # cockpit's authoritative Docker bind mounts.  Resolve it using the same

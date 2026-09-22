@@ -44,6 +44,7 @@ def make_cli():
     catalog = HelpCatalog(
         IDENTITY,
         prog="test-tool",
+        description="A concise overview of this operator CLI.",
         getting_started=("test-tool status",),
         verbs=(
             VerbSpec("status", "", "show state", group="EXPLORATION"),
@@ -211,11 +212,151 @@ def test_help_actions_use_the_invocation_stream():
     assert stderr.getvalue() == ""
 
 
+def test_contract_helper_accepts_command_help_body_without_identity_prefix():
+    help_text = (
+        f"{IDENTITY.headline}\n\nUsage: test-tool <verb> [options]\n\n"
+        "  status  show current state\n"
+    )
+    command_help = "usage: test-tool status [options]\n\nshow current state\n"
+    topic_calls = 0
+
+    def invoke(argv):
+        nonlocal topic_calls
+        argv = list(argv)
+        if argv in ([], ["--help"], ["help"]):
+            return SimpleNamespace(returncode=0, stdout=help_text, stderr="")
+        if argv == ["-h"]:
+            return SimpleNamespace(
+                returncode=2,
+                stdout="",
+                stderr=f"[ERROR] unsupported\n\n{IDENTITY.headline}\n\nusage:\n",
+            )
+        if argv in (["version"], ["--version"]):
+            return SimpleNamespace(
+                returncode=0, stdout=IDENTITY.version_line + "\n", stderr=""
+            )
+        if argv == ["help", "status"]:
+            topic_calls += 1
+            text = (
+                f"{IDENTITY.headline}\n\n{command_help}"
+                if topic_calls == 1
+                else command_help
+            )
+            return SimpleNamespace(returncode=0, stdout=text, stderr="")
+        if argv == ["status", "--help"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"{IDENTITY.headline}\n\n{command_help}",
+                stderr="",
+            )
+        if argv == ["status", "bad"]:
+            return SimpleNamespace(
+                returncode=2,
+                stdout="",
+                stderr=f"[ERROR] bad\n\n{IDENTITY.headline}\n\n{command_help}",
+            )
+        raise AssertionError(f"unexpected CLI invocation: {argv!r}")
+
+    assert_cli_contract(
+        invoke,
+        IDENTITY,
+        ("status",),
+        invalid_invocations={"missing value": ("status", "bad")},
+        known_verb_errors={"missing value": "status"},
+    )
+
+
+def test_help_color_policy_covers_catalog_and_verb_help(monkeypatch):
+    app = _registered_cli()
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    for argv in (("--color", "--help"), ("--help", "--color")):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        assert app.run(argv=argv, stdout=stdout, stderr=stderr) == 0
+        assert "\033[" in stdout.getvalue()
+        assert "\033[1m\033[34mEXPLORATION\033[0m" in stdout.getvalue()
+    assert stderr.getvalue() == ""
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    assert (
+        app.run(
+            argv=("status", "--help", "--color"),
+            stdout=stdout,
+            stderr=stderr,
+        )
+        == 0
+    )
+    assert "\033[" in stdout.getvalue()
+    assert "\033[1;36m--help\033[0m" in stdout.getvalue()
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    assert app.run(argv=("--no-color", "--help"), stdout=stdout, stderr=stderr) == 0
+    assert "\033[" not in stdout.getvalue()
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    stdout, stderr = io.StringIO(), io.StringIO()
+    assert app.run(argv=("--help",), stdout=stdout, stderr=stderr) == 0
+    assert "\033[" not in stdout.getvalue()
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    assert app.run(argv=("--color", "--help"), stdout=stdout, stderr=stderr) == 0
+    assert "\033[" in stdout.getvalue()
+
+    for argv in (
+        ("--color", "--help", "--no-color"),
+        ("--no-color", "--help", "--color"),
+    ):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        assert app.run(argv=argv, stdout=stdout, stderr=stderr) == 2
+        assert "mutually exclusive" in stderr.getvalue()
+        assert "\033[" not in stderr.getvalue()
+
+
+def test_help_automatically_colors_only_when_destination_is_a_tty(monkeypatch):
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    app = _registered_cli()
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    stdout = TTY()
+    assert app.run(argv=(), stdout=stdout, stderr=io.StringIO()) == 0
+    assert "\033[" in stdout.getvalue()
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    stdout = TTY()
+    assert app.run(argv=(), stdout=stdout, stderr=io.StringIO()) == 0
+    assert "\033[" not in stdout.getvalue()
+
+    monkeypatch.setenv("NO_COLOR", "")
+    stdout = TTY()
+    assert app.run(argv=(), stdout=stdout, stderr=io.StringIO()) == 0
+    assert "\033[" not in stdout.getvalue()
+
+
+def test_help_attached_to_parse_errors_redacts_echoed_secrets():
+    app = _registered_cli()
+    stderr = io.StringIO()
+    assert (
+        app.run(
+            argv=("status", "srv-1", "private-token"),
+            secrets=("private-token",),
+            stdout=io.StringIO(),
+            stderr=stderr,
+        )
+        == 2
+    )
+    assert "<redacted>" in stderr.getvalue()
+    assert "private-token" not in stderr.getvalue()
+
+
 def test_grouped_help_has_each_verb_once_and_no_short_help():
     parser, _ = make_cli()
     text = parser.format_help()
     assert text.count("status") == 2  # getting-started example plus verb entry
-    assert text.count("apply FILE") == 1
+    assert len([line for line in text.splitlines() if line.startswith("  apply")]) == 1
+    assert "apply FILE" not in text
+    assert "\n\nA concise overview of this operator CLI.\n\nGETTING STARTED" in text
     assert "\n  -h" not in text
     assert "EXPLORATION" in text and "MODIFICATION" in text
     assert "--debug/--verbose" in text
@@ -380,9 +521,8 @@ def _registered_cli(*, side_effects=None):
 
     registry.register(
         VerbSpec(
-            "status",
-            "[server_id]",
-            "show current state",
+            name="status",
+            description="show current state",
             group="EXPLORATION",
             examples=("test-tool status srv-1",),
             arguments=(
@@ -412,9 +552,8 @@ def _registered_cli(*, side_effects=None):
     )
     registry.register(
         VerbSpec(
-            "apply",
-            "FILE",
-            "apply a reviewed change",
+            name="apply",
+            description="apply a reviewed change",
             group="MODIFICATION",
             mutating=True,
             examples=("test-tool apply change.json --yes",),
@@ -431,17 +570,28 @@ def test_registry_builds_parser_dispatch_help_options_and_markdown_once():
     assert "EXPLORATION" in help_text and "MODIFICATION" in help_text
     assert "DEBUGGING" in help_text and "OUTPUT CONTROL" in help_text
     assert "INPUT" in help_text and "--config FILE" in help_text
-    assert "status [server_id] show current state" in help_text
-    assert "apply FILE apply a reviewed change [mutating]" in help_text
+    assert "\n\nA test command registry.\n\nGETTING STARTED" in help_text
+    assert "status [server_id]" not in help_text
+    assert "apply FILE" not in help_text
+    status_line = next(
+        line for line in help_text.splitlines() if line.startswith("  status")
+    )
+    apply_line = next(
+        line for line in help_text.splitlines() if line.startswith("  apply")
+    )
+    description_column = status_line.index("show current state")
+    assert apply_line.index("apply", len("  apply")) == description_column
 
     status_help = app.command_parsers["status"].format_help()
     apply_help = app.command_parsers["apply"].format_help()
+    assert "HELP AND VERSION:" in status_help
     assert "FILTERS" in status_help and "--filter TEXT" in status_help
     assert "--format {table,json}" in status_help
     assert "--yes" not in status_help
     assert "--yes" in apply_help
     assert "test-tool apply change.json --yes" in apply_help
     markdown = app.catalog.render(output_format="markdown")
+    assert "A test command registry." in markdown
     assert "| `server_id` | optional server selector |" in markdown
     assert "| `--filter TEXT` | filter status results |" in markdown
     assert (
@@ -456,6 +606,108 @@ def test_registry_builds_parser_dispatch_help_options_and_markdown_once():
     assert "| `--yes` |" not in status_markdown
     assert "| `--yes` | accept confirmation prompts |" in apply_markdown
     assert "## Input" in markdown
+
+
+def test_required_mutually_exclusive_options_drive_usage_and_parser_validation():
+    registry = CliRegistry(IDENTITY, prog="test-tool", description="test CLI")
+    registry.register(
+        VerbSpec(
+            name="status",
+            description="show current state",
+            options=(
+                OptionSpec(
+                    ("--config",),
+                    "read a JSON configuration file",
+                    group="CONFIGURATION",
+                    metavar="FILE",
+                    mutually_exclusive_group="configuration-source",
+                    mutually_exclusive_required=True,
+                ),
+                OptionSpec(
+                    ("--config-json",),
+                    "read configuration JSON inline",
+                    group="CONFIGURATION",
+                    metavar="JSON",
+                    mutually_exclusive_group="configuration-source",
+                    mutually_exclusive_required=True,
+                ),
+            ),
+            handler=lambda _args, _runtime: 0,
+        )
+    )
+    app = registry.build()
+    command_help = app.command_parsers["status"].format_help()
+    flattened_command_help = " ".join(command_help.split())
+
+    assert "(--config FILE | --config-json JSON)" in flattened_command_help
+    assert "\n\nshow current state\n\nHELP AND VERSION:" in command_help
+    assert "one option in this group is required" in app.catalog.render(
+        output_format="markdown"
+    )
+    top_level = app.parser.format_help()
+    assert "status (--config FILE | --config-json JSON)" not in top_level
+    assert "show current state" in top_level
+
+    missing_stderr = io.StringIO()
+    assert app.run(argv=["status"], stdout=io.StringIO(), stderr=missing_stderr) == 2
+    missing = missing_stderr.getvalue()
+    assert "one of the arguments --config --config-json is required" in missing
+    assert missing.startswith("[ERROR]")
+    assert f"\n\n{IDENTITY.headline}\n\nusage:" in missing
+
+    both_stderr = io.StringIO()
+    assert (
+        app.run(
+            argv=["status", "--config", "settings.json", "--config-json", "{}"],
+            stdout=io.StringIO(),
+            stderr=both_stderr,
+        )
+        == 2
+    )
+    assert "not allowed with argument --config" in both_stderr.getvalue()
+
+
+def test_derived_synopsis_handles_required_repeated_values_and_inferred_metavar():
+    registry = CliRegistry(IDENTITY, prog="test-tool", description="test CLI")
+    registry.register(
+        VerbSpec(
+            name="search",
+            description="search by one or more tags",
+            options=(
+                OptionSpec(
+                    ("--tags",),
+                    "tags to match",
+                    parser_kwargs={"nargs": "+", "required": True},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    search = app.catalog.verbs[0]
+    flattened_usage = " ".join(app.command_parsers["search"].format_usage().split())
+
+    assert search.display_synopsis == "--tags TAGS [TAGS ...]"
+    assert "search --tags TAGS [TAGS ...]" not in app.parser.format_help()
+    assert "search by one or more tags" in app.parser.format_help()
+    assert "--tags TAGS [TAGS ...]" in flattened_usage
+
+
+def test_handled_runtime_error_is_separated_from_command_help():
+    registry = CliRegistry(IDENTITY, prog="test-tool", description="test CLI")
+
+    def refuse(_args, _runtime):
+        raise CliFailure("configuration is invalid", exit_code=2, show_help=True)
+
+    registry.register(VerbSpec("status", "", "show current state", handler=refuse))
+    stderr = io.StringIO()
+
+    assert (
+        registry.build().run(argv=["status"], stdout=io.StringIO(), stderr=stderr) == 2
+    )
+    rendered = stderr.getvalue()
+    assert rendered.startswith("[ERROR] configuration is invalid\n\n")
+    assert f"\n\n{IDENTITY.headline}\n\nusage:" in rendered
 
 
 def test_custom_parser_extensions_remain_visible_in_generated_markdown():
@@ -570,7 +822,8 @@ def test_unsupported_common_output_option_shows_known_verb_help(argv):
 
     assert app.run(argv=argv, stdout=io.StringIO(), stderr=stderr) == 2
     error = stderr.getvalue()
-    assert error.startswith(IDENTITY.headline)
+    assert error.startswith("[ERROR]")
+    assert f"\n\n{IDENTITY.headline}\n\n" in error
     assert "[ERROR]" in error
     assert "usage: mixed login" in error
     assert "Usage: mixed <verb>" not in error
@@ -597,6 +850,21 @@ def test_black_box_contract_helper_and_help_paths_do_not_call_handlers():
         known_verb_errors={"missing apply file": "apply"},
     )
     assert side_effects == []
+
+    def prefix_collision(argv):
+        result = invoke(argv)
+        if list(argv) == ["--help"]:
+            result.stdout = result.stdout.replace("  status ", "  statusX ")
+        return result
+
+    with pytest.raises(AssertionError, match="omits registered verb 'status'"):
+        assert_cli_contract(
+            prefix_collision,
+            IDENTITY,
+            ("status", "apply"),
+            invalid_invocations={"missing apply file": ("apply",)},
+            known_verb_errors={"missing apply file": "apply"},
+        )
 
     def usage_only_for_missing_apply(argv):
         result = invoke(argv)
@@ -834,11 +1102,14 @@ def test_output_levels_colour_and_redaction(monkeypatch):
     output.info("hidden secret-token")
     output.warn("secret-token needs attention")
     output.error("secret-token failed", hint="inspect the configuration")
+    output.primary("machine-composable result")
     text = stderr.getvalue()
     assert "INFO" not in text
     assert "<redacted>" in text
     assert "Hint:" in text and "inspect" in text
     assert "\033[" in text
+    assert "\033[" not in stdout.getvalue()
+    assert stdout.getvalue() == "machine-composable result\n"
 
     quiet_stderr = io.StringIO()
     quiet = CliOutput(IDENTITY, level=LogLevel.WARN, stderr=quiet_stderr)
@@ -848,11 +1119,26 @@ def test_output_levels_colour_and_redaction(monkeypatch):
     assert "hidden info" not in quiet_stderr.getvalue()
     assert "[WARN] visible warning" in quiet_stderr.getvalue()
     assert "[ERROR] visible error" in quiet_stderr.getvalue()
+    error_stderr = io.StringIO()
+    CliOutput(IDENTITY, stderr=error_stderr).error("failed")
+    assert error_stderr.getvalue().startswith(
+        "[ERROR] failed\n\n" + IDENTITY.headline + "\n"
+    )
 
     monkeypatch.setenv("NO_COLOR", "1")
     no_color = CliOutput(IDENTITY, color=None, stderr=io.StringIO())
     no_color.warn("warning")
     assert "\033[" not in no_color.stderr.getvalue()
+
+
+def test_output_reports_interactive_only_when_both_streams_are_ttys():
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    assert CliOutput(IDENTITY, stdin=TTY(), stdout=TTY()).is_interactive
+    assert not CliOutput(IDENTITY, stdin=TTY(), stdout=io.StringIO()).is_interactive
+    assert not CliOutput(IDENTITY, stdin=io.StringIO(), stdout=TTY()).is_interactive
 
 
 def test_logging_adapter_uses_contract_levels():
@@ -949,6 +1235,28 @@ def test_progress_auto_falls_back_to_plain_and_rawjson_is_machine_readable():
     assert "refresh-secret" not in redacted.getvalue()
     assert "<redacted> used" in redacted.getvalue()
     assert "finished <redacted>" in redacted.getvalue()
+
+
+def test_progress_tty_completion_keeps_severity_and_honors_empty_no_color(monkeypatch):
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setenv("NO_COLOR", "")
+    plain = TTY()
+    progress = ProgressRenderer(ProgressMode.TTY, stream=plain)
+    progress.update("working")
+    progress.finish("complete")
+    assert "\033[36m" not in plain.getvalue()
+    assert "[INFO] working" in plain.getvalue()
+    assert plain.getvalue().endswith("[INFO] complete\n")
+
+    monkeypatch.delenv("NO_COLOR")
+    colored = TTY()
+    progress = ProgressRenderer(ProgressMode.TTY, stream=colored)
+    progress.update("working")
+    progress.finish("complete")
+    assert "\033[36m[INFO] complete\033[0m" in colored.getvalue()
 
 
 def test_yes_and_debug_raw_are_available_to_handlers():
