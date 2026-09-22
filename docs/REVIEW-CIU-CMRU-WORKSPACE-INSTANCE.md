@@ -298,3 +298,16 @@ build-discard call paths.
 - The R2 closures are in the next commit; the complete CMRU aggregate and CIU
   R0-R3 gate runs remain pending and will run serially. Local green status does
   not substitute for those external gate results.
+- The serialized CIU aggregate on `0da8f1583d990a9eee2d2463c4192c0fd181c100`
+  reached R0–R3 in container `run-gate-vbpub-ciu-2734759-1790091744`. R0,
+  R1 (100%, 820/820 executable lines and 124/124 branches), and R3 passed;
+  R2 killed 64/65 candidates and had one survivor at
+  `ciu/src/ciu/worktree.py:4482` (`Or -> And`). The persisted verdict is
+  `ciu/.assay/verdict-ciu.json`; the container has since been removed.
+- The surviving boolean mutant exposed that the old malformed-root fixture
+  made both refusal predicates true. The regression now covers a relative
+  existing directory and an absolute missing directory independently, as
+  well as a relative missing path. The focused test passes all three cases;
+  the new commit and CIU aggregate rerun are pending. CMRU's aggregate passed
+  on the immediately preceding code commit; both product gates will be
+  serialized again on the final reviewed head before merge.

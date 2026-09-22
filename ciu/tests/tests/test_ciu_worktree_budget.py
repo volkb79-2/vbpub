@@ -202,15 +202,30 @@ def test_git_toplevel_not_a_git_repo_raises(tmp_path):
         worktree.git_toplevel(bare)
 
 
-def test_git_toplevel_malformed_zero_exit_output_raises(tmp_git_repo, monkeypatch):
-    """A zero exit but non-absolute/empty stdout (never observed from real
-    git, but defended against explicitly) is still a loud [S16.3] failure,
-    not a silently-accepted bogus path."""
+@pytest.mark.parametrize(
+    "bad_top_kind",
+    ("relative-existing-dir", "absolute-missing-dir", "relative-missing-dir"),
+)
+def test_git_toplevel_malformed_zero_exit_output_raises(
+    bad_top_kind, tmp_git_repo, tmp_path, monkeypatch
+):
+    """Malformed successful Git output fails if it is relative OR missing.
+
+    The first two cases independently exercise each side of that refusal:
+    a relative existing directory and an absolute missing directory. Keeping
+    those one-predicate-true cases is important; replacing ``or`` with ``and``
+    would otherwise accept both malformed results.
+    """
     shared = worktree._shared_worktree()
+    malformed_top = {
+        "relative-existing-dir": Path("."),
+        "absolute-missing-dir": tmp_path / "missing-top-level",
+        "relative-missing-dir": Path("not/absolute"),
+    }[bad_top_kind]
     monkeypatch.setattr(
         shared,
         "discover_git_root",
-        lambda _path: (Path("not/absolute"), tmp_git_repo / ".git"),
+        lambda _path: (malformed_top, tmp_git_repo / ".git"),
     )
     with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\].*absolute"):
         worktree.git_toplevel(_ciu_root(tmp_git_repo))
