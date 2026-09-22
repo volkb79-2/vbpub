@@ -7,6 +7,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
+
 from cli_extended import (
     ArgumentSpec,
     CliFailure,
@@ -592,10 +593,43 @@ def test_black_box_contract_helper_and_help_paths_do_not_call_handlers():
         ("status", "apply"),
         invalid_invocations={
             "missing apply file": ("apply",),
-            "short help option is unsupported": ("-h",),
         },
+        known_verb_errors={"missing apply file": "apply"},
     )
     assert side_effects == []
+
+    def usage_only_for_missing_apply(argv):
+        result = invoke(argv)
+        if list(argv) == ["apply"]:
+            lines = result.stderr.splitlines()
+            usage_index = next(
+                index
+                for index, line in enumerate(lines)
+                if line.lower().startswith("usage:")
+            )
+            result.stderr = "\n".join(lines[: usage_index + 1]) + "\n"
+        return result
+
+    with pytest.raises(AssertionError, match="did not include complete 'apply' help"):
+        assert_cli_contract(
+            usage_only_for_missing_apply,
+            IDENTITY,
+            ("status", "apply"),
+            invalid_invocations={"missing apply file": ("apply",)},
+            known_verb_errors={"missing apply file": "apply"},
+        )
+
+    def legacy_short_help(argv):
+        return invoke(["--help"] if list(argv) == ["-h"] else argv)
+
+    assert_cli_contract(
+        legacy_short_help,
+        IDENTITY,
+        ("status", "apply"),
+        invalid_invocations={"missing apply file": ("apply",)},
+        known_verb_errors={"missing apply file": "apply"},
+        allow_short_help=True,
+    )
 
 
 def test_registry_supports_single_command_shape_without_a_verb():

@@ -313,5 +313,7 @@ workflow examples, API/configuration validation, expected exception
 classification, secret registration, result schemas, and whether a proposed
 mutation is safe. `--yes` only accepts a validated prompt; it is not a domain
 safety bypass. Test the real executable with `assert_cli_contract()` and
-separately prove that help/version paths perform no credential, API, file, or
-mutation side effects.
+use `known_verb_errors` for failures that must include the full selected-verb
+help. The helper rejects `-h` unless a documented compatibility exception is
+enabled. Separately prove that help/version paths perform no credential, API,
+file, or mutation side effects.

@@ -81,6 +81,12 @@ the interface, not a source of domain truth. `configure(parser)` remains an
 escape hatch for unusual nested parser structures rather than the default
 place for every argument.
 
+The black-box contract helper checks observable behavior, not just parser
+construction. It rejects the undocumented short `-h` spelling by default,
+and its `known_verb_errors` mapping lets a consumer assert that a known command
+failure includes the same complete help shown by `help VERB`. A usage line
+alone is not enough to make a parse error actionable.
+
 The same registry supports single-command tools during migration. When a tool
 has distinct operator actions, explicit verbs make those differences
 discoverable and testable rather than hiding them behind a positional UUID or

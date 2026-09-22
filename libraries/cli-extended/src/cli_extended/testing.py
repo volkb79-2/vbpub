@@ -16,6 +16,8 @@ def assert_cli_contract(
     verbs: Sequence[str],
     *,
     invalid_invocations: Mapping[str, Sequence[str]] | None = None,
+    known_verb_errors: Mapping[str, str] | None = None,
+    allow_short_help: bool = False,
 ) -> None:
     """Black-box check help/version discovery and parse-error conventions.
 
@@ -23,8 +25,12 @@ def assert_cli_contract(
     object with ``returncode``, ``stdout``, and ``stderr`` attributes (such as
     ``subprocess.CompletedProcess``). Side-effect freedom must additionally be
     asserted by the consumer using observable state appropriate to its CLI.
-    This helper assumes bare invocation prints help; it is not for a CLI that
-    deliberately performs a documented action without arguments.
+    ``known_verb_errors`` maps labels in ``invalid_invocations`` to the verb
+    whose complete help must accompany that error. By default ``-h`` must be
+    rejected; set ``allow_short_help`` only for a documented compatibility
+    exception, in which case ``-h`` must match ``--help``. This helper assumes
+    bare invocation prints help; it is not for a CLI that deliberately
+    performs a documented action without arguments.
     """
 
     help_cases = [([], "bare invocation"), (["--help"], "--help"), (["help"], "help")]
@@ -38,6 +44,25 @@ def assert_cli_contract(
         _assert(
             not result.stderr, f"{label} wrote diagnostics to stderr: {result.stderr!r}"
         )
+
+    short_help = invoke(["-h"])
+    if allow_short_help:
+        long_help = invoke(["--help"])
+        _assert(short_help.returncode == 0, "-h compatibility spelling failed")
+        _assert(
+            short_help.stdout == long_help.stdout,
+            "-h compatibility help differs from --help",
+        )
+        _assert(not short_help.stderr, "-h wrote diagnostics to stderr")
+    else:
+        _assert(short_help.returncode == 2, "-h must be rejected by default")
+        _assert(
+            short_help.stderr.startswith(identity.headline),
+            "rejected -h lacks an identity-headed diagnostic",
+        )
+        _assert("[ERROR]" in short_help.stderr, "rejected -h lacks an error diagnostic")
+        _assert("usage:" in short_help.stderr.lower(), "rejected -h lacks usage")
+        _assert("Traceback" not in short_help.stderr, "rejected -h printed a traceback")
 
     for argv in (["version"], ["--version"]):
         result = invoke(argv)
@@ -70,8 +95,10 @@ def assert_cli_contract(
             f"help {verb} and {verb} --help differ",
         )
 
+    invalid_results = {}
     for label, argv in (invalid_invocations or {}).items():
         result = invoke(argv)
+        invalid_results[label] = result
         _assert(
             result.returncode == 2,
             f"invalid invocation {label!r} exited {result.returncode}",
@@ -89,6 +116,27 @@ def assert_cli_contract(
             f"invalid invocation {label!r} did not include command usage/help",
         )
         _assert("Traceback" not in result.stderr, f"{label!r} printed a traceback")
+
+    for label, verb in (known_verb_errors or {}).items():
+        _assert(
+            label in invalid_results,
+            f"known-verb error {label!r} is missing from invalid_invocations",
+        )
+        _assert(
+            verb in verbs, f"known-verb error {label!r} names unknown verb {verb!r}"
+        )
+        expected = invoke(["help", verb])
+        _assert(
+            expected.returncode == 0,
+            f"help for known-verb error {label!r} could not be rendered",
+        )
+        help_body = expected.stdout
+        if help_body.startswith(identity.headline):
+            help_body = help_body[len(identity.headline) :].lstrip("\n")
+        _assert(
+            help_body in invalid_results[label].stderr,
+            f"known-verb error {label!r} did not include complete {verb!r} help",
+        )
 
 
 def _assert(condition: bool, message: str) -> None:

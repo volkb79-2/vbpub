@@ -179,8 +179,12 @@ and must not print ad-hoc progress directly to stdout.
 ## Tests required for an adoption
 
 Use `assert_cli_contract()` against the real executable/subprocess for bare
-invocation, both help/version spellings, every registered verb's paired help,
-and selected invalid invocations. Also test facts the helper cannot observe:
+invocation, both help/version spellings, rejection of `-h` (unless an existing
+compatibility promise is documented), every registered verb's paired help,
+and selected invalid invocations. For each selected known-verb failure, pass
+`known_verb_errors={label: verb}` so the helper checks that the complete
+verb-specific help accompanies the diagnostic, not just a usage synopsis.
+Also test facts the helper cannot observe:
 
 - no credentials, API calls, file changes, or mutations on help/version paths;
 - real handler dispatch and each verb's parser options/actions;

@@ -186,12 +186,16 @@ assert_cli_contract(
     identity,
     ("status", "apply"),
     invalid_invocations={"missing file": ("apply",)},
+    known_verb_errors={"missing file": "apply"},
 )
 ```
 
-That checks observable help/version/error conventions; the consumer must also
-assert that help/version cause no API calls, credential reads, or filesystem
-changes using its own fakes or state probes.
+That checks observable help/version/error conventions, rejects `-h` by
+default, and verifies that selected known-verb errors include the complete
+verb help rather than only a usage line. Set `allow_short_help=True` only for
+a documented compatibility exception. The consumer must also assert that
+help/version cause no API calls, credential reads, or filesystem changes using
+its own fakes or state probes.
 
 See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for install, migration, and
 responsibility guidance; [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) for

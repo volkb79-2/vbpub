@@ -83,8 +83,12 @@ def test_real_executable_obeys_help_version_and_parse_contract(tmp_path):
         invalid_invocations={
             "missing show task UUID": ("show",),
             "malformed task UUID": ("watch", "not-a-uuid"),
-            "short help alias is unsupported": ("-h",),
             "poll interval is watch-only": ("show", TASK_UUID, "--poll", "1"),
+        },
+        known_verb_errors={
+            "missing show task UUID": "show",
+            "malformed task UUID": "watch",
+            "poll interval is watch-only": "show",
         },
     )
 

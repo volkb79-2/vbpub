@@ -446,6 +446,8 @@ The test suite for every adopted CLI must prove at least:
 11. JSON mode keeps stdout machine-readable and diagnostics on stderr; and
 12. help/version paths work without credentials, configuration, network, or
     runtime services.
+13. `-h` is rejected unless the CLI documents a compatibility exception, and
+    known-verb parse errors include that verb's complete help.
 
 Tests should exercise the real entrypoint or module invocation, not only helper
 functions. A controlled bad input must demonstrate that each safety/error

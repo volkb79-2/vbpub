@@ -47,7 +47,6 @@ def _invoke(script: Path, argv: list[str], cwd: Path, home: Path):
             {
                 "missing power target": ("power", "on"),
                 "JSON is unavailable for login": ("login", "--json"),
-                "short help option is unsupported": ("-h",),
             },
         ),
         (
@@ -55,7 +54,6 @@ def _invoke(script: Path, argv: list[str], cwd: Path, home: Path):
             ("wizard", "configure", "install", "attach"),
             {
                 "missing option value": ("wizard", "--server-id"),
-                "short help option is unsupported": ("-h",),
             },
         ),
     ],
@@ -109,7 +107,21 @@ def test_real_executable_obeys_cli_contract_without_reading_or_changing_local_st
         version=version,
         long_name=long_name,
     )
-    assert_cli_contract(invoke, identity, verbs, invalid_invocations=invalid)
+    known_verb_errors = (
+        {
+            "missing power target": "power",
+            "JSON is unavailable for login": "login",
+        }
+        if script_name == "scp-api.py"
+        else {"missing option value": "wizard"}
+    )
+    assert_cli_contract(
+        invoke,
+        identity,
+        verbs,
+        invalid_invocations=invalid,
+        known_verb_errors=known_verb_errors,
+    )
 
     if script_name == "scp-api.py":
         for argv in (("login", "--json"), ("--json", "login")):
