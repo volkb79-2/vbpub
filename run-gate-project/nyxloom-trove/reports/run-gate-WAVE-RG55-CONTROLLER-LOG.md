@@ -3637,3 +3637,32 @@ container active, host PSI `full avg10=2.68%`, and Assay entering its
 source-backed judge. The missing installed-distribution provenance notice is
 expected for this in-repo source-backed consumer. Prior P1 history estimates
 about 5–6 hours; no progress polling is due before the 25-minute boundary.
+
+### RW-295 — 2026-09-23 13:36:04Z — P1 R2 complete; one equivalent survivor
+
+The persistent P1 R2 carrier session `45281` completed and was read from its
+authoritative verdict, not from the wrapper status. Its exact tester container
+was `run-gate-vbpub-r2-522284-1790154369`; it has exited and no RG-55 gate
+process remains. On quiet HEAD `a2c2501fea2b576a774f1a7fcedd3a5ad251f630`,
+Assay accounted for 250 candidates: 249 killed, 1 survived, 0 equivalent,
+0 budget-exceeded, 0 crashed, 0 hung; exit 1 `MUTANTS_SURVIVED`. The sole
+survivor is `lib/damon.py:325`, `Gt->GtE` on the pool release guard. The
+existing P1 report's invariant proof applies: after a live owned slot exists,
+`current == expected_end` implies `current > baseline`, so the replacement
+cannot change a reachable outcome. It is an assay-classification limitation,
+not an untriaged oracle gap. The result remains mutation evidence, not a green
+R2 verdict; any provisional integration must retain this disclosure and the
+verdict/progress artifacts.
+
+### RW-296 — 2026-09-23 13:36:04Z — operator changes long-gate integration workflow
+
+The operator authorizes provisional package integration once full line/branch
+coverage, the short rigor gates, and the required adversarial review report no
+new issue, while a long R2 mutation run continues in an isolated `ciu
+worktree`. This provisional integration is not a release or a DONE claim.
+Mutation evidence remains authoritative per exact tree; a survivor that is not
+proven equivalent, or any discovered defect, must be fixed/backported and
+invalidates the affected provisional evidence and gates. The final merge and
+release still require the fresh Sol xhigh review requested by the operator,
+the survivor disposition recorded in the package report, and a final quiet
+gate set; no mutation result may be silently waived.
