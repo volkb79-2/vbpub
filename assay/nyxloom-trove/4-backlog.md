@@ -9966,7 +9966,7 @@ large events files; no timing threshold replaces those behavioral checks.
 
 ## B096 — P7 S6: derive `--rejudge-outcome` help from the vocabulary
 
-**Status: DONE (v6.3.0, 2026-09-13) — confirmed on main (`cli.py` derives help from `MUTATION_BUCKETS`), commit 6f76e471, CHANGES.md 6.3.0. NOTE: the branch named `assay-b096` was later reused for an UNRELATED, unmerged, abandoned P25/Topos-qualification repair (commit `84baffb4` onward) — see the audit report's WIP-branch section; that branch's later work has nothing to do with this entry, which is fully shipped.**
+**Status: DONE (v6.3.0, 2026-09-16) — confirmed on main (`cli.py` derives help from `MUTATION_BUCKETS`), commit 6f76e471, CHANGES.md 6.3.0 (corrects an earlier 2026-09-13 mis-date in this file, verified against CHANGES.md's own `## [6.3.0] - 2026-09-16` header). NOTE: the branch named `assay-b096` was later reused for an UNRELATED, unmerged, abandoned P25/Topos-qualification repair (commit `84baffb4` onward) — see the audit report's WIP-branch section; that branch's later work has nothing to do with this entry, which is fully shipped.**
 
 **FIXED in this change, 2026-09-13.** CLI help now derives accepted canonical
 bucket spellings from `assay.verdict.MUTATION_BUCKETS` through a helper at
@@ -9983,7 +9983,7 @@ temporary vocabulary addition changes the help without a second edit.
 
 ## B097 — P7 B6-b: pid stamping and per-process xdist liveness parsing
 
-**Status: DONE (v6.3.0, 2026-09-13) — commit 1daf6e62, merged to main via 260c4013, CHANGES.md 6.3.0.**
+**Status: DONE (v6.3.0, 2026-09-16) — commit 1daf6e62, merged to main via 260c4013, CHANGES.md 6.3.0 (corrects an earlier 2026-09-13 mis-date, per CHANGES.md's own `## [6.3.0] - 2026-09-16` header).**
 
 **FIXED in this change, 2026-09-13.** One events file receives every xdist
 worker's and controller's session records. The materialized plugin now stamps
@@ -10011,7 +10011,7 @@ traceability and deferred verification notes.
 
 ## B098 — P7 N3: `mutation_pct` omits `crashed` in its enumeration
 
-**Status: DONE (v6.3.0, 2026-09-13) — CHANGES.md 6.3.0 "B098 documents every excluded mutation bucket".**
+**Status: DONE (v6.3.0, 2026-09-16) — CHANGES.md 6.3.0 "B098 documents every excluded mutation bucket" (corrects an earlier 2026-09-13 mis-date, per CHANGES.md's own `## [6.3.0] - 2026-09-16` header).**
 
 **FIXED in this change, 2026-09-13.** The public `mutation_pct` docstring
 now names every excluded canonical bucket — `crashed`, `budget_exceeded`,
@@ -10032,7 +10032,7 @@ then indexed as though it were a mapping. The resulting `TypeError` exited
 the lane with no structured verdict, turning corrupt resume state into an
 ambiguous tool crash.
 
-**Status: DONE (v6.3.1, 2026-09-16) — CHANGES.md 6.3.1 "reject non-object JSON mutation resume records ... (B099, RG-49 review B9)". ID-COLLISION WARNING: the unmerged branch `assay-b099-p35-repair` (and siblings `assay-next-wave`, `review/assay-p35-execution-interruption-boundary`) reassigns frontmatter id `B099` to an unrelated "execution interruption boundary" design (formerly slotted as B100) and its diff DELETES this entry's body if merged as-is. See the audit report's WIP-branch section and stub entry B103 below before touching this id.**
+**Status: DONE (v6.4.0, 2026-09-17) — CHANGES.md 6.4.0 "reject non-object JSON mutation resume records ... (B099, RG-49 review B9)" (corrects an earlier v6.3.1/2026-09-16 mis-citation: `[6.3.1] - 2026-09-16` in CHANGES.md contains only an unrelated debian-install-v2 testing entry; the B099 fix is under CHANGES.md's own `## [6.4.0] - 2026-09-17` header, alongside the RG-49 review B11 follow-up in the same section). ID-COLLISION WARNING: the unmerged branch `assay-b099-p35-repair` (and siblings `assay-next-wave`, `review/assay-p35-execution-interruption-boundary`) reassigns frontmatter id `B099` to an unrelated "execution interruption boundary" design (formerly slotted as B100) and its diff DELETES this entry's body if merged as-is. See the audit report's WIP-branch section and stub entry B103 below before touching this id.**
 
 **Status: FIXED 2026-09-16.** `_load_validated_state_record` now checks the
 decoded root before reading required fields and raises the existing

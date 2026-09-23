@@ -8,7 +8,24 @@ checkpoint/continuation handoff mid-task, per this estate's own long-running-
 agent doctrine) — the Method, frontmatter repair, WIP-branch findings, and ID
 collisions sections below are carried over verbatim from the first session's
 already-thorough investigation; the verdict table (B001-B087), UNCLEAR items,
-and prose-wrong findings were completed by the second.
+and prose-wrong findings were completed by the second. A third pass corrected
+the `assay-b096` WIP finding (see the "correct assay-b096 WIP finding" commit
+on this branch). A fourth, independent verification pass (documented below)
+found and fixed one more real defect.
+
+**Independent verification pass (fourth session, same day):** a separate
+audit pass over this same branch cross-checked the verdict table against
+`assay/CHANGES.md`'s own version headers directly and found one real,
+recurring date/version error carried through the prior sessions: **B096,
+B097 and B098 shipped in `[6.3.0] - 2026-09-16`, not 2026-09-13** (the
+2026-09-13 date is `[6.2.0]`'s release date, for the unrelated B090/B091
+work), and **B099 shipped in `[6.4.0] - 2026-09-17`, not v6.3.1/2026-09-16**
+(`[6.3.1] - 2026-09-16` contains only an unrelated debian-install-v2 testing
+entry). Corrected directly in `4-backlog.md`'s B096/B097/B098/B099 status
+lines and in this report's verdict table below; everything else in this
+report was independently re-derived by this pass for B001-B102 and matched
+the existing content closely (including the corrected `assay-b096` finding
+above), so nothing else was changed.
 
 ## Method
 
@@ -208,10 +225,10 @@ order after B061) is preserved to match the actual heading sequence.
 | B093 | OPEN | deferred 2026-09-13 | P7 S1, excluded from the B091 fold-in commit, absent from CHANGES.md entirely |
 | B094 | OPEN | deferred 2026-09-13 | P7 S3/N5, same as B093 |
 | B095 | OPEN | deferred 2026-09-13 | P7 S5, same as B093 |
-| B096 | DONE | v6.3.0 (2026-09-13) | confirmed in main `cli.py`; branch name later reused for unrelated unmerged work, see WIP findings |
-| B097 | DONE | v6.3.0 (2026-09-13) | 1daf6e62 via merge 260c4013 |
-| B098 | DONE | v6.3.0 (2026-09-13) | CHANGES.md 6.3.0 |
-| B099 | DONE | v6.3.1 (2026-09-16) | CHANGES.md 6.3.1; **ID COLLISION**, see below |
+| B096 | DONE | v6.3.0 (2026-09-16) | confirmed in main `cli.py`; branch name later reused for unrelated unmerged work, see WIP findings |
+| B097 | DONE | v6.3.0 (2026-09-16) | 1daf6e62 via merge 260c4013 |
+| B098 | DONE | v6.3.0 (2026-09-16) | CHANGES.md 6.3.0 |
+| B099 | DONE | v6.4.0 (2026-09-17) | CHANGES.md 6.4.0; **ID COLLISION**, see below |
 | B100 | OPEN | 2026-09-19 | no `assay analyze report` subcommand on main |
 | B101 | OPEN | 2026-09-23 | direction decided, not carved (already correctly labeled, from ffa1264a) |
 | B102 | OPEN | 2026-09-23 | direction decided, not carved (already correctly labeled, from ffa1264a) |
