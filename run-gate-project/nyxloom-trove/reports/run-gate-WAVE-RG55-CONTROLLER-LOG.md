@@ -3744,3 +3744,13 @@ At the first permitted 25-minute state check, P1's isolated mutation container
 PSI was over the launch threshold (`full avg10=5.08`), so no P6 gate or probe
 was launched and no running job was disturbed. P6 remains queued for the next
 quiet, PSI-admitted slot.
+
+### RW-303 — 2026-09-23 14:33:20Z — retain the quiet-slot decision after takeover review
+
+The controller's next state check found P1's asynchronous R2 still active in
+`rg55-p1-r2-ciu` (`run-gate-vbpub-r2-765950-1790171671`, runner PID 765950)
+and an unrelated Assay B101 gate container still running. The memory PSI
+launch signal had fallen below the threshold (`full avg10=0.89`), but the
+estate's current one-gate-container rule still leaves no admitted slot for a
+P6 short gate. No running job was stopped, and P6 remains queued at its quiet
+reviewed tip `8e52ea08`.
