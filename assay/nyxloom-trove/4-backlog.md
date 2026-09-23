@@ -2,24 +2,110 @@
 kind: backlog
 schema_version: 1
 items:
-  - {id: B092, title: "Native-R2 judge identity may explicitly exclude report-only POSIX path globs from the frozen tree-content digest", type: feature, component: mutation, context_estimate: medium}
-  - {id: B093, title: "P7 S1: guard liveness writes in the judged tree and define side-file cleanup", type: bug, component: liveness, context_estimate: small}
-  - {id: B094, title: "P7 S3 / N5: distinguish unknown --rejudge ids from unreadable state artifacts", type: bug, component: mutation, context_estimate: small}
-  - {id: B095, title: "P7 S5: bound monitor CPU history and reduce hot-loop file/proc cost", type: bug, component: liveness, context_estimate: small}
-  - {id: B096, title: "P7 S6: derive --rejudge-outcome help from MUTATION_BUCKETS", type: bug, component: cli, context_estimate: small}
-  - {id: B097, title: "P7 B6-b: stamp process identity and parse xdist liveness events per process", type: bug, component: liveness, context_estimate: medium}
-  - {id: B098, title: "P7 N3: include crashed in mutation_pct excluded-bucket enumeration", type: bug, component: mutation, context_estimate: small}
-  - {id: B100, title: "bounded operator report for live gate progress, verdicts, errors, and retained evidence", type: feature, component: evidence, context_estimate: medium}
-  - {id: B089, title: "istanbul branch-arc self-contradiction on some .tsx files: a coverage record's arc list names a branch on a line the same record does not classify as executed or missing. Observed live (dstdns ui_unit lane, 2026-09-12) on ChartCard.tsx:34, DataTable.tsx:33-35, StatCard.tsx:17, StatTile.tsx:28 -- assay's own self-consistency check catches it and drops the offending arcs rather than misreport (non-blocking, lane still PASSes), but the root cause in the istanbul producer (B038/B045's parser) that emits an inconsistent record for these specific files is unexamined.", type: bug, component: parsers, context_estimate: small}
   - {id: B001, title: "SQL/DDL source-mutation adapter. IMPLEMENTED and RELEASED (wave 3, assay-v2.1.0): judge.language = \"sql\" at R2 only, seven sql:* operators on a stdlib-only two-level DDL lexer, equivalence_artifact REQUIRED, qualified against real PostgreSQL 18.4 at a pinned dstdns revision. No verdict-schema change.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
   - {id: B002, title: "Adopt cmru for assay's release process. COMPLETE: implemented 2026-08-11 (A-249/A-250), and the last open step -- the first real release -- is discharged by two cmru-cut releases, assay-v2.0.0 and assay-v2.1.0. cmru now owns snapshot/gate/tag/build/publish and generates the dated CHANGES.md entry. Five findings from the 2.1.0 run are filed as cmru KI-12..KI-16.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
   - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. COMPLETE: publication waited on B002's release step, which landed; both assay-v2.0.0 and assay-v2.1.0 publish assay-<version>.pyz with a .sha256 sidecar, and dstdns consumes the zipapp. Measured bonus: the .pyz is byte-reproducible across independent builds at different commits, while the wheel is not.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
-  - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. CARVED, REVIEWED and DEFERRED (wave 2, A-275/A-276). CIU-20 has SHIPPED and is no longer the blocker; the blockers are now (1) one new ReasonCode, PROVENANCE_UNVERIFIED, reserved by name and awaiting a schema bump another item pays for, and (2) ciu CIU-39 (was CIU-28, renumbered 2026-08-19) -- provenance compares vendor images ciu never built, so verified-match is unreachable on any live host. The recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
+  - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. CARVED, REVIEWED and DEFERRED (wave 2, A-275/A-276). CIU-20 has SHIPPED and is no longer the blocker; the blockers are now (1) one new ReasonCode, PROVENANCE_UNVERIFIED, reserved by name and awaiting a schema bump another item pays for, and (2) ciu CIU-39 (was CIU-28, renumbered 2026-08-19) -- provenance compares vendor images ciu never built, so verified-match is unreachable on any live host. The recorded half already ships via A-254. [audit 2026-09-23: DONE v5.0.0]", type: feature, component: evidence, context_estimate: medium}
   - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict. IMPLEMENTED (wave 1, judge.mode = \"whole_target\"): shipped, gated, documented, and proven end to end through the real CLI — a target absent from the artifact refuses NO_MEASUREMENT/TARGET_NOT_MEASURED rather than reporting 100% of zero.", type: feature, component: evaluate, context_estimate: medium}
-  - {id: B006, title: "B006(a): explicit, commit-validated omission of unsafe symlink leaves for monorepo R1/R2/R3 lanes — never an unsafe-symlink ignore, and NOT the withdrawn project-boundary design A-269 replaces; B006(b): assay-owned artifact parents created inside the private snapshot. IMPLEMENTED (wave 1): both shipped, gated, documented, and qualified end to end — CMRU makes genuine R0/R1/R2/R3 claims while Topos's tracked /etc/passwd fixtures stay in place.", type: bug, component: isolation, context_estimate: large}
-  - {id: B007, title: "Ordered, bounded, explicitly declared multi-target R3 canary — try several declared source files so a gate is not cleared merely because one arbitrarily chosen module is never imported. Proposed by nyxloom 2026-08-17 while adopting assay. ASSESSED AND DEFERRED out of wave 1: the first post-v6 schema item (v7), with five design findings recorded for its carver. No automatic discovery or ranking.", type: feature, component: canary, context_estimate: large}
+  - {id: B006, title: "B006(a): explicit, commit-validated omission of unsafe symlink leaves for monorepo R1/R2/R3 lanes — never an unsafe-symlink ignore, and NOT the withdrawn project-boundary design A-269 replaces; B006(b): assay-owned artifact parents created inside the private snapshot. IMPLEMENTED (wave 1): both shipped, gated, documented, and qualified end to end — CMRU makes genuine R0/R1/R2/R3 claims while Topos's tracked /etc/passwd fixtures stay in place.", type: bugfix, component: isolation, context_estimate: large}
+  - {id: B007, title: "Ordered, bounded, explicitly declared multi-target R3 canary — try several declared source files so a gate is not cleared merely because one arbitrarily chosen module is never imported. Proposed by nyxloom 2026-08-17 while adopting assay. ASSESSED AND DEFERRED out of wave 1: the first post-v6 schema item (v7), with five design findings recorded for its carver. No automatic discovery or ranking. [audit 2026-09-23: DONE v5.0.0]", type: feature, component: canary, context_estimate: large}
+  - {id: B008, title: "R1 base resolution on a merge-commit HEAD silently narrows the changed-line floor", type: bugfix, component: evaluate}
+  - {id: B009, title: "document assay.toml's estate role + the image-baked distribution model (operator decision 2026-08-20)", type: feature, component: distribution}
   - {id: B010, title: "assay run executes the lane argv in the invoking environment with no way to declare WHERE the lane is valid -- in the dstdns devcontainer cockpit `assay run auth` cannot execute at all (the suite imports fastapi.routing.iter_route_contexts, absent from the cockpit's FastAPI 0.135.1 and present only in the app image's pin), so the lane had to be evidenced by re-running its argv manually in the gate container plus a hand-check of the judge criteria against the artifact. Ask: either document the doctrinal answer (assay runs only in the gate environment; run-gate.py/B009 owns getting it there) or add a lane-level environment preflight that refuses with a clear message instead of surfacing the suite's raw ImportError.", type: feature, component: execution, context_estimate: small}
+  - {id: B011, title: "CONSUMERS.md's cross-tool wiring example teaches the superseded pre-run-gate integration", type: feature, component: gate}
+  - {id: B012, title: "mutation execution observability, planning, resume/sharding, and per-candidate budgets", type: feature, component: mutation}
+  - {id: B013, title: "repository-only snapshots cannot provide infrastructure facts required by SQL mutation lanes", type: bugfix, component: isolation}
+  - {id: B014, title: "persist bounded subprocess stdout/stderr in verdicts on COMMAND_FAILED", type: feature, component: evidence}
   - {id: B015, title: "UUID/equality/enum-aware Python mutation operators. NOT in assay-v2.2.0; the shipped Python catalogue remains compare-swap, boolop-swap, bool-const-flip and falsy-swap, so P126's deferred R2 debt remains deferred.", type: feature, component: adapters, context_estimate: medium}
+  - {id: B016, title: "repository snapshot omits committed source files when `__pycache__` exists in the tree", type: bugfix, component: isolation}
+  - {id: B017, title: "Assay dirty-tree check ignores committed .gitignore for coverage artifacts", type: bugfix, component: isolation}
+  - {id: B018, title: "CIU V8 preparation: judge provenance in every verdict", type: feature, component: evidence}
+  - {id: B019, title: "CIU V8 preparation: gate-request-supplied comparison base", type: feature, component: gate}
+  - {id: B020, title: "CIU V8 preparation: SQL mutation template/reset hooks (design first)", type: feature, component: mutation}
+  - {id: B021, title: "mutation resume: stale-record disposition is inverted", type: bugfix, component: mutation}
+  - {id: B022, title: "B013 infrastructure injection: hardening items found by adversarial review, none blocking", type: feature}
+  - {id: B023, title: "mutation shard merging has no producer or consumer", type: feature, component: mutation}
+  - {id: B024, title: "wire pyflakes/ruff into the registered gate; sweep pre-existing findings first", type: feature, component: gate}
+  - {id: B025, title: "a refusal whose OWN cause is an unresolvable infrastructure declaration writes no verdict artifact", type: bugfix, component: evidence}
+  - {id: B026, title: "a bad `--shard` refusal names no cause; `judge.mutation.shard_index`/`shard_count` are dead config", type: bugfix, component: mutation}
+  - {id: B027, title: "a mutant-induced pytest timeout crashes `execute_plan` instead of reaching `BUDGET_EXCEEDED`/`LANE_TIMEOUT`", type: bugfix, component: mutation}
+  - {id: B028, title: "a lane-wide `LANE_TIMEOUT` also writes no verdict artifact", type: bugfix, component: evidence}
+  - {id: B029, title: "R3's canary side-run has no infrastructure wiring at all; a resolvable-elsewhere fact reports a misattributed R3 claim", type: bugfix, component: evidence}
+  - {id: B030, title: "`assay plan` reports zero candidates for every lane; its own test asserts the bug", type: bugfix, component: mutation}
+  - {id: B031, title: "the R2 progress artifact is written into the consumer's live worktree and poisons assay's own clean-tree precondition; the field is dead and unregistered in `verify.py`", type: feature, component: isolation}
+  - {id: B032, title: "the preflight probe added by B010/B012 discards its own outcome, misreports budget overruns, and B010's \"clear message\" refusal ships 0 bytes of stderr", type: bugfix, component: evidence}
+  - {id: B033, title: "SQL whole-target R2 silently drops declared targets that R1 refuses, records a `base` for a comparison that never ran, and a `judge.mode` toggle silently enables/disables the SQL vacuity guard", type: bugfix, component: adapters}
+  - {id: B034, title: "B015's two \"semantic\" Python mutation operators add zero mutation coverage beyond `compare-swap`, mislabel ordinary attribute comparisons as enum comparisons, and double-count every co-selected site", type: feature, component: mutation}
+  - {id: B035, title: "an `R0,R2` whole-target verdict cannot witness its own judging scope, so the `base` rule is unenforceable there", type: bugfix, component: evidence}
+  - {id: B036, title: "a JavaScript/TypeScript `LanguageAdapter` for changed-line coverage (R1), first consumer dstdns's React UI", type: feature, component: adapters}
+  - {id: B037, title: "JavaScript/TypeScript mutation rigor (R2): design first, do not implement against this entry directly", type: feature, component: mutation}
+  - {id: B038, title: "`coverage-istanbul-json`: real branch arcs, and the type-only-module gap, once a producer can be declared", type: bugfix, component: parsers}
+  - {id: B039, title: "`go_cover.parse` expands a block's line range with no fixed bound", type: bugfix, component: parsers}
+  - {id: B040, title: "`@vitest/coverage-v8` reports never-executed lines as executed, and assay cannot detect it", type: bugfix, component: evidence}
+  - {id: B041, title: "a JavaScript lane's dependency closure (`node_modules`) is absent from the committed-object snapshot: the offline-install pattern, `isolation.link_paths`, and a real-`vitest` qualification", type: feature, component: isolation}
+  - {id: B042, title: "JavaScript consumer documentation: the worked lane is not a monorepo lane, \"Jest is unaffected\" is an overclaim, and support files are not test paths", type: feature, component: adapters}
+  - {id: B043, title: "a lane-level `cwd`: the command's working directory as a declared, recorded fact", type: feature, component: execution}
+  - {id: B044, title: "`assay lanes --json`: a machine-readable lane inventory for gate tools", type: feature, component: gate}
+  - {id: B045, title: "declare the coverage PRODUCER: `judge.coverage.producer`, recorded in the verdict (schema v9); closes B038(a)(b) and B040(b)", type: feature, component: evidence}
+  - {id: B046, title: "R2 by evidence ingestion: `judge.mutation.format = \"mutation-report-json\"`, the lane's own argv runs the mutation tool inside the snapshot (resolves B037; schema v9)", type: feature, component: isolation}
+  - {id: B047, title: "Go wave preparation: helper distribution and identity, `helpers[]` in the gate envelope, the shared line-expansion bound (B039), the `covdata` producer", type: feature, component: adapters}
+  - {id: B048, title: "browser (Playwright) coverage of a React UI as an R1 lane: `vite-plugin-istanbul` inside the lane, and where the S3 binding stops", type: feature, component: parsers}
+  - {id: B049, title: "a coverage/mutation tool that deletes-and-recreates its own output directory silently orphans assay's held reservation, reading `EMPTY_COVERAGE` over a genuinely complete artifact", type: bugfix, component: mutation}
+  - {id: B050, title: "an ingested R2 lane cannot declare a mutation-score floor below 100: `judgment.r2` has no field recording WHICH floor was applied", type: bugfix, component: mutation}
+  - {id: B051, title: "`judgment.r2.discarded` is accepted on the producer's word alone: never derived, never cross-checked, and a materially false value rides the wire uncontradicted", type: bugfix}
+  - {id: B052, title: "an ingested report's embedded `source` is never compared against the snapshot's own committed bytes: assay derives every mutant position from text it takes entirely on the tool's word", type: feature, component: isolation}
+  - {id: B053, title: "an `ERROR`-outcome verdict's detailed message is constructed but never surfaced anywhere a consumer can read it -- not stdout, not stderr, not the verdict JSON", type: feature, component: evidence}
+  - {id: B054, title: "a NEVER-EXECUTED file matching `coverage.include` can make `@vitest/coverage-istanbul` emit a self-contradictory `branchMap`, and `UNREADABLE_ARTIFACT` refuses the WHOLE verdict rather than isolating the one file -- defeating `changed_lines` mode's cost-scoping promise", type: bugfix, component: evidence}
+  - {id: B055, title: "an uncovered Go statement sharing a physical LINE with a covered one is still laundered into `executed`; the statement-position oracle does not fix it, and cannot at line granularity", type: bugfix, component: adapters}
+  - {id: B056, title: "`test_verdict_schema_is_packaged.py`'s docstring states a measurement that no longer holds: the `package-data` stanza it defends is inert, so its named negative is currently unreachable", type: bugfix, component: evidence}
+  - {id: B057, title: "the Go canary and union tests now prove their subject against a DOWNGRADED adapter: `requires_statement_attribution=False`, because a real Go lane needs a toolchain the gate image does not have", type: bugfix, component: adapters}
+  - {id: B058, title: "srdm's `covergate` classifies a cover block's whole extent as executable, so its own coverage floor measures more lines than Go has statements", type: feature, component: adapters}
+  - {id: B059, title: "`go` is registered at R1, but no Go lane reachable through the shipped CLI can resolve its own coverage keys", type: feature, component: cli}
+  - {id: B060, title: "`build_release.py` leaves a `zipapp-staging/` directory beside `--outdir` and never removes it, which can turn the project's own gate red", type: bugfix, component: distribution}
+  - {id: B061, title: "the statement-position join kept only the LAST record for a repeated block, so `-coverpkg=./...` profiles reported covered code as uncovered", type: bugfix, component: evidence}
+  - {id: B062, title: "`tests/` carries 31 pyflakes findings, so the gate's new lint phase judges `src/assay` only", type: feature, component: gate}
+  - {id: B063, title: "three test modules `git -C PROJECT_ROOT.parent`, so the suite cannot run from a copy of the tree", type: bugfix}
+  - {id: B064, title: "progress and resume beyond R2: what R0/R1 could observably report, and why R3's canary is the one tier where both are actually feasible", type: feature, component: evidence}
+  - {id: B065, title: "progress events carry no time and no outcome, so a caller cannot compute rate, ETA or stall from the file alone", type: bugfix}
+  - {id: B066, title: "the state location is derived from `project_root`; there is no way to keep resume state outside an ephemeral worktree", type: bugfix, component: isolation}
+  - {id: B067, title: "`budget` is the only liveness bound a lane has; \"unbounded by convention\" needs per-unit bounds first", type: bugfix, component: liveness}
+  - {id: B068, title: "`assay run` (R0/R1 mock/coverage target) hard-fails `GIT_FAILED` in a Mode-B linked worktree, unconditionally of `clean_tree`", type: bugfix, component: isolation}
+  - {id: B069, title: "the gate-only harnesses' contract pins are invisible to the local suite, so a stale pin costs a 25-minute red gate", type: bugfix, component: gate}
+  - {id: B070, title: "`judgment.r2.discarded` has no counterpart on the wire to be a difference OF, so it can only ever be declared: list the discarded mutants, or carry an ingested-only in-scope count", type: feature, component: mutation}
+  - {id: B071, title: "a native R2 mutation candidate's `stdout_tail`/`stderr_tail` is computed and then discarded; `crashed`/`killed` verdicts carry no diagnostic evidence of why", type: bugfix, component: mutation}
+  - {id: B072, title: "`attestation.py`'s `parse_attestation` has the IDENTICAL uncaught-`RecursionError` gap `adjudication.py` had before `f0126b35` fixed it", type: bugfix, component: evidence}
+  - {id: B073, title: "a per-language \"live test progress\" adapter, reading the runner's own output stream as it happens", type: feature, component: adapters}
+  - {id: B074, title: "a lane cannot put DEPLOYED LIBRARY CODE under a whole-target judge when it lives under a `tests/` segment; `is_test_path` has no per-target opt-out", type: bugfix, component: evaluate}
+  - {id: B075, title: "`verify.py`'s `verify_text` is the THIRD instance of the uncaught-`RecursionError` gap, and it is on `assay verify`'s own untrusted-input path", type: bugfix}
+  - {id: B076, title: "an unbounded R2 lane's own BASELINE run is the one command B067 leaves with no bound at all", type: bugfix}
+  - {id: B077, title: "a `--state-dir`/`--progress` destination reached through a symlink INSIDE the judged tree fails closed with a raw, opaque `GIT_FAILED` passthrough", type: bugfix, component: isolation}
+  - {id: B078, title: "R0 trusts only the wrapped target's exit code, which a test framework's own internal machinery can flip independent of test correctness (run-gate RG-45)", type: feature, component: gate}
+  - {id: B079, title: "`judgment.r2.discarded` folds `CompileError` and `RuntimeError` into one undifferentiated list, while the sentence that justifies the field says \"could not COMPILE\"", type: feature}
+  - {id: B080, title: "an istanbul `default-arg` branch sits on the function-SIGNATURE line, which the `javascript` adapter's own documented guarantee leaves unattributed -- so `FileCoverage`'s \"no branch line outside `executed | missing`\" invariant refuses a fully-executed file whose arc count is genuinely non-zero", type: bugfix, component: adapters}
+  - {id: B081, title: "a \"dubious ownership\" `GIT_FAILED` passes through git's own remedy, which `_REPLACEMENT_ENV` has made unreachable by construction: the message sends the consumer to a fix assay guarantees cannot work", type: bugfix}
+  - {id: B082, title: "a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so", type: bugfix, component: adapters}
+  - {id: B083, title: "assay refuses a shallow clone, correctly, but the Go section's gotcha list does not mention it and a `--depth N` clone is the normal case for a patch stack or a CI build", type: bugfix, component: isolation}
+  - {id: B084, title: "Go-section drift: `golang:1.25` reads as a requirement when it is one measured example, and the \"how consumers actually get the judge\" table is stale against the real pins", type: bugfix}
+  - {id: B085, title: "a THIRD declared-target test-path veto (`judge.canary.target`, R3) is untouched by B074's opt-out and its refusal names neither a flag nor a remedy", type: bugfix, component: canary}
+  - {id: B086, title: "Go mutation testing (R2): `generate_mutation_sites` is unconditionally `UNSUPPORTED`; a real Go mutant generator is buildable, not blocked, and other Go-ecosystem tools already prove the shape", type: feature, component: mutation}
+  - {id: B087, title: "JavaScript/TypeScript canary (R3): the injection methods are real, implemented code; no producer path reaches them through the CLI registry", type: feature, component: cli}
+  - {id: B088, title: "`--resume`'s candidate identity folds in the mutant's source bytes but not the judging test suite's, so a test-only fix silently replays a stale verdict instead of re-executing", type: bugfix, component: mutation}
+  - {id: B089, title: "istanbul branch-arc self-contradiction on some .tsx files: a coverage record's arc list names a branch on a line the same record does not classify as executed or missing. Observed live (dstdns ui_unit lane, 2026-09-12) on ChartCard.tsx:34, DataTable.tsx:33-35, StatCard.tsx:17, StatTile.tsx:28 -- assay's own self-consistency check catches it and drops the offending arcs rather than misreport (non-blocking, lane still PASSes), but the root cause in the istanbul producer (B038/B045's parser) that emits an inconsistent record for these specific files is unexamined.", type: bugfix, component: parsers, context_estimate: small}
+  - {id: B090, title: "`judge.mutation.budget_per_candidate` has no default, so one hung mutant blocks a whole R2 run indefinitely, and nothing warns when the key is unset", type: feature, component: mutation}
+  - {id: B091, title: "judge candidates by progress, not by time: auto per-candidate bound, per-test cadence hints, `os._exit` runner, `hung` outcome, `--rejudge`", type: feature, component: mutation}
+  - {id: B092, title: "Native-R2 judge identity may explicitly exclude report-only POSIX path globs from the frozen tree-content digest", type: feature, component: mutation, context_estimate: medium}
+  - {id: B093, title: "P7 S1: guard liveness writes in the judged tree and define side-file cleanup", type: bugfix, component: liveness, context_estimate: small}
+  - {id: B094, title: "P7 S3 / N5: distinguish unknown --rejudge ids from unreadable state artifacts", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B095, title: "P7 S5: bound monitor CPU history and reduce hot-loop file/proc cost", type: bugfix, component: liveness, context_estimate: small}
+  - {id: B096, title: "P7 S6: derive --rejudge-outcome help from MUTATION_BUCKETS", type: bugfix, component: cli, context_estimate: small}
+  - {id: B097, title: "P7 B6-b: stamp process identity and parse xdist liveness events per process", type: bugfix, component: liveness, context_estimate: medium}
+  - {id: B098, title: "P7 N3: include crashed in mutation_pct excluded-bucket enumeration", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B099, title: "a JSON `null` mutation resume record crashes the native R2 lane before it can write a verdict", type: bugfix, component: mutation}
+  - {id: B100, title: "bounded operator report for live gate progress, verdicts, errors, and retained evidence", type: feature, component: evidence, context_estimate: medium}
+  - {id: B101, title: "Snapshot seed carries and budgets the full history closure; default to judged-commit(+base) shallow seed, full history per-lane opt-in, limits count seed contents, [isolation.limits] configurable", type: bugfix, component: isolation, context_estimate: medium}
+  - {id: B102, title: "Repo-wide DIRTY_TREE refusal for snapshot lanes; declared dirty_ignore globs plus --allow-dirty override marked in the verdict", type: feature, component: isolation, context_estimate: medium}
+  - {id: B103, title: "Execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL (stub -- design carved on unmerged branch assay-b099-p35-repair, ID collision with main B099/A-448 only -- A-449/A-450 exist only on the branch, not yet on main, see report)", type: feature, component: execution, context_estimate: large}
+  - {id: B104, title: "test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness FAILS on unmodified main: the normalized verdict differs from the frozen v6 witness, and the verdict schema has moved on to v11 since (B070) -- cause unexamined (witness staleness vs. dstdns pin drift vs. a real regression); also names the hazard that a Docker-reaching test runs by default in the local suite when a socket is present", type: bugfix, component: gate}
 ---
 
 # assay — backlog
@@ -27,9 +113,50 @@ items:
 Items proposed but not carved. One line each in the frontmatter; rationale
 below, so a proposal cannot be adopted without the argument that produced it.
 
+## Open items at a glance (audited 2026-09-23)
+
+Non-DONE items only; every entry below (id, one-line title, verdict) has a
+full evidenced `**Status:**` line under its own `## Bnnn` heading. See
+`nyxloom-trove/reports/assay-BACKLOG-AUDIT-2026-09-23.md` for the full
+per-entry evidence table, WIP-branch findings, and ID collisions.
+
+- B010 — `assay run` unusable when the gate environment differs from the invoking one — PARTIAL
+- B015 — UUID/equality/enum-aware Python mutation operators — WITHDRAWN
+- B017 — dirty-tree check vs committed `.gitignore` for coverage artifacts — WITHDRAWN (fixed per-consumer, not in assay)
+- B020 — CIU V8 prep: SQL mutation template/reset hooks — OPEN (design first)
+- B023 — mutation shard merging has no producer or consumer — OPEN
+- B025 — a refusal writes no verdict artifact for its own unresolvable cause — PARTIAL
+- B026 — a bad `--shard` refusal names no cause; dead shard config — PARTIAL
+- B040 — `@vitest/coverage-v8` reports never-executed lines as executed — PARTIAL (upstream bug never filed)
+- B058 — srdm `covergate` over-counts executable lines — OPEN
+- B064 — progress/resume beyond R2 — PARTIAL (R3 half unbuilt)
+- B073 — per-language live test-progress adapter — OPEN (not started)
+- B076 — unbounded R2 lane's baseline run has no bound — OPEN (deliberately deferred)
+- B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3 open)
+- B079 — `judgment.r2.discarded` folds CompileError/RuntimeError together — OPEN (v12 candidate)
+- B080 — istanbul default-arg branch on the signature line — OPEN (six live sightings through 2026-09-22)
+- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN
+- B082 — a lane's own `assay.toml` cannot be untracked for a disposable Go module root — OPEN (docs)
+- B083 — shallow-clone refusal undocumented for Go — OPEN (docs)
+- B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — OPEN (docs)
+- B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN
+- B086 — Go mutation testing (R2) generator unconditionally UNSUPPORTED — OPEN (design first)
+- B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN
+- B089 — istanbul branch-arc self-contradiction on some `.tsx` files — WITHDRAWN (duplicate of B080)
+- B093 — P7 S1: liveness write guard / side-file cleanup — OPEN (deferred RW-57)
+- B094 — P7 S3/N5: unknown `--rejudge` reason mapping — OPEN (deferred RW-57)
+- B095 — P7 S5: monitor hot-loop cost / unbounded CPU history — OPEN (deferred RW-57)
+- B100 — bounded operator report for live gate progress/verdicts — OPEN (design only, no `assay analyze report` on main)
+- B101 — snapshot `max_total_object_bytes` measures full history closure, not the tree — OPEN (direction decided 2026-09-23, not carved)
+- B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — OPEN (direction decided 2026-09-23, not carved)
+- B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN
+- B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main — OPEN (filed 2026-09-23)
+
 ---
 
 ## B001 — a SQL/DDL adapter, and why PostgreSQL projects are the cheapest place to prove R2/R3
+
+**Status: DONE (v2.1.0, 2026-08-18) — merge ccf9ca55 "wave 3 -- P34/B001 source-oriented SQL/DDL adapter", on main.**
 
 **Proposed by:** dstdns, 2026-08-10, out of the CW2a corpus-schema wave.
 **Status:** **CARVED and REVIEWED, wave 3, 2026-08-18 — implementation in
@@ -235,6 +362,8 @@ C14).
 
 ## B002 — adopt cmru for assay's release process (design checkpoint, NOT landed)
 
+**Status: DONE (v2.0.0/v2.1.0) — A-249/A-250; two real cmru-cut releases (assay-v2.0.0, assay-v2.1.0).**
+
 **Proposed by:** the operator, standing intent, scoped here 2026-08-11 by C-sol-1.
 **Status:** **COMPLETE.** Implemented 2026-08-11 (A-249/A-250); the one open
 step — the first real release — is discharged, twice: `assay-v2.0.0`
@@ -346,6 +475,8 @@ the case the carve rules say to hand back rather than land.
 ---
 
 ## B003 — a zipapp (.pyz) beside the wheel, as a second release artifact
+
+**Status: DONE (v2.0.0/v2.1.0) — .pyz + .sha256 published on both releases per A-249; CHANGES.md confirms.**
 
 **Proposed by:** Fable, round-3 review, 2026-08-11, as the near-zero-cost
 answer for consumers with no installed Python package manager (A-O04's srdm
@@ -487,6 +618,8 @@ is cmru's work and should not gate assay.
 
 ## B004 — provenance as VERIFIED evidence, not merely recorded
 
+**Status: DONE (v5.0.0, 2026-09-03) — A-442, commit d9fc22eb, merged via d761838d (Wave D), on main. NOTE: this entry's own body text below is stale (still reads "CARVED, REVIEWED and DEFERRED, wave 2... blocked twice"); the correction is v5.0.0 / `d9fc22eb` (the `PROVENANCE_UNVERIFIED` ReasonCode this section's own blocker list names) as stated directly in this line — B007 is a different, unrelated backlog entry (the R3 multi-target canary) and does not carry this correction; an earlier version of this note pointed there in error.**
+
 **Proposed by:** dstdns's reconciliation program, 2026-08-11, out of its
 real-lane isolation work on ciu's S16 worktree verb ("embed provenance in the
 verdict so invariant #18 holds by construction").
@@ -582,6 +715,8 @@ it — but it is cheap and in-estate, so it is the obvious item after.
 ---
 
 ## B005 — a whole-module / per-callable coverage judge (R1 without a diff) — IMPLEMENTED
+
+**Status: DONE (v2.0.0, 2026-08-17) — merge e7e2c616 "wave 1 -- B005 whole-target judge...", on main; A-260.**
 
 **Proposed by:** dstdns's DESIGN-AUTHORITY reconciliation program, 2026-08-16, on
 the first package that adopted an R1 coverage lane (`redirect_chain`, a
@@ -687,6 +822,8 @@ commit.
 ---
 
 ## B006 — unsafe-symlink-omission snapshots and in-snapshot artifact parents for monorepo R1/R2/R3 lanes — IMPLEMENTED
+
+**Status: DONE (v2.0.0, 2026-08-17) — merge e7e2c616 (same wave as B005), on main; A-269.**
 
 **Proposed by:** dstdns's reconciliation program, 2026-08-16; expanded by CMRU's
 first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** **(a) and (b)
@@ -867,6 +1004,8 @@ whole-source coverage gate, while its attempted R1+ run fails on the Topos
 
 ## B007 — ordered, bounded, explicitly declared multi-target R3 canary
 
+**Status: DONE (v5.0.0, 2026-09-03) — A-440, commit d30b313b, merged via d761838d, on main.**
+
 **Proposed by:** nyxloom, 2026-08-17, while retiring its own coverage, mutation,
 canary, verdict and gate-judgment implementations in favour of assay through the
 public CLI/verdict boundary. **Status: RESOLVED in Wave D (verdict schema v10)
@@ -1046,6 +1185,8 @@ be asked to carry a passenger.
 
 ## B008 — R1 base resolution on a merge-commit HEAD silently narrows the changed-line floor
 
+**Status: DONE (v2.4.0, 2026-08-25) — commit e2169d46, on main; A-301.**
+
 **Filed 2026-08-20 (dstdns Fable controller, from ciu's first two production gate runs
 of the vendored assay-2.1.0.pyz).** Reproduced, not speculated.
 
@@ -1126,6 +1267,8 @@ no consumer-facing doc, only the schema).
 
 ## B009 — document assay.toml's estate role + the image-baked distribution model (operator decision 2026-08-20)
 
+**Status: DONE (v5.0.0 Wave D phase 1, 2026-09-02) — docs-only, DA-D16, folded into d761838d.**
+
 Operator interview (dstdns Fable controller session, dstdns ledger D-110), after
 ciu-P07 vendored the pyz per the cmru precedent:
 
@@ -1186,6 +1329,8 @@ those tools' own work; this entry no longer blocks on them, and the docs now
 say what is true rather than what was intended.
 
 ## B010 — `assay run` is unusable when the gate environment is not the invoking environment
+
+**Status: PARTIAL (2026-08-25) — environment_command fail-fast probe shipped; image-baking/orchestration half (B009/run-gate) still unaddressed.**
 
 **Filed 2026-08-20 (dstdns P111 auth-config-cutover implementer, Mode-B wave).**
 **Status:** **PARTIALLY IMPLEMENTED 2026-08-24.** A lane may declare an optional top-level
@@ -1270,6 +1415,8 @@ fail-fast probe plus its diagnosis.
 
 ## B011 — CONSUMERS.md's cross-tool wiring example teaches the superseded pre-run-gate integration
 
+**Status: DONE (v2.2.0, 2026-08-24) — the actual wiring-example rewrite (the old CMRU-step example replaced with the adopted `[lanes.assay]` `run-gate.toml` shape) is `8a2a4731`; `f64307a9`, ~24 minutes later the same day, is the companion "document and disposition B010/B011/B012" commit. Both on main, both v2.2.0.**
+
 **Filed 2026-08-22 (vbpub controller session, adversarial review of the
 run-gate estate-wide adoption wave `vbpub@4c6eb2b6..91959b3a`; consumer-UX
 reviewer, finding "stale against the adopted mechanism").**
@@ -1325,6 +1472,8 @@ worked example that should become the canonical stitched version of both
 halves).
 
 ## B012 — mutation execution observability, planning, resume/sharding, and per-candidate budgets
+
+**Status: DONE (v2.2.0 initial + v2.4.0 remediation, 2026-08-24/25) — commits 8a2a4731, e2169d46, on main; A-296.**
 
 **Filed 2026-08-23 (dstdns repair program; consumer evidence from P127 admission mutation lanes and the SQL mutation blocker).**
 **Status:** **IMPLEMENTED 2026-08-25, REMEDIATED 2026-08-25.** Shipped: baseline/per-candidate progress NDJSON,
@@ -1401,6 +1550,8 @@ Split lanes by operator group, retain separate verdicts, and require a combined 
 
 ## B013 — repository-only snapshots cannot provide infrastructure facts required by SQL mutation lanes
 
+**Status: DONE (v2.4.0, 2026-08-25) — commits 11b20645/7941fdcb, on main; A-297.**
+
 **Filed 2026-08-23 (dstdns SQL mutation blocker; consumer evidence from `dstdns-SQL-MUTATION-LANE-BLOCKER.md`).**
 **Status:** **IMPLEMENTED 2026-08-25, REMEDIATED 2026-08-25.** Lanes may declare
 `[lanes.<name>.infrastructure]`; sources are `required-env:NAME` and
@@ -1466,6 +1617,8 @@ Disposable server lease/fact files, owner-checked cleanup on exit/interrupt, per
 
 ## B014 — persist bounded subprocess stdout/stderr in verdicts on COMMAND_FAILED
 
+**Status: DONE (v2.3.0, 2026-08-24) — commit 37462618, on main.**
+
 **Filed 2026-08-23 (dstdns repair program; consumer evidence from CIU v7 proposal §10.1 and P121/P127 debugging sessions).**
 **Status:** **IMPLEMENTED 2026-08-24.** `CommandResult` captures bounded
 stdout/stderr tails and dropped-byte counts; failed and timed-out verdicts carry
@@ -1504,6 +1657,8 @@ When a lane command exits non-zero, the verdict records `FAIL/COMMAND_FAILED` wi
 - [x] existing consumers reading verdicts tolerate the new optional keys.
 
 ## B015 — UUID/equality/enum-aware Python mutation operators
+
+**Status: WITHDRAWN (2026-08-26) — A-326; both operator families proved a byte-identical subset of compare-swap, zero new kills attributable.**
 
 **Filed 2026-08-24 from the post-`assay-v2.2.0` release review.**
 **Status:** **WITHDRAWN 2026-08-26 (A-326).** Previously marked
@@ -1622,6 +1777,8 @@ discipline.
 
 ## B016 — repository snapshot omits committed source files when `__pycache__` exists in the tree
 
+**Status: DONE (v2.4.0, 2026-08-25) — not reproducible at HEAD; hardening shipped anyway, commit 00da6510, on main; A-295. Acceptance boxes stale: the three unchecked boxes (a regression fixture reproducing the omission; all manifest entries materialized; the dstdns P128 lane passing end-to-end) describe reproducing and then fixing a live defect that turned out not to be reproducible at HEAD at all — satisfied instead by the two checked boxes below them (sibling-cache fixture + explicit on-disk verification), which is the hardening this entry actually shipped; not ticked here per this audit's own rule against editing historical boxes.**
+
 **Filed 2026-08-24 (dstdns P128 R1 blocker; consumer evidence from P128 debugging session).**
 **Status:** **NOT REPRODUCIBLE at current HEAD; hardened 2026-08-25, corrected
 2026-08-25.** A literal tracked-source/untracked-sibling-cache fixture passes,
@@ -1687,6 +1844,8 @@ materialization rather than written.
 ---
 
 ## B017: Assay dirty-tree check ignores committed .gitignore for coverage artifacts
+
+**Status: WITHDRAWN (assay-side fix reverted 2026-08-25, A-290) — every real recurrence closed via consumer .gitignore edits (dstdns@08b789f5, dstdns@5c8c14c6, vbpub@8caf1c24), no assay code change.**
 
 **Status:** **NOT REPRODUCIBLE; REVERTED 2026-08-25 (A-290).** Item 2 below does
 not reproduce: measured on a repository with a **committed** `.gitignore`
@@ -1941,6 +2100,8 @@ each found the same expensive way.
 
 ## B018 — CIU V8 preparation: judge provenance in every verdict
 
+**Status: DONE (v3.0.0, 2026-08-30) — A-327/A-332, merge b6aca39d, on main.**
+
 **Filed 2026-08-25 from `ciu/docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §11.3.**
 
 ### Required contract
@@ -2002,6 +2163,8 @@ does not prove the running code came from it.
 
 ## B019 — CIU V8 preparation: gate-request-supplied comparison base
 
+**Status: DONE (v3.0.0, 2026-08-30) — A-328, merge b6aca39d, on main.**
+
 **Filed 2026-08-25 from proposal §10.10 and dstdns P128 evidence.**
 
 ### Required contract
@@ -2050,6 +2213,8 @@ one line. The one estate lane that pays a real cost is `ciu/assay.toml:49`
 
 ## B020 — CIU V8 preparation: SQL mutation template/reset hooks (design first)
 
+**Status: OPEN (filed 2026-08-25) — design-first, no implementation decisions recorded; last reference A-294 confirms still open.**
+
 **Filed 2026-08-25 from proposal §10.2.**
 
 ### Scope boundary
@@ -2079,6 +2244,8 @@ future decision explicitly reverses it.
 ---
 
 ## B021 — mutation resume: stale-record disposition is inverted
+
+**Status: DONE (v2.4.0, 2026-08-25) — part of commit e2169d46, on main; A-302.**
 
 **Filed 2026-08-25 from an independent adversarial review of B012 (round 1).**
 
@@ -2137,6 +2304,8 @@ candidate id and their current "raise" disposition needs no change.
 
 ## B022 — B013 infrastructure injection: hardening items found by adversarial review, none blocking
 
+**Status: DONE (v2.4.0, 2026-08-25) — part of commit e2169d46, on main; A-303/A-305/A-306.**
+
 **Filed 2026-08-25 from an independent adversarial review of B013 (round 1).**
 None of these are exploitable beyond what a trusted, committed lane file can
 already reach via `env_passthrough`; they are filed for hardening, not
@@ -2188,6 +2357,8 @@ see A-303/A-305/A-306.
 ---
 
 ## B023 — mutation shard merging has no producer or consumer
+
+**Status: OPEN (filed 2026-08-25) — no shipped CLI producer/consumer; zero CHANGES.md/decisions.md hits.**
 
 **Filed 2026-08-25 from an independent adversarial review of B012 (round 1).**
 
@@ -2243,6 +2414,8 @@ rather than let a future round re-discover it as a defect.
 ---
 
 ## B024 — wire pyflakes/ruff into the registered gate; sweep pre-existing findings first
+
+**Status: DONE (sweep v2.4.0 2026-08-25, gate-wiring v5.0.0 Wave D 2026-09-02) — commit 7c9e8dd1, on main; A-417.**
 
 **Filed 2026-08-25 from an independent adversarial review of B012/B013/B016/B017
 (round 1).** `pyflakes src/assay/cli.py` found two unimported names
@@ -2421,6 +2594,8 @@ evidence — filed as **B062**.
 
 ## B025 — a refusal whose OWN cause is an unresolvable infrastructure declaration writes no verdict artifact
 
+**Status: PARTIAL (v2.4.0/2.4.1, 2026-08-25) — A-308; 4 crash sites fixed, one acceptance box (attestation-LANE_TIMEOUT forward test) explicitly unmet.**
+
 **Filed 2026-08-25 (round 1 remediation), rescoped 2026-08-25 after round 2
 review + a round-3 partial fix narrowed it.** Not itself a crash — the
 refusal is a clean, typed `AssayError` that reaches `main()`'s handler and
@@ -2541,6 +2716,8 @@ See A-308.
 
 ## B026 — a bad `--shard` refusal names no cause; `judge.mutation.shard_index`/`shard_count` are dead config
 
+**Status: PARTIAL (v2.4.0, 2026-08-25) — A-309/A-310; decided-and-documented asymmetry/dead-config, not eliminated.**
+
 **Filed 2026-08-25 from round 2 review of the B012/B013/B016/B017
 remediation (findings N-4, N-5).** Two small, unrelated diagnosability gaps
 bundled here rather than as two one-line items.
@@ -2632,6 +2809,8 @@ actual code fix (A-310). Marking this `RESOLVED` outright would overstate
 what changed; round 2 review of this wave caught the overstatement.
 
 ## B027 — a mutant-induced pytest timeout crashes `execute_plan` instead of reaching `BUDGET_EXCEEDED`/`LANE_TIMEOUT`
+
+**Status: DONE (v2.4.0, 2026-08-25) — A-300; all acceptance boxes closed, red-first proven.**
 
 **Filed 2026-08-25 (dstdns P132 phase-1 code review; provenance below).**
 
@@ -2779,6 +2958,8 @@ from a blind, independent reproduction.
 
 ## B028 — a lane-wide `LANE_TIMEOUT` also writes no verdict artifact
 
+**Status: DONE (v5.0.0 Wave D, 2026-09-02/03) — A-415, commit dd8f4d2c, on main.**
+
 **Filed 2026-08-25 (round 2 review of the stabilization wave, finding
 N-W3).** Same family as B025 ("a post-HEAD-resolution terminal path emits
 no artifact"), a different trigger — filed separately rather than folded
@@ -2869,6 +3050,8 @@ not been done yet.
 ---
 
 ## B029 — R3's canary side-run has no infrastructure wiring at all; a resolvable-elsewhere fact reports a misattributed R3 claim
+
+**Status: DONE (v5.0.0 Wave D, 2026-09-02/03) — A-416, commit 81228b25, on main.**
 
 **Filed 2026-08-25 (round 2 review of the stabilization wave, in the course
 of verifying B025).** Not B025 itself — B025's four sites all crashed
@@ -2974,6 +3157,8 @@ snapshot-unit machinery and never reaches `execute_command`.
 
 ## B030 — `assay plan` reports zero candidates for every lane; its own test asserts the bug
 
+**Status: DONE (v2.4.1, 2026-08-26) — A-319, commit 6a0f9a04, on main.**
+
 **Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
 (`reports/assay-review-gap-audit-2026-08-25.md` §6, finding 8a-A) — the first
 independent review of `8a2a4731` (shipped in assay-v2.2.0 as part of B012).**
@@ -3056,6 +3241,8 @@ as the "estimate" when the key is declared, which is not what B012 requirement
       corrected box above ("**Re-verified true 2026-08-25 (B030/A-319)**").
 
 ## B031 — the R2 progress artifact is written into the consumer's live worktree and poisons assay's own clean-tree precondition; the field is dead and unregistered in `verify.py`
+
+**Status: DONE (v2.4.1, 2026-08-26) — mutation.progress_artifact removed, opt-in --progress path, candidate_ids registered in verify.py (A-320/A-323).**
 
 **Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
 (`reports/assay-review-gap-audit-2026-08-25.md` §6, findings 8a-B/8a-C/8a-F) —
@@ -3166,6 +3353,8 @@ since nothing populates it today.
 
 ## B032 — the preflight probe added by B010/B012 discards its own outcome, misreports budget overruns, and B010's "clear message" refusal ships 0 bytes of stderr
 
+**Status: DONE (v2.4.1, 2026-08-26) — probe honors its own timeout, refusal message reaches stderr (A-321/A-322).**
+
 **Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
 (`reports/assay-review-gap-audit-2026-08-25.md` §6, findings 8a-D/8a-E) —
 `8a2a4731` (assay-v2.2.0, B010's `environment_command` mechanism + part of
@@ -3250,6 +3439,8 @@ written, plus the actual message text B010 asked for in the first place.
       the correction note on B010 above.
 
 ## B033 — SQL whole-target R2 silently drops declared targets that R1 refuses, records a `base` for a comparison that never ran, and a `judge.mode` toggle silently enables/disables the SQL vacuity guard
+
+**Status: DONE (2026-08-26, assay-v2.4.2) — whole-target R2 refuses dropped/out-of-scope targets, matching R1 (A-325).**
 
 **Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
 (`reports/assay-review-gap-audit-2026-08-25.md` §5, findings ba-A/ba-B/ba-C) —
@@ -3357,6 +3548,8 @@ scope. The model, the raw verifier and the JSON Schema therefore enforce the
 
 ## B034 — B015's two "semantic" Python mutation operators add zero mutation coverage beyond `compare-swap`, mislabel ordinary attribute comparisons as enum comparisons, and double-count every co-selected site
 
+**Status: DONE (2026-08-26, assay-v2.4.2) — both "semantic" operators withdrawn from the vocabulary, not fixed (A-326).**
+
 **Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
 (`reports/assay-review-gap-audit-2026-08-25.md` §1, findings B015-A/B/C) —
 `126ef577`/`6324548d` (B015, marked IMPLEMENTED 2026-08-24; see the
@@ -3458,6 +3651,8 @@ which is itself a governed, A-numbered decision per A-112/A-114/A-220/A-221.
 
 ## B035 — an `R0,R2` whole-target verdict cannot witness its own judging scope, so the `base` rule is unenforceable there
 
+**Status: DONE (2026-08-30, assay-v3.0.0, schema v8) — judgment.r2 records mode/targets; base rule enforced for R0,R2 lanes (A-329/A-330).**
+
 **Filed 2026-08-26 from B033's own fix (A-325).**
 **Status:** **FIXED 2026-08-30 (A-329)**, on branch
 `feature/assay-b018-b019-b035-v8-synergy`, unmerged and unreleased at the time
@@ -3534,6 +3729,8 @@ alongside whatever else needs one, not force one on its own.
 ---
 
 ## B036 — a JavaScript/TypeScript `LanguageAdapter` for changed-line coverage (R1), first consumer dstdns's React UI
+
+**Status: DONE (2026-08-30, assay-v3.1.0) — JavaScript/TypeScript adapter + coverage-istanbul-json registered at R1.**
 
 **Status: IMPLEMENTED 2026-08-30 on `feature/assay-b036-js-adapter`; awaiting
 adversarial review and merge.** Decisions A-340..A-345; report at
@@ -3670,6 +3867,8 @@ field, no `Judgment`/`JudgmentR1`/`JudgmentR2` shape, and no packaged schema.
 
 ## B037 — JavaScript/TypeScript mutation rigor (R2): design first, do not implement against this entry directly
 
+**Status: DONE (2026-08-31, assay-v4.0.0, schema v9) — resolved via B046's ingested-R2 design (A-375–A-383).**
+
 > **RESOLVED 2026-08-31 by B046** (Wave B, assay-4.0.0 / schema v9). B037's
 > three open decisions were answered by B046's ratified design and are now
 > implemented: the lane's own argv runs StrykerJS inside the private snapshot
@@ -3786,6 +3985,8 @@ ruling closes the architectural fork, not the implementation.
 
 ## B038 — `coverage-istanbul-json`: real branch arcs, and the type-only-module gap, once a producer can be declared
 
+**Status: DONE (v4.0.0, 2026-08-31, schema v9) — resolved via B045: real branch arcs + type-only lexer (A-356/A-357/A-358). Acceptance boxes stale: all four remain unticked, but each is satisfied by B045's shipped mechanism (the ruled `judge.coverage.producer` key discharges box 1; real per-arm `BranchCoverage` under `producer = "istanbul"` discharges box 2; the A-358 type-only lexer discharges box 3; CONSUMERS'/README's guidance was updated in step, discharging box 4) — not ticked here per this audit's own rule against editing historical boxes.**
+
 > **RESOLVED 2026-08-31 by B045** (Wave B, assay-4.0.0 / schema v9). Both
 > halves shipped once the producer became declarable.
 > **(a)** real branch arcs under `producer = "istanbul"` — decided as
@@ -3870,6 +4071,8 @@ forbids (A-007) — it must be argued explicitly if it is chosen, not slid in.
 
 ## B039 — `go_cover.parse` expands a block's line range with no fixed bound
 
+**Status: DONE (2026-08-30, assay-v3.2.0) — shared MAX_CLASSIFIED_LINES bound in coverage_parsers/model.py (A-348).**
+
 **Filed 2026-08-30 by B036's own implementation, in passing.** Noticed while
 writing the equivalent expansion for `coverage-istanbul-json`, which was
 given a bound (`MAX_CLASSIFIED_LINES`, O4's "a fixed bound, never an ambient
@@ -3918,6 +4121,8 @@ elsewhere.
 ---
 
 ## B040 — `@vitest/coverage-v8` reports never-executed lines as executed, and assay cannot detect it
+
+**Status: PARTIAL (b: 2026-08-31 assay-v4.0.0 via B045; a: still open) — v8 provider refused by name at load, but the upstream bug report was never filed.**
 
 > **(b) RESOLVED 2026-08-31 by B045** (Wave B, assay-4.0.0 / schema v9),
 > decided as **A-353**: the three v8-remapping producers are SPELLABLE so the
@@ -4010,6 +4215,8 @@ ones).
 ---
 
 ## B041 — a JavaScript lane's dependency closure (`node_modules`) is absent from the committed-object snapshot: the offline-install pattern, `isolation.link_paths`, and a real-`vitest` qualification
+
+**Status: DONE ((a)(c): 2026-08-30 v3.2.0; (b): 2026-08-31 v4.0.0, schema v9) — offline-install pattern + link_paths shipped; R3 registration explicitly deferred out of scope.**
 
 **Filed 2026-08-30 from the 3.1.0 design review**
 (`reports/assay-3.1-js-adapter-design-review-2026-08-30.md` §3 G1).
@@ -4215,6 +4422,8 @@ supersedes that for THIS wave). (b) `link_paths` remains open for Wave B.
 
 ## B042 — JavaScript consumer documentation: the worked lane is not a monorepo lane, "Jest is unaffected" is an overclaim, and support files are not test paths
 
+**Status: DONE (2026-08-30, assay-v3.2.0) — JS consumer docs corrected (worked lane, Jest scope, support files).**
+
 **Filed 2026-08-30 from the 3.1.0 design review (§3 G2/G3, §6).** Docs only;
 ships on the current schema. Every item below names its file:line and its
 replacement so the change is mechanical.
@@ -4286,6 +4495,8 @@ replacement so the change is mechanical.
 
 ## B043 — a lane-level `cwd`: the command's working directory as a declared, recorded fact
 
+**Status: DONE (2026-08-31, assay-v4.0.0, schema v9) — lane-level cwd, one resolution site, cwd_declared on the wire.**
+
 **Filed 2026-08-30 from the 3.1.0 design review (§3 G2).** Schema v9 (the
 verdict must witness it) — rides B045's wave.
 
@@ -4356,6 +4567,8 @@ not `npm`), (2) makes `allow_argv_append` meaningless for the inner command,
 
 ## B044 — `assay lanes --json`: a machine-readable lane inventory for gate tools
 
+**Status: DONE for assay (2026-08-30, assay-v3.2.0) — assay lanes --json shipped; ciu-side CIU-72 handoff explicitly out of scope here.**
+
 **Filed 2026-08-30 from the 3.1.0 design review (§4).** No schema coupling;
 ships on the current schema. Companion to ciu CIU-72 (v8 gate) AND run-gate
 RG-25/RG-26 (the current gate — both consume this verb, so it is the
@@ -4425,6 +4638,8 @@ as `[testing.lanes.<l>] request_base = true`, a second spelling of one fact
 ---
 
 ## B045 — declare the coverage PRODUCER: `judge.coverage.producer`, recorded in the verdict (schema v9); closes B038(a)(b) and B040(b)
+
+**Status: DONE (2026-08-31, assay-v4.0.0, schema v9) — judge.coverage.producer declared, closes B038(a)(b)/B040(b).**
 
 **Filed 2026-08-30 from the 3.1.0 design review (§4 D1). Operator ruling
 2026-08-30: one bundled v9 cut with B046/B043/B041(b) — assay 4.0.0.** This
@@ -4522,6 +4737,8 @@ were at v8.
 ---
 
 ## B046 — R2 by evidence ingestion: `judge.mutation.format = "mutation-report-json"`, the lane's own argv runs the mutation tool inside the snapshot (resolves B037; schema v9)
+
+**Status: DONE (2026-08-31, assay-v4.0.0, schema v9) — R2 by evidence ingestion (Stryker), resolves B037.**
 
 **Filed 2026-08-30 from the 3.1.0 design review (§4 D2). Operator ruling
 2026-08-30: RATIFIED — B037's three open decisions are resolved as below;
@@ -4679,6 +4896,8 @@ filed rather than fudged: `fail_under` is honoured at `100.0` only — see
 
 ## B047 — Go wave preparation: helper distribution and identity, `helpers[]` in the gate envelope, the shared line-expansion bound (B039), the `covdata` producer
 
+**Status: DONE (v4.1.0, 2026-09-02) — item 6 (fixture regeneration) is discharged by `394c6cc2` (F008-A4, "the Go coverage fixtures are real toolchain output"), same release; CHANGES.md's v4.1.0 entry `3355d238` ("F008-A5 -- the srdm qualification ran; F008 is shipped, M6 is done") confirms F008 as a whole shipped. The entry's own unticked acceptance boxes are stale: item 6's own box was never ticked despite the fix landing under it, and the remaining "P27 re-carve cites items 1–6 explicitly" box is a carve-process check, not a functional gap.**
+
 **Filed 2026-08-30 from the 3.1.0 design review (§4 D4/D8).** Not a package:
 scope additions for the P27 re-carve (A-217/A-239), so the carve does not
 discover them. Each item names what is already ruled and what is not.
@@ -4740,6 +4959,8 @@ discover them. Each item names what is already ruled and what is not.
 
 ## B048 — browser (Playwright) coverage of a React UI as an R1 lane: `vite-plugin-istanbul` inside the lane, and where the S3 binding stops
 
+**Status: DONE for assay (2026-08-30, assay-v3.2.0) — browser/Playwright coverage path documented and proven with a real vite-plugin-istanbul artifact; dstdns-side dump fixture out of scope.**
+
 **Filed 2026-08-30 from the 3.1.0 design review (§4 D6).** Documents a path
 that needs NO assay change today, and names the one thing that must not be
 built before B004.
@@ -4798,6 +5019,8 @@ first assay judgment with no commit binding of its own.
 ---
 
 ## B049 — a coverage/mutation tool that deletes-and-recreates its own output directory silently orphans assay's held reservation, reading `EMPTY_COVERAGE` over a genuinely complete artifact
+
+**Status: DONE (v5.0.0, 2026-09-03) — OutputReservation._refuse_if_parent_was_replaced (A-408).**
 
 **Filed 2026-08-30, Wave A (B041(c)'s real-`vitest` qualification harness) — the
 first time a real external coverage tool has run inside an assay snapshot.**
@@ -4966,6 +5189,8 @@ candidates:
 
 ## B050 — an ingested R2 lane cannot declare a mutation-score floor below 100: `judgment.r2` has no field recording WHICH floor was applied
 
+**Status: DONE (v5.0.0, 2026-09-03, schema v10) — judgment.r2.fail_under wired end to end (A-436).**
+
 **Filed 2026-08-31 from Wave B (B046's implementation), with evidence.
 Refused loudly rather than half-implemented — the gap is a WIRE field, so the
 fix belongs to the next schema cut, not to a patch release.**
@@ -5066,6 +5291,8 @@ were landed adjacently for exactly this reason (DA-R23).
 ---
 
 ## B051 — `judgment.r2.discarded` is accepted on the producer's word alone: never derived, never cross-checked, and a materially false value rides the wire uncontradicted
+
+**Status: DONE by ruling (v5.0.0, 2026-09-03) — discarded is declared-not-verified by design; residual filed as B070 (A-437).**
 
 **Filed 2026-08-31 from Wave B fix round 1, with evidence. FILE, DO NOT BUILD
 — what "derived" would even mean here is a real product question, not an
@@ -5282,6 +5509,8 @@ a v11 item (`B070`).**
 
 ## B052 — an ingested report's embedded `source` is never compared against the snapshot's own committed bytes: assay derives every mutant position from text it takes entirely on the tool's word
 
+**Status: DONE (v5.0.0, 2026-09-03) — a third non-repudiation "content" tier compares report source to committed bytes (A-438).**
+
 **Filed 2026-08-31 during Wave B fix round 1, on the controller's request.
 FILE, DO NOT BUILD — the check is easy and what a MISMATCH MEANS is not.**
 
@@ -5456,6 +5685,8 @@ correct lanes over a `.gitattributes` setting.
       for it.
 
 ## B053 — an `ERROR`-outcome verdict's detailed message is constructed but never surfaced anywhere a consumer can read it — not stdout, not stderr, not the verdict JSON
+
+**Status: DONE (v5.0.0, 2026-09-03) — every ERROR verdict's message now reaches stderr/diagnostics/claim.detail (A-409/A-414/A-439).**
 
 **Filed 2026-09-02, dstdns's first `javascript` lane adoption (assay-4.0.0,
 `[lanes.ui_unit]`).** Found diagnosing a real `BAD_LANE_CONFIG` refusal that
@@ -5671,6 +5902,8 @@ an exception, and each of those sites holds the fact when it refuses.
 
 ## B054 — a NEVER-EXECUTED file matching `coverage.include` can make `@vitest/coverage-istanbul` emit a self-contradictory `branchMap`, and `UNREADABLE_ARTIFACT` refuses the WHOLE verdict rather than isolating the one file — defeating `changed_lines` mode's cost-scoping promise
 
+**Status: DONE (v5.0.0, 2026-09-03) — contradictory branchMap isolated per file, not verdict-wide (A-410).**
+
 **Filed 2026-09-02, dstdns's first `javascript` lane adoption
 (assay-4.0.0). Related to B038/A-357** (an unrecognised `branchMap` entry
 type REFUSES the artifact rather than degrading silently) but a DIFFERENT
@@ -5813,6 +6046,8 @@ inside vs. outside the judged set.
 
 ## B055 — an uncovered Go statement sharing a physical LINE with a covered one is still laundered into `executed`; the statement-position oracle does not fix it, and cannot at line granularity
 
+**Status: DONE (v5.0.0, 2026-09-03) — ruled a documented line-granularity limit, not fixed in code (A-413). Acceptance boxes stale: two of the entry's unchecked boxes ("the ruling recorded as an A-row..." and "not applicable: no wire field...") are superseded duplicates, each satisfied by a checked box directly below it citing A-413 by name; not ticked here per this audit's own rule against editing historical boxes.**
+
 > **Renumbering note, 2026-09-02.** Every id this Wave C branch filed was
 > shifted up by two: **B053→B055, B054→B056, B055→B057, B056→B058,
 > B057→B059, B058→B060**. Main's `a050a467` (2026-09-02, from dstdns's first
@@ -5913,6 +6148,8 @@ cut: `attribute_statements` already holds the data a fix would need.
 
 ## B056 — `test_verdict_schema_is_packaged.py`'s docstring states a measurement that no longer holds: the `package-data` stanza it defends is inert, so its named negative is currently unreachable
 
+**Status: DONE (v5.0.0, 2026-09-03) — test docstring corrected to state the outcome, not a refuted mechanism (A-412).**
+
 **Filed 2026-08-31, Wave C, as a side finding while packaging the Go helper.**
 Recorded as decision **A-396**. Not fixed here: the fix is a real call, not a
 typo repair.
@@ -5991,6 +6228,8 @@ option 1 would move the sibling toward.
 ---
 
 ## B057 — the Go canary and union tests now prove their subject against a DOWNGRADED adapter: `requires_statement_attribution=False`, because a real Go lane needs a toolchain the gate image does not have
+
+**Status: DONE (2026-09-02, assay-v4.1.0, Wave C generation 6) — downgraded-adapter shortcuts removed; note: entry's own trailing sentence under acceptance box 3 is stale (says two boxes "stay open" though both are checked above it).**
 
 **Filed 2026-08-31, Wave C, while wiring A-392's guard.** Not a defect in the
 shipped code — the shipped `GoAdapter` declares `True` — but a real, tracked
@@ -6098,6 +6337,8 @@ Go toolchain exists — which the registered gate image does not provide.
 
 ## B058 — srdm's `covergate` classifies a cover block's whole extent as executable, so its own coverage floor measures more lines than Go has statements
 
+**Status: OPEN (filed 2026-08-31, no fix found) — all 3 acceptance boxes unchecked; cross-filed to srdm's own backlog, not resolved there per this file.**
+
 **Filed 2026-08-31, Wave C, while reading `covergate` for F008-A5's
 qualification.** Not an assay defect and not a blocker for this wave — assay's
 side is fixed. Filed because the qualification is about to compare the two,
@@ -6191,6 +6432,8 @@ what produces that, and it is still owed.
       intended and A-217 explains is the only binding that is not circular).
 
 ## B059 — `go` is registered at R1, but no Go lane reachable through the shipped CLI can resolve its own coverage keys
+
+**Status: DONE (2026-09-02, assay-v4.1.0) — Go module path derived from go.mod (A-404).**
 
 **Filed 2026-09-01, Wave C generation 4, MEASURED end to end inside
 `tester-unified-go:local` (A-334) rather than reasoned about.** This is a
@@ -6327,6 +6570,8 @@ would be a protocol change on top of A-397's.
 
 ## B060 — `build_release.py` leaves a `zipapp-staging/` directory beside `--outdir` and never removes it, which can turn the project's own gate red
 
+**Status: DONE (v5.0.0, 2026-09-03) — build_release.py stages into a TemporaryDirectory (A-411).**
+
 **Filed 2026-09-02, Wave C generation 5, on the controller's ruling at
 `vbpub@3a95459e`.** Observed by generation 4 while building the in-image
 consumer harness (BRIEF-5 §3) and left unfiled as "a one-line property of a
@@ -6377,6 +6622,8 @@ three; the other two named as rejected in the A-row.
 ---
 
 ## B061 — the statement-position join kept only the LAST record for a repeated block, so `-coverpkg=./...` profiles reported covered code as uncovered
+
+**Status: DONE (2026-09-02, assay-v4.1.0) — statement-position join folds repeated block records executed-wins.**
 
 **Filed 2026-09-02, Wave C generation 6, FOUND by F008-A5's srdm qualification
 — which is what that criterion exists for.** Fixed in the same change; this
@@ -6465,6 +6712,8 @@ srdm-shaped repetition being asserted in three orders (a fix handling only
 
 ## B065 — progress events carry no time and no outcome, so a caller cannot compute rate, ETA or stall from the file alone
 
+**Status: DONE (2026-09-08, assay-v5.2.0) — progress events carry emitted_at/elapsed_s/outcome_bucket via ProgressStream.**
+
 **Filed 2026-09-02 by the vbpub controller on main, from the operator's ask to
 make "progress artifact a caller polls + re-attachable runs + unbounded
 budget by convention" the default pattern for assay and run-gate.
@@ -6519,6 +6768,8 @@ itself (`event: "candidate"`). Acceptance measured in
 against a real CLI run and its own verdict.
 
 ## B066 — the state location is derived from `project_root`; there is no way to keep resume state outside an ephemeral worktree
+
+**Status: DONE (2026-09-08, assay-v5.2.0) — assay run --state-dir PATH decouples resume state from project_root.**
 
 **Filed 2026-09-02 (same ask). Pairs with run-gate RG-38.**
 
@@ -6576,6 +6827,8 @@ Two implementation notes worth keeping:
   ignoring it; every other call keeps the anchor.
 
 ## B067 — `budget` is the only liveness bound a lane has; "unbounded by convention" needs per-unit bounds first
+
+**Status: DONE (v5.2.0, 2026-09-08, corrected round-1) — budget = "unbounded" admissible only when every unit is bounded (A-447; A-444 is a different row, B064's, not this entry's — see this entry's own "Ruling recorded as A-447" note below).**
 
 **Filed 2026-09-02 (same ask). A product decision for the operator or the
 next wave, not a fix.**
@@ -6643,6 +6896,8 @@ a genuinely different question and stays open: there the sweep, the part whose
 length cannot be guessed, IS bounded per unit.
 
 ## B068 — `assay run` (R0/R1 mock/coverage target) hard-fails `GIT_FAILED` in a Mode-B linked worktree, unconditionally of `clean_tree`
+
+**Status: DONE (2026-09-08, assay-v5.1.0) — _linked_worktree_gap() names the missing main .git; entry's own "R2 doesn't hit this" discriminator theory was refuted by the fix's own investigation.**
 
 **Filed 2026-09-02 (dstdns controller session, P152 real-fault-harness-restart-matrix,
 found while confirming a Mode-B git-access fix — dstdns D-322/D-325/D-326).**
@@ -6757,6 +7012,8 @@ still writes the `gitdir: <path>` shape the helper parses.
 
 ## B062 — `tests/` carries 31 pyflakes findings, so the gate's new lint phase judges `src/assay` only
 
+**Status: DONE (2026-09-08, v5.1.0) — quick-wins wave swept all 31 pyflakes findings and widened `run_lint_phase` to `tests/`; confirmed live in `tools/tester-unified-gate.sh` on main.**
+
 **Filed 2026-09-02** from B024's landing (Wave D phase 1, DA-R7, A-417).
 
 DA-R7 asked for the lint phase to cover `src/assay` "and `tests/` if clean".
@@ -6862,6 +7119,8 @@ suite red in seconds instead of only after a nine-minute container run.
 ---
 
 ## B063 — three test modules `git -C PROJECT_ROOT.parent`, so the suite cannot run from a copy of the tree
+
+**Status: DONE (2026-09-08, v5.1.0) — `tests/conftest.py` gained shared `REPO_ROOT` + `requires_parent_repository` skip mark, confirmed present on main.**
 
 **Filed 2026-09-02** from R-1's round-1 review of Wave D phase 1 (report:
 `nyxloom-trove/reports/assay-WAVE-D-v10-REVIEW-R1-round1.md`). **Not fixed in
@@ -6979,6 +7238,8 @@ skips are the pre-existing `requires the tester-unified image's own
 
 ## B064 — progress and resume beyond R2: what R0/R1 could observably report, and why R3's canary is the one tier where both are actually feasible
 
+**Status: PARTIAL (filed 2026-09-02, `f254b702`; R0/R1 half shipped v5.2.0, 2026-09-08) — R0/R1 phase-boundary progress stream shipped (A-444, `mutation.PROGRESS_EVENTS`); R3 per-attempt progress/resume remains unbuilt, coupled to B007's identity.**
+
 **Filed 2026-09-02** by the controller, from an operator question during Wave
 D: *do R0/R1 runtimes justify progress/resume, and could the canary (R3) have
 them?* **FILED, NOT IMPLEMENTED — no scope in Wave D.** This entry records the
@@ -7084,6 +7345,8 @@ a second one inside this wave is exactly what this entry warns against.
 
 ## B069 — the gate-only harnesses' contract pins are invisible to the local suite, so a stale pin costs a 25-minute red gate
 
+**Status: DONE (resolved at filing, 2026-09-02) — `tests/test_gate_harness_version_pins.py` confirmed present on main (A-435).**
+
 **Filed 2026-09-02** by Wave D generation 9, on the controller's **DA-R24**,
 from the two red gate runs generation 8 paid during the v10 cut.
 **RESOLVED at filing** by A-435 (`tests/test_gate_harness_version_pins.py`);
@@ -7164,6 +7427,8 @@ a stale generation is stale).
 ---
 
 ## B070 — `judgment.r2.discarded` has no counterpart on the wire to be a difference OF, so it can only ever be declared: list the discarded mutants, or carry an ingested-only in-scope count
+
+**Status: DONE (2026-09-08, v6.0.0) — verdict schema v10→v11 shipped; `VERDICT_SCHEMA_VERSION = 11` on main.**
 
 **Filed 2026-09-02** by Wave D generation 10, on the controller's **DA-R26**,
 as the explicit residual of [B051](#b051). **v11 CANDIDATE — FILE, DO NOT
@@ -7294,6 +7559,8 @@ mutants). Every box below is ticked; see
 ---
 
 ## B071 — a native R2 mutation candidate's `stdout_tail`/`stderr_tail` is computed and then discarded; `crashed`/`killed` verdicts carry no diagnostic evidence of why
+
+**Status: DONE, scoped to the `crashed` bucket only (2026-09-08, v5.1.0) — `_crash_diagnostic_tails` confirmed in `src/assay/mutation.py`; `killed`/`survived`/`budget_exceeded` deliberately not wired.**
 
 **Filed 2026-09-03 by the dstdns controller, found while diagnosing D-371/D-372
 (dstdns `nyxloom-trove/decisions.md`) on the `cw2b_schema` lane. Related but
@@ -7444,6 +7711,8 @@ output.
 
 ## B072 — `attestation.py`'s `parse_attestation` has the IDENTICAL uncaught-`RecursionError` gap `adjudication.py` had before `f0126b35` fixed it
 
+**Status: DONE (2026-09-08, v5.1.0) — `attestation.py`'s `parse_attestation` catches `RecursionError`, confirmed on main; its own required sweep found a third instance, filed as B074/B075.**
+
 **Filed 2026-09-07 by the vbpub controller.** Found during Wave D's R-2
 round-2 review (2026-09-03), flagged in that review's own report as
 INFORMATIONAL-1 with an explicit "controller decision ask: fix same-shaped
@@ -7563,6 +7832,8 @@ site live in B074's Resolution.
 
 ## B073 — a per-language "live test progress" adapter, reading the runner's own output stream as it happens
 
+**Status: OPEN (filed 2026-09-08, corroborated live 2026-09-09) — no live-stream/per-language progress reader exists in `src/assay` for R0/R1, which is what this entry asks for; explicitly "filed and deliberately not started" per A-444. Narrower, adjacent progress since shipped for a different scope: B091 A4 (`5baf2670`, v6.2.0) ships per-test pytest progress events (`tests_completed`, `slowest_test_s`) for R2 mutation CANDIDATES specifically, not the general per-language R0/R1 live-stream reader this entry proposes — OPEN remains the correct verdict for what this entry actually asks.**
+
 **Filed 2026-09-08 by the vbpub controller, deferred out of B064's discussion
 on purpose.** FILE ONLY — not scoped, not carved, not for the next wave.
 
@@ -7637,6 +7908,8 @@ new entry filed — this corroborates B073 as written.
 ---
 
 ## B074 — a lane cannot put DEPLOYED LIBRARY CODE under a whole-target judge when it lives under a `tests/` segment; `is_test_path` has no per-target opt-out
+
+**Status: DONE (2026-09-09, v6.1.0) — `judge.allow_test_path_targets` shipped and extended to R2's `_mutation_targets_whole`; confirmed live in `src/assay/evaluate.py`. A third veto (R3 canary) deliberately left open as B085.**
 
 **Proposed by:** dstdns, 2026-09-08, out of package P171 (seeded-infra
 program) Phase C.
@@ -7791,6 +8064,8 @@ veto was found and deliberately left untouched — `judge.canary.target`
 ---
 
 ## B075 — `verify.py`'s `verify_text` is the THIRD instance of the uncaught-`RecursionError` gap, and it is on `assay verify`'s own untrusted-input path
+
+**Status: DONE (2026-09-08, v5.1.0) — `verify.py`'s `verify_text` catches `RecursionError`; the corrected 11-site sweep and its enforcing test (`test_untrusted_json_parse_sweep.py`) both confirmed present on main.**
 
 **Renumbered from B074 to B075 at merge time (2026-09-08):** this wave's
 own commits and its LOG/REPORT/REVIEW narrative all name this finding
@@ -7985,6 +8260,8 @@ two independent tests fail, naming the file and function.
 
 ## B076 — an unbounded R2 lane's own BASELINE run is the one command B067 leaves with no bound at all
 
+**Status: OPEN (filed 2026-09-08, deliberately not ruled) — `config.py`'s own docstring still says "B076: filed, reasoned, and deliberately not closed here"; no `budget_per_baseline` and no A-row exist. (Corrected 2026-09-23: this entry was first created fresh on 2026-09-08, `7f2ba056` — there is no earlier 2026-08-25 filing to restate; the commit's own body confirms "Filed while building this: B076".)**
+
 **Filed 2026-09-08 by the progress/resume wave's implementer, from building
 B067 rather than from a review. Recorded because B067's own rule —
 "`unbounded` only when every unit of the lane's work carries its own bound" —
@@ -8059,6 +8336,8 @@ as one.
 
 ## B077 — a `--state-dir`/`--progress` destination reached through a symlink INSIDE the judged tree fails closed with a raw, opaque `GIT_FAILED` passthrough
 
+**Status: DONE (2026-09-09, v6.1.0) — `_refuse_a_destination_reached_through_a_symlink` (tagged "(B077)") confirmed in `src/assay/cli.py` on main.**
+
 **Filed 2026-09-08 by the progress/resume wave's round-2 reviewer**, found
 while re-deriving SF-1's fix (report:
 `nyxloom-trove/reports/assay-WAVE-PROGRESS-RESUME-REVIEW-round2-fixverify.md`).
@@ -8122,6 +8401,8 @@ mirroring the diagnostic-message discipline `_linked_worktree_gap()`
       `--state-dir` and `--progress`) and confirms the new message.
 
 ## B078 — R0 trusts only the wrapped target's exit code, which a test framework's own internal machinery can flip independent of test correctness (run-gate RG-45)
+
+**Status: PARTIAL — Checkpoint 1 (vitest R0 report override) DONE 2026-09-09/v6.1.0; Checkpoints 2 (pytest-json-report) and 3 (go test -json) remain OPEN — only `result_reports/vitest_json.py` exists on main.**
 
 ### What was measured
 
@@ -8207,6 +8488,8 @@ rejected in favor of the report-completeness approach.
 ---
 
 ## B079 — `judgment.r2.discarded` folds `CompileError` and `RuntimeError` into one undifferentiated list, while the sentence that justifies the field says "could not COMPILE"
+
+**Status: OPEN (v12 candidate, filed 2026-09-08, "FILE, DO NOT BUILD") — no A-row or fix commit exists; `CompileError`/`RuntimeError` remain undifferentiated in `mutation.py`.**
 
 **Renumbered from B078 at merge time (2026-09-08)** — a real ID collision:
 `feat/assay-b070-discarded-mutants-2026-09-08` filed this as B078
@@ -8301,6 +8584,8 @@ Not a design, just the questions a v12 A-row would have to answer:
       A-row recording that no such run could be produced and what that costs.
 
 ## B080 — an istanbul `default-arg` branch sits on the function-SIGNATURE line, which the `javascript` adapter's own documented guarantee leaves unattributed — so `FileCoverage`'s "no branch line outside `executed | missing`" invariant refuses a fully-executed file whose arc count is genuinely non-zero
+
+**Status: OPEN (filed 2026-09-08, addendum 2026-09-09) — no fix commit in CHANGES.md; the predicted "latent tripwire" has now fired live six times through 2026-09-22 (D-423, D-429, D-433, plus B089's three sightings), still unfixed — see the 2026-09-23 audit addendum below for the full count.**
 
 **Proposed by:** dstdns, 2026-09-08, out of the P176 (`ui-design-system-primitives`)
 phase-2 code review and the P177 code review that inherited its consequence.
@@ -8551,7 +8836,42 @@ shape (A or B) above. No new entry filed — this corroborates B080 exactly as
 written; recording it here as the first live confirmation of the predicted
 tripwire, in case it moves this entry's priority.
 
+**Audit addendum, 2026-09-23 — live sightings now number six, not two.**
+The entry's own status line previously said "recurred live twice," counting
+only D-423 (the originating P177 finding) and this section's D-433 addendum.
+Cross-checking `dstdns/nyxloom-trove/decisions.md` and B089 (filed
+independently as a separate backlog entry before this audit recognized it as
+the same defect, see B089's own status line) finds four more, for six total
+through 2026-09-22:
+
+1. **D-423** (2026-09-08, P177 post-merge `ui_unit`) — the four files this
+   entry's "Live specimens" table names.
+2. **D-429** (2026-09-09, P179 implementer's full gate, commit `808daaaa`)
+   — "Second independent confirmation (after P177's D-423 F1)," same four
+   files, explicitly ruled unrelated to P179's own diff.
+3. **D-433** (2026-09-09, P179 post-merge, this section above) — a *fifth*,
+   different specimen (`domains.ts`'s `useDomainEvolution`), same
+   default-arg-on-signature-line mechanism.
+4. **B089's original filing** (2026-09-12, dstdns P186, assay-6.1.0.pyz) —
+   the same four files as (1)/(2), filed as a separate backlog entry because
+   the duplicate relationship to this one was not yet recognized.
+5. **B089's P197 reproduction** (2026-09-22, commit `d62a338e`,
+   assay-6.4.0.pyz) — same four files.
+6. **B089's P194 reproduction** (2026-09-22, commit `9b9bb177`,
+   assay-6.4.0.pyz) — same four files.
+
+B089 itself is now WITHDRAWN as a duplicate of this entry (see its own
+status line): both are the same istanbul default-arg-branch-on-signature-line
+inconsistency, observed through two different code paths (this entry's hard
+refuse when the file is in the judged diff; B089's non-blocking
+drop-and-continue when it is not). Six confirmed live occurrences across ten
+days and three assay versions (6.1.0/6.4.0 for the four-file signature, plus
+the unrelated-file `domains.ts` variant) is well past "one-off"; this raises
+this entry's priority.
+
 ## B081 — a "dubious ownership" `GIT_FAILED` passes through git's own remedy, which `_REPLACEMENT_ENV` has made unreachable by construction: the message sends the consumer to a fix assay guarantees cannot work
+
+**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — no ownership/`safe.directory` remedy message exists anywhere in `src/assay/git.py`.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, while wiring an assay 6.0.0 Go R1
 changed-line-coverage lane into the `pterodactyl/wings` patch stack
@@ -8663,6 +8983,8 @@ ownership is the only thing that works.
 
 ## B082 — a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so
 
+**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — `docs/CONSUMERS.md` still has no bullet on the lane file's own dirty-tree/tracked-or-gitignored obligation for disposable module roots.**
+
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
 [B081](#b081) (`vbpub@bfb2077b`, `patchstack/assay/assay.toml`).
 **Docs ask. The behaviour is correct and deliberate — nothing here proposes
@@ -8759,6 +9081,8 @@ truth — hence 'authoritative here, copied there'."*
 
 ## B083 — assay refuses a shallow clone, correctly, but the Go section's gotcha list does not mention it and a `--depth N` clone is the normal case for a patch stack or a CI build
 
+**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — `docs/CONSUMERS.md`'s Go section still has no mention of the shallow/grafted-clone refusal.**
+
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
 [B081](#b081)/[B082](#b082) (`vbpub@bfb2077b`).
 **Docs ask. The refusal is correct and defensible; nothing here proposes
@@ -8823,6 +9147,8 @@ the per-run cost.
 - [ ] no source change — `git.py:1539`'s refusal is unchanged.
 
 ## B084 — Go-section drift: `golang:1.25` reads as a requirement when it is one measured example, and the "how consumers actually get the judge" table is stale against the real pins
+
+**Status: OPEN (filed 2026-09-08 as B081-B084 batch, `57d52972`) — the consumer-pin table was later restructured (now dated 2026-09-16) but `docs/CONSUMERS.md:46` still shows a stale `assay-4.0.0.pyz` for dstdns; dstdns's own `assay.toml`/`run-gate.toml` actually pin `tools/assay/assay-6.4.0.pyz` (verified directly against dstdns's checkout, not the doc), and the golang:1.25-as-floor wording is unchanged.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session as
 [B081](#b081)–[B083](#b083). **Minor; docs only. Two unrelated small items
@@ -8895,6 +9221,8 @@ claim that the current release was "5.2" is wrong.
 
 ## B085 — a THIRD declared-target test-path veto (`judge.canary.target`, R3) is untouched by B074's opt-out and its refusal names neither a flag nor a remedy
 
+**Status: OPEN (filed 2026-09-09) — `canary.py`'s `is_test_path` veto (R3) still does not consult `allow_test_path_targets`, confirmed on main.**
+
 **Filed 2026-09-09** by B074+B077's round-2 fix-verification reviewer,
 while confirming the B074→R2 extension reached exactly the sites it
 should and no further. **Not a blocker on B074/B077** — filed so the gap
@@ -8944,6 +9272,8 @@ not an oversight the same fix already answers.
 ---
 
 ## B086 — Go mutation testing (R2): `generate_mutation_sites` is unconditionally `UNSUPPORTED`; a real Go mutant generator is buildable, not blocked, and other Go-ecosystem tools already prove the shape
+
+**Status: OPEN (design-first, filed 2026-09-09) — `GoAdapter.generate_mutation_sites` still unconditionally returns `"UNSUPPORTED"` on main; no A-row recorded.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-09, from a cross-language rigor
 matrix built while documenting `README.md`'s "Rigor levels, and what's
@@ -9010,6 +9340,8 @@ names.
 
 ## B087 — JavaScript/TypeScript canary (R3): the injection methods are real, implemented code; no producer path reaches them through the CLI registry
 
+**Status: OPEN (filed 2026-09-09) — `_built_in_registry()`'s own docstring on main states "R3 is still NOT registered for `javascript`".**
+
 **Proposed by:** `wings-cgroups`, 2026-09-09, same session/matrix as B086.
 **Cheap, scoped, NOT design-first — the harder design work is already done.**
 
@@ -9063,6 +9395,8 @@ a product capability until a supported producer path reaches it" framing).
       this.
 
 ## B088 — `--resume`'s candidate identity folds in the mutant's source bytes but not the judging test suite's, so a test-only fix silently replays a stale verdict instead of re-executing
+
+**Status: DONE (v6.1.1, 2026-09-11) — `judge_sha256` (judged-tree content + resolved argv/env/cwd/link_paths/version) added to the resume record; per-tree not per-commit resume; `resume` event now also fires on all-refused stores. CHANGES.md 6.1.1; commits fd08df8f/fd50183e/dd62d88b/e5455b2b.**
 
 **Found by:** dstdns-P175 implementer dispatch, 2026-09-09,
 `worker-execution-admission-r2-flips` lane, via `--state-dir`
@@ -9273,6 +9607,8 @@ source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
 
 ## B089 — istanbul branch-arc self-contradiction on some `.tsx` files
 
+**Status: WITHDRAWN (duplicate of B080, 2026-09-23) — the same six default-arg-on-signature-line branch sites (ChartCard.tsx:34, StatCard.tsx:17, StatTile.tsx:28, DataTable.tsx:33-35) B080 diagnoses as "Live specimens" and root-causes; this entry is B054's drop-and-continue path firing on those same files when they sit outside the judged/diff set (B080 is the hard-refuse path when they ARE in scope). No separate fix is owed here: whichever shape (A/B) B080 ships resolves this entry's symptom too. See B080's own status line and its 2026-09-23 audit addendum for the full sighting count.**
+
 Observed live during dstdns's `ui_unit` lane (P186 post-merge gate, 2026-09-12,
 run-gate rev 40, assay-6.1.0.pyz), against unrelated pre-existing files (P186
 itself touched zero frontend code):
@@ -9327,6 +9663,8 @@ directly against the parser (as the original filing already asked) over
 continuing to rely on the defensive drop-and-continue behavior masking it.
 
 ## B090 — `judge.mutation.budget_per_candidate` has no default, so one hung mutant blocks a whole R2 run indefinitely, and nothing warns when the key is unset
+
+**Status: DONE (v6.2.0, 2026-09-12/13) — mitigated by B091: `budget_per_candidate` defaults to `"auto"`, `os._exit` candidate wrapper avoids the shutdown hang, `LivenessRunner` catches genuine stalls as `hung`, `--rejudge`/`--rejudge-outcome` added. CHANGES.md 6.2.0.**
 
 Observed live 2026-09-12 13:22Z in vbpub's `scripts/cgroup-profiler` r2 lane
 (assay from the `tester-unified:local` source tree, run-gate rev 40, RG-55
@@ -9389,6 +9727,8 @@ classification, and re-judging it after a test fix) is answered by
 incident's own proposal named as "worth" adding.
 
 ## B091 — judge candidates by progress, not by time: auto per-candidate bound, per-test cadence hints, `os._exit` runner, `hung` outcome, `--rejudge`
+
+**Status: DONE (v6.2.0, 2026-09-13) — A1-A6 all shipped: auto `budget_per_candidate`, materialized liveness plugin + `os._exit` wrapper, active `LivenessRunner` monitoring with `hung` outcome, progress test events, `--rejudge`/`--rejudge-outcome`. CHANGES.md 6.2.0; P7 round-1 review findings folded in the same release.**
 
 **Provenance:** vbpub `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md`
 D-17/D-23 (operator directive 2026-09-12: fixed budgets fail on slow
@@ -9487,6 +9827,8 @@ via P7 (`assay-liveness`) per the controller's own mid-session instruction,
 during the same wave B091 shipped in. Follows B088 (resume identity, the
 mechanism this backlog row is about) and is a direct, live incident of it —
 not a hypothetical.
+
+**Status: DONE (v6.3.0, 2026-09-16) — `judge.mutation.identity_exclude` shipped: normalized POSIX-glob list, tagged digest, omitted key keeps B088's whole-tree identity byte-for-byte. CHANGES.md 6.3.0 (release date 2026-09-16; the implementation commit itself is dated 2026-09-13, three days before its release).**
 
 **Status:** **IMPLEMENTED in this change, 2026-09-13.**
 
@@ -9609,6 +9951,8 @@ backwards from what a checkpointed, resumable process should reward.
 
 ## B093 — P7 S1: liveness write guard and side-file cleanup
 
+**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — no fix landed; unlike sibling P7 items S6/B6-b/N3 (B096-B098), S1 is absent from every CHANGES.md entry.**
+
 **OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** Liveness materializes
 its plugin and candidate event/stdout/stderr files in the judged tree's
 `.assay/liveness/` without an ignore guard or cleanup. The estate ignores
@@ -9623,6 +9967,8 @@ candidate count readback and any explicitly retained diagnostic artifacts.
 Sync README, DESIGN-GUIDE and CONSUMERS with the selected policy.
 
 ## B094 — P7 S3 / N5: unknown `--rejudge` reason mapping
+
+**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — explicitly excluded from the B091 P7 round-1 fold-in commit (S2,S4,S7-S10 only); no later CHANGES.md entry addresses it.**
 
 **OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** An unknown candidate
 id correctly refuses with the right message, but reports
@@ -9639,6 +9985,8 @@ user documents if the public reason vocabulary or compatibility changes.
 
 ## B095 — P7 S5: monitor hot-loop cost and unbounded CPU history
 
+**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — explicitly excluded from the B091 P7 round-1 fold-in commit; no later CHANGES.md entry addresses it.**
+
 **OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** The one-second loop
 rescans event/proc data and retains an unbounded `cpu_samples` list, including
 for unbounded candidates. Trim history while retaining the sample needed
@@ -9652,6 +10000,8 @@ accounting and `/proc` failure behavior. Measure before/after cost against
 large events files; no timing threshold replaces those behavioral checks.
 
 ## B096 — P7 S6: derive `--rejudge-outcome` help from the vocabulary
+
+**Status: DONE (v6.3.0, 2026-09-16) — confirmed on main (`cli.py` derives help from `MUTATION_BUCKETS`), commit 6f76e471, CHANGES.md 6.3.0 (corrects an earlier 2026-09-13 mis-date in this file, verified against CHANGES.md's own `## [6.3.0] - 2026-09-16` header). NOTE: the branch named `assay-b096` was later reused for an UNRELATED, unmerged, abandoned P25/Topos-qualification repair (commit `84baffb4` onward) — see the audit report's WIP-branch section; that branch's later work has nothing to do with this entry, which is fully shipped.**
 
 **FIXED in this change, 2026-09-13.** CLI help now derives accepted canonical
 bucket spellings from `assay.verdict.MUTATION_BUCKETS` through a helper at
@@ -9667,6 +10017,8 @@ Oracle: real CLI help names every accepted bucket and the alias, and a
 temporary vocabulary addition changes the help without a second edit.
 
 ## B097 — P7 B6-b: pid stamping and per-process xdist liveness parsing
+
+**Status: DONE (v6.3.0, 2026-09-16) — commit 1daf6e62, merged to main via 260c4013, CHANGES.md 6.3.0 (corrects an earlier 2026-09-13 mis-date, per CHANGES.md's own `## [6.3.0] - 2026-09-16` header).**
 
 **FIXED in this change, 2026-09-13.** One events file receives every xdist
 worker's and controller's session records. The materialized plugin now stamps
@@ -9694,6 +10046,8 @@ traceability and deferred verification notes.
 
 ## B098 — P7 N3: `mutation_pct` omits `crashed` in its enumeration
 
+**Status: DONE (v6.3.0, 2026-09-16) — CHANGES.md 6.3.0 "B098 documents every excluded mutation bucket" (corrects an earlier 2026-09-13 mis-date, per CHANGES.md's own `## [6.3.0] - 2026-09-16` header).**
+
 **FIXED in this change, 2026-09-13.** The public `mutation_pct` docstring
 now names every excluded canonical bucket — `crashed`, `budget_exceeded`,
 `equivalent`, and `hung` — while its existing `killed / (killed + survived)`
@@ -9706,6 +10060,8 @@ Oracle: enumerate every excluded bucket, including `crashed`, against
 empty-denominator behavior unchanged.
 
 ## B099 — a JSON `null` mutation resume record crashes the native R2 lane before it can write a verdict
+
+**Status: DONE (v6.4.0, 2026-09-17) — CHANGES.md 6.4.0 "reject non-object JSON mutation resume records ... (B099, RG-49 review B9)" (corrects an earlier v6.3.1/2026-09-16 mis-citation: `[6.3.1] - 2026-09-16` in CHANGES.md contains only an unrelated debian-install-v2 testing entry; the B099 fix is under CHANGES.md's own `## [6.4.0] - 2026-09-17` header, alongside the RG-49 review B11 follow-up in the same section). ID-COLLISION WARNING: the unmerged branch `assay-b099-p35-repair` (and siblings `assay-next-wave`, `review/assay-p35-execution-interruption-boundary`) reassigns frontmatter id `B099` to an unrelated "execution interruption boundary" design (formerly slotted as B100), and its `decisions.md` diff grafts new content onto id A-448 too. The branch's merge base (`a1050e58`) predates this entry and A-448 on main; a three-dot diff shows the branch only ADDS its own B099 section and A-448/A-449/A-450 rows, so a real merge would produce a duplicate/conflicting id here, not delete this entry's body (an earlier two-dot-diff reading of this was wrong — see the audit report's "ID collisions" section). See the audit report's WIP-branch section and stub entry B103 below before touching this id.**
 
 **Found:** RG-49 final adversarial review B9, 2026-09-16. A present,
 bounded state file containing valid JSON `null` passed JSON decoding and was
@@ -9741,6 +10097,8 @@ also pins this guarded site by name, retaining both the stale-exemption
 refusal and protection against silent guard removal.
 
 ## B100 — bounded operator report for live gate progress, verdicts, errors, and retained evidence
+
+**Status: OPEN (2026-09-19) — design proposal only; no `assay analyze report` subcommand exists in `cli.py` on main.**
 
 **Proposed by:** estate release review, 2026-09-19. **Status: OPEN; backlog
 only.** Assay already has separate `analyze progress` and `analyze verdict`
@@ -9810,6 +10168,8 @@ prove that no report status is derived from the mere existence of a path or
 from a child log line, and that a report never writes into the judged tree.
 
 ## B101 — `snapshot_selection = "repository"`'s `max_total_object_bytes` measures the full reachable git-HISTORY closure, not the current tree; the 1GiB default is unconfigurable and has no path-scoping, so an actively-developed repo eventually breaches it permanently
+
+**Status: OPEN (2026-09-23) — direction decided at operator design interview (4 numbered decisions below); not yet carved or implemented on main.**
 
 **Reported by:** dstdns controller, 2026-09-22 (`dstdns@6dd368d7`..`dstdns@285b3965`
 range, provenance: `dstdns/nyxloom-trove/CONTROLLER-BRIEF.md` "operator caps
@@ -9923,3 +10283,190 @@ should interview the assay maintainer/operator on what `snapshot_selection =
 "repository"` isolation is actually meant to guarantee before choosing a
 direction, rather than implementing either sketch above as if it were already
 agreed.
+
+### Operator design interview held, 2026-09-23 — direction decided
+
+**Measured on dstdns `f1b179be` (5,105 commits):** reachable closure 1084.4 MiB
+uncompressed but only **48.2 MiB on disk**; the judged commit's own tree is
+47.4 MiB. Two append-heavy ledgers account for 60% of the uncompressed total
+(`decisions.md` 386 MiB over 501 versions, `CONTROLLER-BRIEF.md` 258 MiB over
+538). **Second wall, not in the original report:** `max_objects` (100,000) also
+counts the full history closure — dstdns is at 44,007 objects and added ~2,600
+commits in the preceding 30 days, so a byte-limit-only fix moves the wall
+~2–3 months out rather than removing it.
+
+**Correction to the original framing:** the closure is not only *measured*,
+it is *transferred* — `prepare_snapshot` streams every reachable object into
+the private seed (A-184/A-185). So swapping the accounting to `--no-walk`
+alone would yield a seed whose commit references absent parents; the fix
+changes what the seed contains, not just what is counted.
+
+**Why A-185's history requirement is relaxed.** A-185 justified the full
+closure with "omitting history breaks real build/version commands that
+inspect Git". But the materialized snapshot is a detached HEAD with **no refs
+and no tags** (`isolation.py` writes `HEAD` as a bare OID), so tag-based
+version derivation (`git describe`, setuptools-scm, hatch-vcs) already cannot
+work inside a snapshot today. What full history actually buys is only
+ancestor walks (`git log`, `rev-list --count`, in-snapshot `merge-base`).
+dstdns: 105 of 121 lanes are `whole_target` (need no history at all); 16 are
+`changed_lines` (need the resolved base commit, not the history between);
+no lane uses git-derived versioning. Assay's job is to test the judged tree
+and write a verdict; carrying every historical revision of every tracked
+file into each lane's seed is cost without a consumer.
+
+**Decisions:**
+
+1. **Default seed = judged commit + (for `changed_lines`) the pre-snapshot
+   resolved base commit**, as a well-defined shallow repository (boundary
+   recorded in the seed's `shallow` file). This is distinct from A-185's
+   refusal of a *shallow SOURCE* (where "reachable" is ambiguous): here the
+   seed's boundary is chosen by assay and exact. In-snapshot base handling
+   must consume the carried resolved OID and never re-run `merge-base`
+   across the boundary (see the unmerged `assay-b096` branch's
+   `check_resolved_base_is_head`, commit `84baffb4`, for prior art on
+   exactly this seam).
+2. **Full history becomes a per-lane opt-in** (e.g.
+   `isolation.snapshot_history = "full"`), for a lane whose own commands
+   walk ancestry. Default is the shallow seed above.
+3. **Limits count what is transferred/materialized, not history:**
+   object/byte ceilings apply to the seed's actual contents (with the
+   shallow default, ≈ the judged tree); keep `max_pack_bytes` as the
+   transfer bound; add an explicit ceiling on the judged tree's total blob
+   bytes (today that is bounded only incidentally, by the history total
+   always being larger).
+4. **`SnapshotLimits` is configurable in `assay.toml`** (project-level
+   `[isolation.limits]`, per-field, `DEFAULT_SNAPSHOT_LIMITS` as fallback,
+   validated by the dataclass's existing `__post_init__`) — the escape
+   hatch for a lane that opts into full history or has a genuinely large
+   tree.
+
+Oracle additions: the fixture above must PASS under default limits with the
+shallow seed and no override; a `snapshot_history = "full"` lane on the same
+fixture must still FAIL under defaults and PASS with a raised
+`[isolation.limits]`; a `changed_lines` lane whose symbolic base is several
+commits behind HEAD must produce the same added-line set as today; a
+`max_objects` fixture (many small commits) must PASS by default.
+
+**Audit addendum, 2026-09-23.** Operator confirmed the shallow-seed direction
+above. P1 (the pre-snapshot resolved-base seam, ported from the deleted
+`assay-b096` branch's `84baffb4`, extended to both R3 canary snapshot halves)
+is committed on branch `assay-b101-p1-resolved-base` (`36f8551c`, evidence
+carried in `6bd0ed51`); not yet reviewed/merged.
+
+## B102 — higher-rigor lanes refuse `DIRTY_TREE` for ANY uncommitted path in the repository, although a snapshot lane judges the committed tree and no uncommitted byte can reach it
+
+**Status: OPEN (2026-09-23) — direction decided at operator design interview; not yet carved or implemented on main.**
+
+**Reported by:** operator + dstdns friction, 2026-09-23 (companion to B101).
+**Status: OPEN; direction decided (operator, 2026-09-23); not carved.**
+
+### Mechanism
+
+`runner.py`'s pre-snapshot guard calls `git.dirty_paths(repo)` —
+`git status --porcelain` over the WHOLE repository, unscoped — and refuses
+every R1+ lane with `NO_MEASUREMENT/DIRTY_TREE` if anything at all is
+uncommitted. For a snapshot lane this protects no verdict: the snapshot is
+the resolved commit, so an uncommitted path cannot influence the result. It
+only guards against an operator believing uncommitted work was tested. In
+practice (dstdns) a controller's live edit to a ledger file such as
+`nyxloom-trove/CONTROLLER-BRIEF.md` refuses every lane in the project.
+
+### Decided direction
+
+1. **Declared exclude list (structural default):** a project-level glob list
+   (e.g. `[isolation] dirty_ignore = ["nyxloom-trove/**"]`) whose uncommitted
+   changes do not refuse a snapshot lane. Reuse B092's
+   `identity_exclude` POSIX-glob grammar/normalization rather than a second
+   dialect. The verdict still records the ignored dirty paths.
+2. **Escape hatch `--allow-dirty`:** the run proceeds despite dirty paths
+   outside the exclude list; the verdict carries a machine-readable marker
+   (the overridden dirty path list) and a diagnostic. `assay verify` and
+   attestation consumers can **refuse** an `--allow-dirty` verdict (default
+   refuse for attestation/release receipts; verification reports it
+   explicitly). Schema impact must be assessed at carve time.
+3. **Scope:** snapshot (R1+) lanes. In-place (non-snapshot) lanes also run a
+   post-command dirty check to catch lane-written files; extending the
+   override there needs a pre/post dirty-set comparison so pre-existing dirt
+   is not confused with lane output — carve decides whether that is in scope
+   or a follow-up.
+4. **Explicitly NOT in scope:** judging the uncommitted working tree itself
+   (a synthetic commit). Verdict identity is bound to a real commit
+   throughout provenance/attestation/verify; committing on a worktree branch
+   is already cheap.
+
+Oracle sketch: repo with a dirty `ledger.md` matched by `dirty_ignore` →
+lane runs, verdict lists the ignored path; dirty `src/x.py` without flag →
+`DIRTY_TREE` (unchanged); same with `--allow-dirty` → lane runs, verdict
+carries the override marker, and `assay verify`/attestation refuse it per
+policy; a snapshot-lane verdict's judged content is byte-identical with and
+without the dirty file present.
+
+## B103 — execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL
+
+**Status: OPEN — design carved on unmerged branch `assay-b099-p35-repair` (siblings: `assay-next-wave`, `review/assay-p35-execution-interruption-boundary`), ID collision: the branch calls this design B099 (and grafts new content onto decision id A-448) — only A-448 is already real and different on main (main's own A-448 is "Ship review evidence creation and consumption as `assay analyze`"); the branch's own A-449/A-450 do not exist on main today (main's decisions.md ends at A-448), so they do not yet collide with anything, though main could independently claim those numbers before this branch is ever reconciled. The branch's merge base (`a1050e58`) predates main's real B099 and A-448 entirely — both were added to main independently, after the branch diverged. See the audit report's "ID collisions" section for the full mechanism. Renumber to B103/fresh decision ids on merge; do not carve or implement under the branch's own B099/A-448 spelling.**
+
+This stub only reserves the id and points at the real material; it does not
+copy the branch's design text (per the audit's own instruction, to avoid this
+file carrying an unreviewed, currently-NOT-READY design as if it were settled
+backlog prose).
+
+**Pointers:**
+- Handoff: `assay/nyxloom-trove/handoffs/assay-P35-execution-interruption-boundary.md`
+  on branches `assay-next-wave` (carved), `assay-b099-p35-repair` (repair
+  attempt), and `review/assay-p35-execution-interruption-boundary` (review).
+- Branch commits of interest: `bcb70320` (carve interruption receipt
+  boundary), `c132d598` (reserve next interruption package id), `40b2106e`
+  (repair P35 interruption handoff), `6d34f0d7` (close P35 residual handoff
+  blockers, `assay-b099-p35-repair` tip).
+- Independent adversarial review, same package: `9c9f6d99` (reject P35
+  interruption design — NOT READY) then `9bc3ea84` (fix-verification review
+  of the `40b2106e` repair — **still NOT READY**: findings F-1, F-5, F-7, F-8
+  not closed). `assay-b099-p35-repair`'s later `6d34f0d7` claims to close the
+  residual findings but was never independently re-reviewed after that claim
+  — treat the package as NOT READY until a fresh review says otherwise.
+- Companion, cross-repo handoffs the design depends on (per its own D-450,
+  OPEN): `run-gate-project/nyxloom-trove/handoffs/rungate-P36-execution-interruption-producer.md`
+  and `scripts/cgroup-profiler/nyxloom-trove/handoffs/cgprofile-P07-execution-interruption-kill-handshake.md`.
+
+## B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main
+
+**Status: OPEN (filed 2026-09-23) — `tests/test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness` FAILS against unmodified `main` (`c4dbc4f8`); cause unexamined.**
+
+**Found:** controller run, 2026-09-23, an ordinary serial full `tests/` run on
+this host (this test is Docker-gated and needs a real `/workspaces/dstdns`
+checkout, so it only runs where both this repo and dstdns are present
+side-by-side; it happened to be one of those hosts).
+
+```
+QualificationError: the normalized verdict differs from the frozen witness at
+…/carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json
+1 failed in 28.55s
+```
+
+**Three unexamined candidate causes, not yet distinguished:**
+1. **Witness staleness** — the frozen witness file is named `...-v6-witness.json`
+   while the verdict schema has moved on to v11 since (B070); the witness may
+   simply predate a schema change this test was never updated to expect.
+2. **dstdns pin drift** — the test qualifies against a real `/workspaces/dstdns`
+   checkout; at the time of this run dstdns's own `HEAD` was `4e2069ff`, not
+   necessarily the exact commit this test's witness was frozen against.
+3. **A real regression** — the SQL/DDL R2 lane (B001) itself may have
+   changed behavior since the witness was captured.
+
+**Hazard worth recording independent of root cause:** this is a
+Docker-reaching test that runs BY DEFAULT in the local `pytest tests/` suite
+whenever a Docker socket is present — it is not opt-in, and a contributor
+running the full local suite on a host with both a Docker socket and a
+`/workspaces/dstdns` checkout will hit this without expecting a
+cross-repo-dependent, container-backed test to be in scope.
+
+### Acceptance
+
+- [ ] root cause identified (witness staleness / dstdns pin drift / real
+      regression), distinguished from the other two candidates above;
+- [ ] if witness staleness: the witness regenerated against the current
+      schema and dstdns pin, with the regeneration procedure documented;
+- [ ] if a real regression: a fix, plus confirmation the fixed lane still
+      matches a freshly-captured witness;
+- [ ] the "Docker-reaching test runs by default in the local suite" hazard
+      is at minimum documented, if not also gated behind an explicit marker.
