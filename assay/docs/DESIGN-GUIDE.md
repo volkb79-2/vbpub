@@ -1713,6 +1713,9 @@ defaults when `[isolation.limits]` is absent:
 ```toml
 schema_version = 2
 
+[isolation]
+dirty_ignore = ["nyxloom-trove/**", ".assay/**"]
+
 [isolation.limits]
 max_objects = 100000
 max_total_object_bytes = 1073741824
@@ -1730,11 +1733,39 @@ different private object-transfer policy and make `assay plan` disagree with
 `assay run`; an older assay fails closed on the new top-level table, so the
 consumer must repin before committing it.
 
-The verdict schema deliberately does not invent a new wire field in this
-implementation while the wave's separate v12/B079 decision is pending. The
-effective policy is still authoritative in the loaded lane and applied by
-both `run` and `plan`; the schema decision is recorded before the next wave
-adds any verdict marker.
+### Snapshot dirty-tree policy (B102)
+
+The project-level `[isolation].dirty_ignore` list reuses B092's normalized,
+repo-top-relative POSIX glob grammar. It is read from the lane file that the
+operator supplied, never from `.git/info/exclude` or another unversioned
+source. A matching path is recorded as `ignored_dirty_paths`; it is not folded
+into a clean-tree claim.
+
+The loaded `assay.toml` is a protected input even when a glob matches it and
+even when `--allow-dirty` is supplied. The loader reads that file from the
+working tree, so allowing its edit would let an uncommitted policy choose the
+rules for a verdict labelled with a different commit. This wave keeps lane
+loading on the working tree and fails `NO_MEASUREMENT/DIRTY_TREE`; switching to
+committed-blob loading is a separate design with different operator semantics.
+
+`assay run --allow-dirty` and `assay plan --allow-dirty` admit only unignored
+pre-existing dirt for R1+ snapshot lanes. The verdict records those paths as
+`overridden_dirty_paths` in a v12 `worktree_integrity` object. R0 and in-place
+lanes retain their strict/pre-post policy because an override there would need
+a separate pre/post dirty-set proof. `assay verify` accepts a structurally
+valid marker but warns; release receipt consumers refuse non-empty override
+lists by default. `run-gate.py --allow-dirty` remains an independent outer
+clean-tree policy and is not forwarded to assay.
+
+### Liveness side-file placement (B093)
+
+Native R2 liveness still records plugin identity and `tests_completed` in the
+verdict/progress evidence, but the plugin and per-candidate side files are
+created under a temporary directory outside the live checkout for the complete
+higher-rigor run. Cleanup occurs after the progress evidence has been read.
+This is a relocation/cleanup decision rather than a load-time warning: the
+next run cannot inherit `.assay/liveness` residue and falsely refuse its
+snapshot preflight, while the verdict retains the evidence needed for review.
 
 **A duplicated compatibility fact, stated here because it is the reason a
 consumer cannot silently straddle both versions.** The lane schema bump to 2
@@ -2345,7 +2376,7 @@ documented as **declared by artifact, not verified** — it is not a `helpers[]`
 entry, because `helpers[]` records tools Assay itself invoked.
 
 **`judgment.r2.discarded` used to stand beside `producer_tool` in exactly that
-tier. Since schema v11 it does not, and how it got out is the more useful
+tier. Since schema v12 it does not, and how it got out is the more useful
 half of the story** (B051/DA-D4/DA-R26, completed by **B070**).
 
 Assay always *derived* the fact at ingest — it lists the report's own

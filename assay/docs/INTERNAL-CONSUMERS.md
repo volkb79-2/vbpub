@@ -22,9 +22,12 @@ No artifact, no pin, no cache:
 The editable source also carries the current P22 lane surface. If an internal
 project adopts B101's shallow-seed policy, its checked-in `assay.toml` can use
 the project-level `[isolation.limits]` table and a lane can opt into
-`snapshot_history = "full"`; the editable install reads those keys from this
-worktree's shipped loader. An older pinned zipapp fails closed on the new keys,
-so these settings must land together with the worktree that installs them.
+`snapshot_history = "full"`; B102's project-level `dirty_ignore` and the
+`assay run/plan --allow-dirty` flags are available from the same source. The
+editable install reads those keys from this worktree's shipped loader. An older
+pinned zipapp fails closed on the new keys, so these settings must land together
+with the worktree that installs them. The `run-gate.py --allow-dirty` flag is an
+independent outer clean-tree decision and is not forwarded to assay.
 
 In a `run-gate.toml` lane this is selected simply by omitting both
 `assay_command` and `pins`; run-gate performs the editable install and invokes

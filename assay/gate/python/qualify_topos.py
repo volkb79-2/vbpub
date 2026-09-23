@@ -99,13 +99,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # under the contract that existed when it proved it. The two W6 templates are
 # W5's own pair with `schema_version` 9 -> 10 and nothing else: the v10 cut
 # added no field that a P25 R0,R2 lane emits.
-# B070 (the v11 discarded-mutants cut) advances it a SIXTH time, to W7's
-# `p25-*-v11-template.json` pair, by the identical rule. The two W7 templates
-# are W6's own pair with `schema_version` 10 -> 11 and nothing else: v11
+# B101 (the v12 isolation/dirty provenance cut) advances it a SEVENTH time, to
+# W8's `p25-*-v12-template.json` pair, by the identical rule. The two W8
+# templates are W7's own pair with `schema_version` 11 -> 12 and the P3
+# marker absent from native P25 output: v12
 # reshapes `judgment.r2.discarded`, which is FORBIDDEN under `producer =
 # "native"`, and every P25 lane is native -- so the cut adds no field a P25
 # R0,R2 lane emits either. W6 stays frozen and unedited beside the rest.
-_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W7" / "expected"
+_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W8" / "expected"
 _QUALIFICATION_MANIFEST = (
     _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P25" / "qualification-manifest.json"
 )
@@ -933,8 +934,8 @@ def normalize_artifact(
 ) -> dict[str, Any]:
     """Replace only runtime identities whose real value is checked separately."""
     normalized = copy.deepcopy(dict(document))
-    if normalized.get("schema_version") != 11:
-        raise QualificationError("artifact schema_version is not the current v11 contract")
+    if normalized.get("schema_version") != 12:
+        raise QualificationError("artifact schema_version is not the current v12 contract")
     if normalized.get("assay_version") != assay_version:
         raise QualificationError("artifact assay_version is not the installed version")
     _check_judge_provenance(normalized, assay_version=assay_version)
@@ -990,8 +991,8 @@ def compare_complete_artifact(
         pytest_log=pytest_log,
     )
     expected = json.loads(template.read_text(encoding="utf-8"))
-    if expected.get("schema_version") != 11:
-        raise QualificationError("locked template is not a v11 successor")
+    if expected.get("schema_version") != 12:
+        raise QualificationError("locked template is not a v12 successor")
     if normalized != expected:
         differing = sorted(
             key
@@ -1256,7 +1257,7 @@ def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Pa
         pytest_log=pytest_log,
     )
     expected = json.loads(
-        (_EXPECTED_ROOT / "p25-missing-v11-template.json").read_text(encoding="utf-8")
+        (_EXPECTED_ROOT / "p25-missing-v12-template.json").read_text(encoding="utf-8")
     )
     differing = sorted(key for key in set(normalized) | set(expected) if normalized.get(key) != expected.get(key))
     if not differing:
@@ -1293,7 +1294,7 @@ def _check_universal_pass_mutation(missing_result: ScenarioResult) -> None:
     try:
         compare_complete_artifact(
             actual=forged,
-            template=_EXPECTED_ROOT / "p25-missing-v11-template.json",
+            template=_EXPECTED_ROOT / "p25-missing-v12-template.json",
             assay_version=forged["assay_version"],
             base_oid=missing_result.base_oid,
             head_oid=missing_result.head_oid,
@@ -1341,8 +1342,8 @@ def qualify(
     primary = results[PRIMARY.name]
     missing = results[MISSING.name]
     for result, template_name in (
-        (primary, "p25-pass-v11-template.json"),
-        (missing, "p25-missing-v11-template.json"),
+        (primary, "p25-pass-v12-template.json"),
+        (missing, "p25-missing-v12-template.json"),
     ):
         # The version and the witness/log paths come from the committed plan
         # (the owner this scenario was run with, and the deterministic scratch

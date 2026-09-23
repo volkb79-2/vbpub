@@ -497,6 +497,33 @@ def test_project_snapshot_limits_are_loaded_and_invalid_values_refused(project: 
         load_lane_file(project.write(malformed))
 
 
+def test_project_dirty_ignore_reuses_repo_relative_posix_glob_grammar(
+    project: Project,
+):
+    text = (
+        "schema_version = 2\n\n"
+        "[isolation]\n"
+        'dirty_ignore = ["nyxloom-trove/**", "ledger-?.md"]\n\n'
+        + _lane_text(rigor='["R0", "R1"]', isolation_block=_repository_block()).split(
+            "schema_version = 2\n\n", 1
+        )[1]
+    )
+    loaded = load_lane_file(project.write(text))
+    assert loaded.dirty_ignore == ("nyxloom-trove/**", "ledger-?.md")
+
+    for value, pattern in [
+        ('["/absolute/**"]', "relative"),
+        ('["../outside"]', "path component"),
+        ('["ledger\\\\*.md"]', "backslash"),
+    ]:
+        bad = text.replace(
+            'dirty_ignore = ["nyxloom-trove/**", "ledger-?.md"]',
+            f"dirty_ignore = {value}",
+        )
+        with pytest.raises(LaneConfigError, match=pattern):
+            load_lane_file(project.write(bad))
+
+
 # --- direct construction: the shapes TOML cannot spell, or that prove the ------
 # --- SAME __post_init__ mechanism runs for BOTH the loader and a direct caller
 

@@ -217,6 +217,22 @@ def test_verdict_error_is_valid_data_and_binary_hash_is_exact(repository, tmp_pa
     assert (code, err) == (0, "") and "ERROR" in text and "recorded exit 2" in text
 
 
+def test_release_receipt_refuses_a_verdict_with_an_allow_dirty_override(
+    repository, tmp_path
+):
+    root, head, _tree = repository
+    path = verdict(tmp_path, head)
+    document = json.loads(path.read_text())
+    document["worktree_integrity"] = {
+        "ignored_dirty_paths": ["ledger.md"],
+        "overridden_dirty_paths": ["src/uncommitted.py"],
+    }
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(ValueError, match=r"--allow-dirty overrides"):
+        analysis.inspect_verdict(path, head)
+
+
 @pytest.mark.parametrize("name", ["r1_pass", "r1_fail_uncovered_branches", "r2_pass_with_judgment"])
 def test_human_summary_retains_claim_and_measurements(tmp_path, name):
     head = "a" * 40
@@ -365,7 +381,7 @@ def test_verdict_inspection_reuses_real_verifier_and_refuses_false_certification
     elif problem == "duplicate":
         text = text.replace('"exit_code": 0', '"exit_code": 0, "exit_code": 0')
     elif problem == "schema":
-        text = text.replace('"schema_version": 11', '"schema_version": 10')
+        text = text.replace('"schema_version": 12', '"schema_version": 11')
     elif problem == "rollup":
         text = text.replace('"outcome": "PASS"', '"outcome": "FAIL"')
     else:

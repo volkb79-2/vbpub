@@ -121,9 +121,9 @@ heading. See `nyxloom-trove/reports/assay-BACKLOG-AUDIT-2026-09-23.md` for
 the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Wave "B101 isolation" (next; packages in B101's "Wave plan" section)**
-- B101 — snapshot seed carries/budgets the full history closure — DONE (P2 implemented in `5bf832a4`, pyflakes gate correction in `4ed15f31`; tester-unified PASS on `4ed15f31`)
-- B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — OPEN (direction decided)
-- B093 — P7 S1: liveness write guard / side-file cleanup — OPEN (joins the wave: liveness side files land in the judged tree)
+- B101 — snapshot seed carries/budgets the full history closure — DONE (P2 implemented in `5bf832a4`, pyflakes gate correction in `4ed15f31`; P3/P4 implemented in the B101 wave worktree; provisional merge follows review)
+- B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — DONE in the B101 wave worktree (v12 dirty provenance, `dirty_ignore`, and snapshot-only `--allow-dirty`; provisional merge follows review)
+- B093 — P7 S1: liveness write guard / side-file cleanup — DONE in the B101 wave worktree (higher-rigor liveness files use an external temporary directory and cleanup; provisional merge follows review)
 - B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main — DONE (`c6a97f1e`; tester-unified PASS on `4ed15f31`)
 - B082 — a lane's own `assay.toml` cannot be untracked for a disposable Go module root — DONE (CONSUMERS.md guidance in `5bf832a4`; tester-unified PASS on `4ed15f31`)
 - B083 — shallow-clone refusal undocumented for Go — DONE (consumer docs in `5bf832a4`; tester-unified PASS on `4ed15f31`)
@@ -9958,9 +9958,9 @@ backwards from what a checkpointed, resumable process should reward.
 
 ## B093 — P7 S1: liveness write guard and side-file cleanup
 
-**Status: OPEN — scheduled into the B101 isolation wave (operator triage 2026-09-23: liveness side files land in the judged tree, the same surface B102's dirty-tree rules govern); was deferred by RW-53/RW-57, 2026-09-13 filing — no fix landed; unlike sibling P7 items S6/B6-b/N3 (B096-B098), S1 is absent from every CHANGES.md entry.**
+**Status: DONE in the B101 isolation wave worktree — higher-rigor liveness files use an external temporary directory, are removed after `tests_completed` is read, and their bounded evidence remains in the verdict/progress surface.**
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** Liveness materializes
+**Previously open, deferred by RW-53/RW-57 (2026-09-13 filing).** Liveness materialized
 its plugin and candidate event/stdout/stderr files in the judged tree's
 `.assay/liveness/` without an ignore guard or cleanup. The estate ignores
 `.assay/`, but external consumers may not. Define a load-time refusal/WARN
@@ -9971,7 +9971,9 @@ outside the B6 minimum repair.
 Oracle: construct both an ignored and an unignored destination, prove the
 appropriate diagnostic before writes, and prove cleanup preserves the
 candidate count readback and any explicitly retained diagnostic artifacts.
-Sync README, DESIGN-GUIDE and CONSUMERS with the selected policy.
+The B101 wave implements the selected external-temporary-directory policy;
+runner tests prove the checkout has no liveness side tree after the run, and
+README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the policy.
 
 ## B094 — P7 S3 / N5: unknown `--rejudge` reason mapping
 
@@ -10176,7 +10178,7 @@ from a child log line, and that a report never writes into the judged tree.
 
 ## B101 — `snapshot_selection = "repository"`'s `max_total_object_bytes` measures the full reachable git-HISTORY closure, not the current tree; the 1GiB default is unconfigurable and has no path-scoping, so an actively-developed repo eventually breaches it permanently
 
-**Status: DONE (P2 in `5bf832a4`, lint correction in `4ed15f31`; tester-unified PASS on `4ed15f31`) — the default shallow seed, full-history opt-in, project limits, and judged-tree blob ceiling are implemented in the worktree; merge/release awaits the separate P3 operator decision.**
+**Status: DONE in the B101 isolation wave worktree — P2 is in `5bf832a4` with the lint correction in `4ed15f31`; P3 dirty provenance and P4 documentation are implemented here, with provisional merge after review.**
 
 **Reported by:** dstdns controller, 2026-09-22 (`dstdns@6dd368d7`..`dstdns@285b3965`
 range, provenance: `dstdns/nyxloom-trove/CONTROLLER-BRIEF.md` "operator caps
@@ -10413,10 +10415,10 @@ part can ship alone.
 
 ## B102 — higher-rigor lanes refuse `DIRTY_TREE` for ANY uncommitted path in the repository, although a snapshot lane judges the committed tree and no uncommitted byte can reach it
 
-**Status: OPEN (2026-09-23) — direction decided at operator design interview; not yet carved or implemented on main.**
+**Status: DONE in the B101 isolation wave worktree (2026-09-23) — direction implemented and covered by focused runner, config, verifier, receipt, and frozen v12 acceptance tests; provisional merge follows review.**
 
 **Reported by:** operator + dstdns friction, 2026-09-23 (companion to B101).
-**Status: OPEN; direction decided (operator, 2026-09-23); not carved.**
+**Status: DONE in the B101 isolation wave worktree; the operator's v12 decision is recorded as A-452--A-455.**
 
 ### Mechanism
 
@@ -10452,12 +10454,13 @@ practice (dstdns) a controller's live edit to a ledger file such as
    throughout provenance/attestation/verify; committing on a worktree branch
    is already cheap.
 
-Oracle sketch: repo with a dirty `ledger.md` matched by `dirty_ignore` →
+Oracle: repo with a dirty `ledger.md` matched by `dirty_ignore` →
 lane runs, verdict lists the ignored path; dirty `src/x.py` without flag →
 `DIRTY_TREE` (unchanged); same with `--allow-dirty` → lane runs, verdict
 carries the override marker, and `assay verify`/attestation refuse it per
 policy; a snapshot-lane verdict's judged content is byte-identical with and
-without the dirty file present.
+without the dirty file present. Focused tests exercise all three paths,
+including refusal when the loaded `assay.toml` itself is dirty.
 
 ## B103 — execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL
 

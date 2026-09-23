@@ -13,11 +13,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - feat(assay): make P22 seeds shallow by default, add explicit full-history
   lane opt-in, project-level snapshot limits, and a judged-tree blob ceiling
   (B101)
+- feat(assay): record snapshot dirty-path provenance, support declared
+  `dirty_ignore` globs and the snapshot-only `--allow-dirty` override, and
+  refuse release receipts for overridden verdicts (B102)
+- feat(assay): keep higher-rigor liveness side files outside the checkout and
+  retain their bounded evidence in the verdict (B093)
+- feat(assay): distinguish ingested compile and runtime discards with the
+  `discard_reason` vocabulary (B079)
 
 ### Documentation
 - docs(assay): document shallow source/seed distinctions, snapshot limits,
   Go lane-file cleanliness, source unshallowing, measured Go image support,
   and the current dstdns assay pin (B082-B084/B101)
+- docs(assay): document verdict schema v12, dirty-tree provenance, liveness
+  cleanup, and ingested discard reasons (B079/B093/B102)
 
 ### Fixed
 - fix(assay): refresh the W3 dstdns SQL witness for the shipped v11 liveness

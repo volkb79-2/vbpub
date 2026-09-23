@@ -1302,6 +1302,11 @@ class LaneFile:
     #: different modules to keep the config boundary acyclic; the loader
     #: constructs this type lazily after TOML parsing.
     snapshot_limits: "SnapshotLimits"
+    #: Project-top-relative POSIX globs whose pre-existing dirt may be
+    #: recorded rather than rejected by snapshot lanes when the operator
+    #: explicitly opts in.  This is deliberately separate from the lane's
+    #: own isolation table: it is project policy, not a per-lane escape hatch.
+    dirty_ignore: tuple[str, ...] = ()
 
     def lane(self, name: str) -> Lane:
         try:
@@ -1331,8 +1336,10 @@ def find_lane_file(start: Path | None = None) -> Path:
     )
 
 
-def _load_project_snapshot_limits(value: Any, file_path: Path) -> "SnapshotLimits":
-    """Load optional project-level ``[isolation.limits]`` policy.
+def _load_project_snapshot_limits(
+    value: Any, file_path: Path
+) -> tuple["SnapshotLimits", tuple[str, ...]]:
+    """Load optional project-level ``[isolation]`` policy.
 
     The isolation module owns the bounds and its ``__post_init__`` is the
     single validation authority.  This function only closes the TOML grammar,
@@ -1343,23 +1350,26 @@ def _load_project_snapshot_limits(value: Any, file_path: Path) -> "SnapshotLimit
     from .isolation import DEFAULT_SNAPSHOT_LIMITS, SnapshotLimits
 
     if value is None:
-        return DEFAULT_SNAPSHOT_LIMITS
+        return DEFAULT_SNAPSHOT_LIMITS, ()
     if not isinstance(value, dict):
         raise LaneConfigError(
             f"{file_path}: top-level 'isolation' must be a table containing "
-            f"[isolation.limits], got {_type_name(value)}"
+            f"dirty_ignore and/or [isolation.limits], got {_type_name(value)}"
         )
-    unknown = sorted(set(value) - {"limits"})
+    unknown = sorted(set(value) - {"limits", "dirty_ignore"})
     if unknown:
         raise LaneConfigError(
             f"{file_path}: unknown top-level isolation key(s): {', '.join(unknown)}; "
-            f"expected only: limits"
+            f"expected only: dirty_ignore, limits"
         )
+    dirty_ignore: tuple[str, ...] = ()
+    if "dirty_ignore" in value:
+        dirty_ignore = _load_posix_glob_list(
+            value["dirty_ignore"], str(file_path), "isolation.dirty_ignore"
+        )
+
     if "limits" not in value:
-        raise LaneConfigError(
-            f"{file_path}: top-level isolation table is missing required "
-            f"[isolation.limits]"
-        )
+        return DEFAULT_SNAPSHOT_LIMITS, dirty_ignore
     limits = value["limits"]
     if not isinstance(limits, dict):
         raise LaneConfigError(
@@ -1379,7 +1389,7 @@ def _load_project_snapshot_limits(value: Any, file_path: Path) -> "SnapshotLimit
     }
     fields.update(limits)
     try:
-        return SnapshotLimits(**fields)
+        return SnapshotLimits(**fields), dirty_ignore
     except ValueError as exc:
         raise LaneConfigError(
             f"{file_path}: invalid [isolation.limits] value: {exc}"
@@ -1412,7 +1422,9 @@ def load_lane_file(path: Path) -> LaneFile:
             f"expected only: schema_version, lanes, isolation"
         )
 
-    snapshot_limits = _load_project_snapshot_limits(document.get("isolation"), file_path)
+    snapshot_limits, dirty_ignore = _load_project_snapshot_limits(
+        document.get("isolation"), file_path
+    )
 
     if "lanes" not in document:
         raise LaneConfigError(
@@ -1441,6 +1453,7 @@ def load_lane_file(path: Path) -> LaneFile:
         schema_version=schema_version,
         lanes=MappingProxyType(lanes),
         snapshot_limits=snapshot_limits,
+        dirty_ignore=dirty_ignore,
     )
 
 
@@ -3682,50 +3695,58 @@ def _as_str_list(value: Any, where: str, field: str) -> list[str]:
     return list(value)
 
 
-def _load_identity_exclude(value: Any, where: str) -> tuple[str, ...]:
-    """Load the native-R2 ``identity_exclude`` POSIX glob list (B092).
+def _load_posix_glob_list(
+    value: Any, where: str, field: str
+) -> tuple[str, ...]:
+    """Load one declared POSIX glob list.
 
     Patterns are normalized with :class:`PurePosixPath` after rejecting
     ambiguous namespace spellings. The normalized values are matched against
-    normalized Git tree paths by ``fnmatch.fnmatchcase`` in the frozen-manifest
-    digest code; no local filesystem fact participates.
+    normalized repository paths by ``fnmatch.fnmatchcase``; no local
+    filesystem fact participates. B092's native mutation exclusion and P3's
+    project-level dirty policy intentionally share this grammar.
     """
-    patterns = _as_str_list(value, where, "judge.mutation.identity_exclude")
+    patterns = _as_str_list(value, where, field)
     normalized: list[str] = []
     for index, pattern in enumerate(patterns):
-        field = f"judge.mutation.identity_exclude[{index}]"
+        item_field = f"{field}[{index}]"
         if not pattern:
             raise LaneConfigError(
-                f"{where}: '{field}' must be a non-empty string"
+                f"{where}: '{item_field}' must be a non-empty string"
             )
         if "\\" in pattern:
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} must use POSIX separators; "
+                f"{where}: '{item_field}' {pattern!r} must use POSIX separators; "
                 f"backslashes are forbidden"
             )
         if "\x00" in pattern:
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} contains a NUL character"
+                f"{where}: '{item_field}' {pattern!r} contains a NUL character"
             )
         candidate = PurePosixPath(pattern)
         if candidate.is_absolute():
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} must be relative to the "
+                f"{where}: '{item_field}' {pattern!r} must be relative to the "
                 f"judged repository root"
             )
         components = pattern.split("/")
         if any(component in {".", ".."} for component in components):
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} contains a '.' or '..' "
+                f"{where}: '{item_field}' {pattern!r} contains a '.' or '..' "
                 f"path component"
             )
         normalized_pattern = candidate.as_posix()
         if not normalized_pattern or normalized_pattern == ".":
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} is not a usable POSIX glob"
+                f"{where}: '{item_field}' {pattern!r} is not a usable POSIX glob"
             )
         normalized.append(normalized_pattern)
     return tuple(normalized)
+
+
+def _load_identity_exclude(value: Any, where: str) -> tuple[str, ...]:
+    """Load the native-R2 ``identity_exclude`` POSIX glob list (B092)."""
+    return _load_posix_glob_list(value, where, "judge.mutation.identity_exclude")
 
 
 def _as_str_table(value: Any, where: str, field: str) -> dict[str, str]:

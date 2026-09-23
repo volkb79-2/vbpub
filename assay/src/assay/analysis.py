@@ -301,6 +301,15 @@ def inspect_verdict(path: Path, expected: str) -> dict:
     failures = verify_text(text)
     if failures:
         raise ValueError("invalid Assay verdict: " + "; ".join(failures))
+    integrity = document.get("worktree_integrity") or {}
+    overridden = integrity.get(
+        "overridden_dirty_paths", []
+    )
+    if overridden:
+        raise ValueError(
+            "verdict records --allow-dirty overrides; release receipts refuse "
+            f"these uncommitted paths by default: {', '.join(overridden)}"
+        )
     if document["commit"] != expected:
         raise ValueError(f"verdict commit {document['commit']} differs from {expected}")
     return {"validation": "schema-and-internal-consistency-plus-expected-commit",

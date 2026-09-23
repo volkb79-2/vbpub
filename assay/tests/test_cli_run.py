@@ -559,6 +559,7 @@ budget_per_candidate = "50s"
         "plugin": r2_judgment["liveness"]["plugin"],
     }
     assert r2_judgment["liveness"]["plugin"] is not None
+    assert not (git_repo.path / ".assay" / "liveness").exists()
 
 
 def test_run_liveness_classifies_a_busy_loop_as_budget_exceeded_not_hung(

@@ -149,6 +149,7 @@ from .verdict import (
     JudgmentResolved,
     RefusalDetail,
     SnapshotPolicy,
+    WorktreeIntegrity,
     Verdict,
     iso_utc,
     refusal_detail,
@@ -2069,6 +2070,7 @@ def assemble_verdict(
     ended: str | None = None,
     env_effective_incomplete: bool = False,
     helpers: tuple[Helper, ...] = (),
+    worktree_integrity: WorktreeIntegrity | None = None,
 ) -> Verdict:
     """Final verdict assembly (A-094): separable from :func:`execute_command`.
 
@@ -2249,6 +2251,7 @@ def assemble_verdict(
         # (A-395) while the Go lane's parallel test asserts the opposite.
         helpers=helpers or None,
         snapshot_policy=_verdict_snapshot_policy(lane),
+        worktree_integrity=worktree_integrity,
         # (B043) Straight from the loaded lane, at the SINGLE verdict
         # construction site every producer path funnels through -- normal
         # completion, `refuse_lane`, and every CLI refusal branch alike. A
@@ -2398,6 +2401,7 @@ def _refuse_lane_with_plan(
     clock: Clock = _utc_now,
     env_effective_incomplete: bool = False,
     detail: RefusalDetail | None = None,
+    worktree_integrity: WorktreeIntegrity | None = None,
 ) -> Verdict:
     """The identical shape :func:`refuse_lane` builds, given an
     ALREADY-RESOLVED *plan* (P23/A-193): the higher-rigor path resolves its
@@ -2453,6 +2457,7 @@ def _refuse_lane_with_plan(
         evidence=evidence,
         declared_evidence=declared_evidence,
         env_effective_incomplete=env_effective_incomplete,
+        worktree_integrity=worktree_integrity,
     )
 
 
@@ -2494,6 +2499,90 @@ def _resolved_project_prefix(repo_top: Path, project_root: Path) -> PurePosixPat
         ) from exc
     return (
         PurePosixPath(".") if relative == Path(".") else PurePosixPath(relative.as_posix())
+    )
+
+
+def _resolve_snapshot_worktree_integrity(
+    *,
+    repo: Path,
+    repo_top: Path,
+    project_root: Path,
+    dirty_ignore: tuple[str, ...],
+    allow_dirty: bool,
+    remaining: Callable[[], float] | None = None,
+) -> WorktreeIntegrity | None:
+    """Apply P3's snapshot-only dirty-tree policy.
+
+    ``git.dirty_paths`` is already repo-top-relative, so the project policy
+    uses that same namespace. The lane file is always protected: it was loaded
+    from the invoking working tree, and allowing a dirty copy would let the
+    policy that decides which paths are ignored change after it was read.
+    ``allow_dirty`` admits only the remaining unignored paths and records them
+    separately; it never changes the commit identity or snapshot contents.
+    """
+    raw_dirty = git.dirty_paths(repo, remaining=remaining)
+    # Git reports an untracked directory once from porcelain (``src/``) and
+    # then reports its actual files from the explicit ls-files pass.  The
+    # verdict vocabulary is a file/tree path, not a display directory marker;
+    # retain the descendants when present and normalize a lone directory
+    # marker before glob matching and wire construction.
+    dirty = tuple(
+        sorted(
+            {
+                path.rstrip("/")
+                for path in raw_dirty
+                if not (
+                    path.endswith("/")
+                    and any(
+                        other != path and other.startswith(path)
+                        for other in raw_dirty
+                    )
+                )
+            },
+            key=lambda path: path.encode("utf-8"),
+        )
+    )
+    if not dirty:
+        return None
+    protected_path = (project_root / "assay.toml").resolve()
+    try:
+        protected = protected_path.relative_to(repo_top.resolve()).as_posix()
+    except ValueError:
+        protected = "assay.toml"
+    if protected in dirty:
+        raise AssayError(
+            f"the loaded lane file {protected!r} is uncommitted; assay refuses "
+            f"to judge a snapshot using a working-tree policy that may have "
+            f"changed. Commit or stash it, then re-run",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.DIRTY_TREE,
+        )
+    ignored = tuple(
+        sorted(
+            (
+                path
+                for path in dirty
+                if any(fnmatch.fnmatchcase(path, pattern) for pattern in dirty_ignore)
+            ),
+            key=lambda path: path.encode("utf-8"),
+        )
+    )
+    ignored_set = set(ignored)
+    unignored = tuple(path for path in dirty if path not in ignored_set)
+    if unignored and not allow_dirty:
+        raise AssayError(
+            f"{len(unignored)} unignored uncommitted file(s) in {repo} -- a "
+            f"snapshot lane refuses to measure a tree whose changes are not "
+            f"covered by isolation.dirty_ignore. Commit or stash them, or "
+            f"re-run with --allow-dirty to record an explicit override. "
+            f"Affected: {', '.join(unignored)}",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.DIRTY_TREE,
+        )
+    overridden = tuple(sorted(unignored, key=lambda path: path.encode("utf-8")))
+    return WorktreeIntegrity(
+        ignored_dirty_paths=ignored,
+        overridden_dirty_paths=overridden,
     )
 
 
@@ -3383,6 +3472,7 @@ class _PreparedOutcome:
     #: the same reason ``judgment`` is: a cleanup-only failure can still void
     #: the claim a helper produced, and the record has to be voidable with it.
     helpers: tuple[Helper, ...] = ()
+    worktree_integrity: WorktreeIntegrity | None = None
 
 
 def resolve_base_declaration(lane: Lane, request_base: str | None) -> str | None:
@@ -3495,6 +3585,7 @@ def _run_prepared_lane(
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
+    liveness_dir: Path | None = None,
     diagnostics: "TextIO | None" = None,
 ) -> _PreparedOutcome:
     """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
@@ -3556,7 +3647,11 @@ def _run_prepared_lane(
     if r2_declared and not r2_ingested and adapter is not None and adapter.name == "python":
         liveness_injection = liveness.inject_liveness_plugin(
             plan,
-            liveness_dir=project_root / ".assay" / "liveness",
+            liveness_dir=(
+                liveness_dir
+                if liveness_dir is not None
+                else project_root / ".assay" / "liveness"
+            ),
             diagnostics=diagnostics,
             liveness_policy=lane.judge.mutation.liveness,
         )
@@ -3608,13 +3703,17 @@ def _run_prepared_lane(
     liveness_candidates_dir: Path | None = None
     baseline_plan = plan
     if liveness_injected:
-        liveness_baseline_events_path = project_root / ".assay" / "liveness" / "baseline.ndjson"
+        liveness_baseline_events_path = (
+            liveness_dir
+            if liveness_dir is not None
+            else project_root / ".assay" / "liveness"
+        ) / "baseline.ndjson"
         liveness_baseline_events_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             liveness_baseline_events_path.unlink()
         except FileNotFoundError:
             pass
-        liveness_candidates_dir = project_root / ".assay" / "liveness" / "candidates"
+        liveness_candidates_dir = liveness_baseline_events_path.parent / "candidates"
         baseline_plan = replace(
             plan,
             env_effective=MappingProxyType(
@@ -5037,6 +5136,8 @@ def _run_higher_rigor_lane(
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
+    allow_dirty: bool = False,
+    dirty_ignore: tuple[str, ...] = (),
     #: (B019/A-328) `run_lane`'s already-resolved comparison DECLARATION --
     #: the lane's `judge.base` or the gate request's `--request-base`,
     #: whichever the lane's `judge.base_source` named, with every
@@ -5102,6 +5203,7 @@ def _run_higher_rigor_lane(
             clock=clock,
         )
     rigor_levels = tuple(lane.rigor)
+    worktree_integrity: WorktreeIntegrity | None = None
 
     def refuse_all(
         status: Outcome,
@@ -5121,6 +5223,7 @@ def _run_higher_rigor_lane(
             declared_evidence=declared_evidence,
             clock=clock,
             detail=detail,
+            worktree_integrity=worktree_integrity,
         )
 
     # (B053/DA-R3) Both guards compose their sentence HERE, where the fact is
@@ -5130,21 +5233,22 @@ def _run_higher_rigor_lane(
     # operator got `NO_MEASUREMENT/DIRTY_TREE` and nothing else: the emitter's
     # contract is a MESSAGE, and a refusal site that has the fact and does
     # not compose it is the same defect B053 filed one layer down.
-    dirty = git.dirty_paths(repo, remaining=deadline.remaining)
-    if dirty:
+    try:
+        worktree_integrity = _resolve_snapshot_worktree_integrity(
+            repo=repo,
+            repo_top=repo_top,
+            project_root=project_root,
+            dirty_ignore=dirty_ignore,
+            allow_dirty=allow_dirty,
+            remaining=deadline.remaining,
+        )
+    except AssayError as exc:
         dirty_detail = announce_refusal(
-            AssayError(
-                f"{len(dirty)} uncommitted file(s) in {repo} -- a higher-rigor "
-                f"lane measures the RESOLVED COMMIT from a snapshot, so an "
-                f"uncommitted change is invisible to it. Commit or stash, then "
-                f"re-run. Affected: {', '.join(dirty)}",
-                outcome=Outcome.NO_MEASUREMENT,
-                reason_code=ReasonCode.DIRTY_TREE,
-            ),
+            exc,
             diagnostics=diagnostics,
         )
         return refuse_all(
-            Outcome.NO_MEASUREMENT, ReasonCode.DIRTY_TREE, detail=dirty_detail
+            exc.outcome, exc.reason_code, detail=dirty_detail
         )
     observed_head = git.head_rev(repo, remaining=deadline.remaining)
     if observed_head != commit:
@@ -5210,8 +5314,8 @@ def _run_higher_rigor_lane(
                     snapshot_policy=snapshot_policy,
                     project_prefix=project_prefix,
                 )
-                outcome_holder.append(
-                    _run_prepared_lane(
+                with tempfile.TemporaryDirectory(prefix="assay-liveness-") as raw_liveness_dir:
+                    prepared_outcome = _run_prepared_lane(
                         lane,
                         plan=plan,
                         deadline=deadline,
@@ -5235,7 +5339,13 @@ def _run_higher_rigor_lane(
                         progress_stream=progress_stream,
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
                         state_dir=state_dir,
+                        liveness_dir=Path(raw_liveness_dir),
                         diagnostics=diagnostics,
+                    )
+                outcome_holder.append(
+                    replace(
+                        prepared_outcome,
+                        worktree_integrity=worktree_integrity,
                     )
                 )
     except AssayError as exc:
@@ -5334,6 +5444,7 @@ def _run_higher_rigor_lane(
         judgment=outcome.judgment,
         ended=outcome.ended,
         helpers=outcome.helpers,
+        worktree_integrity=outcome.worktree_integrity,
     )
 
 
@@ -5424,6 +5535,8 @@ def run_lane(
     #: disagreement between the two owners before any Git call.
     request_base: str | None = None,
     snapshot_limits: isolation.SnapshotLimits = isolation.DEFAULT_SNAPSHOT_LIMITS,
+    allow_dirty: bool = False,
+    dirty_ignore: tuple[str, ...] = (),
     diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
@@ -5530,6 +5643,8 @@ def run_lane(
                 state_dir=state_dir,
                 request_base=request_base,
                 snapshot_limits=snapshot_limits,
+                allow_dirty=allow_dirty,
+                dirty_ignore=dirty_ignore,
                 diagnostics=diagnostics,
             )
 
@@ -5946,6 +6061,8 @@ def run_lane(
             progress_stream=progress_stream,
             progress_heartbeat_seconds=progress_heartbeat_seconds,
             state_dir=state_dir,
+            allow_dirty=allow_dirty,
+            dirty_ignore=dirty_ignore,
             base_declaration=base_declaration,
             diagnostics=diagnostics,
         )

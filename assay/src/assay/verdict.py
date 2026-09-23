@@ -104,6 +104,7 @@ __all__ = [
     "CANARY_AGGREGATIONS",
     "CANARY_DISPOSITIONS",
     "CANARY_NOT_ATTEMPTED_REASONS",
+    "DISCARD_REASONS",
     "MIN_CANARY_TARGETS",
     "MAX_CANARY_TARGETS",
     "RED_FIRST_COMMIT_SOURCES",
@@ -131,6 +132,7 @@ __all__ = [
     "MutantOutcome",
     "MutationProducerTool",
     "SnapshotPolicy",
+    "WorktreeIntegrity",
     "SourcePosition",
     "operator_language",
     "Outcome",
@@ -323,9 +325,15 @@ __all__ = [
 #: recoverable from any artifact assay receives and stays in A-230a's
 #: declared-by-artifact tier.
 #:
-#: Same rule again: producers emit v11, and `assay verify` refuses v10 exactly
-#: as v10 refused v9.
-VERDICT_SCHEMA_VERSION = 11
+#: Bumped 11 -> 12 (P3/B102 and B079): snapshot-lane verdicts can now record
+#: which pre-existing dirty paths were covered by project policy and which
+#: unignored paths were explicitly overridden with ``--allow-dirty``. The
+#: discarded-mutant entries also carry the closed assay-owned reason that
+#: distinguishes ``compile_error`` from ``runtime_error``. Both changes are
+#: major because a v11 consumer cannot interpret the new provenance and a
+#: v11 discarded entry cannot state the new distinction. Producers emit v12,
+#: and ``assay verify`` refuses v11 exactly as v11 refused v10.
+VERDICT_SCHEMA_VERSION = 12
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -352,6 +360,11 @@ BRANCH_CAPABILITIES: tuple[str, ...] = ("reported", "unavailable")
 #: this discriminator exists to make that limit visible in every artifact
 #: rather than absent from all of them (A-220).
 KILL_ATTRIBUTIONS: tuple[str, ...] = ("declared", "unattributed")
+
+#: (B079/schema v12) Why an ingested mutant was not attempted. These are
+#: assay's own wire vocabulary, not a foreign tool's open status namespace;
+#: the parser maps the two accepted upstream statuses to these stable names.
+DISCARD_REASONS: tuple[str, ...] = ("compile_error", "runtime_error")
 
 #: (B018/A-327) the one digest algorithm a judge identity may name. Recorded in
 #: the artifact rather than assumed by the consumer: a digest whose algorithm is
@@ -1498,6 +1511,9 @@ class MutantOutcome:
     #: they live one and two levels up rather than here; what this class owns
     #: is the field's own grammar.
     kill_signal: str | None = None
+    #: (B079/schema v12) present only on ``judgment.r2.discarded`` entries;
+    #: bucket entries are attempted mutants and must omit it.
+    discard_reason: str | None = None
 
     def __post_init__(self) -> None:
         _check_wire_path(self.path, "MutantOutcome.path")
@@ -1551,6 +1567,11 @@ class MutantOutcome:
             )
         if self.kill_signal is not None:
             _check_nonempty(self.kill_signal, "MutantOutcome.kill_signal")
+        if self.discard_reason is not None and self.discard_reason not in DISCARD_REASONS:
+            raise ValueError(
+                f"MutantOutcome.discard_reason must be one of "
+                f"{list(DISCARD_REASONS)}, got {self.discard_reason!r}"
+            )
 
     @property
     def identity(self) -> tuple[str, int, int, str, str]:
@@ -1578,6 +1599,8 @@ class MutantOutcome:
         # every optional field.
         if self.kill_signal is not None:
             payload["kill_signal"] = self.kill_signal
+        if self.discard_reason is not None:
+            payload["discard_reason"] = self.discard_reason
         return payload
 
 
@@ -2784,6 +2807,15 @@ class JudgmentR2:
         # re-derivation one level up meaningful.
         _check_mutant_outcome_tuple(self.discarded, "judgment.r2.discarded")
         assert self.discarded is not None  # _check_producer_fork
+        missing_reasons = [
+            item.identity for item in self.discarded if item.discard_reason is None
+        ]
+        if missing_reasons:
+            raise ValueError(
+                f"judgment.r2.discarded entry/entries {missing_reasons} carry no "
+                f"discard_reason -- every discarded mutant must distinguish "
+                f"{list(DISCARD_REASONS)}"
+            )
         # (B070 fix round 1) Bounded by the DOCUMENT ceiling, not by
         # `max_mutants`' 10,000. This field exists only under `producer =
         # "ingested"`, so a native cap was never the concern it could be
@@ -4067,6 +4099,57 @@ class SnapshotPolicy:
 
 
 @dataclass(frozen=True, kw_only=True)
+class WorktreeIntegrity:
+    """The explicit dirt policy applied before a snapshot lane ran.
+
+    Paths are repository-top-relative and are split by treatment: project
+    policy-covered paths are ``ignored_dirty_paths``; unignored paths made
+    admissible only by ``--allow-dirty`` are ``overridden_dirty_paths``.
+    Absence of this optional object means the snapshot preflight observed a
+    clean tree (or the lane never reached a snapshot preflight). It is never
+    a claim that an uncommitted tree was incorporated into the judged commit.
+    """
+
+    ignored_dirty_paths: tuple[str, ...] = ()
+    overridden_dirty_paths: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.ignored_dirty_paths and not self.overridden_dirty_paths:
+            raise ValueError(
+                "worktree_integrity must record at least one dirty path"
+            )
+        for name in ("ignored_dirty_paths", "overridden_dirty_paths"):
+            values = getattr(self, name)
+            if not isinstance(values, tuple):
+                raise ValueError(f"worktree_integrity.{name} must be a tuple")
+            for index, path in enumerate(values):
+                _check_wire_path(path, f"worktree_integrity.{name}[{index}]")
+                if ".git" in path.split("/"):
+                    raise ValueError(
+                        f"worktree_integrity.{name}[{index}] {path!r} "
+                        f"contains a '.git' component"
+                    )
+            encoded = [path.encode("utf-8") for path in values]
+            if encoded != sorted(encoded) or len(set(values)) != len(values):
+                raise ValueError(
+                    f"worktree_integrity.{name} must be unique and sorted by "
+                    f"UTF-8 bytes"
+                )
+        overlap = set(self.ignored_dirty_paths) & set(self.overridden_dirty_paths)
+        if overlap:
+            raise ValueError(
+                f"worktree_integrity path(s) appear as both ignored and "
+                f"overridden: {sorted(overlap)}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ignored_dirty_paths": list(self.ignored_dirty_paths),
+            "overridden_dirty_paths": list(self.overridden_dirty_paths),
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class Verdict:
     """One verdict: one lane, one commit (§7).
 
@@ -4153,6 +4236,10 @@ class Verdict:
     #: error produced before a lane resolves at all. See
     #: :meth:`_check_snapshot_policy_matches_declared_rigor`.
     snapshot_policy: SnapshotPolicy | None = None
+    #: (P3/B102, schema v12) explicit dirty-tree provenance for snapshot lanes.
+    #: A consumer may accept the artifact as structurally valid while refusing
+    #: it for release because ``overridden_dirty_paths`` is non-empty.
+    worktree_integrity: WorktreeIntegrity | None = None
     #: (B014) bounded final output from a failed or timed-out lane command.
     #: ``None`` means no command-output contract applies (a pre-command refusal,
     #: a PASS whose evidence was not requested, or an error before the command);
@@ -4190,6 +4277,13 @@ class Verdict:
             raise ValueError(
                 f"judge_provenance must be a JudgeProvenance, got "
                 f"{self.judge_provenance!r}"
+            )
+        if self.worktree_integrity is not None and not isinstance(
+            self.worktree_integrity, WorktreeIntegrity
+        ):
+            raise ValueError(
+                f"worktree_integrity must be a WorktreeIntegrity, got "
+                f"{self.worktree_integrity!r}"
             )
         if self.env_effective_incomplete and self.declared_rigor is None:
             raise ValueError(
@@ -4877,6 +4971,18 @@ class Verdict:
         """
         mutation = claim.mutation
         assert mutation is not None  # the caller checks `r2_judged`
+        bucket_reasons = [
+            (name, item.identity)
+            for name in MUTATION_BUCKETS
+            for item in getattr(mutation, name)
+            if item.discard_reason is not None
+        ]
+        if bucket_reasons:
+            raise ValueError(
+                f"claim[R2].mutation bucket entry/entries {bucket_reasons} carry "
+                f"discard_reason -- that field is legal only on "
+                f"judgment.r2.discarded entries"
+            )
         terminal = (claim.status, claim.reason_code)
         residual = mutation.candidate_count - mutation.total
         if policy.discarded is None:
@@ -5089,6 +5195,8 @@ class Verdict:
             payload["judgment"] = self.judgment.to_dict()
         if self.snapshot_policy is not None:
             payload["snapshot_policy"] = self.snapshot_policy.to_dict()
+        if self.worktree_integrity is not None:
+            payload["worktree_integrity"] = self.worktree_integrity.to_dict()
         if self.result_stdout_tail is not None:
             payload["result_stdout_tail"] = self.result_stdout_tail
             payload["result_stdout_dropped_bytes"] = (

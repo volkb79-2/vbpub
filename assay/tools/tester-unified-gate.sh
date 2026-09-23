@@ -599,19 +599,19 @@ for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9), ("W6", 10)):
         document = json.loads(path.read_text())
         failures = verify_document(document)
         assert failures == [
-            f"schema_version {version} is not this verifier's version 11: a "
+            f"schema_version {version} is not this verifier's version 12: a "
             f"verdict artifact is rejected, never upgraded in place -- "
-            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 11"
+            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 12"
         ], (wave, path.name, failures)
         checked += 1
 print(f"v6/v7/v8/v9/v10 hard-cut guard passed for {checked} frozen templates")
 PYEOF
   echo 'ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-v10-hard-cut-verified'
 
-  # B070 (the v11 discarded-mutants cut): the locked v11 acceptance suite, run
+  # B101 (the v12 isolation/dirty provenance cut): the locked v12 acceptance suite, run
   # for real against the same installed wheel. It carries forward the positive
   # coverage W1's, W2's, W4's, W5's and now W6's suites gave up above -- v10's
-  # whole contract included -- and adds v11's own: `judgment.r2.discarded` as
+  # whole contract included -- and adds v12's own: `judgment.r2.discarded` as
   # an ARRAY of mutant identities, its three re-derivations (bucket
   # disjointness, the `lines_without_candidates` line rule, and the
   # fifth-disposition arithmetic `candidate_count - total == len(discarded)`),
@@ -621,9 +621,9 @@ PYEOF
   # rejected. Every negative in it is differential.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/nyxloom-trove/carve-assets/W7/test_acceptance_v11.py" \
+    "$worktree/assay/nyxloom-trove/carve-assets/W8/test_acceptance_v12.py" \
     -q -p no:randomly --override-ini=pythonpath=
-  echo 'ASSAY_GATE_PHASE=verdict-v11-successors-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v12-successors-verified'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version" "$wheel"
 

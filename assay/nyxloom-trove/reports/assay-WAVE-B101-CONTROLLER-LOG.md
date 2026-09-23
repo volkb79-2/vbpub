@@ -22,18 +22,24 @@ P2 contract:
   `max_total_tree_blob_bytes <= max_total_object_bytes`;
 - `run` and `plan` construct the same effective `SnapshotSpec`, and every
   materialization writes/verifies the same boundary before closure checks;
-- lane schema remains 2; verdict schema is not changed until the required
-  operator decision about v12 and B079.
+- lane schema remains 2; the v12 verdict cut adds only the optional dirty
+  provenance object and the ingested discarded-entry reason.
 
-P3 is carved but deliberately not started pending the prompt's mandatory
-operator question: whether B079's discarded split joins the same verdict v12
-cut as the dirty override marker and (possibly) `snapshot_history`. The P3
-carve is `dirty_ignore` as a project-level declared glob list with a
-pre/post dirty-set check, while the lane file itself is never suppressible;
-liveness side files will use the chosen WARN/cleanup policy and retain any
-evidence needed by verdict or rejudge. A mechanical BLOCKED trigger is: no
-operator answer to the v12/B079 question, or a third consecutive gate/review
-run showing the same external-state failure; neither trigger is asserted yet.
+The operator answered yes to the mandatory v12/B079 question. A-452--A-455
+record the resulting decisions: repo-top POSIX `dirty_ignore` globs with a
+protected lane file, snapshot-only `--allow-dirty` with explicit verifier and
+receipt policy, the closed `compile_error`/`runtime_error` split, and external
+temporary liveness files with cleanup after `tests_completed`.
+
+The implementation is complete in this worktree. The short deterministic
+review gate is the focused suite, frozen W8 acceptance, docs/vocabulary checks,
+compile/schema checks, and the full local suite with the known Docker-reaching
+dstdns witness test explicitly deselected. Once those are clean, this branch
+is provisionally merged to unblock work; the long mutation campaign and the
+authoritative tester-unified gate are launched independently from a `ciu
+worktree` pinned to the provisional merge. Any defect found there is
+backported as a small follow-up commit rather than disturbing the running
+campaign.
 
 ## P0 — B104
 
@@ -75,13 +81,48 @@ seed/materialization proof rather than be masked by `--no-walk`.
 | config + isolation focused tests | PASS: 133 tests |
 | P1 runner suites | PASS: 71 tests |
 | tester-unified gate | PASS on `4ed15f31`: all required phases, self-hosted lane, Topos, cmru B006(a), independent self-hosting, and pyflakes |
-| verdict schema / B079 question | operator decision required before P3 |
+| verdict schema / B079 question | PASS: operator answered yes; A-452--A-455 record the v12 decisions |
 
 The first gate attempt on `5bf832a4` ran the full self-hosted suite successfully
 but correctly rejected `config.py`'s unaliased `dataclasses.field` import as a
 pyflakes shadowing finding. The alias-only correction is `4ed15f31`; the
 authoritative rerun built wheel `assay-6.5.1.dev243+g4ed15f31` and ended with
 `GATE_EXIT=0`.
+
+## P3/P4 implementation and review
+
+The v12 package includes the following tested surfaces:
+
+- dirty-path normalization and `dirty_ignore` matching at repo-top scope;
+  ignored dirt is recorded, unignored dirt refuses, `--allow-dirty` records an
+  override, and a dirty loaded `assay.toml` always refuses;
+- `assay run`/`assay plan` parity for the snapshot-only override, with R0 and
+  in-place paths remaining strict;
+- `assay verify` warning semantics and release-receipt refusal for overridden
+  verdicts;
+- external liveness temporary-directory cleanup and the absence of a checkout
+  `.assay/liveness` tree after a higher-rigor run;
+- v12's `discard_reason` reconstruction, raw verification, and W8's real
+  40-entry high-discard fixture (`compile_error` for the actual CompileError
+  records), including closed-vocabulary mutation tests;
+- README, DESIGN-GUIDE, CONSUMERS, INTERNAL-CONSUMERS, CHANGES, backlog and
+  decision-ledger updates.
+
+The adversarial review of this package found and fixed one real issue: Git
+reports an untracked directory as a trailing-slash path, which is not a valid
+verdict wire path; the implementation now normalizes that marker while
+retaining child paths for glob matching. The focused regression suite is green
+after the correction. No unresolved review finding remains at this checkpoint.
+
+The current deterministic evidence ledger is:
+
+| checkpoint | result |
+|---|---|
+| W8 v12 frozen acceptance | PASS: 111 tests |
+| ingested mutation/verifier payload suites | PASS: 152 tests |
+| config, CLI, runner, and liveness suites | PASS: 150 tests |
+| gate harness, W8, Python qualification | PASS: 138 passed, 9 skipped |
+| prior authoritative tester-unified gate | PASS on `4ed15f31`, `GATE_EXIT=0`; v12 rerun pending provisional merge |
 
 ## History-walk audit
 
@@ -91,11 +132,12 @@ On 2026-09-23, `git ls-files '*assay.toml'` found 15 vbpub lane files and
 audit over dstdns's tracked `assay.toml` found no history-walking argv. No
 lane needs a `snapshot_history = "full"` override for the current estate.
 
-## Files in the P2/P4 package
+## Files in the provisional package
 
 `assay/src/assay/{config.py,isolation.py,runner.py,cli.py}`, the focused
 config/isolation tests, `assay/README.md`, `assay/docs/{DESIGN-GUIDE.md,
 CONSUMERS.md,INTERNAL-CONSUMERS.md}`, `assay/CHANGES.md`,
-`assay/nyxloom-trove/decisions.md`, this log, and B101/B082-B084 backlog
-status/evidence. P3 files and its verdict generations are intentionally not
-in this package.
+`assay/nyxloom-trove/decisions.md`, this log, B101/B102/B093 backlog evidence,
+and the W8 v12 verdict generations. P3 is no longer pending the operator
+decision; the only remaining long-running work is the post-merge campaign and
+authoritative gate in the CIU worktree.

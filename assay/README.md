@@ -59,7 +59,8 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json` and `schemas/analysis-receipt.schema.json`.
-The existing verdict schema remains unchanged.
+Receipt verdicts are checked against the current v12 verdict schema; a receipt
+with an `--allow-dirty` override is refused by default.
 
 ## Why use it
 
@@ -116,6 +117,13 @@ assay exists to close that gap mechanically, not by policy:
   `snapshot_history = "full"`; project-level `[isolation.limits]` ceilings
   bound the seed and materialized trees. See [§6, snapshot history and seed
   limits](docs/DESIGN-GUIDE.md#snapshot-history-and-seed-limits-b101).
+- **Snapshot dirt is explicit and auditable.** Project-level
+  `[isolation].dirty_ignore` may cover known ledger/output paths using the
+  same repo-top-relative POSIX glob grammar as `identity_exclude`. Other dirty
+  paths still refuse; `assay run --allow-dirty` admits them only for R1+
+  snapshot lanes and records them in the v12 `worktree_integrity` marker.
+  `assay verify` accepts but warns about that marker, while release receipts
+  refuse it. See the [design rationale](docs/DESIGN-GUIDE.md#snapshot-dirty-tree-policy-b102).
 - **An escalating rigor ladder (R0–R3)**, so "tested" means something
   specific instead of one undifferentiated green checkmark:
   - **R0** — the declared command ran and produced a result.
@@ -153,9 +161,9 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 8` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-Both are hard cuts: `assay verify` refuses a v7 verdict exactly as it refuses
-v6 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
+`VERDICT_SCHEMA_VERSION = 12` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+Both are hard cuts: `assay verify` refuses a v11 verdict exactly as it refuses
+v10 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
@@ -309,7 +317,8 @@ and see B073 if per-test detail becomes worth the design cost.
 **B091 has since delivered a SCOPED instance of exactly this**, for one case
 only: a native R2 python/pytest mutation lane. When `judge.mutation.liveness`
 is active (the default, `"auto"`, whenever the lane's own argv invokes
-pytest), assay materializes a small pytest plugin that emits one `test`
+pytest), assay materializes a small pytest plugin in an ephemeral directory
+outside the live checkout that emits one `test`
 event per test to a side file; the progress stream forwards the BASELINE's
 own per-test events verbatim, and each `candidate` record carries its own
 `tests_completed` count. This is the mechanism that also makes a hung mutant
@@ -780,6 +789,10 @@ answer.
 # assay.toml
 schema_version = 2
 
+# Optional project-top-relative paths whose pre-existing dirt is recorded.
+[isolation]
+dirty_ignore = ["nyxloom-trove/**", ".assay/**"]
+
 # Optional project-wide P22 ceilings. All *_bytes values are uncompressed
 # logical bytes; omitted fields use Assay's shipped defaults.
 [isolation.limits]
@@ -812,6 +825,13 @@ base = "origin/main"
 format = "coverage-py-json"
 artifact = "cov.json"
 ```
+
+`dirty_ignore` is policy for pre-existing dirt only; the lane file itself is
+always protected because it is loaded from the working tree. An unignored
+path requires an explicit `assay run --allow-dirty` (and the same independent
+flag is available on `assay plan` for parity). R0 remains strict. The
+`run-gate.py` flag with the same spelling controls run-gate's outer clean-tree
+check and is independent; it does not silently change assay's policy.
 
 ```bash
 pip install ./assay-*.whl   # see Installing
