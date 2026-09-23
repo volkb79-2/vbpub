@@ -3570,3 +3570,14 @@ from `scripts/cgroup-profiler/`, with wrapper PID `322897` and authoritative
 marker `/tmp/rg55-p1-r01-20260923.log`. No other RG-55 gate was active at
 launch. P6 remains queued until the assay B101 P2 shallow-seed announcement;
 its old judged tree is not reused.
+
+### RW-290 — 2026-09-23 08:08:50Z — preserve RG-55 backlog identity during P1 reconcile
+
+Current `main` contains a post-wave profiler row named CP-4 for the
+`cmd_targets` duplicate-mount defect. The P1/P6 RG-55 records already use CP-4
+for the pre-existing `test_store.py` run-id flake, and the P6 handoff reserves
+the RG-55 follow-up namespace through CP-11. The reconciliation therefore
+preserves the historical RG-55 CP-4..CP-11 identities and renumbers only the
+post-wave `cmd_targets` row to the next available CP-12 identity, updating its
+filename, frontmatter, and generated index. This is an identity collision
+repair, not a product-scope change or a claim that CP-12 is fixed.
