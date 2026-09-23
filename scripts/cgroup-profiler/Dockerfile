@@ -20,7 +20,8 @@
 # Two stages: `ruptures==1.1.9` (pyproject.toml's pin) ships no prebuilt
 # wheel for cp314 yet, so it compiles a C extension at `pip install` time —
 # needing gcc, which has no business in the RUNNING daemon's attack surface
-# (this image is `--privileged --pid=host --cgroupns=host`; every package
+# (this image is privileged but uses private namespaces and explicit
+# read-only host proc/cgroup mounts; every package
 # not needed at runtime is one this daemon does not carry). The builder
 # stage installs build-essential and produces venv/; the final stage copies
 # only the finished venv, never the compiler that made it.

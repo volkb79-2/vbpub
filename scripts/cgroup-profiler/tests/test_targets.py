@@ -200,12 +200,53 @@ class TestParseTarget:
             t.parse_target("containerid:my-container", str(cgroup_root))
 
     def test_pid_scheme(self, cgroup_root: Path, proc_root: Path, monkeypatch):
-        monkeypatch.setattr(t.util, "read_text", lambda p: (
-            "0::/dev.slice/dev-background.slice" if p.endswith("/cgroup") else "fakeproc"
-        ))
-        resolved = t.parse_target("pid:4242", str(cgroup_root))
+        _write_pid_cgroup(proc_root, 4242, "/../../dev.slice/dev-background.slice")
+        _write_pid_cgroup(proc_root, 1001, "/")
+        _write_cgroup_members(cgroup_root, "dev.slice/dev-interactive.slice", "1001\n")
+        _install_local_proc_cgroup(monkeypatch, "/")
+        monkeypatch.setattr(t.os, "getpid", lambda: 1001)
+        (proc_root / "4242" / "comm").write_text("fakeproc\n")
+        resolved = t.parse_target("pid:4242", str(cgroup_root), proc_root=str(proc_root))
         assert resolved[0].cgroup == "/dev.slice/dev-background.slice"
         assert resolved[0].pid == 4242
+
+    def test_pid_scheme_reads_the_explicit_proc_root(
+        self, cgroup_root: Path, tmp_path: Path, monkeypatch,
+    ):
+        proc = tmp_path / "hostproc"
+        pid_dir = proc / "4242"
+        pid_dir.mkdir(parents=True)
+        (pid_dir / "cgroup").write_text("0::/../../dev.slice/dev-background.slice\n")
+        (pid_dir / "comm").write_text("host-worker\n")
+        _write_cgroup_members(cgroup_root, "dev.slice/dev-interactive.slice", "1001\n")
+        _write_cgroup_members(cgroup_root, "dev.slice/dev-background.slice", "")
+        _install_local_proc_cgroup(monkeypatch, "/")
+        monkeypatch.setattr(t.os, "getpid", lambda: 1001)
+        resolved = t.parse_target("pid:4242", str(cgroup_root), proc_root=str(proc))
+        assert resolved[0].cgroup == "/dev.slice/dev-background.slice"
+        assert resolved[0].label == "host-worker[4242]"
+
+    def test_self_uses_the_pid_visible_in_the_selected_proc_mount(
+        self, cgroup_root: Path, tmp_path: Path,
+    ):
+        proc = tmp_path / "hostproc"
+        pid_dir = proc / "4321"
+        pid_dir.mkdir(parents=True)
+        (proc / "self").symlink_to("4321")
+        (pid_dir / "cgroup").write_text("0::/\n")
+        _write_cgroup_members(cgroup_root, "dev.slice/dev-interactive.slice", "1001\n")
+        monkeypatch.setattr(t.os, "getpid", lambda: 1001)
+        _install_local_proc_cgroup(monkeypatch, "/")
+        resolved = t.parse_target("self", str(cgroup_root), proc_root=str(proc))
+        assert resolved[0].cgroup == "/dev.slice/dev-interactive.slice"
+
+    def test_self_refuses_when_proc_self_cannot_be_resolved(self, cgroup_root: Path, monkeypatch):
+        def missing_proc_self(path):
+            raise OSError("no host proc bind")
+
+        monkeypatch.setattr(t.os, "readlink", missing_proc_self)
+        with pytest.raises(t.TargetError, match="cannot resolve current PID"):
+            t.parse_target("self", str(cgroup_root))
 
     def test_pid_scheme_rejects_a_non_numeric_pid(self, cgroup_root: Path):
         with pytest.raises(t.TargetError, match="needs a number"):
@@ -213,30 +254,34 @@ class TestParseTarget:
 
     def test_pid_scheme_raises_when_the_pid_has_no_readable_cgroup(self, cgroup_root: Path, monkeypatch):
         # The process already exited between being named and being resolved.
-        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root: None)
+        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root, proc_root: None)
         with pytest.raises(t.TargetError, match="already exited"):
             t.parse_target("pid:99999", str(cgroup_root))
 
     def test_self_scheme_bare(self, cgroup_root: Path, monkeypatch):
-        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root: "/dev.slice/dev-background.slice")
+        monkeypatch.setattr(t.os, "readlink", lambda path: "4242")
+        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root, proc_root: "/dev.slice/dev-background.slice")
         resolved = t.parse_target("self", str(cgroup_root))
         assert resolved[0].kind == "self"
         assert resolved[0].cgroup == "/dev.slice/dev-background.slice"
 
     def test_self_scheme_explicit(self, cgroup_root: Path, monkeypatch):
-        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root: "/wings.slice")
+        monkeypatch.setattr(t.os, "readlink", lambda path: "4242")
+        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root, proc_root: "/wings.slice")
         resolved = t.parse_target("self:", str(cgroup_root))
         assert resolved[0].cgroup == "/wings.slice"
 
     def test_self_scheme_raises_at_the_namespace_root(self, cgroup_root: Path, monkeypatch):
         # A private cgroup namespace reads its own processes back as "/" —
         # correct for that namespace, useless for naming a host cgroup.
-        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root: "/")
+        monkeypatch.setattr(t.os, "readlink", lambda path: "4242")
+        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root, proc_root: "/")
         with pytest.raises(t.TargetError, match="namespace root"):
             t.parse_target("self", str(cgroup_root))
 
     def test_self_scheme_raises_when_unresolvable(self, cgroup_root: Path, monkeypatch):
-        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root: None)
+        monkeypatch.setattr(t.os, "readlink", lambda path: "4242")
+        monkeypatch.setattr(t, "cgroup_of_pid", lambda pid, root, proc_root: None)
         with pytest.raises(t.TargetError, match="namespace root"):
             t.parse_target("self", str(cgroup_root))
 
@@ -273,26 +318,103 @@ class TestParseTarget:
 
 
 class TestCgroupOfPid:
-    def test_no_cgroup_file_is_none(self, monkeypatch):
-        monkeypatch.setattr(t.util, "read_text", lambda p: None)
-        assert t.cgroup_of_pid(12345) is None
-
-    def test_skips_non_hierarchy_zero_lines_before_matching(self, monkeypatch):
-        # A cgroup v1-style line ("1:name=systemd:...") must not be mistaken
-        # for the unified (hierarchy "0") line the caller actually wants.
-        monkeypatch.setattr(
-            t.util, "read_text",
-            lambda p: "1:name=systemd:/foo\n0::/dev.slice/dev-background.slice",
+    def test_skips_non_unified_line_and_resolves_relative_to_namespace_root(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        root = tmp_path / "cg"
+        _write_cgroup_members(root, "dev.slice/dev-interactive.slice/profiler.scope", "1001\n")
+        _write_cgroup_members(root, "dev.slice/dev-gates.slice/gate.scope", "")
+        _write_cgroup_members(root, "init.scope", "")
+        proc = tmp_path / "hostproc"
+        _write_pid_cgroup(
+            proc, 4242,
+            "1:name=systemd:/ignored\n0::/../../../dev.slice/dev-gates.slice/gate.scope\n",
         )
-        assert t.cgroup_of_pid(1) == "/dev.slice/dev-background.slice"
+        _install_local_proc_cgroup(monkeypatch, "/")
+        monkeypatch.setattr(t.os, "getpid", lambda: 1001)
+        assert t.cgroup_of_pid(4242, str(root), str(proc)) == "/dev.slice/dev-gates.slice/gate.scope"
 
-    def test_no_matching_line_is_none(self, monkeypatch):
-        monkeypatch.setattr(t.util, "read_text", lambda p: "1:name=systemd:/foo")
-        assert t.cgroup_of_pid(1) is None
+    def test_host_cgroup_namespace_keeps_global_proc_path(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "cg"
+        _write_cgroup_members(root, "dev.slice/dev-interactive.slice/profiler.scope", "1001\n")
+        _write_cgroup_members(root, "dev.slice/dev-gates.slice/gate.scope", "")
+        proc = tmp_path / "proc"
+        _write_pid_cgroup(proc, 4242, "0::/dev.slice/dev-gates.slice/gate.scope\n")
+        _install_local_proc_cgroup(
+            monkeypatch, "/dev.slice/dev-interactive.slice/profiler.scope",
+        )
+        monkeypatch.setattr(t.os, "getpid", lambda: 1001)
+        assert t.cgroup_of_pid(4242, str(root), str(proc)) == "/dev.slice/dev-gates.slice/gate.scope"
 
-    def test_empty_path_after_hierarchy_zero_is_root(self, monkeypatch):
-        monkeypatch.setattr(t.util, "read_text", lambda p: "0::")
-        assert t.cgroup_of_pid(1) == "/"
+    def test_nested_cgroup_namespace_root_is_derived(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "cg"
+        _write_cgroup_members(root, "dev.slice/dev-interactive.slice/profiler.scope", "1001\n")
+        _write_cgroup_members(root, "dev.slice/dev-interactive.slice/worker.scope", "")
+        proc = tmp_path / "hostproc"
+        _write_pid_cgroup(proc, 4242, "0::/worker.scope\n")
+        _install_local_proc_cgroup(monkeypatch, "/profiler.scope")
+        monkeypatch.setattr(t.os, "getpid", lambda: 1001)
+        assert t.cgroup_of_pid(4242, str(root), str(proc)) == "/dev.slice/dev-interactive.slice/worker.scope"
+
+    def test_empty_unified_path_resolves_to_namespace_root(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "cg"
+        _write_cgroup_members(root, "dev.slice/dev-interactive.slice/profiler.scope", "1001\n")
+        proc = tmp_path / "hostproc"
+        _write_pid_cgroup(proc, 4242, "0::\n")
+        _install_local_proc_cgroup(monkeypatch, "/")
+        monkeypatch.setattr(t.os, "getpid", lambda: 1001)
+        assert t.cgroup_of_pid(4242, str(root), str(proc)) == "/dev.slice/dev-interactive.slice/profiler.scope"
+
+    def test_missing_proc_record_or_unified_hierarchy_is_none(self, tmp_path: Path):
+        assert t.cgroup_of_pid(12345, str(tmp_path / "cg"), str(tmp_path / "proc")) is None
+        proc = tmp_path / "proc"
+        _write_pid_cgroup(proc, 12345, "1:name=systemd:/foo\n")
+        assert t.cgroup_of_pid(12345, str(tmp_path / "cg"), str(proc)) is None
+
+    def test_bad_relative_or_empty_components_are_rejected(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "cg"
+        _write_cgroup_members(root, "dev.slice/dev-interactive.slice/profiler.scope", "1001\n")
+        proc = tmp_path / "proc"
+        _install_local_proc_cgroup(monkeypatch, "/")
+        monkeypatch.setattr(t.os, "getpid", lambda: 1001)
+        for path in ("relative/path", "/a//b", "/a/./b"):
+            _write_pid_cgroup(proc, 4242, f"0::{path}\n")
+            assert t.cgroup_of_pid(4242, str(root), str(proc)) is None
+
+    def test_missing_or_ambiguous_current_membership_is_none(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "cg"
+        _write_cgroup_members(root, "dev.slice/dev-interactive.slice/one.scope", "")
+        proc = tmp_path / "proc"
+        _write_pid_cgroup(proc, 4242, "0::/\n")
+        _install_local_proc_cgroup(monkeypatch, "/")
+        monkeypatch.setattr(t.os, "getpid", lambda: 1001)
+        assert t.cgroup_of_pid(4242, str(root), str(proc)) is None
+        _write_cgroup_members(root, "dev.slice/dev-interactive.slice/two.scope", "1001\n")
+        (root / "dev.slice/dev-interactive.slice/one.scope/cgroup.procs").write_text("1001\n")
+        assert t.cgroup_of_pid(4242, str(root), str(proc)) is None
+
+
+def _write_cgroup_members(root: Path, relative: str, members: str) -> None:
+    directory = root if not relative else root / relative
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "cgroup.procs").write_text(members)
+
+
+def _write_pid_cgroup(proc_root: Path, pid: int, contents: str) -> None:
+    directory = proc_root / str(pid)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "cgroup").write_text(contents)
+
+
+def _install_local_proc_cgroup(monkeypatch, visible_path: str) -> None:
+    real_read_text = t.util.read_text
+
+    def fake_read_text(path: str):
+        if path == "/proc/self/cgroup":
+            return f"0::{visible_path}\n"
+        return real_read_text(path)
+
+    monkeypatch.setattr(t.util, "read_text", fake_read_text)
 
 
 class TestBareNameInference:

@@ -178,7 +178,7 @@ class SessionServer:
         observe_slices: Sequence[str] = (),
         max_sessions: int = DEFAULT_MAX_SESSIONS,
         cgroup_root: str = access.CGROUP_ROOT,
-        proc_root: str = "/proc",
+        proc_root: str = access.PROC_ROOT,
         daemon_name: str = DEFAULT_DAEMON_NAME,
         clock: Callable[[], float] = time.time,
         sampler_clock: Callable[[], float] = time.monotonic,

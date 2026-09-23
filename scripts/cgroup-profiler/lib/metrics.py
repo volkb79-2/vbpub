@@ -20,6 +20,7 @@ import os
 from typing import Any, Dict, Optional, Set, Tuple
 
 from . import util
+from .access import PROC_ROOT
 
 GROUPS: tuple[str, ...] = ("mem", "memstat", "memev", "psi", "cpu", "io", "pids", "cgstat")
 
@@ -77,13 +78,12 @@ def sample_cgroup(abs_path: str, groups: Optional[Set[str]] = None) -> Dict[str,
     return out
 
 
-def sample_proc(pid: int, proc_root: str = "/proc") -> Dict[str, Any]:
+def sample_proc(pid: int, proc_root: str = PROC_ROOT) -> Dict[str, Any]:
     """One tick of one process's memory/cpu/io counters, ``{}`` if it is gone.
 
-    ``proc_root`` has no counterpart in the public contract (a pid is process-
-    namespace bound, not something a bind-mount root can redirect) — it exists
-    purely as a test seam so the suite never has to read the real ``/proc``;
-    every real caller uses the default.
+    ``proc_root`` may be the explicit read-only host-proc bind mount used by
+    the daemon/helper. The default remains the local procfs; tests point it at
+    a fixture tree.
 
     ``utime``/``stime`` come back in microseconds, not clock ticks, so they
     sit on the same footing as every other ``*_usec`` counter in this package
@@ -136,7 +136,7 @@ def _proc_cpu_usec(stat_path: str) -> Tuple[Optional[int], Optional[int]]:
     return (int(ticks_utime * per_tick), int(ticks_stime * per_tick))
 
 
-def sample_host(proc_root: str = "/proc", sys_root: str = "/sys") -> Dict[str, Any]:
+def sample_host(proc_root: str = PROC_ROOT, sys_root: str = "/sys") -> Dict[str, Any]:
     """One tick of host-wide memory/swap/pressure/KSM/zswap/CPU state."""
     pressure_dir = os.path.join(proc_root, "pressure")
     return {

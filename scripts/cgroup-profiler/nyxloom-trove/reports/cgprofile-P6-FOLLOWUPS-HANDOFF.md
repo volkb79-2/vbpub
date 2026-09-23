@@ -157,8 +157,10 @@ The container `cgprofile-host-daemon` belongs to the controller (it may be
 down, or up from `main`, at any time — never start, stop or `ciu down` it).
 Probe with YOUR OWN instance from the image you build: `docker run --rm -d
 --name cgprofile-p6-probe` with the same flags the compose template
-renders (privileged, `--pid=host`, `--cgroupns=host`, `--network none`,
-`--cgroup-parent cgprofile.slice`, `-v /tmp/cgprofile-p6:/run/cgprofile`
+renders (privileged, private PID/cgroup namespaces, `--network none`,
+`--cgroup-parent cgprofile.slice`, read-only host `/proc` at `/hostproc`,
+read-only host cgroup v2 at `/sys/fs/cgroup`, `CGPROFILE_PROC_ROOT=/hostproc`,
+`-v /tmp/cgprofile-p6:/run/cgprofile`
 — a SCRATCH host directory, never the real `/run/cgprofile`), remove it in
 a `finally`. Probes to record in the REPORT: every verb over both carriers
 diffed (from a throwaway `cmru-enroll-fixture:local` container that mounts
@@ -222,7 +224,7 @@ no whole-suite run, no run-gate lane, no image build. After both exit:
 the r0/r1 lane, r3, then r2 only when `pgrep -af 'assay-r2|assay.cli run r2'`
 and `docker ps` show no other mutation run. ≤ 2 gate containers
 estate-wide; `docker update --cpus=3` after any launch; remove in a
-`finally`. Only your daemon probe may use `--pid=host --cgroupns=host`.
+`finally`. No container may use host PID/cgroup/network namespace modes.
 
 Commit trailers (every commit): `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`
 and `Claude-Session: https://claude.ai/code/session_01YBJzBA7KyG4ayu5ndNf9Hx`.

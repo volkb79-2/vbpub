@@ -13,6 +13,18 @@ state required to observe DAMON. A consumer that needs a cap change must use a
 separate, explicitly authorized tool; adding a hidden fallback here would make
 the observer change the workload it is measuring.
 
+Host visibility does not require joining host namespaces. Both daemon and
+one-shot helper keep private PID/cgroup namespaces and bind the host cgroup
+tree read-only; the host proc tree is also bound read-only at `/hostproc` and
+selected through `CGPROFILE_PROC_ROOT`. The daemon checks that PID 1 in that
+view belongs to a PID namespace distinct from the daemon's before serving.
+Since `/proc/<pid>/cgroup` is relative to the reader's cgroup namespace, PID
+target resolution derives that namespace root from the daemon's own
+`cgroup.procs` membership in the mounted tree before resolving any target
+path. This keeps the observation source explicit and fail-closed while
+avoiding namespace sharing; it does not grant the observer a cgroup write
+path. The DAMON sysfs and session directory remain the only intended writes.
+
 The DAMON pool treats the `nr_kdamonds` value read at pool creation as an
 ownership boundary. Indices below that baseline are foreign. New sessions use
 only indices proven to have been created after the baseline, and teardown

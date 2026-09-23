@@ -3,18 +3,18 @@ re-exec itself inside a privileged helper container?
 
 Two modes, auto-detected:
 
-**direct** — the process already sees the host's cgroup v2 root (running as
-root on the host, or in a container started with ``--cgroupns=host
---privileged``).  Everything is read straight from ``/sys/fs/cgroup`` and
-``/proc``.
+**direct** — the process has an explicit view of the host's cgroup v2 root
+(running on the host, or with the host cgroup tree bind-mounted at
+``/sys/fs/cgroup``). Host process files are read through
+``CGPROFILE_PROC_ROOT`` when configured; the process's own identity still
+comes from its private ``/proc``.
 
-**helper** — the common devcontainer case.  ``/sys/fs/cgroup`` is a read-only,
-cgroup-namespaced view containing only our own subtree, so the host's slices
-are simply not present.  Rather than shuttle individual file reads across a
-container boundary (which cannot sustain a 250 ms cadence), the profiler
-**re-executes its whole self** inside a privileged helper container that has
-``--cgroupns=host --pid=host`` and streams its output back over a shared
-directory.  Sampling code is then identical in both modes.
+**helper** — the common devcontainer case. Rather than shuttle individual file
+reads across a container boundary (which cannot sustain a 250 ms cadence), the
+profiler **re-executes its whole self** inside a privileged helper container
+with private PID/cgroup namespaces and explicit host ``/proc`` and cgroup-v2
+bind mounts. Host proc files are mounted read-only at ``/hostproc`` and
+sampling code reads them through ``CGPROFILE_PROC_ROOT``.
 
 The helper needs an image with python3 and the repo bind-mounted.  Both are
 resolved from the *host's* view of paths: a bind source given to the Docker
@@ -35,6 +35,21 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 CGROUP_ROOT = "/sys/fs/cgroup"
+
+
+def _configured_proc_root() -> str:
+    value = os.environ.get("CGPROFILE_PROC_ROOT")
+    if value is None:
+        return "/proc"
+    root = value.strip()
+    if not root:
+        raise RuntimeError("CGPROFILE_PROC_ROOT must not be empty")
+    if not os.path.isabs(root):
+        raise RuntimeError(f"CGPROFILE_PROC_ROOT must be absolute, got {value!r}")
+    return os.path.normpath(root)
+
+
+PROC_ROOT = _configured_proc_root()
 
 # Root-level cgroups that only exist in the host's own view. If none of these
 # are visible we are looking at a namespaced subtree, whatever the mount says.
@@ -73,6 +88,25 @@ def have_host_cgroup_view(root: str = CGROUP_ROOT) -> bool:
     return any(os.path.exists(os.path.join(root, marker)) for marker in _HOST_MARKERS)
 
 
+def have_host_proc_view(proc_root: str = PROC_ROOT) -> bool:
+    """Require *proc_root* to expose a broader PID namespace than this one.
+
+    A bind-mounted procfs still reports cgroup paths relative to the reader's
+    cgroup namespace, so PID 1's ``/proc/<pid>/cgroup`` is not a sound host
+    view check. Its PID-namespace identity is: in a container, host PID 1 is
+    in a different namespace from this container's PID 1; on the host, both
+    paths name the same namespace.
+    """
+    try:
+        selected_pid_ns = os.stat(os.path.join(proc_root, "1", "ns", "pid")).st_ino
+        local_pid_ns = os.stat("/proc/1/ns/pid").st_ino
+    except OSError:
+        return False
+    if in_container():
+        return selected_pid_ns != local_pid_ns
+    return selected_pid_ns == local_pid_ns
+
+
 def cgroup_root_is_writable(root: str = CGROUP_ROOT) -> bool:
     """True when we could actually set a limit (needed for ``--cap-*``).
 
@@ -96,10 +130,8 @@ def in_container() -> bool:
     if os.path.exists("/.dockerenv"):
         return True
     try:
-        # This process's own cgroup, not PID 1's: under --pid=host (exactly
-        # the mode the helper container runs in), /proc/1 is the HOST's real
-        # init, so reading /proc/1/cgroup would report the host's cgroup
-        # instead of this container's own.
+        # This process's own cgroup, not PID 1's: the configured host-proc
+        # bind may show the host's init at /hostproc/1.
         with open("/proc/self/cgroup", "r", encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
@@ -242,11 +274,13 @@ class HelperSpec:
             "--privileged",
             "--user",
             "0:0",
-            # The whole point: the host's cgroup tree, its PID namespace (so
-            # /proc/<pid> of a monitored container resolves), and its network
-            # (so nothing new is plumbed).
-            "--cgroupns=host",
-            "--pid=host",
+            "--cgroupns=private",
+            # Namespaces stay private. These explicit bind mounts provide the
+            # host observations needed by the collector without sharing host
+            # PID or cgroup namespaces; the cgroup view is read-only.
+            "--cpus=3",
+            "--mount=type=bind,source=/proc,target=/hostproc,readonly",
+            "--mount=type=bind,source=/sys/fs/cgroup,target=/sys/fs/cgroup,readonly",
             # The collector reads files and writes to a bind mount; it has no
             # business on the network. Denying it also skips veth setup, which
             # is the slowest part of starting the helper.
@@ -266,6 +300,8 @@ class HelperSpec:
             f"{self.out_host_path}:{self.out_mount_path}:rw",
             "-e",
             "CGPROFILE_IN_HELPER=1",
+            "-e",
+            "CGPROFILE_PROC_ROOT=/hostproc",
             "-e",
             "PYTHONUNBUFFERED=1",
         ]

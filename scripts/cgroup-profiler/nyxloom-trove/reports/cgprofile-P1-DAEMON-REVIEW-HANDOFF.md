@@ -130,7 +130,9 @@ Write the round file, then return the verdict line first in your message.
 SERIAL only, `nice -n 19 ionice -c 3`; targeted files while iterating, the
 whole suite at most once. ≤ 2 gate containers estate-wide (`docker ps` for
 `tester-unified:local` first; a P2 package may hold one); `docker update
---cpus=3` after launch; remove in a `finally`. Only the daemon may run with
-`--cgroupns=host --pid=host`. Never touch `run-gate-project/`, `ciu/src/`,
+--cpus=3` after launch; remove in a `finally`. No container may use host
+PID/cgroup/network namespaces. The daemon probe must use private namespaces
+plus explicit read-only host `/proc` and cgroup binds, matching the compose
+template. Never touch `run-gate-project/`, `ciu/src/`,
 `/workspaces/dstdns`. Edit tool only if you must write (round files); no
 commits to the branch — repairs are the implementer's.

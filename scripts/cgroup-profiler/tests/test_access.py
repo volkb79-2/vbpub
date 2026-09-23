@@ -15,6 +15,7 @@ import io
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 import pytest
@@ -52,6 +53,73 @@ class TestHaveHostCgroupView:
         (root / "cgroup.controllers").write_text("cpu memory\n")
         (root / "system.slice").mkdir()
         assert access.have_host_cgroup_view(str(root)) is True
+
+
+class TestConfiguredProcRoot:
+    def test_missing_value_uses_local_procfs(self, monkeypatch):
+        monkeypatch.delenv("CGPROFILE_PROC_ROOT", raising=False)
+        assert access._configured_proc_root() == "/proc"
+
+    def test_absolute_value_is_normalized(self, monkeypatch):
+        monkeypatch.setenv("CGPROFILE_PROC_ROOT", "/hostproc/../hostproc")
+        assert access._configured_proc_root() == "/hostproc"
+
+    def test_empty_value_refuses(self, monkeypatch):
+        monkeypatch.setenv("CGPROFILE_PROC_ROOT", "  ")
+        with pytest.raises(RuntimeError, match="must not be empty"):
+            access._configured_proc_root()
+
+    def test_relative_value_refuses(self, monkeypatch):
+        monkeypatch.setenv("CGPROFILE_PROC_ROOT", "hostproc")
+        with pytest.raises(RuntimeError, match="must be absolute"):
+            access._configured_proc_root()
+
+
+class TestHaveHostProcView:
+    def _stat_pair(self, monkeypatch, proc_root: Path, selected: int, local: int):
+        inodes = {
+            str(proc_root / "1" / "ns" / "pid"): selected,
+            "/proc/1/ns/pid": local,
+        }
+
+        def fake_stat(path):
+            if str(path) not in inodes:
+                raise FileNotFoundError(path)
+            return SimpleNamespace(st_ino=inodes[str(path)])
+
+        monkeypatch.setattr(access.os, "stat", fake_stat)
+
+    def test_container_requires_pid1_from_a_distinct_pid_namespace(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        proc = tmp_path / "hostproc"
+        self._stat_pair(monkeypatch, proc, selected=202, local=101)
+        monkeypatch.setattr(access, "in_container", lambda: True)
+        assert access.have_host_proc_view(str(proc)) is True
+
+    def test_same_pid_namespace_is_not_a_host_proc_view(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        proc = tmp_path / "proc"
+        self._stat_pair(monkeypatch, proc, selected=101, local=101)
+        monkeypatch.setattr(access, "in_container", lambda: True)
+        assert access.have_host_proc_view(str(proc)) is False
+
+    def test_host_process_accepts_its_own_pid_namespace(self, monkeypatch, tmp_path: Path):
+        proc = tmp_path / "proc"
+        self._stat_pair(monkeypatch, proc, selected=101, local=101)
+        monkeypatch.setattr(access, "in_container", lambda: False)
+        assert access.have_host_proc_view(str(proc)) is True
+
+    def test_host_process_rejects_a_different_pid_namespace(self, monkeypatch, tmp_path: Path):
+        proc = tmp_path / "other-proc"
+        self._stat_pair(monkeypatch, proc, selected=202, local=101)
+        monkeypatch.setattr(access, "in_container", lambda: False)
+        assert access.have_host_proc_view(str(proc)) is False
+
+    def test_missing_namespace_metadata_is_false(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setattr(access.os, "stat", lambda path: (_ for _ in ()).throw(OSError(path)))
+        assert access.have_host_proc_view(str(tmp_path / "missing-proc")) is False
 
 
 # ── cgroup_root_is_writable ──────────────────────────────────────────────────
@@ -518,6 +586,13 @@ class TestHelperSpecDockerArgs:
         assert args[-1] == "img:local"
         assert "--privileged" in args
         assert "--network=none" in args
+        assert "--cpus=3" in args
+        assert "--cgroupns=host" not in args
+        assert "--pid=host" not in args
+        assert "--cgroupns=private" in args
+        assert "--mount=type=bind,source=/proc,target=/hostproc,readonly" in args
+        assert "--mount=type=bind,source=/sys/fs/cgroup,target=/sys/fs/cgroup,readonly" in args
+        assert "CGPROFILE_PROC_ROOT=/hostproc" in args
         assert f"/h/repo:/repo:ro" in args
         assert f"/h/out:/out:rw" in args
 

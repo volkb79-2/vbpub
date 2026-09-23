@@ -401,7 +401,8 @@ def _launch_helper(run_path: str, collect_args: List[str],
                    image: Optional[str],
                    cgroup_parent: Optional[str] = None) -> subprocess.Popen:
     spec = access.build_helper_spec(HERE, os.path.dirname(run_path), image, cgroup_parent)
-    docker_args = spec.docker_args()
+    helper_name = f"cgprofile-helper-{os.getpid()}-{time.time_ns()}"
+    docker_args = spec.docker_args(name=helper_name)
     # Plain python3, not the venv: the collector is standard-library only by
     # contract, and running it on the bare interpreter is what keeps it that way.
     command = [
@@ -412,8 +413,41 @@ def _launch_helper(run_path: str, collect_args: List[str],
         "_collect",
         *collect_args,
     ]
-    _note(f"starting helper container ({spec.image.split(':')[0][:48]})")
-    return subprocess.Popen(command, stdout=sys.stderr, stderr=sys.stderr)
+    _note(f"starting helper container {helper_name} ({spec.image.split(':')[0][:48]})")
+    child = subprocess.Popen(command, stdout=sys.stderr, stderr=sys.stderr)
+    # --cpus=3 is present in the create request, so the helper is bounded from
+    # its first instruction. Confirm the estate's required post-launch update
+    # while the named Docker container is still running; a very short helper
+    # may finish before the update CLI can see it, which is safe because the
+    # create-time cap was already applied.
+    for _ in range(5):
+        if child.poll() is not None:
+            return child
+        try:
+            updated = access._docker("update", "--cpus=3", helper_name, timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            updated = None
+        if updated is not None and updated.returncode == 0:
+            return child
+        if child.poll() is not None:
+            return child
+        time.sleep(0.05)
+    if child.poll() is None:
+        # The exact name was printed before launch and is unique to this run.
+        # Remove only that helper if the create-time cap could not be
+        # confirmed; never leave a partially launched observer behind.
+        try:
+            access._docker("rm", "--force", helper_name, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        child.terminate()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+        _err(f"could not confirm the 3-CPU cap on helper container {helper_name}")
+    return child
 
 
 def _wait_for(path: str, timeout: float, what: str) -> None:
@@ -803,15 +837,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     """Run the profiling daemon. Refuses `--cap` structurally (this parser
     defines no such flag — see build_parser()'s `serve_parser`) and refuses
-    to start at all without the host's own cgroup v2 view, since a
-    namespaced view cannot see the containers run-gate wants profiled
+    to start unless explicit host proc/cgroup bind mounts expose the host
+    observations run-gate needs. PID and cgroup namespaces remain private
     (RG55-INTERFACE-CONTRACT.md §5).
     """
     if not access.have_host_cgroup_view(access.CGROUP_ROOT):
         _err(
-            "serve needs the host's cgroup v2 view, not a namespaced subtree — "
-            "run this container with --privileged --cgroupns=host --pid=host "
+            "serve needs the host cgroup v2 tree explicitly bind-mounted at "
+            f"{access.CGROUP_ROOT}; keep the cgroup namespace private "
             "(RG55-INTERFACE-CONTRACT.md §5)"
+        )
+    if not access.have_host_proc_view(access.PROC_ROOT):
+        _err(
+            "serve needs the host /proc tree explicitly bind-mounted read-only "
+            "and CGPROFILE_PROC_ROOT set to that mount; its PID 1 must resolve "
+            "to a different PID namespace from this container. Keep the PID "
+            "namespace private (RG55-INTERFACE-CONTRACT.md §5)"
         )
     from lib import serve as serve_mod
 

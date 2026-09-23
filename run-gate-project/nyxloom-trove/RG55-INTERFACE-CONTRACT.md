@@ -333,6 +333,15 @@ directory, which it writes only to create/commit/stop its own kdamonds;
 are `containerid:` and the consumer resolves ids). run-gate never passes
 `--cgroupns=host` or `--pid=host` to anything.
 
+The daemon's PID and cgroup namespaces remain private. Host observation is
+provided by explicit binds: host `/proc` is read-only at `/hostproc`, selected
+by `CGPROFILE_PROC_ROOT`, and host cgroup v2 is read-only at
+`/sys/fs/cgroup`. `serve` refuses unless PID 1 in the configured proc view
+belongs to a PID namespace distinct from the daemon's. `/proc/<pid>/cgroup`
+paths are resolved relative to the daemon's cgroup-namespace root, derived
+from its own membership in the mounted host tree. No RG-55 container uses a
+host PID, cgroup, or network namespace.
+
 ## 6. Test fixtures shared by both packages
 
 - `fixtures/rg55/summary-v1.json` — golden Summary (§3).

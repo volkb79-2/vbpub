@@ -31,9 +31,17 @@ ciu up --dir .
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 ```
 
-The daemon must have the host cgroup and PID view supplied by the shipped
-stack. It has no Docker socket and does not accept `--cap`; it observes the
-target and writes session data under `/var/lib/cgprofile/sessions`.
+The shipped stack supplies host observation with private PID/cgroup
+namespaces: host `/proc` is bind-mounted read-only at `/hostproc`, host
+cgroup v2 is bind-mounted read-only at `/sys/fs/cgroup`, and
+`CGPROFILE_PROC_ROOT=/hostproc` selects the host proc view. Do not set host
+namespace modes. On startup `serve` verifies that PID 1 in that proc view
+belongs to a PID namespace distinct from the daemon's and refuses if either
+view is missing. PID target paths are resolved relative to the daemon's
+cgroup-namespace root, derived from its own membership in the mounted host
+tree. The daemon has no Docker socket and does not accept
+`--cap`; it writes session data under `/var/lib/cgprofile/sessions` and its
+own DAMON kdamonds under sysfs.
 
 The version response has the current wire shape:
 
