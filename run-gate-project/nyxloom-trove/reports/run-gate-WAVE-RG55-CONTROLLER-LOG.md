@@ -3714,3 +3714,16 @@ CIU-managed worktree `rg55-p1-r2-ciu` at its quiet judged tree. This does not
 claim R2 PASS, release, or wave completion. A non-equivalent survivor,
 regression, or review finding requires a backport and invalidates affected
 evidence; final quiet gates and the required release review remain mandatory.
+
+### RW-301 — 2026-09-23 14:22:05Z — P6 reconciled with current P1 and locally green
+
+The controller reconciled the P6 worktree `.worktrees/rg55-followups-cgprofile-final`
+with the current P1 implementation. The merge preserved P6's CP-12 ownership;
+the unrelated current-main backlog item was renumbered CP-13. During
+reconciliation, the initial synchronous sample was wired into the liveness
+tracker so the summary and liveness views share the same baseline. The P6
+focused daemon suite then passed 591 tests with 6 skips. The four root frozen
+contract fixtures were updated to the P6 package version 1.1.0 and remain
+byte-identical to the package copies. Reconciliation commit: `bb1042a6`.
+This is a source/test checkpoint only; registered gates, adversarial review,
+mutation disposition, merge, and release remain outstanding.
