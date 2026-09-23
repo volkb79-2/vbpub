@@ -3678,3 +3678,14 @@ by the unrelated Assay B101 gate container
 process are `assay-b101-gate-clean` / PID `686965`. The controller will not
 stop or contend with that run. The P1 CIU worktree is clean and ready; no P1
 R2 container is currently running.
+
+### RW-298 — 2026-09-23 13:40:33Z — preserve R2 disposition in queued tree
+
+The P1 report now carries the current R2 evidence and the explicit
+`damon.py:325` equivalence disposition in commit `9471a9af`. That report-only
+commit was mirrored into the managed CIU checkout as `07161416`; the queued
+checkout remains clean and is the tree to judge when the single gate slot is
+free. The original R2 ran from `09:06:11Z` to `11:48:41Z` (2h42m30s), so the
+new run is expected to be a multi-hour task; it will receive the normal
+10-second health check and then no progress read more often than every 25
+minutes.
