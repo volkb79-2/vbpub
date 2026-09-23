@@ -56,6 +56,55 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [7.0.0] - 2026-09-23
+<!-- cmru: generated -->
+<!-- cmru: source-end=e434b2938551ad6edfb49d35da88ce5eac996822 -->
+
+### Added
+- feat(assay)!: record v12 isolation provenance (452cf976)
+- feat(assay): use shallow snapshot seeds by default (5bf832a4)
+
+### Fixed
+- fix(assay): advance dstdns witness to verdict v12 (c183a371)
+- fix(assay): avoid pyflakes field shadowing (4ed15f31)
+- fix(assay): refresh dstdns qualification witness (c6a97f1e)
+- fix(assay): consume the pre-snapshot resolved base inside P22 snapshots (port of assay-b096 84baffb4; B101 P1) (36f8551c)
+
+### Changed
+- backlog(assay): operator triage 2026-09-23 and the B101 wave plan (96ac8197)
+- Merge assay B101 P1: consume the pre-snapshot resolved base inside P22 snapshots (e785b955)
+- backlog(assay): audit — complete B001-B087 status normalization, finish report (83446781)
+- backlog(assay): audit — complete frontmatter index, normalize B088-B103 status (5689b85d)
+- backlog(assay): B101 design interview decided; file B102 dirty-tree override (ffa1264a)
+- Share native Git worktree inventory across CIU and CMRU (b9cad87c)
+- Merge main into workspace instance feature (e2a4a68d)
+- backlog(assay): B101 -- note that a design interview is needed before implementation (d05939b9)
+- backlog(assay): B101 -- snapshot_selection=repository's max_total_object_bytes measures full git-history closure, unconfigurable, 74-lane blast radius on dstdns (0361b211)
+- Merge branch 'main' into feat/ciu-cmru-workspace-instance (19828b67)
+- harden workspace lifecycle and gate oracles (8d634211)
+- reap gate descendants before PID exhaustion (b552e0e2)
+- Retry transient Assay Git child launch failures (d14c9ddb)
+- Bound Assay Git index preload resources (294aaf94)
+
+### Documentation
+- docs(assay): close provisional gate evidence (e434b293)
+- docs(assay): record B101 wave gate evidence (171c9045)
+- docs(assay): fix B101 wave handoff per independent review (4 blocking, 12 major) (a02dcb32)
+- docs(assay): B101 isolation wave handoff for a third-party controller (7a3c0571)
+- docs(assay): fix independent-reviewer findings in backlog audit (B047, B089/B080, B092, frontmatter titles, ID-collision mechanism, dates, B104) (a127067e)
+- docs(assay): B101 P1 review nits -- stale re-resolution prose, R3 test scope (260055ee)
+- docs(assay): preserve assay-b096 review records and gate-repair briefs (6bd0ed51)
+- docs(assay): fix B096-B099 release date/version citations in audit (080bdb2c)
+- docs(assay): correct assay-b096 WIP finding using the B101 triage (baaf780c)
+- docs(assay): B101 shallow-seed explanation and assay-b096 triage (f5e702bc)
+- docs(assay): audit checkpoint — continuation brief for B001-B087 (390e651b)
+- docs(assay): audit — WIP-branch findings and ID collisions (5aeb0f84)
+- docs(assay): begin backlog audit report (93d64b29)
+- docs(backlog): B089 -- two more reproductions of the istanbul branch-arc contradiction (e7fbb50f)
+
+### Testing
+- test: close CMRU mutation survivors and Git spawn retries (67c45c8d)
+
 ## [6.5.0] - 2026-09-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=55473fd56a77ba8f4a209f64bdd207ac82366641 -->
