@@ -227,30 +227,37 @@ vs. main). Two unrelated pieces of work share this branch name:
    Fully shipped, v6.3.0. No action needed.
 2. Everything after that merge point (`84baffb4` "carry resolved bases
    through P22 snapshots" onward) is a SEPARATE, unrelated, UNMERGED repair
-   for a P25/Topos-qualification bug, confirmed `git merge-base
+   attempt for a P25/Topos-qualification scenario, confirmed `git merge-base
    --is-ancestor 84baffb4 main` → **not an ancestor of main**. This fix adds
    `measurability.check_resolved_base_is_head()`, a snapshot-safe sibling of
    `check_base_is_head()` that consumes an ALREADY-resolved commit directly
-   instead of re-resolving it. **The bug this fixes still exists on main:**
-   `runner.py`'s `_run_prepared_lane` (main, ~line 3964) calls
-   `measurability.check_base_is_head(baseline_snapshot.root, resolved_base,
-   remaining=...)` — passing an already-resolved commit as `base`, which
-   `check_base_is_head` then re-resolves via `git.resolve_base` A SECOND
-   TIME, now against the materialized P22 snapshot. Per the fix's own
-   reasoning (confirmed by reading `isolation.py`'s snapshot writer), P22
-   snapshots intentionally carry bare commit objects with no refs/tags, so a
-   symbolic spelling that resolved correctly against the real repository
-   before the snapshot was made can come back `GIT_FAILED` when re-resolved
-   a second time inside the ref-less snapshot. This is a real, still-open
-   correctness gap on main, not merely a design preference.
-   **Branch state: abandoned mid-repair.** After implementing the fix with
-   tests (`84baffb4`), the branch moved into live `tester-unified`
-   reproduction of the triggering P25/Topos scenario (checkpoints
-   `99e588e9`, `5d828bb0` "Topos command failure"), then stopped after one
-   formatting-only commit (`0f640587`) — no completion report, no merge, no
-   further commits. Prior art cited directly by B101's own operator-decided
-   text (this backlog file, committed at `ffa1264a`), so whoever picks this
-   up should read `84baffb4` before reinventing the seam.
+   instead of re-resolving it inside the snapshot.
+   **Correction (post-commit, from a dedicated B101/B096 triage landed at
+   `f5e702bc`, `assay-B101-SHALLOW-SEED-AND-B096-TRIAGE-2026-09-23.md`): the
+   bug is NOT live on main today.** Under main's current default (full-history
+   snapshot seed), `runner.py`'s `_run_prepared_lane` passes the
+   already-resolved base into `check_base_is_head`, which re-resolves it via
+   `git.resolve_base` = `merge-base OID HEAD` inside the snapshot — and that
+   succeeds today because the snapshot carries full ancestry. The branch's own
+   final checkpoint (BRIEF-4) independently confirms this: with the fix
+   applied, the triggering P25 scenario's R1 claim PASSes either way, and the
+   actual observed red was an unrelated Topos UI test
+   (`textual.pilot.WaitForScreenTimeout`) timing out under load, not an assay
+   defect — the branch's original P25-red motivation was misattributed.
+   **Why the fix is still needed:** B101 is about to change the *default*
+   seed to shallow (history-bounded); under a shallow seed, `merge-base`
+   across two shallow roots fails and `rev-list --parents -n1 HEAD` stops
+   seeing a merge commit's true parents, so the in-snapshot re-resolution
+   breaks for real. `check_resolved_base_is_head` is exactly the seam a
+   shallow default requires, and is a harmless no-op improvement under
+   today's full-history mode (saves one git round-trip).
+   **Disposition (per the B101 triage): port `84baffb4`'s product change +
+   tests + P25 diagnostics onto main as the first package of B101's
+   implementation — do not merge the branch itself** (its own checkpoint
+   records a since-superseded diagnosis, and the branch's two ACCEPT
+   adversarial reviews both predate `84baffb4`, reviewing only the earlier
+   `--rejudge-outcome` fix). The Topos UI timeout is a separate,
+   load-sensitive test issue for Topos's own owner, not assay's.
 
 **P35 "execution interruption boundary" package** (`assay-next-wave` →
 `assay-b099-p35-repair` and `review/assay-p35-execution-interruption-
