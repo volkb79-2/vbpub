@@ -10,6 +10,8 @@ items:
   - {id: B097, title: "P7 B6-b: stamp process identity and parse xdist liveness events per process", type: bug, component: liveness, context_estimate: medium}
   - {id: B098, title: "P7 N3: include crashed in mutation_pct excluded-bucket enumeration", type: bug, component: mutation, context_estimate: small}
   - {id: B100, title: "bounded operator report for live gate progress, verdicts, errors, and retained evidence", type: feature, component: evidence, context_estimate: medium}
+  - {id: B101, title: "Snapshot seed carries and budgets the full history closure; default to judged-commit(+base) shallow seed, full history per-lane opt-in, limits count seed contents, [isolation.limits] configurable", type: bug, component: isolation, context_estimate: medium}
+  - {id: B102, title: "Repo-wide DIRTY_TREE refusal for snapshot lanes; declared dirty_ignore globs plus --allow-dirty override marked in the verdict", type: feature, component: isolation, context_estimate: medium}
   - {id: B089, title: "istanbul branch-arc self-contradiction on some .tsx files: a coverage record's arc list names a branch on a line the same record does not classify as executed or missing. Observed live (dstdns ui_unit lane, 2026-09-12) on ChartCard.tsx:34, DataTable.tsx:33-35, StatCard.tsx:17, StatTile.tsx:28 -- assay's own self-consistency check catches it and drops the offending arcs rather than misreport (non-blocking, lane still PASSes), but the root cause in the istanbul producer (B038/B045's parser) that emits an inconsistent record for these specific files is unexamined.", type: bug, component: parsers, context_estimate: small}
   - {id: B001, title: "SQL/DDL source-mutation adapter. IMPLEMENTED and RELEASED (wave 3, assay-v2.1.0): judge.language = \"sql\" at R2 only, seven sql:* operators on a stdlib-only two-level DDL lexer, equivalence_artifact REQUIRED, qualified against real PostgreSQL 18.4 at a pinned dstdns revision. No verdict-schema change.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
   - {id: B002, title: "Adopt cmru for assay's release process. COMPLETE: implemented 2026-08-11 (A-249/A-250), and the last open step -- the first real release -- is discharged by two cmru-cut releases, assay-v2.0.0 and assay-v2.1.0. cmru now owns snapshot/gate/tag/build/publish and generates the dated CHANGES.md entry. Five findings from the 2.1.0 run are filed as cmru KI-12..KI-16.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
@@ -9923,3 +9925,112 @@ should interview the assay maintainer/operator on what `snapshot_selection =
 "repository"` isolation is actually meant to guarantee before choosing a
 direction, rather than implementing either sketch above as if it were already
 agreed.
+
+### Operator design interview held, 2026-09-23 — direction decided
+
+**Measured on dstdns `f1b179be` (5,105 commits):** reachable closure 1084.4 MiB
+uncompressed but only **48.2 MiB on disk**; the judged commit's own tree is
+47.4 MiB. Two append-heavy ledgers account for 60% of the uncompressed total
+(`decisions.md` 386 MiB over 501 versions, `CONTROLLER-BRIEF.md` 258 MiB over
+538). **Second wall, not in the original report:** `max_objects` (100,000) also
+counts the full history closure — dstdns is at 44,007 objects and added ~2,600
+commits in the preceding 30 days, so a byte-limit-only fix moves the wall
+~2–3 months out rather than removing it.
+
+**Correction to the original framing:** the closure is not only *measured*,
+it is *transferred* — `prepare_snapshot` streams every reachable object into
+the private seed (A-184/A-185). So swapping the accounting to `--no-walk`
+alone would yield a seed whose commit references absent parents; the fix
+changes what the seed contains, not just what is counted.
+
+**Why A-185's history requirement is relaxed.** A-185 justified the full
+closure with "omitting history breaks real build/version commands that
+inspect Git". But the materialized snapshot is a detached HEAD with **no refs
+and no tags** (`isolation.py` writes `HEAD` as a bare OID), so tag-based
+version derivation (`git describe`, setuptools-scm, hatch-vcs) already cannot
+work inside a snapshot today. What full history actually buys is only
+ancestor walks (`git log`, `rev-list --count`, in-snapshot `merge-base`).
+dstdns: 105 of 121 lanes are `whole_target` (need no history at all); 16 are
+`changed_lines` (need the resolved base commit, not the history between);
+no lane uses git-derived versioning. Assay's job is to test the judged tree
+and write a verdict; carrying every historical revision of every tracked
+file into each lane's seed is cost without a consumer.
+
+**Decisions:**
+
+1. **Default seed = judged commit + (for `changed_lines`) the pre-snapshot
+   resolved base commit**, as a well-defined shallow repository (boundary
+   recorded in the seed's `shallow` file). This is distinct from A-185's
+   refusal of a *shallow SOURCE* (where "reachable" is ambiguous): here the
+   seed's boundary is chosen by assay and exact. In-snapshot base handling
+   must consume the carried resolved OID and never re-run `merge-base`
+   across the boundary (see the unmerged `assay-b096` branch's
+   `check_resolved_base_is_head`, commit `84baffb4`, for prior art on
+   exactly this seam).
+2. **Full history becomes a per-lane opt-in** (e.g.
+   `isolation.snapshot_history = "full"`), for a lane whose own commands
+   walk ancestry. Default is the shallow seed above.
+3. **Limits count what is transferred/materialized, not history:**
+   object/byte ceilings apply to the seed's actual contents (with the
+   shallow default, ≈ the judged tree); keep `max_pack_bytes` as the
+   transfer bound; add an explicit ceiling on the judged tree's total blob
+   bytes (today that is bounded only incidentally, by the history total
+   always being larger).
+4. **`SnapshotLimits` is configurable in `assay.toml`** (project-level
+   `[isolation.limits]`, per-field, `DEFAULT_SNAPSHOT_LIMITS` as fallback,
+   validated by the dataclass's existing `__post_init__`) — the escape
+   hatch for a lane that opts into full history or has a genuinely large
+   tree.
+
+Oracle additions: the fixture above must PASS under default limits with the
+shallow seed and no override; a `snapshot_history = "full"` lane on the same
+fixture must still FAIL under defaults and PASS with a raised
+`[isolation.limits]`; a `changed_lines` lane whose symbolic base is several
+commits behind HEAD must produce the same added-line set as today; a
+`max_objects` fixture (many small commits) must PASS by default.
+
+## B102 — higher-rigor lanes refuse `DIRTY_TREE` for ANY uncommitted path in the repository, although a snapshot lane judges the committed tree and no uncommitted byte can reach it
+
+**Reported by:** operator + dstdns friction, 2026-09-23 (companion to B101).
+**Status: OPEN; direction decided (operator, 2026-09-23); not carved.**
+
+### Mechanism
+
+`runner.py`'s pre-snapshot guard calls `git.dirty_paths(repo)` —
+`git status --porcelain` over the WHOLE repository, unscoped — and refuses
+every R1+ lane with `NO_MEASUREMENT/DIRTY_TREE` if anything at all is
+uncommitted. For a snapshot lane this protects no verdict: the snapshot is
+the resolved commit, so an uncommitted path cannot influence the result. It
+only guards against an operator believing uncommitted work was tested. In
+practice (dstdns) a controller's live edit to a ledger file such as
+`nyxloom-trove/CONTROLLER-BRIEF.md` refuses every lane in the project.
+
+### Decided direction
+
+1. **Declared exclude list (structural default):** a project-level glob list
+   (e.g. `[isolation] dirty_ignore = ["nyxloom-trove/**"]`) whose uncommitted
+   changes do not refuse a snapshot lane. Reuse B092's
+   `identity_exclude` POSIX-glob grammar/normalization rather than a second
+   dialect. The verdict still records the ignored dirty paths.
+2. **Escape hatch `--allow-dirty`:** the run proceeds despite dirty paths
+   outside the exclude list; the verdict carries a machine-readable marker
+   (the overridden dirty path list) and a diagnostic. `assay verify` and
+   attestation consumers can **refuse** an `--allow-dirty` verdict (default
+   refuse for attestation/release receipts; verification reports it
+   explicitly). Schema impact must be assessed at carve time.
+3. **Scope:** snapshot (R1+) lanes. In-place (non-snapshot) lanes also run a
+   post-command dirty check to catch lane-written files; extending the
+   override there needs a pre/post dirty-set comparison so pre-existing dirt
+   is not confused with lane output — carve decides whether that is in scope
+   or a follow-up.
+4. **Explicitly NOT in scope:** judging the uncommitted working tree itself
+   (a synthetic commit). Verdict identity is bound to a real commit
+   throughout provenance/attestation/verify; committing on a worktree branch
+   is already cheap.
+
+Oracle sketch: repo with a dirty `ledger.md` matched by `dirty_ignore` →
+lane runs, verdict lists the ignored path; dirty `src/x.py` without flag →
+`DIRTY_TREE` (unchanged); same with `--allow-dirty` → lane runs, verdict
+carries the override marker, and `assay verify`/attestation refuse it per
+policy; a snapshot-lane verdict's judged content is byte-identical with and
+without the dirty file present.
