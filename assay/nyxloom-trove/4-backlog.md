@@ -10488,7 +10488,7 @@ backlog prose).
 
 ## B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main
 
-**Status: OPEN (filed 2026-09-23) — `tests/test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness` FAILS against unmodified `main` (`c4dbc4f8`); cause unexamined.**
+**Status: DONE (B104 triage, 2026-09-23; fix on `assay-b101-wave`) — the pinned dstdns run is healthy; the witness was stale against shipped v11 additive liveness fields, and the comparator was not removing the run-derived candidate-budget value.**
 
 **Found:** controller run, 2026-09-23, an ordinary serial full `tests/` run on
 this host (this test is Docker-gated and needs a real `/workspaces/dstdns`
@@ -10510,6 +10510,18 @@ QualificationError: the normalized verdict differs from the frozen witness at
    necessarily the exact commit this test's witness was frozen against.
 3. **A real regression** — the SQL/DDL R2 lane (B001) itself may have
    changed behavior since the witness was captured.
+
+**Triage result.** The test was run against the real dstdns checkout with the
+pinned `DSTDNS_COMMIT` reachable exactly. The captured verdict had the same
+stable R0/R2 outcome and mutation buckets as the witness, but shipped v11 also
+emits `mutation.hung` and `judgment.r2.liveness`, which the witness omitted.
+It also emits `judgment.r2.budget_per_candidate_derived_s`, which is derived
+from the run's measured baseline wall time and therefore cannot be an exact
+cross-run witness value. The comparator now removes only that volatile field
+after validating the real verdict; the witness carries the two stable v11
+fields. The targeted test passes after this refresh. The Docker-reaching test
+remains explicitly opt-in by its existing `dstdns_checkout`/Docker fixtures;
+the ordinary gate has no Docker socket.
 
 **Hazard worth recording independent of root cause:** this is a
 Docker-reaching test that runs BY DEFAULT in the local `pytest tests/` suite

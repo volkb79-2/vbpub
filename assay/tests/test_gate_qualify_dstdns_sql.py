@@ -459,6 +459,19 @@ def test_normalize_verdict_replaces_the_four_placeholder_fields() -> None:
     assert normalized["judgment"]["resolved"]["base"] == "@BASE_OID@"
 
 
+def test_normalize_verdict_discards_the_run_derived_candidate_budget() -> None:
+    document = _minimal_verdict(
+        judgment={
+            "resolved": {"base": "2" * 40},
+            "r2": {"budget_per_candidate_derived_s": 63.089135},
+        }
+    )
+    normalized = q.normalize_verdict(
+        document, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40
+    )
+    assert "budget_per_candidate_derived_s" not in normalized["judgment"]["r2"]
+
+
 def test_normalize_verdict_refuses_a_wrong_assay_version() -> None:
     with pytest.raises(q.QualificationError, match="assay_version"):
         q.normalize_verdict(_minimal_verdict(), assay_version="0.0.1", head_oid="1" * 40, base_oid="2" * 40)

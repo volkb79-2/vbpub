@@ -12,6 +12,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   also offers a concise text summary. No runtime dependencies are added.
 
 ### Fixed
+- fix(assay): refresh the W3 dstdns SQL witness for the shipped v11 liveness
+  fields and normalize its per-run derived candidate budget (B104)
 - fix(assay): base checks inside a P22 snapshot (R1, R2's own target diff,
   both R3 canary halves) and `assay plan`'s diff now use the base commit
   resolved before the snapshot. They no longer re-run

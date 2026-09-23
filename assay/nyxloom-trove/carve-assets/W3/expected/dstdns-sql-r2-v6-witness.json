@@ -23,6 +23,7 @@
         "candidate_count": 6,
         "crashed": [],
         "equivalent": [],
+        "hung": [],
         "killed": [
           {
             "description": "NOT NULL -> NULL",
@@ -113,6 +114,11 @@
       "jobs": 1,
       "kill_attribution": "declared",
       "kill_signal_artifact": ".assay/kill-signal.txt",
+      "liveness": {
+        "active": false,
+        "plugin": null,
+        "reason": "language-not-python"
+      },
       "max_mutants": 6,
       "mode": "changed_lines",
       "operators": [
