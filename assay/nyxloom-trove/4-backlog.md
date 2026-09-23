@@ -10400,8 +10400,16 @@ part can ship alone.
 - **Coordination:** the RG-55 continuation runs long mutation campaigns on
   vbpub trees; assay changes merge to main without disturbing a campaign
   pinned to its own tree, but no assay release/devcontainer redeploy while
-  one is mid-run without telling that controller first, and only one gate
-  container runs on the host at a time.
+  one is mid-run without telling that controller first. Gate containers:
+  one at a time, EXCEPT (operator ruling 2026-09-23) a short (~10 min)
+  assay `tester-unified` gate may run beside a long RG-55 mutation
+  campaign, capped `docker update --cpus=3`; a long release campaign needs
+  an agreed window.
+- **Handoff:** the whole wave is handed to a third-party controller in
+  `nyxloom-trove/WAVE-PROMPT-2026-09-23-b101-isolation.md` (independently
+  reviewed; that prompt corrects this entry's original oracle sketch —
+  appending ~5 MB per commit trips `max_blob_bytes` before 1 GiB of
+  history, so the fixture must REWRITE a ~5 MiB file across ~210 commits).
 
 ## B102 — higher-rigor lanes refuse `DIRTY_TREE` for ANY uncommitted path in the repository, although a snapshot lane judges the committed tree and no uncommitted byte can reach it
 
