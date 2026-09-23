@@ -414,6 +414,89 @@ def test_snapshot_selections_public_constant_is_exactly_the_closed_pair():
     assert SNAPSHOT_SELECTIONS == {"repository", "repository-minus-unsafe-symlinks"}
 
 
+def test_snapshot_history_defaults_shallow_and_accepts_full(project: Project):
+    shallow = load_lane_file(
+        project.write(
+            _lane_text(
+                rigor='["R0", "R1"]',
+                isolation_block=_repository_block(),
+            )
+        )
+    ).lane("package")
+    assert shallow.isolation is not None
+    assert shallow.isolation.snapshot_history == "shallow"
+
+    full_text = _lane_text(
+        rigor='["R0", "R1"]',
+        isolation_block=(
+            "[lanes.package.isolation]\n"
+            'snapshot_selection = "repository"\n'
+            'snapshot_history = "full"\n\n'
+        ),
+    )
+    full = load_lane_file(project.write(full_text)).lane("package")
+    assert full.isolation is not None
+    assert full.isolation.snapshot_history == "full"
+    assert full.as_declared()["isolation"]["snapshot_history"] == "full"
+
+    explicit_shallow = load_lane_file(
+        project.write(
+            _lane_text(
+                rigor='["R0", "R1"]',
+                isolation_block=(
+                    "[lanes.package.isolation]\n"
+                    'snapshot_selection = "repository"\n'
+                    'snapshot_history = "shallow"\n\n'
+                ),
+            )
+        )
+    ).lane("package")
+    assert explicit_shallow.as_declared()["isolation"]["snapshot_history"] == "shallow"
+
+
+def test_unknown_snapshot_history_is_refused(project: Project):
+    text = _lane_text(
+        rigor='["R0", "R1"]',
+        isolation_block=(
+            "[lanes.package.isolation]\n"
+            'snapshot_selection = "repository"\n'
+            'snapshot_history = "shallowish"\n\n'
+        ),
+    )
+    with pytest.raises(LaneConfigError, match="snapshot_history.*must be one of"):
+        load_lane_file(project.write(text))
+
+
+def test_project_snapshot_limits_are_loaded_and_invalid_values_refused(project: Project):
+    text = (
+        "schema_version = 2\n\n"
+        "[isolation.limits]\n"
+        "max_objects = 123\n"
+        "max_total_tree_blob_bytes = 456\n\n"
+        + _lane_text(rigor='["R0", "R1"]', isolation_block=_repository_block()).split(
+            "schema_version = 2\n\n", 1
+        )[1]
+    )
+    loaded = load_lane_file(project.write(text))
+    assert loaded.snapshot_limits.max_objects == 123
+    assert loaded.snapshot_limits.max_total_tree_blob_bytes == 456
+
+    bad = text.replace("max_objects = 123", "max_objects = 0")
+    with pytest.raises(LaneConfigError, match=r"invalid \[isolation\.limits\]"):
+        load_lane_file(project.write(bad))
+
+    unknown = text.replace(
+        "max_total_tree_blob_bytes = 456",
+        "max_total_tree_blob_bytes = 456\nunknown = 1",
+    )
+    with pytest.raises(LaneConfigError, match=r"unknown \[isolation\.limits\] key"):
+        load_lane_file(project.write(unknown))
+
+    malformed = text.replace("[isolation.limits]", "[isolation]\nwrong = true\n\n[isolation.limits]")
+    with pytest.raises(LaneConfigError, match=r"unknown top-level isolation key"):
+        load_lane_file(project.write(malformed))
+
+
 # --- direct construction: the shapes TOML cannot spell, or that prove the ------
 # --- SAME __post_init__ mechanism runs for BOTH the loader and a direct caller
 

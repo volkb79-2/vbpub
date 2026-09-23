@@ -1476,6 +1476,7 @@ def _run_reserved(
                 # it, and refuses every disagreement -- the CLI does not
                 # adjudicate.
                 request_base=getattr(args, "request_base", None),
+                snapshot_limits=lane_file.snapshot_limits,
                 # B032/A-322: where the `environment_command` probe's refusal
                 # message goes. `run_lane` returns a Verdict and carries no
                 # free-text field for a cause (A-138/A-170), so B010's "refuse
@@ -1599,6 +1600,11 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
     project_prefix = runner._resolved_project_prefix(repo_top, lane_file.project_root)
     snapshot_policy = runner._snapshot_policy_for_lane(lane)
     assert snapshot_policy is not None
+    resolved_base = runner._resolve_declared_base(
+        lane_file.project_root,
+        base_declaration,
+        remaining=deadline.remaining,
+    )
 
     with tempfile.TemporaryDirectory(prefix="assay-plan-seed-") as raw_seed:
         seed_root = Path(raw_seed).resolve()
@@ -1608,6 +1614,8 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             project_prefix=project_prefix,
             scratch_root=seed_root,
             snapshot_policy=snapshot_policy,
+            resolved_base=resolved_base,
+            limits=lane_file.snapshot_limits,
         )
         with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
             # B030/A-319: source roots are NOT relocated here, on purpose.
@@ -1630,11 +1638,6 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             # the identical helper -- `plan` predicts a run, so a plan scoped
             # against a different base than the run it predicts would be
             # worse than emitting none.
-            resolved_base = runner._resolve_declared_base(
-                lane_file.project_root,
-                base_declaration,
-                remaining=deadline.remaining,
-            )
             if lane.judge.mode == "whole_target":
                 targets = runner._mutation_targets_whole(
                     prepared=prepared,

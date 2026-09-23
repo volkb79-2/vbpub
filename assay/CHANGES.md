@@ -10,6 +10,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   and appended mutation progress; produce receipts from these facts and
   `tester-unified/run` evidence. JSON is the default output; verdict inspection
   also offers a concise text summary. No runtime dependencies are added.
+- feat(assay): make P22 seeds shallow by default, add explicit full-history
+  lane opt-in, project-level snapshot limits, and a judged-tree blob ceiling
+  (B101)
+
+### Documentation
+- docs(assay): document shallow source/seed distinctions, snapshot limits,
+  Go lane-file cleanliness, source unshallowing, measured Go image support,
+  and the current dstdns assay pin (B082-B084/B101)
 
 ### Fixed
 - fix(assay): refresh the W3 dstdns SQL witness for the shipped v11 liveness

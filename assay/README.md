@@ -110,6 +110,12 @@ assay exists to close that gap mechanically, not by policy:
   commit-validated P22-unsafe symlink is absent and every other P22-supported
   tracked path from the resolved commit is materialised.* See
   [§6, snapshot selection](docs/DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a).
+- **Snapshot history is shallow by default.** A seed carries the judged commit
+  and the pre-snapshot resolved base, with exact Git shallow boundaries. A
+  lane whose command genuinely walks ancestry opts in with
+  `snapshot_history = "full"`; project-level `[isolation.limits]` ceilings
+  bound the seed and materialized trees. See [§6, snapshot history and seed
+  limits](docs/DESIGN-GUIDE.md#snapshot-history-and-seed-limits-b101).
 - **An escalating rigor ladder (R0–R3)**, so "tested" means something
   specific instead of one undifferentiated green checkmark:
   - **R0** — the declared command ran and produced a result.
@@ -407,8 +413,9 @@ unconditionally `UNSUPPORTED`, and declaring a rigor level a lane can't
 actually back up is exactly the failure this project exists to prevent.
 
 **Getting assay into a Go gate image costs nothing extra**, and this is what
-stdlib-only (A-005) buys: a `golang:1.25`-based image already carries
-`/usr/bin/python3` 3.13.5, above assay's `>=3.11` floor. It has no pip, so
+stdlib-only (A-005) buys: any image with `python3` at or above assay's
+`>=3.11` floor works; a `golang:1.25` image was measured carrying
+`/usr/bin/python3` 3.13.5. It has no pip, so
 the shipped **zipapp** is the install path — copy the `.pyz` in, check its
 `.sha256`, run it with the interpreter that is there. The Go oracle rides
 inside that archive and is staged out to a real directory when it runs, so
@@ -425,6 +432,11 @@ modules, or in none, refuses and says which — it never picks one silently.
 [CONSUMERS.md's Go
 section](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
 point 6 has the detail; `go.work` is not supported.
+
+A shallow or grafted **source checkout** is refused as `ERROR`/`GIT_FAILED`;
+run `git fetch --unshallow` before judging it. This is independent of the
+deliberately shallow private seed described above: use
+`snapshot_history = "full"` when the lane's own command walks ancestry.
 
 Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
@@ -768,6 +780,11 @@ answer.
 # assay.toml
 schema_version = 2
 
+# Optional project-wide P22 ceilings. All *_bytes values are uncompressed
+# logical bytes; omitted fields use Assay's shipped defaults.
+[isolation.limits]
+max_total_tree_blob_bytes = 536870912
+
 [lanes.unit]
 scope = "S1"
 rigor = ["R0", "R1"]
@@ -779,8 +796,8 @@ budget = "20m"
 allow_argv_append = false
 
 # Required the moment a lane declares R1, R2 or R3 (refused on an R0-only
-# lane); no default. "repository" materialises the whole commit -- see the
-# design guide for "repository-minus-unsafe-symlinks", the monorepo case.
+# lane); no selection default. History is shallow unless this lane needs
+# ancestry, in which case add snapshot_history = "full".
 [lanes.unit.isolation]
 snapshot_selection = "repository"
 

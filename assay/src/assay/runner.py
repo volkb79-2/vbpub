@@ -5024,6 +5024,7 @@ def _run_higher_rigor_lane(
     r2_declared: bool,
     r3_declared: bool,
     snapshot_policy: IsolationConfig,
+    snapshot_limits: isolation.SnapshotLimits = isolation.DEFAULT_SNAPSHOT_LIMITS,
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
@@ -5194,7 +5195,8 @@ def _run_higher_rigor_lane(
                 project_prefix=project_prefix,
                 scratch_root=scratch_root,
                 snapshot_policy=snapshot_policy,
-                limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
+                resolved_base=resolved_base,
+                limits=snapshot_limits,
             )
             with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
                 # (B006a/A-269 WI-3, §3.4) After `prepare_snapshot` has
@@ -5421,6 +5423,7 @@ def run_lane(
     #: contract `judge.base` does; `resolve_base_declaration` refuses every
     #: disagreement between the two owners before any Git call.
     request_base: str | None = None,
+    snapshot_limits: isolation.SnapshotLimits = isolation.DEFAULT_SNAPSHOT_LIMITS,
     diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
@@ -5526,6 +5529,7 @@ def run_lane(
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
                 state_dir=state_dir,
                 request_base=request_base,
+                snapshot_limits=snapshot_limits,
                 diagnostics=diagnostics,
             )
 
@@ -5929,6 +5933,7 @@ def run_lane(
             r2_declared=r2_declared,
             r3_declared=r3_declared,
             snapshot_policy=snapshot_policy,
+            snapshot_limits=snapshot_limits,
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
             resume=resume,

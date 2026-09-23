@@ -43,7 +43,7 @@ Stated as MEASURED rather than as intended, because the two have differed:
 | `ciu` | internal source mode: its `run-gate.toml` omits `assay_command`/`pins`; run-gate installs the selected worktree's `assay/` and the verdict records the runtime version |
 | `cmru` | internal source mode: its run-gate lanes install the selected worktree's `assay/`; the mutation evidence records version and source commit |
 | `nyxloom` | internal source mode: its run-gate lanes install the selected worktree's `assay/` and record runtime provenance |
-| `dstdns` | vendored pinned zipapp, `tools/assay/assay-4.0.0.pyz`, with a `[lanes.*.pins.assay]` sha256 block per lane |
+| `dstdns` | vendored pinned zipapp, `tools/assay/assay-6.4.0.pyz`, with a `[lanes.*.pins.assay]` sha256 block per lane |
 | `assay` itself | builds its own wheel in-repo and installs it into a clean venv for the gate; it never imports its own source under test |
 
 Thus internal consumers resolve assay from the selected worktree, while
@@ -145,6 +145,73 @@ full shape, what the refusal looks like, and the maintenance obligation it creat
 
 Both values are recorded verbatim in the verdict's `snapshot_policy` object, so a reviewer can
 tell a full-repository verdict from an omission-mode one without re-running anything.
+
+### Shallow seeds, full-history opt-in, and project limits (B101)
+
+The private seed is **shallow by default**: it contains the judged commit and,
+when a comparison base was resolved before snapshot preparation, that base as
+well. Assay writes those exact commit OIDs to `.git/shallow` in the seed and
+in every materialized baseline or replacement. This is different from the
+source checkout: a shallow, grafted, promisor or alternates-backed source is
+still refused as `ERROR`/`GIT_FAILED` (see the Go gotchas below), because assay
+cannot inventory a source whose object identity is incomplete.
+
+Use the lane-level `snapshot_history = "full"` only when the command itself
+walks ancestry or names an older commit. Tags and refs are not preserved in a
+snapshot, and assay resolves changed-line bases before snapshot creation, so
+ordinary R1/R2/R3 lanes should keep the shallow default.
+
+The history policy and the project-level object ceilings are adopted together
+in the same `assay.toml` commit. This is a complete lane file shape you can
+copy and adapt:
+
+```toml
+schema_version = 2
+
+[isolation.limits]
+max_total_tree_blob_bytes = 536870912
+
+[lanes.unit]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["pytest", "-q", "--cov=src", "--cov-report=json:cov.json"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.unit.isolation]
+snapshot_selection = "repository"
+snapshot_history = "full"
+
+[lanes.unit.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+base = "HEAD~1"
+
+[lanes.unit.judge.coverage]
+format = "coverage-py-json"
+artifact = "cov.json"
+```
+
+Omit `[isolation.limits]` to use the shipped defaults. Every limit is a
+positive integer; `*_bytes` values are uncompressed logical bytes,
+`max_total_tree_blob_bytes` counts unique blobs in the judged tree, and it
+cannot exceed `max_total_object_bytes`. Limits are project-wide so `assay
+plan` and `assay run` cannot silently choose different transfer policy. The
+lane schema remains `2`, but an older assay rejects these new keys: repin the
+consumer before committing them.
+
+If a disposable or vendored Go module root is where `assay.toml` must live,
+the lane file itself must be tracked in that checkout, or matched by a
+**committed** `.gitignore` rule. `.git/info/exclude` cannot hide it from the
+whole-repository dirty check (A-177/A-290). A generated checkout therefore
+needs the file copied in, `git add assay.toml`, and committed before invoking
+the lane; removing it afterward is cleanup, not a way to make an uncommitted
+run pass.
 
 ## Run the lane somewhere other than the project root: `cwd` (B043)
 
@@ -3512,9 +3579,10 @@ recipe at `nyxloom-trove/carve-assets/P27-recarve/`.
 
 **6. Installing assay into a Go gate image needs no Python packaging work.**
 The judge needs an *interpreter*, not a toolchain — assay is stdlib-only by
-design (A-005) — and a `golang:1.25`-based image already has one:
-`/usr/bin/python3` 3.13.5 on Debian trixie, against assay's own
-`requires-python = ">=3.11"`. Measured, not assumed:
+design (A-005). Any image carrying `python3` at or above assay's own
+`requires-python = ">=3.11"` floor is sufficient; `golang:1.25` on Debian
+trixie is one measured example with `/usr/bin/python3` 3.13.5, not a minimum
+Go version. Measured, not assumed:
 
 ```console
 $ docker run --rm --network=none <your-go-gate-image> python3 --version
@@ -3565,6 +3633,14 @@ Two consequences worth planning around:
 * **A project root that is in no Go module at all refuses**
   `ERROR`/`BAD_LANE_CONFIG`, naming the paths it looked at. That is a lane
   configuration fault, not a coverage one, and it is reported as such.
+
+**The source checkout must not be shallow or grafted.** Assay refuses a
+source `.git/shallow`, grafts, promisor configuration or alternates-backed
+repository as `ERROR`/`GIT_FAILED`, for Go and every other language. A
+`--depth N` checkout must be completed with `git fetch --unshallow` before
+the judge runs. This source-side refusal is not contradicted by B101's
+deliberately shallow private seed: use `snapshot_history = "full"` only for a
+lane whose own command walks history.
 
 **`go.work` is not supported this wave.** Nested modules never appear in
 `go test ./...`'s own output, so a workspace's other modules are simply not

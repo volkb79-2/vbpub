@@ -1137,8 +1137,11 @@ run, a build cache, a FIFO — and makes repeatability depend on facts the
 recorded commit does not contain. Copying only `project_root` is worse: a
 monorepo project whose tests read a tracked sibling passes in the real
 repository and fails in every mutant. The snapshot therefore reconstructs the
-**complete SHA-1 reachable closure of one full commit**, preserving repository
-topology and project prefix, and nothing that is merely present on disk.
+exact SHA-1 object set for the judged commit, preserving repository topology
+and project prefix, and nothing that is merely present on disk. By default
+that set is a deliberately shallow commit-plus-resolved-base seed; a lane
+that needs ancestry explicitly opts into the complete reachable closure with
+`snapshot_history = "full"` below.
 
 **Why a prepared seed rather than a snapshot function.** The obvious stateless
 `materialize_snapshot(spec)` shape leaves exactly two implementations once full
@@ -1669,6 +1672,69 @@ over. The shape that shipped instead omits only symlink leaves P22 would
 already refuse, so it can never hide a source file, a test, or a B005 target
 — the vacuity guarantee stays structurally shut without an enumeration anyone
 has to keep complete by hand.
+
+### Snapshot history and seed limits (B101)
+
+The default seed is the judged commit and, when the runner resolved a
+comparison base before snapshot preparation, that base commit as well. Both
+are written as exact entries in the private Git `shallow` file. This is a
+chosen boundary, not an incomplete source: the source checkout must still be
+full, non-shallow, non-promisor, alternates-free, and SHA-1-backed. A missing
+or malformed source boundary remains `ERROR`/`GIT_FAILED`; the deliberate
+shallow file exists only in the private seed and each materialization.
+
+This default is safe for assay's own snapshot work because the materialized
+repository has no refs or tags and P1 resolves base handling before the
+snapshot exists. It does not promise ancestry to a consumer command. A lane
+that runs `git log`, `git rev-list` over history, `git show <old>:path`,
+`git archive <old>`, or another ancestry walk declares the lane-level opt-in:
+
+<!-- assay-doc-example:skip reason="fragment -- the complete loadable B101 lane is in CONSUMERS.md; this shows only the isolation keys" -->
+```toml
+schema_version = 2
+
+[lanes.unit.isolation]
+snapshot_selection = "repository"
+snapshot_history = "full"
+```
+
+`shallow` is the closed-vocabulary default and `full` is the only opt-in;
+unknown values fail at lane load with `ERROR`/`BAD_LANE_CONFIG`. The full
+mode preserves the former history-bearing behavior and its source-side
+refusals. In either mode the seed is transferred from the exact inventoried
+OID set, and every materialization recreates the same boundary before any
+verification or child-closure walk. Baseline `rev-list --count HEAD` is 1 in
+shallow mode; a replacement child is 2 (child plus its boundary).
+
+Snapshot ceilings are a project-level policy in the lane file, with shipped
+defaults when `[isolation.limits]` is absent:
+
+<!-- assay-doc-example:skip reason="fragment -- this is the project-level limits table; the complete loadable lane is in CONSUMERS.md" -->
+```toml
+schema_version = 2
+
+[isolation.limits]
+max_objects = 100000
+max_total_object_bytes = 1073741824
+max_total_tree_blob_bytes = 536870912
+max_pack_bytes = 536870912
+```
+
+Every limit field is a positive integer. Byte fields are uncompressed logical
+bytes. `max_total_object_bytes` counts the exact seed object set (and each
+replacement's own closure); `max_total_tree_blob_bytes` counts unique blob
+objects in the judged commit's tree and may not exceed the overall object
+ceiling. Pack bytes remain a separate transfer bound. Limits are project-wide
+because a lane-specific ceiling would let otherwise identical lanes choose
+different private object-transfer policy and make `assay plan` disagree with
+`assay run`; an older assay fails closed on the new top-level table, so the
+consumer must repin before committing it.
+
+The verdict schema deliberately does not invent a new wire field in this
+implementation while the wave's separate v12/B079 decision is pending. The
+effective policy is still authoritative in the loaded lane and applied by
+both `run` and `plan`; the schema decision is recorded before the next wave
+adds any verdict marker.
 
 **A duplicated compatibility fact, stated here because it is the reason a
 consumer cannot silently straddle both versions.** The lane schema bump to 2

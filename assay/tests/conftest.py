@@ -358,6 +358,7 @@ def prepared_snapshot(
     repo: GitRepo,
     *,
     commit: str | None = None,
+    resolved_base: str | None = None,
     project_prefix: str = ".",
     scratch_root: Path,
     snapshot_policy: IsolationConfig | None = None,
@@ -373,7 +374,9 @@ def prepared_snapshot(
     caller that is not itself testing the omission axis gets plain
     repository mode without having to spell it out, and a caller that IS
     testing omissions passes its own :class:`~assay.config.IsolationConfig`
-    explicitly.
+    explicitly. *resolved_base* is supplied by tests that need the real B101
+    shallow seed to carry a comparison commit; it is the same pre-snapshot
+    fact the production runner threads into :class:`SnapshotSpec`.
     """
     from assay import isolation
 
@@ -385,6 +388,7 @@ def prepared_snapshot(
         snapshot_policy=(
             REPOSITORY_SNAPSHOT_POLICY if snapshot_policy is None else snapshot_policy
         ),
+        resolved_base=resolved_base,
         limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
     )
     return isolation.prepare_snapshot(spec, timeout=timeout)
