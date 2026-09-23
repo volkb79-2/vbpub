@@ -1,7 +1,7 @@
 ---
 kind: backlog-entry
 schema_version: 1
-id: CP-4
+id: CP-12
 title: "cmd_targets passes HERE as both repo_dir and out_dir to build_helper_spec, causing Docker to refuse a duplicate mount point"
 status: open
 type: "bugfix"
