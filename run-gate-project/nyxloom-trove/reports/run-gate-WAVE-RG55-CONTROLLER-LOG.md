@@ -3581,3 +3581,17 @@ preserves the historical RG-55 CP-4..CP-11 identities and renumbers only the
 post-wave `cmd_targets` row to the next available CP-12 identity, updating its
 filename, frontmatter, and generated index. This is an identity collision
 repair, not a product-scope change or a claim that CP-12 is fixed.
+
+### RW-291 — 2026-09-23 08:23:42Z — discard lost P1 short-gate launch and rearm
+
+The first detached P1 `r0-r1` wrapper (PID `322897`) disappeared with empty
+stdout and no child-exit marker; no gate container was created, so it is
+inconclusive and contributes no evidence. The one-shot continuation was
+cancelled before it could launch mutation. The reconciled P1 tree then fixed
+the duplicate backlog identity by renaming the post-wave `cmd_targets` entry
+to CP-12 in commit `32ec2b3d`; the historical RG-55 CP-4 flake remains CP-4.
+
+After a fresh PSI check (`full avg10=0`) and an empty gate slot, the controller
+re-launched `r0-r1` from that quiet tree with disowned wrapper PID `354688`,
+authoritative log `/tmp/rg55-p1-r01-20260923.log`, and a single disowned
+20-minute continuation PID `355510`. No mutation verdict is claimed yet.
