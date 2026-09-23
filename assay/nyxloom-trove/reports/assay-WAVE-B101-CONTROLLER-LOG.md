@@ -72,10 +72,16 @@ seed/materialization proof rather than be masked by `--no-walk`.
 | checkpoint | result |
 |---|---|
 | B104 focused tests | PASS: 3 tests, real pinned dstdns capture included |
-| config + isolation focused tests | PASS: 126 tests before final helper/docs tightening |
+| config + isolation focused tests | PASS: 133 tests |
 | P1 runner suites | PASS: 71 tests |
-| tester-unified gate | pending on final worktree |
+| tester-unified gate | PASS on `4ed15f31`: all required phases, self-hosted lane, Topos, cmru B006(a), independent self-hosting, and pyflakes |
 | verdict schema / B079 question | operator decision required before P3 |
+
+The first gate attempt on `5bf832a4` ran the full self-hosted suite successfully
+but correctly rejected `config.py`'s unaliased `dataclasses.field` import as a
+pyflakes shadowing finding. The alias-only correction is `4ed15f31`; the
+authoritative rerun built wheel `assay-6.5.1.dev243+g4ed15f31` and ended with
+`GATE_EXIT=0`.
 
 ## History-walk audit
 

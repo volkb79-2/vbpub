@@ -121,13 +121,13 @@ heading. See `nyxloom-trove/reports/assay-BACKLOG-AUDIT-2026-09-23.md` for
 the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Wave "B101 isolation" (next; packages in B101's "Wave plan" section)**
-- B101 — snapshot seed carries/budgets the full history closure — OPEN (shallow seed decided; P1 merged `e785b955`)
+- B101 — snapshot seed carries/budgets the full history closure — DONE (P2 implemented in `5bf832a4`, pyflakes gate correction in `4ed15f31`; tester-unified PASS on `4ed15f31`)
 - B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — OPEN (direction decided)
 - B093 — P7 S1: liveness write guard / side-file cleanup — OPEN (joins the wave: liveness side files land in the judged tree)
-- B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main — OPEN (wave P0 triage)
-- B082 — a lane's own `assay.toml` cannot be untracked for a disposable Go module root — OPEN (docs, wave P4)
-- B083 — shallow-clone refusal undocumented for Go — OPEN (docs, wave P4)
-- B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — OPEN (docs, wave P4)
+- B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main — DONE (`c6a97f1e`; tester-unified PASS on `4ed15f31`)
+- B082 — a lane's own `assay.toml` cannot be untracked for a disposable Go module root — DONE (CONSUMERS.md guidance in `5bf832a4`; tester-unified PASS on `4ed15f31`)
+- B083 — shallow-clone refusal undocumented for Go — DONE (consumer docs in `5bf832a4`; tester-unified PASS on `4ed15f31`)
+- B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — DONE (consumer docs in `5bf832a4`; tester-unified PASS on `4ed15f31`)
 
 **Later waves (open, not scheduled)**
 - B080 — istanbul default-arg branch on the signature line — OPEN (JS/R3 wave; six live sightings through 2026-09-22)
@@ -8990,7 +8990,7 @@ ownership is the only thing that works.
 
 ## B082 — a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so
 
-**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — `docs/CONSUMERS.md` still has no bullet on the lane file's own dirty-tree/tracked-or-gitignored obligation for disposable module roots.**
+**Status: DONE (P4 docs in `5bf832a4`; tester-unified PASS on `4ed15f31`) — `docs/CONSUMERS.md` now states the whole-tree cleanliness rule, committed-ignore requirement, `.git/info/exclude` limitation, and the disposable-module-root copy/stage pattern.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
 [B081](#b081) (`vbpub@bfb2077b`, `patchstack/assay/assay.toml`).
@@ -9088,7 +9088,7 @@ truth — hence 'authoritative here, copied there'."*
 
 ## B083 — assay refuses a shallow clone, correctly, but the Go section's gotcha list does not mention it and a `--depth N` clone is the normal case for a patch stack or a CI build
 
-**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — `docs/CONSUMERS.md`'s Go section still has no mention of the shallow/grafted-clone refusal.**
+**Status: DONE (P4 docs in `5bf832a4`; tester-unified PASS on `4ed15f31`) — the Go guidance names the language-independent shallow/grafted-source refusal and `git fetch --unshallow` remedy.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
 [B081](#b081)/[B082](#b082) (`vbpub@bfb2077b`).
@@ -9155,7 +9155,7 @@ the per-run cost.
 
 ## B084 — Go-section drift: `golang:1.25` reads as a requirement when it is one measured example, and the "how consumers actually get the judge" table is stale against the real pins
 
-**Status: OPEN (filed 2026-09-08 as B081-B084 batch, `57d52972`) — the consumer-pin table was later restructured (now dated 2026-09-16) but `docs/CONSUMERS.md:46` still shows a stale `assay-4.0.0.pyz` for dstdns; dstdns's own `assay.toml`/`run-gate.toml` actually pin `tools/assay/assay-6.4.0.pyz` (verified directly against dstdns's checkout, not the doc), and the golang:1.25-as-floor wording is unchanged.**
+**Status: DONE (P4 docs in `5bf832a4`; tester-unified PASS on `4ed15f31`) — the dstdns consumer pin and date were refreshed, and the Go section now states the Python floor rather than implying a Go-version floor.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session as
 [B081](#b081)–[B083](#b083). **Minor; docs only. Two unrelated small items
@@ -10176,12 +10176,12 @@ from a child log line, and that a report never writes into the judged tree.
 
 ## B101 — `snapshot_selection = "repository"`'s `max_total_object_bytes` measures the full reachable git-HISTORY closure, not the current tree; the 1GiB default is unconfigurable and has no path-scoping, so an actively-developed repo eventually breaches it permanently
 
-**Status: OPEN (2026-09-23) — direction decided at operator design interview (4 numbered decisions below); not yet carved or implemented on main.**
+**Status: DONE (P2 in `5bf832a4`, lint correction in `4ed15f31`; tester-unified PASS on `4ed15f31`) — the default shallow seed, full-history opt-in, project limits, and judged-tree blob ceiling are implemented in the worktree; merge/release awaits the separate P3 operator decision.**
 
 **Reported by:** dstdns controller, 2026-09-22 (`dstdns@6dd368d7`..`dstdns@285b3965`
 range, provenance: `dstdns/nyxloom-trove/CONTROLLER-BRIEF.md` "operator caps
 concurrency" / "P199 merged, P198 reviewer resumed" entries, 2026-09-22).
-**Status: OPEN; backlog only.**
+**Status: DONE for P2; the historical diagnosis and operator decisions below remain as provenance.**
 
 ### Observed mechanism (source-confirmed, not guessed)
 
