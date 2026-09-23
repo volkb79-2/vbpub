@@ -59,7 +59,8 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json` and `schemas/analysis-receipt.schema.json`.
-The existing verdict schema remains unchanged.
+Receipt verdicts are checked against the current v12 verdict schema; a receipt
+with an `--allow-dirty` override is refused by default.
 
 ## Why use it
 
@@ -110,6 +111,19 @@ assay exists to close that gap mechanically, not by policy:
   commit-validated P22-unsafe symlink is absent and every other P22-supported
   tracked path from the resolved commit is materialised.* See
   [§6, snapshot selection](docs/DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a).
+- **Snapshot history is shallow by default.** A seed carries the judged commit
+  and the pre-snapshot resolved base, with exact Git shallow boundaries. A
+  lane whose command genuinely walks ancestry opts in with
+  `snapshot_history = "full"`; project-level `[isolation.limits]` ceilings
+  bound the seed and materialized trees. See [§6, snapshot history and seed
+  limits](docs/DESIGN-GUIDE.md#snapshot-history-and-seed-limits-b101).
+- **Snapshot dirt is explicit and auditable.** Project-level
+  `[isolation].dirty_ignore` may cover known ledger/output paths using the
+  same repo-top-relative POSIX glob grammar as `identity_exclude`. Other dirty
+  paths still refuse; `assay run --allow-dirty` admits them only for R1+
+  snapshot lanes and records them in the v12 `worktree_integrity` marker.
+  `assay verify` accepts but warns about that marker, while release receipts
+  refuse it. See the [design rationale](docs/DESIGN-GUIDE.md#snapshot-dirty-tree-policy-b102).
 - **An escalating rigor ladder (R0–R3)**, so "tested" means something
   specific instead of one undifferentiated green checkmark:
   - **R0** — the declared command ran and produced a result.
@@ -147,9 +161,9 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 8` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-Both are hard cuts: `assay verify` refuses a v7 verdict exactly as it refuses
-v6 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
+`VERDICT_SCHEMA_VERSION = 12` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+Both are hard cuts: `assay verify` refuses a v11 verdict exactly as it refuses
+v10 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
@@ -303,7 +317,8 @@ and see B073 if per-test detail becomes worth the design cost.
 **B091 has since delivered a SCOPED instance of exactly this**, for one case
 only: a native R2 python/pytest mutation lane. When `judge.mutation.liveness`
 is active (the default, `"auto"`, whenever the lane's own argv invokes
-pytest), assay materializes a small pytest plugin that emits one `test`
+pytest), assay materializes a small pytest plugin in an ephemeral directory
+outside the live checkout that emits one `test`
 event per test to a side file; the progress stream forwards the BASELINE's
 own per-test events verbatim, and each `candidate` record carries its own
 `tests_completed` count. This is the mechanism that also makes a hung mutant
@@ -407,8 +422,9 @@ unconditionally `UNSUPPORTED`, and declaring a rigor level a lane can't
 actually back up is exactly the failure this project exists to prevent.
 
 **Getting assay into a Go gate image costs nothing extra**, and this is what
-stdlib-only (A-005) buys: a `golang:1.25`-based image already carries
-`/usr/bin/python3` 3.13.5, above assay's `>=3.11` floor. It has no pip, so
+stdlib-only (A-005) buys: any image with `python3` at or above assay's
+`>=3.11` floor works; a `golang:1.25` image was measured carrying
+`/usr/bin/python3` 3.13.5. It has no pip, so
 the shipped **zipapp** is the install path — copy the `.pyz` in, check its
 `.sha256`, run it with the interpreter that is there. The Go oracle rides
 inside that archive and is staged out to a real directory when it runs, so
@@ -425,6 +441,11 @@ modules, or in none, refuses and says which — it never picks one silently.
 [CONSUMERS.md's Go
 section](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
 point 6 has the detail; `go.work` is not supported.
+
+A shallow or grafted **source checkout** is refused as `ERROR`/`GIT_FAILED`;
+run `git fetch --unshallow` before judging it. This is independent of the
+deliberately shallow private seed described above: use
+`snapshot_history = "full"` when the lane's own command walks ancestry.
 
 Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
@@ -768,6 +789,15 @@ answer.
 # assay.toml
 schema_version = 2
 
+# Optional project-top-relative paths whose pre-existing dirt is recorded.
+[isolation]
+dirty_ignore = ["nyxloom-trove/**", ".assay/**"]
+
+# Optional project-wide P22 ceilings. All *_bytes values are uncompressed
+# logical bytes; omitted fields use Assay's shipped defaults.
+[isolation.limits]
+max_total_tree_blob_bytes = 536870912
+
 [lanes.unit]
 scope = "S1"
 rigor = ["R0", "R1"]
@@ -779,8 +809,8 @@ budget = "20m"
 allow_argv_append = false
 
 # Required the moment a lane declares R1, R2 or R3 (refused on an R0-only
-# lane); no default. "repository" materialises the whole commit -- see the
-# design guide for "repository-minus-unsafe-symlinks", the monorepo case.
+# lane); no selection default. History is shallow unless this lane needs
+# ancestry, in which case add snapshot_history = "full".
 [lanes.unit.isolation]
 snapshot_selection = "repository"
 
@@ -795,6 +825,13 @@ base = "origin/main"
 format = "coverage-py-json"
 artifact = "cov.json"
 ```
+
+`dirty_ignore` is policy for pre-existing dirt only; the lane file itself is
+always protected because it is loaded from the working tree. An unignored
+path requires an explicit `assay run --allow-dirty` (and the same independent
+flag is available on `assay plan` for parity). R0 remains strict. The
+`run-gate.py` flag with the same spelling controls run-gate's outer clean-tree
+check and is independent; it does not silently change assay's policy.
 
 ```bash
 pip install ./assay-*.whl   # see Installing

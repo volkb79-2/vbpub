@@ -674,7 +674,9 @@ def test_evaluate_r1_uses_a_carried_base_resolution_inside_a_snapshot(
     scratch = tmp_path / "scratch"
     scratch.mkdir()
 
-    with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
+    with prepared_snapshot(
+        git_repo, scratch_root=scratch, resolved_base=base_rev
+    ) as prepared:
         with prepared.materialize(timeout=60) as snapshot:
             write_coverage_json(
                 snapshot.root / "cov.json",

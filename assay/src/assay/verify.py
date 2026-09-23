@@ -93,6 +93,7 @@ from typing import Any, TextIO
 from .mutation import judge_mutation
 from .verdict import (
     CLAIM_DETAIL_BYTES,
+    DISCARD_REASONS,
     EXIT_CODES,
     MUTATION_BUCKETS,
     REASON_CODES,
@@ -119,6 +120,7 @@ from .verdict import (
     RedFirstResult,
     SnapshotPolicy,
     SourcePosition,
+    WorktreeIntegrity,
     Verdict,
     is_ingested_operator,
     operator_language,
@@ -544,6 +546,44 @@ def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
                 "ascending by UTF-8 bytes"
             )
             return
+
+
+def _check_worktree_integrity(document: dict, failures: list[str]) -> None:
+    """Check the raw v12 dirty-tree provenance shape.
+
+    An overridden path is a valid fact in a structurally valid artifact, not
+    a verifier failure. ``cmd_verify`` reports that fact explicitly so
+    release consumers can refuse it without making ordinary verification
+    pretend the JSON is malformed.
+    """
+    raw = document.get("worktree_integrity")
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        failures.append("worktree_integrity must be an object")
+        return
+    for key in ("ignored_dirty_paths", "overridden_dirty_paths"):
+        values = raw.get(key)
+        if not isinstance(values, list):
+            failures.append(f"worktree_integrity.{key} must be an array")
+            continue
+        all_strings = all(isinstance(path, str) for path in values)
+        if not all_strings:
+            failures.append(f"worktree_integrity.{key} entries must be strings")
+        if all_strings and values != sorted(values, key=lambda path: path.encode("utf-8")):
+            failures.append(
+                f"worktree_integrity.{key} must be sorted by UTF-8 bytes"
+            )
+        if len(set(values)) != len(values):
+            failures.append(f"worktree_integrity.{key} contains a duplicate path")
+    ignored = raw.get("ignored_dirty_paths")
+    overridden = raw.get("overridden_dirty_paths")
+    if isinstance(ignored, list) and isinstance(overridden, list):
+        overlap = sorted(set(ignored) & set(overridden))
+        if overlap:
+            failures.append(
+                f"worktree_integrity path(s) appear in both dirty lists: {overlap}"
+            )
 
 
 def _check_claims_cover_declared_rigor(document: dict, failures: list[str]) -> None:
@@ -1102,6 +1142,16 @@ def _check_ingested_r2_agrees_with_its_payload(
         _mutant_identities_are_ascending(
             discarded, "judgment.r2.discarded", failures
         )
+        for entry in discarded:
+            if not isinstance(entry, dict):
+                continue
+            reason = entry.get("discard_reason")
+            if reason not in DISCARD_REASONS:
+                failures.append(
+                    f"judgment.r2.discarded entry {entry.get('path')} has "
+                    f"discard_reason {reason!r}, expected one of "
+                    f"{list(DISCARD_REASONS)}"
+                )
         barren = {
             (position.get("path"), position.get("lineno"))
             for position in (without if isinstance(without, list) else [])
@@ -1510,6 +1560,13 @@ def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
                 f"lists {sum(sizes)} identity/identities across its five buckets"
             )
     _check_identities_are_unique(mutation, buckets, failures)
+    for bucket, entry in _mutant_entries(mutation):
+        if "discard_reason" in entry:
+            failures.append(
+                f"mutation.{bucket} entry {entry.get('path')} carries "
+                "discard_reason; that field is legal only on "
+                "judgment.r2.discarded entries"
+            )
 
     policy = document.get("judgment")
     policy_r2 = policy.get("r2") if isinstance(policy, dict) else None
@@ -1895,6 +1952,7 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
         operator=raw["operator"],
         description=raw["description"],
         kill_signal=raw.get("kill_signal"),
+        discard_reason=raw.get("discard_reason"),
     )
     _reject_unknown_keys(raw, item.to_dict(), "mutant outcome")
     return item
@@ -1974,6 +2032,15 @@ def _reconstruct_snapshot_policy(raw: dict) -> SnapshotPolicy:
     )
     _reject_unknown_keys(raw, policy.to_dict(), "snapshot_policy")
     return policy
+
+
+def _reconstruct_worktree_integrity(raw: dict) -> WorktreeIntegrity:
+    integrity = WorktreeIntegrity(
+        ignored_dirty_paths=tuple(raw["ignored_dirty_paths"]),
+        overridden_dirty_paths=tuple(raw["overridden_dirty_paths"]),
+    )
+    _reject_unknown_keys(raw, integrity.to_dict(), "worktree_integrity")
+    return integrity
 
 
 def _reconstruct_helper(raw: dict) -> Helper:
@@ -2062,6 +2129,10 @@ def _reconstruct_verdict(document: dict) -> Verdict:
     if "snapshot_policy" in document:
         judgment_kwargs["snapshot_policy"] = _reconstruct_snapshot_policy(
             document["snapshot_policy"]
+        )
+    if "worktree_integrity" in document:
+        judgment_kwargs["worktree_integrity"] = _reconstruct_worktree_integrity(
+            document["worktree_integrity"]
         )
     if "result_stdout_tail" in document:
         judgment_kwargs["result_stdout_tail"] = document["result_stdout_tail"]
@@ -2757,6 +2828,7 @@ def verify_document(document: Any) -> list[str]:
     _check_outcome_agrees_with_rollup(document, outcome, failures)
     _check_judgment_matches_claims(document, failures)
     _check_snapshot_policy(document, failures)
+    _check_worktree_integrity(document, failures)
     _check_r2_producer_vocabulary(document, failures)
     _check_mutation_payload_shapes(document, failures)
     _check_ingested_r2_agrees_with_its_payload(document, failures)
@@ -2834,6 +2906,27 @@ def cmd_verify(path: str, *, stdin: TextIO, stderr: TextIO) -> int:
         return 1
     failures = verify_text(text)
     if not failures:
+        # P3/B102: structural verification accepts a valid artifact, but it
+        # must not hide that the producer overrode unignored dirt. Release
+        # and attestation consumers make their own stricter refusal; this
+        # command reports the fact without turning a valid JSON document into
+        # a malformed one.
+        try:
+            document = json.loads(text)
+        except (json.JSONDecodeError, ValueError, RecursionError):
+            document = None
+        integrity = document.get("worktree_integrity") if isinstance(document, dict) else None
+        overridden = (
+            integrity.get("overridden_dirty_paths")
+            if isinstance(integrity, dict)
+            else ()
+        )
+        if overridden:
+            print(
+                "assay verify: valid verdict overrides dirty paths; release "
+                f"consumers must refuse by default: {', '.join(overridden)}",
+                file=stderr,
+            )
         return 0
     for failure in failures:
         print(f"assay verify: {failure}", file=stderr)

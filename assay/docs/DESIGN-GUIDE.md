@@ -1137,8 +1137,11 @@ run, a build cache, a FIFO — and makes repeatability depend on facts the
 recorded commit does not contain. Copying only `project_root` is worse: a
 monorepo project whose tests read a tracked sibling passes in the real
 repository and fails in every mutant. The snapshot therefore reconstructs the
-**complete SHA-1 reachable closure of one full commit**, preserving repository
-topology and project prefix, and nothing that is merely present on disk.
+exact SHA-1 object set for the judged commit, preserving repository topology
+and project prefix, and nothing that is merely present on disk. By default
+that set is a deliberately shallow commit-plus-resolved-base seed; a lane
+that needs ancestry explicitly opts into the complete reachable closure with
+`snapshot_history = "full"` below.
 
 **Why a prepared seed rather than a snapshot function.** The obvious stateless
 `materialize_snapshot(spec)` shape leaves exactly two implementations once full
@@ -1669,6 +1672,100 @@ over. The shape that shipped instead omits only symlink leaves P22 would
 already refuse, so it can never hide a source file, a test, or a B005 target
 — the vacuity guarantee stays structurally shut without an enumeration anyone
 has to keep complete by hand.
+
+### Snapshot history and seed limits (B101)
+
+The default seed is the judged commit and, when the runner resolved a
+comparison base before snapshot preparation, that base commit as well. Both
+are written as exact entries in the private Git `shallow` file. This is a
+chosen boundary, not an incomplete source: the source checkout must still be
+full, non-shallow, non-promisor, alternates-free, and SHA-1-backed. A missing
+or malformed source boundary remains `ERROR`/`GIT_FAILED`; the deliberate
+shallow file exists only in the private seed and each materialization.
+
+This default is safe for assay's own snapshot work because the materialized
+repository has no refs or tags and P1 resolves base handling before the
+snapshot exists. It does not promise ancestry to a consumer command. A lane
+that runs `git log`, `git rev-list` over history, `git show <old>:path`,
+`git archive <old>`, or another ancestry walk declares the lane-level opt-in:
+
+<!-- assay-doc-example:skip reason="fragment -- the complete loadable B101 lane is in CONSUMERS.md; this shows only the isolation keys" -->
+```toml
+schema_version = 2
+
+[lanes.unit.isolation]
+snapshot_selection = "repository"
+snapshot_history = "full"
+```
+
+`shallow` is the closed-vocabulary default and `full` is the only opt-in;
+unknown values fail at lane load with `ERROR`/`BAD_LANE_CONFIG`. The full
+mode preserves the former history-bearing behavior and its source-side
+refusals. In either mode the seed is transferred from the exact inventoried
+OID set, and every materialization recreates the same boundary before any
+verification or child-closure walk. Baseline `rev-list --count HEAD` is 1 in
+shallow mode; a replacement child is 2 (child plus its boundary).
+
+Snapshot ceilings are a project-level policy in the lane file, with shipped
+defaults when `[isolation.limits]` is absent:
+
+<!-- assay-doc-example:skip reason="fragment -- this is the project-level limits table; the complete loadable lane is in CONSUMERS.md" -->
+```toml
+schema_version = 2
+
+[isolation]
+dirty_ignore = ["nyxloom-trove/**", ".assay/**"]
+
+[isolation.limits]
+max_objects = 100000
+max_total_object_bytes = 1073741824
+max_total_tree_blob_bytes = 536870912
+max_pack_bytes = 536870912
+```
+
+Every limit field is a positive integer. Byte fields are uncompressed logical
+bytes. `max_total_object_bytes` counts the exact seed object set (and each
+replacement's own closure); `max_total_tree_blob_bytes` counts unique blob
+objects in the judged commit's tree and may not exceed the overall object
+ceiling. Pack bytes remain a separate transfer bound. Limits are project-wide
+because a lane-specific ceiling would let otherwise identical lanes choose
+different private object-transfer policy and make `assay plan` disagree with
+`assay run`; an older assay fails closed on the new top-level table, so the
+consumer must repin before committing it.
+
+### Snapshot dirty-tree policy (B102)
+
+The project-level `[isolation].dirty_ignore` list reuses B092's normalized,
+repo-top-relative POSIX glob grammar. It is read from the lane file that the
+operator supplied, never from `.git/info/exclude` or another unversioned
+source. A matching path is recorded as `ignored_dirty_paths`; it is not folded
+into a clean-tree claim.
+
+The loaded `assay.toml` is a protected input even when a glob matches it and
+even when `--allow-dirty` is supplied. The loader reads that file from the
+working tree, so allowing its edit would let an uncommitted policy choose the
+rules for a verdict labelled with a different commit. This wave keeps lane
+loading on the working tree and fails `NO_MEASUREMENT/DIRTY_TREE`; switching to
+committed-blob loading is a separate design with different operator semantics.
+
+`assay run --allow-dirty` and `assay plan --allow-dirty` admit only unignored
+pre-existing dirt for R1+ snapshot lanes. The verdict records those paths as
+`overridden_dirty_paths` in a v12 `worktree_integrity` object. R0 and in-place
+lanes retain their strict/pre-post policy because an override there would need
+a separate pre/post dirty-set proof. `assay verify` accepts a structurally
+valid marker but warns; release receipt consumers refuse non-empty override
+lists by default. `run-gate.py --allow-dirty` remains an independent outer
+clean-tree policy and is not forwarded to assay.
+
+### Liveness side-file placement (B093)
+
+Native R2 liveness still records plugin identity and `tests_completed` in the
+verdict/progress evidence, but the plugin and per-candidate side files are
+created under a temporary directory outside the live checkout for the complete
+higher-rigor run. Cleanup occurs after the progress evidence has been read.
+This is a relocation/cleanup decision rather than a load-time warning: the
+next run cannot inherit `.assay/liveness` residue and falsely refuse its
+snapshot preflight, while the verdict retains the evidence needed for review.
 
 **A duplicated compatibility fact, stated here because it is the reason a
 consumer cannot silently straddle both versions.** The lane schema bump to 2
@@ -2279,7 +2376,7 @@ documented as **declared by artifact, not verified** — it is not a `helpers[]`
 entry, because `helpers[]` records tools Assay itself invoked.
 
 **`judgment.r2.discarded` used to stand beside `producer_tool` in exactly that
-tier. Since schema v11 it does not, and how it got out is the more useful
+tier. Since schema v12 it does not, and how it got out is the more useful
 half of the story** (B051/DA-D4/DA-R26, completed by **B070**).
 
 Assay always *derived* the fact at ingest — it lists the report's own

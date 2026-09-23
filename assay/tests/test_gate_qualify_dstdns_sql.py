@@ -459,6 +459,19 @@ def test_normalize_verdict_replaces_the_four_placeholder_fields() -> None:
     assert normalized["judgment"]["resolved"]["base"] == "@BASE_OID@"
 
 
+def test_normalize_verdict_discards_the_run_derived_candidate_budget() -> None:
+    document = _minimal_verdict(
+        judgment={
+            "resolved": {"base": "2" * 40},
+            "r2": {"budget_per_candidate_derived_s": 63.089135},
+        }
+    )
+    normalized = q.normalize_verdict(
+        document, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40
+    )
+    assert "budget_per_candidate_derived_s" not in normalized["judgment"]["r2"]
+
+
 def test_normalize_verdict_refuses_a_wrong_assay_version() -> None:
     with pytest.raises(q.QualificationError, match="assay_version"):
         q.normalize_verdict(_minimal_verdict(), assay_version="0.0.1", head_oid="1" * 40, base_oid="2" * 40)
@@ -538,7 +551,7 @@ def test_witness_file_is_valid_json_with_the_current_schema_version() -> None:
     # `==`, so it tracks the CURRENT schema and is migrated by every cut. Its
     # filename still says `v6`; that is a wave identity, not a schema version.
     document = json.loads(_WITNESS_PATH.read_text(encoding="utf-8"))
-    assert document["schema_version"] == 11
+    assert document["schema_version"] == 12
     # B035/A-329: the witness is an `R0,R2` document -- the exact shape whose
     # `base` rule was unenforceable until `judgment.r2` could say which scope
     # it judged under. It carries a base, so it must say `changed_lines`.

@@ -121,13 +121,13 @@ heading. See `nyxloom-trove/reports/assay-BACKLOG-AUDIT-2026-09-23.md` for
 the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Wave "B101 isolation" (next; packages in B101's "Wave plan" section)**
-- B101 — snapshot seed carries/budgets the full history closure — OPEN (shallow seed decided; P1 merged `e785b955`)
-- B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — OPEN (direction decided)
-- B093 — P7 S1: liveness write guard / side-file cleanup — OPEN (joins the wave: liveness side files land in the judged tree)
-- B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main — OPEN (wave P0 triage)
-- B082 — a lane's own `assay.toml` cannot be untracked for a disposable Go module root — OPEN (docs, wave P4)
-- B083 — shallow-clone refusal undocumented for Go — OPEN (docs, wave P4)
-- B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — OPEN (docs, wave P4)
+- B101 — snapshot seed carries/budgets the full history closure — DONE (P2 implemented in `5bf832a4`, pyflakes gate correction in `4ed15f31`; P3/P4 implemented in the B101 wave worktree; provisional merge follows review)
+- B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — DONE in the B101 wave worktree (v12 dirty provenance, `dirty_ignore`, and snapshot-only `--allow-dirty`; provisional merge follows review)
+- B093 — P7 S1: liveness write guard / side-file cleanup — DONE in the B101 wave worktree (higher-rigor liveness files use an external temporary directory and cleanup; provisional merge follows review)
+- B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main — DONE (`c6a97f1e`; tester-unified PASS on `4ed15f31`)
+- B082 — a lane's own `assay.toml` cannot be untracked for a disposable Go module root — DONE (CONSUMERS.md guidance in `5bf832a4`; tester-unified PASS on `4ed15f31`)
+- B083 — shallow-clone refusal undocumented for Go — DONE (consumer docs in `5bf832a4`; tester-unified PASS on `4ed15f31`)
+- B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — DONE (consumer docs in `5bf832a4`; tester-unified PASS on `4ed15f31`)
 
 **Later waves (open, not scheduled)**
 - B080 — istanbul default-arg branch on the signature line — OPEN (JS/R3 wave; six live sightings through 2026-09-22)
@@ -8990,7 +8990,7 @@ ownership is the only thing that works.
 
 ## B082 — a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so
 
-**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — `docs/CONSUMERS.md` still has no bullet on the lane file's own dirty-tree/tracked-or-gitignored obligation for disposable module roots.**
+**Status: DONE (P4 docs in `5bf832a4`; tester-unified PASS on `4ed15f31`) — `docs/CONSUMERS.md` now states the whole-tree cleanliness rule, committed-ignore requirement, `.git/info/exclude` limitation, and the disposable-module-root copy/stage pattern.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
 [B081](#b081) (`vbpub@bfb2077b`, `patchstack/assay/assay.toml`).
@@ -9088,7 +9088,7 @@ truth — hence 'authoritative here, copied there'."*
 
 ## B083 — assay refuses a shallow clone, correctly, but the Go section's gotcha list does not mention it and a `--depth N` clone is the normal case for a patch stack or a CI build
 
-**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — `docs/CONSUMERS.md`'s Go section still has no mention of the shallow/grafted-clone refusal.**
+**Status: DONE (P4 docs in `5bf832a4`; tester-unified PASS on `4ed15f31`) — the Go guidance names the language-independent shallow/grafted-source refusal and `git fetch --unshallow` remedy.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
 [B081](#b081)/[B082](#b082) (`vbpub@bfb2077b`).
@@ -9155,7 +9155,7 @@ the per-run cost.
 
 ## B084 — Go-section drift: `golang:1.25` reads as a requirement when it is one measured example, and the "how consumers actually get the judge" table is stale against the real pins
 
-**Status: OPEN (filed 2026-09-08 as B081-B084 batch, `57d52972`) — the consumer-pin table was later restructured (now dated 2026-09-16) but `docs/CONSUMERS.md:46` still shows a stale `assay-4.0.0.pyz` for dstdns; dstdns's own `assay.toml`/`run-gate.toml` actually pin `tools/assay/assay-6.4.0.pyz` (verified directly against dstdns's checkout, not the doc), and the golang:1.25-as-floor wording is unchanged.**
+**Status: DONE (P4 docs in `5bf832a4`; tester-unified PASS on `4ed15f31`) — the dstdns consumer pin and date were refreshed, and the Go section now states the Python floor rather than implying a Go-version floor.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session as
 [B081](#b081)–[B083](#b083). **Minor; docs only. Two unrelated small items
@@ -9958,9 +9958,9 @@ backwards from what a checkpointed, resumable process should reward.
 
 ## B093 — P7 S1: liveness write guard and side-file cleanup
 
-**Status: OPEN — scheduled into the B101 isolation wave (operator triage 2026-09-23: liveness side files land in the judged tree, the same surface B102's dirty-tree rules govern); was deferred by RW-53/RW-57, 2026-09-13 filing — no fix landed; unlike sibling P7 items S6/B6-b/N3 (B096-B098), S1 is absent from every CHANGES.md entry.**
+**Status: DONE in the B101 isolation wave worktree — higher-rigor liveness files use an external temporary directory, are removed after `tests_completed` is read, and their bounded evidence remains in the verdict/progress surface.**
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** Liveness materializes
+**Previously open, deferred by RW-53/RW-57 (2026-09-13 filing).** Liveness materialized
 its plugin and candidate event/stdout/stderr files in the judged tree's
 `.assay/liveness/` without an ignore guard or cleanup. The estate ignores
 `.assay/`, but external consumers may not. Define a load-time refusal/WARN
@@ -9971,7 +9971,9 @@ outside the B6 minimum repair.
 Oracle: construct both an ignored and an unignored destination, prove the
 appropriate diagnostic before writes, and prove cleanup preserves the
 candidate count readback and any explicitly retained diagnostic artifacts.
-Sync README, DESIGN-GUIDE and CONSUMERS with the selected policy.
+The B101 wave implements the selected external-temporary-directory policy;
+runner tests prove the checkout has no liveness side tree after the run, and
+README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the policy.
 
 ## B094 — P7 S3 / N5: unknown `--rejudge` reason mapping
 
@@ -10176,12 +10178,12 @@ from a child log line, and that a report never writes into the judged tree.
 
 ## B101 — `snapshot_selection = "repository"`'s `max_total_object_bytes` measures the full reachable git-HISTORY closure, not the current tree; the 1GiB default is unconfigurable and has no path-scoping, so an actively-developed repo eventually breaches it permanently
 
-**Status: OPEN (2026-09-23) — direction decided at operator design interview (4 numbered decisions below); not yet carved or implemented on main.**
+**Status: DONE in the B101 isolation wave worktree — P2 is in `5bf832a4` with the lint correction in `4ed15f31`; P3 dirty provenance and P4 documentation are implemented here, with provisional merge after review.**
 
 **Reported by:** dstdns controller, 2026-09-22 (`dstdns@6dd368d7`..`dstdns@285b3965`
 range, provenance: `dstdns/nyxloom-trove/CONTROLLER-BRIEF.md` "operator caps
 concurrency" / "P199 merged, P198 reviewer resumed" entries, 2026-09-22).
-**Status: OPEN; backlog only.**
+**Status: DONE for P2; the historical diagnosis and operator decisions below remain as provenance.**
 
 ### Observed mechanism (source-confirmed, not guessed)
 
@@ -10413,10 +10415,10 @@ part can ship alone.
 
 ## B102 — higher-rigor lanes refuse `DIRTY_TREE` for ANY uncommitted path in the repository, although a snapshot lane judges the committed tree and no uncommitted byte can reach it
 
-**Status: OPEN (2026-09-23) — direction decided at operator design interview; not yet carved or implemented on main.**
+**Status: DONE in the B101 isolation wave worktree (2026-09-23) — direction implemented and covered by focused runner, config, verifier, receipt, and frozen v12 acceptance tests; provisional merge follows review.**
 
 **Reported by:** operator + dstdns friction, 2026-09-23 (companion to B101).
-**Status: OPEN; direction decided (operator, 2026-09-23); not carved.**
+**Status: DONE in the B101 isolation wave worktree; the operator's v12 decision is recorded as A-452--A-455.**
 
 ### Mechanism
 
@@ -10452,12 +10454,13 @@ practice (dstdns) a controller's live edit to a ledger file such as
    throughout provenance/attestation/verify; committing on a worktree branch
    is already cheap.
 
-Oracle sketch: repo with a dirty `ledger.md` matched by `dirty_ignore` →
+Oracle: repo with a dirty `ledger.md` matched by `dirty_ignore` →
 lane runs, verdict lists the ignored path; dirty `src/x.py` without flag →
 `DIRTY_TREE` (unchanged); same with `--allow-dirty` → lane runs, verdict
 carries the override marker, and `assay verify`/attestation refuse it per
 policy; a snapshot-lane verdict's judged content is byte-identical with and
-without the dirty file present.
+without the dirty file present. Focused tests exercise all three paths,
+including refusal when the loaded `assay.toml` itself is dirty.
 
 ## B103 — execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL
 
@@ -10488,7 +10491,7 @@ backlog prose).
 
 ## B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main
 
-**Status: OPEN (filed 2026-09-23) — `tests/test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness` FAILS against unmodified `main` (`c4dbc4f8`); cause unexamined.**
+**Status: DONE (B104 triage, 2026-09-23; fix on `assay-b101-wave`) — the pinned dstdns run is healthy; the witness was stale against shipped v11 additive liveness fields, and the comparator was not removing the run-derived candidate-budget value.**
 
 **Found:** controller run, 2026-09-23, an ordinary serial full `tests/` run on
 this host (this test is Docker-gated and needs a real `/workspaces/dstdns`
@@ -10510,6 +10513,18 @@ QualificationError: the normalized verdict differs from the frozen witness at
    necessarily the exact commit this test's witness was frozen against.
 3. **A real regression** — the SQL/DDL R2 lane (B001) itself may have
    changed behavior since the witness was captured.
+
+**Triage result.** The test was run against the real dstdns checkout with the
+pinned `DSTDNS_COMMIT` reachable exactly. The captured verdict had the same
+stable R0/R2 outcome and mutation buckets as the witness, but shipped v11 also
+emits `mutation.hung` and `judgment.r2.liveness`, which the witness omitted.
+It also emits `judgment.r2.budget_per_candidate_derived_s`, which is derived
+from the run's measured baseline wall time and therefore cannot be an exact
+cross-run witness value. The comparator now removes only that volatile field
+after validating the real verdict; the witness carries the two stable v11
+fields. The targeted test passes after this refresh. The Docker-reaching test
+remains explicitly opt-in by its existing `dstdns_checkout`/Docker fixtures;
+the ordinary gate has no Docker socket.
 
 **Hazard worth recording independent of root cause:** this is a
 Docker-reaching test that runs BY DEFAULT in the local `pytest tests/` suite

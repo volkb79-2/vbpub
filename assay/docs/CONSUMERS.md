@@ -43,7 +43,7 @@ Stated as MEASURED rather than as intended, because the two have differed:
 | `ciu` | internal source mode: its `run-gate.toml` omits `assay_command`/`pins`; run-gate installs the selected worktree's `assay/` and the verdict records the runtime version |
 | `cmru` | internal source mode: its run-gate lanes install the selected worktree's `assay/`; the mutation evidence records version and source commit |
 | `nyxloom` | internal source mode: its run-gate lanes install the selected worktree's `assay/` and record runtime provenance |
-| `dstdns` | vendored pinned zipapp, `tools/assay/assay-4.0.0.pyz`, with a `[lanes.*.pins.assay]` sha256 block per lane |
+| `dstdns` | vendored pinned zipapp, `tools/assay/assay-6.4.0.pyz`, with a `[lanes.*.pins.assay]` sha256 block per lane |
 | `assay` itself | builds its own wheel in-repo and installs it into a clean venv for the gate; it never imports its own source under test |
 
 Thus internal consumers resolve assay from the selected worktree, while
@@ -145,6 +145,92 @@ full shape, what the refusal looks like, and the maintenance obligation it creat
 
 Both values are recorded verbatim in the verdict's `snapshot_policy` object, so a reviewer can
 tell a full-repository verdict from an omission-mode one without re-running anything.
+
+### Shallow seeds, full-history opt-in, and project limits (B101)
+
+The private seed is **shallow by default**: it contains the judged commit and,
+when a comparison base was resolved before snapshot preparation, that base as
+well. Assay writes those exact commit OIDs to `.git/shallow` in the seed and
+in every materialized baseline or replacement. This is different from the
+source checkout: a shallow, grafted, promisor or alternates-backed source is
+still refused as `ERROR`/`GIT_FAILED` (see the Go gotchas below), because assay
+cannot inventory a source whose object identity is incomplete.
+
+Use the lane-level `snapshot_history = "full"` only when the command itself
+walks ancestry or names an older commit. Tags and refs are not preserved in a
+snapshot, and assay resolves changed-line bases before snapshot creation, so
+ordinary R1/R2/R3 lanes should keep the shallow default.
+
+The history policy and the project-level object ceilings are adopted together
+in the same `assay.toml` commit. This is a complete lane file shape you can
+copy and adapt:
+
+```toml
+schema_version = 2
+
+[isolation]
+dirty_ignore = ["nyxloom-trove/**", ".assay/**"]
+
+[isolation.limits]
+max_total_tree_blob_bytes = 536870912
+
+[lanes.unit]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["pytest", "-q", "--cov=src", "--cov-report=json:cov.json"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.unit.isolation]
+snapshot_selection = "repository"
+snapshot_history = "full"
+
+[lanes.unit.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+base = "HEAD~1"
+
+[lanes.unit.judge.coverage]
+format = "coverage-py-json"
+artifact = "cov.json"
+```
+
+Omit `[isolation.limits]` to use the shipped defaults. Every limit is a
+positive integer; `*_bytes` values are uncompressed logical bytes,
+`max_total_tree_blob_bytes` counts unique blobs in the judged tree, and it
+cannot exceed `max_total_object_bytes`. Limits are project-wide so `assay
+plan` and `assay run` cannot silently choose different transfer policy. The
+lane schema remains `2`, but an older assay rejects these new keys: repin the
+consumer before committing them.
+
+`dirty_ignore` uses repo-top-relative POSIX globs, shared with native R2's
+`identity_exclude`. It records matching pre-existing dirt on the verdict; it
+does not admit changes to the loaded `assay.toml`. An unignored path still
+refuses a snapshot lane unless the operator supplies `--allow-dirty`:
+
+```bash
+assay run unit --allow-dirty --verdict-json .assay/verdict.json
+assay plan unit --allow-dirty
+```
+
+The flag applies only to R1+ snapshot lanes; R0 remains strict. The verdict's
+`worktree_integrity.overridden_dirty_paths` is accepted, with an explicit
+warning, by `assay verify` but is refused by `assay analyze receipt` by
+default. `run-gate.py --allow-dirty` is a separate outer clean-tree policy;
+run-gate does not forward or reinterpret it as assay's flag.
+
+If a disposable or vendored Go module root is where `assay.toml` must live,
+the lane file itself must be tracked in that checkout, or matched by a
+**committed** `.gitignore` rule. `.git/info/exclude` cannot hide it from the
+whole-repository dirty check (A-177/A-290). A generated checkout therefore
+needs the file copied in, `git add assay.toml`, and committed before invoking
+the lane; removing it afterward is cleanup, not a way to make an uncommitted
+run pass.
 
 ## Run the lane somewhere other than the project root: `cwd` (B043)
 
@@ -1713,7 +1799,7 @@ applied; that refusal is gone with the field that replaced it, and only the
 | `Survived` | `survived` | — |
 | `NoCoverage` | `survived`, **and** listed in `judgment.r2.survived_uncovered` | a mutant no test exercised is not killed — and it is the worst kind of survivor, so it is listed by position rather than buried in a count |
 | `Timeout` | `budget_exceeded` | Stryker's per-mutant timeout IS the per-candidate budget. Never `killed`: a mutant that hung is not one the suite caught |
-| `CompileError`, `RuntimeError` | **listed** in `judgment.r2.discarded`, and counted in `mutation.candidate_count` but not `mutation.total` | an invalid mutant assay's native engine never emits. Excluded from the score's denominator, and recorded rather than dropped — a report that could not compile most of its mutants measured far less than its score implies. Listed by identity since v11 (B070); an integer count before that |
+| `CompileError`, `RuntimeError` | **listed** in `judgment.r2.discarded`, and counted in `mutation.candidate_count` but not `mutation.total` | an invalid mutant assay's native engine never emits. Excluded from the score's denominator, and recorded rather than dropped — a report that could not compile most of its mutants measured far less than its score implies. Listed by identity since v11 (B070), with `discard_reason` added in v12 (B079); an integer count before that |
 | `Ignored` | **refuses the lane** | see below |
 | `Pending` | **refuses the report** | pending means the run did not finish; incomplete evidence is not weaker evidence |
 
@@ -1737,13 +1823,14 @@ that did not compile); `lines_without_candidates` (in-scope non-blank lines
 the tool produced no mutant for at all).
 
 **`discarded` LISTS the invalid mutants, and `assay verify` re-derives it
-against the payload** (**B070**, schema v11 — see the
-[migration notes](#migration-notes-v10--v11)). It is an array of mutant
+against the payload** (**B070/B079**, schema v12 — see the
+[migration notes](#migration-notes-v11--v12)). It is an array of mutant
 records, one per mutant the report marked `CompileError`/`RuntimeError`,
 carrying the same identity a bucketed mutant carries
 (`path`, `lineno`, `start_byte`, `end_byte`, `replacement_sha256`,
-`operator`, `description`), ascending and unique by that identity, and
-required-possibly-empty exactly as `survived_uncovered` is.
+`operator`, `description`), plus the required closed `discard_reason`,
+ascending and unique by that identity, and required-possibly-empty exactly as
+`survived_uncovered` is.
 
 Four things are now checked, and none of them is an upper bound:
 
@@ -2164,9 +2251,9 @@ invokes pytest — the token `pytest`, a path ending `/pytest`, or the
 adjacent pair `-m pytest`; `assay.liveness.argv_invokes_pytest` is the exact
 check — assay now:
 
-1. materializes a small, stdlib-only pytest plugin into
-   `<project>/.assay/liveness/` (rewritten only when its content changes)
-   and injects it via `argv_appended` + a prepended `PYTHONPATH` entry
+1. materializes a small, stdlib-only pytest plugin into a temporary directory
+   outside the consumer checkout and injects it via `argv_appended` + a
+   prepended `PYTHONPATH` entry
    (**not** `allow_argv_append` — RW-36: that flag keeps its unrelated
    CLI-passthrough-consent meaning; liveness injection is judge mechanics,
    gated by the new key below). The injection rides on the lane's shared
@@ -2212,7 +2299,7 @@ so an ingested judgment has nothing honest to put here) recording whether
 the mechanism ran for this lane and, when it did not, why.
 
 **The `hung` outcome bucket** (additive to `MUTATION_BUCKETS` under schema
-v11 — no v12 cut; a document produced before `hung` existed simply omits the
+v12 — no v13 cut; a document produced before `hung` existed simply omits the
 key) is `LivenessRunner`'s own classification for a candidate that stops
 making progress, on EITHER of two branches:
 
@@ -2607,7 +2694,7 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-Verdict schema v8 and lane schema v2 are both hard cuts (no dual-version verifier, no
+Verdict schema v12 and lane schema v2 are both hard cuts (no dual-version verifier, no
 compatibility shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the
@@ -2628,7 +2715,47 @@ commit in between either runs a v1 assay against a v2 file (rejected as an unkno
 assay against your still-v1 file (rejected as a missing `[isolation]` table) — a self-inflicted
 outage with a one-line fix that is obvious only once you already know why the gate went red.
 
-## Migration notes (v10 → v11)
+## Migration notes (v11 → v12)
+
+Verdict schema v12 is a **hard cut**. `assay verify` refuses a v11 document
+with one version-only diagnostic; there is no in-place upgrade. Re-pin assay
+and regenerate archived verdicts before consuming them under v12. Lane files
+remain schema v2, but consumers must repin before using the new project-level
+`dirty_ignore` key or `--allow-dirty` behavior.
+
+### Dirty provenance and liveness cleanup
+
+Snapshot lanes may now carry an optional top-level `worktree_integrity` object:
+
+```json
+{
+  "ignored_dirty_paths": ["nyxloom-trove/controller.md"],
+  "overridden_dirty_paths": ["src/temporary_probe.py"]
+}
+```
+
+The first list is covered by committed project policy; the second exists only
+when the operator used `--allow-dirty`. The marker never changes the real
+commit or snapshot contents. `assay verify` validates it and warns when the
+override list is non-empty; release receipts refuse such a verdict by default.
+R0 and in-place lanes do not gain this override.
+
+B093's native R2 liveness plugin and per-candidate files are now placed in an
+ephemeral directory outside the consumer checkout for the higher-rigor run.
+The verdict keeps the liveness identity/evidence, but the temporary side files
+are removed after `tests_completed` has been read, so the next run does not
+inherit a dirty `.assay/liveness` tree.
+
+### B079: discarded-mutant reasons
+
+Every ingested `judgment.r2.discarded` entry now carries the closed
+`discard_reason` value `compile_error` or `runtime_error`, derived from the
+upstream `CompileError` or `RuntimeError` status. Native mutation buckets may
+not carry this field. Update consumers that only counted discarded entries to
+read `len(judgment.r2.discarded)` and, when the distinction matters, branch on
+`discard_reason`.
+
+## Historical migration notes (v10 → v11)
 
 Verdict schema v11 is a **hard cut**, exactly as v10 was over v9: `assay
 verify` refuses a v10 document with one version-only diagnostic and reads
@@ -3512,9 +3639,10 @@ recipe at `nyxloom-trove/carve-assets/P27-recarve/`.
 
 **6. Installing assay into a Go gate image needs no Python packaging work.**
 The judge needs an *interpreter*, not a toolchain — assay is stdlib-only by
-design (A-005) — and a `golang:1.25`-based image already has one:
-`/usr/bin/python3` 3.13.5 on Debian trixie, against assay's own
-`requires-python = ">=3.11"`. Measured, not assumed:
+design (A-005). Any image carrying `python3` at or above assay's own
+`requires-python = ">=3.11"` floor is sufficient; `golang:1.25` on Debian
+trixie is one measured example with `/usr/bin/python3` 3.13.5, not a minimum
+Go version. Measured, not assumed:
 
 ```console
 $ docker run --rm --network=none <your-go-gate-image> python3 --version
@@ -3565,6 +3693,14 @@ Two consequences worth planning around:
 * **A project root that is in no Go module at all refuses**
   `ERROR`/`BAD_LANE_CONFIG`, naming the paths it looked at. That is a lane
   configuration fault, not a coverage one, and it is reported as such.
+
+**The source checkout must not be shallow or grafted.** Assay refuses a
+source `.git/shallow`, grafts, promisor configuration or alternates-backed
+repository as `ERROR`/`GIT_FAILED`, for Go and every other language. A
+`--depth N` checkout must be completed with `git fetch --unshallow` before
+the judge runs. This source-side refusal is not contradicted by B101's
+deliberately shallow private seed: use `snapshot_history = "full"` only for a
+lane whose own command walks history.
 
 **`go.work` is not supported this wave.** Nested modules never appear in
 `go test ./...`'s own output, so a workspace's other modules are simply not

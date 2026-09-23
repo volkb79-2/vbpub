@@ -58,10 +58,10 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from .coverage import FORMAT_REGISTRY
 from .errors import LaneConfigError
@@ -91,6 +91,9 @@ from .vocabulary import (
     operator_language,
 )
 
+if TYPE_CHECKING:
+    from .isolation import SnapshotLimits
+
 __all__ = [
     "CanaryConfig",
     "CoverageConfig",
@@ -111,6 +114,7 @@ __all__ = [
     "RIGOR_LEVELS",
     "ResultReportConfig",
     "SCOPES",
+    "SNAPSHOT_HISTORIES",
     "SNAPSHOT_SELECTIONS",
     "find_lane_file",
     "load_lane_file",
@@ -228,8 +232,14 @@ SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
     {"repository", "repository-minus-unsafe-symlinks"}
 )
 
+# B101: the seed is deliberately shallow unless the lane's command walks
+# ancestry.  This is a lane policy, not a source-repository property; source
+# shallow/promisor/alternate refusals remain owned by the Git boundary.
+SNAPSHOT_HISTORIES: frozenset[str] = frozenset({"shallow", "full"})
+
 _ISOLATION_FIELDS: tuple[str, ...] = (
     "snapshot_selection",
+    "snapshot_history",
     "unsafe_symlink_omissions",
     # (B041(b), schema v9) paths symlinked IN from the invoking checkout.
     "link_paths",
@@ -1045,6 +1055,15 @@ class IsolationConfig:
 
     snapshot_selection: str
     unsafe_symlink_omissions: tuple[str, ...]
+    #: B101: default seed history policy.  ``shallow`` carries only the
+    #: judged commit and the already-resolved comparison base; ``full`` is an
+    #: explicit opt-in for commands that walk ancestry.
+    snapshot_history: str = "shallow"
+    #: Preserve whether TOML explicitly wrote the native default so
+    #: ``as_declared`` remains an exact projection of the lane table.
+    snapshot_history_declared: bool = dataclass_field(
+        default=False, repr=False, compare=False
+    )
     #: (B041(b), schema v9) Repo-top-relative directories symlinked from the
     #: INVOKING CHECKOUT into every snapshot this lane creates, immediately
     #: after ``read-tree`` and before any command runs. Empty -- the only
@@ -1065,6 +1084,14 @@ class IsolationConfig:
 
     def __post_init__(self) -> None:
         where = "IsolationConfig"
+        if (
+            not isinstance(self.snapshot_history, str)
+            or self.snapshot_history not in SNAPSHOT_HISTORIES
+        ):
+            raise LaneConfigError(
+                f"{where}: 'snapshot_history' must be one of "
+                f"{sorted(SNAPSHOT_HISTORIES)}, got {self.snapshot_history!r}"
+            )
         self._check_link_paths(where)
         if (
             not isinstance(self.snapshot_selection, str)
@@ -1150,6 +1177,8 @@ class IsolationConfig:
 
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {"snapshot_selection": self.snapshot_selection}
+        if self.snapshot_history_declared or self.snapshot_history != "shallow":
+            declared["snapshot_history"] = self.snapshot_history
         if self.unsafe_symlink_omissions:
             declared["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
         if self.link_paths:
@@ -1269,6 +1298,15 @@ class LaneFile:
     project_root: Path
     schema_version: int
     lanes: Mapping[str, Lane]
+    #: Project-level P22 ceilings.  IsolationConfig and SnapshotLimits live in
+    #: different modules to keep the config boundary acyclic; the loader
+    #: constructs this type lazily after TOML parsing.
+    snapshot_limits: "SnapshotLimits"
+    #: Project-top-relative POSIX globs whose pre-existing dirt may be
+    #: recorded rather than rejected by snapshot lanes when the operator
+    #: explicitly opts in.  This is deliberately separate from the lane's
+    #: own isolation table: it is project policy, not a per-lane escape hatch.
+    dirty_ignore: tuple[str, ...] = ()
 
     def lane(self, name: str) -> Lane:
         try:
@@ -1298,6 +1336,66 @@ def find_lane_file(start: Path | None = None) -> Path:
     )
 
 
+def _load_project_snapshot_limits(
+    value: Any, file_path: Path
+) -> tuple["SnapshotLimits", tuple[str, ...]]:
+    """Load optional project-level ``[isolation]`` policy.
+
+    The isolation module owns the bounds and its ``__post_init__`` is the
+    single validation authority.  This function only closes the TOML grammar,
+    supplies the explicit policy defaults when a field is absent, and
+    translates the dataclass's ValueError into the loader's stable
+    ``BAD_LANE_CONFIG`` terminal.
+    """
+    from .isolation import DEFAULT_SNAPSHOT_LIMITS, SnapshotLimits
+
+    if value is None:
+        return DEFAULT_SNAPSHOT_LIMITS, ()
+    if not isinstance(value, dict):
+        raise LaneConfigError(
+            f"{file_path}: top-level 'isolation' must be a table containing "
+            f"dirty_ignore and/or [isolation.limits], got {_type_name(value)}"
+        )
+    unknown = sorted(set(value) - {"limits", "dirty_ignore"})
+    if unknown:
+        raise LaneConfigError(
+            f"{file_path}: unknown top-level isolation key(s): {', '.join(unknown)}; "
+            f"expected only: dirty_ignore, limits"
+        )
+    dirty_ignore: tuple[str, ...] = ()
+    if "dirty_ignore" in value:
+        dirty_ignore = _load_posix_glob_list(
+            value["dirty_ignore"], str(file_path), "isolation.dirty_ignore"
+        )
+
+    if "limits" not in value:
+        return DEFAULT_SNAPSHOT_LIMITS, dirty_ignore
+    limits = value["limits"]
+    if not isinstance(limits, dict):
+        raise LaneConfigError(
+            f"{file_path}: [isolation.limits] must be a table, got "
+            f"{_type_name(limits)}"
+        )
+    known = set(DEFAULT_SNAPSHOT_LIMITS.__dataclass_fields__)
+    unknown = sorted(set(limits) - known)
+    if unknown:
+        raise LaneConfigError(
+            f"{file_path}: unknown [isolation.limits] key(s): {', '.join(unknown)}; "
+            f"expected only: {', '.join(sorted(known))}"
+        )
+    fields = {
+        name: getattr(DEFAULT_SNAPSHOT_LIMITS, name)
+        for name in DEFAULT_SNAPSHOT_LIMITS.__dataclass_fields__
+    }
+    fields.update(limits)
+    try:
+        return SnapshotLimits(**fields), dirty_ignore
+    except ValueError as exc:
+        raise LaneConfigError(
+            f"{file_path}: invalid [isolation.limits] value: {exc}"
+        ) from exc
+
+
 def load_lane_file(path: Path) -> LaneFile:
     """Load and fully validate an ``assay.toml``.
 
@@ -1317,12 +1415,16 @@ def load_lane_file(path: Path) -> LaneFile:
     project_root = file_path.parent
     schema_version = _load_schema_version(document, file_path)
 
-    unknown = sorted(set(document) - {"schema_version", "lanes"})
+    unknown = sorted(set(document) - {"schema_version", "lanes", "isolation"})
     if unknown:
         raise LaneConfigError(
             f"{file_path}: unknown top-level key(s): {', '.join(unknown)}; "
-            f"expected only: schema_version, lanes"
+            f"expected only: schema_version, lanes, isolation"
         )
+
+    snapshot_limits, dirty_ignore = _load_project_snapshot_limits(
+        document.get("isolation"), file_path
+    )
 
     if "lanes" not in document:
         raise LaneConfigError(
@@ -1350,6 +1452,8 @@ def load_lane_file(path: Path) -> LaneFile:
         project_root=project_root,
         schema_version=schema_version,
         lanes=MappingProxyType(lanes),
+        snapshot_limits=snapshot_limits,
+        dirty_ignore=dirty_ignore,
     )
 
 
@@ -1815,6 +1919,15 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
             f"{where}: 'isolation.snapshot_selection' must be one of "
             f"{sorted(SNAPSHOT_SELECTIONS)}, got {selection!r}"
         )
+    snapshot_history = "shallow"
+    snapshot_history_declared = "snapshot_history" in value
+    if "snapshot_history" in value:
+        snapshot_history = _as_str(value["snapshot_history"], where, "isolation.snapshot_history")
+        if snapshot_history not in SNAPSHOT_HISTORIES:
+            raise LaneConfigError(
+                f"{where}: 'isolation.snapshot_history' must be one of "
+                f"{sorted(SNAPSHOT_HISTORIES)}, got {snapshot_history!r}"
+            )
     # (B041(b)/A-366) Read BEFORE the selection fork and passed to both
     # branches: `link_paths` is independent of `snapshot_selection`, and
     # reading it inside one branch is how a key silently becomes legal under
@@ -1841,6 +1954,8 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
         return IsolationConfig(
             snapshot_selection=selection,
             unsafe_symlink_omissions=(),
+            snapshot_history=snapshot_history,
+            snapshot_history_declared=snapshot_history_declared,
             link_paths=link_paths,
         )
     if not has_omissions:
@@ -1855,6 +1970,8 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
     return IsolationConfig(
         snapshot_selection=selection,
         unsafe_symlink_omissions=tuple(omissions),
+        snapshot_history=snapshot_history,
+        snapshot_history_declared=snapshot_history_declared,
         link_paths=link_paths,
     )
 
@@ -3578,50 +3695,58 @@ def _as_str_list(value: Any, where: str, field: str) -> list[str]:
     return list(value)
 
 
-def _load_identity_exclude(value: Any, where: str) -> tuple[str, ...]:
-    """Load the native-R2 ``identity_exclude`` POSIX glob list (B092).
+def _load_posix_glob_list(
+    value: Any, where: str, field: str
+) -> tuple[str, ...]:
+    """Load one declared POSIX glob list.
 
     Patterns are normalized with :class:`PurePosixPath` after rejecting
     ambiguous namespace spellings. The normalized values are matched against
-    normalized Git tree paths by ``fnmatch.fnmatchcase`` in the frozen-manifest
-    digest code; no local filesystem fact participates.
+    normalized repository paths by ``fnmatch.fnmatchcase``; no local
+    filesystem fact participates. B092's native mutation exclusion and P3's
+    project-level dirty policy intentionally share this grammar.
     """
-    patterns = _as_str_list(value, where, "judge.mutation.identity_exclude")
+    patterns = _as_str_list(value, where, field)
     normalized: list[str] = []
     for index, pattern in enumerate(patterns):
-        field = f"judge.mutation.identity_exclude[{index}]"
+        item_field = f"{field}[{index}]"
         if not pattern:
             raise LaneConfigError(
-                f"{where}: '{field}' must be a non-empty string"
+                f"{where}: '{item_field}' must be a non-empty string"
             )
         if "\\" in pattern:
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} must use POSIX separators; "
+                f"{where}: '{item_field}' {pattern!r} must use POSIX separators; "
                 f"backslashes are forbidden"
             )
         if "\x00" in pattern:
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} contains a NUL character"
+                f"{where}: '{item_field}' {pattern!r} contains a NUL character"
             )
         candidate = PurePosixPath(pattern)
         if candidate.is_absolute():
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} must be relative to the "
+                f"{where}: '{item_field}' {pattern!r} must be relative to the "
                 f"judged repository root"
             )
         components = pattern.split("/")
         if any(component in {".", ".."} for component in components):
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} contains a '.' or '..' "
+                f"{where}: '{item_field}' {pattern!r} contains a '.' or '..' "
                 f"path component"
             )
         normalized_pattern = candidate.as_posix()
         if not normalized_pattern or normalized_pattern == ".":
             raise LaneConfigError(
-                f"{where}: '{field}' {pattern!r} is not a usable POSIX glob"
+                f"{where}: '{item_field}' {pattern!r} is not a usable POSIX glob"
             )
         normalized.append(normalized_pattern)
     return tuple(normalized)
+
+
+def _load_identity_exclude(value: Any, where: str) -> tuple[str, ...]:
+    """Load the native-R2 ``identity_exclude`` POSIX glob list (B092)."""
+    return _load_posix_glob_list(value, where, "judge.mutation.identity_exclude")
 
 
 def _as_str_table(value: Any, where: str, field: str) -> dict[str, str]:

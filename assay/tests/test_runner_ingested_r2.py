@@ -859,6 +859,31 @@ def test_every_discarded_mutant_reaches_the_wire_with_its_full_identity(
         assert len(entry.replacement_sha256) == 64
         # A discarded mutant was refused by nothing, so it names no mechanism.
         assert entry.kill_signal is None
+        assert entry.discard_reason == "compile_error"
+
+
+def test_compile_and_runtime_discards_keep_distinct_reasons(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B079: the two upstream discard statuses are not collapsed on the wire."""
+    document = _typecheck_report_document()
+    document["projectRoot"] = PLACEHOLDER
+    for record in document["files"].values():
+        for mutant in record["mutants"]:
+            if mutant["status"] == "CompileError":
+                mutant["status"] = "RuntimeError"
+                break
+        else:
+            continue
+        break
+    staged = _stage_report(tmp_path, document, name="runtime-discard-report.json")
+    _seed_repo(git_repo, document)
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    verdict = _run(git_repo, _lane(git_repo=git_repo, staged=staged, base=base))
+    _, judgment_r2 = _r2(verdict)
+    reasons = [entry.discard_reason for entry in judgment_r2.discarded]
+    assert reasons.count("runtime_error") == 1
+    assert reasons.count("compile_error") == 39
 
 
 def test_the_discarded_list_is_sorted_and_unique_by_identity(discarding):

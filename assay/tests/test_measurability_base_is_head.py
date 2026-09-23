@@ -58,7 +58,9 @@ def test_a_snapshot_guard_uses_the_carried_resolution_not_a_missing_symbolic_ref
     scratch = tmp_path / "scratch"
     scratch.mkdir()
 
-    with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
+    with prepared_snapshot(
+        git_repo, scratch_root=scratch, resolved_base=base
+    ) as prepared:
         with prepared.materialize(timeout=60) as snapshot:
             assert not (snapshot.root / ".git" / "refs" / "tags" / "declared-base").exists()
             with pytest.raises(AssayError) as excinfo:
@@ -105,7 +107,9 @@ def test_a_history_cut_snapshot_defeats_re_resolution_but_not_the_carried_guard(
     scratch = tmp_path / "scratch"
     scratch.mkdir()
 
-    with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
+    with prepared_snapshot(
+        git_repo, scratch_root=scratch, resolved_base=base
+    ) as prepared:
         with prepared.materialize(timeout=60) as snapshot:
             with pytest.raises(AssayError) as excinfo:
                 check_base_is_head(snapshot.root, base)

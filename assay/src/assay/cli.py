@@ -275,6 +275,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument("--resume", action="store_true")
+    run.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help=(
+            "for snapshot lanes only, admit unignored dirty paths and record "
+            "them in the v12 verdict; project isolation.dirty_ignore paths "
+            "are recorded separately. R0 lanes remain strict. This flag is "
+            "independent of run-gate's own --allow-dirty policy."
+        ),
+    )
     run.add_argument("--operators", default=None)
     run.add_argument("--shard", default=None, metavar="INDEX/COUNT")
     run.add_argument(
@@ -318,6 +328,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan.add_argument("lane", help="the mutation lane name to inspect")
     plan.add_argument("--operators", default=None)
+    plan.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help=(
+            "apply the same snapshot dirty-tree policy as assay run; the plan "
+            "does not judge the dirty tree and reports no verdict"
+        ),
+    )
     plan.add_argument("--shard", default=None, metavar="INDEX/COUNT")
     _add_request_base_argument(plan)
     plan.add_argument(
@@ -1476,6 +1494,9 @@ def _run_reserved(
                 # it, and refuses every disagreement -- the CLI does not
                 # adjudicate.
                 request_base=getattr(args, "request_base", None),
+                snapshot_limits=lane_file.snapshot_limits,
+                allow_dirty=getattr(args, "allow_dirty", False),
+                dirty_ignore=lane_file.dirty_ignore,
                 # B032/A-322: where the `environment_command` probe's refusal
                 # message goes. `run_lane` returns a Verdict and carries no
                 # free-text field for a cause (A-138/A-170), so B010's "refuse
@@ -1596,9 +1617,22 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
     )
     commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
     repo_top = git.repo_top(lane_file.project_root, remaining=deadline.remaining)
+    worktree_integrity = runner._resolve_snapshot_worktree_integrity(
+        repo=lane_file.project_root,
+        repo_top=repo_top,
+        project_root=lane_file.project_root,
+        dirty_ignore=lane_file.dirty_ignore,
+        allow_dirty=getattr(args, "allow_dirty", False),
+        remaining=deadline.remaining,
+    )
     project_prefix = runner._resolved_project_prefix(repo_top, lane_file.project_root)
     snapshot_policy = runner._snapshot_policy_for_lane(lane)
     assert snapshot_policy is not None
+    resolved_base = runner._resolve_declared_base(
+        lane_file.project_root,
+        base_declaration,
+        remaining=deadline.remaining,
+    )
 
     with tempfile.TemporaryDirectory(prefix="assay-plan-seed-") as raw_seed:
         seed_root = Path(raw_seed).resolve()
@@ -1608,6 +1642,8 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             project_prefix=project_prefix,
             scratch_root=seed_root,
             snapshot_policy=snapshot_policy,
+            resolved_base=resolved_base,
+            limits=lane_file.snapshot_limits,
         )
         with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
             # B030/A-319: source roots are NOT relocated here, on purpose.
@@ -1630,11 +1666,6 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             # the identical helper -- `plan` predicts a run, so a plan scoped
             # against a different base than the run it predicts would be
             # worse than emitting none.
-            resolved_base = runner._resolve_declared_base(
-                lane_file.project_root,
-                base_declaration,
-                remaining=deadline.remaining,
-            )
             if lane.judge.mode == "whole_target":
                 targets = runner._mutation_targets_whole(
                     prepared=prepared,
@@ -1684,6 +1715,9 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
         payload: dict[str, Any] = {
             "status": "unsupported",
             "reason_code": "MUTATION_UNSUPPORTED",
+            "worktree_integrity": (
+                None if worktree_integrity is None else worktree_integrity.to_dict()
+            ),
         }
     else:
         selected_indices = mutation.select_mutation_shard(
@@ -1739,6 +1773,9 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                 }
                 for job in jobs
             ],
+            "worktree_integrity": (
+                None if worktree_integrity is None else worktree_integrity.to_dict()
+            ),
         }
     print(json.dumps(payload, indent=2, sort_keys=True), file=out)
     return 0
