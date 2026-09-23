@@ -8990,7 +8990,7 @@ ownership is the only thing that works.
 
 ## B082 — a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so
 
-**Status: DONE (P4 docs in `5bf832a4`; tester-unified PASS on `4ed15f31`) — `docs/CONSUMERS.md` now states the whole-tree cleanliness rule, committed-ignore requirement, `.git/info/exclude` limitation, and the disposable-module-root copy/stage pattern.**
+**Status: DONE (assay-v7.0.0; P4 docs in `5bf832a4`; release tester-unified gate PASS) — `docs/CONSUMERS.md` states the whole-tree cleanliness rule, committed-ignore requirement, `.git/info/exclude` limitation, and disposable-module-root copy/stage pattern.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
 [B081](#b081) (`vbpub@bfb2077b`, `patchstack/assay/assay.toml`).
@@ -9088,7 +9088,7 @@ truth — hence 'authoritative here, copied there'."*
 
 ## B083 — assay refuses a shallow clone, correctly, but the Go section's gotcha list does not mention it and a `--depth N` clone is the normal case for a patch stack or a CI build
 
-**Status: DONE (P4 docs in `5bf832a4`; tester-unified PASS on `4ed15f31`) — the Go guidance names the language-independent shallow/grafted-source refusal and `git fetch --unshallow` remedy.**
+**Status: DONE (assay-v7.0.0; P4 docs in `5bf832a4`; release tester-unified gate PASS) — the Go guidance names the language-independent shallow/grafted-source refusal and `git fetch --unshallow` remedy.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
 [B081](#b081)/[B082](#b082) (`vbpub@bfb2077b`).
@@ -9155,7 +9155,7 @@ the per-run cost.
 
 ## B084 — Go-section drift: `golang:1.25` reads as a requirement when it is one measured example, and the "how consumers actually get the judge" table is stale against the real pins
 
-**Status: DONE (P4 docs in `5bf832a4`; tester-unified PASS on `4ed15f31`) — the dstdns consumer pin and date were refreshed, and the Go section now states the Python floor rather than implying a Go-version floor.**
+**Status: DONE (assay-v7.0.0; P4 docs in `5bf832a4`; release tester-unified gate PASS) — the dstdns consumer pin and date were refreshed, and the Go section states the Python floor rather than implying a Go-version floor.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, same session as
 [B081](#b081)–[B083](#b083). **Minor; docs only. Two unrelated small items
@@ -9958,7 +9958,7 @@ backwards from what a checkpointed, resumable process should reward.
 
 ## B093 — P7 S1: liveness write guard and side-file cleanup
 
-**Status: DONE in the B101 isolation wave worktree — higher-rigor liveness files use an external temporary directory, are removed after `tests_completed` is read, and their bounded evidence remains in the verdict/progress surface.**
+**Status: DONE (assay-v7.0.0, release commit `47435679`; tester-unified gate PASS) — higher-rigor liveness files use an external temporary directory, are removed after `tests_completed` is read, and their bounded evidence remains in the verdict/progress surface.**
 
 **Previously open, deferred by RW-53/RW-57 (2026-09-13 filing).** Liveness materialized
 its plugin and candidate event/stdout/stderr files in the judged tree's
@@ -10178,7 +10178,7 @@ from a child log line, and that a report never writes into the judged tree.
 
 ## B101 — `snapshot_selection = "repository"`'s `max_total_object_bytes` measures the full reachable git-HISTORY closure, not the current tree; the 1GiB default is unconfigurable and has no path-scoping, so an actively-developed repo eventually breaches it permanently
 
-**Status: DONE in the B101 isolation wave worktree — P2 is in `5bf832a4` with the lint correction in `4ed15f31`; P3 dirty provenance and P4 documentation are implemented here, with provisional merge after review.**
+**Status: DONE (assay-v7.0.0, release commit `47435679`; provisional integration `309ad781`, v12 witness follow-up `c183a371`; tester-unified gate PASS) — P2 ships the shallow seed, full-history opt-in and configurable limits; P3 ships dirty-path provenance and the snapshot-only override; P4 consumer documentation is included.**
 
 **Reported by:** dstdns controller, 2026-09-22 (`dstdns@6dd368d7`..`dstdns@285b3965`
 range, provenance: `dstdns/nyxloom-trove/CONTROLLER-BRIEF.md` "operator caps
@@ -10415,10 +10415,10 @@ part can ship alone.
 
 ## B102 — higher-rigor lanes refuse `DIRTY_TREE` for ANY uncommitted path in the repository, although a snapshot lane judges the committed tree and no uncommitted byte can reach it
 
-**Status: DONE in the B101 isolation wave worktree (2026-09-23) — direction implemented and covered by focused runner, config, verifier, receipt, and frozen v12 acceptance tests; provisional merge follows review.**
+**Status: DONE (assay-v7.0.0, release commit `47435679`; provisional integration `309ad781`; tester-unified gate PASS) — implemented and covered by focused runner, config, verifier, receipt, and frozen v12 acceptance tests.**
 
 **Reported by:** operator + dstdns friction, 2026-09-23 (companion to B101).
-**Status: DONE in the B101 isolation wave worktree; the operator's v12 decision is recorded as A-452--A-455.**
+**Status: DONE in assay-v7.0.0; the operator's v12 decision is recorded as A-452--A-455.**
 
 ### Mechanism
 
@@ -10491,7 +10491,7 @@ backlog prose).
 
 ## B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main
 
-**Status: DONE (B104 triage, 2026-09-23; fix on `assay-b101-wave`) — the pinned dstdns run is healthy; the witness was stale against shipped v11 additive liveness fields, and the comparator was not removing the run-derived candidate-budget value.**
+**Status: DONE (B104 triage and witness updates in `c6a97f1e`/`c183a371`; included in assay-v7.0.0, release commit `47435679`; tester-unified gate PASS) — the pinned dstdns run is healthy, and the frozen witness now matches verdict schema v12.**
 
 **Found:** controller run, 2026-09-23, an ordinary serial full `tests/` run on
 this host (this test is Docker-gated and needs a real `/workspaces/dstdns`
