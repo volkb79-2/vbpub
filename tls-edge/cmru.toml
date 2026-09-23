@@ -1,5 +1,8 @@
 schema_version = 1
 
+[runtime]
+kind = "none"
+
 [env]
 TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\n\nEdge proxy and TLS termination stack for vbpub infrastructure.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
 

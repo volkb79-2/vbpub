@@ -40,7 +40,8 @@ requirements are marked *(withdrawn)*.
 ## S0 — Terminology
 
 - **Workspace / repo root** — the directory identified by `REPO_ROOT`, holding
-  `ciu.global.defaults.toml.j2` and `ciu.env`.
+  `ciu.global.defaults.toml.j2`; it may also contain the generated `ciu.env`
+  shell export.
 - **Stack** — a directory containing `ciu.defaults.toml.j2` and
   `ciu.compose.yml.j2`; the unit `ciu` renders and starts.
 - **Stack root key** — the single non-reserved top-level TOML table of a stack
@@ -68,54 +69,18 @@ requirements are marked *(withdrawn)*.
 
 ## S1 — Project & path model
 
-- **S1.1** CIU MUST resolve the repo root in this order: `--define-root`
-  (alias `--root-folder`), given explicitly, ALWAYS wins outright — returned
-  immediately, with no consistency check against `REPO_ROOT` (explicit intent
-  is not second-guessed by a shell variable). Otherwise CIU walks up from the
-  working directory to the nearest dir containing `ciu.global.defaults.toml.j2`.
-  When that walk-up SUCCEEDS: an ambient `REPO_ROOT` that AGREES with the
-  derived root is used silently; one that DISAGREES is a REFUSAL — a
-  `[S1.1]`-tagged error naming both paths and the three remedies (unset
-  `REPO_ROOT`, pass `--define-root` explicitly, or `cd` into the intended
-  repo) — CIU MUST NOT silently prefer either value on a genuine disagreement,
-  since this decides which repo destructive verbs (`worktree rm`,
-  `branches -y`, `clean`) operate on. Only when the walk-up finds **nothing**
-  does CIU fall back to `REPO_ROOT` from the environment, then to the working
-  directory itself (the ultimate fallback).
-
-  **Correction (2026-08-25, CIU-53).** This precedence previously read
-  `--define-root → REPO_ROOT env → walk-up`, and `dev.resolve_repo_root`
-  additionally implemented an even earlier ordering (`REPO_ROOT` env checked
-  *before* `--define-root`) that violated this SPEC's own documented contract.
-  Both are corrected together: the code now matches a walk-up-first order, and
-  that order itself closes a masked-default gap the *previously documented*
-  contract still had — under the old order, an ambient `REPO_ROOT` from an
-  unrelated sourced `ciu.env` silently outranked a successful walk-up
-  derivation from where the operator was actually standing, the same
-  masked-default hazard family S2.7 already closes for the derived identity
-  tuple (CIU-41). See `docs/DESIGN-GUIDE.md` ("Why `dev`/`worktree` refuse an
-  ambient REPO_ROOT that disagrees with the derived root").
-- **S1.1a** The walk-up order above governs `dev`/`worktree`'s
-  local-repo-identity question (`_resolve_repo_root_cli` /
-  `dev.resolve_repo_root`). A SECOND, deliberately narrower resolver
-  (`deploy.resolve_repo_root`) governs every verb whose usage shape is
-  remote-push, listing, or profile-based deploy rather than "which repo am I
-  standing in": plain `ciu up`/`down`/`health`/`render`/`check`/`graph`/
-  `clean`/`profiles` (no modifier — routed through `deploy.main`), and, as of
-  CIU-54 (ciu-P45), the `--host` branches of `render`/`up`/`down`/`health`,
-  `up --layout`, `layouts`, `host-secrets`, and `ssh`. Its order is `
-  --define-root` (alias `--root-folder`), given explicitly, ALWAYS wins
-  outright, with the SAME disagreement-refusal against a conflicting ambient
-  `REPO_ROOT` S1.1 describes above; otherwise ambient `REPO_ROOT` is
-  REQUIRED — there is NO walk-up and NO cwd fallback, so an unset `REPO_ROOT`
-  with no `--define-root` is itself a refusal (`[ERROR] REPO_ROOT not set.
-  Run 'ciu env generate' and source ciu.env.`). CIU MUST route every verb
-  through the SAME one of these two resolvers across all of that verb's own
-  branches — never a `--host`/`--layout` branch resolving one way and that
-  verb's local/profile branch resolving a different way — which is exactly
-  the inconsistency CIU-54 closed: those 8 sites previously used neither
-  resolver, only a bare `REPO_ROOT`-or-cwd fallback with no `--define-root`
-  consideration at all.
+- **S1.1** CIU MUST resolve the CIU root from explicit or local facts only:
+  `--root-folder`, given explicitly, ALWAYS wins outright. Otherwise CIU walks
+  up from the invocation directory (`cwd` or `--dir`) to the nearest directory
+  containing `ciu.global.defaults.toml.j2`. A missing marker is a typed
+  refusal naming the marker and the `--root-folder PATH` remedy. Ambient
+  `REPO_ROOT` is an output for child processes and shell exports, never a root
+  selector or fallback. This same rule applies to ordinary, remote, listing,
+  and profile-based branches of a verb; a branch must not silently select a
+  different root because it was reached through `--host` or `--layout`.
+- **S1.1a** CIU may keep adapter functions for local and deploy call sites,
+  but they MUST delegate to the same S1.1 contract. There is no ambient-only
+  deploy resolver and no cwd fallback that invents a root without the marker.
 - **S1.2** A repo whose `ciu.global.defaults.toml.j2` sets
   `standalone_root = true` is a standalone root: CIU MUST refuse to run with a
   `REPO_ROOT` that does not match that directory. The guard MUST be evaluated by
@@ -158,11 +123,12 @@ requirements are marked *(withdrawn)*.
 
 ## S2 — Workspace environment (`ciu.env`)
 
-- **S2.1** `ciu.env` at the repo root carries this workspace's MACHINE facts.
-  CIU MUST generate it when missing and MUST regenerate it on
-  `--generate-env`. Since CIU-75 it is authoritative for those facts only:
-  instance IDENTITY lives in `[ciu.instance.generated]` and is read from
-  nowhere else (S3.1c, which overrides any older reading of this section).
+- **S2.1** `ciu.env` at the repo root is a generated shell export. CIU MUST
+  generate it when missing and MUST regenerate it on `ciu env generate`.
+  Internal identity and machine facts are authoritative only in the exact
+  path `<ciu-root>/ciu.instance.generated.toml`, under the versioned
+  `[ciu.instance.generated]` and `[ciu.instance.machine]` tables. `ciu.env`
+  is never read by CIU itself.
 - **S2.2** Required keys (always): `REPO_ROOT`, `PHYSICAL_REPO_ROOT`,
   `DOCKER_NETWORK_INTERNAL`, `CONTAINER_UID`, `DOCKER_GID`. Missing or empty
   required keys MUST abort the run.
@@ -178,10 +144,13 @@ requirements are marked *(withdrawn)*.
   (`is None` / `== ""`, never truthiness).
 - **S2.6** All `ciu.env` keys remain visible to `docker compose` `${VAR}`
   interpolation (the compose process env inherits `os.environ`, see S8.2).
-- **S2.7** `ciu.env` is the **machine identity layer** — detected facts
+- **S2.7** The generated facts document is the **machine identity layer** — detected facts
   about this machine, not project configuration (project configuration is
   TOML; TOML may reference machine facts via `$VAR` expansion, S3.2).
-  Every key is autodetected; a pre-set environment value always wins:
+  Ordinary machine facts may use a valid pre-set environment value, subject to
+  the validation rules below. Root selection and generated identity facts are
+  the stricter exception: they follow S1.1 and the derived-identity rule below
+  and MUST NOT be redirected by ambient values:
 
   | Key | Detection (when not pre-set) |
   |---|---|
@@ -193,23 +162,14 @@ requirements are marked *(withdrawn)*.
   | `ENV_TYPE` | `devcontainer` \| `native` \| `github-actions` (v1's `bare-metal` and post-create's `local` unify as `native`) |
   | `PUBLIC_IP`/`PUBLIC_FQDN`/`PUBLIC_TLS_*` | config → ipify → reverse DNS → `localhost` fallback (S2.3 gates whether required) |
 
-  **Refined precedence for the derived identity tuple (CIU-41).** The
-  blanket "a pre-set environment value always wins" rule does NOT apply to
-  the derived identity values (`REPO_NAME`, `INSTANCE_ID`,
-  `DOCKER_NETWORK_INTERNAL`) during **generation** — the same refined
-  precedence already applied to `PHYSICAL_REPO_ROOT`. A shell that sourced a
-  DIFFERENT checkout's `ciu.env` carries that checkout's network name; a
-  generate run in this workspace must never adopt it (the 2026-07
-  `PHYSICAL_REPO_ROOT` leak family, dstdns P111 F2 live reproduction).
-  Contract: during generation each identity value is derived from THIS
-  physical root alone; an ambient value is adopted only when it EQUALS the
-  derived one; on mismatch the derived value is written and a stderr warning
-  names the ignored ambient value and the S16.1 remedy. Within the same run,
-  bootstrap steps that follow a generation (network creation, devcontainer
-  attach, S16 cross-checks) act on the just-written file's identity, parsed
-  by exact path — never re-derived from ambient state or re-found via an
-  ambient `REPO_ROOT`. Read-path precedence of already-generated workspaces
-  (ambient wins when consistent) is unchanged.
+  **Derived identity has one source.** During generation each identity value
+  (`REPO_NAME`, `INSTANCE_ID`, `DOCKER_NETWORK_INTERNAL`) is derived from this
+  invocation's canonical physical Git/root facts. A sibling checkout's
+  `ciu.env`, ambient identity variables, or a stale logical path can never
+  select the result. Bootstrap steps act on the just-written generated-facts
+  file by exact path. On ordinary reads CIU reads that file by exact path and
+  seeds the child environment from it; ambient `REPO_ROOT` is never consulted
+  to redirect the read.
 
   **Refined precedence for `PUBLIC_FQDN` (CIU-47).** The same masked-default
   family, host-derived rather than path-derived: a shell that sourced a main
@@ -235,7 +195,7 @@ requirements are marked *(withdrawn)*.
   pre-set-wins read (out of CIU-47's filed scope).
 
 - **S2.8** `ciu env generate` is the **single bootstrap entry point** and
-  MUST perform: detect + write `ciu.env` → ensure `DOCKER_NETWORK_INTERNAL`
+  MUST perform: detect + write the generated facts document and `ciu.env` → ensure `DOCKER_NETWORK_INTERNAL`
   exists → attach the devcontainer to it (devcontainer only; the network
   need not pre-exist the devcontainer — attachment is dynamic via the host
   daemon, so there is **no** chicken-and-egg) → TLS accessibility probe via
@@ -333,8 +293,9 @@ requirements are marked *(withdrawn)*.
   **CIU's file: `<ciu-root>/ciu.instance.generated.toml` (CIU-60, normative).**
   A gitignored **plain TOML file, never a `.j2`** — nothing renders it, so a
   reader needs no render context at all. `ciu env generate` MUST write it
-  carrying exactly one table, `[ciu.instance.generated]`, with exactly six
-  snake_case keys — `repo_name`, `instance_id`, `network`,
+  carrying exactly two tables, `[ciu.instance.generated]` and
+  `[ciu.instance.machine]`, with the current `schema_version`; the identity
+  table has exactly six snake_case keys — `repo_name`, `instance_id`, `network`,
   `physical_repo_root`, `repo_root`, `public_fqdn` — from the SAME in-memory
   values that invocation wrote into `ciu.env`. They are never re-derived and
   `ciu.env` is never read back to produce them: a second derivation could
@@ -393,37 +354,21 @@ requirements are marked *(withdrawn)*.
      Never from `ciu.env`, and never from ambient `os.environ` (CIU-41) —
      including the ambient values a verb itself runs with, which clause 2a
      makes derived state rather than input.
-  2. **`ciu.env` is a legacy export, and never a source of identity.**
+  2. **`ciu.env` is a legacy export, and never an internal source of facts.**
      `ciu env generate` MUST keep writing it, with an unchanged key set and
-     format, from the same in-memory values as the table (S3.1b). No CIU code
-     path may take an identity fact from it — not a direct read, and not by
-     seeding `os.environ` (clause 2a). What it still carries at process start
-     is the MACHINE facts (`CONTAINER_UID`, `DOCKER_GID`, `ENV_TYPE`,
-     `PUBLIC_IP`, `PUBLIC_TLS_*`, `PYTHON_EXECUTABLE`, `HOST_MDT_TMP`, …) —
-     properties of the host, not of the instance — as a cache of live
-     derivation, applied only where the process environment says nothing (an
-     explicit `--define-root` overrides, as it always has). That read MUST be
-     by EXACT path (never a walk that an ambient `REPO_ROOT` can redirect) and
-     MUST NOT be able to abort a verb: an `OSError`, a non-UTF-8 byte or a
-     malformed entry is a WARN naming the file and `ciu env generate`, after
-     which a genuinely missing required key still refuses at S2.2's own check.
-     A later release stops writing the file; until then `ciu env` and
-     `ciu env print` hand its contents to a SHELL, which is its only other
-     consumer.
-  2a. **The process environment is seeded from the table, and OVERRIDES what
-     it inherited.** At STEP 1 of every verb, the six facts are read from this
-     checkout's table under their legacy shell names and written into
-     `os.environ` unconditionally — not "where absent". Skip-if-present is
-     what let a shell that had sourced a SIBLING checkout's `ciu.env` win: the
-     twelve per-checkout reads of clause 1 were correct while ~26 internal
-     sites, and every `$DOCKER_NETWORK_INTERNAL` in a rendered template, still
-     read the inherited value (the CIU-41 hazard, arriving through the one
-     door a per-site cutover cannot close). A checkout whose generated facts
-     file is absent or carries
-     NO such table is REPAIRED — the record CIU reads is the record CIU
-     regenerates, exactly as an absent `ciu.env` has always been regenerated —
-     rather than refusing a verb the operator just ran; a PRESENT but
-     unreadable table is not repaired, because clause 4 wants that loud.
+     format, from the same in-memory values as the generated document. No CIU
+     code path may read it or seed `os.environ` from it. `ciu env` and
+     `ciu env print` hand its contents to a SHELL, which is its only consumer.
+     Machine facts (`CONTAINER_UID`, `DOCKER_GID`, `ENV_TYPE`, `PUBLIC_IP`,
+     `PUBLIC_TLS_*`, `PYTHON_EXECUTABLE`, `HOST_MDT_TMP`, …) live in the exact
+     `[ciu.instance.machine]` table and a malformed or missing table refuses.
+  2a. **The process environment is seeded from both generated tables, and
+     OVERRIDES what it inherited.** At STEP 1 of every verb, all generated
+     facts are translated to their legacy shell names and written into
+     `os.environ` unconditionally. A checkout whose generated facts file is
+     absent or incomplete refuses with the exact `ciu env generate` remedy. A
+     runtime-start verb may regenerate it; a present but unreadable table is
+     never repaired, because clause 4 wants that loud.
      Consequence, and it is deliberate: exporting an identity variable no
      longer overrides a run. `ciu env generate` (which still honors a
      CONSISTENT pre-set value, S2.7) is how identity changes.
@@ -438,16 +383,15 @@ requirements are marked *(withdrawn)*.
      so a stdout notice there lands ahead of the JSON document and breaks
      every machine consumer's parse. The interactive `ciu env generate` verb
      keeps announcing on stdout.
-  4. **Reader semantics — three outcomes, never two.** An ABSENT
-     `ciu.instance.generated.toml`, or one carrying no such table, yields
-     "no facts": a legitimate state
-     (`ciu env generate` was never run here) that MUST stay silent. A PRESENT
-     record that cannot be read — an `OSError` (including a directory where
-     the file belongs), a non-UTF-8 byte, malformed TOML, or a non-string
-     value — is INDETERMINATE and MUST refuse or announce, never collapse into
-     "no facts" (the absence-for-emptiness anti-pattern; the live consequence
-     it caused is recorded at S6.4a). Each call site's existing refuse-or-
-     degrade contract is preserved exactly across the cutover.
+  4. **Reader semantics — absence and indeterminacy stay distinct.** An
+     ABSENT `ciu.instance.generated.toml`, or one carrying no such table, is
+     an incomplete workspace fact and MUST refuse wherever identity is needed;
+     a runtime-start verb may explicitly regenerate it. A PRESENT record that
+     cannot be read — an `OSError` (including a directory where the file
+     belongs), a non-UTF-8 byte, malformed TOML, wrong schema version, unknown
+     key, or non-string value — is INDETERMINATE and MUST refuse, never
+     collapse into "no facts" (the absence-for-emptiness anti-pattern). Each
+     read validates the shipped schema exactly.
   5. **The read is a whole-file plain-TOML parse.** `ciu.instance.generated.
      toml` is not a template and contains nothing but the CIU-owned table, so
      the read is an ordinary `tomllib` parse of the entire file — no scan for
@@ -962,7 +906,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   published — `sh -c '<prebuild…> && exec <command>'`, so generated files land
   in the served tree and a failed prebuild never starts the server.
 - **S5a.3** `--no-prebuild` re-runs only the dev server (skips prebuild);
-  `--profile` selects the host profile for rendering; `--define-root` overrides
+  `--profile` selects the host profile for rendering; `--root-folder` overrides
   the repo root. The verb is for the local dev loop only — it is **not** part of
   the `up`/`down`/`clean` lifecycle and creates no rendered/overlay artifacts.
 
@@ -1195,7 +1139,8 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   - **CLI precedence:** if any `--profile` is given on the CLI, the CLI
     list **fully overrides** the env list (they are NOT merged).
 - **S7.5a** *Multi-host workflow.* Each host carries a clone of the project,
-  its own generated `ciu.env` (machine identity, S2.7), and a
+  its own generated-facts document (machine identity, S2.7) and export-only
+  `ciu.env`, and a
   `CIU_SERVICES_PROFILE` (ordered list). The admin orders execution
   manually across hosts (e.g. `--profile core,db` on host A **first**, then
   `--profile worker-io` on host B whose `topology_overrides` points
@@ -1488,7 +1433,8 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
 - **S8.1a** *`--project-directory` (CIU-71).* Every compose lifecycle
   invocation this section and S8.6/S8.7 describe (native `up`, `--shipped`
   `up`, and the reset/down path) MUST additionally pass
-  `--project-directory <repo_root>` — the same `REPO_ROOT`/`--define-root`
+  `--project-directory <repo_root>` — the same resolved root selected by
+  `--root-folder` or the marker walk
   value already resolved for that invocation (S1). Without it, `docker
   compose` resolves every relative path IN the compose file — a service's
   `build.context` chief among them — against the **compose file's own
@@ -1541,8 +1487,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   relative paths and `.env` resolution inside/around the compose file
   resolve.
 - **S8.2** The compose process environment is exactly: `os.environ`
-  (the machine facts loaded from `ciu.env` plus the six identity facts CIU
-  seeds from `[ciu.instance.generated]`, S3.1c clause 2a) + `PWD` +
+  (facts seeded from the generated TOML tables, never from `ciu.env`) + `PWD` +
   `COMPOSE_PROFILES`
   (when set by profile/service) + `expose_env` secrets (S4.19).
   **TOML config flattening into env is withdrawn** — `flatten_dict` /
@@ -1908,7 +1853,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   do not exist in that parser at all, so every abbreviation of them already
   fails loudly (exit 2, nothing deployed) and they route on the exact and `=`
   forms only — widening them would resolve, in CIU, an abbreviation that
-  `ciu-deploy` itself treats as ambiguous (`--d` against `--define-root`).
+  `ciu-deploy` itself treats as ambiguous (`--d` against `--root-folder`).
   This asymmetry is normative and MUST be pinned by a test against the real
   `ciu-deploy` parser rather than asserted in prose.
   A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
@@ -2408,7 +2353,7 @@ one finding, not a second complaint derived from untrustworthy input.
 
 ### S13.7 — `ciu migration-check` (ciu-P46, normative)
 
-`ciu migration-check [--define-root PATH] [--json]` reports artifacts in the
+`ciu migration-check [--root-folder PATH] [--json]` reports artifacts in the
 current checkout left behind by an OLDER CIU.
 
 **Why it exists.** CIU performs **hard cutovers**: when a file, key or table
@@ -2440,10 +2385,8 @@ Normative rules:
   the same `WARN`/`ERROR` vocabulary S9.5's hook-preflight findings use.
   `--json` emits one versioned envelope (`schema_version`, `operation`,
   `status`, `repo_root`, `rules`, `findings`).
-- Root resolution follows CIU-54's convention for a verb with its own parser
-  (`--define-root`/`--root-folder`, else ambient `$REPO_ROOT`, refusing on
-  disagreement — S1.1a), so it answers identically to `ciu check` run in the
-  same checkout.
+- Root resolution follows S1.1 (`--root-folder`, else the nearest committed
+  marker), so it answers identically to `ciu check` run in the same checkout.
 
 **v1 rule set** (all WARN):
 
@@ -3019,7 +2962,7 @@ failure.
 
 `ciu env generate` (`workspace_env.generate_ciu_env`) additionally derives
 `CIU_GOV_READ_IOPS` (via the same S15.4 formula, always in "derive" mode —
-`ciu.env` is the machine-identity layer, S2.7, with no per-stack `read_iops`
+the generated machine-facts table is the machine-identity layer, S2.7, with no per-stack `read_iops`
 override reachable there) and writes it into `ciu.env` for shell/template
 consumption. This is a convenience export only: the overlay generator
 (S15.3/S15.4) reads the baseline file and `findmnt` directly and does **not**
@@ -4131,12 +4074,13 @@ Migration recipes: docs/MIGRATION-V2.md.
 
 ## S16 — Worktree instances (`ciu worktree`)
 
-A git worktree of a CIU repo is already a distinct runtime: `INSTANCE_ID` is a
-hash of the PHYSICAL repo path (S2), so a second checkout gets its own network,
-container prefix and volumes. `ciu worktree` is the verb that composes what CIU
-already knows into one operation.
+A git worktree of a CIU repo is already a distinct runtime: its six-character
+lower-case base-36 workspace identity is derived from the canonical physical
+checkout path, so a second checkout gets its own network, container prefix and
+volumes. `ciu worktree` is the verb that composes what CIU already knows into
+one operation.
 
-- **`worktree create LOGICAL [--name DISPLAY | --prefix PREFIX --feature FEATURE] [--branch BRANCH] [--path PATH] [...]`** — creates a new managed checkout.
+- **`worktree create LOGICAL [--name DISPLAY | --prefix PREFIX --feature FEATURE] [--branch BRANCH] [--path PATH] [...]`** — creates a new managed checkout and prepares every committed CIU root in it.
   Generated names are UTC `<prefix>-<YYYYMMDD_HHMMSS>-<feature>`; generated
   branch and directory basename are identical, with a suffix only on an actual
   same-second collision under the Git-family allocation lock.
@@ -4145,11 +4089,11 @@ already knows into one operation.
   CIU-owned partial allocation. Any requested identity mismatch refuses.
 - **`worktree adopt LOGICAL PATH [...]`** — the sole operation allowed to take
   ownership of a registered unmanaged linked checkout.
-- **`worktree add NAME [...]`** — retained human shorthand for create with
-  logical/display/branch/directory basename all equal to NAME. It does NOT deploy: `add`
-  prepares an instance, it does not decide you want it running. `--shared-infra`
-  joins the new instance's declared diverging services onto an existing
-  reference instance's shared network (S16.1).
+- There is no `worktree add` alias. `create` is the sole allocation verb; it
+  does NOT deploy. A create operation discovers CIU roots from committed
+  `ciu.global.defaults.toml.j2` markers at the selected Git base and prepares
+  all of them. An ignored or uncommitted marker is never enough to create a
+  runtime root.
 - **`worktree rm NAME [-y] [--force]`** — runs `ciu clean` INSIDE the worktree
   under that worktree's own identity — its `[ciu.instance.generated]` facts
   overlaid on an ambient environment (S3.1c clauses 1/7; its `ciu.env` before
@@ -4160,58 +4104,55 @@ already knows into one operation.
   `rm -rf` cannot delete; and removing the checkout first destroys the rendered
   config that tells CIU what to clean. A failed clean ABORTS the removal unless
   `--force`.
-- **`worktree list`** — registered worktrees, primary marked.
+- **`worktree list`** — the native Git worktree inventory, including unmanaged
+  linked checkouts, with the primary marked.
 
-Every managed linked checkout has an atomic, non-secret
-`<target-ciu-root>/ciu.worktree-instance.json` (schema v1, or v2 once it
-carries an explicit ownership lease — S16.9). It records the family-scoped
-logical identity, display/branch/Git-path facts, exact Git-root-to-CIU-root
-offset, allocation time, base reference, lifecycle state
-(`allocating | ready | recovery-required`), and runtime identity once derived.
-Current HEAD is inspected from Git and is never frozen in the record. The
-record owns lifecycle; `ciu.global.instance.toml.j2` owns local configuration;
-`ciu.instance.generated.toml` — its `[ciu.instance.generated]` table — owns the
-instance identity CIU reads (S3.1c); `ciu.env` owns the generated MACHINE
-facts. Each fact has one authority, and since ciu-P47 each authority has its
-own file.
+Every managed linked checkout has an atomic, non-secret shared-library record
+at `<git-common-dir>/.workspace-instances/<workspace-id>.json`, plus CIU's
+adapter record for lifecycle and root entries. The shared record owns the
+family-scoped physical identity, branch/base facts, leases and opaque adapter
+metadata; the CIU record owns display names, exact Git-root-to-CIU-root offsets,
+root preparation state and CIU-specific intent. Current HEAD is inspected from
+Git and is never frozen in the record. `ciu.global.instance.toml.j2` owns local
+configuration; `ciu.instance.generated.toml` — its
+`[ciu.instance.generated]` table — owns the instance identity CIU reads;
+`[ciu.instance.machine]` in that same file owns the generated machine facts;
+and `ciu.env` is the shell-export rendering of those facts.
 
-Create/adopt admission rejects an occupied logical identity, path, or active
-branch before allocation. CIU first writes an `allocating` record into a
-`--no-checkout` linked worktree, so interruption remains attributable; it then
-checks out the base and generates identity-only records
-(`ciu.instance.generated.toml`, the record CIU reads, and `ciu.env` beside
-it). Before any network
-bootstrap it rejects duplicate family `INSTANCE_ID`/network values and an
-already-existing exact Docker network (independent-clone collision). Docker
-absence is valid for local-only projects; a present but failing Docker endpoint
-is not treated as absence. Only full env bootstrap followed by an unchanged
-identity marks the record `ready`; failure writes one closed recovery status.
+Create/adopt admission rejects an occupied path, branch, or six-character
+identity collision before allocation. The shared allocator holds one blocking
+Git-family lock, refuses any existing target path (empty or not), records the
+allocation atomically, and runs adapter cleanup before removal. CIU then
+discovers every committed root, acquires per-root locks in stable offset order,
+and prepares each root's generated facts and runtime names. A partial
+preparation remains attributable and is reported as recovery-required; no
+missing or malformed generated-facts file is silently treated as a fresh
+identity.
 
 Environment generation and clean run as subprocesses at the exact target CIU
-root (which may be nested below the Git worktree root).
-In-process would violate S1.1 (`--define-root` must agree with `REPO_ROOT`,
-which describes the PRIMARY checkout) and, for generation, would derive the new
-instance's identity from the old instance's environment. The worktree's
-identity record (`[ciu.instance.generated]` since CIU-75, `ciu.env` before it)
-is read by explicit path, never via a search that consults `$REPO_ROOT` — that
-search would find the PRIMARY's file and operate on the wrong instance.
+root (which may be nested below the Git worktree root). `--root-folder` selects
+the containing Git family for the worktree operation; it is not a nested-root
+selector. Each root's identity record is read by exact path, never via a search
+that consults `$REPO_ROOT` or a sibling `ciu.env`. Runtime start may regenerate
+missing facts from physical path facts; inspection and read-only operations
+refuse until `ciu env generate` has produced the current schema.
 
 ### S16.1 — Shared-infra join for worktree instances (CIU-22)
 
-`worktree add NAME --shared-infra REF --shared-infra-services S1[,S2]
---shared-infra-ref-projects R1[,R2] --profile P1[,P2]` joins only the new
+`worktree create NAME --shared-infra REF --shared-infra-services S1[,S2]
+--shared-infra-ref-projects R1[,R2]` joins only the new
 instance's declared DIVERGING-tier services onto an EXISTING reference
 worktree's shared-infra network, instead of standing up a second copy of
 heavy, rarely-diverging infrastructure (identity, secrets, observability,
 reverse-proxy). `REF` is resolved by the same basename-or-absolute-path
-grammar `find_worktree` already uses. The three shared-infra flags and a
-non-empty `--profile` are an ALL-OR-NOTHING group — no mode may infer a
-tier from a compose file, and a partial group is an add-time refusal before
-any side effect. The OPTIONAL fourth flag `--shared-infra-ref-services`
+grammar `find_worktree` already uses. The three shared-infra flags are an
+ALL-OR-NOTHING group — no mode may infer a tier from a compose file, and a
+partial group is a create-time refusal before any side effect. The OPTIONAL
+fourth flag `--shared-infra-ref-services`
 (S16.1a) joins that same group: optional, but never standalone.
 
-**Validation happens at `add` time; joining happens at `ciu up` time.** `add`
-never deploys (S16's existing rule, unchanged): it resolves REF, reads its
+**Validation happens at `create` time; joining happens at `ciu up` time.**
+`create` never deploys (S16's existing rule, unchanged): it resolves REF, reads its
 explicit `[ciu.instance.generated].network`, and proves EVERY declared
 reference Compose project (`--shared-infra-ref-projects`) has a running
 container on that network — AND-combined, never OR, and scoped to both the
@@ -4221,7 +4162,7 @@ create the checkout and record the resolved intent under
 `[ciu.instance.shared_infra]` in the new worktree's OWN
 `ciu.global.instance.toml.j2`. The actual `docker network connect` calls happen
 later, in the new worktree's own process, after `docker compose up`
-succeeds — never during `add`, and never before Compose has brought this
+succeeds — never during `create`, and never before Compose has brought this
 instance's own stack up on its own network.
 
 **The new instance keeps its own `DOCKER_NETWORK_INTERNAL` throughout.**
@@ -4233,10 +4174,10 @@ never every container in the project, and never a reference-tier container.
 
 **The post-up join re-validates everything before any side effect.** `ciu
 up` re-resolves the recorded REF against the current `git worktree list`
-(catches removal since `add`), re-reads its `[ciu.instance.generated].network`, and refuses if its
+(catches removal since `create`), re-reads its `[ciu.instance.generated].network`, and refuses if its
 network changed or a declared reference project now equals the joining
 instance's own compose project. It re-runs the same AND-combined liveness
-check `add` used (catches a reference stopped between verbs), then requires
+check `create` used (catches a reference stopped between verbs), then requires
 a RUNNING container for every declared service in THIS compose project
 (matched by `com.docker.compose.project`/`com.docker.compose.service`
 labels) before touching the reference network at all.
@@ -4310,7 +4251,7 @@ existing all-or-nothing group, and omitting it reproduces the pre-CIU-52
 behavior exactly — byte-identical overlay text and not one additional Docker
 call at either verb.
 
-**The container name is DERIVED, then AUTHENTICATED, at `add` time — once.**
+**The container name is DERIVED, then AUTHENTICATED, at `create` time — once.**
 CIU renders the REFERENCE's own global config chain read-only
 (`write_rendered=False`, so nothing is ever written into a checkout CIU does
 not own) and under the REFERENCE's own environment (`environ=<ref env>` — ambient minus
@@ -4368,9 +4309,10 @@ own CIU configuration root's global table:
 max_concurrent_instances = 3
 ```
 
-"Primary Git worktree" (`worktree.primary_worktree_root`, the entry
-`git worktree list` marks primary) and "this process's own CIU configuration
-root" (`REPO_ROOT`, resolved by `dev.py:resolve_repo_root`'s CIU-marker walk)
+"Primary Git worktree" (`worktree.primary_worktree_root`, the primary entry
+reported by `libraries/worktree`'s NUL-safe Git inventory) and "this process's
+own CIU configuration root" (`REPO_ROOT`, resolved by
+`dev.py:resolve_repo_root`'s CIU-marker walk)
 are NOT the same path in a monorepo — the CIU marker can sit below the git
 top-level (this project's own `ciu/` under the `vbpub` git root is exactly
 this shape). `worktree.primary_ciu_root(repo_root)` derives the offset once —
@@ -4415,7 +4357,9 @@ moment it tries to enumerate worktrees for a cap it cannot actually honour,
 rather than silently treating a real ambient request as "no cap".
 
 **The deployment classifier.** Candidates are exclusively the entries in
-`git worktree list --porcelain`; the primary is always included. A candidate
+`worktree.list_git_worktrees()`; its parser consumes Git's
+`--porcelain -z` inventory and marks the primary without probing `.git` paths.
+The primary is always included. A candidate
 is *registered* only when its own
 `<git-worktree>/<ciu-root-offset>/ciu.instance.generated.toml` carries a
 `[ciu.instance.generated]` table that parses and supplies a distinct,
@@ -4492,11 +4436,11 @@ becomes visible.
 ### S16.4 — Structured JSON documents (D-009)
 
 `ciu worktree inspect LOGICAL --json`, `ciu worktree list --json`, the
-lifecycle verbs (`create`/`ensure`/`adopt`/`add`) with `--json`,
+lifecycle verbs (`create`/`ensure`/`adopt`) with `--json`,
 `ciu worktree lease --json` (S16.9) and `ciu worktree rm --json` each emit
 **exactly one JSON document on stdout** (`schema_version: 1`); diagnostics go
 to stderr. The `operation` vocabulary is closed (`create | ensure | adopt |
-add | inspect | lease | list | remove`) and the `status` vocabulary is closed
+inspect | lease | list | remove`) and the `status` vocabulary is closed
 (`allocating | ready | recovery-required | removed`); a `recovery-required`
 instance additionally carries a closed `recovery_status`
 (`checkout-incomplete | env-generation-failed | runtime-collision`). The
@@ -4601,7 +4545,7 @@ CIU-25's grounded-staleness demand, delivered for the GIT layer: a crashed
 dispatcher or forgotten teardown most often leaves a fully-merged branch and
 its checkout behind, and nothing grounded said so. `ciu worktree branches
 [--base REF] [-y] [--json]` surveys every LOCAL branch against *base*
-(default `main` — the same policy default `worktree add --base` ships).
+(default `main` — the same policy default `worktree create --base` ships).
 *base* MUST name a LOCAL BRANCH — a SHA or remote-tracking ref refuses
 `[S16.8]`: classification and the destructive prune reason about branch
 NAMES, and a SHA anchor once let the anchor branch itself classify prunable
@@ -4703,8 +4647,12 @@ are attributed. **It defines no destruction of anything.**
 
 #### The `lease` field — record schema v2
 
-The worktree-instance record (S16, `ciu.worktree-instance.json`) gains ONE
-optional field, `lease`, and with it a schema version 2:
+The CIU adapter worktree-instance record (S16, `ciu.worktree-instance.json`)
+gains ONE optional field, `lease`, and with it a schema version 2. This is the
+compatibility-facing CIU view; the neutral family record at
+`<git-common-dir>/.workspace-instances/<workspace-id>.json` is the generic
+lifecycle owner and carries the same lease for shared cleanup and CMRU
+interoperability:
 
 ```json
 "lease": {
@@ -4732,8 +4680,8 @@ expiry is ambiguous by up to a day is worse than no lease at all once a
 destructive verb reads it. `holder` reuses the identity CIU already has: the
 `instance_id` from the workspace's own `[ciu.instance.generated]` table
 (S3.1c; `ciu.env`'s `INSTANCE_ID` before CIU-75) and the host name
-`ciu.env`'s `DEVCONTAINER_NAME` records — that second half is a MACHINE fact
-and still comes from the legacy export — no new identity mechanism.
+`DEVCONTAINER_NAME` from the workspace's `[ciu.instance.machine]` table,
+exported through `ciu.env` — no new identity mechanism.
 
 **v1 and v2 coexist permanently, and a READ never upgrades a record.** A
 schema-v1 record (no `lease` key at all) is read successfully and is
@@ -5202,14 +5150,20 @@ evidence-judgment command.
   judged commit. A consumer outside vbpub may instead supply an explicit
   command and hash/version pins, which run-gate verifies before every run.
   tester-unified deliberately does not bake an ambient Assay version.
-- **S18.2** *Lane contract.* `assay.toml` declares the `ciu` lane: the full
-  suite under pytest-cov with a 100% whole-source line AND branch fail-under
-  (`run-ciu-tests.py`) as the lane command, inside Assay's isolated snapshot
+- **S18.2** *Lane contract.* `assay.toml` declares the `ciu` lane with the
+  complete `R0`, `R1`, `R2`, and `R3` ladder: the full suite under pytest-cov
+  with a 100% whole-source line AND branch floor (`run-ciu-tests.py`) as the
+  lane command, inside Assay's isolated snapshot
   (`snapshot_selection = "repository-minus-unsafe-symlinks"`, declaring the
   monorepo's three absolute-target security-fixture symlinks verbatim). The
-  lane also declares R1: Assay judges the changed-line floor on
-  `base..HEAD` (`fail_under = 100.0`, `require_branch = true`,
-  `allow_excluded = false`) from the lane's coverage artifact. A new unsafe
+  full suite runs with `--maxfail=1` (a passing run still exercises every
+  test; a failing mutation candidate stops at its first test failure). The
+  lane declares R1: Assay judges the changed-line floor on `base..HEAD`
+  (`fail_under = 100.0`, `require_branch = true`, `allow_excluded = false`)
+  from the lane's coverage artifact, R2: serial native Python mutation with
+  active liveness monitoring, the declared operator set, and per-candidate
+  budget, and R3: an import-break canary against the declared CIU source
+  target. A new unsafe
   symlink anywhere in the repository reds the lane until its owner declares
   or untracks it (fail-closed).
 - **S18.3** *Cgroup (fail-closed).* The gate resolves the container slice

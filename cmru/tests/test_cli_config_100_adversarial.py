@@ -22,6 +22,9 @@ owner_type = "org"
 host = "github"
 registry = ["{registry}"]
 
+[runtime]
+kind = "none"
+
 [project]
 id = "{name}"
 description = "A test project"
@@ -100,7 +103,7 @@ def _write_project(tmp_path: Path, name: str = "demo", *, centralized: bool = Fa
 
 def _centralize(document: str) -> str:
     project = document.split("[project]\n", 1)[1]
-    return "schema_version = 1\n\n[project]\n" + project
+    return "schema_version = 1\n\n[runtime]\nkind = \"none\"\n\n[project]\n" + project
 
 
 def test_duration_and_command_boundaries_have_distinct_results(tmp_path):
@@ -145,6 +148,7 @@ def test_project_config_loads_effective_contract_and_environment(tmp_path, monke
 def test_environment_token_is_invocation_authority_over_secret_files(tmp_path, monkeypatch):
     path = _write_project(tmp_path)
     (tmp_path / "cmru.secret.toml").write_text('[github]\ntoken = "file-token"\n', encoding="utf-8")
+    monkeypatch.delenv("GITHUB_PUSH_PAT", raising=False)
     monkeypatch.setenv("GITHUB_TOKEN", "environment-token")
     forge = config.load_forge_config(path)
     assert forge.github.token == "environment-token"

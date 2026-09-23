@@ -27,6 +27,9 @@ owner_type = "user"
 [targets]
 host = "github"
 registry = []
+
+[runtime]
+kind = "none"
 """
 
 

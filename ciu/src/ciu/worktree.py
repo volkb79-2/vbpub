@@ -1,10 +1,11 @@
-"""S16 — per-worktree stack instances (`ciu worktree add|rm|list`).
+"""S16 — per-worktree stack instances (`ciu worktree create|rm|list`).
 
 WHY THIS IS CIU'S JOB
 --------------------
 A git worktree of a CIU repo is already a distinct CIU instance: ``INSTANCE_ID``
-is a hash of the PHYSICAL repo path (S2), so a second checkout gets its own
-network, container prefix and volumes automatically. Everything needed to stand
+is a six-character lower-case base-36 identity of the canonical PHYSICAL repo
+path (S2), so a second checkout gets its own network, container prefix and
+volumes automatically. Everything needed to stand
 one up is therefore already CIU's data — instance identity, network naming,
 profile narrowing (S7.5), the render-input layer. What was missing was a verb
 that COMPOSES them, so consumers wrote it out as prose instead: a five-step
@@ -40,7 +41,7 @@ import os
 import re
 import subprocess
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,7 +49,7 @@ from typing import Any
 
 from . import config_model
 from . import procutil
-from .config_constants import GLOBAL_CONFIG_INSTANCE_OVERRIDES
+from .config_constants import GLOBAL_CONFIG_DEFAULTS, GLOBAL_CONFIG_INSTANCE_OVERRIDES
 from .paths import to_physical_path
 # CIU-85: the identity half of `_CIU_IDENTITY_ENV_KEYS` (below) is DERIVED
 # from this, the same canonical fact->env-name table `workspace_env.py`'s
@@ -67,6 +68,106 @@ WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
 WORKTREE_INSTANCE_SCHEMA_VERSION = 2
 WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
 WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2})
+
+
+def _shared_worktree():
+    """Load the canonical internal workspace library in source/wheel mode."""
+    try:
+        import worktree
+        return worktree
+    except ModuleNotFoundError:
+        import sys
+        library_src = Path(__file__).resolve().parents[3] / "libraries" / "worktree" / "src"
+        if not library_src.is_dir():
+            raise
+        sys.path.insert(0, str(library_src))
+        import worktree
+        return worktree
+
+
+def _shared_record_for_checkout(path: Path):
+    """Return the neutral record owning *path*, if this is a new allocation.
+
+    CIU's root/runtime record remains product-owned, but the shared record is
+    the authoritative lifecycle and lease record.  The lookup is deliberately
+    by the Git-family context and exact checkout path; it never guesses from a
+    logical name or from an ambient root.
+    """
+    shared = _shared_worktree()
+    try:
+        top, common, _branch, _head = shared.discover_git_context(Path(path))
+    except shared.WorkspaceError as exc:
+        # A legacy/unit-test CIU record may exist outside Git and therefore has
+        # no neutral record to mirror.  Real shared allocations always have a
+        # discoverable Git family; preserve that adapter compatibility without
+        # swallowing errors from an actual shared record lookup.
+        if exc.category == "git-error":
+            return None
+        raise
+    return shared.find_workspace(common, top.resolve())
+
+
+def _physical_workspace_target(repo_root: Path, target: Path) -> Path:
+    """Translate one logical checkout path into the daemon's path namespace."""
+
+    shared = _shared_worktree()
+    from .workspace_env import _detect_physical_repo_root
+
+    primary = primary_worktree_root(repo_root).resolve()
+    physical_primary = _detect_physical_repo_root(primary)
+    return shared.physical_path(
+        target, logical_root=primary, physical_root=physical_primary
+    )
+
+
+def _ensure_shared_record(
+    repo_root: Path,
+    record: "WorktreeInstanceRecord",
+) -> object | None:
+    """Adopt a pre-library CIU record into the neutral lifecycle once.
+
+    CIU's root record remains the compatibility-facing product record, but a
+    checkout must also have the neutral record before a lifecycle operation can
+    claim that the shared library owns it.  Older CIU records are migrated on
+    the first ensure/remove-adjacent operation; the checkout is never reset or
+    otherwise changed by this bridge.
+    """
+
+    shared = _shared_worktree()
+    existing = _shared_record_for_checkout(record.git_worktree_path)
+    if existing is not None:
+        return existing
+    try:
+        return shared.adopt_workspace(
+            primary_worktree_root(repo_root),
+            record.git_worktree_path,
+            purpose="ciu",
+            physical_target=_physical_workspace_target(
+                repo_root, record.git_worktree_path
+            ),
+            labels={"ciu.logical_name": record.logical_name},
+            metadata={
+                "ciu_root_offset": str(record.ciu_root_offset),
+                "legacy_record": True,
+            },
+        )
+    except shared.WorkspaceError as exc:
+        raise WorktreeError(
+            f"[S16] could not adopt CIU checkout into shared workspace lifecycle: {exc}"
+        ) from exc
+
+
+def _sync_shared_lease(ciu_root: Path, lease) -> None:
+    """Mirror the CIU adapter lease into the neutral ownership record."""
+    try:
+        shared = _shared_worktree()
+        record = _shared_record_for_checkout(ciu_root)
+        if record is not None:
+            shared.write_record(replace(record, lease=lease))
+    except Exception as exc:
+        raise WorktreeError(
+            f"[S16.9] could not update shared workspace lease for {ciu_root}: {exc}"
+        ) from exc
 #: CIU-106: the only shape `fork_point_sha` may take when present.
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 WORKTREE_LEASE_MODES = frozenset({"held", "perpetual"})
@@ -82,62 +183,25 @@ WORKTREE_RECOVERY_STATUSES = frozenset(
 _ALLOCATION_LOCK_NAME = "ciu-worktree-allocation.lock"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
-class WorktreeError(RuntimeError):
-    """A worktree operation failed (configuration/environment; exit 2)."""
+# Generic lifecycle failures come from the neutral library.  CIU adds product
+# context to their messages but must not maintain a second exception taxonomy.
+WorktreeError = _shared_worktree().WorkspaceError
 
 
 @dataclass(frozen=True)
 class WorktreeInfo:
-    """One entry from ``git worktree list --porcelain``."""
+    """CIU display record adapted from the neutral Git inventory."""
 
     path: Path
     branch: str
     head: str
-
-    @property
-    def is_primary(self) -> bool:
-        """True for the main checkout (never a candidate for `rm`)."""
-        return not (self.path / ".git").is_file()
+    is_primary: bool
 
 
-@dataclass(frozen=True)
-class WorktreeLease:
-    """S16.9 — one EXPLICIT ownership lease on a managed worktree instance.
-
-    CIU-25's whole point: staleness is never inferred from age, basename or a
-    missing process. It is DECLARED, by this record, or it is not known. The
-    two modes are the closed vocabulary :data:`WORKTREE_LEASE_MODES`:
-
-    ``held``
-        a bounded claim — ``expires_at_utc`` is REQUIRED and is the only fact
-        a future reap may treat as "the operator's claim has lapsed".
-    ``perpetual``
-        an explicit, unbounded claim — ``expires_at_utc`` is FORBIDDEN (must
-        be ``null``). A perpetual lease can never lapse; it is the operator
-        saying "this instance is long-lived on purpose", which the backlog
-        entry names as the exact case an age heuristic gets wrong.
-
-    Every timestamp is ISO-8601 with an EXPLICIT UTC offset, written in
-    :func:`_utc_stamp`'s ``...Z`` form (the same form ``created_at_utc``
-    already uses). A naive, offset-less timestamp is a refusal, never a
-    lenient local-time parse — a lease whose expiry is ambiguous by up to a
-    day is worse than no lease at all when a destructive verb reads it.
-    """
-
-    holder: str
-    acquired_at_utc: str
-    renewed_at_utc: str
-    expires_at_utc: str | None
-    mode: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "holder": self.holder,
-            "acquired_at_utc": self.acquired_at_utc,
-            "renewed_at_utc": self.renewed_at_utc,
-            "expires_at_utc": self.expires_at_utc,
-            "mode": self.mode,
-        }
+# Lease parsing and validation are supplied by the neutral library.  The alias
+# preserves CIU's serialized record spelling and lets existing adapter code
+# remain product-focused.
+WorktreeLease = _shared_worktree().Lease
 
 
 @dataclass(frozen=True)
@@ -563,6 +627,10 @@ def acquire_own_lease(
         record, ttl_hours=ttl_hours, holder=lease_holder(instance_id), now=now
     )
     _write_instance_record(updated)
+    # `ciu up` reaches this adapter entry point directly, rather than going
+    # through `apply_lease`. Keep the neutral lifecycle record's ownership
+    # claim in lockstep or the shared remover could miss an active CIU lease.
+    _sync_shared_lease(ciu_root, updated.lease)
     return updated
 
 
@@ -582,6 +650,7 @@ def release_own_lease(ciu_root: Path) -> WorktreeInstanceRecord | None:
         return record
     updated = release_lease(record)
     _write_instance_record(updated)
+    _sync_shared_lease(ciu_root, None)
     return updated
 
 
@@ -607,28 +676,24 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 
 def list_worktrees(repo_root: Path) -> list[WorktreeInfo]:
-    """Every registered worktree, primary first (git's own order)."""
-    res = _git(["worktree", "list", "--porcelain"], repo_root)
-    if res.returncode != 0:
+    """Adapt the neutral, NUL-safe Git inventory to CIU's display record."""
+    try:
+        entries = _shared_worktree().list_git_worktrees(repo_root)
+    except WorktreeError as exc:
         raise WorktreeError(
-            f"[S16] `git worktree list` failed in {repo_root}: "
-            f"{(res.stderr or res.stdout).strip()}"
+            f"[S16] could not list Git worktrees for {repo_root}: {exc}"
+        ) from exc
+    return [
+        WorktreeInfo(
+            path=entry.path,
+            branch=entry.branch or (
+                "(detached)" if entry.is_detached else "(bare)" if entry.is_bare else "(unknown)"
+            ),
+            head=(entry.head or "")[:8],
+            is_primary=entry.is_primary,
         )
-    out: list[WorktreeInfo] = []
-    path = head = branch = ""
-    for line in res.stdout.splitlines() + [""]:
-        if line.startswith("worktree "):
-            path = line[len("worktree "):]
-        elif line.startswith("HEAD "):
-            head = line[len("HEAD "):][:8]
-        elif line.startswith("branch "):
-            branch = line[len("branch "):].removeprefix("refs/heads/")
-        elif line.startswith("detached"):
-            branch = "(detached)"
-        elif not line and path:
-            out.append(WorktreeInfo(Path(path), branch or "(unknown)", head))
-            path = head = branch = ""
-    return out
+        for entry in entries
+    ]
 
 
 def find_worktree(repo_root: Path, name: str) -> WorktreeInfo | None:
@@ -670,7 +735,7 @@ class SharedInfraRefService:
 class SharedInfraIntent:
     """S16.1/CIU-22 — a worktree's recorded intent to join a reference
     instance's shared-infra network, resolved and validated once at
-    ``worktree add --shared-infra`` time and persisted verbatim into this
+    ``worktree create --shared-infra`` time and persisted verbatim into this
     worktree's own global instance overlay (see
     :func:`parse_shared_infra_config`,
     :func:`connect_shared_infra_after_up`).
@@ -908,7 +973,7 @@ def _worktree_overlay_text(
             lines.extend([
                 "",
                 "# S16.1/CIU-52 — CIU-resolved addressing for the reference instance's shared",
-                "# services. Do not hand-edit; re-run `ciu worktree add --shared-infra ...`.",
+                "# services. Do not hand-edit; re-run `ciu worktree create --shared-infra ...`.",
             ])
             for entry in shared_infra.ref_services:
                 lines.extend([
@@ -1075,7 +1140,7 @@ def _authenticate_ref_services(
         )
         if recorded:
             message += (
-                " Restore it, re-run `ciu worktree add --shared-infra` to "
+                " Restore it, re-run `ciu worktree create --shared-infra` to "
                 "update the recorded reference, or `ciu down` this instance."
             )
         raise WorktreeError(message)
@@ -1175,7 +1240,7 @@ def _preflight_shared_infra_for_add(
     shared_infra_ref_projects: str,
     shared_infra_ref_services: str | None = None,
 ) -> SharedInfraIntent:
-    """S16.1 — resolve and validate `worktree add --shared-infra` input
+    """S16.1 — resolve and validate `worktree create --shared-infra` input
     BEFORE any side effect (no git worktree, no checkout). Read-only Docker
     checks only; see the module's O1 contract."""
     from .workspace_env import (
@@ -1293,7 +1358,7 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
     """Run ``ciu clean`` INSIDE *worktree*, under that worktree's own identity.
 
     A subprocess, not an in-process call, and deliberately so. S1.1 requires
-    ``--define-root`` to agree with ``REPO_ROOT``; this process's REPO_ROOT
+    ``--root-folder`` to agree with ``REPO_ROOT``; this process's REPO_ROOT
     normally points at the PRIMARY checkout, so an in-process clean of a
     worktree would either abort on that guard or — worse, if the guard were
     bypassed — clean the wrong instance. Handing the child the worktree's own
@@ -1448,7 +1513,7 @@ CAPABILITIES_SCHEMA_VERSION = 1
 # recovery-required instance additionally carries a closed recovery_status
 # (WORKTREE_RECOVERY_STATUSES).
 WORKTREE_JSON_OPERATIONS = frozenset({
-    "add", "adopt", "create", "ensure", "inspect", "lease", "list", "remove",
+    "adopt", "create", "ensure", "inspect", "lease", "list", "remove",
 })
 WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 
@@ -1668,6 +1733,7 @@ def apply_lease(
             )
         )
     _write_instance_record(updated)
+    _sync_shared_lease(updated.ciu_root, updated.lease)
     return updated
 
 
@@ -3526,6 +3592,15 @@ def _finish_allocation(
         if _FULL_SHA_RE.fullmatch(candidate):
             record = replace(record, fork_point_sha=candidate)
 
+    # A generic Git worktree is valid even when the selected family contains no
+    # CIU root marker.  Worktree creation must report that there are no CIU
+    # roots to prepare; it must not reinterpret the Git top level as a root or
+    # fail before `discover_committed_roots` can inspect nested markers.
+    if not (record.ciu_root / GLOBAL_CONFIG_DEFAULTS).is_file():
+        ready = replace(record, state="ready", recovery_status=None)
+        _write_instance_record(ready)
+        return ready
+
     rc = _generate_env_in(record.ciu_root, identity_only=True)
     if rc != 0:
         _mark_recovery(record, "env-generation-failed")
@@ -3602,7 +3677,7 @@ def create(
     test container bind-mounts the repo can then see it for free; a worktree in
     ``/tmp`` is invisible to that container and its tests cannot be gated there.
 
-    Deploy is deliberately NOT performed: `add` prepares an instance, it does
+    Deploy is deliberately NOT performed: `create` prepares an instance, it does
     not decide that you want it running.
 
     With *shared_infra* (S16.1/CIU-22), joins this instance's declared
@@ -3612,9 +3687,9 @@ def create(
     basename-or-absolute-path grammar as :func:`find_worktree`);
     *shared_infra_services* and *shared_infra_ref_projects* are raw
     comma-separated lists (this function owns validation, not argparse). All
-    three, together with a non-empty *profile*, are an all-or-nothing group —
-    partial input is a loud :class:`WorktreeError`, never silent inference
-    from a compose file. The reference is fully validated (registered, its own
+    three are an all-or-nothing group — partial input is a loud
+    :class:`WorktreeError`, never silent inference from a compose file. The
+    reference is fully validated (registered, its own
     overlay-declared network, every declared reference project actually running on
     it) BEFORE any side effect; `create` records the resolved intent into the
     new worktree's own local config overlay but never joins anything itself — the actual
@@ -3648,11 +3723,11 @@ def create(
         or shared_infra_ref_projects is not None
         or shared_infra_ref_services is not None
     ):
-        if not (shared_infra and shared_infra_services and shared_infra_ref_projects and profile):
+        if not (shared_infra and shared_infra_services and shared_infra_ref_projects):
             raise WorktreeError(
                 "[S16.1] --shared-infra requires --shared-infra-services, "
-                "--shared-infra-ref-projects, and a non-empty --profile all "
-                "together; got a partial group. No mode may infer a tier from "
+                "and --shared-infra-ref-projects all together; got a partial "
+                "group. No mode may infer a tier from "
                 "a compose file."
             )
         shared_infra_intent = _preflight_shared_infra_for_add(
@@ -3711,15 +3786,26 @@ def create(
                 "[S16] generated branch and worktree directory basename must be identical"
             )
 
-        res = _git(
-            ["worktree", "add", "--no-checkout", "-b", candidate_branch, str(target), base],
-            repo_root,
-        )
-        if res.returncode != 0:
-            raise WorktreeError(
-                f"[S16] `git worktree add` failed: "
-                f"{(res.stderr or res.stdout).strip()}"
+        try:
+            # Git lifecycle and the family allocation record belong to the
+            # neutral library. CIU's record below remains the adapter-owned
+            # root/runtime state and is intentionally separate.
+            shared = _shared_worktree()
+            physical_target = _physical_workspace_target(repo_root, target)
+            shared_context = shared.create_workspace(
+                repo_root,
+                target,
+                branch=candidate_branch,
+                base=base,
+                purpose="ciu",
+                physical_target=physical_target,
+                labels={"ciu.logical_name": logical_name},
+                metadata={"ciu_root_offset": str(offset), "root_entries": []},
             )
+        except Exception as exc:
+            if isinstance(exc, WorktreeError):
+                raise
+            raise WorktreeError(f"[S16] shared workspace allocation failed: {exc}") from exc
 
         # CIU-106: `fork_point_sha` is deliberately NOT set here. The branch
         # tip is decided by `_finish_allocation`'s `reset --hard <base_ref>`,
@@ -3744,16 +3830,91 @@ def create(
         except WorktreeError:
             _mark_recovery(record, "checkout-incomplete")
             raise
-        return _finish_allocation(repo_root, record, checkout_required=True)
+        ready = _finish_allocation(repo_root, record, checkout_required=True)
+        # Worktree creation is a workspace operation: every committed CIU root
+        # in the selected Git tree is prepared with its own generated facts.
+        # The root selected by the legacy CIU record has already been prepared
+        # by _finish_allocation; the remaining roots are generated by exact
+        # root-relative translation and never by ignored overlays or ambient
+        # REPO_ROOT.
+        root_entries: list[dict[str, Any]] = []
+        try:
+            from . import workspace as workspace_adapter
+            from .workspace_env import generate_ciu_env, read_generated_facts
 
+            discovered_roots = workspace_adapter.discover_committed_roots(primary, base=base)
+            specs: list[tuple[Path, Path, object]] = []
+            physical_primary = shared_context.physical_worktree_path
+            for discovered in discovered_roots:
+                relative = discovered.relative_to(primary)
+                target_root = (target / relative).resolve()
+                if not (target_root / GLOBAL_CONFIG_DEFAULTS).is_file():
+                    raise WorktreeError(
+                        f"[S16] committed CIU root marker did not materialize at {target_root}"
+                    )
+                root_context = workspace_adapter.context_for_root(
+                    target_root, physical_git_root=physical_primary
+                )
+                specs.append((relative, target_root, root_context))
 
-def add(
-    repo_root: Path,
-    name: str,
-    **kwargs: Any,
-) -> Path:
-    """Backward-compatible human create spelling; returns the checkout path."""
-    return create(repo_root, name, **kwargs).git_worktree_path
+            workspace_adapter.assert_root_identity_distinct(
+                [root_context for _relative, _target_root, root_context in specs]
+            )
+
+            with ExitStack() as locks:
+                for _relative, _target_root, root_context in sorted(
+                    specs, key=lambda item: str(item[0])
+                ):
+                    locks.enter_context(workspace_adapter.root_lock(root_context))
+                for relative, target_root, root_context in specs:
+                    if target_root.resolve() != ready.ciu_root.resolve():
+                        generate_ciu_env(target_root, notice_stream=None)
+                    facts = read_generated_facts(target_root)
+                    root_entries.append({
+                        "offset": relative.as_posix() if relative != Path(".") else ".",
+                        "generated_facts_path": str(
+                            workspace_adapter._shared().canonical_path(
+                                target_root / "ciu.instance.generated.toml"
+                            )
+                        ),
+                        "root_instance_id": root_context.root_instance_id,
+                        "workspace_id": root_context.workspace_id,
+                        "network": facts.get("network", ""),
+                        "state": "ready",
+                    })
+
+            generic_record = _shared_worktree().read_record(shared_context.record_path)
+            _shared_worktree().write_record(
+                replace(
+                    generic_record,
+                    metadata={
+                        **dict(generic_record.metadata),
+                        "root_entries": root_entries,
+                    },
+                )
+            )
+        except Exception as exc:
+            if root_entries:
+                try:
+                    generic_record = _shared_worktree().read_record(shared_context.record_path)
+                    _shared_worktree().write_record(
+                        replace(
+                            generic_record,
+                            metadata={
+                                **dict(generic_record.metadata),
+                                "root_entries": root_entries,
+                            },
+                        )
+                    )
+                except Exception:
+                    pass
+            _mark_recovery(ready, "env-generation-failed")
+            if isinstance(exc, WorktreeError):
+                raise
+            raise WorktreeError(
+                f"[S16] multi-root preparation failed in {target}: {exc}"
+            ) from exc
+        return ready
 
 
 def ensure(
@@ -3807,6 +3968,7 @@ def ensure(
                         f"[S16] ensure mismatch for {field}: record has "
                         f"{actual!r}, caller requested {expected!r}"
                     )
+            _ensure_shared_record(repo_root, record)
             if record.state == "ready":
                 return record
             checkout_required = record.recovery_status in (None, "checkout-incomplete")
@@ -3837,9 +3999,11 @@ def adopt(
         or shared_infra_ref_projects is not None
         or shared_infra_ref_services is not None
     ):
-        if not (shared_infra and shared_infra_services and shared_infra_ref_projects and profile):
+        if not (shared_infra and shared_infra_services and shared_infra_ref_projects):
             raise WorktreeError(
-                "[S16.1] adopt shared-infra options and --profile are all-or-nothing"
+                "[S16.1] adopt shared-infra is an all-or-nothing group: requires "
+                "--shared-infra, "
+                "--shared-infra-services, and --shared-infra-ref-projects"
             )
         shared_infra_intent = _preflight_shared_infra_for_add(
             repo_root, shared_infra=shared_infra,
@@ -3870,6 +4034,7 @@ def adopt(
             base_ref=head.stdout.strip(), state="allocating",
         )
         _write_instance_record(record)
+        _ensure_shared_record(repo_root, record)
         if (record.ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists() and (
             profile or shared_infra_intent is not None
         ):
@@ -3955,13 +4120,33 @@ def remove(
     if rc == 0:
         release_own_lease(ciu_root)
 
-    res = _git(["worktree", "remove", str(wt.path)] + (["--force"] if force else []),
-               repo_root)
-    if res.returncode != 0:
-        raise WorktreeError(
-            f"[S16] volumes were cleaned, but `git worktree remove` failed: "
-            f"{(res.stderr or res.stdout).strip()}"
+    # New allocations have a neutral family record.  CIU has already completed
+    # its product cleanup above, so hand the final Git removal to the shared
+    # lifecycle owner; this preserves the generic cleanup-before-removal order
+    # and removes the shared record atomically with the checkout.
+    try:
+        shared = _shared_worktree()
+        _top, common, _branch, _head = shared.discover_git_context(wt.path)
+        shared_record = shared.find_workspace(common, wt.path.resolve())
+    except Exception as exc:
+        raise WorktreeError(f"[S16] could not inspect shared workspace ownership: {exc}") from exc
+    if shared_record is not None:
+        try:
+            shared.remove_workspace(shared_record)
+            return wt.path
+        except Exception as exc:
+            raise WorktreeError(f"[S16] shared workspace removal failed: {exc}") from exc
+
+    try:
+        shared.remove_unrecorded_workspace(
+            repo_root,
+            wt.path,
+            expected_branch=wt.branch,
+            purpose="ciu-legacy",
+            force=force,
         )
+    except Exception as exc:
+        raise WorktreeError(f"[S16] shared legacy workspace removal failed: {exc}") from exc
     return wt.path
 
 
@@ -4086,7 +4271,7 @@ def connect_shared_infra_after_up(
         raise WorktreeError(
             f"[S16.1] shared-infra reference {intent.ref_path} is no longer a "
             f"registered worktree under {repo_root}; it may have been removed. "
-            "Restore it, re-run `ciu worktree add --shared-infra` to update the "
+            "Restore it, re-run `ciu worktree create --shared-infra` to update the "
             "recorded reference, or `ciu down` this instance."
         )
 
@@ -4123,7 +4308,7 @@ def connect_shared_infra_after_up(
 
     # S16.1/CIU-52: every recorded reference-service address is re-proven
     # against live Docker state HERE, still inside the every-precondition-
-    # before-any-side-effect region — a container name resolved at `add` time
+    # before-any-side-effect region — a container name resolved at `create` time
     # is a write-once record, and the reference may have been re-created under
     # a new identity since. A no-op (and zero Docker calls) when none is
     # declared. Nothing has been connected yet, so a refusal here has nothing
@@ -4288,18 +4473,16 @@ def git_toplevel(repo_root: Path) -> Path:
     This is the GIT root, which may sit ABOVE this process's own CIU root in
     a monorepo (see :func:`primary_ciu_root`) — never substituted for it.
     """
-    res = _git(["rev-parse", "--show-toplevel"], repo_root)
-    if res.returncode != 0:
+    try:
+        top, _common = _shared_worktree().discover_git_root(repo_root)
+    except WorktreeError as exc:
         raise WorktreeError(
-            f"[S16.3] `git rev-parse --show-toplevel` failed in {repo_root}: "
-            f"{(res.stderr or res.stdout).strip()}"
-        )
-    out = (res.stdout or "").strip()
-    top = Path(out)
-    if not out or not top.is_absolute() or not top.is_dir():
+            f"[S16.3] `git rev-parse --show-toplevel` failed in {repo_root}: {exc}"
+        ) from exc
+    if not top.is_absolute() or not top.is_dir():
         raise WorktreeError(
             f"[S16.3] `git rev-parse --show-toplevel` in {repo_root} did not "
-            f"return one absolute, existing directory: {out!r}"
+            f"return one absolute, existing directory: {str(top)!r}"
         )
     return top
 
@@ -4410,7 +4593,9 @@ def _primary_worktree_table(repo_root: Path) -> Any:
     checkout's configuration is authoritative.
     """
     repo_root = Path(repo_root).resolve()
-    if _git(["rev-parse", "--show-toplevel"], repo_root).returncode != 0:
+    try:
+        _shared_worktree().discover_git_root(repo_root)
+    except WorktreeError:
         return None
     root = primary_ciu_root(repo_root)
     try:
@@ -4622,16 +4807,12 @@ def _git_common_dir(repo_root: Path) -> Path:
     """The ``.git`` directory shared by every linked worktree of *repo_root*'s
     family (S16.3) — the S16.3 lock lives here so it is visible to, and
     shared by, every sibling worktree regardless of which one takes it."""
-    res = _git(["rev-parse", "--git-common-dir"], repo_root)
-    if res.returncode != 0:
+    try:
+        _top, common = _shared_worktree().discover_git_root(repo_root)
+    except WorktreeError as exc:
         raise WorktreeError(
-            f"[S16.3] `git rev-parse --git-common-dir` failed in {repo_root}: "
-            f"{(res.stderr or res.stdout).strip()}"
-        )
-    out = (res.stdout or "").strip()
-    common = Path(out)
-    if not common.is_absolute():
-        common = (Path(repo_root) / common).resolve()
+            f"[S16.3] `git rev-parse --git-common-dir` failed in {repo_root}: {exc}"
+        ) from exc
     return common
 
 

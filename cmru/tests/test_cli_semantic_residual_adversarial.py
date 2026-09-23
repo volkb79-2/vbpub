@@ -20,6 +20,12 @@ def test_build_refuses_uncommitted_snapshot_before_fetch_or_workspace(monkeypatc
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", build_step="build")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {"demo": ["demo/input.py"]})
@@ -33,15 +39,17 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", build_step="build")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/build/abc", "a" * 40)
     calls = []
+    overlays = []
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: "b" * 40)
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: overlays.append(args[-1]))
     monkeypatch.setattr(cli.transaction, "run_child", lambda w, args, **kwargs: calls.append((w, args, kwargs)) or 0)
     retained = [tmp_path / "demo" / "artifacts" / "build-1"]
     monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
@@ -50,7 +58,8 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
         cli.main(["build", "--config", str(tmp_path / "cmru.toml"), "demo"])
     assert exc.value.code == 0
     assert calls[0][1] == ["demo", "--config", "cmru.toml"]
-    assert calls[0][2] == {"verb": "build"}
+    assert calls[0][2] == {"verb": "build", "project_names": ["demo"]}
+    assert overlays == [[tmp_path / "demo" / "cmru.toml"]]
     assert calls[-1] == ("removed", workspace)
     assert "--delete-build-output build-1 --yes" in capsys.readouterr().out
 
@@ -67,14 +76,17 @@ def test_isolated_build_requires_declared_artifact_step_and_orders_prepare_gate_
     assert seen == [["prepare", "run-tests", "build"]]
 
 
-def test_worktrees_dispatch_reports_empty_and_inaccessible_records(monkeypatch, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="/repo\n"))
+def test_worktrees_dispatch_reports_empty_and_prunable_records(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_current_git_root", lambda: Path("/repo"))
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _: [])
     cli.main(["worktrees"])
     assert "No retained CMRU" in capsys.readouterr().out
 
-    workspace = transaction.ReleaseWorkspace(Path("/repo"), Path("/missing"), "cmru/release/x", "a" * 40)
+    workspace = transaction.ReleaseWorkspace(
+        Path("/repo"), Path("/missing"), "cmru/release/x", "a" * 40,
+        is_prunable=True,
+    )
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _: [workspace])
     cli.main(["worktrees"])
     output = capsys.readouterr().out
-    assert "action: unavailable here" in output
+    assert "action: withheld" in output

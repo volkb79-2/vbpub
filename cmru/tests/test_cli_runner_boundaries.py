@@ -125,7 +125,9 @@ def test_runner_dynamic_environment_rejects_empty_key(tmp_path, monkeypatch):
         runner.apply_env_command(["emit-env"], tmp_path)
 
 
-def test_runner_required_environment_names_all_missing_values():
+def test_runner_required_environment_names_all_missing_values(monkeypatch):
+    monkeypatch.delenv("A", raising=False)
+    monkeypatch.delenv("B", raising=False)
     with pytest.raises(RuntimeError, match="A, B"):
         runner.ensure_required_env(["A", "B"])
 
@@ -151,6 +153,7 @@ def test_runner_nonzero_command_preserves_log_and_raises(tmp_path):
 
 def test_runner_build_date_requires_a_commit_when_metadata_requested(tmp_path, monkeypatch):
     monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    monkeypatch.delenv("BUILD_DATE", raising=False)
     monkeypatch.setattr(runner, "apply_reproducible_env", lambda _root: None)
     with pytest.raises(RuntimeError, match="derive BUILD_DATE"):
         runner.compute_build_date({"build_metadata": {"date_env": "BUILD_DATE"}}, tmp_path)

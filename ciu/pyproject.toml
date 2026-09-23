@@ -44,7 +44,10 @@ schema = ["jsonschema>=4.18"]
 registry = ["pydantic>=2"]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "../libraries/worktree/src"]
+
+[tool.setuptools.package-dir]
+worktree = "../libraries/worktree/src/worktree"
 
 # S15.17 — the KSM shim SOURCE ships with CIU (built on demand into the
 # consumer's .ciu/ksm/, never checked in as a binary). Without this the wheel

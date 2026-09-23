@@ -18,6 +18,7 @@ def test_explicit_matching_define_root_resolves_to_canonical_path(
     """A matching explicit root is the canonical deployment workspace."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
+    (repo_root / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     monkeypatch.setenv("REPO_ROOT", str(repo_root))
 
     assert deploy.resolve_repo_root(repo_root / ".") == repo_root.resolve()
@@ -26,12 +27,13 @@ def test_explicit_matching_define_root_resolves_to_canonical_path(
 def test_root_resolution_requires_generated_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unset environment root explains how to generate the workspace env."""
+    """Without a committed root marker selection is indeterminate."""
     monkeypatch.delenv("REPO_ROOT", raising=False)
 
     with pytest.raises(WorkspaceEnvError) as exc_info:
         deploy.resolve_repo_root(None)
 
     message = str(exc_info.value)
-    assert "REPO_ROOT" in message
-    assert "ciu env generate" in message
+    assert "[no-ciu-root]" in message
+    assert "ciu.global.defaults.toml.j2" in message
+    assert "--root-folder" in message

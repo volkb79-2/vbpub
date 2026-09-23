@@ -8,7 +8,6 @@ and exposes the values as process environment variables.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shlex
@@ -89,6 +88,34 @@ GENERATED_FACTS_KEYS: tuple[str, ...] = (
     "repo_root",
     "public_fqdn",
 )
+GENERATED_FACTS_SCHEMA_VERSION = 2
+
+# Machine facts are generated into the same CIU-owned document as identity.
+# They are deliberately a separate table: templates and compatibility readers
+# can continue to consume the identity table while every internal process fact
+# still has one exact-path authority.  `ciu.env` is only the shell rendering
+# of these two tables.
+MACHINE_FACTS_TABLE = "ciu.instance.machine"
+MACHINE_FACTS_HEADER = f"[{MACHINE_FACTS_TABLE}]"
+MACHINE_FACTS_KEYS: tuple[str, ...] = (
+    "env_type", "is_devcontainer", "is_github_actions", "is_native",
+    "user_name", "user_uid", "user_gid", "container_uid", "container_gid",
+    "docker_uid", "docker_gid", "devcontainer_name", "host_mdt_tmp",
+    "public_ip", "public_tls_crt_pem", "public_tls_key_pem",
+    "python_executable", "pip_executable", "ciu_gov_read_iops",
+)
+MACHINE_FACT_ENV_KEYS: dict[str, str] = {
+    "env_type": "ENV_TYPE", "is_devcontainer": "IS_DEVCONTAINER",
+    "is_github_actions": "IS_GITHUB_ACTIONS", "is_native": "IS_NATIVE",
+    "user_name": "USER_NAME", "user_uid": "USER_UID", "user_gid": "USER_GID",
+    "container_uid": "CONTAINER_UID", "container_gid": "CONTAINER_GID",
+    "docker_uid": "DOCKER_UID", "docker_gid": "DOCKER_GID",
+    "devcontainer_name": "DEVCONTAINER_NAME", "host_mdt_tmp": "HOST_MDT_TMP",
+    "public_ip": "PUBLIC_IP", "public_tls_crt_pem": "PUBLIC_TLS_CRT_PEM",
+    "public_tls_key_pem": "PUBLIC_TLS_KEY_PEM",
+    "python_executable": "PYTHON_EXECUTABLE", "pip_executable": "PIP_EXECUTABLE",
+    "ciu_gov_read_iops": "CIU_GOV_READ_IOPS",
+}
 
 # S3.1c (CIU-75) — the ONE translation table between the generated record's
 # snake_case fact names (above) and the legacy SCREAMING_CASE `ciu.env` key
@@ -171,14 +198,18 @@ def resolve_env_root(start_dir: Path, define_root: Optional[Path], defaults_file
     """Resolve the workspace env root directory.
 
     Order:
-    1. Explicit --define-root
+    1. Explicit --root-folder
     2. Walk up from start_dir until defaults_filename is found
-    3. Fallback to start_dir
+    3. Refuse when no committed root marker exists
     """
     if define_root:
         root = define_root.resolve()
-        if not root.exists():
-            raise WorkspaceEnvError(f"Repository root does not exist: {root}")
+        marker = root / defaults_filename
+        if not marker.is_file():
+            raise WorkspaceEnvError(
+                f"[no-ciu-root] --root-folder {root} is not a CIU root: "
+                f"missing {defaults_filename}"
+            )
         return root
 
     current = start_dir.resolve()
@@ -189,22 +220,18 @@ def resolve_env_root(start_dir: Path, define_root: Optional[Path], defaults_file
             break
         current = current.parent
 
-    return start_dir.resolve()
+    raise WorkspaceEnvError(
+        f"[no-ciu-root] no CIU root above {start_dir.resolve()}; expected "
+        f"{defaults_filename}. Use --root-folder PATH for an explicit root."
+    )
 
 
 def find_workspace_env(start_dir: Path) -> Path:
     """Find ciu.env by walking up from start_dir.
 
-    Priority:
-    1. REPO_ROOT environment variable (if set)
-    2. Walk up directory tree from start_dir
+    The lookup is exact to the invocation's nearest ancestor.  Ambient
+    ``REPO_ROOT`` is an output for child processes, never a selector.
     """
-    repo_root = os.environ.get("REPO_ROOT")
-    if repo_root:
-        candidate = Path(repo_root).resolve() / ENV_FILE_NAME
-        if candidate.exists():
-            return candidate
-
     current = start_dir.resolve()
     while True:
         candidate = current / ENV_FILE_NAME
@@ -264,11 +291,10 @@ def load_workspace_env(start_dir: Path, override: bool = False) -> Dict[str, str
     **Not for identity, and not for CIU's own bootstrap (S3.1c).** Two reasons,
     both of which cost real bugs before CIU-75: it seeds the six identity keys
     from the LEGACY export, which since 7.7.0 is not where identity lives; and
-    it locates the file through :func:`find_workspace_env`, which honors an
-    ambient ``REPO_ROOT`` and can therefore load a DIFFERENT checkout's file
-    entirely. `bootstrap_workspace_env` uses :func:`_load_legacy_machine_env`
-    (exact path, machine facts only) plus :func:`seed_identity_env`. This
-    function remains for consumers of the legacy export itself.
+    it searches from the invocation directory rather than using the already
+    resolved CIU root. `bootstrap_workspace_env` uses the exact generated TOML
+    record for both identity and machine facts. This function remains only for
+    explicit consumers of the legacy export itself.
 
     Args:
         start_dir: Directory to begin searching for ciu.env
@@ -743,7 +769,12 @@ def _detect_host_mdt_tmp() -> str:
     return ""
 
 
-def _compute_network_name(physical_root: Path) -> Dict[str, str]:
+def _compute_network_name(
+    physical_root: Path,
+    *,
+    workspace_id: str | None = None,
+    root_instance_id: str | None = None,
+) -> Dict[str, str]:
     """Derive the identity tuple for THIS physical root (S2.7, CIU-41).
 
     Every value is derived from *physical_root* alone. Ambient environment
@@ -758,8 +789,19 @@ def _compute_network_name(physical_root: Path) -> Dict[str, str]:
     value is used and a warning names the ignored ambient value.
     """
     repo_name = physical_root.name.lower()
-    instance_id = hashlib.sha256(str(physical_root).encode("utf-8")).hexdigest()[:6]
-    network_name = f"{repo_name}-{instance_id}-network"
+    from . import workspace as workspace_adapter
+
+    if workspace_id is None or root_instance_id is None:
+        # Standalone/non-Git bootstrap remains deterministic, but the shared
+        # path identity is used even on this fallback so CIU and CMRU do not
+        # carry two digest alphabets.
+        workspace_id = workspace_adapter._shared().workspace_id_for_path(physical_root)
+        root_instance_id = workspace_id
+    instance_id = root_instance_id
+    identity_suffix = workspace_adapter.root_identity_suffix(
+        workspace_id, root_instance_id
+    )
+    network_name = f"{repo_name}-{identity_suffix}-network"
     derived = {
         "REPO_NAME": repo_name,
         "INSTANCE_ID": instance_id,
@@ -772,7 +814,7 @@ def _compute_network_name(physical_root: Path) -> Dict[str, str]:
         network_name,
         remedy=(
             "To reuse another instance's running infra, use "
-            "`ciu worktree add --shared-infra` (SPEC S16.1) instead of "
+            "`ciu worktree create --shared-infra` (SPEC S16.1) instead of "
             "inheriting its network name."
         ),
     )
@@ -1061,7 +1103,9 @@ def generated_facts_path(ciu_root: Path) -> Path:
     return Path(ciu_root) / INSTANCE_GENERATED_FACTS
 
 
-def render_generated_facts_block(facts: Mapping[str, str]) -> list[str]:
+def render_generated_facts_block(
+    facts: Mapping[str, str], machine_facts: Mapping[str, str] | None = None,
+) -> list[str]:
     """Render the whole ``ciu.instance.generated.toml`` body as TOML lines.
 
     Values are emitted with ``json.dumps`` exactly as
@@ -1078,12 +1122,58 @@ def render_generated_facts_block(facts: Mapping[str, str]) -> list[str]:
         raise WorkspaceEnvError(
             f"[S3.1b] generated identity facts incomplete: missing {missing}"
         )
+    unknown = sorted(set(facts) - set(GENERATED_FACTS_KEYS))
+    if unknown:
+        raise WorkspaceEnvError(
+            f"[S3.1b] generated identity facts contain unknown keys: {unknown}"
+        )
+    non_strings = [
+        key for key in GENERATED_FACTS_KEYS
+        if not isinstance(facts[key], str)
+    ]
+    if non_strings:
+        raise WorkspaceEnvError(
+            f"[S3.1b] generated identity facts must be strings: {non_strings}"
+        )
+    machine = dict(machine_facts or {})
+    if machine_facts is None:
+        # Low-level identity-only callers remain useful for migration and
+        # inspection tests. Production generation always supplies the complete
+        # machine table below.
+        return [
+            *_GENERATED_FACTS_BANNER, "", GENERATED_FACTS_HEADER,
+            f"schema_version = {GENERATED_FACTS_SCHEMA_VERSION}",
+            *(f"{key} = {json.dumps(facts[key])}" for key in GENERATED_FACTS_KEYS),
+        ]
+    missing_machine = [key for key in MACHINE_FACTS_KEYS if key not in machine]
+    unknown_machine = sorted(set(machine) - set(MACHINE_FACTS_KEYS))
+    if missing_machine:
+        raise WorkspaceEnvError(
+            f"[S3.1b] generated machine facts incomplete: missing {missing_machine}"
+        )
+    if unknown_machine:
+        raise WorkspaceEnvError(
+            f"[S3.1b] generated machine facts contain unknown keys: {unknown_machine}"
+        )
+    non_string_machine = [key for key in MACHINE_FACTS_KEYS if not isinstance(machine[key], str)]
+    if non_string_machine:
+        raise WorkspaceEnvError(
+            f"[S3.1b] generated machine facts must be strings: {non_string_machine}"
+        )
     lines = [*_GENERATED_FACTS_BANNER, "", GENERATED_FACTS_HEADER]
+    lines.append(f"schema_version = {GENERATED_FACTS_SCHEMA_VERSION}")
     lines.extend(f"{key} = {json.dumps(facts[key])}" for key in GENERATED_FACTS_KEYS)
+    lines.extend(["", MACHINE_FACTS_HEADER, f"schema_version = {GENERATED_FACTS_SCHEMA_VERSION}"])
+    lines.extend(f"{key} = {json.dumps(machine[key])}" for key in MACHINE_FACTS_KEYS)
     return lines
 
 
-def write_generated_facts(ciu_root: Path, facts: Mapping[str, str]) -> Path:
+def write_generated_facts(
+    ciu_root: Path,
+    facts: Mapping[str, str],
+    *,
+    machine_facts: Mapping[str, str] | None = None,
+) -> Path:
     """S3.1b — write *facts* to *ciu_root*'s ``ciu.instance.generated.toml``.
 
     A **wholesale** rewrite: the file is CIU's alone, so there is no
@@ -1108,12 +1198,12 @@ def write_generated_facts(ciu_root: Path, facts: Mapping[str, str]) -> Path:
     Returns the path written.
     """
     path = generated_facts_path(ciu_root)
-    body = "\n".join(render_generated_facts_block(facts)) + "\n"
-    _atomic_write_text(path, body)
+    body = "\n".join(render_generated_facts_block(facts, machine_facts)) + "\n"
+    _atomic_write_text(path, body, mode=0o600)
     return path
 
 
-def _atomic_write_text(path: Path, payload: str) -> None:
+def _atomic_write_text(path: Path, payload: str, *, mode: int | None = None) -> None:
     """Temp-file + fsync + ``os.replace`` (S16 durability), as
     ``worktree._write_worktree_overlay`` does.
 
@@ -1124,6 +1214,8 @@ def _atomic_write_text(path: Path, payload: str) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         with tmp.open("w", encoding="utf-8") as fh:
+            if mode is not None:
+                os.chmod(tmp, mode)
             fh.write(payload)
             fh.flush()
             os.fsync(fh.fileno())
@@ -1261,8 +1353,21 @@ def read_generated_facts(ciu_root: Path) -> dict[str, str]:
             f"[S3.1c] {path} {GENERATED_FACTS_HEADER} is "
             f"{type(table).__name__}, not a table"
         )
+    _require_generated_schema_version(path, GENERATED_FACTS_HEADER, table)
     facts: dict[str, str] = {}
+    missing = [key for key in GENERATED_FACTS_KEYS if key not in table]
+    if missing:
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} generated facts are incomplete: missing {missing}"
+        )
+    unknown = sorted(set(table) - {"schema_version", *GENERATED_FACTS_KEYS})
+    if unknown:
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} has unknown generated-facts keys: {unknown}"
+        )
     for key, value in table.items():
+        if key == "schema_version":
+            continue
         if not isinstance(value, str):
             raise WorkspaceEnvError(
                 f"[S3.1c] {path} {GENERATED_FACTS_HEADER}.{key} is "
@@ -1270,6 +1375,57 @@ def read_generated_facts(ciu_root: Path) -> dict[str, str]:
             )
         facts[key] = value
     return facts
+
+
+def read_generated_machine_facts(ciu_root: Path) -> dict[str, str]:
+    """Read the strict machine-facts table from the generated document.
+
+    This is the sole internal source for host/process facts.  The legacy
+    `ciu.env` file is intentionally not consulted, even when it exists.
+    """
+    path = generated_facts_path(ciu_root)
+    parsed = generated_facts_document(ciu_root)
+    table: object = parsed
+    for part in MACHINE_FACTS_TABLE.split("."):
+        if not isinstance(table, dict):
+            raise WorkspaceEnvError(f"[S3.1c] {path} has malformed {MACHINE_FACTS_HEADER}")
+        if part not in table:
+            return {}
+        table = table[part]
+    if not isinstance(table, dict):
+        raise WorkspaceEnvError(f"[S3.1c] {path} {MACHINE_FACTS_HEADER} is not a table")
+    _require_generated_schema_version(path, MACHINE_FACTS_HEADER, table)
+    missing = [key for key in MACHINE_FACTS_KEYS if key not in table]
+    unknown = sorted(set(table) - {"schema_version", *MACHINE_FACTS_KEYS})
+    if missing or unknown:
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} machine facts invalid: missing={missing}, unknown={unknown}"
+        )
+    result: dict[str, str] = {}
+    for key in MACHINE_FACTS_KEYS:
+        value = table[key]
+        if not isinstance(value, str):
+            raise WorkspaceEnvError(
+                f"[S3.1c] {path} {MACHINE_FACTS_HEADER}.{key} is not a string"
+            )
+        result[key] = value
+    return result
+
+
+def _require_generated_schema_version(
+    path: Path, header: str, table: Mapping[str, object]
+) -> None:
+    """Reject non-integer (including bool/float) and unsupported versions."""
+    version = table.get("schema_version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version != GENERATED_FACTS_SCHEMA_VERSION
+    ):
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} {header} has schema_version={version!r}; expected "
+            f"{GENERATED_FACTS_SCHEMA_VERSION}"
+        )
 
 
 def identity_env_from_facts(facts: Mapping[str, str]) -> dict[str, str]:
@@ -1302,8 +1458,8 @@ def seed_identity_env(ciu_root: Path) -> dict[str, str]:
     """Put *ciu_root*'s generated identity into ``os.environ``, OVERRIDING it.
 
     S3.1c clause 2a, and the fix for the gap the CIU-75 review found: moving
-    the twelve per-checkout fact READS onto the generated record left the PROCESS
-    ENVIRONMENT still seeded from `ciu.env`, and ~26 internal sites read
+    moving the twelve per-checkout fact READS onto the generated record left
+    the PROCESS ENVIRONMENT still seeded from an older export, and ~26 internal sites read
     `REPO_ROOT` / `PHYSICAL_REPO_ROOT` / `DOCKER_NETWORK_INTERNAL` /
     `PUBLIC_FQDN` straight out of `os.environ` (a rendered
     ``network_name = "$DOCKER_NETWORK_INTERNAL"`` among them). With the seed
@@ -1325,59 +1481,30 @@ def seed_identity_env(ciu_root: Path) -> dict[str, str]:
     return identity
 
 
-def _load_legacy_machine_env(env_path: Path, *, override: bool) -> dict[str, str]:
-    """Seed ``os.environ`` with the NON-identity half of `ciu.env`.
-
-    S3.1c clause 2: `ciu.env` remains the transport for MACHINE facts at
-    process start — a cache of live derivation, regenerated when absent — and
-    is never a source of instance identity. The identity keys it still carries
-    are skipped here and seeded from `ciu.instance.generated.toml` by
-    :func:`seed_identity_env`; that is belt and braces (the caller seeds
-    identity afterwards regardless), and it is what makes "no identity fact is
-    ever read from `ciu.env`" true of the code rather than of the ordering.
-
-    Read failure is a WARN and an empty dict, not a traceback. Pre-CIU-75 this
-    was a bare `read_text` at the first statement of every verb, so a non-UTF-8
-    byte in a file CIU calls write-only crashed `ciu up` with a raw
-    `UnicodeDecodeError` — CIU-62's three unrelated failure types
-    (`OSError`, `UnicodeDecodeError`, `WorkspaceEnvError`) reaching one more
-    reader that had never been given them. Missing machine facts still refuse
-    loudly, one step later and with a remedy, in :func:`ensure_workspace_env`.
-    """
-    try:
-        values = parse_workspace_env(env_path)
-    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
-        _log_warn(
-            f"[S3.1c] could not read {env_path}: {exc}. Machine facts "
-            "(CONTAINER_UID, DOCKER_GID, ENV_TYPE, PUBLIC_TLS_*, …) fall back "
-            "to this process's own environment; instance identity is "
-            f"unaffected — since 7.7.0 it comes from "
-            f"{INSTANCE_GENERATED_FACTS}, not from this file. "
-            "Repair with: ciu env generate",
-            stream=sys.stderr,
-        )
-        return {}
-    applied: dict[str, str] = {}
-    for key, value in values.items():
-        if key in LEGACY_IDENTITY_ENV_KEYS:
-            continue
-        if override or key not in os.environ:
-            os.environ[key] = value
-            applied[key] = value
+def seed_generated_env(ciu_root: Path) -> dict[str, str]:
+    """Seed all generated identity and machine facts, overriding ambient env."""
+    facts = read_generated_facts(ciu_root)
+    machine = read_generated_machine_facts(ciu_root)
+    applied = identity_env_from_facts(facts)
+    applied.update({MACHINE_FACT_ENV_KEYS[key]: value for key, value in machine.items()})
+    for key, value in applied.items():
+        os.environ[key] = value
     return applied
 
 
-def _seed_identity_or_repair(ciu_root: Path, *, generated: bool) -> dict[str, str]:
+def _seed_identity_or_repair(
+    ciu_root: Path, *, generated: bool, allow_repair: bool = False
+) -> dict[str, str]:
     """:func:`seed_identity_env`, repairing a checkout that has no table yet.
 
     A 7.6.x checkout upgrading in place has a `ciu.env` and — since CIU-60
     (7.5.0) — usually a generated facts record too, but not necessarily: that
     record is gitignored, so a fresh clone, a lost per-checkout file, a
     pre-CIU-60 record, or a pre-ciu-P47 record still written into the OLD
-    overlay filename all leave nothing to read. The record CIU reads is the
-    record CIU repairs, which is the same self-healing `ciu.env` has always had
-    when absent — and it keeps the upgrade from being "your next `ciu up`
-    refuses until you run a command it did not tell you about".
+    overlay filename all leave nothing to read. Read-only/bootstrap callers
+    refuse when the generated record is absent; runtime-start callers may opt
+    into repair with ``allow_repair=True`` so the missing identity is derived
+    at the point where the workspace is about to run.
 
     Repairing is skipped when this run already generated (the generate wrote
     the table itself; a second one would only be slower). A PRESENT but
@@ -1387,6 +1514,12 @@ def _seed_identity_or_repair(ciu_root: Path, *, generated: bool) -> dict[str, st
     identity = seed_identity_env(ciu_root)
     if identity or generated:
         return identity
+    if not allow_repair:
+        raise WorkspaceEnvError(
+            f"[S3.1c] {generated_facts_path(ciu_root)} has no complete "
+            f"{GENERATED_FACTS_HEADER} record. Run `ciu env generate` "
+            "or use a runtime-start command that can derive it."
+        )
     _log_warn(
         f"[S3.1c] {generated_facts_path(ciu_root)} carries no "
         f"{GENERATED_FACTS_HEADER} table — regenerating this workspace's "
@@ -1434,7 +1567,27 @@ def generate_ciu_env(
     docker_gid = _detect_docker_gid()
     physical_root = _detect_physical_repo_root(repo_root)
     host_mdt_tmp = _detect_host_mdt_tmp()
-    network_values = _compute_network_name(physical_root)
+    workspace_id: str | None = None
+    root_instance_id: str | None = None
+    git_context_expected = any(
+        (candidate / ".git").exists() for candidate in (repo_root, *repo_root.parents)
+    )
+    try:
+        from . import workspace as workspace_adapter
+        shared = workspace_adapter._shared()
+        git_root, _common, _branch, _head = shared.discover_git_context(repo_root)
+        physical_git_root = _detect_physical_repo_root(git_root)
+        workspace_id = shared.workspace_id_for_path(physical_git_root)
+        root_instance_id = shared.workspace_id_for_path(physical_root)
+    except Exception:
+        # A CIU env can be generated before a Git repository exists in a
+        # scaffold. The path-only derivation above is still deterministic; the
+        # next Git-backed generation supplies the full workspace/root pair.
+        if git_context_expected:
+            raise
+    network_values = _compute_network_name(
+        physical_root, workspace_id=workspace_id, root_instance_id=root_instance_id,
+    )
     public_values = _detect_public_fqdn(repo_root, require_fqdn=False)
 
     user_name = os.environ.get("USER_NAME", os.environ.get("USER", ""))
@@ -1582,6 +1735,27 @@ def generate_ciu_env(
             "repo_root": str(repo_root),
             "public_fqdn": public_values["PUBLIC_FQDN"],
         },
+        machine_facts={
+            "env_type": env_flags["ENV_TYPE"],
+            "is_devcontainer": env_flags["IS_DEVCONTAINER"],
+            "is_github_actions": env_flags["IS_GITHUB_ACTIONS"],
+            "is_native": env_flags["IS_NATIVE"],
+            "user_name": user_name,
+            "user_uid": user_uid,
+            "user_gid": user_gid,
+            "container_uid": container_uid,
+            "container_gid": container_gid,
+            "docker_uid": docker_uid,
+            "docker_gid": docker_gid,
+            "devcontainer_name": detect_devcontainer_name(),
+            "host_mdt_tmp": host_mdt_tmp,
+            "public_ip": public_values["PUBLIC_IP"],
+            "public_tls_crt_pem": public_values["PUBLIC_TLS_CRT_PEM"],
+            "public_tls_key_pem": public_values["PUBLIC_TLS_KEY_PEM"],
+            "python_executable": python_exec,
+            "pip_executable": pip_exec,
+            "ciu_gov_read_iops": gov_read_iops,
+        },
     )
     return output_path
 
@@ -1602,15 +1776,9 @@ def bootstrap_env_init(repo_root: Path) -> Path:
     """
     env_path = generate_ciu_env(repo_root)
 
-    # Seed os.environ so the steps below see this workspace's values. Two
-    # sources, on purpose (S3.1c clause 2): the MACHINE facts come from the
-    # file just written, and the IDENTITY comes from the generated facts file
-    # the same generate wrote — always overriding ambient, because the network
-    # step below must act on THIS workspace's network and not on a stale
-    # DOCKER_NETWORK_INTERNAL inherited from another checkout's sourced
-    # ciu.env (CIU-41).
-    _load_legacy_machine_env(env_path, override=False)
-    _seed_identity_or_repair(repo_root, generated=True)
+    # Seed every fact from the generated document. `ciu.env` is an export
+    # produced for humans and child shells, never an internal input.
+    seed_generated_env(repo_root)
 
     # Step 2+3: network + devcontainer attach (devcontainer attach is a no-op
     # on native/CI per _connect_devcontainer_to_network's ENV_TYPE guard)
@@ -1634,6 +1802,7 @@ def bootstrap_workspace_env(
     generate_env: bool,
     update_cert_permission: bool,
     required_keys: Iterable[str],
+    allow_identity_repair: bool = False,
 ) -> Path:
     """Prepare this process's environment for a verb, and validate it.
 
@@ -1643,9 +1812,12 @@ def bootstrap_workspace_env(
     * **identity** — `[ciu.instance.generated]` in this checkout's
       `ciu.instance.generated.toml`, always, and always OVERRIDING whatever the
       ambient environment claims;
-    * **machine facts** — `ciu.env`, a cache of live derivation, applied only
-      where the ambient environment has nothing to say (unless `--define-root`
-      pins the root, which has always overridden).
+    * **machine facts** — `[ciu.instance.machine]` in the exact generated
+      document, always overriding ambient environment.
+
+    A missing `ciu.env` is generated only for an explicit `generate_env` request
+    or a caller that opts into runtime-start repair. Read-only callers refuse
+    rather than turning absence into a new identity.
 
     Returns the resolved env root directory.
     """
@@ -1654,22 +1826,34 @@ def bootstrap_workspace_env(
 
     generated = False
     if generate_env or not env_path.exists():
+        if not generate_env and not allow_identity_repair:
+            raise WorkspaceEnvError(
+                f"[S3.1c] {env_path} is missing. Read-only bootstrap will not "
+                "invent workspace facts; run `ciu env generate` explicitly or "
+                "use a runtime-start command that can derive them."
+            )
         # The notice goes to stderr here: this regeneration is a side effect of
         # a verb the operator ran for another reason, and `ciu check --json`
         # writes its document to stdout (S3.1c clause 3).
         generate_ciu_env(env_root, notice_stream=sys.stderr)
         generated = True
 
-    # By EXACT path in both cases. `load_workspace_env` walks via
-    # `find_workspace_env`, which honors an ambient REPO_ROOT and can therefore
-    # hand back ANOTHER checkout's ciu.env — the same cross-workspace leak the
-    # identity seed below exists to close, and there is no reason to leave it
-    # open for machine facts either now that the root is already resolved.
-    _load_legacy_machine_env(env_path, override=bool(define_root))
-    # S3.1c clause 2a — identity last, from the generated facts file, unconditionally
-    # overriding. Ordering is not what makes this safe (the loader above skips
-    # identity keys outright); it is here so a reader sees the precedence.
-    _seed_identity_or_repair(env_root, generated=generated)
+    # By EXACT path in both cases. The invocation resolver has already selected
+    # this root, so no generated fact is rediscovered from an ancestor or shell.
+    if generated:
+        seed_generated_env(env_root)
+    else:
+        _seed_identity_or_repair(
+            env_root, generated=False, allow_repair=allow_identity_repair
+        )
+        machine = read_generated_machine_facts(env_root)
+        if not machine:
+            raise WorkspaceEnvError(
+                f"[S3.1c] {generated_facts_path(env_root)} has no complete "
+                "[ciu.instance.machine] table; run `ciu env generate`"
+            )
+        for key, value in machine.items():
+            os.environ[MACHINE_FACT_ENV_KEYS[key]] = value
 
     if generated:
         # Run post-generate bootstrap steps (network + TLS probe).

@@ -6,6 +6,9 @@
 # can instead add its own gitignored <project>/cmru.secret.toml overlay.
 schema_version = 1
 
+[runtime]
+kind = "none"
+
 [github]
 owner = "your-github-owner"
 repo = "your-repository"

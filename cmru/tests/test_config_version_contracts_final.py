@@ -36,6 +36,8 @@ owner_type = "org"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 [project]
 id = "demo"
 description = "demo project"
@@ -61,7 +63,7 @@ commands = [{label = "push", argv = ["echo", "ok"], cwd = "."}]
 
 
 def central_project_toml() -> str:
-    return "schema_version = 1\n[project]\n" + project_toml().split("[project]\n", 1)[1]
+    return "schema_version = 1\n[runtime]\nkind = \"none\"\n[project]\n" + project_toml().split("[project]\n", 1)[1]
 
 
 def orch_toml(entry: str = 'config = "demo/cmru.toml"', order: str = '["demo"]') -> str:
@@ -119,6 +121,22 @@ def test_config_project_shape_errors_are_reached_from_complete_documents(tmp_pat
         with pytest.raises(SystemExit):
             config.load_forge_config(path)
         assert diagnostic in capsys.readouterr().err
+
+
+def test_config_accepts_a_valid_project_without_optional_metadata(tmp_path):
+    path = tmp_path / "cmru.toml"
+    path.write_text(project_toml(), encoding="utf-8")
+    parsed, _github, _targets = config._parse_project_document(path)
+    assert parsed.name == "demo"
+
+
+def test_config_rejects_unknown_runtime_kind_in_a_complete_document(tmp_path, capsys):
+    path = tmp_path / "cmru.toml"
+    path.write_text(project_toml().replace('kind = "none"', 'kind = "future"'), encoding="utf-8")
+    with pytest.raises(SystemExit) as error:
+        config._parse_project_document(path)
+    assert error.value.code == 2
+    assert "runtime.kind must be one of" in capsys.readouterr().err
 
 
 def test_config_orchestration_resolution_refuses_ambiguity_and_accepts_shared_facts(tmp_path):

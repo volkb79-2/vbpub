@@ -188,6 +188,7 @@ changed-line policy, isolation snapshots) stays in `assay.toml`, and the
 `run-gate.toml` lane is a thin wrapper referencing the assay lane by name:
 
 ```toml
+schema_version = 1
 [lanes.ciu]
 kind = "assay"            # install selected ../assay + run the judge
 assay_lane = "ciu"        # judgment policy lives in assay.toml — one registry each
@@ -261,8 +262,9 @@ the tool's reason to exist and MUST be implemented + tested:
   identity, host-lane view, and toolchain fitness, never the invoking
   checkout's under B's name (SPEC `R-37`, RG-30 — the last instance
   of the read-scope hazard RG-27 closed for `history`).
-- **Run form:** detached container + wait + logs (survives terminal loss);
-  the gate's exit status is the judged job's own — no wrapper/pipe masking.
+- **Run form:** detached container with Docker's init reaper + wait + logs
+  (survives terminal loss and reaps orphaned descendants); the gate's exit
+  status is the judged job's own — no wrapper/pipe masking.
 - **Recovery records are ownership boundaries:** if a container lane finds
   an inflight record written by the exec runner, the live invocation refuses
   with exit 2 and starts nothing. It never treats “foreign” as “absent,” even

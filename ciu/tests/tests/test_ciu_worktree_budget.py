@@ -180,12 +180,13 @@ def test_primary_worktree_root_zero_primaries_raises(tmp_git_repo, monkeypatch):
 
 
 def test_primary_worktree_root_multiple_primaries_raises(tmp_git_repo, monkeypatch):
-    fake_primary = worktree.WorktreeInfo(path=Path("/nowhere"), branch="main", head="abc")
+    fake_primary = worktree.WorktreeInfo(
+        path=Path("/nowhere"), branch="main", head="abc", is_primary=True
+    )
     monkeypatch.setattr(
         worktree, "list_worktrees",
         lambda repo_root: [fake_primary, fake_primary],
     )
-    monkeypatch.setattr(worktree.WorktreeInfo, "is_primary", property(lambda self: True))
     with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\].*found 2"):
         worktree.primary_worktree_root(_ciu_root(tmp_git_repo))
 
@@ -201,35 +202,58 @@ def test_git_toplevel_not_a_git_repo_raises(tmp_path):
         worktree.git_toplevel(bare)
 
 
-def test_git_toplevel_malformed_zero_exit_output_raises(tmp_git_repo, monkeypatch):
-    """A zero exit but non-absolute/empty stdout (never observed from real
-    git, but defended against explicitly) is still a loud [S16.3] failure,
-    not a silently-accepted bogus path."""
+@pytest.mark.parametrize(
+    "bad_top_kind",
+    ("relative-existing-dir", "absolute-missing-dir", "relative-missing-dir"),
+)
+def test_git_toplevel_malformed_zero_exit_output_raises(
+    bad_top_kind, tmp_git_repo, tmp_path, monkeypatch
+):
+    """Malformed successful Git output fails if it is relative OR missing.
+
+    The first two cases independently exercise each side of that refusal:
+    a relative existing directory and an absolute missing directory. Keeping
+    those one-predicate-true cases is important; replacing ``or`` with ``and``
+    would otherwise accept both malformed results.
+    """
+    shared = worktree._shared_worktree()
+    malformed_top = {
+        "relative-existing-dir": Path("."),
+        "absolute-missing-dir": tmp_path / "missing-top-level",
+        "relative-missing-dir": Path("not/absolute"),
+    }[bad_top_kind]
     monkeypatch.setattr(
-        worktree, "_git",
-        lambda args, cwd: subprocess.CompletedProcess(args, 0, stdout="not/absolute\n", stderr=""),
+        shared,
+        "discover_git_root",
+        lambda _path: (malformed_top, tmp_git_repo / ".git"),
     )
     with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\].*absolute"):
         worktree.git_toplevel(_ciu_root(tmp_git_repo))
 
 
 def test_git_common_dir_failure_raises(tmp_git_repo, monkeypatch):
+    shared = worktree._shared_worktree()
     monkeypatch.setattr(
-        worktree, "_git",
-        lambda args, cwd: subprocess.CompletedProcess(args, 128, stdout="", stderr="not a git repo"),
+        shared,
+        "discover_git_root",
+        lambda _path: (_ for _ in ()).throw(shared.WorkspaceError(
+            "could not discover common dir: not a git repo", category="git-error"
+        )),
     )
     with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\].*git-common-dir"):
         worktree._git_common_dir(_ciu_root(tmp_git_repo))
 
 
 def test_git_common_dir_resolves_a_relative_result_against_repo_root(tmp_git_repo, monkeypatch):
-    """`git rev-parse --git-common-dir` reports a RELATIVE path from the
-    PRIMARY checkout (confirmed with real git: plain `.git`) -- must be
-    resolved against repo_root, never returned as-is (which would be
-    meaningless once the lock path is later joined onto it)."""
+    """The shared Git-context resolver owns relative common-dir resolution."""
+    shared = worktree._shared_worktree()
     monkeypatch.setattr(
-        worktree, "_git",
-        lambda args, cwd: subprocess.CompletedProcess(args, 0, stdout=".git\n", stderr=""),
+        shared,
+        "discover_git_root",
+        lambda _path: (
+            _ciu_root(tmp_git_repo).resolve(),
+            (_ciu_root(tmp_git_repo) / ".git").resolve(),
+        ),
     )
     result = worktree._git_common_dir(_ciu_root(tmp_git_repo))
     assert result == (_ciu_root(tmp_git_repo) / ".git").resolve()
@@ -241,9 +265,11 @@ def test_git_common_dir_absolute_result_used_as_is(tmp_git_repo, monkeypatch):
     LINKED worktree (confirmed with real git) -- used verbatim, never
     re-joined onto repo_root (which would produce a bogus nested path)."""
     absolute_common = str((tmp_git_repo / ".git").resolve())
+    shared = worktree._shared_worktree()
     monkeypatch.setattr(
-        worktree, "_git",
-        lambda args, cwd: subprocess.CompletedProcess(args, 0, stdout=absolute_common + "\n", stderr=""),
+        shared,
+        "discover_git_root",
+        lambda _path: (_ciu_root(tmp_git_repo), Path(absolute_common)),
     )
     result = worktree._git_common_dir(_ciu_root(tmp_git_repo))
     assert result == Path(absolute_common)

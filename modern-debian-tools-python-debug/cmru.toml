@@ -1,5 +1,8 @@
 schema_version = 1
 
+[runtime]
+kind = "none"
+
 [env]
 CMRU_TESTER_DIND_IMAGE = "docker:dind"
 RELEASE_IMAGE_FLOW = "load"

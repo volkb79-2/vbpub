@@ -141,7 +141,14 @@ def _write_repo(
         )
         + f'\nexport INSTANCE_ID="{WORKSPACE_INSTANCE_ID}"\n'
     )
-    from ciu.workspace_env import write_generated_facts
+    from ciu.workspace_env import MACHINE_FACT_ENV_KEYS, write_generated_facts
+
+    machine = {
+        key: os.environ.get(env_key, "")
+        for key, env_key in MACHINE_FACT_ENV_KEYS.items()
+    }
+    for key in ("container_uid", "container_gid", "docker_uid", "docker_gid"):
+        machine[key] = machine[key] or "0"
 
     write_generated_facts(
         tmp_path,
@@ -153,6 +160,7 @@ def _write_repo(
             "repo_root": os.environ["REPO_ROOT"],
             "public_fqdn": "",
         },
+        machine_facts=machine,
     )
     (tmp_path / ".gitignore").write_text("**/.ciu/\n")
     if managed:

@@ -27,18 +27,60 @@ landscape_id = "prod-eu"
 DNS-label-safe slug (`^[a-z][a-z0-9-]{0,62}$`) that a consumer renders its
 Consul KV root (`dstdns/<landscape_id>/…`) and mesh ACL tags from.
 
-## 2. Create a managed instance and read its lifecycle JSON
+## 2. Create a managed workspace
 
 ```console
-$ ciu worktree create pkg-under-test --prefix myapp --feature pkg-under-test --json
+$ ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
 {"schema_version": 1, "operation": "create", "status": "ready", "instance": {...}}
 ```
 
-Every lifecycle verb (`create`, `ensure`, `adopt`, `add`) with `--json` emits
+Creation discovers every committed `ciu.global.defaults.toml.j2` in the base
+commit and prepares each root. The optional ignored
+`ciu.global.instance.toml.j2` overlay is not a discovery marker. Every lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits
 the same envelope. `status` is one of `allocating`, `ready`,
 `recovery-required`; a `recovery-required` instance carries a closed
 `recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
 `runtime-collision`. Resume a partial allocation with `ensure`.
+
+For a root-specific operation, enter that root (or pass `--dir`) and use the
+ordinary stack verb. The canonical explicit selector is:
+
+```console
+$ ciu up --dir services/api --root-folder services/api
+```
+
+Do not source another checkout's `ciu.env` to select a root. `REPO_ROOT` is
+export-only; CIU derives the nearest marker and refuses when no marker exists.
+
+The generated identity record is exact and versioned:
+
+```toml
+[ciu.instance.generated]
+schema_version = 2
+repo_name = "example"
+instance_id = "abc123"
+network = "example-abc123-network"
+physical_repo_root = "/host/example"
+repo_root = "/workspaces/example"
+public_fqdn = "example.invalid"
+
+[ciu.instance.machine]
+schema_version = 2
+env_type = "native"
+docker_gid = "999"
+host_mdt_tmp = ""
+user_name = "vscode"
+user_uid = "1000"
+user_gid = "1000"
+docker_uid = "1000"
+container_uid = "1000"
+container_gid = "999"
+python_executable = "/usr/bin/python3"
+pip_executable = "/usr/bin/pip3"
+```
+
+`ciu.env` is still available for shell exports (`eval "$(ciu env print)"`),
+but CIU internals read only the generated facts file at the selected root.
 
 ## 3. Inspect one instance with fresh Git facts
 
@@ -830,11 +872,15 @@ python3 -m pip install --no-deps --no-build-isolation --editable ./assay
 assay lanes --file ciu/assay.toml
 
 # 3. Run the lane; Assay snapshots the commit, runs the full suite at 100%
-#    line+branch, and judges the changed-line floor on base..HEAD (R1).
+#    line+branch, judges the changed-line floor (R1), runs native mutation
+#    (R2), and runs the import-break canary (R3).
+#    R2 liveness bounds stalled pytest candidates; --maxfail=1 stops a failing
+#    mutant at its first failed test without shortening a successful full run.
 #    The verdict goes OUTSIDE the judged tree (gitignored .assay/).
 cd ciu && mkdir -p .assay && \
   assay run ciu \
-    --file assay.toml --verdict-json .assay/verdict-ciu.json
+    --file assay.toml --verdict-json .assay/verdict-ciu.json \
+    --resume --progress .assay/progress-ciu.jsonl
 ```
 
 Contract notes for a consumer of the gate:
@@ -1259,7 +1305,7 @@ internal_host = "dstdns-mstest-f2d1cb-vault"  # instance config: scoped (GUIDE 3
 That value is correct on the day someone types it and never checked again.
 If the reference instance is ever re-created under a new identity — a new
 `INSTANCE_ID`, a new network, the ordinary result of a `ciu worktree rm`
-followed by a fresh `add` — the container this string names is simply gone,
+followed by a fresh `create` — the container this string names is simply gone,
 and nothing here re-checks it: the frozen literal ships forward unchanged,
 and every worktree template copied from `dstdns-mstest` afterward carries
 the same stale name one copy-paste further from the instance it was
@@ -1272,11 +1318,7 @@ used to verify this example, not the mstest environment's own actual
 project/instance identity):
 
 ```console
-$ ciu worktree add mstest --base main --profile core \
-    --shared-infra primary-ref \
-    --shared-infra-services api \
-    --shared-infra-ref-projects idp-dev-idp \
-    --shared-infra-ref-services vault
+$ ciu worktree create mstest --base main
 worktree ready: /repo/.worktrees/mstest
   next: cd /repo/.worktrees/mstest && ciu up
 ```
@@ -1297,7 +1339,7 @@ here.
 
 > **What the migration buys you.** The hand-typed override is checked
 > exactly once — by whoever typed it, against whatever was running that
-> day. `ref_services` is re-derived at every `add`/`create`/`ensure`/`adopt`
+> day. `ref_services` is re-derived at every `create`/`ensure`/`adopt`
 > that declares it, and re-authenticated against live Docker state again at
 > every `ciu up` that joins the network: CIU re-renders the reference's own
 > config, re-derives its qualified container name, and re-proves that exact
@@ -1427,54 +1469,29 @@ schema/template paths) resolves **stack-dir-relative**, not repo-root-
 relative — the two conventions genuinely differ within the same stack. See
 S8.1a for the full accounting and why.
 
-## 19. `--define-root` now works (and is required, absent it, alongside ambient `REPO_ROOT`) on `ciu`'s remote/listing verbs (S1.1, CIU-54)
+## 19. Root selection is explicit or derived (S1.1, CIU-54)
 
 **Affected verbs:** the `--host` branches of `render`/`up`/`down`/`health`,
 `up --layout`, `layouts`, `host-secrets`, `ssh`.
 
-Before ciu-P45, these 8 call sites resolved `repo_root` with a bare
-`Path(os.environ.get("REPO_ROOT", Path.cwd()))` — a THIRD, informal
-resolution strategy alongside `dev.resolve_repo_root` (walk-up, `dev`/
-`worktree`) and `deploy.resolve_repo_root` (explicit-or-ambient, every other
-`up`/`down`/`health`/`render`/`check`/`graph`/`clean`/`profiles` branch).
-`--define-root` was silently ignored on all 8: passing it did nothing
-locally, and on the `--host`/`ssh` branches an unconsumed `--define-root`
-even leaked into the ONE remote command string forwarded to the target
-host's own `ciu` — a local path re-parsed in a foreign context. On four of
-these verbs (`render`/`up`/`down`/`health`) this was worse than merely
-undocumented: `--define-root` was ALREADY listed in `ciu <verb> --help`'s
-general options as if it applied verb-wide, so the `--host` branch silently
-broke its own documented contract.
+Historically, these branches used several incompatible root-selection paths:
+some read ambient `REPO_ROOT`, some fell back to the current directory, and
+some ignored `--root-folder`. That made a remote or listing invocation depend
+on how the caller's shell happened to be prepared, and could forward a local
+path into a remote command by accident.
 
-**The fix routes all 8 sites through `deploy.resolve_repo_root`** — the SAME
-resolver each of these verbs' own local/profile-based branch already uses
-(plain `ciu up` routes into `deploy.main`, which calls
-`deploy.resolve_repo_root`), rather than `dev.resolve_repo_root`'s
-walk-up-from-cwd. This was a deliberate choice, not the only one considered:
-walk-up fits `dev`/`worktree`'s "which repo am I standing in" question, not
-these verbs' remote-push/listing shape, and adopting it here would have made
-e.g. plain `ciu up` resolve one way and `ciu up --host x` resolve a
-DIFFERENT way depending on which branch ran — a worse inconsistency than the
-one being fixed. See `docs/SPEC.md` S1.1a.
+All of these sites now use the same resolver. `--root-folder <path>` is an
+explicit local selection; otherwise CIU walks upward from `--dir` (or the
+current directory) to the nearest directory containing the committed
+`ciu.global.defaults.toml.j2` marker. `ciu.env` is export-only and is never
+used as an implicit source of truth. If no marker is found, CIU refuses and
+the caller must provide the correct root explicitly. See
+`docs/DESIGN-GUIDE.md#workspace-and-root-identity`.
 
-> **This is a BREAKING change.** `deploy.resolve_repo_root` requires ambient
-> `REPO_ROOT` to be set (or `--define-root` given explicitly) — **there is NO
-> cwd fallback**. Previously, running one of these 8 verbs from inside a repo
-> whose `ciu.env` had never been sourced (no ambient `REPO_ROOT`) silently
-> worked, using the current directory. It now refuses: `[ERROR] REPO_ROOT not
-> set. Run 'ciu env generate' and source ciu.env.` **If you have a script or
-> habit that runs `ciu ssh`, `ciu layouts`, `ciu host-secrets`, or `ciu
-> up`/`down`/`health`/`render --host`/`--layout` without first running `ciu
-> env generate` and `eval "$(ciu env print)"` (or equivalently `source
-> ciu.env`)**, either source it first or pass `--define-root <path>`
-> explicitly. Separately, an operator who WAS already passing `--define-root`
-> on one of these 8 verbs while ambient `REPO_ROOT` disagreed will now see a
-> `[S1.1]`-tagged refusal instead of the flag being silently ignored — the
-> intended CIU-54 fix, not a regression: it now does what the flag's own name
-> says. There is no dstdns/vbpub consumer script or CI job affected today (no
-> shipped `.sh`/CI invokes any of these 8 verbs without first sourcing
-> `ciu.env`), but an interactive operator's own shell habit, or a downstream
-> consumer's own script, may be.
+> **Migration note.** Scripts that previously depended on an ambient
+> `REPO_ROOT` should pass `--root-folder <path>` when their working directory
+> is not inside the intended CIU root. Scripts that run inside a checked-out
+> root need no environment setup: the marker walk derives the root directly.
 
 ---
 
@@ -1548,7 +1565,7 @@ name and the `/run/secrets/<name>` basename).
 - `ciu check`'s `vault-presence` stage (`[S13.4d]`) refuses a stack declaring
   `ASK_VAULT`/`GEN_TO_VAULT` with no `topology.services.vault` — previously a
   runtime-only failure, mid-`ciu up`.
-- `ciu migration-check [--define-root PATH] [--json]` (S13.7) reports stale
+- `ciu migration-check [--root-folder PATH] [--json]` (S13.7) reports stale
   pre-cutover artifacts in a checkout. CIU performs hard cutovers with no
   legacy-compat shims anywhere in its normal code paths; this verb is the one
   place that knows the version history, so a stale artifact is a named

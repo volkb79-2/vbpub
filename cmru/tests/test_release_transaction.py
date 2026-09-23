@@ -105,6 +105,11 @@ def mocked_invocation_context(monkeypatch):
             config_path=Path(path).resolve(), project_name=None, scope="estate",
         ),
     )
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
 
 
 def test_copy_secret_overlays_preserves_root_and_project_scoped_credentials(tmp_path):
@@ -285,7 +290,7 @@ def test_release_aborts_before_creating_a_workspace_when_a_released_project_is_d
         monkeypatch.setattr(
             transaction, "create_workspace", lambda _root, *, base, **_kw: calls.append("created"),
         )
-        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
+        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
 
         with pytest.raises(SystemExit) as exc:
             cli.main(["release", "--config", str(config), "alpha"])
@@ -315,7 +320,7 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
+        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
         monkeypatch.setattr(
@@ -353,7 +358,7 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
+        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
         monkeypatch.setattr(
@@ -400,7 +405,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 0)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace: calls.append("backup-removed"))
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
@@ -460,7 +465,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
     # Child fails after the candidate cycle started; the new parent must never
     # infer that source history needs a compensating revert.
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 1)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 1)
     monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
     monkeypatch.setattr(
         transaction, "revert_promotion",
@@ -523,7 +528,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     # Child fails before ever reaching promote_workspace (e.g. gates failed).
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 1)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: 1)
     monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
     monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: False)
     monkeypatch.setattr(
@@ -594,7 +599,7 @@ cwd = "beta"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
@@ -657,7 +662,7 @@ cwd = "beta"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 0)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
@@ -715,7 +720,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: fresh_workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-    monkeypatch.setattr(transaction, "run_child", lambda ws, args: calls.append(("ran", ws.branch)) or 0)
+    monkeypatch.setattr(transaction, "run_child", lambda ws, args, **kwargs: calls.append(("ran", ws.branch)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
@@ -2620,3 +2625,42 @@ def test_abandon_previous_only_abandons_overlapping_scope():
         assert not ciu_path.exists()
         assert pwmcp_path.exists()       # different scope — left alone
         assert unscoped_path.exists()    # no recorded scope — left alone
+
+
+def test_abandon_previous_uses_the_shared_record_for_new_cmru_workspaces():
+    with _OriginAndClone() as h:
+        workspace = transaction.create_workspace(
+            h.repo_root,
+            base=_git("rev-parse", "HEAD", cwd=h.repo_root),
+            purpose="release",
+            scope="ciu",
+        )
+        transaction.write_release_scope(h.repo_root, workspace, ["ciu"])
+        common = transaction._common_git_dir(h.repo_root)
+        assert len(transaction._shared_worktree().list_workspaces(common)) == 1
+
+        abandoned = transaction.abandon_previous(h.repo_root, ["ciu"])
+
+        assert abandoned == [workspace.branch]
+        assert not workspace.path.exists()
+        assert transaction._shared_worktree().list_workspaces(common) == []
+
+
+def test_cmru_does_not_claim_or_discard_a_foreign_shared_workspace(tmp_path):
+    from worktree import create_workspace, remove_workspace
+
+    with _OriginAndClone() as h:
+        target = h.repo_root / ".worktrees" / "cmru-build-owned-by-ciu"
+        context = create_workspace(
+            h.repo_root,
+            target,
+            branch="cmru-build-owned-by-ciu",
+            base="HEAD",
+            purpose="ciu",
+        )
+
+        assert transaction.list_cmru_workspaces(h.repo_root) == []
+        with pytest.raises(RuntimeError, match="not a CMRU build transaction"):
+            transaction.discard_build_workspace(h.repo_root, target, dry_run=False)
+
+        remove_workspace(context)

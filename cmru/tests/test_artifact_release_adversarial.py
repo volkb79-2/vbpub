@@ -238,8 +238,7 @@ class TestVersionStrategyBoundaries(unittest.TestCase):
 class TestHandlerSubprocessBoundaries(unittest.TestCase):
     def test_git_mount_rejects_non_git_source(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.object(handlers.subprocess, "run",
-                              return_value=SimpleNamespace(returncode=128, stdout="")):
+            with patch.object(handlers, "_git_common_dir", return_value=None):
                 with self.assertRaisesRegex(RuntimeError, "requires a Git worktree"):
                     handlers._wheel_builder_git_mount_args(Path(tmp))
 

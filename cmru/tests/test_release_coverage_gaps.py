@@ -31,6 +31,9 @@ def _loaded(projects, order=None):
 def _minimal_project(name: str = "demo") -> str:
     return f'''schema_version = 1
 
+[runtime]
+kind = "none"
+
 [project]
 id = "{name}"
 description = "{name} project"
@@ -258,6 +261,16 @@ def test_cli_status_from_console_entrypoint_configures_native_logging(monkeypatc
     monkeypatch.setattr(cli, "_resolve_config", lambda _arg: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded({"demo": project}))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+    monkeypatch.setattr(
+        cli,
+        "_configs_for_git_family",
+        lambda configs, names, _root: {name: configs[name] for name in names},
+    )
     calls = []
     monkeypatch.setattr(
         cli,

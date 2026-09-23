@@ -1,5 +1,8 @@
 schema_version = 1
 
+[runtime]
+kind = "none"
+
 [env]
 NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\n\nFiles-first, daemon-supervised control plane for role-separated AI-assisted development.\n\n**Install**\n```bash\npipx install nyxloom-*.whl\n```"
 

@@ -79,6 +79,8 @@ owner_type = "user"
 [targets]
 host = "github"
 registry = ["ghcr.io"]
+[runtime]
+kind = "none"
 [project]
 id = "alpha"
 description = "alpha"
@@ -416,6 +418,11 @@ def test_status_uses_current_directory_orchestration_without_a_shim(tmp_path, mo
         "status_cmd",
         lambda root, projects, **kwargs: calls.append((root, list(projects), kwargs)),
     )
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
 
     cli.main(["status", "alpha"])
 
@@ -483,11 +490,10 @@ def test_module_console_dispatch_accepts_top_level_version():
 def test_worktrees_is_config_free_read_only_discovery(tmp_path, monkeypatch):
     workspace = SimpleNamespace(
         branch="cmru/build/debug", path=tmp_path / "retained-build", base="a" * 40,
+        is_prunable=True,
     )
     monkeypatch.setattr(
-        cli.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"),
+        cli, "_current_git_root", lambda: tmp_path,
     )
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: [workspace])
 
@@ -500,7 +506,7 @@ def test_worktrees_is_config_free_read_only_discovery(tmp_path, monkeypatch):
         "path": str(workspace.path),
         "purpose": "build",
         "source_commit": "a" * 40,
-        "visible": False,
+        "prunable": True,
     }]
 
 
@@ -510,11 +516,10 @@ def test_worktrees_json_lists_a_flat_branch_with_no_slash_without_crashing(tmp_p
     # IndexError on exactly this shape, the one `cmru worktrees` exists to list.
     workspace = SimpleNamespace(
         branch="cmru-release-20260101_000000-ciu-abcd1234", path=tmp_path / "retained-release", base="a" * 40,
+        is_prunable=True,
     )
     monkeypatch.setattr(
-        cli.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"),
+        cli, "_current_git_root", lambda: tmp_path,
     )
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: [workspace])
 
@@ -527,7 +532,7 @@ def test_worktrees_json_lists_a_flat_branch_with_no_slash_without_crashing(tmp_p
         "path": str(workspace.path),
         "purpose": "release",
         "source_commit": "a" * 40,
-        "visible": False,
+        "prunable": True,
     }]
 
 
@@ -536,11 +541,10 @@ def test_worktrees_plain_lists_a_flat_branch_with_no_slash_without_crashing(tmp_
     workspace_path.mkdir()
     workspace = SimpleNamespace(
         branch="cmru-release-20260101_000000-ciu-abcd1234", path=workspace_path, base="a" * 40,
+        is_prunable=False,
     )
     monkeypatch.setattr(
-        cli.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"),
+        cli, "_current_git_root", lambda: tmp_path,
     )
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: [workspace])
 
@@ -560,11 +564,10 @@ def test_worktrees_recovery_advice_includes_the_repository_config(tmp_path, monk
     workspace_path.mkdir()
     workspace = SimpleNamespace(
         branch="cmru/build/debug", path=workspace_path, base="a" * 40,
+        is_prunable=False,
     )
     monkeypatch.setattr(
-        cli.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"),
+        cli, "_current_git_root", lambda: tmp_path,
     )
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: [workspace])
 

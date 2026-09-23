@@ -71,10 +71,11 @@ def test_runner_git_metadata_and_build_date_are_source_derived_or_refused(tmp_pa
     runner.compute_build_date({"build_metadata": {"date_env": "CREATED", "date_format": "%Y-%m-%dT%H:%M:%SZ"}}, root)
     assert os.environ["CREATED"].endswith("Z")
     monkeypatch.delenv("CREATED", raising=False)
+    monkeypatch.delenv("BUILD_DATE", raising=False)
     monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
     with patch.object(runner, "_git_out", return_value=None):
         with pytest.raises(RuntimeError, match="commit"):
-            runner.compute_build_date({"build_metadata": {"created_env": "CREATED"}}, root)
+            runner.compute_build_date({"build_metadata": {"date_env": "CREATED"}}, root)
 
 
 def test_runner_quiet_aggregate_log_is_distinct_and_append_is_observable(tmp_path, monkeypatch):

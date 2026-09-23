@@ -48,7 +48,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Governance and KSM policy** | Global and stack resource policy place services under verified cgroup slices, enforce memory/IO limits, and offer built-in KSM preload or per-service wrapper strategy. | S15 |
 | **Managed worktree instances** | `ciu worktree` creates/adopts/resumes durable logical identities with exact nested CIU roots, local sparse overrides, collision admission, optional shared-infra join, and a primary-config concurrency cap; `inspect`/`list`/`rm` emit versioned JSON documents with freshly derived Git facts; `up`/`exec` act on one exact selected instance under its own identity record (`[ciu.instance.generated]`; its `ciu.env` before 7.7.0, S3.1c), and `exec --target` runs inside a declared already-running container with a worktree-mount proof; `ciu capabilities --json` exposes the closed machine-contract allowlist. | S16, S16.4, S16.5, S16.6, S16.7 |
 | **Image provenance evidence** | `ciu provenance --json` verifies running images against the commit under test AND against a declared vendor baseline (`[deploy.provenance] vendor_images` → `vendor-pinned`, vendor drift → `mismatch`), making `verified-match` reachable on all-vendor deployments; documents are emitted at `schema_version: 2`; the explicit break-glass `--no-preflight` produces no verdict. | S17 |
-| **Assay-backed implementation gate** | The release gate runs the full suite (100% line+branch) inside `tester-unified` and is judged by Assay installed from the selected vbpub worktree source: the runtime version and source commit are retained in the verdict, without a drifting consumer-owned copy; Assay judges the changed-line floor on `base..HEAD` (R1) from the coverage artifact; the gate slice comes only from `$CGROUP_PARENT_DEV_GATES` (verified loaded, fail-closed); the gate's status is the Assay job's own. | S18 |
+| **Assay-backed implementation gate** | The release gate runs the full suite (100% line+branch) inside `tester-unified` and is judged by Assay installed from the selected vbpub worktree source: the runtime version and source commit are retained in the verdict, without a drifting consumer-owned copy; the lane declares R0-R3 (changed-line coverage on `base..HEAD`, native mutation, and an import-break canary); the gate slice comes only from `$CGROUP_PARENT_DEV_GATES` (verified loaded, fail-closed); the gate's status is the Assay job's own. | S18 |
 
 ---
 
@@ -62,8 +62,8 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu --version` / `ciu version` | Print the CIU package version on stdout and exit 0 | Both spellings are supported; `--version` is the estate compatibility form; parser diagnostics at every depth begin with the CIU headline |
 | `ciu init` | Guided repo scaffolding (S19): validated global defaults template, gitignore entries, optional stack skeletons; never overwrites an existing target | `--project-name NAME`, `--environment-tag TAG`, `--stacks A,B`, `--hooks NAME1,NAME2` (S19.1: copies shipped, revision-stamped hook templates into every scaffolded stack; unknown name or no `--stacks` target refuses with exit 2 before any write) |
 | `ciu env` | Show `ciu.env` key=value pairs (read-only) | — |
-| `ciu env generate` | (Re)generate `ciu.env` from system state | `--define-root PATH` |
-| `ciu render` | Render `ciu.global.toml` + per-stack `ciu.toml` | `--profile NAME`, `--define-root PATH`, `--host NAME` (remote) |
+| `ciu env generate` | (Re)generate `ciu.env` from system state | `--root-folder PATH` |
+| `ciu render` | Render `ciu.global.toml` + per-stack `ciu.toml` | `--profile NAME`, `--root-folder PATH`, `--host NAME` (remote) |
 | `ciu profiles` | List host profiles | — |
 | `ciu layouts` | List declared deploy layouts (S7.5c) — shows what is DECLARED; `up --layout` validates | — |
 | `ciu up` | Render + materialise secrets + `compose up` | `--profile NAME` \| `--dir PATH`, `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; `--host NAME` push-deploys to a remote host (S14.2); `--thin` docker-optional push→activate (S14.6), `--bootstrap`/`--rollback` select activation verbs |
@@ -75,16 +75,16 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu status` | Per-stack compose project, containers, and health (read-only) | `--profile NAME`, `--json` |
 | `ciu bake` | `docker buildx bake --load` (production image); with `--profile`, targets are resolved via the same selection chain as `ciu up --profile` (CIU-QOL-7) | `[targets …]` \| `--profile NAME`, `--no-cache` |
 | `ciu ksm build` | Build CIU's shipped KSM shim cache | `--force` |
-| `ciu dev <stack>` | Run the stack's `[<root>.dev]` dev loop (S5a) | `--profile NAME`, `--no-prebuild`, `--define-root PATH` |
+| `ciu dev <stack>` | Run the stack's `[<root>.dev]` dev loop (S5a) | `--profile NAME`, `--no-prebuild`, `--root-folder PATH` |
 | `ciu secrets list` | List materialised secret names | `-d PATH` |
 | `ciu secrets reset` | Delete secret store files | `--name N`, `-y` |
 | `ciu check` | Validate the whole config pipeline in memory (no deploy) | `--profile NAME`, `--live` (also probe live state), `--json` (versioned per-stage report), `--phases N,M` |
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
-| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; legacy `add NAME`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
+| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
 | `ciu capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
 | `ciu host-secrets <host>` | Host-scoped local secrets (S14.3a): materialize/list/resolve path for pre-Vault bootstrap credentials | `--materialize`, `--list`, `--path NAME`, `-y` |
-| `ciu provenance` | Verify running images against the commit under test and the declared vendor baseline | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--define-root PATH`; `--no-preflight` and `--json` are incompatible |
+| `ciu provenance` | Verify running images against the commit under test and the declared vendor baseline | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--root-folder PATH`; `--no-preflight` and `--json` are incompatible |
 
 For the complete, copy/paste-oriented CLI surface, use `ciu` for the command
 index and `ciu <verb> --help` for the verb's accepted options. The help output
@@ -142,8 +142,9 @@ Use an isolated worktree when a parallel change needs a real stack without
 adopting the primary checkout's containers, network, or volumes:
 
 ```bash
-# Prepare a separate instance; this does not start it.
-ciu worktree create feature-x --prefix myapp --feature api-retry --profile dev
+# Prepare a separate workspace; this does not start it. Every committed CIU
+# root in the selected Git worktree is prepared with its declared defaults.
+ciu worktree create feature-x --prefix myapp --feature api-retry
 # Output reports both the Git checkout and exact CIU root. Creation never starts it.
 ciu worktree ensure feature-x --json
 # Enter the reported CIU root, then: eval "$(ciu env print)" && ciu up

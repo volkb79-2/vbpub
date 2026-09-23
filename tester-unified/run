@@ -217,6 +217,7 @@ if ((active_count >= 2)); then
 fi
 
 container_id=$("$docker_bin" run -d \
+    --init \
     --name "$name" \
     --cgroup-parent "$cgroup_parent" \
     --cpus=3 \

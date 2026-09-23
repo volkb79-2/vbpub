@@ -88,6 +88,8 @@ ghcr_delete_packages = []
     demo.mkdir()
     (demo / "cmru.toml").write_text(
         '''schema_version = 1
+[runtime]
+kind = "none"
 [project]
 id = "demo"
 description = "demo"
@@ -180,8 +182,7 @@ def test_transaction_child_args_strip_parent_only_options_and_reject_external_co
     assert args == ["demo", "--config", "cmru.toml"]
     outside = tmp_path.parent / "outside-cmru.toml"
     outside.write_text("", encoding="utf-8")
-    with pytest.raises(ValueError, match="tracked inside"):
-        cli._child_release_args([], outside, tmp_path)
+    assert cli._child_release_args([], outside, tmp_path) == ["--config", str(outside.resolve())]
 
 
 def test_tag_on_head_ignores_latest_pointer_and_selects_highest_version(tmp_path):

@@ -21,6 +21,8 @@ from ciu import cli
 @pytest.fixture
 def remote(monkeypatch, tmp_path):
     """Install deterministic inventory/transport fakes and select a repo root."""
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("REPO_ROOT", str(tmp_path))
     # Remote command construction is the subject here; give it a successful
     # config-load seam rather than relying on an unrelated on-disk fixture.
@@ -72,9 +74,9 @@ def test_remote_verbs_preserve_selection_as_one_shell_argument(remote, monkeypat
 # ---------------------------------------------------------------------------
 # ciu-P45 / CIU-54: these `--host` branches now resolve repo_root via
 # `deploy.resolve_repo_root` (S1.1) instead of a bare `REPO_ROOT`-or-cwd
-# fallback that ignored `--define-root` entirely -- and, since it forwarded
+# fallback that ignored `--root-folder` entirely -- and, since it forwarded
 # the whole "leftover" argv into the remote command string, an operator who
-# DID pass `--define-root` on one of these had it silently shipped to the
+# DID pass `--root-folder` on one of these had it silently shipped to the
 # remote host's own `ciu`, a LOCAL path re-parsed in a foreign context.
 # ---------------------------------------------------------------------------
 
@@ -82,21 +84,21 @@ def test_remote_verbs_preserve_selection_as_one_shell_argument(remote, monkeypat
 def test_remote_verbs_define_root_resolves_and_is_not_forwarded(remote, monkeypatch, verb, tmp_path):
     seen, _ = remote
     monkeypatch.delenv("REPO_ROOT", raising=False)
-    assert _run(monkeypatch, [verb, "--host", "web", "--define-root", str(tmp_path)]) == 0
+    assert _run(monkeypatch, [verb, "--host", "web", "--root-folder", str(tmp_path)]) == 0
     cfg, argv, config, repo_root, kwargs = seen["exec"][0]
     assert repo_root == tmp_path.resolve()
-    assert not any("--define-root" in a for a in argv)
+    assert not any("--root-folder" in a for a in argv)
 
 
 def test_remote_up_host_define_root_resolves_and_is_not_forwarded(remote, monkeypatch, tmp_path):
     seen, _ = remote
     monkeypatch.delenv("REPO_ROOT", raising=False)
-    assert _run(monkeypatch, ["up", "--host", "web", "--define-root", str(tmp_path)]) == 0
+    assert _run(monkeypatch, ["up", "--host", "web", "--root-folder", str(tmp_path)]) == 0
     assert len(seen["sync"]) == 1
     _cfg, _local, _target, _config, repo_root, _kw = seen["sync"][0]
     assert repo_root == tmp_path.resolve()
     remote_command = seen["exec"][0][1][0]
-    assert "--define-root" not in remote_command and str(tmp_path) not in remote_command
+    assert "--root-folder" not in remote_command and str(tmp_path) not in remote_command
 
 
 def test_remote_verb_refuses_when_repo_root_not_set_and_no_define_root(monkeypatch, capsys):
@@ -110,7 +112,7 @@ def test_remote_verb_refuses_when_repo_root_not_set_and_no_define_root(monkeypat
     )
     assert _run(monkeypatch, ["render", "--host", "web"]) == 2
     err = capsys.readouterr().err
-    assert "[ERROR]" in err and "REPO_ROOT not set" in err
+    assert "[ERROR]" in err and "no-ciu-root" in err
 
 
 def test_remote_up_sync_failure_short_circuits_remote_execution(remote, monkeypatch):
@@ -200,7 +202,7 @@ def test_extract_define_root_does_not_abbreviate(monkeypatch):
     assert define_root is None
     assert remaining == ["--d", "/x", "--host", "web"]
 
-    define_root, remaining = cli._extract_define_root(["--define-root", "/x", "--host", "web"])
+    define_root, remaining = cli._extract_define_root(["--root-folder", "/x", "--host", "web"])
     assert define_root == Path("/x")
     assert remaining == ["--host", "web"]
 

@@ -40,6 +40,8 @@ owner_type = "org"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 [project]
 id = "{name}"
 description = "test"
@@ -65,7 +67,7 @@ commands = [{{label = "push", argv = ["echo", "ok"], cwd = "."}}]
 
 
 def central_project_toml(name: str = "demo") -> str:
-    return "schema_version = 1\n[project]\n" + project_toml(name).split("[project]\n", 1)[1]
+    return "schema_version = 1\n[runtime]\nkind = \"none\"\n[project]\n" + project_toml(name).split("[project]\n", 1)[1]
 
 
 def orchestration_toml(entry: str = 'config = "demo/cmru.toml"', *, order: str = '["demo"]') -> str:
@@ -171,7 +173,7 @@ def test_transaction_build_output_and_project_root_require_authenticated_source(
         with pytest.raises(RuntimeError, match="source commit"):
             transaction.build_output_id(workspace)
     project = SimpleNamespace(project_root=tmp_path / "outside")
-    with pytest.raises(RuntimeError, match="outside repository"):
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
         transaction._project_roots_for_retention(root, workspace, project, "demo")
 
 

@@ -130,6 +130,7 @@ class ProjectS2Config:
     artifact_dirs: List[str] = field(default_factory=list)
     evidence_paths: List[str] = field(default_factory=list)
     build_step: str = ""
+    runtime_kind: str = "none"
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,43 @@ class InvocationContext:
     cmru_root: Path
     project_name: Optional[str]
     scope: str
+    source_git_root: Optional[Path] = None
+    git_common_dir: Optional[Path] = None
+    worktree_path: Optional[Path] = None
+    physical_source_git_root: Optional[Path] = None
+    physical_worktree_path: Optional[Path] = None
+
+
+def _git_scope(path: Path) -> dict[str, Optional[Path]]:
+    """Return shared Git-family facts when a selected project is in Git.
+
+    A CMRU root is allowed to be a plain orchestration directory above several
+    independent repositories.  The absence of Git at that orchestration root
+    is therefore not an error; each selected project supplies its own family.
+    """
+    candidate = path.resolve()
+    if not any((directory / ".git").exists() for directory in (candidate, *candidate.parents)):
+        return {}
+    try:
+        try:
+            import worktree
+        except ModuleNotFoundError:
+            import sys
+            library_src = Path(__file__).resolve().parents[3] / "libraries" / "worktree" / "src"
+            if not library_src.is_dir():
+                raise RuntimeError("shared worktree library is unavailable")
+            sys.path.insert(0, str(library_src))
+            import worktree
+        top, common, _branch, _head = worktree.discover_git_context(path)
+    except Exception as exc:
+        raise ValueError(f"could not resolve Git context for CMRU project {path}: {exc}") from exc
+    return {
+        "source_git_root": top,
+        "git_common_dir": common,
+        "worktree_path": top,
+        "physical_source_git_root": top,
+        "physical_worktree_path": top,
+    }
 
 
 # ─── Parsing ─────────────────────────────────────────────────────────────────
@@ -722,11 +760,18 @@ def _parse_project_document(
     raw = _read_toml(config_path, PROJECT_CONFIG_FILENAME)
     _reject_unknown(
         raw,
-        {"schema_version", "github", "targets", "env", "build_metadata", "project", "steps", "project_metadata"},
+        {"schema_version", "github", "targets", "env", "build_metadata", "project", "runtime", "steps", "project_metadata"},
         PROJECT_CONFIG_FILENAME,
     )
     if raw.get("schema_version") != 1:
         _error(f"{PROJECT_CONFIG_FILENAME}.schema_version must be exactly 1")
+    runtime_raw = raw.get("runtime")
+    if not isinstance(runtime_raw, dict):
+        _error("[runtime] is required; declare kind = 'none' or 'ciu'")
+    _reject_unknown(runtime_raw, {"kind"}, "runtime")
+    runtime_kind = _require(runtime_raw, "kind", "runtime")
+    if not isinstance(runtime_kind, str) or runtime_kind not in {"none", "ciu"}:
+        _error("runtime.kind must be one of: none, ciu")
     if require_repository_facts:
         github = _github(raw.get("github"))
         targets = _targets(raw.get("targets"))
@@ -852,6 +897,7 @@ def _parse_project_document(
             artifact_dirs=artifact_dirs,
             evidence_paths=evidence_paths,
             build_step=build_step,
+            runtime_kind=runtime_kind,
         ),
         github,
         targets,
@@ -1113,24 +1159,31 @@ def resolve_invocation_context(
         forge = load_forge_config(selected, require_orchestration=True)
         _refuse_unregistered_project(forge, current)
         project_name = _project_for_directory(forge, current)
+        git_scope = (
+            _git_scope(forge.orchestration.project_configs[project_name].parent)
+            if project_name and forge.orchestration is not None else {}
+        )
         return InvocationContext(
             config_path=selected,
             config_kind="orchestration",
             cmru_root=selected.parent.resolve(),
             project_name=project_name,
             scope="project" if project_name else "estate",
+            **git_scope,
         )
     if selected.name == PROJECT_CONFIG_FILENAME:
         forge = load_forge_config(selected)
         project_name = next(iter(forge.projects))
         if not explicit and not _contains(selected.parent, current):
             _error(f"{selected}: current directory is outside the selected project root")
+        git_scope = _git_scope(selected.parent)
         return InvocationContext(
             config_path=selected,
             config_kind="project",
             cmru_root=selected.parent.resolve(),
             project_name=project_name,
             scope="project",
+            **git_scope,
         )
     _error(
         f"CMRU configuration must be named {PROJECT_CONFIG_FILENAME} or "

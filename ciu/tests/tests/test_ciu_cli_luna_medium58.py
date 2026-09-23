@@ -15,6 +15,8 @@ from ciu import cli
 
 def test_thin_health_maps_activation_value_error_to_error_exit(monkeypatch, tmp_path, capsys):
     """An activation validation error is reported without exposing a traceback."""
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("REPO_ROOT", str(tmp_path))
     host = {"ssh_host": "web", "ssh_key": "/key", "known_host": "pinned"}
 

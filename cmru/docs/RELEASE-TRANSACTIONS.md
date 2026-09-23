@@ -3,7 +3,7 @@
 `cmru release` is intentionally safe to start from a busy developer checkout.
 It does not build, tag, or publish from that checkout. Instead it takes a
 committed snapshot of `origin/main` and performs all release work in a private
-`cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (SPEC S-CLI.5b; flat,
+`cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree (SPEC S-CLI.5b; flat,
 so the branch name and its `.worktrees/` directory name are identical) — one
 project **at a time**, each project's own cycle running to completion before
 the next project starts (see "Transaction order" below).
@@ -140,7 +140,7 @@ the success, plan-refusal, and child-failure paths, so no path claims that the c
 build copies logs into `<project>/logs/<commit-date>_<full-commit>/` and declared artifact
 directories into `<project>/artifacts/<commit-date>_<full-commit>/`, writes a `build.json`
 SHA-256 inventory marked `publication: forbidden`, then removes its
-`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree. It is local consumption evidence, not a candidate that `publish` may consume. A build
+`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree. It is local consumption evidence, not a candidate that `publish` may consume. A build
 or retention failure keeps that worktree and prints its path; `cmru worktrees` discovers it and
 `cmru cleanup --discard-build-worktree <path> --yes` removes it after inspection. Rebuilding the
 same commit requires explicit deletion of the existing output record with
@@ -165,7 +165,7 @@ caller checkout
     │  lock + reject uncommitted release-path edits + reject local-only main commits
     │  fetch origin/main → immutable snapshot base
     ▼
-cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8> worktree, one project at a time (project_order, changed only):
+cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id> worktree, one project at a time (project_order, changed only):
     ┌─────────────────────────────────────────────────────────────────────┐
     │  optional prepare → generate CHANGES.md → commit declared outputs  │
     │  required tester-unified gate (again if versioning adds a commit)  │
@@ -252,7 +252,7 @@ Suppose only these three have real changes this run (`project_order` puts
 
 End state: `origin/main` is at `<sha C>`; `ciu-v4.9.0` and `nyxloom-v0.2.0` are
 real GitHub Releases with wheels attached; the mdt image on ghcr was built
-against those exact wheel versions. The `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>`
+against those exact wheel versions. The `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>`
 branch/worktree and its origin candidate branch are removed; your local `main` is synced to `<sha C>`.
 That removal is real here because this run actually pushed the backup once at least one
 project changed; a run that never pushes one (a dry run, "nothing to release", or a refused
@@ -289,8 +289,8 @@ promotion loses a concurrent fast-forward race:
 [INFO] Building + pushing modern-debian-tools-python-debug (oci-image — registry, no tag)
 [INFO] ... ghcr push succeeded ...
 [ERROR] release candidate was not promoted to origin/main; the candidate branch was retained
-[ERROR] Release transaction failed; retained .../cmru-release-20260818_195012-all-a3ae580d on branch
-        cmru-release-20260818_195012-all-a3ae580d for inspection/resume.
+[ERROR] Release transaction failed; retained .../cmru-release-20260818_195012-all-abc123 on branch
+        cmru-release-20260818_195012-all-abc123 for inspection/resume.
 ```
 
 `origin/main` remains at `<sha B>` (nyxloom's completed commit); `ciu-v4.9.0`
@@ -353,7 +353,7 @@ The following release gates are now declared through `cmru tester-gate`:
 | Project | Current state | Required follow-up |
 |---|---|---|
 | ciu | Full pytest coverage floor | `run-ciu-tests.py` |
-| cmru | Full unit/contract suite | `pytest tests -q` |
+| cmru | Full R0-R3 suite, coverage, mutation, and canary | `./run-gate.py gate` |
 | nyxloom | Full unit/contract suite | `pytest tests -q` |
 | MDT | Source-first release-flow and OCI-staging contracts | focused `unittest` modules |
 | pwmcp | Resolver and builder contracts | `pytest tests -q` |

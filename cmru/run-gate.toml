@@ -1,16 +1,18 @@
 # =============================================================================
 # cmru project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml; judgment
-# policy lives in assay.toml [lanes.cmru] (R0 — see that file for why higher
-# rigor is not yet declared here). The release-gate conjunction is lane
+# policy lives in assay.toml [lanes.cmru] (R0-R3: full Python rigor ladder).
+# The release-gate conjunction is lane
 # `gate`; cmru.toml [steps.test] points at it and owns NO test logic itself.
+# The lanes use a 2g hard ceiling and ample swap for mutation campaigns. The
+# current run-gate revision has no cgroup-v2 memory.high placement actuator;
+# this file therefore records only limits it can actually pass and verify.
 # See run-gate-project/SPEC.md.
 #
 # RG-20 resources: every container lane declares its RAM so gate admission
-# can sum concurrent gates against the dev-tier slice budget. Values mirror
-# the proven CMRU_TESTER_MEMORY=1g / _MEMORY_SWAP=16g pattern: a tight RAM
-# cap keeps bursts from cascading into co-resident live services, ample swap
-# absorbs transients without OOM kills.
+# can sum concurrent gates against the dev-tier slice budget. The 2g hard cap
+# leaves room for the mutation campaign while 16g of swap absorbs transients
+# without OOM kills.
 # =============================================================================
 schema_version = 1
 
@@ -18,24 +20,24 @@ schema_version = 1
 kind = "assay"
 assay_lane = "cmru"                 # -> assay.toml [lanes.cmru]
 environment = "tester-unified"
-budget = "20m"
+budget = "8h"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
 # verdict records the exact runtime assay version and source commit.
 
 [lanes.assay.resources]
-memory = "1g"
+memory = "2g"
 memory_swap = "16g"
 
 [lanes.coverage]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
 [lanes.coverage.resources]
-memory = "1g"
+memory = "2g"
 memory_swap = "16g"
 
 # Mutation base = the PREVIOUS cmru release tag, resolved at gate time — NOT
@@ -50,23 +52,23 @@ memory_swap = "16g"
 [lanes.mutation]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; mkdir -p .assay; printf '{\"status\": \"skipped\", \"reason\": \"no-changed-source\", \"base\": \"%s\"}\\n' \"$BASE\" > .assay/mutation-cmru.json; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- env PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = ["bash", "-c", "cd {worktree}/cmru && /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; mkdir -p .assay; printf '{\"status\": \"skipped\", \"reason\": \"no-changed-source\", \"base\": \"%s\"}\\n' \"$BASE\" > .assay/mutation-cmru.json; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- env PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "4h"
 artifacts = [".assay/mutation-cmru.json"]
 
 [lanes.mutation.resources]
-memory = "1g"
+memory = "2g"
 memory_swap = "16g"
 
 [lanes.canary]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "20m"
 artifacts = [".assay/coverage-canary-cmru.json"]
 
 [lanes.canary.resources]
-memory = "1g"
+memory = "2g"
 memory_swap = "16g"
 
 # KI-25: get.py enroll's security-critical container oracles (O2/O3) -- real
@@ -110,4 +112,7 @@ kind = "command"
 environment = "bare-host"
 argv = ["bash", "-c", "cd {worktree}/cmru && ./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary && ./run-gate.py --worktree {worktree} enroll"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
-budget = "5h"
+# The conjunction includes the 8h native R0-R3 lane plus the retained
+# coverage/mutation/canary/enroll evidence lanes; this is advisory but must not
+# understate the declared work.
+budget = "14h"

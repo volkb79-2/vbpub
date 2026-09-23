@@ -12,7 +12,9 @@ shipped loader and the closed public vocabulary.
 from __future__ import annotations
 
 import re
+import runpy
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -168,3 +170,28 @@ def test_every_cross_document_anchor_resolves():
                     f"in {path_part}"
                 )
     assert failures == []
+
+
+def test_workspace_identity_spec_keeps_export_and_authority_distinct():
+    spec = (REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "`ciu.env` is a legacy export, and never an internal source of facts." in spec
+    assert "Root selection and generated identity facts are" in spec
+    assert "Derived identity has one source." in spec
+    assert "a pre-set environment value always wins" not in spec
+
+
+def test_assay_lane_declares_the_complete_rigor_ladder():
+    lane = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["ciu"]
+    assert lane["rigor"] == ["R0", "R1", "R2", "R3"]
+    assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
+    assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
+    assert lane["judge"]["mutation"]["jobs"] == 1
+    assert lane["judge"]["mutation"]["liveness"] is True
+    helper = runpy.run_path(str(REPO_ROOT / "run-ciu-tests.py"))
+    assert lane["argv"][1:] == helper["pytest_args"]("0")
+    assert "--maxfail=1" in lane["argv"]
+    assert lane["judge"]["canary"]["mechanism"] == "import-break"
+    spec = (REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "--maxfail=1" in spec and "liveness monitoring" in spec
+    assert "active liveness" in readme

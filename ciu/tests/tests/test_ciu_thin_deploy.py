@@ -31,6 +31,12 @@ def _successful_remote_config_load(monkeypatch):
     monkeypatch.setattr(cli_mod, "_load_remote_config", lambda _root: {})
 
 
+@pytest.fixture(autouse=True)
+def _cli_ciu_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ciu.global.defaults.toml.j2").touch()
+
+
 class TestResolveActivationCommand:
     def test_string_entrypoint_appends_verb(self):
         cfg = {"activate": "sh deploy/activate.sh"}

@@ -99,7 +99,11 @@ def _write_ciu_env(tmp_path: Path) -> None:
     identity record and REGENERATE one, deriving a network name from the tmp
     path instead of the `budget-net` this suite pins.
     """
-    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+    from ciu.workspace_env import (
+        GENERATED_FACTS_KEYS,
+        MACHINE_FACT_ENV_KEYS,
+        write_generated_facts,
+    )
 
     body = "\n".join(
         f'export {key}="{os.environ[key]}"'
@@ -115,7 +119,11 @@ def _write_ciu_env(tmp_path: Path) -> None:
         physical_repo_root=os.environ["PHYSICAL_REPO_ROOT"],
         network=os.environ["DOCKER_NETWORK_INTERNAL"],
     )
-    write_generated_facts(tmp_path, facts)
+    machine = {
+        key: os.environ.get(env_key, "")
+        for key, env_key in MACHINE_FACT_ENV_KEYS.items()
+    }
+    write_generated_facts(tmp_path, facts, machine_facts=machine)
 
 
 def _write_native_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

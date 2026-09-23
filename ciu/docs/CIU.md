@@ -66,15 +66,15 @@ selected by the active/explicit profile; it deliberately has no `--dir` flag.
 
 | Command | Relevant options |
 |---|---|
-| `ciu env generate` · `ciu env print` | `--define-root PATH` (alias: `--root-folder`) |
-| `ciu render` | `--profile NAME`, `--define-root PATH` |
+| `ciu env generate` · `ciu env print` | `--root-folder PATH` |
+| `ciu render` | `--profile NAME`, `--root-folder PATH` |
 | `ciu up` | `--profile NAME` \| `--dir PATH` \| `--layout NAME`; `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; remote: `--host NAME`, `--thin`, `--bootstrap`, `--rollback` |
 | `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors`, `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.instance.toml.j2` / `ciu.instance.generated.toml`) |
 | `ciu secrets list\|reset` | `-d PATH`; `reset` also accepts `--name N`, `-y` |
 | `ciu check` | `--profile NAME`, `--phases N,M`, `--live` (also probe live state) |
 | `ciu graph` | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu worktree <action>` | `create LOGICAL --prefix P --feature F [--json]`; `adopt LOGICAL PATH [--json]`; `ensure LOGICAL [--json]`; `rm LOGICAL -y [--force] [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--json]`; `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` |
-| `ciu provenance` | `--ignore-mismatch` (alias `--force`), `--no-preflight`, `--json`, `--define-root PATH` |
+| `ciu provenance` | `--ignore-mismatch` (alias `--force`), `--no-preflight`, `--json`, `--root-folder PATH` |
 | `ciu capabilities` | `--json` |
 
 For a single-stack dry run use `ciu up --dir <stack> --dry-run`. With that
@@ -140,8 +140,10 @@ ciu up --dir <stack> --shipped    # through CIU: adds the wiring below
 `ciu up --dir <stack> --shipped` is a passthrough that **skips** the stack config requirement and
 all secret / overlay / configfile steps, but still:
 
-- loads the workspace environment — machine facts from `ciu.env`, the six
-  identity facts seeded from `[ciu.instance.generated]` (S3.1c clause 2a) — so
+  - loads the workspace environment — machine facts from
+  `[ciu.instance.machine]`, the six identity facts seeded from
+  `[ciu.instance.generated]` (S3.1c clause 2a), with `ciu.env` retained only as
+  the shell-export surface — so
   the compose file's `${VAR}` interpolation resolves the same UID/GID, network
   name and physical paths as the native path,
 - ensures and (in a devcontainer) attaches the workspace network [S2.8],
@@ -212,7 +214,7 @@ The table below is the execution order for a single-stack `ciu up --dir <stack>`
 
 | Step | What happens | Spec |
 |---|---|---|
-| 1 | Load the workspace environment (machine facts from `ciu.env`, identity seeded from `[ciu.instance.generated]`); abort on missing required keys | S2.1–S2.2, S3.1c |
+| 1 | Load the workspace environment (machine facts from `[ciu.instance.machine]`, identity seeded from `[ciu.instance.generated]`, and `ciu.env` used only as shell-export compatibility); abort on missing required keys | S2.1–S2.2, S3.1c |
 | 2 | Render global chain: `ciu.global.defaults.toml.j2` → `ciu.global.toml.j2` → merged `ciu.global.toml` | S3.1–S3.3 |
 | 3 | Render stack: `ciu.defaults.toml.j2` → `ciu.toml.j2` → `ciu.toml` (preserving `[state]`) | S3.1–S3.4 |
 | 4 | Deep-merge global + stack config | S3.3 |
@@ -534,8 +536,9 @@ def run(config: dict, ctx) -> dict:
 
 ## Workspace Environment (`ciu.env`) [S2]
 
-`ciu.env` is the machine identity layer — autodetected facts about this machine,
-not project configuration [S2.7]. **Since 7.7.0 it is not where CIU reads the
+The generated-facts document is the machine identity layer — autodetected facts
+about this machine, not project configuration [S2.7]. `ciu.env` is the
+shell-export compatibility surface. **Since 7.7.0 it is not where CIU reads the
 six INSTANCE identity facts** (`REPO_NAME`, `INSTANCE_ID`,
 `DOCKER_NETWORK_INTERNAL`, `PHYSICAL_REPO_ROOT`, `REPO_ROOT`, `PUBLIC_FQDN`):
 those come from `[ciu.instance.generated]` and are seeded into every verb's
@@ -567,7 +570,7 @@ Always-required keys [S2.2]:
 
 | Key | Detected from |
 |---|---|
-| `REPO_ROOT` | `--define-root` (wins outright) → walk-up to `ciu.global.defaults.toml.j2`, REFUSING if it disagrees with a pre-set `REPO_ROOT` → `REPO_ROOT` env (only if the walk-up finds nothing) → cwd |
+| `REPO_ROOT` | explicit `--root-folder` → nearest `ciu.global.defaults.toml.j2` above the invocation directory; ambient `REPO_ROOT` is never a selector |
 | `PHYSICAL_REPO_ROOT` | pre-set env (only if consistent with mountinfo, or mountinfo absent) → per-repo longest-prefix match of `REPO_ROOT` in `/proc/self/mountinfo` → `devcontainer.local_folder` label via `docker ps` (container-origin fallback) → native: `= REPO_ROOT` |
 | `DOCKER_NETWORK_INTERNAL` | `<repo-name>-<instance-id>-network` |
 | `CONTAINER_UID` / `CONTAINER_GID` | current user UID / `DOCKER_GID` |

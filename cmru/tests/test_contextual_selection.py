@@ -18,6 +18,9 @@ description = "{name} project"
 prefix = "{name}-v"
 artifacts = ["wheel"]
 
+[runtime]
+kind = "none"
+
 [project.version]
 strategy = "scm"
 bump = "patch"

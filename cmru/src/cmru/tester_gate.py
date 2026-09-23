@@ -68,15 +68,13 @@ def _git_common_dir(repo_root: Path) -> Path | None:
     Returns ``None`` for an ordinary (non-worktree) checkout, where the
     mounted tree already contains everything git needs.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "--git-common-dir"],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
+    from cmru.transaction import _common_git_dir, _shared_worktree
+
+    shared = _shared_worktree()
+    try:
+        common = _common_git_dir(repo_root)
+    except shared.WorkspaceError:
         return None
-    common = Path(result.stdout.strip())
-    if not common.is_absolute():
-        common = (repo_root / common).resolve()
     if common == (repo_root / ".git").resolve():
         return None
     return common
@@ -100,18 +98,16 @@ def _resolve_worktree_context(invocation_root: Path, relative_cwd: str) -> tuple
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("--cwd must be a relative path inside the current worktree")
 
-    result = subprocess.run(
-        ["git", "-C", str(invocation_root), "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
+    from cmru.transaction import _shared_worktree
+
+    shared = _shared_worktree()
+    try:
+        repo_root, _common = shared.discover_git_root(invocation_root)
+    except shared.WorkspaceError as exc:
         raise SystemExit(
             "tester-gate: refusing to launch — the caller is not inside a Git worktree; "
             "the gate must mount the complete repository, not an inferred subtree."
-        )
-    repo_root = Path(result.stdout.strip()).resolve()
+        ) from exc
     target = (invocation_root / relative).resolve()
     try:
         container_relative = target.relative_to(repo_root)

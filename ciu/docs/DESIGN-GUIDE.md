@@ -5,6 +5,36 @@ surface, not just how to use it. The authoritative normative contract is
 [SPEC.md](SPEC.md) (§S16.4, §S16.5); the adoption walkthrough is
 [CONSUMERS.md](CONSUMERS.md); the capability list is `ciu capabilities`.
 
+## Workspace and root identity
+
+The Git worktree and a CIU root are different scopes. The shared workspace
+library derives a six-character lower-case base-36 identity from the canonical
+physical checkout path; CIU derives a second identity from each root's
+physical path. This prevents two same-named stacks below different roots from
+joining one Compose project or network. A collision is a refusal naming both
+paths, because choosing one would certify an ambiguous runtime owner.
+
+Worktree lifecycle uses committed `ciu.global.defaults.toml.j2` markers from
+the selected base commit. The optional, ignored
+`ciu.global.instance.toml.j2` overlay is deliberately not a discovery marker:
+it is user-owned state and may not exist in a newly created checkout. The
+workspace operation therefore prepares all committed roots, while ordinary
+stack verbs resolve the nearest root above their invocation directory.
+
+Root selection is explicit or derived: `--root-folder` wins, then the nearest
+marker above `pwd`/`--dir`; a missing marker refuses. Ambient `REPO_ROOT` is an
+export for child processes, not a selector. This closes the cross-checkout
+leak where a shell sourced from one checkout caused a command in another to
+name and clean the wrong runtime.
+
+Generated identity facts have one owner and one path:
+`<ciu-root>/ciu.instance.generated.toml`, with
+`[ciu.instance.generated].schema_version = 2` and the six required string
+facts plus the complete `[ciu.instance.machine]` table. Reads are exact-path
+and strict; malformed or wrong-version facts are not replaced by a sibling
+file, ambient variables, or legacy `ciu.env`. `ciu.env` remains an export-only
+compatibility file for shell consumers.
+
 ## Why a versioned, closed JSON surface at all
 
 CIU's worktree lifecycle is an *environment provider* for human tools, IDEs,
@@ -32,13 +62,16 @@ replaces them with two explicit contracts:
 
 ## Why Git facts are freshly derived, never frozen or guessed
 
-The durable instance record (`ciu.worktree-instance.json`) deliberately stores
+The CIU adapter record (`ciu.worktree-instance.json`) deliberately stores
 **no current HEAD** and no derived state that Git already owns (decision
-D-003). It stores only identity facts CIU created: logical name, display name,
+D-003). It stores CIU's compatibility-facing facts: logical name, display name,
 branch, Git path, CIU-root offset, allocation time, base reference, lifecycle
-state, and runtime identity. Inspection (`ciu worktree inspect`) therefore
-re-derives current Git facts from the live `git worktree list` and
-`git status --porcelain` every time.
+state, and runtime identity. The neutral family record at
+`<git-common-dir>/.workspace-instances/<workspace-id>.json` owns generic Git
+lifecycle, physical identity, and leases; CIU mirrors the lease into its
+historical record so existing S16 JSON and lease consumers remain compatible.
+Inspection (`ciu worktree inspect`) therefore re-derives current Git facts from
+the live `git worktree list` and `git status --porcelain` every time.
 
 This split has one rule: **a mismatch is a refusal, never a repair.** If the
 record says branch `feature-x` but Git registers `main`, or the record's
@@ -56,8 +89,9 @@ reported as a refusal (`[S16] could not read git status`), never collapsed into
 
 ## Why `env generate` never trusts ambient identity values (CIU-41)
 
-`ciu.env` is the machine-identity record every later ciu command trusts, so
-its generation must be immune to the shell that happens to run it. The
+`ciu.instance.generated.toml` is the machine-identity record every later ciu
+command trusts; `ciu.env` is only the shell/export surface, so generation must
+be immune to the shell that happens to run it. The
 documented convenience pattern — a login shell sourcing a checkout's
 `ciu.env` — means an agent's non-interactive shell carries ANOTHER checkout's
 `DOCKER_NETWORK_INTERNAL`; the pre-2026-08 generator adopted that ambient
@@ -72,46 +106,20 @@ value only when consistent; on mismatch warn naming the ignored value and the
 S16.1 remedy. The strict alternative ("ignore ambient outright") was rejected
 because consistency-checking keeps deliberate pinning working while still
 failing safe, and because the warning text is the teaching moment for
-`worktree add --shared-infra` — which is the *supported* mechanism for
+`worktree create --shared-infra` — which is the *supported* mechanism for
 reusing another instance's infra (per-service selective join with validation),
 not whole-instance network inheritance.
 
-## Why `dev`/`worktree` refuse an ambient REPO_ROOT that disagrees with the derived root (CIU-53)
+## Why ambient `REPO_ROOT` is never a selector
 
-The section above closes the masked-default hazard for the identity tuple
-`env generate` writes. `REPO_ROOT` itself carries the SAME hazard one level
-up, for a DIFFERENT check: `dev.resolve_repo_root` (consumed by `ciu dev` and
-every `ciu worktree *` verb) decides which repo a command operates on in the
-first place, before any identity is derived or read. The documented
-convenience pattern — a login shell sourcing a checkout's `ciu.env` — means an
-operator's or agent's shell can carry ANOTHER checkout's `REPO_ROOT` while
-they stand inside a completely different, real CIU repo. The pre-fix
-resolver checked that ambient value before even `--define-root`, so it
-silently outranked both an explicit flag AND a successful derivation from
-where the invocation actually happened — this is exactly how an operator
-standing in one repo, with no `--define-root`, had a `ciu worktree list`
-answered with an unrelated sibling checkout's worktrees.
-
-The fix reorders and extends the S2.7 refined-precedence pattern
-(`_compute_network_name` above): `--define-root` always wins outright (no
-consistency check — an explicit flag is not second-guessed); otherwise CIU
-derives by walking up from cwd for `ciu.global.defaults.toml.j2`. Where
-`env generate`'s identity tuple WARNS on a mismatch and proceeds with the
-derived value (the value is about to be freshly written to `ciu.env` anyway),
-`resolve_repo_root` REFUSES instead: it feeds destructive verbs directly
-(`worktree rm`, `branches -y`, `clean`) in the SAME invocation, with no
-freshly-generated file downstream to correct a wrong guess. Silently picking
-either value — the ambient one (today's bug) or the derived one (a new,
-different surprise for an operator who set `REPO_ROOT` on purpose for a
-legitimate reason) — trades one masked default for another. A hard stop
-naming both paths and three remedies (unset `REPO_ROOT`, pass
-`--define-root` explicitly, or `cd` into the intended repo) is the only
-response that never silently operates on the wrong repo. Only when the
-walk-up finds NOTHING at all — cwd is not inside any CIU repo, so there is no
-derived answer to disagree with — does CIU fall back to ambient `REPO_ROOT`,
-unchanged from today: this is the one case where trusting an already-sourced
-`ciu.env` from an unrelated location is a reasonable convenience rather than
-a masked default, since there is no different, correct answer being hidden.
+`dev.resolve_repo_root` and every CIU worktree verb answer a destructive
+question: which checkout am I operating on? A login shell may carry another
+checkout's `REPO_ROOT`, so treating that variable as a fallback can select a
+real but unrelated Git family. CIU therefore derives from the nearest
+`ciu.global.defaults.toml.j2` above cwd/`--dir`, or uses an explicit
+`--root-folder`; with neither fact it refuses. `REPO_ROOT` is written to child
+processes only after that decision. This makes a stale shell export unable to
+redirect `list`, `rm`, `clean`, or runtime naming.
 
 ## Why identity facts moved into a real, gitignored FILE — not a Jinja global (CIU-60)
 
@@ -323,8 +331,8 @@ survived a printed `clean complete`. Three shapes were considered:
 2. **Keep the basename fallback, computed and passed as `-p`** — up/clean
    agree by construction, but the cross-checkout collision class survives.
 3. **Derive the name from workspace identity** (`REPO_NAME-INSTANCE_ID-stack`
-   from THIS checkout's own record, exact-path read — `ciu.env` then, the
-   generated table since CIU-75) — adopted. Unique per
+   from THIS checkout's own generated-facts record, read by exact path) —
+   adopted. Unique per
    checkout AND per stack; up and clean call the same function; a checkout
    that cannot produce the name refuses loudly instead of inventing one.
 
@@ -415,7 +423,7 @@ refuse unknown members — fail-closed in both directions.
 
 ## Why one envelope and one closed vocabulary for every document
 
-`create`/`ensure`/`adopt`/`add`, `inspect`, `list`, and `remove` all speak the
+`create`/`ensure`/`adopt`, `inspect`, `list`, and `remove` all speak the
 same envelope: `schema_version`, `operation`, `status`, `instance` (the
 persisted record), plus `git` where fresh facts apply. There is exactly one
 place a consumer must learn the shape, and the closed vocabulary is a single
@@ -452,16 +460,16 @@ code path it names, or not at all.
 ## Why `up` and `exec` take one exact selected instance
 
 A worktree family has one primary checkout and many linked ones; each linked
-checkout is a distinct CIU instance with its own `INSTANCE_ID`, network, and
-`REPO_ROOT` (a hash of the *physical* path, S2). Running a command "in the
+checkout is a distinct CIU instance with its own six-character base-36
+`INSTANCE_ID`, network, and `REPO_ROOT`, derived from the canonical *physical*
+path (S2). Running a command "in the
 worktree" from the wrong process environment is therefore the same failure as
 the one inspection guards against: the ambient `REPO_ROOT` describes the
 PRIMARY checkout, so a naive `cd <worktree> && ciu up` would argue about which
 instance is real, and could act on the wrong one.
 
 Both `worktree up` and `worktree exec` therefore build the child environment
-from the SELECTED instance's own facts, read by exact path (`ciu.env` before
-CIU-75, `[ciu.instance.generated]` since), after stripping every CIU identity
+from the SELECTED instance's own generated facts, read by exact path, after stripping every CIU identity
 key from the ambient environment. The selected value must
 agree with the durable record (`REPO_ROOT` = the record's CIU root, and the
 record's `INSTANCE_ID`/network) — a mismatch refuses rather than running with
@@ -549,12 +557,20 @@ it retains the immutable `.pyz` + `.sha256` boundary and verifies it before
 the lane. Baking Assay into `tester-unified` remains wrong for both: an image
 rebuild would silently change every consumer at once.
 
-**Why R1 with `repository-minus-unsafe-symlinks`.** The gate's second half
-(the old `nyxloom.coverage_gate` changed-line floor) exists so a changed
+**Why the full R0-R3 ladder with `repository-minus-unsafe-symlinks`.** The
+gate's R0 command remains the full suite and its R1 half (the old
+`nyxloom.coverage_gate` changed-line floor) exists so a changed
 executable line can never ship uncovered — and pragma-excluded lines are
 invisible to `--cov-fail-under=100`, so only a *diff-aware* judgment can
 enforce "no pragma on changed code". Assay's R1 reproduces exactly that
-floor and adds a verifiable verdict. R1+ runs in an isolated snapshot of the
+floor and adds a verifiable verdict. R2 and R3 then exercise the same selected
+source with native mutation and an import-break canary, so coverage, mutation,
+and known-bad rejection cannot drift into separate unjudged commands. R2 also
+enables Assay's liveness monitor, and `--maxfail=1` stops a failing mutant at
+its first failed test; the successful baseline remains a full-suite run. This
+prevents one mutation's failure cascade from reaching unrelated later tests.
+R1+ runs
+in an isolated snapshot of the
 committed tree; this monorepo tracks exactly three absolute-target
 security-fixture symlinks (topos), which the snapshot substrate refuses, so
 the lane declares them via the documented monorepo shape. That carries a

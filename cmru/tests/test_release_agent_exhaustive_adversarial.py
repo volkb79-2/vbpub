@@ -172,7 +172,7 @@ def test_transaction_secret_overlay_is_private_and_rejects_outside_config(tmp_pa
     transaction.copy_secret_overlays(root, ws, [config])
     copied = child / "cmru.secret.toml"
     assert copied.read_text() == "token = 'secret'\n" and copied.stat().st_mode & 0o777 == 0o600
-    with pytest.raises(RuntimeError, match="outside repository"):
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
         transaction.copy_secret_overlays(root, ws, [tmp_path / "outside.toml"])
     _git(root, "worktree", "remove", "--force", str(child)); _git(root, "branch", "-D", "cmru/release/secret")
 

@@ -22,6 +22,7 @@ def test_cli_rejects_anonymous_generated_hostdir_before_daemon_or_hook_side_effe
     an unintended location.  The command must therefore fail before Docker
     reachability or hook/deployment work begins.
     """
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     stack = tmp_path / "stack"
     stack.mkdir()
     merged = {
@@ -53,6 +54,6 @@ def test_cli_rejects_anonymous_generated_hostdir_before_daemon_or_hook_side_effe
         lambda *_args, **_kwargs: pytest.fail("invalid hostdir must not run hooks"),
     )
 
-    assert engine.main(["--dry-run", "-d", str(stack), "--define-root", str(tmp_path)]) == 2
+    assert engine.main(["--dry-run", "-d", str(stack), "--root-folder", str(tmp_path)]) == 2
     assert "hostdir section found without service name" in capsys.readouterr().out
     assert list(stack.iterdir()) == []

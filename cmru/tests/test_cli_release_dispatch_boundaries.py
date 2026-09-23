@@ -17,8 +17,8 @@ def test_child_release_args_replaces_parent_only_options_and_preserves_operation
         config, repo,
     )
     assert args == ["release", "demo", "--dry-run", "--config", "cmru.orchestration.toml"]
-    with pytest.raises(ValueError, match="tracked inside"):
-        cli._child_release_args([], tmp_path / "outside.toml", repo)
+    outside = tmp_path / "outside.toml"
+    assert cli._child_release_args([], outside, repo) == ["--config", str(outside.resolve())]
 
 
 def test_cleanup_project_step_dry_run_and_execution_pass_version_and_environment(monkeypatch, tmp_path, capsys):

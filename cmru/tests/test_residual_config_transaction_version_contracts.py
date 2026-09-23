@@ -34,6 +34,8 @@ owner_type="org"
 [targets]
 host="github"
 registry=["ghcr.io"]
+[runtime]
+kind="none"
 [project]
 id="demo"
 description="demo"
@@ -127,7 +129,7 @@ def test_transaction_create_workspace_fetches_when_base_is_not_supplied(tmp_path
 def test_transaction_secret_overlay_and_result_record_fail_closed(tmp_path):
     root = repo(tmp_path); workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/x", "a" * 40)
     config_path = tmp_path / "outside" / "cmru.toml"; config_path.parent.mkdir()
-    with pytest.raises(RuntimeError, match="outside repository"):
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
         transaction.copy_secret_overlays(root, workspace, [config_path])
     scope = transaction._scope_dir(root); scope.mkdir(); (scope / "x.results.json").write_text("[]")
     with pytest.raises(RuntimeError, match="invalid release result"):

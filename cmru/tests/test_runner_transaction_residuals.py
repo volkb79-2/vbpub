@@ -531,14 +531,19 @@ def test_handlers_and_tester_gate_reject_or_report_boundary_conditions(tmp_path,
     ))
     assert "Published demo 2.0.0" in capsys.readouterr().out
 
-    with patch.object(tester_gate, "subprocess") as process:
-        process.run.return_value = SimpleNamespace(returncode=0, stdout="/repo\n")
-        with pytest.raises(ValueError, match="inside"):
-            tester_gate._resolve_worktree_context(tmp_path, "../outside")
-    with patch.object(tester_gate, "subprocess") as process:
-        process.run.return_value = SimpleNamespace(returncode=0, stdout=str(tmp_path / "other") + "\n")
-        with pytest.raises(ValueError, match="inside"):
-            tester_gate._resolve_worktree_context(tmp_path, "child")
+    shared = transaction._shared_worktree()
+    monkeypatch.setattr(
+        shared, "discover_git_root", lambda _path: (tmp_path, tmp_path / ".git")
+    )
+    with pytest.raises(ValueError, match="inside"):
+        tester_gate._resolve_worktree_context(tmp_path, "../outside")
+    monkeypatch.setattr(
+        shared,
+        "discover_git_root",
+        lambda _path: (tmp_path / "other", tmp_path / "other" / ".git"),
+    )
+    with pytest.raises(ValueError, match="inside"):
+        tester_gate._resolve_worktree_context(tmp_path, "child")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "3G")
     assert tester_gate.resolve_memory_swap(None) == "3G"
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_: (tmp_path, "."))

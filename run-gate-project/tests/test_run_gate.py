@@ -1035,6 +1035,7 @@ class TestArgvConstruction:
         run_call = docker_runs(log)[0]
         idx = lambda flag: run_call.index(flag)  # noqa: E731
         assert run_call[0:3] == ["run", "-d", "--name"]
+        assert run_call[4] == "--init"
         assert run_call[idx("--name") + 1].startswith("run-gate-repo-suite-")
         assert run_call[idx("--cgroup-parent") + 1] == "dev-gates.slice"
         assert run_call[idx("-e") + 1] == f"{CGROUP_VAR}=dev-gates.slice"
@@ -1051,6 +1052,36 @@ class TestArgvConstruction:
         assert "cd /wt/tree/proj && echo gate-ran" in inner  # {worktree} substituted
         # transparency: the docker argv is printed, never buried
         assert "docker argv:" in proc.stdout
+
+    def test_ephemeral_probe_requests_docker_init_reaper(self, tmp_path, monkeypatch):
+        """RG-15/RG-26: probes also run a shell as PID 1.
+
+        The probe is short-lived, but it can exercise the same imported
+        tooling as a judged lane. It must therefore get the same orphan and
+        zombie protection as the detached lane rather than being a second
+        unreviewed Docker launch shape.
+        """
+        repo = tmp_path / "repo"
+        worktree = tmp_path / "worktree"
+        monkeypatch.setattr(run_gate, "physical_path", lambda path: tmp_path / "host")
+        monkeypatch.setattr(
+            run_gate,
+            "dual_mount_flags",
+            lambda namespace, physical: ["-v", f"{physical}:{physical}"],
+        )
+        argv = run_gate.build_env_probe_argv(
+            "docker",
+            {"image": "tester-unified:local"},
+            "tester-unified",
+            repo,
+            worktree,
+            "test source",
+            "dev-gates.slice",
+            "true",
+        )
+        assert argv[:5] == [
+            "docker", "run", "--rm", "--init", "--cgroup-parent",
+        ]
 
     def test_assay_lane_inner_shape_and_verdict_line(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -3629,6 +3660,24 @@ class TestResourceAdmission:
             f"{textwrap.indent(textwrap.dedent(resources), '    ').rstrip()}\n")
         proj = make_project(repo, cfg)
         return repo, proj
+
+    def test_consumer_lane_schema_example_uses_the_shipped_loader(self, tmp_path):
+        consumers = (RUN_GATE_DIR / "CONSUMERS.md").read_text(encoding="utf-8")
+        match = re.search(
+            r"## Lane schema .*?```toml\n(.*?)```", consumers, re.DOTALL
+        )
+        assert match is not None
+        example = match.group(1)
+        parsed = tomllib.loads(example)
+        assert parsed["schema_version"] == 1
+        resources = parsed["lanes"]["suite"]["resources"]
+        assert resources["memory"] == "2g"
+        assert resources["memory_swap"] == "16g"
+        repo = make_repo(tmp_path)
+        project = make_project(repo, example)
+        proc = run_tool(project, "--list")
+        assert proc.returncode == 0, proc.stderr
+        assert "suite" in proc.stdout
 
     @pytest.mark.parametrize("snippet", [
         'memory = "512m"\nwat = 1',

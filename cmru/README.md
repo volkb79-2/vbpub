@@ -1,6 +1,6 @@
 # cmru — Configurable Multi Release Utility
 
-One release CLI for a **monorepo of independently-versioned products** that share a
+One release CLI for a **central registry of independently-versioned products** that share a
 **single** GitHub Releases page. cmru gives each product its own `<prefix><semver>` tag line and a monorepo-safe per-product "latest" (GitHub's repo-global *Latest* badge can only point at one release; cmru's resolver fixes that).
 
 cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags, commits, GitHub Releases, ghcr pruning, the `latest.json` pointer) and calls each project's own `build`/`push`/`clean` step commands for the artifact-specific work. No project logic is hardcoded in cmru.
@@ -44,6 +44,24 @@ the step which makes retained outputs. `commit_generated` lists the only mechani
 outputs CMRU may commit before its gate. This permits a GitHub wheel release, an image-only
 registry publication, or a combined image+bundle release without hidden behavior.
 
+Every project also declares its runtime owner explicitly:
+
+```toml
+schema_version = 1
+
+[runtime]
+kind = "none" # or "ciu"
+```
+
+`none` means the project command owns any one-shot tooling it starts. `ciu`
+means the project step may use the isolated workspace's CIU adapter and must
+declare the CIU roots it needs. CMRU never infers this from Docker or Compose
+commands and refuses a missing or unknown value. The workspace identity is
+passed to steps as `CMRU_WORKSPACE_ID`, together with the workspace path and
+source Git root, so runtime evidence can be tied to the exact candidate.
+The rationale is in [the design guide's Git-family and runtime sections](docs/DESIGN-GUIDE.md#git-family-is-separate-from-cmru-root),
+and the pasteable adoption contract is in [CONSUMERS.md](docs/CONSUMERS.md).
+
 ## Verbs
 
 ```bash
@@ -72,6 +90,13 @@ cmru version                      # print the CMRU version
 cmru --version                    # estate-wide top-level compatibility spelling
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ```
+
+`cmru worktrees` includes retained paths recorded by Git even when they are not
+reachable through the current bind mount. Its `prunable` field reports Git's
+registration marker, not filesystem visibility; the listing preserves the
+reported commit and withholds actions for marked entries. Every offered action
+still validates the exact checkout before changing Git state. See the
+[Git-family design note](docs/DESIGN-GUIDE.md#git-family-is-separate-from-cmru-root).
 
 Both version spellings print exactly one `cmru <version>` identity line to
 stdout and exit 0 without diagnostics on stderr. At every parser depth,
@@ -193,10 +218,13 @@ release tag.
 
 Run `cmru release` from your ordinary checkout—even if unrelated work is in progress.
 cmru fetches `origin/main`, rejects local-only `main` commits that the snapshot would omit,
-and creates a temporary `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree at that
-exact commit — chronologically sortable, and flat, so the `.worktrees/` directory name is
+and creates a temporary `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree at that exact
+commit — chronologically sortable, and flat, so the `.worktrees/` directory name is
 byte-for-byte the branch name (true 1:1, matching ciu's `<prefix>-<YYYYMMDD_HHMMSS>-<feature>`
-naming; the trailing `uuid8` is kept for collision-freedom). Worktrees retained under the
+naming). The shared allocator derives a six-character lower-case base-36 identity from an explicit
+canonical allocation path recorded in the shared workspace record (the final visible basename
+contains that identity, so hashing the basename itself would be circular) and refuses collisions
+while naming both paths. Worktrees retained under the
 older nested `cmru/release/…` naming are still recognised. A local `main` behind the remote is warned about but safe because the
 remote is authoritative. This matters because setuptools-scm sees the
 whole Git worktree: a harmless edit in another project can otherwise make a wheel dirty.
@@ -221,6 +249,10 @@ If another writer advanced remote main, the final candidate promotion fails clos
 artifact step. A failure keeps the branch/worktree for diagnosis; success removes both (after
 optional evidence retention).
 
+When selected products live in independent Git repositories, CMRU runs one isolated transaction
+per Git family. Each repository gets its own lock, branch, workspace identity, and promotion
+result; the coordinated release is ordered but cannot be one atomic cross-repository commit.
+
 `cmru build` uses the same remote snapshot and transaction mechanics but stops before every
 release action. On success it copies project logs to
 `<project>/logs/<commit-date>_<full-commit>/` and declared artifact directories to
@@ -228,7 +260,7 @@ release action. On success it copies project logs to
 inventory and a `publication: forbidden` marker, then removes the worktree. These records are
 gitignored local consumption outputs, not release candidates and not inputs to `cmru publish`.
 If the build or retention fails, CMRU keeps the exact
-`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree and prints its
+`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree and prints its
 path. Run `cmru worktrees` to discover retained build/release worktrees, then use
 `cmru cleanup --discard-build-worktree <path> --yes` only after inspection. An existing output
 coordinate is never overwritten; remove it explicitly with
@@ -257,6 +289,14 @@ immutable artifact and declare it below.
 `[[project.tool_dependencies]]` in `cmru.toml` makes that edge explicit:
 
 ```toml
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[project]
+id = "example-wheel"
+
 [[project.tool_dependencies]]
 project = "assay"                          # a first-party project in this estate
 version = "1.0.0"                          # the pinned version
@@ -365,5 +405,12 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 ## Testing
 
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
-discovers the declared lanes; definitions live in `run-gate.toml`.
+discovers the declared lanes; definitions live in `run-gate.toml`. The
+`assay` lane declares the complete R0-R3 ladder: the full suite and 100%
+line+branch coverage, native mutation, and an import-break canary. The
+selected worktree's Assay source is installed at lane time. Mutation runs
+stop each failing candidate at its first failed test (`--maxfail=1`) and
+enable Assay liveness for stalled pytest candidates; a successful full-suite
+run still executes all tests. `.assay/` verdict/progress artifacts are
+retained as gate evidence.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

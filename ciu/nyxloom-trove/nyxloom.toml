@@ -29,12 +29,13 @@ docs_dir = "docs"
 #
 # The lane (assay.toml) runs CIU's full suite under pytest-cov (whole-source
 # 100% line AND branch via run-ciu-tests.py) inside Assay's isolated snapshot,
-# and Assay itself judges the changed-line floor on base..HEAD plus the
-# coverage artifact (R1). The verdict is retained at .assay/verdict-ciu.json
-# in the bound worktree (gitignored) as review evidence.
+# and Assay itself judges the complete R0-R3 ladder: changed-line coverage on
+# base..HEAD plus the coverage artifact (R1), native Python mutation (R2), and
+# an import-break canary (R3). The verdict is retained at
+# .assay/verdict-ciu.json in the bound worktree (gitignored) as review evidence.
 #
 # Cgroup (estate doctrine): the gate resolves the container slice ONLY from
-# $CGROUP_PARENT_DEV_BACKGROUND (no literal, no fallback — absent is a hard
+# $CGROUP_PARENT_DEV_GATES (no literal, no fallback — absent is a hard
 # error). The LoadState=loaded pre-check runs ONLY where systemd is actually
 # reachable ([ -d /run/systemd/system ] — measured at checkpoint review: the
 # devcontainer ships a systemctl SHIM that exits 0 with advisory stdout, so an
@@ -52,12 +53,12 @@ docs_dir = "docs"
 [gates.tester-unified]
 # SSOT pointer (D-110/D-111): all test definitions live in ciu/run-gate.toml;
 # this entry owns only scheduling policy. run-gate resolves the slice from
-# $CGROUP_PARENT_DEV_BACKGROUND, dual-mounts the repo, and runs the pinned
+# $CGROUP_PARENT_DEV_GATES, dual-mounts the repo, and runs the selected
 # assay lane (assay.toml [lanes.ciu]) in tester-unified.
 argv = ["bash", "-c", "cd {worktree}/ciu && exec ./run-gate.py --worktree {worktree} ciu"]
 phase = "implementation"
 asserts = ["tests-pass", "changed-line-coverage", "canary-verified", "assay-verdict"]
-timeout_seconds = 1800
+timeout_seconds = 57600
 environment = "tester-unified"
 
 [policy]

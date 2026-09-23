@@ -5,6 +5,15 @@ import pytest
 from cmru import cli, transaction
 
 
+@pytest.fixture(autouse=True)
+def fake_git_family(monkeypatch):
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+
+
 def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v", github_token="token")
     config = (
@@ -21,8 +30,9 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: "b" * 40)
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 1)
     workspace_args = {}
+    overlays = []
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace_args.update(kwargs) or workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: overlays.append(args[-1]))
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
@@ -37,7 +47,8 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
     assert exc.value.code == 0
-    assert workspace_args == {"base": "b" * 40, "scope": "demo"}
+    assert workspace_args == {"base": "b" * 40, "scope": "demo", "source_git_root": tmp_path}
+    assert overlays == [[tmp_path / "demo" / "cmru.toml"]]
     output = capsys.readouterr().out
     assert "1 commit(s) behind origin/main" in output
     assert "Release transaction complete" in output

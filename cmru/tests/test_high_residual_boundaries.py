@@ -82,7 +82,7 @@ def test_transaction_digest_tree_is_sorted_and_content_authenticated(tmp_path):
 def test_transaction_workspace_roots_reject_outside_project(tmp_path):
     project = SimpleNamespace(project_root=tmp_path.parent / "outside")
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path, "", "")
-    with pytest.raises(RuntimeError, match="outside repository"):
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
         transaction._project_roots_for_retention(tmp_path, workspace, project, "demo")
 
 

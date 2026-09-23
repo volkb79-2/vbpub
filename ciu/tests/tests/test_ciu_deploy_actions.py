@@ -1488,12 +1488,27 @@ def test_action_clean_preserves_worktree_durable_inputs(monkeypatch, tmp_path):
     config = _teardown_config()
     profile = MagicMock()
     profile.config = config
+    from ciu.workspace_env import (
+        MACHINE_FACT_ENV_KEYS,
+        render_generated_facts_block,
+    )
+
+    machine = {key: "" for key in MACHINE_FACT_ENV_KEYS}
+    machine.update(
+        container_uid="0", container_gid="0", docker_uid="0", docker_gid="0"
+    )
+    generated = "\n".join(render_generated_facts_block(
+        {
+            "repo_name": "repo", "instance_id": "abc123", "network": "repo-net",
+            "physical_repo_root": str(tmp_path), "repo_root": str(tmp_path),
+            "public_fqdn": "",
+        },
+        machine,
+    )) + "\n"
     durable = {
         "ciu.env": 'export INSTANCE_ID="abc123"\n',
         "ciu.global.instance.toml.j2": "[ciu.instance]\nservice_profiles = [\"core\"]\n",
-        "ciu.instance.generated.toml": (
-            '[ciu.instance.generated]\ninstance_id = "abc123"\n'
-        ),
+        "ciu.instance.generated.toml": generated,
         "ciu.worktree-instance.json": '{"schema_version": 1}\n',
     }
     for name, body in durable.items():
@@ -1501,6 +1516,10 @@ def test_action_clean_preserves_worktree_durable_inputs(monkeypatch, tmp_path):
     monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
     monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
     monkeypatch.setattr(deploy, "_remove_project_volumes", lambda cfg=None, **_kw: [])
+    # The generated facts deliberately contain an identity network.  Keep this
+    # unit test focused on durable-file preservation while making the network
+    # invariant deterministic without a Docker daemon.
+    monkeypatch.setattr(deploy, "_network_exists", lambda _name: False)
 
     assert deploy.action_clean(tmp_path, profile, [], ignore_errors=True) == 0
     for name, body in durable.items():

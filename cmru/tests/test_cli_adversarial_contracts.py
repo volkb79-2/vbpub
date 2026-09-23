@@ -111,7 +111,14 @@ def test_controller_engine_errors_are_reported_as_failure(monkeypatch, capsys):
 
 
 def test_worktree_dispatch_refuses_non_git_directory(monkeypatch):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="not git"))
+    shared = cli.transaction._shared_worktree()
+    monkeypatch.setattr(
+        cli,
+        "_current_git_root",
+        lambda: (_ for _ in ()).throw(
+            shared.WorkspaceError("not git", category="git-error")
+        ),
+    )
     with pytest.raises(SystemExit) as error:
         cli.main(["worktrees", "--json"])
     assert error.value.code == 2

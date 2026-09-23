@@ -103,18 +103,19 @@ The gate is orchestration above the released Assay CLI, not a CIU module:
 
 ```
 operator / nyxloomd
-  └─ bash (host): CGP="${CGROUP_PARENT_DEV_BACKGROUND:?}"        (S18.3)
-       └─ systemctl show "$CGP" --property=LoadState  == loaded  (fail-closed)
-            └─ docker run --cgroup-parent="$CGP" tester-unified:local
-                 └─ bash: cd <worktree>/ciu
-                      ├─ sha256sum -c tools/assay/assay-<v>.pyz.sha256   (S18.1)
-                      └─ python tools/assay/assay-<v>.pyz run ciu --file assay.toml
-                           ├─ Assay snapshot (repository-minus-unsafe-symlinks)
-                           ├─ lane argv: run-ciu-tests.py  (100% line+branch)
-                           └─ Assay R1 judges base..HEAD changed-line floor
-                                → .assay/verdict-ciu.json (gitignored evidence)
+  └─ ./ciu/run-gate.py ciu (host; clean-tree check)
+       └─ resolve CGROUP_PARENT_DEV_GATES from the root gate config
+            └─ detached tester-unified container in that cgroup slice
+                 ├─ install Assay from the selected worktree's assay/
+                 └─ assay run ciu --resume --progress .assay/progress-ciu.jsonl
+                      ├─ Assay snapshot (repository-minus-unsafe-symlinks)
+                      ├─ lane argv: python -m pytest (100% line+branch)
+                      ├─ R2 liveness required; argv matches
+                      │  run-ciu-tests.py's pytest_args()
+                      └─ R1 judges base..HEAD changed-line floor
+                           → .assay/verdict-ciu.json (gitignored evidence)
 ```
 
 CIU source never imports Assay and never runs a nyxloom coverage/mutation/
-canary judge; the lane command is CIU's own release runner, and the Assay CLI
-is the sole evidence judge.
+canary judge; run-gate installs Assay from the selected worktree and the Assay
+CLI is the sole evidence judge.

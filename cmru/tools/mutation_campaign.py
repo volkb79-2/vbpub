@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +21,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
+try:
+    from .project_fixture import copy_project_fixture
+except ImportError:  # direct ``python tools/mutation_campaign.py`` execution
+    from project_fixture import copy_project_fixture
 
 OPERATORS = (
     "python:compare-swap",
@@ -29,16 +32,6 @@ OPERATORS = (
     "python:bool-const-flip",
     "python:falsy-swap",
 )
-
-# These tracked repository-root artifacts are part of CMRU's checked-in test
-# contract.  Keep the list explicit: copying a whole monorepo would reintroduce
-# the unrelated hostile Topos fixtures that this consumer-scoped runner avoids.
-ROOT_CMRU_ARTIFACTS = (
-    "cmru.orchestration.sample.toml",
-    "cmru.orchestration.toml",
-    "cmru.project.sample.toml",
-)
-
 
 @dataclass(frozen=True)
 class Result:
@@ -104,23 +97,6 @@ def _relative_project_path(path: str, *, repo_root: Path, project_root: Path) ->
         raise ValueError(f"mutation target {path!r} is outside project root") from exc
 
 
-def _copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path) -> Path:
-    """Copy the tested project plus its checked-in root CMRU artifacts.
-
-    CMRU's own tests intentionally locate these files relative to the project
-    directory's parent.  Copying just ``cmru/`` changes that contract and can
-    make every mutation appear killed by a broken control instead.
-    """
-    for name in ROOT_CMRU_ARTIFACTS:
-        artifact = repo_root / name
-        if not artifact.is_file() or artifact.is_symlink():
-            raise ValueError(f"required root CMRU artifact is not a real file: {artifact}")
-        shutil.copy2(artifact, workspace / artifact.name)
-    copied = workspace / project_root.name
-    shutil.copytree(project_root, copied, symlinks=True)
-    return copied
-
-
 def run(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     test_argv = list(args.test_argv)
@@ -177,7 +153,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         raise RuntimeError("the declared source diff produced no mutation candidates")
 
     with tempfile.TemporaryDirectory(prefix="cmru-mutation-baseline-") as temporary:
-        baseline_root = _copy_project_fixture(
+        baseline_root = copy_project_fixture(
             repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
         )
         baseline = _run(test_argv, cwd=baseline_root)
@@ -193,7 +169,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             job.path, repo_root=repo_root, project_root=project_root
         )
         with tempfile.TemporaryDirectory(prefix="cmru-mutation-") as temporary:
-            candidate_root = _copy_project_fixture(
+            candidate_root = copy_project_fixture(
                 repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
             )
             target = candidate_root / relative

@@ -35,6 +35,9 @@
 # =============================================================================
 schema_version = 1
 
+[runtime]
+kind = "none"
+
 [env]
 RUN_GATE_RELEASE_NOTES = "## run-gate wheel\n\nThe per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script. Stdlib-only — no dependencies.\n\nThe canonical artifact remains the SCRIPT (`run-gate.py`, drift marker `__revision__`); this wheel only wraps the same module for pip-installable consumption and must never become a requirement.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 

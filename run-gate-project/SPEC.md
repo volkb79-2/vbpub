@@ -354,12 +354,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   judged worktree must have zero `git status --porcelain` entries; refusal
   names the count, first entry, and the flag escape.
 - `R-15` **Container lanes** run detached: `docker run -d --name
-  run-gate-<repo>-<lane>-<pid>-<epoch> --cgroup-parent <slice> -e
+  run-gate-<repo>-<lane>-<pid>-<epoch> --init --cgroup-parent <slice> -e
   CGROUP_PARENT_DEV_GATES=<slice> <mounts per R-23>
   [--memory M] <image> bash -c <inner>` — the slice passed BOTH ways
   (`--cgroup-parent` AND `-e`), the repo dual-mounted (physical AND
-  namespace paths — worktree gitfiles), `--rm` never used (explicit
-  `docker rm -f` in a finally).
+  namespace paths — worktree gitfiles), and Docker's init reaper is required
+  so orphaned descendants become reaped instead of accumulating against the
+  gate cgroup's `pids.max`. `--rm` is never used (explicit `docker rm -f` in
+  a finally). The init flag is lifecycle hygiene, not a substitute for the
+  cgroup placement or resource limits.
 - `R-16` **Inner command** (both kinds) starts `set -euo pipefail && git
   config --global safe.directory '*' && ...`. Command kind: the lane argv
   (`{worktree}`-substituted, shell-quoted) appended. Assay kind: source mode
@@ -641,7 +644,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     knows how to reach an environment for a short read-only command; it
     reuses `resolve_container_name()` (exec) and
     `physical_path()`/`dual_mount_flags()` (ephemeral). A probe is attached
-    and captured rather than detached like a lane run (`R-17`), which is safe
+    and captured with Docker's init reaper rather than detached like a lane run
+    (`R-17`), which is safe
     here and only here because a probe's result is a preflight line, never a
     verdict. Ephemeral probes carry `--cgroup-parent` like any container this
     tool starts; where no slice is derivable the probe SKIPs rather than

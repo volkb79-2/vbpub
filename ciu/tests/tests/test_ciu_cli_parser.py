@@ -56,8 +56,8 @@ class TestParseArgumentsFlags:
         assert args.dir == Path("/tmp/service")
         assert args.file == "custom.yml.j2"
 
-    def test_define_root_flag(self):
-        args = parse_arguments(["--define-root", "/tmp/repo"])
+    def test_root_folder_flag(self):
+        args = parse_arguments(["--root-folder", "/tmp/repo"])
 
         assert args.define_root == Path("/tmp/repo")
 
@@ -247,8 +247,7 @@ class TestPerVerbHelp:
             "ensure",
             "idempotent",
             "existing unmanaged linked checkout",
-            "add NAME",
-            "compatibility shorthand",
+            "adopt LOGICAL PATH",
             "worktree up LOGICAL",
             "worktree exec LOGICAL [--target ALIAS] -- ARGV...",
             "worktree rm LOGICAL",
@@ -356,7 +355,7 @@ class TestLocalCliDispatch:
         monkeypatch.setattr(deploy, "action_generate_env", fake_generate)
         monkeypatch.chdir(tmp_path)
 
-        assert self._run(monkeypatch, ["env", "generate", "--define-root", "/repo"]) == 7
+        assert self._run(monkeypatch, ["env", "generate", "--root-folder", "/repo"]) == 7
         assert seen["args"] == (Path("/repo"), tmp_path)
 
     def test_iops_runtime_rejects_negative_values(self, monkeypatch, capsys):

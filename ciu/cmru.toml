@@ -1,5 +1,8 @@
 schema_version = 1
 
+[runtime]
+kind = "ciu"
+
 [env]
 CIU_RELEASE_NOTES = "## CIU CLI wheel\n\nRelease history is generated from the project-scoped source range in `CHANGES.md`.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 

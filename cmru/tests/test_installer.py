@@ -33,6 +33,7 @@ import sys
 import tarfile
 import tempfile
 import textwrap
+import uuid
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 from unittest import mock
@@ -52,6 +53,8 @@ owner_type = "user"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 """
 
 
@@ -2061,21 +2064,21 @@ def rendered_get_py(tmp_path) -> Path:
 def _enroll_container(image: str, script: Path, *, network: str = "bridge") -> Iterator[str]:
     """A short-lived fixture container carrying the rendered installer.
 
-    Placed on the estate's dev-gates cgroup tier and capped, per the shared
-    production host's rules; removed in a finally so a failing assertion never
-    leaves one running.
+    Placed on the estate's gate cgroup tier with a 2 GiB hard RAM cap and ample
+    swap; named for operator visibility
+    and removed in a finally so a failing assertion never leaves one running.
     """
     slice_name = os.environ["CGROUP_PARENT_DEV_GATES"]
+    container = f"cmru-enroll-{os.getpid()}-{uuid.uuid4().hex[:12]}"
     started = subprocess.run(
-        ["docker", "run", "-d",
+        ["docker", "run", "-d", "--init", f"--name={container}",
          f"--cgroup-parent={slice_name}",
-         "--cpus=3", "--memory=1g", "--memory-swap=4g",
+         "--cpus=3", "--memory=2g", "--memory-swap=16g",
          f"--network={network}",
          image, "sleep", "600"],
         capture_output=True, text=True,
     )
-    assert started.returncode == 0, started.stderr
-    container = started.stdout.strip()
+    assert started.returncode == 0, f"{container}: {started.stderr}"
     try:
         copied = subprocess.run(
             ["docker", "cp", str(script), f"{container}:/tmp/get.py"],

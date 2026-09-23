@@ -36,6 +36,8 @@ owner_type="org"
 [targets]
 host="github"
 registry=["{registry}"]
+[runtime]
+kind="none"
 [project]
 id="{name}"
 description="demo"
@@ -61,7 +63,7 @@ commands=[{{label="push",argv=["echo"],cwd="."}}]
 
 
 def central_project_doc(name="demo"):
-    return "schema_version=1\n[project]\n" + project_doc(name).split("[project]\n", 1)[1]
+    return "schema_version=1\n[runtime]\nkind=\"none\"\n[project]\n" + project_doc(name).split("[project]\n", 1)[1]
 
 
 def orch(entry='config="demo/cmru.toml"', order='["demo"]'):
@@ -127,7 +129,7 @@ def test_transaction_build_retention_rejects_empty_artifacts_and_cleanup_manifes
         transaction.delete_retained_build_output(root, project, "demo", output_id, dry_run=False)
 
 
-def test_transaction_retained_release_errors_are_explicit_and_listing_skips_malformed_blocks(tmp_path):
+def test_transaction_retained_release_errors_are_explicit_and_listing_filters_unbranched_entries(tmp_path, monkeypatch):
     root = repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/x", "a" * 40)
     with pytest.raises(RuntimeError, match="unknown project"):
@@ -135,10 +137,20 @@ def test_transaction_retained_release_errors_are_explicit_and_listing_skips_malf
     project = SimpleNamespace(project_root=None, artifact_dirs=[])
     with pytest.raises(RuntimeError, match="project_root"):
         transaction.retain_success_outputs(root, workspace, {"demo": project}, {"demo": "tag"}, retain_logs=False, retain_artifacts=True)
-    raw = "worktree /tmp/not-a-worktree\nHEAD " + "a" * 40 + "\nbranch refs/heads/cmru/release/x\n\nworktree /tmp/no-branch\nHEAD " + "b" * 40 + "\n"
-    with patch.object(transaction, "_git", return_value=raw):
-        listed = transaction.list_cmru_workspaces(root)
-    assert len(listed) == 1 and listed[0].base == ""
+    shared = transaction._shared_worktree()
+    entries = [
+        shared.GitWorktree(
+            path=Path("/tmp/release"), head="a" * 40,
+            branch="cmru/release/x", is_primary=False,
+        ),
+        shared.GitWorktree(
+            path=Path("/tmp/detached"), head="b" * 40,
+            branch=None, is_primary=False, is_detached=True,
+        ),
+    ]
+    monkeypatch.setattr(shared, "list_git_worktrees", lambda _root: entries)
+    listed = transaction.list_cmru_workspaces(root)
+    assert listed == [transaction.ReleaseWorkspace(root, Path("/tmp/release"), "cmru/release/x", "a" * 40)]
 
 
 def test_version_change_detection_and_file_release_strategy_use_observable_paths(tmp_path):
