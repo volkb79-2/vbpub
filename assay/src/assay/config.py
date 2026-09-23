@@ -58,7 +58,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
@@ -1061,7 +1061,9 @@ class IsolationConfig:
     snapshot_history: str = "shallow"
     #: Preserve whether TOML explicitly wrote the native default so
     #: ``as_declared`` remains an exact projection of the lane table.
-    snapshot_history_declared: bool = field(default=False, repr=False, compare=False)
+    snapshot_history_declared: bool = dataclass_field(
+        default=False, repr=False, compare=False
+    )
     #: (B041(b), schema v9) Repo-top-relative directories symlinked from the
     #: INVOKING CHECKOUT into every snapshot this lane creates, immediately
     #: after ``read-tree`` and before any command runs. Empty -- the only
