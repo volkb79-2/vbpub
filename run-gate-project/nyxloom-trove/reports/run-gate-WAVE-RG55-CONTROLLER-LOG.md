@@ -3834,3 +3834,17 @@ host-observation contract, not permission to use host namespaces or to weaken
 D-15. The gate launcher was independently amended at `3ce08349` to use the
 read-only host cgroup bind mount, immediately cap its named containers at 3
 CPUs, and assert both the cap and cgroup parent.
+
+### RW-309 — 2026-09-23 20:43:17Z — resolve proc cgroup paths relative to the private namespace
+
+A live P1-shaped probe used private PID/cgroup namespaces plus read-only host
+`/proc` and cgroup-v2 binds. It confirmed that `/hostproc/1` is the host init
+and that PID 1's PID-namespace inode differs from the container's; it also
+showed `/hostproc/1/cgroup` as `/../../../init.scope` while the helper's own
+local path is `/`. A bind-mounted host procfs does not make
+`/proc/<pid>/cgroup` globally rooted: those paths remain relative to the
+reader's cgroup namespace. Therefore P1 must derive that namespace root from
+the helper's own visible PID membership in the mounted cgroup tree and local
+`/proc/self/cgroup`, then normalize each observed process path against that
+derived root. Reject missing/ambiguous membership or an absent resolved
+cgroup; do not use a host cgroup namespace to avoid the translation.
