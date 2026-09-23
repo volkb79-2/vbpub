@@ -33,8 +33,8 @@ deliberately left out and why).
 - **RG-55** — a separate, long-running run-gate/cgroup-profiler program run by
   another agent on this host. **cmru** — the release tool (`cmru release`).
 - **dstdns** — the sibling product repo (`/workspaces/dstdns`) and assay's main
-  external consumer; touched only through `.assay-inbox/release.json` (7.5)
-  and read-only measurement (section 9.1).
+  external consumer; touched only through `.assay-inbox/release.json` (section
+  9.1) and read-only measurement.
 - **`assay verify`** (`verify.py`) — re-derives a verdict's claims from its own
   evidence and rejects one that does not re-derive; a refusal spelling only
   counts if verify accepts it (this bites in P2).
@@ -174,12 +174,25 @@ Deliberately NOT in this wave (do not pick these up):
   which deliberately EXCLUDES `BAD_LANE_CONFIG` (comment ~2220: it is meant for
   `refuse_lane` verdicts, which carry the pair on every level). A `BAD_LANE_CONFIG`
   R2 claim next to a passing baseline is therefore rejected by verify.
-  Two ways out; pick one by reading the code, record it as a decision row: (i)
-  hoist the id check to before the baseline so it can go through the existing
-  `refuse_lane` path (only if candidate discovery can run that early); (ii)
-  extend verify's accepted set — a verification-policy change, so a stop-and-ask
-  (section 12). Either way, an oracle must run `assay verify` over the
-  CLI-produced refusal verdict and see it accepted.
+  Ways out; pick one by reading the code, record it as decision row **A-458**
+  (P2 runs before P3's A-457): (i) hoist the id check to before the baseline so
+  it can use the existing `refuse_lane` path — NOT currently feasible: targets
+  are resolved only inside `if r2_declared and result.outcome is Outcome.PASS`
+  (`runner.py` ~4086) and candidate discovery / `selected_jobs` exist only
+  inside `run_mutation` (`mutation.py` ~2168-2230), after the baseline check at
+  ~2062; hoisting them moves discovery ahead of the ordering `verify.py`'s A-245
+  comment (~2250-2256) relies on, which is itself a verify-policy change;
+  (ii) extend verify's accepted set — a verification-policy change, so a
+  stop-and-ask (section 12); (iii) catch the new exception subclass in the
+  runner and refuse the WHOLE lane through the existing whole-lane refusal
+  (`refuse_all` / `_refuse_lane_with_plan`, `runner.py` ~5208), which writes the
+  same pair on every level and which verify already accepts — at the cost of
+  discarding an already-measured R0/R1 result for what is an input error.
+  (iii) is the smallest change; weigh that cost and record it. The same
+  exception also refuses R3 (`runner.py` ~4553-4570), so the verify oracle needs
+  an R3-declared lane or an explicit statement that R3 is excluded. Either way,
+  an oracle must run `assay verify` over the CLI-produced refusal verdict and
+  see it accepted.
 - **D4 B081 → message + docs only.** Assay must NOT start passing
   `-c safe.directory=…` to git: command-line config is protected scope, so it
   would work, and that is exactly why it is a security decision (it would turn
@@ -227,7 +240,8 @@ Deliberately NOT in this wave (do not pick these up):
    a finding about a TOOL is filed in the tool's backlog, never worked around
    locally). (a) The hand-written `## [Unreleased]` block is never folded:
    KI-23 covers only the `## [X.Y.Z] - UNRELEASED` form
-   (`changelog.py` ~36, where such a heading makes the release REFUSE), so
+   (`changelog.py` ~36 is the regex; the refusal is ~256-262 and fires when
+   that heading's version equals the version being released), so
    file **KI-30** with the three-release recurrence (6.4.0/6.5.0/7.0.0) as
    evidence — as a question ("should cmru fold `## [Unreleased]`?"), not a
    patch. (b) The child-remapper nesting failure: first check for retained
@@ -302,7 +316,12 @@ minimized fixture into assay's tests; **no test may read a dstdns path**.
   function's own call count (`fnMap`/`f` — **currently never read**, parser
   docstring ~line 57, so consuming them is a parser-contract change that needs
   docs; check that a `default-arg` node can be mapped to its function
-  reliably); **(B′)** count>0 ⇒ line executed (the default applied, so the
+  reliably — measured 2026-09-23 on the real artifact: 0 of the 6 lines fall
+  inside any `fnMap` `loc` (it starts at the function BODY, e.g. ChartCard
+  `34:104`), 3 of 6 match on line alone, but **6 of 6 map to exactly one
+  function with `decl.start ≤ node < loc.start`**; and a default's count is not
+  its function's call count (`f` = 9/6/6/6/18/26 vs `b` = 9/6/6/6/15/7), so
+  `b` cannot stand in for `f`); **(B′)** count>0 ⇒ line executed (the default applied, so the
   function ran); count 0 ⇒ the arc is dropped with a NAMED, non-refusing
   diagnostic, an explicit documented gap; **(D)** drop every `default-arg` arc
   on a statement-less line, named, never counted. Whatever you pick: no
@@ -333,10 +352,22 @@ minimized fixture into assay's tests; **no test may read a dstdns path**.
    independent.
 4. **Controlled wrong implementations** (each must turn the named oracle RED;
    if not, the fix deleted an integrity check instead of narrowing it):
-   M1 = "delete FileCoverage invariant 3 / make `_contradictory_branch_lines`
-   return empty" → the B054 braceless-`if` witness and the zero-count fixtures
-   go RED (oracle 3 stays green); M2 = "apply the new rule to ANY neither-bucket
-   branch line regardless of node type" → the B054 witness goes RED.
+   **M1** = "tolerate ANY neither-bucket branch line": remove `FileCoverage`
+   invariant 3 (`model.py` ~424-430) AND the `unconsidered` half of
+   `_contradictory_branch_lines` together (either alone does not do it: the
+   parser drops those lines before the model sees them, and an empty
+   `_contradictory_branch_lines` alone makes the model raise and refuse the whole
+   artifact). Under M1 the B054 braceless-`if` witness goes RED, and the
+   default-arg fixtures go RED wherever they assert classification or counts
+   (the line stays unclassified and its arc uncounted, `evaluate.py` ~593);
+   oracle 3 stays GREEN. Pin oracle 3 at the `FileCoverage` level — at parser
+   level a tampered line is currently isolated, not raised. **M2** = "apply the
+   new rule to ANY neither-bucket branch line regardless of node type" → the
+   B054 witness goes RED. The committed B054 fixture carries `b = [1, 0]`
+   (`tests/test_coverage_istanbul_contradictory_branch_arcs.py` ~80), so also
+   add a B054-shaped witness whose neither-bucket branch has a ZERO count —
+   the field witness is zero-count, and a type-blind rule that touches only
+   zero-count lines would otherwise slip through green.
 5. End to end through the real CLI: a `javascript` lane declaring an
    arc-bearing `judge.coverage.producer` (the istanbul parser reads no arcs
    otherwise, `coverage_istanbul_json.py` ~246), `require_branch = true`,
