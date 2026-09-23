@@ -1379,3 +1379,27 @@ No further pytest/container or assay launch was made after the controller's
 PSI gate became high; the current check is above the <=5 launch threshold and
 there is no verification need that justifies another launch.  No R2 was
 started by this session.
+
+## Session 11 — current-tree reconciliation and controller review
+
+The P6 branch was reconciled with the current P1 implementation in
+`bb1042a6`. The synchronous sample-zero read is now also the liveness
+baseline, so Summary and watch/status views share one initial observation. The
+root frozen fixture copies were updated to the package's 1.1.0 version and
+remain byte-identical with `tests/fixtures/contract/`. The socket stop golden
+correctly reports `series.damon: null` when no classified DAMON record was
+persisted. The focused daemon suite passed **591 tests, 6 skipped**; the
+documentation tests passed **3 tests**; and the contract mirror comparison
+returned zero.
+
+The controller's Luna review is recorded in
+`cgprofile-P6-FOLLOWUPS-REVIEW-round1.md` at `13e394a0` and is
+`ACCEPT-CONDITIONAL`. It found no new merge-blocking defect and corrected
+three adopter-facing 1.0.0 examples to 1.1.0 in `54e0a364`. This review is
+not the required independent Sol review and does not substitute for current
+registered gates, current-tip mutation evidence, or current live probes.
+
+The exact reviewed tip for the next gate and mutation work is `13e394a0`.
+The CIU mutation checkout `rg55-p6-r2-ciu` is prepared at that tree and must
+remain quiet once judging starts. Current-tip R2 remains unstarted; CP-11
+orphaned-leaf reclamation remains an explicitly filed, out-of-scope follow-up.
