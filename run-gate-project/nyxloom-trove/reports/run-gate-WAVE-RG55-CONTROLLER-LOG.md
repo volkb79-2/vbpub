@@ -3818,3 +3818,19 @@ hardcodes `CGPROFILE_VERSION = "1.0.0"` and the CLI reports the separate
 `pyproject.toml` version `0.1.0`. Before P6 release, resolve whether this
 separation is intentional under the frozen contract; if not, propagate the
 release coordinate to the running daemon's self-description and test it.
+
+### RW-308 — 2026-09-23 19:44:04Z — enforce the no-host-namespace constraint
+
+The operator's current repo-wide AGENTS.md instruction and the RG-55
+controller constraints prohibit `--cgroupns=host`, `--pid=host`, and
+`--net=host` for any spawned container. The P1 compose template currently
+sets host cgroup and PID namespaces, which conflicts with that binding rule.
+Do not deploy that template as-is. Preserve the daemon's required host
+observability through explicit, read-only host `/proc` and cgroup-v2 bind
+mounts while leaving both namespaces private; keep DAMON's narrowly scoped
+write surface separate. Prove the actual host paths and daemon probes live
+before deployment. This is an implementation reconciliation of the existing
+host-observation contract, not permission to use host namespaces or to weaken
+D-15. The gate launcher was independently amended at `3ce08349` to use the
+read-only host cgroup bind mount, immediately cap its named containers at 3
+CPUs, and assert both the cap and cgroup parent.
