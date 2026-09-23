@@ -115,42 +115,49 @@ below, so a proposal cannot be adopted without the argument that produced it.
 
 ## Open items at a glance (audited 2026-09-23)
 
-Non-DONE items only; every entry below (id, one-line title, verdict) has a
-full evidenced `**Status:**` line under its own `## Bnnn` heading. See
-`nyxloom-trove/reports/assay-BACKLOG-AUDIT-2026-09-23.md` for the full
-per-entry evidence table, WIP-branch findings, and ID collisions.
+Non-DONE items only, grouped by the operator's triage of 2026-09-23; every
+entry below has a full evidenced `**Status:**` line under its own `## Bnnn`
+heading. See `nyxloom-trove/reports/assay-BACKLOG-AUDIT-2026-09-23.md` for
+the per-entry evidence table, WIP-branch findings, and ID collisions.
 
-- B010 — `assay run` unusable when the gate environment differs from the invoking one — PARTIAL
+**Wave "B101 isolation" (next; packages in B101's "Wave plan" section)**
+- B101 — snapshot seed carries/budgets the full history closure — OPEN (shallow seed decided; P1 merged `e785b955`)
+- B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — OPEN (direction decided)
+- B093 — P7 S1: liveness write guard / side-file cleanup — OPEN (joins the wave: liveness side files land in the judged tree)
+- B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main — OPEN (wave P0 triage)
+- B082 — a lane's own `assay.toml` cannot be untracked for a disposable Go module root — OPEN (docs, wave P4)
+- B083 — shallow-clone refusal undocumented for Go — OPEN (docs, wave P4)
+- B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — OPEN (docs, wave P4)
+
+**Later waves (open, not scheduled)**
+- B080 — istanbul default-arg branch on the signature line — OPEN (JS/R3 wave; six live sightings through 2026-09-22)
+- B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
+- B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
+- B094 — P7 S3/N5: unknown `--rejudge` reason mapping — OPEN (liveness wave)
+- B095 — P7 S5: monitor hot-loop cost / unbounded CPU history — OPEN (liveness wave)
+- B076 — unbounded R2 lane's baseline run has no bound — OPEN (liveness wave)
+- B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
+- B100 — bounded operator report for live gate progress/verdicts — OPEN (design only)
+- B025 — a refusal writes no verdict artifact for its own unresolvable cause — PARTIAL (one acceptance box; quick win)
+- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (quick win)
+- B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
+
+**Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
+- B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
+- B023 — mutation shard merging has no producer or consumer — DEFERRED
+- B026 — a bad `--shard` refusal names no cause; dead shard config — DEFERRED (with B023)
+- B064 — progress/resume beyond R2 — DEFERRED (R3 half, coupled to B007)
+- B073 — per-language live test-progress adapter — DEFERRED (file-only by design)
+- B079 — `judgment.r2.discarded` folds CompileError/RuntimeError together — DEFERRED (until a verdict schema bump)
+- B086 — Go mutation testing (R2) generator unconditionally UNSUPPORTED — DEFERRED (design first)
+
+**Closed by the 2026-09-23 triage or earlier (kept here for one cycle)**
+- B010 — `assay run` unusable when the gate environment differs — DONE for assay's scope; remainder is run-gate's (B009 orchestration)
+- B040 — `@vitest/coverage-v8` false executed lines — DONE for assay's scope (refused by name at load); upstream report not pursued
+- B058 — srdm `covergate` over-counts executable lines — WITHDRAWN from assay (srdm's defect, lives in srdm's backlog)
 - B015 — UUID/equality/enum-aware Python mutation operators — WITHDRAWN
 - B017 — dirty-tree check vs committed `.gitignore` for coverage artifacts — WITHDRAWN (fixed per-consumer, not in assay)
-- B020 — CIU V8 prep: SQL mutation template/reset hooks — OPEN (design first)
-- B023 — mutation shard merging has no producer or consumer — OPEN
-- B025 — a refusal writes no verdict artifact for its own unresolvable cause — PARTIAL
-- B026 — a bad `--shard` refusal names no cause; dead shard config — PARTIAL
-- B040 — `@vitest/coverage-v8` reports never-executed lines as executed — PARTIAL (upstream bug never filed)
-- B058 — srdm `covergate` over-counts executable lines — OPEN
-- B064 — progress/resume beyond R2 — PARTIAL (R3 half unbuilt)
-- B073 — per-language live test-progress adapter — OPEN (not started)
-- B076 — unbounded R2 lane's baseline run has no bound — OPEN (deliberately deferred)
-- B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3 open)
-- B079 — `judgment.r2.discarded` folds CompileError/RuntimeError together — OPEN (v12 candidate)
-- B080 — istanbul default-arg branch on the signature line — OPEN (six live sightings through 2026-09-22)
-- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN
-- B082 — a lane's own `assay.toml` cannot be untracked for a disposable Go module root — OPEN (docs)
-- B083 — shallow-clone refusal undocumented for Go — OPEN (docs)
-- B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — OPEN (docs)
-- B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN
-- B086 — Go mutation testing (R2) generator unconditionally UNSUPPORTED — OPEN (design first)
-- B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN
 - B089 — istanbul branch-arc self-contradiction on some `.tsx` files — WITHDRAWN (duplicate of B080)
-- B093 — P7 S1: liveness write guard / side-file cleanup — OPEN (deferred RW-57)
-- B094 — P7 S3/N5: unknown `--rejudge` reason mapping — OPEN (deferred RW-57)
-- B095 — P7 S5: monitor hot-loop cost / unbounded CPU history — OPEN (deferred RW-57)
-- B100 — bounded operator report for live gate progress/verdicts — OPEN (design only, no `assay analyze report` on main)
-- B101 — snapshot `max_total_object_bytes` measures full history closure, not the tree — OPEN (direction decided 2026-09-23, not carved)
-- B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — OPEN (direction decided 2026-09-23, not carved)
-- B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN
-- B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main — OPEN (filed 2026-09-23)
 
 ---
 
@@ -1330,7 +1337,7 @@ say what is true rather than what was intended.
 
 ## B010 — `assay run` is unusable when the gate environment is not the invoking environment
 
-**Status: PARTIAL (2026-08-25) — environment_command fail-fast probe shipped; image-baking/orchestration half (B009/run-gate) still unaddressed.**
+**Status: DONE for assay's scope (operator triage 2026-09-23; remainder = run-gate's B009 image/orchestration) — was PARTIAL (2026-08-25): environment_command fail-fast probe shipped; image-baking/orchestration half (B009/run-gate) still unaddressed.**
 
 **Filed 2026-08-20 (dstdns P111 auth-config-cutover implementer, Mode-B wave).**
 **Status:** **PARTIALLY IMPLEMENTED 2026-08-24.** A lane may declare an optional top-level
@@ -2213,7 +2220,7 @@ one line. The one estate lane that pays a real cost is `ciu/assay.toml:49`
 
 ## B020 — CIU V8 preparation: SQL mutation template/reset hooks (design first)
 
-**Status: OPEN (filed 2026-08-25) — design-first, no implementation decisions recorded; last reference A-294 confirms still open.**
+**Status: DEFERRED (operator triage 2026-09-23: until ciu v8 resumes; filed 2026-08-25) — design-first, no implementation decisions recorded; last reference A-294 confirms still open.**
 
 **Filed 2026-08-25 from proposal §10.2.**
 
@@ -2358,7 +2365,7 @@ see A-303/A-305/A-306.
 
 ## B023 — mutation shard merging has no producer or consumer
 
-**Status: OPEN (filed 2026-08-25) — no shipped CLI producer/consumer; zero CHANGES.md/decisions.md hits.**
+**Status: DEFERRED (operator triage 2026-09-23, with B026: keep neither built nor deleted for now; filed 2026-08-25) — no shipped CLI producer/consumer; zero CHANGES.md/decisions.md hits.**
 
 **Filed 2026-08-25 from an independent adversarial review of B012 (round 1).**
 
@@ -2716,7 +2723,7 @@ See A-308.
 
 ## B026 — a bad `--shard` refusal names no cause; `judge.mutation.shard_index`/`shard_count` are dead config
 
-**Status: PARTIAL (v2.4.0, 2026-08-25) — A-309/A-310; decided-and-documented asymmetry/dead-config, not eliminated.**
+**Status: DEFERRED (operator triage 2026-09-23, with B023; was PARTIAL v2.4.0, 2026-08-25) — A-309/A-310; decided-and-documented asymmetry/dead-config, not eliminated.**
 
 **Filed 2026-08-25 from round 2 review of the B012/B013/B016/B017
 remediation (findings N-4, N-5).** Two small, unrelated diagnosability gaps
@@ -4122,7 +4129,7 @@ elsewhere.
 
 ## B040 — `@vitest/coverage-v8` reports never-executed lines as executed, and assay cannot detect it
 
-**Status: PARTIAL (b: 2026-08-31 assay-v4.0.0 via B045; a: still open) — v8 provider refused by name at load, but the upstream bug report was never filed.**
+**Status: DONE for assay's scope (operator triage 2026-09-23: (a) the upstream report is not pursued) — was PARTIAL (b: 2026-08-31 assay-v4.0.0 via B045; a: still open) — v8 provider refused by name at load, but the upstream bug report was never filed.**
 
 > **(b) RESOLVED 2026-08-31 by B045** (Wave B, assay-4.0.0 / schema v9),
 > decided as **A-353**: the three v8-remapping producers are SPELLABLE so the
@@ -6337,7 +6344,7 @@ Go toolchain exists — which the registered gate image does not provide.
 
 ## B058 — srdm's `covergate` classifies a cover block's whole extent as executable, so its own coverage floor measures more lines than Go has statements
 
-**Status: OPEN (filed 2026-08-31, no fix found) — all 3 acceptance boxes unchecked; cross-filed to srdm's own backlog, not resolved there per this file.**
+**Status: WITHDRAWN from assay (operator triage 2026-09-23: srdm's own defect, tracked in srdm's backlog; filed 2026-08-31) — all 3 acceptance boxes unchecked; cross-filed to srdm's own backlog, not resolved there per this file.**
 
 **Filed 2026-08-31, Wave C, while reading `covergate` for F008-A5's
 qualification.** Not an assay defect and not a blocker for this wave — assay's
@@ -7238,7 +7245,7 @@ skips are the pre-existing `requires the tester-unified image's own
 
 ## B064 — progress and resume beyond R2: what R0/R1 could observably report, and why R3's canary is the one tier where both are actually feasible
 
-**Status: PARTIAL (filed 2026-09-02, `f254b702`; R0/R1 half shipped v5.2.0, 2026-09-08) — R0/R1 phase-boundary progress stream shipped (A-444, `mutation.PROGRESS_EVENTS`); R3 per-attempt progress/resume remains unbuilt, coupled to B007's identity.**
+**Status: DEFERRED for the R3 half (operator triage 2026-09-23; coupled to B007) — PARTIAL (filed 2026-09-02, `f254b702`; R0/R1 half shipped v5.2.0, 2026-09-08) — R0/R1 phase-boundary progress stream shipped (A-444, `mutation.PROGRESS_EVENTS`); R3 per-attempt progress/resume remains unbuilt, coupled to B007's identity.**
 
 **Filed 2026-09-02** by the controller, from an operator question during Wave
 D: *do R0/R1 runtimes justify progress/resume, and could the canary (R3) have
@@ -7832,7 +7839,7 @@ site live in B074's Resolution.
 
 ## B073 — a per-language "live test progress" adapter, reading the runner's own output stream as it happens
 
-**Status: OPEN (filed 2026-09-08, corroborated live 2026-09-09) — no live-stream/per-language progress reader exists in `src/assay` for R0/R1, which is what this entry asks for; explicitly "filed and deliberately not started" per A-444. Narrower, adjacent progress since shipped for a different scope: B091 A4 (`5baf2670`, v6.2.0) ships per-test pytest progress events (`tests_completed`, `slowest_test_s`) for R2 mutation CANDIDATES specifically, not the general per-language R0/R1 live-stream reader this entry proposes — OPEN remains the correct verdict for what this entry actually asks.**
+**Status: DEFERRED (operator triage 2026-09-23; filed 2026-09-08, corroborated live 2026-09-09) — no live-stream/per-language progress reader exists in `src/assay` for R0/R1, which is what this entry asks for; explicitly "filed and deliberately not started" per A-444. Narrower, adjacent progress since shipped for a different scope: B091 A4 (`5baf2670`, v6.2.0) ships per-test pytest progress events (`tests_completed`, `slowest_test_s`) for R2 mutation CANDIDATES specifically, not the general per-language R0/R1 live-stream reader this entry proposes — OPEN remains the correct verdict for what this entry actually asks.**
 
 **Filed 2026-09-08 by the vbpub controller, deferred out of B064's discussion
 on purpose.** FILE ONLY — not scoped, not carved, not for the next wave.
@@ -8489,7 +8496,7 @@ rejected in favor of the report-completeness approach.
 
 ## B079 — `judgment.r2.discarded` folds `CompileError` and `RuntimeError` into one undifferentiated list, while the sentence that justifies the field says "could not COMPILE"
 
-**Status: OPEN (v12 candidate, filed 2026-09-08, "FILE, DO NOT BUILD") — no A-row or fix commit exists; `CompileError`/`RuntimeError` remain undifferentiated in `mutation.py`.**
+**Status: DEFERRED (operator triage 2026-09-23: until a verdict schema bump; v12 candidate, filed 2026-09-08, "FILE, DO NOT BUILD") — no A-row or fix commit exists; `CompileError`/`RuntimeError` remain undifferentiated in `mutation.py`.**
 
 **Renumbered from B078 at merge time (2026-09-08)** — a real ID collision:
 `feat/assay-b070-discarded-mutants-2026-09-08` filed this as B078
@@ -9273,7 +9280,7 @@ not an oversight the same fix already answers.
 
 ## B086 — Go mutation testing (R2): `generate_mutation_sites` is unconditionally `UNSUPPORTED`; a real Go mutant generator is buildable, not blocked, and other Go-ecosystem tools already prove the shape
 
-**Status: OPEN (design-first, filed 2026-09-09) — `GoAdapter.generate_mutation_sites` still unconditionally returns `"UNSUPPORTED"` on main; no A-row recorded.**
+**Status: DEFERRED (operator triage 2026-09-23; design-first, filed 2026-09-09) — `GoAdapter.generate_mutation_sites` still unconditionally returns `"UNSUPPORTED"` on main; no A-row recorded.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-09, from a cross-language rigor
 matrix built while documenting `README.md`'s "Rigor levels, and what's
@@ -9951,7 +9958,7 @@ backwards from what a checkpointed, resumable process should reward.
 
 ## B093 — P7 S1: liveness write guard and side-file cleanup
 
-**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — no fix landed; unlike sibling P7 items S6/B6-b/N3 (B096-B098), S1 is absent from every CHANGES.md entry.**
+**Status: OPEN — scheduled into the B101 isolation wave (operator triage 2026-09-23: liveness side files land in the judged tree, the same surface B102's dirty-tree rules govern); was deferred by RW-53/RW-57, 2026-09-13 filing — no fix landed; unlike sibling P7 items S6/B6-b/N3 (B096-B098), S1 is absent from every CHANGES.md entry.**
 
 **OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** Liveness materializes
 its plugin and candidate event/stdout/stderr files in the judged tree's
@@ -10352,6 +10359,49 @@ above. P1 (the pre-snapshot resolved-base seam, ported from the deleted
 `assay-b096` branch's `84baffb4`, extended to both R3 canary snapshot halves)
 is committed on branch `assay-b101-p1-resolved-base` (`36f8551c`, evidence
 carried in `6bd0ed51`); not yet reviewed/merged.
+
+**P1 merged, 2026-09-23:** `e785b955` (independent adversarial review: no
+blocking/major; nits fixed in `260055ee`; run-gate `tester-unified` PASS on
+`260055ee`, all phases incl. `topos-qualified`). The `assay-b096` branch is
+deleted.
+
+### vbpub itself is close to the wall (measured 2026-09-23)
+
+vbpub `main` (6,109 commits): 52,852 objects (limit 100,000), **873 MiB
+uncompressed of the 1024 MiB limit**, full pack 39 MiB vs judged-tree pack
+21 MiB. Growth: 761 MiB seven days earlier, 853 MiB one day earlier —
+roughly 15–20 MiB/day, so every vbpub R1+ lane (assay's own, run-gate,
+cgroup-profiler mutation campaigns) is expected to refuse
+`SNAPSHOT_LIMIT_EXCEEDED` within about a week of this measurement unless P2
+lands first. Interim escape hatch if P2 is late: P2's `[isolation.limits]`
+part can ship alone.
+
+### Wave plan (operator triage 2026-09-23)
+
+- **P0 — B104 triage:** stale frozen witness vs dstdns-pin drift vs real
+  regression; confirm whether any release gate depends on it.
+- **P1 — resolved-base seam:** DONE (`e785b955`).
+- **P2 — B101 shallow seed:** seed = judged commit (+ carried base for
+  `changed_lines`) with exact `.git/shallow` boundaries; limits count seed
+  contents plus an explicit judged-tree bytes ceiling; `[isolation.limits]`
+  in `assay.toml`; per-lane `snapshot_history = "full"` opt-in. Inventory
+  from the P1 review: `SnapshotRepository._enforce_child_closure`
+  (`isolation.py` ~943) runs `rev-list --objects <child>` inside every
+  replacement snapshot (R2 mutants, R3 transform) — a closure walk, so
+  `.git/shallow` must be present in each materialization BEFORE it runs, and
+  `_copy_objects` copies only `objects/pack` today. The P1 test helper
+  `cut_snapshot_history` patches `_verify` (after that walk), so it does not
+  exercise it; P2 needs a real shallow-seed oracle.
+- **P3 — B102 `dirty_ignore` + `--allow-dirty`** (verdict marker; verify/
+  attestation refusal; schema impact decided at carve) **+ B093** liveness
+  side-file guard/cleanup (same judged-tree surface).
+- **P4 — docs:** B082, B083 (now: source shallow clone still refused, seed
+  deliberately shallow), B084, and consumer docs for P2/P3.
+- **Coordination:** the RG-55 continuation runs long mutation campaigns on
+  vbpub trees; assay changes merge to main without disturbing a campaign
+  pinned to its own tree, but no assay release/devcontainer redeploy while
+  one is mid-run without telling that controller first, and only one gate
+  container runs on the host at a time.
 
 ## B102 — higher-rigor lanes refuse `DIRTY_TREE` for ANY uncommitted path in the repository, although a snapshot lane judges the committed tree and no uncommitted byte can reach it
 
