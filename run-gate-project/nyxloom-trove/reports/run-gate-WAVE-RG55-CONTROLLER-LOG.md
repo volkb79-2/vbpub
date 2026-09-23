@@ -3779,3 +3779,23 @@ gate remains authoritative because the cockpit lacks NumPy/report-tier
 dependencies. The short registered gates remain deferred until the already
 active P1 mutation and unrelated B101 gate release the estate's one gate
 slot.
+
+### RW-306 — 2026-09-23 18:58:14Z — P1 R2 terminal and P6 `r0-r1` green
+
+The P1 CIU mutation run finished on quiet tree
+`071614168b2a96cab0b90b1f0d4c439972bf54dc`. The terminal side-file event
+records 250 candidates: 249 killed, one survivor, and zero equivalent,
+budget-exceeded, crashed, or hung outcomes. The separate verdict records R0
+PASS and R2 `FAIL/MUTANTS_SURVIVED`, exit 1. Its sole survivor is the already
+documented equivalent `lib/damon.py:325 Gt->GtE` on the pool release guard,
+with the same replacement hash and invariant proof. The CIU tree's package
+source is unchanged from the reviewed and short-gated P1 source; its exact
+result is in the P1 report.
+
+P6's registered `r0-r1` lane passed on quiet tree
+`4392bece345d828e88f25f2b13cd7b239f7d711a`: 1,474 tests passed, and coverage
+reported 5,560/5,560 statements and 1,862/1,862 branches. Run-gate history
+records `exit_code=0`, `dirty=false`, and the same tree. Tester container
+`upbeat_elbakyan` ran under `dev-gates.slice` at 3 CPUs; it exited and was
+removed by the lane. Host memory PSI `full avg10=0.00`; the slot was free at
+the follow-up check. P6 `r3` is next; no mutation or merge has started.
