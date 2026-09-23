@@ -1403,3 +1403,16 @@ The exact reviewed tip for the next gate and mutation work is `13e394a0`.
 The CIU mutation checkout `rg55-p6-r2-ciu` is prepared at that tree and must
 remain quiet once judging starts. Current-tip R2 remains unstarted; CP-11
 orphaned-leaf reclamation remains an explicitly filed, out-of-scope follow-up.
+
+## Session 12 — current-main Assay reconciliation and controller review
+
+Before a new P6 campaign, the controller found that the prior judged checkout
+did not contain current main's source-backed Assay B101 shallow-snapshot seed.
+The P6 branch was reconciled with current `main` in merge commit
+`cc9d13b60cbd734b889eb4b4196a30c07104fb39`, retaining the P6 cgprofile source
+and adopting the current Assay source. The CIU mutation checkout was advanced
+to the same exact tree and remains clean. The controller's second review is
+`cgprofile-P6-FOLLOWUPS-REVIEW-round2.md`; it is conditional and found no new
+cgprofile blocker. The focused local suite passed `445 passed, 6 skipped`, and
+`git diff --check` passed. The full tester-unified gate, exact-tree R2, fresh
+Sol review, and live probes remain required.
