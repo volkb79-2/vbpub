@@ -41,6 +41,7 @@ import pytest
 
 import cgprofile as cg
 from lib import damon as damon_mod, limits as limits_mod, serve, summary, targets as targets_mod
+from lib import damon as damon_mod, serve, store, summary, targets as targets_mod
 from tests.conftest import cgroup_files, write_cgroup
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "contract"
@@ -303,6 +304,22 @@ class TestStartRegistry:
         resp = simple_server._dispatch(_start_req(meta="oops"))
         assert resp["error"]["code"] == "bad-argument"
 
+    @pytest.mark.parametrize("interval", ["not-a-number", "NaN", "inf", True])
+    def test_malformed_interval_is_a_contract_error(self, simple_server, interval):
+        resp = simple_server._dispatch(_start_req(interval=interval))
+        assert resp["ok"] is False
+        assert resp["contract"] == 1
+        assert resp["error"]["code"] == "bad-argument"
+
+    def test_finite_out_of_range_interval_is_clamped_by_contract(self, simple_server):
+        assert simple_server._dispatch(_start_req(interval=-1))["interval_seconds"] == 0.25
+        # The first session is live and the fixture's fixed id makes a second
+        # start an idempotent tokenless case only after B3 is fixed; use the
+        # same session to avoid relying on a second id here.
+        sess = simple_server._sessions[SESSION_ID]
+        sess.stop_event.set()
+        sess.thread.join(timeout=5.0)
+
     def test_no_interval_given_falls_back_to_the_server_default(self, simple_server):
         # `_start_req()`'s own default always supplies an explicit interval
         # (1.0) -- this is the one test that omits it, exercising the
@@ -348,6 +365,33 @@ class TestStartRegistry:
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
 
+    def test_no_token_starts_are_independent_and_consume_max_sessions(self, simple_server):
+        simple_server.max_sessions = 2
+        ids = iter(["s-20260912T101500Z-9f01", "s-20260912T101500Z-9f02"])
+        simple_server._session_id_fn = lambda: next(ids)
+        first = simple_server._dispatch(_start_req())
+        second = simple_server._dispatch(_start_req())
+        assert first["reused"] is False
+        assert second["reused"] is False
+        assert second["session"] != first["session"]
+        assert len([s for s in simple_server._sessions.values() if not s.finished]) == 2
+        for response in (first, second):
+            sess = simple_server._sessions[response["session"]]
+            sess.stop_event.set()
+            sess.thread.join(timeout=5.0)
+
+    def test_no_token_start_at_max_sessions_is_not_reused(self, simple_server):
+        simple_server.max_sessions = 1
+        ids = iter(["s-20260912T101500Z-9f01", "s-20260912T101500Z-9f02"])
+        simple_server._session_id_fn = lambda: next(ids)
+        first = simple_server._dispatch(_start_req())
+        second = simple_server._dispatch(_start_req())
+        assert first["reused"] is False
+        assert second["error"]["code"] == "too-many-sessions"
+        sess = simple_server._sessions[first["session"]]
+        sess.stop_event.set()
+        sess.thread.join(timeout=5.0)
+
     def test_start_after_the_same_key_finished_creates_a_new_session(self, simple_server):
         first = simple_server._dispatch(_start_req(token="a-finished-token1"))
         sess = simple_server._sessions[first["session"]]
@@ -371,6 +415,69 @@ class TestStartRegistry:
 
 
 class TestStatusStopReport:
+    def test_stop_series_damon_is_null_without_a_persisted_damon_sample(self, simple_server):
+        start_resp = simple_server._dispatch(_start_req(damon="off"))
+        sess = simple_server._sessions[start_resp["session"]]
+        sess.stop_event.set()
+        sess.thread.join(timeout=5.0)
+        stop_resp = simple_server._dispatch(_wire("stop", session=start_resp["session"]))
+        assert stop_resp["series"]["damon"] is None
+
+        # A real persisted record is the positive case; an enabled-but-empty
+        # or unavailable/restarted session must not advertise a fake path.
+        sess.rundir.append("damon", {"hot": 1, "warm": 2, "cold": 3, "idle": 4})
+        assert simple_server._stop_response(
+            start_resp["session"], stop_resp["summary"], already_stopped=True
+        )["series"]["damon"] == "damon.jsonl"
+
+    def test_stop_response_does_not_conjure_a_missing_run_dir(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        server = serve.SessionServer(sessions_dir=str(sessions_dir))
+        session_id = "s-20260101T000000Z-missing"
+        missing_dir = sessions_dir / session_id
+        response = server._stop_response(session_id, None, already_stopped=True)
+        assert response["series"]["damon"] is None
+        assert not missing_dir.exists()
+
+    def test_stop_response_does_not_advertise_a_non_damon_dict(self, simple_server):
+        session_id = "s-20260101T000000Z-nodamon"
+        session_dir = Path(simple_server.sessions_dir) / session_id
+        session_dir.mkdir(parents=True)
+        (session_dir / "damon.jsonl").write_text("{}\n")
+        response = simple_server._stop_response(session_id, None, already_stopped=True)
+        assert response["series"]["damon"] is None
+
+    def test_stop_response_stays_null_when_damon_series_read_fails(
+        self, simple_server, monkeypatch,
+    ):
+        def unreadable_series(_rundir, _name):
+            raise OSError("synthetic read failure")
+
+        monkeypatch.setattr(store.RunDir, "read", unreadable_series)
+        response = simple_server._stop_response(
+            "s-20260101T000000Z-unreadable", None, already_stopped=True,
+        )
+
+        assert response["series"]["damon"] is None
+
+    def test_start_records_sample_zero_before_an_immediate_stop(self, simple_server):
+        resolved = targets_mod.find_container_cgroup(
+            SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root
+        )
+        with simple_server._lock:
+            sess = simple_server._create_session_locked(
+                container_id=SIMPLE_CONTAINER_ID, cgroup=resolved, scope="container-shared",
+                token=None, interval=1.0, damon_req="off",
+                meta={"lane": "x", "project": "p", "worktree": "w", "commit": None,
+                      "run_gate_revision": 1, "kind": "command", "expected": None},
+            )
+            simple_server._sessions[sess.session_id] = sess
+            simple_server._finalize_session_locked(sess, aborted_reason=None)
+        assert sess.summary_acc.sample_count == 1
+        assert list(sess.rundir.read("samples"))[0]["seq"] == 0
+        assert sess.summary_doc["samples"] == 1
+        assert sess.summary_doc["memory"]["baseline_bytes"] == 500 * 1024 * 1024
+        assert sess.summary_doc["memory"]["p90_bytes"] == 500 * 1024 * 1024
     def test_status_unknown_malformed_id(self, simple_server):
         resp = simple_server._dispatch(_wire("status", session="not-a-session-id"))
         assert resp["error"]["code"] == "unknown-session"
@@ -932,6 +1039,56 @@ class TestRestartRecovery:
         assert summary_doc["memory"]["peak_bytes"] == 100
         assert summary_doc["target"]["targets_seen"] == 1
         assert summary_doc["host"]["start"]["memory_pressure"]["some_avg10"] == 12.5
+
+    def test_a_live_orphan_replays_damon_payload_after_removing_sequence(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        session_dir = sessions_dir / "s-20260101T000000Z-aaaa"
+        self._write_manifest(
+            session_dir,
+            damon_enabled=True,
+            damon_kdamond=0,
+            damon_thresholds={"hot_rate_pct": 5},
+        )
+        (session_dir / "samples.jsonl").write_text(
+            json.dumps({
+                "seq": 0,
+                "cg": {"/dev.slice/x.scope": {"mem": {"current": 100, "peak": 100}}},
+                "pids": [1],
+                "mono": 0.0,
+            }) + "\n"
+        )
+        (session_dir / "host.jsonl").write_text(
+            json.dumps({"host": {}, "slice": None}) + "\n"
+        )
+        (session_dir / "damon.jsonl").write_text(
+            json.dumps({"_seq": 0, "hot": 10, "warm": 20, "cold": 30, "idle": 40}) + "\n"
+        )
+        serve.SessionServer(sessions_dir=str(sessions_dir), clock=lambda: EPOCH_END)
+        summary_doc = json.loads((session_dir / "summary.json").read_text())
+        assert summary_doc["damon"]["samples"] == 1
+        assert summary_doc["damon"]["hot_bytes"]["peak"] == 10
+
+    def test_a_live_orphan_skips_non_dict_damon_rows(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        session_dir = sessions_dir / "s-20260101T000000Z-aaaa"
+        self._write_manifest(session_dir, damon_enabled=True, damon_kdamond=0)
+        (session_dir / "samples.jsonl").write_text(
+            json.dumps({
+                "seq": 0,
+                "cg": {"/dev.slice/x.scope": {"mem": {"current": 100, "peak": 100}}},
+                "pids": [1],
+                "mono": 0.0,
+            }) + "\n"
+        )
+        (session_dir / "host.jsonl").write_text(
+            json.dumps({"host": {}, "slice": None}) + "\n"
+        )
+        (session_dir / "damon.jsonl").write_text("null\n")
+        serve.SessionServer(sessions_dir=str(sessions_dir), clock=lambda: EPOCH_END)
+        manifest = json.loads((session_dir / "manifest.json").read_text())
+        summary_doc = json.loads((session_dir / "summary.json").read_text())
+        assert manifest["status"] == "aborted"
+        assert summary_doc["damon"]["samples"] == 0
 
     def test_finalize_orphan_never_conjures_the_run_dir_into_existence(self, tmp_path, monkeypatch):
         # `_finalize_orphan` passes `create=False` to `store.RunDir` (its own
@@ -1685,6 +1842,42 @@ def test_create_session_damon_on_with_no_pids_is_unavailable(simple_server):
     assert sess.damon_session is None
 
 
+def test_damon_collect_failure_degrades_only_that_session(simple_server, monkeypatch):
+    scope_path = (
+        Path(simple_server.cgroup_root)
+        / f"dev.slice/dev-background.slice/docker-{SIMPLE_CONTAINER_ID}.scope"
+    )
+    (scope_path / "cgroup.procs").write_text("123\n")
+    closed: List[bool] = []
+
+    class BrokenDamonSession:
+        kdamond_idx = 7
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5, "cold_age_s": 30, "idle_age_s": 120}
+
+        def __init__(self, targets, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            closed.append(True)
+
+        def collect(self):
+            raise RuntimeError("synthetic collect failure")
+
+    monkeypatch.setattr(damon_mod, "DamonSession", BrokenDamonSession)
+    start_resp = simple_server._dispatch(_start_req(damon="on"))
+    assert start_resp["damon"] == "unavailable:RuntimeError: synthetic collect failure"
+    sess = simple_server._sessions[start_resp["session"]]
+    sess.stop_event.set()
+    sess.thread.join(timeout=5.0)
+    stop_resp = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert stop_resp["summary"]["damon"]["status"] == "unavailable"
+    assert stop_resp["series"]["damon"] is None
+    assert closed == [True]
+
+
 def test_create_session_damon_on_with_pids_but_damon_unavailable(tmp_path, monkeypatch):
     # Forces damon_mod.available() False regardless of what this host's own
     # /sys/kernel/mm/damon actually exposes, so DamonSession.__enter__()
@@ -2012,20 +2205,20 @@ def test_on_session_sample_no_token_path_recommits_only_on_pid_set_change(simple
                   "run_gate_revision": 1, "kind": "command", "expected": None},
         )
         simple_server._sessions[sess.session_id] = sess
-    assert sess.no_token_pids == []  # nothing sampled through _on_session_sample yet
+    assert sess.no_token_pids == [100]  # captured atomically as sample zero
 
     stub = _StubDamonSession()
     sess.damon_session = stub
     abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
 
-    # mono=0.0: first tick ever (last_discovery_mono is None) => due; the
-    # pid set [100] differs from the empty starting cache => recommit.
+    # mono=0.0: the pid set was already captured for sample zero, so this
+    # discovery confirms [100] without an unnecessary recommit.
     simple_server._on_session_sample(
         sess, {"mono": 0.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
     )
     assert sess.last_discovery_mono == 0.0
     assert sess.no_token_pids == [100]
-    assert stub.recommit_calls == [[100]]
+    assert stub.recommit_calls == []
 
     # mono=1.0: not due yet (delta 1.0 < 2.0) => pids reused from cache,
     # cgroup.procs is not even re-read, no recommit.
@@ -2033,7 +2226,7 @@ def test_on_session_sample_no_token_path_recommits_only_on_pid_set_change(simple
         sess, {"mono": 1.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
     )
     assert sess.last_discovery_mono == 0.0
-    assert len(stub.recommit_calls) == 1
+    assert len(stub.recommit_calls) == 0
 
     # mono=3.0: due again (delta 3.0 >= 2.0); the pid set really changed
     # (100 -> 100,200) => recommit with the new set.
@@ -2043,7 +2236,7 @@ def test_on_session_sample_no_token_path_recommits_only_on_pid_set_change(simple
     )
     assert sess.last_discovery_mono == 3.0
     assert sess.no_token_pids == [100, 200]
-    assert len(stub.recommit_calls) == 2
+    assert len(stub.recommit_calls) == 1
 
     # mono=5.0: due again, but cgroup.procs is UNCHANGED => no recommit,
     # even though this tick did re-read the file (RW-15's whole point: cheap
@@ -2052,7 +2245,7 @@ def test_on_session_sample_no_token_path_recommits_only_on_pid_set_change(simple
         sess, {"mono": 5.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
     )
     assert sess.last_discovery_mono == 5.0
-    assert len(stub.recommit_calls) == 2
+    assert len(stub.recommit_calls) == 1
 
     # A discovery-due tick with NO damon session attached must skip
     # recommit_targets entirely rather than crash — the no-token twin of
@@ -2065,6 +2258,29 @@ def test_on_session_sample_no_token_path_recommits_only_on_pid_set_change(simple
     assert sess.last_discovery_mono == 7.0
     assert sess.no_token_pids == [100, 200, 300]
 
+
+def test_on_session_sample_treats_a_partial_cpu_baseline_as_unreadable(simple_server):
+    # The two previous CPU fields are a pair.  If an interrupted or restored
+    # session has only the counter but no timestamp, it is not a usable rate
+    # baseline and must be carried forward without attempting `mono - None`.
+    resolved = targets_mod.find_container_cgroup(SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root)
+    with simple_server._lock:
+        sess = simple_server._create_session_locked(
+            container_id=SIMPLE_CONTAINER_ID, cgroup=resolved, scope="container-shared",
+            token=None, interval=1.0, damon_req="off",
+            meta={"lane": "x", "project": "p", "worktree": "w", "commit": None,
+                  "run_gate_revision": 1, "kind": "command", "expected": None},
+        )
+        simple_server._sessions[sess.session_id] = sess
+    sess._prev_cpu_usage_usec = 1_000_000
+    sess._prev_mono = None
+    abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+
+    simple_server._on_session_sample(
+        sess, {"mono": 1.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
+    )
+
+    assert sess.live_cpu_cores_recent is None
 
 # ── host snapshot: observe_slices and non-slice children ─────────────────
 
@@ -2332,6 +2548,21 @@ def test_real_socket_round_trip_version_and_bad_request(tmp_path):
                              "error": {"code": "bad-argument",
                                        "message": "request was not valid JSON"}}
 
+        for interval in ("not-a-number", "NaN", "inf"):
+            request = {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "token": None, "damon": "off",
+                "interval": interval, "meta": {},
+            }
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5.0)
+                client.connect(socket_path)
+                client.sendall((json.dumps(request) + "\n").encode("utf-8"))
+                interval_resp = json.loads(client.recv(65536).decode("utf-8"))
+            assert interval_resp["ok"] is False
+            assert interval_resp["contract"] == 1
+            assert interval_resp["error"]["code"] == "bad-argument"
+
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(5.0)
             client.connect(socket_path)
@@ -2341,6 +2572,268 @@ def test_real_socket_round_trip_version_and_bad_request(tmp_path):
         server.request_shutdown()
         thread.join(timeout=5.0)
         assert not os.path.exists(socket_path)
+
+
+@pytest.mark.parametrize("reply", [
+    b'{"ok": true, "contract": 2, "cgprofile": "1.0.0", "daemon": {}}\n',
+    b'[]\n',
+    b'{"contract": 1, "cgprofile": "1.0.0", "daemon": {}}\n',
+])
+def test_ctl_rejects_wrong_major_list_and_missing_ok_fake_socket(tmp_path, reply, capsys):
+    # This fake Unix peer isolates the CLI acceptance gate from the live
+    # daemon. A reachable socket is not sufficient evidence of a compatible
+    # contract response.
+    socket_path = str(tmp_path / "ctl.sock")
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.bind(socket_path)
+    peer.listen(1)
+
+    def serve_reply():
+        try:
+            conn, _ = peer.accept()
+            with conn:
+                conn.recv(65536)
+                conn.sendall(reply)
+        finally:
+            peer.close()
+
+    thread = threading.Thread(target=serve_reply, daemon=True)
+    thread.start()
+    try:
+        args = cg.build_parser().parse_args(["ctl", "--socket", socket_path, "version"])
+        assert cg.cmd_ctl(args) == 3
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "invalid response" in captured.err
+    finally:
+        thread.join(timeout=5.0)
+
+
+def _ctl_response_fixture(verb: str) -> Dict[str, Any]:
+    if verb == "version":
+        name = "version-v1.json"
+    elif verb == "start":
+        name = "start-v1.json"
+    elif verb == "status":
+        name = "status-v1.json"
+    elif verb == "host":
+        name = "host-v1.json"
+    elif verb == "stop":
+        name = "stop-v1.json"
+    else:
+        raise AssertionError(f"no fixture for {verb}")
+    return json.loads((FIXTURES / name).read_text())
+
+
+def _ctl_args(verb: str) -> Any:
+    argv = ["ctl", "--socket", "/tmp/unused-cgprofile-test.sock", verb]
+    if verb == "start":
+        argv += [
+            "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
+            "--scope", "container", "--meta", "{}",
+        ]
+    elif verb in ("stop", "report"):
+        argv.append("s-20260912T101500Z-9f01")
+    return cg.build_parser().parse_args(argv)
+
+
+def _run_ctl_with_response(monkeypatch, capsys, verb: str, response: Any):
+    monkeypatch.setattr(cg, "_ctl_roundtrip", lambda *args: response)
+    result = cg.cmd_ctl(_ctl_args(verb))
+    return result, capsys.readouterr()
+
+
+@pytest.mark.parametrize("verb,response", [
+    ("status", "session"),
+    ("report", "report"),
+    ("gc", "gc"),
+])
+def test_ctl_accepts_the_remaining_contract_success_shapes(monkeypatch, capsys, verb, response):
+    if response == "session":
+        valid = _ctl_response_fixture("status")
+        valid["session"] = valid.pop("sessions")[0]
+    elif response == "report":
+        valid = {"ok": True, "contract": 1, "path": "/sessions/s-1/report.html"}
+    else:
+        valid = {"ok": True, "contract": 1, "removed": [], "kept": 0}
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, verb, valid)
+
+    assert rc == 0
+    assert json.loads(captured.out) == valid
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("verb,mutator", [
+    ("version", lambda response: response.pop("cgprofile")),
+    ("report", lambda response: response.pop("path")),
+    ("gc", lambda response: response.pop("removed")),
+])
+def test_ctl_rejects_success_responses_missing_required_fields(
+    monkeypatch, capsys, verb, mutator,
+):
+    if verb == "version":
+        response = _ctl_response_fixture(verb)
+    elif verb == "report":
+        response = {"ok": True, "contract": 1, "path": "/report.html"}
+    else:
+        response = {"ok": True, "contract": 1, "removed": [], "kept": 0}
+    mutator(response)
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, verb, response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
+
+
+@pytest.mark.parametrize("response", [
+    {"ok": False, "contract": 1, "error": {}},
+    {"ok": True, "contract": 1, "cgprofile": "1.0.0", "daemon": []},
+    {
+        "ok": True, "contract": 1, "cgprofile": "1.0.0",
+        "daemon": {
+            "name": "", "started_at": "now", "damon": "off",
+            "damon_default": "off", "sessions_live": 0, "max_sessions": 0,
+        },
+    },
+    {
+        "ok": True, "contract": 1, "cgprofile": "",
+        "daemon": {
+            "name": "cgprofile-host-daemon", "started_at": "now", "damon": "off",
+            "damon_default": "off", "sessions_live": 0, "max_sessions": 0,
+        },
+    },
+    {
+        "ok": True, "contract": 1, "cgprofile": "1.0.0",
+        "daemon": {
+            "name": "cgprofile-host-daemon", "started_at": "now", "damon": "off",
+            "damon_default": "off", "sessions_live": -1, "max_sessions": 0,
+        },
+    },
+])
+def test_ctl_fails_closed_on_invalid_version_payloads(monkeypatch, capsys, response):
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "version", response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
+
+
+def test_ctl_validator_falls_through_only_for_an_unknown_internal_verb():
+    # `build_parser()` exposes only the closed ctl vocabulary, but this
+    # direct envelope check keeps the validator's final dispatch branch
+    # honest if an internal caller ever supplies a new verb first.
+    assert cg._validate_ctl_response("unknown-test-verb", {"ok": True, "contract": 1}) is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("at", None),
+    ("loadavg", {}),
+    ("meminfo", []),
+    ("slices", []),
+])
+def test_ctl_fails_closed_on_invalid_host_payloads(monkeypatch, capsys, field, value):
+    response = _ctl_response_fixture("host")
+    if value is None:
+        response["host"].pop(field)
+    else:
+        response["host"][field] = value
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "host", response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
+
+
+@pytest.mark.parametrize("mutator", [
+    lambda entry: entry.pop("session"),
+    lambda entry: entry.__setitem__("scope", "host"),
+    lambda entry: entry.__setitem__("elapsed_seconds", "2"),
+    lambda entry: entry.__setitem__("elapsed_seconds", float("nan")),
+    lambda entry: entry.__setitem__("target", []),
+])
+def test_ctl_fails_closed_on_invalid_status_session_entries(monkeypatch, capsys, mutator):
+    response = _ctl_response_fixture("status")
+    response["session"] = response.pop("sessions")[0]
+    mutator(response["session"])
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "status", response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
+
+
+@pytest.mark.parametrize("sessions", [
+    {},
+    [{}],
+])
+def test_ctl_fails_closed_on_invalid_status_session_lists(monkeypatch, capsys, sessions):
+    response = _ctl_response_fixture("status")
+    response["sessions"] = sessions
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "status", response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
+
+
+@pytest.mark.parametrize("mutator", [
+    lambda response: response.__setitem__("scope", "host"),
+    lambda response: response.__setitem__("damon", "maybe"),
+    lambda response: response.__setitem__("damon", 1),
+    lambda response: response.__setitem__("reused", 1),
+    lambda response: response.__setitem__("interval_seconds", 0.1),
+    lambda response: response.__setitem__("interval_seconds", float("nan")),
+    lambda response: response["target"].__setitem__("pids_at_start", "3"),
+    lambda response: response["target"].__setitem__("pids_at_start", -1),
+])
+def test_ctl_fails_closed_on_invalid_start_payloads(monkeypatch, capsys, mutator):
+    response = _ctl_response_fixture("start")
+    mutator(response)
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "start", response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
+
+
+@pytest.mark.parametrize("mutator", [
+    lambda response: response.__setitem__("already_stopped", 1),
+    lambda response: response["summary"].__setitem__("schema", 2),
+    lambda response: response.__setitem__("session_dir", ""),
+    lambda response: response.__setitem__("series", []),
+    lambda response: response["series"].__setitem__("damon", 1),
+])
+def test_ctl_fails_closed_on_invalid_stop_payloads(monkeypatch, capsys, mutator):
+    response = _ctl_response_fixture("stop")
+    mutator(response)
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "stop", response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
+
+
+@pytest.mark.parametrize("removed,kept", [
+    ("not-a-list", 0),
+    ([1], 0),
+    ([], "0"),
+    ([], -1),
+])
+def test_ctl_fails_closed_on_invalid_gc_payloads(monkeypatch, capsys, removed, kept):
+    response = {"ok": True, "contract": 1, "removed": removed, "kept": kept}
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "gc", response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
 
 
 # ── CLI golden round-trip: `cgprofile ctl` over a real socket (C5) ────────

@@ -33,6 +33,7 @@ wall time).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import secrets
@@ -225,6 +226,7 @@ class _Session:
     live_damon_hot_bytes_recent: Optional[int] = None
     last_mono: Optional[float] = None
     last_discovery_mono: Optional[float] = None
+    sampler_origin_mono: Optional[float] = None
     # RW-15: the no-token path's own pid cache between discovery ticks —
     # the token path already has one (SubtreeResolver.current_pids); a
     # no-token session has no resolver object, so this is the equivalent
@@ -475,6 +477,11 @@ class SessionServer:
         samples = list(rundir.read("samples"))
         hosts = list(rundir.read("host"))
         damons = list(rundir.read("damon"))
+        damon_by_seq = {
+            item.get("_seq"): {key: value for key, value in item.items() if key != "_seq"}
+            for item in damons
+            if isinstance(item, dict) and isinstance(item.get("_seq"), int)
+        }
         target_cgroup = manifest["cgroup"]
         for index in range(min(len(samples), len(hosts))):
             sample = samples[index]
@@ -488,8 +495,13 @@ class SessionServer:
                 cgroup=(sample.get("cg") or {}).get(target_cgroup, {}),
                 host=host_rec.get("host") or {},
                 slice_cgroup=host_rec.get("slice"),
-                damon=damons[index] if index < len(damons) else None,
+                damon=(
+                    damon_by_seq.get(sample.get("seq"))
+                    if damon_by_seq
+                    else (damons[index] if index < len(damons) else None)
+                ),
                 pids=sample.get("pids") or [],
+                mono=sample.get("mono"),
             )
         manifest["status"] = "aborted"
         manifest["aborted_reason"] = "daemon-restarted"
@@ -636,7 +648,17 @@ class SessionServer:
             raise RequestError("bad-argument", "--token must match [A-Za-z0-9._-]{8,64}")
         if not isinstance(meta, dict):
             raise RequestError("bad-argument", "--meta must be a JSON object")
-        interval = self.default_interval if interval_req is None else float(interval_req)
+        if interval_req is None:
+            interval = self.default_interval
+        else:
+            if isinstance(interval_req, bool):
+                raise RequestError("bad-argument", "--interval must be a finite number")
+            try:
+                interval = float(interval_req)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise RequestError("bad-argument", "--interval must be a finite number") from exc
+            if not math.isfinite(interval):
+                raise RequestError("bad-argument", "--interval must be a finite number")
         interval = util.clamp(interval, 0.25, 30.0)
         # CP-8 (§8.4/§8.8): the stall policy is parsed BEFORE anything is
         # created — `bad-policy` means exit 2 and NO session, never a session
@@ -659,12 +681,13 @@ class SessionServer:
             raise RequestError("bad-argument", str(exc)) from None
 
         with self._lock:
-            key = (container_id, token)
-            existing_id = self._by_target.get(key)
-            if existing_id is not None:
-                existing = self._sessions.get(existing_id)
-                if existing is not None and not existing.finished:
-                    return self._start_response(existing, reused=True)
+            if token is not None:
+                key = (container_id, token)
+                existing_id = self._by_target.get(key)
+                if existing_id is not None:
+                    existing = self._sessions.get(existing_id)
+                    if existing is not None and not existing.finished:
+                        return self._start_response(existing, reused=True)
 
             if self._count_live() >= self.max_sessions:
                 raise RequestError(
@@ -683,7 +706,8 @@ class SessionServer:
                 place_request=place_request,
             )
             self._sessions[sess.session_id] = sess
-            self._by_target[key] = sess.session_id
+            if token is not None:
+                self._by_target[(container_id, token)] = sess.session_id
 
             thread = threading.Thread(
                 target=self._session_loop, args=(sess,), daemon=True,
@@ -703,18 +727,26 @@ class SessionServer:
         session_id = self._session_id_fn()
         started_at = self._iso(self.clock())
         abs_target = os.path.join(self.cgroup_root, cgroup.lstrip("/"))
-        baseline = (summary.sample_target_cgroup(abs_target).get("mem") or {}).get("current")
+        initial_target_metrics = summary.sample_target_cgroup(abs_target)
+        baseline = (initial_target_metrics.get("mem") or {}).get("current")
         pids_now = summary.read_cgroup_pids(abs_target)
         pids_at_start = len(pids_now)
         # RW-14: sampled once, at session creation — the manifest's "host"
         # field mirrors `cmd_collect`'s own convention of a single snapshot
         # written into the manifest at start, not updated thereafter.
         host_snapshot = metrics.sample_host(proc_root=self.host_proc_root)
+        sampler_origin_mono = self.sampler_clock()
 
         slice_cgroup = os.path.dirname(cgroup.rstrip("/")) or "/"
         slice_name = os.path.basename(slice_cgroup) if slice_cgroup not in ("", "/") else None
         if slice_name is None:
             slice_cgroup = None
+        initial_slice_metrics = (
+            summary.sample_slice_cgroup(
+                os.path.join(self.cgroup_root, slice_cgroup.lstrip("/"))
+            )
+            if slice_cgroup else None
+        )
 
         subtree_resolver: Optional[subtree.SubtreeResolver] = None
         if token:
@@ -722,6 +754,11 @@ class SessionServer:
                 cgroup_abs_path=abs_target, token=token, proc_root=self.proc_root
             )
             subtree_resolver.refresh()
+
+        initial_pids = (
+            list(subtree_resolver.current_pids)
+            if subtree_resolver is not None else list(pids_now)
+        )
 
         rundir = store.RunDir(self.sessions_dir, run_id=session_id, create=True)
         with open(rundir.stream_path("events"), "a", encoding="utf-8"):
@@ -779,8 +816,19 @@ class SessionServer:
                     damon_unavailable_reason = str(exc)
                     damon_status = f"unavailable:{damon_unavailable_reason}"
                 else:
-                    damon_session_obj = candidate
-                    damon_status = "on"
+                    try:
+                        # Establish the DAMON sample-zero state while the
+                        # start transaction is still assembling its own
+                        # sample-zero record. A collector failure is a
+                        # per-session unavailability, never a start fault.
+                        candidate.collect()
+                    except Exception as exc:  # noqa: BLE001 - degrade DAMON only
+                        candidate.__exit__(None, None, None)
+                        damon_unavailable_reason = f"{type(exc).__name__}: {exc}"
+                        damon_status = f"unavailable:{damon_unavailable_reason}"
+                    else:
+                        damon_session_obj = candidate
+                        damon_status = "on"
 
         acc = summary.SummaryAccumulator(
             session=session_id, daemon_name=self.daemon_name, daemon_version=CGPROFILE_VERSION,
@@ -792,6 +840,10 @@ class SessionServer:
         )
         if damon_unavailable_reason is not None:
             acc.mark_damon_unavailable(damon_unavailable_reason)
+
+        initial_damon_bytes: Optional[Dict[str, int]] = None
+        if damon_session_obj is not None:
+            initial_damon_bytes = damon_session_obj.last_class_bytes
 
         sess = _Session(
             session_id=session_id, scope=scope, container_id=container_id, cgroup=cgroup,
@@ -808,7 +860,47 @@ class SessionServer:
                 expected_duration_seconds=_expected_duration_seconds(meta),
             ),
             placement=placement_obj,
+            sampler_origin_mono=sampler_origin_mono,
         )
+        # The synchronous sample-zero read is also the liveness baseline.
+        # Summary accounting already records it below; feeding the same
+        # snapshot to the tracker keeps the two views aligned, so an
+        # immediate status reports the real initial reading and the first
+        # later tick measures CPU/IO deltas from that same point.
+        self._observe_liveness(
+            sess, mono=0.0,
+            record={
+                "seq": 0, "t": self._parse_iso_epoch(started_at), "mono": 0.0,
+                "cg": {cgroup: initial_target_metrics}, "host": host_snapshot,
+            },
+            abs_target=abs_target, target_metrics=initial_target_metrics,
+            host_metrics=host_snapshot, pids=initial_pids,
+        )
+        # Sample zero is recorded as part of start, from the target/host/slice
+        # and PID reads that already established this session's baseline.
+        # Therefore an immediate stop has a populated, honest one-sample
+        # summary instead of taking a later replacement read.
+        acc.add_sample(
+            cgroup=initial_target_metrics, host=host_snapshot,
+            slice_cgroup=initial_slice_metrics, damon=initial_damon_bytes,
+            pids=initial_pids, mono=0.0,
+        )
+        sess.live_samples = 1
+        sess.last_mono = 0.0
+        sess.no_token_pids = list(pids_now)
+        target_mem = initial_target_metrics.get("mem") or {}
+        sess.live_memory_current_bytes = target_mem.get("current")
+        sess.live_memory_peak_bytes = target_mem.get("peak")
+        target_cpu = initial_target_metrics.get("cpu") or {}
+        sess._prev_cpu_usage_usec = target_cpu.get("usage_usec")
+        sess._prev_mono = 0.0
+        sess.rundir.append("samples", {
+            "seq": 0, "t": self._parse_iso_epoch(started_at), "mono": 0.0,
+            "cg": {sess.cgroup: initial_target_metrics}, "pids": initial_pids,
+        })
+        sess.rundir.append("host", {"host": host_snapshot, "slice": initial_slice_metrics})
+        if initial_damon_bytes is not None:
+            sess.rundir.append("damon", {"_seq": 0, **initial_damon_bytes})
         rundir.write_manifest(self._manifest_for(sess, status="live"))
         return sess
 
@@ -898,14 +990,24 @@ class SessionServer:
             discovery_interval=DISCOVERY_INTERVAL_SECONDS,
         )
         smp = sampler_mod.Sampler(
-            membership, config, sample_fn, clock=self.sampler_clock, sleep=self.sampler_sleep
+            membership, config, sample_fn, clock=self.sampler_clock, sleep=self.sampler_sleep,
+            start_mono=sess.sampler_origin_mono,
         )
 
         def on_sample(record: Dict[str, Any]) -> None:
             self._on_session_sample(sess, record, abs_target, abs_slice)
-            return None
 
         try:
+            # The synchronous start read is discovery at t=0. The first
+            # sampler tick must therefore measure the two-second discovery
+            # cadence from that baseline, rather than restarting the cadence
+            # at the first post-start tick.
+            sess.last_discovery_mono = 0.0
+            # Sample zero was recorded synchronously at start. Advance one
+            # cadence before the loop so its first tick is the next sample,
+            # not a duplicate of sample zero.
+            if not sess.stop_event.is_set():
+                self.sampler_sleep(sess.interval)
             smp.run(lambda: sess.stop_event.is_set(), on_sample, self._on_topology_noop)
         except Exception as exc:  # noqa: BLE001 - a session thread must not die silently
             with self._lock:
@@ -997,7 +1099,7 @@ class SessionServer:
         with sess.lock:
             sess.summary_acc.add_sample(
                 cgroup=target_metrics, host=host_metrics, slice_cgroup=slice_metrics,
-                damon=damon_bytes, pids=pids,
+                damon=damon_bytes, pids=pids, mono=mono,
             )
             sess.live_samples += 1
             sess.last_mono = mono
@@ -1069,7 +1171,13 @@ class SessionServer:
         })
         sess.rundir.append("host", {"host": host_metrics, "slice": slice_metrics})
         if damon_bytes is not None:
-            sess.rundir.append("damon", damon_bytes)
+            if isinstance(record.get("seq"), int):
+                sess.rundir.append("damon", {"_seq": record.get("seq"), **damon_bytes})
+            else:
+                # Direct unit callers may provide a sample record without a
+                # sampler sequence; retain the historical flat shape for
+                # those synthetic records.
+                sess.rundir.append("damon", damon_bytes)
 
     # ── CP-8: liveness, the watch state machine, enforcement (§8.4) ──────
 
@@ -1469,8 +1577,9 @@ class SessionServer:
                 return self._stop_response(session_id, sess.summary_doc, already_stopped=True)
             self._finalize_session_locked(sess, aborted_reason=None)
             summary_doc = sess.summary_doc
+        response = self._stop_response(session_id, summary_doc, already_stopped=False)
         self._run_retention()
-        return self._stop_response(session_id, summary_doc, already_stopped=False)
+        return response
 
     def _read_stored_summary(self, session_id: str) -> Optional[Dict[str, Any]]:
         path = os.path.join(self.sessions_dir, session_id, "summary.json")
@@ -1536,10 +1645,20 @@ class SessionServer:
         manifest["aborted_reason"] = aborted_reason
         sess.rundir.write_manifest(manifest)
 
-    @staticmethod
     def _stop_response(
-        session_id: str, summary_doc: Optional[Dict[str, Any]], *, already_stopped: bool,
+        self, session_id: str, summary_doc: Optional[Dict[str, Any]], *, already_stopped: bool,
     ) -> Dict[str, Any]:
+        damon_series: Optional[str] = None
+        try:
+            rundir = store.RunDir(self.sessions_dir, run_id=session_id, create=False)
+            for item in rundir.read("damon"):
+                if isinstance(item, dict) and any(
+                    key in item for key in ("hot", "warm", "cold", "idle")
+                ):
+                    damon_series = "damon.jsonl"
+                    break
+        except (OSError, ValueError):
+            damon_series = None
         return {
             "ok": True,
             "contract": CONTRACT_VERSION,
@@ -1548,7 +1667,7 @@ class SessionServer:
             "summary": summary_doc,
             "session_dir": None,  # filled in by the caller once rundir is known
             "series": {
-                "samples": "samples.jsonl.gz", "damon": "damon.jsonl", "events": "events.jsonl",
+                "samples": "samples.jsonl.gz", "damon": damon_series, "events": "events.jsonl",
                 "host": "host.jsonl", "manifest": "manifest.json", "summary": "summary.json",
             },
         }

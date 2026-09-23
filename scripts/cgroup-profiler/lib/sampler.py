@@ -202,6 +202,7 @@ class Sampler:
         sample_fn: Callable[[Membership], Dict[str, Any]],
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        start_mono: Optional[float] = None,
     ) -> None:
         self.membership = membership
         self.config = config
@@ -209,7 +210,7 @@ class Sampler:
         self.clock = clock
         self.sleep = sleep
         self._seq = 0
-        self._t0_mono: Optional[float] = None
+        self._t0_mono: Optional[float] = start_mono
         self._interval = config.hot_interval
         self._forced_hot = False
 

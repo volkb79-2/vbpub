@@ -12,6 +12,16 @@ to that production container?"* — so observing a **victim** alongside the
 
 ---
 
+## CLI identity
+
+The documented shell entrypoint and `cgprofile.py` parser share the project
+version from `pyproject.toml`. A top-level `--version` probe prints
+`cgprofile 0.1.0` on stdout, exits 0, and does not require the reporting venv;
+the shim routes this probe directly to the standard-library parser before its
+missing-venv diagnostic. At every nested parser depth, help, usage, and
+configuration diagnostics begin with `CGPROFILE 0.1.0 — cgroup resource
+profiler` as line 1; normal profiling output is unchanged.
+
 ## 1. Why the shape is what it is
 
 **The devcontainer cannot see the host cgroup tree.** `/sys/fs/cgroup` inside it

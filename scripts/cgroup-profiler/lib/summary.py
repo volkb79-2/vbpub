@@ -67,6 +67,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from math import ceil
+from math import isfinite
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from . import metrics, util
@@ -287,6 +288,7 @@ class SummaryAccumulator:
         self._slice_samples: List[Dict[str, Any]] = []
         self._host_samples: List[Dict[str, Any]] = []
         self._damon_samples: List[Dict[str, int]] = []
+        self._sample_monos: List[Optional[float]] = []
         self._pids_seen: set = set()
 
     def add_sample(
@@ -297,6 +299,7 @@ class SummaryAccumulator:
         slice_cgroup: Optional[Dict[str, Any]] = None,
         damon: Optional[Dict[str, int]] = None,
         pids: Iterable[int] = (),
+        mono: Optional[float] = None,
     ) -> None:
         """Record one tick. ``cgroup``/``slice_cgroup``/``host`` are the
         shapes documented on the module; ``damon`` is one classified-bytes
@@ -310,6 +313,10 @@ class SummaryAccumulator:
             self._slice_samples.append(slice_cgroup)
         if damon is not None:
             self._damon_samples.append(damon)
+        if isinstance(mono, (int, float)) and not isinstance(mono, bool) and isfinite(mono):
+            self._sample_monos.append(float(mono))
+        else:
+            self._sample_monos.append(None)
         self._pids_seen.update(pids)
 
     def mark_damon_unavailable(self, reason: str) -> None:
@@ -320,10 +327,9 @@ class SummaryAccumulator:
 
     @property
     def sample_count(self) -> int:
-        """How many ticks have been recorded so far — RG-55 C4's session
-        server uses this to decide whether ``stop`` needs to take one last
-        sample before calling :meth:`finalize` (which refuses an empty
-        accumulator)."""
+        """How many ticks have been recorded so far — sample zero is present
+        before a live session is published, so a stop always has at least one
+        recorded tick to finalize."""
         return len(self._samples)
 
     @property
@@ -415,11 +421,18 @@ class SummaryAccumulator:
         if seconds is not None and duration is not None and duration > 0:
             cores_avg = seconds / duration
         cores_max = None
-        for prev, cur in zip(self._samples, self._samples[1:]):
+        for index, (prev, cur) in enumerate(zip(self._samples, self._samples[1:])):
             step = _delta(_dig(prev, "cpu", "usage_usec"), _dig(cur, "cpu", "usage_usec"))
-            if step is None or self.interval_seconds <= 0:
-                continue
-            rate = (step / 1e6) / self.interval_seconds
+            prev_mono = self._sample_monos[index]
+            cur_mono = self._sample_monos[index + 1]
+            if step is None or prev_mono is None or cur_mono is None:
+                cores_max = None
+                break
+            delta_mono = cur_mono - prev_mono
+            if delta_mono <= 0:
+                cores_max = None
+                break
+            rate = (step / 1e6) / delta_mono
             cores_max = rate if cores_max is None else max(cores_max, rate)
         throttled_ref = _rw21_reference(self.scope, self._samples, "cpu", "throttled_usec")
         nr_throttled = _rw21_reference(self.scope, self._samples, "cpu", "nr_throttled")

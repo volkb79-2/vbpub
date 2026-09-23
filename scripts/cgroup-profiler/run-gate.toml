@@ -6,7 +6,7 @@
 # verdict-read — see gate.sh's own header for why) and run-gate.py's
 # container orchestration would just be a second, redundant layer around
 # the same docker calls. This mirrors debian-install-v2's
-# r1-privileged-commit precedent (a host lane whose argv happens to be a
+# r1-vm-real-commit precedent (a host lane whose argv happens to be a
 # script that itself launches docker).
 #
 # r2 and r3 both run INSIDE run-gate.py's own tester-unified container

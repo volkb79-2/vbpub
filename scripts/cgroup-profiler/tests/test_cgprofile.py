@@ -2355,11 +2355,18 @@ class TestCmdCtl:
         assert capsys.readouterr().out == ""
 
     def test_ok_response_prints_json_and_exits_0(self, monkeypatch, capsys):
-        monkeypatch.setattr(cg, "_ctl_roundtrip", lambda *a, **k: {"ok": True, "contract": 1})
+        monkeypatch.setattr(cg, "_ctl_roundtrip", lambda *a, **k: {
+            "ok": True, "contract": 1, "cgprofile": "1.0.0",
+            "daemon": {
+                "name": "cgprofile-host-daemon", "started_at": "2026-09-12T10:15:00Z",
+                "damon": "unavailable:not available on this host", "damon_default": "on",
+                "sessions_live": 0, "max_sessions": 16,
+            },
+        })
         args = cg.build_parser().parse_args(["ctl", "version"])
         assert cg.cmd_ctl(args) == 0
         out = capsys.readouterr().out
-        assert json.loads(out) == {"ok": True, "contract": 1}
+        assert json.loads(out)["ok"] is True
         assert out.count("\n") == 1  # exactly one JSON document, nothing else
 
     def test_not_ok_response_prints_json_and_exits_2(self, monkeypatch, capsys):
@@ -2371,3 +2378,22 @@ class TestCmdCtl:
         assert cg.cmd_ctl(args) == 2
         out = capsys.readouterr().out
         assert json.loads(out)["ok"] is False
+
+    @pytest.mark.parametrize("reply", [
+        b'{"ok": true, "contract": 2, "cgprofile": "1.0.0", "daemon": {}}\n',
+        b'[]\n',
+        b'{"contract": 1, "cgprofile": "1.0.0", "daemon": {}}\n',
+    ])
+    def test_incompatible_response_is_a_daemon_fault_without_printing(
+        self, tmp_path, reply, capsys
+    ):
+        socket_path = str(tmp_path / "ctl.sock")
+        thread = TestCtlRoundtrip()._serve_once(socket_path, reply)
+        try:
+            args = cg.build_parser().parse_args(["ctl", "--socket", socket_path, "version"])
+            assert cg.cmd_ctl(args) == 3
+            captured = capsys.readouterr()
+            assert captured.out == ""
+            assert "invalid response" in captured.err
+        finally:
+            thread.join(timeout=5.0)

@@ -1071,7 +1071,7 @@ WRONG and is corrected below):*
   delete it" rule this session already applied once to a resume-cache
   mischaracterization (see LOG).
 
-**Second (final) verdict**, after the RW-21 rewrite: `./run-gate.py r2`
+**Second verdict**, after the RW-21 rewrite: `./run-gate.py r2`
 on commit `7ec4f9e819f33b5106fbcc0ae17c313495f02e65` (RW-21) and its
 successors, across the RW-26 orphan-container recovery, the RW-28
 per-candidate-budget hang, and the RW-48 root-cause fix (all three fully
@@ -1182,11 +1182,116 @@ faith:*
   File restored (`diff` against the pre-edit backup: identical) before
   committing.
 
-**Third verdict** (after this triage's commit, one more `./run-gate.py
-r2` run — the tree changed, so all 208 candidates are freshly judged,
-not resumed): [Recorded once the run completes — see the return message
-for the final numbers; this session did not fabricate a result ahead of
-the actual verdict.]
+**Third completed verdict** (after the second-pass triage commit):
+`./run-gate.py r2` judged commit
+`637b8c0995c5e1ec1ddb802710571fcc305c40dd` from
+`2026-09-12T20:21:28Z` through `23:49:05Z`. The durable verdict at
+`.assay/verdict-r2.json` records 208 candidates, 203 killed, 5 survived,
+0 equivalent (assay does not classify justified equivalents), 0
+`budget_exceeded`, and 0 crashed. Its computed R0 claim is PASS; its R2
+claim and overall outcome are FAIL with reason `MUTANTS_SURVIVED`, solely
+because the five survivors still require human disposition.
+
+**Third-verdict survivor triage (all 5):**
+
+*Behaviorally equivalent (4; the same identities already recorded above,
+re-verified against the final call paths):*
+
+- `lib/serve.py:626`, `None -> []`: this is the nested `on_sample`
+  callback's return (the earlier report text incorrectly named
+  `_on_topology_noop`). `Sampler.run` stores it as `events` and observes it
+  exactly once, as `bool(events)` in its `forced` expression; neither value
+  is returned, persisted, or inspected by identity/type. `bool(None)` and
+  `bool([])` are both false, so cadence and every downstream effect are
+  identical.
+- `lib/serve.py:704`, `and -> or`: the sampler produces numeric `mono`
+  values, and `_prev_cpu_usage_usec`/`_prev_mono` start together and are
+  assigned together after every tick. If the prior usage is present, both
+  operators enter the same block. If it is absent, the `or` mutant alone
+  calls `util.rate(None, usage, dt)`, which returns `None`; the original
+  skips that assignment, but `live_cpu_cores_recent` is already `None`
+  (initially, or reset by the tick on which usage became unreadable).
+  Resumption likewise needs one baseline tick in both versions. Thus every
+  sampler-produced state has the same observable live rate.
+- `lib/summary.py:173` and `lib/summary.py:177`, each `None -> []`: these
+  are `_parse_iso`'s empty-input and malformed-input exits. Its only call
+  site is `SummaryAccumulator.finalize`, and each result is consumed only
+  by the truthiness guard `start_dt and end_dt`; neither result is returned,
+  logged, type-checked, nor identity-checked. Both false values therefore
+  produce the same null duration and dependent CPU average.
+
+*Genuine oracle gap (1, killed by a focused test):*
+
+- `lib/summary.py:214`, final `or -> and` in `_count_limit_drift`'s
+  four-reading presence guard. The mutant lets a pair with present
+  `memory.max` values and only the current `memory.high` absent reach tuple
+  comparison, falsely counting one limit change. Added
+  `test_limit_drift_ignores_pair_with_only_memory_high_missing`. With the
+  exact mutant applied, the selector failed `assert 1 == 0`; after restoring
+  production code, the same selector passed. Both runs used
+  `nice -n 19 ionice -c 3`; memory PSI full avg10 was below 5 before each.
+
+**Fresh R2 on the triage commit** (`53abbf2c50d342de64016b5bf7a9198ead5ce717`)
+completed from `2026-09-13T11:55:57Z` through `15:10:08Z`; the verdict was
+written at `15:10:10Z`. The separately read `.assay/verdict-r2.json` records
+208 candidates, 203 killed, 5 survived, 0 assay-equivalent, 0
+`budget_exceeded`, 0 crashed, outcome `FAIL/MUTANTS_SURVIVED`, exit 1. The
+five survivors are:
+
+- `lib/serve.py:626` (`None->[]`) — **accepted equivalent**. The nested
+  `on_sample` return is stored as `events` and consumed only through
+  `bool(events)` by `Sampler.run`; both values are false and no identity,
+  type, or value is persisted.
+- `lib/serve.py:704` (`and->or`) — **accepted equivalent**. The sampler
+  assigns the numeric CPU counter and monotonic timestamp together. If the
+  previous counter is absent, the mutant's `util.rate(None, ...)` returns
+  null while the live rate is already null; recovery requires the same
+  baseline tick.
+- `lib/summary.py:173` and `:177` (`None->[]`) — **accepted equivalent**.
+  `_parse_iso` has exactly one call site, and both results are consumed only
+  by the false-valued `start_dt and end_dt` guard.
+- `lib/damon.py:329` (`False->True`) — **accepted equivalent**. This is
+  `_acquired_from_pool`, not `_entered` (the earlier line description was
+  wrong). The non-pool teardown branch is selected before reading the flag;
+  pooled success unconditionally sets it true, and failed pool acquisition
+  releases an index that the pool's contract treats as a no-op. The exact
+  temporary mutation was applied and restored byte-for-byte; the serial
+  `tests/test_damon.py` suite passed 68 tests in 0.55s.
+
+The prior `lib/summary.py:214` survivor is now killed by
+`TestAbsentInputsStayNull.test_limit_drift_ignores_pair_with_only_memory_high_missing`;
+the red-first exact-mutant proof and restored green proof are recorded above.
+Therefore the assay remains mechanically FAIL only because it cannot classify
+human-accepted equivalent mutants; no current survivor is an untriaged oracle
+gap. Final `r0-r1` and `r3` are run serially on HEAD `53abbf2c`, with memory
+PSI full avg10 below 5 and no daemon or host infrastructure started.
+
+## Final gates and D-15 safety
+
+Final gates were run serially with HEAD held at
+`53abbf2c50d342de64016b5bf7a9198ead5ce717`:
+
+- `nice -n 19 ionice -c 3 ./run-gate.py r0-r1` — exit 0; 1115 tests
+  passed, with 100% line and 100% branch coverage (4 deprecation warnings),
+  duration `102.811s`, started `2026-09-13T15:26:28Z`.
+- `nice -n 19 ionice -c 3 ./run-gate.py r3` — exit 0; all 7 canaries were
+  rejected and 0 survived, duration `17.553s`, started
+  `2026-09-13T15:28:46Z`.
+
+The separately read `.run-gate/history.json` latest entries match this HEAD
+and both have exit 0. They are `dirty: true`/history-ineligible only because
+these records were intentionally uncommitted during execution; no executable
+or test file was dirty, and the configured lanes permit this records-only
+state. The records-only commit follows this receipt.
+
+D-15 is satisfied: `python3 cgprofile.py serve --cap 1` exits 2 as an
+unrecognized argument; the compose service has `privileged: true`, `pid:
+host`, `cgroup: host`, `network_mode: none`, an authored interactive
+`cgroup_parent`, and only the named sessions volume, with no Docker socket or
+host bind. The direct `serve` and `damon` write paths are guarded by their
+respective `WRITABLE_ROOTS` checks, and the green suite exercises those
+refusals. `cgprofile-host-daemon` was checked at `Exited (0)` and remains
+down; no live probe or session was left running.
 
 ## Decision asks (summary)
 
@@ -1417,3 +1522,108 @@ every overhead measurement, per the handoff's own "daemon idle before
 overhead measurements" instruction — each probe session was started,
 measured, and stopped before the next began; no two probe sessions
 overlapped.
+
+## Fresh Luna xhigh repair of P1 daemon blockers B1–B8
+
+This implementation pass addressed the fresh review's concrete blockers without
+editing `cgprofile-P1-DAEMON-REVIEW-round1.md`, starting a daemon, mutating host
+state, running a registered gate, or starting a mutation campaign.
+
+- **B1:** `KdamondPool` records baseline ownership, allocates only proven
+  post-baseline indices, tracks owned/free/live sets under a lock, refuses an
+  unreadable baseline, and skips teardown for an unacquired slot. Bare sessions
+  also refuse a foreign or unprovable index. Tests preserve a pre-existing
+  kdamond's `on` state and assert failed acquisition makes no placeholder stop.
+- **B2:** `stop.series.damon` is `null` unless persisted DAMON class samples
+  are present. DAMON records carry sample sequence metadata so restart replay
+  does not confuse a missing sample zero with a later sample.
+- **B3:** only non-null tokens enter `_by_target`; no-token starts are
+  independent and consume `max_sessions`.
+- **B4:** start atomically captures and persists target/host/slice/PID sample
+  zero before launching the sampler; an immediate stop retains baseline and
+  percentile population.
+- **B5:** monotonic timestamps are retained in the accumulator and persisted
+  samples; `cores_max` uses every positive adjacent timestamp delta and returns
+  null for missing/non-positive timing input.
+- **B6:** interval parsing rejects non-numeric, boolean, NaN, and infinity
+  through the normal socket error response; finite out-of-range values retain
+  the contract's [0.25, 30] clamp.
+- **B7:** `cgprofile ctl` validates object type, contract major, boolean `ok`,
+  error shape, and verb-specific success shape before printing. Invalid peers
+  are exit-3 daemon faults with no stdout.
+- **B8:** `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, README links, nyxloom
+  refs, and `tests/test_docs.py` now keep the adopter surface synchronized;
+  the tests parse current contract examples, check closed vocabulary coverage,
+  and resolve local links/anchors.
+
+Focused verification was serial and load-niced (`nice -n 19 ionice -c 3`):
+420 tests across DAMON, summary, sampler, serve, store, subtree, targets,
+metrics, and documentation, with one pre-existing dependency-skipped case;
+and `py_compile` for the changed Python modules all passed. The full
+`test_cgprofile.py` collection was not runnable in this environment because
+the system interpreter lacks numpy; equivalent B7 fake-socket coverage runs
+in `test_serve.py`. The final review still owns the live acceptance probe and
+registered gate.
+
+## Controller addendum — final oracle repair checkpoint (2026-09-15)
+
+The historical R2 sections above describe earlier trees and are retained for
+traceability. They do not certify the current implementation. A direct,
+isolated diagnostic rejudge of the prior implementation tip `5fd0ef13`
+produced 252 candidates: 245 killed, 7 survived, with no budget or crash
+classification. The seven survivors were at `damon.py:325`, `damon.py:589`,
+`damon.py:596`, `serve.py:705`, `serve.py:793`, `summary.py:174`, and
+`summary.py:178`. The controller classified these from their real call paths;
+the pool ownership guard was redundant after successful acquisition and the
+callback's explicit `None` was behaviorally required to remain null, while
+the other survivor locations exposed missing direct or edge-case oracles.
+
+Commit `8032716c` closes that oracle gap: it removes the redundant pool
+ownership conjunct, preserves the callback null behavior without an explicit
+empty return, and adds tests for solo teardown equality, partial CPU
+baselines, and missing/malformed ISO timestamps. Its focused tests passed 268
+tests with one dependency skip. The full package run passed 1200 tests with
+five warnings. The registered `r0-r1` gate then passed 1200 tests with 100%
+line and 100% branch coverage, and registered `r3` passed all seven canaries
+(seven rejected, zero survived).
+
+Because assay identity is per tree, the older mutation evidence is invalid
+for `8032716c`. A fresh registered R2 on the final tip is still mandatory;
+this addendum deliberately does not call the package shipped. The final
+merge additionally requires the fresh Sol xhigh adversarial review requested
+by the operator.
+
+## Controller addendum — terminal R2 on `8df62f62` and oracle repair
+
+The registered R2 on the quiet judged tree
+`8df62f628b20c6280574aef8f6e76a53f9d00e35` completed at
+`2026-09-16T15:53:48Z` with **250 candidates accounted for, 248 killed,
+2 survived, 0 equivalent, 0 budget-exceeded, and 0 crashed**. Assay reported
+`FAIL/MUTANTS_SURVIVED` (exit 1). This is complete mutation evidence, but not
+release evidence until every survivor is either behaviorally killed or
+explicitly justified.
+
+The survivors were:
+
+- `lib/damon.py:325`, `Gt->GtE` on `current > baseline`. This is an
+  equivalent mutant under the pool invariant: the release path reaches this
+  conjunction only after a live owned slot exists, so
+  `expected_end = max(_owned) + 1` is strictly greater than `baseline`.
+  With the preceding `current == expected_end`, `current > baseline` is
+  implied; replacing it with `>=` cannot change a reachable result.
+- `lib/damon.py:385`, `False->True` on `_acquired_from_pool`. This exposed a
+  real oracle gap. If a second pooled session fails before acquiring a slot,
+  initializing the flag true causes exception teardown to release constructor
+  index 0, which may be the first session's live slot. The regression
+  `test_failed_pool_acquire_cannot_release_a_live_constructor_index` proves
+  that the first slot remains live and on; the exact temporary mutant fails
+  that test (`MUTANT_TEST_EXIT=1`), while the restored production code passes
+  all 82 `test_damon.py` tests. The test-only repair is committed as
+  `8cc740a2`.
+
+Because `8cc740a2` changes the judged tree, the complete R2 result above is
+now invalid for final release evidence. A fresh R2 must run on `8cc740a2`
+with the exact tree held quiet; the redundant `Gt->GtE` may remain as a
+written equivalent, while the new regression must kill the initialization
+mutant. Final r0-r1/r3, the fresh Sol xhigh review, and the release remain
+pending.

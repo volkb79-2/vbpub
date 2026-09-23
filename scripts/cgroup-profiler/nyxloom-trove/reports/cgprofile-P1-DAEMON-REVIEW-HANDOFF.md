@@ -19,7 +19,8 @@ Read, in this order: the plan of record
 (`run-gate-project/nyxloom-trove/RG55-INTERFACE-CONTRACT.md` §1–§7) and
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
-— RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19 bind this package), the
+— RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
+RW-47, and RW-48 bind this package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,
 `lib/serve.py`, `lib/store.py` changes, `cgprofile.py`, the shim, the
@@ -86,7 +87,12 @@ each claim against what you found; list claims you could not verify.
    contract-fixture identity test really compares bytes against
    `run-gate-project/nyxloom-trove/fixtures/rg55/`.
 9. **Rulings honored.** RW-3 one-liner present; RW-13/RW-15/RW-16 as ruled;
-   RW-19 (r2 budget) recorded; CP-4..CP-7 entries real and honest.
+   RW-19/RW-21/RW-23/RW-47/RW-48 recorded and reflected in code/tests;
+   CP-4..CP-7 entries real and honest. Read `.assay/verdict-r2.json`
+   separately and reconcile every survivor with REPORT's concrete
+   disposition; in particular, independently attack the focused oracle for
+   `lib/summary.py:214` and the four claimed equivalents at
+   `lib/serve.py:626,704` and `lib/summary.py:173,177`.
 10. **Docs.** README "Running the daemon", ATTACH-GUIDE lane section,
     DESIGN.md tier story — accurate to the code, not aspirational.
 

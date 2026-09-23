@@ -1109,14 +1109,182 @@ mutation to prove the fix). `r0-r1`/`r3` deferred to RW-48 step 7, after
 the next commit and the resulting fresh r2 run (the tree changed — a full
 208-candidate re-judgment, not a resume).
 
-### Checkpoint
+### 22. Third r2 verdict and final survivor triage (fresh Codex close-out)
 
-Not yet reached. Remaining: commit this triage (`--only` the touched
-test/conftest/REPORT/LOG paths), relaunch `./run-gate.py r2` untracked
-from the clean tip (full fresh judgment, ~2.5-3.5h at the 600s
-per-candidate budget), respecting the estate-wide ≤2-mutation-runs cap
-(RW-42) — wait with a cheap `until` loop if both slots are taken when
-this is reached. Then RW-48 step 7: `r0-r1` (bare) and `r3`, serially,
-verdicts read from `.run-gate/history.json` in a separate step, and the
-final return message (tip hash, r2 verdict line read separately, the
-full survivor/justification table, r0-r1/r3 lines).
+Read `.assay/verdict-r2.json` separately. It durably judges tree
+`637b8c0995c5e1ec1ddb802710571fcc305c40dd`: 208 candidates, 203 killed,
+5 survived, 0 assay-classified equivalent, 0 `budget_exceeded`, 0 crashed;
+R0 PASS, R2/overall FAIL (`MUTANTS_SURVIVED`). The five actual survivors
+are `lib/serve.py:626` (`None -> []`), `lib/serve.py:704` (`and -> or`),
+`lib/summary.py:173` and `:177` (both `None -> []`), and
+`lib/summary.py:214` (the final `or -> and` in the four-reading
+`limit_drift` presence guard).
+
+Re-inspection preserved the first four equivalent-mutant identities, with
+concrete call-path reasoning in REPORT. It also corrected the old
+`serve.py:626` description: the value is the nested sample callback's
+return and is consumed once through `bool(events)` by `Sampler.run`, not a
+discarded `_on_topology_noop` return. `None` and `[]` remain behaviorally
+identical on that path.
+
+The `summary.py:214` survivor is a genuine oracle gap. Added
+`test_limit_drift_ignores_pair_with_only_memory_high_missing`, isolating
+the final guard operand. Red-first proof with that exact `or -> and`
+mutation applied:
+
+```
+$ nice -n 19 ionice -c 3 python3 -m pytest tests/test_summary.py::TestAbsentInputsStayNull::test_limit_drift_ignores_pair_with_only_memory_high_missing -q
+1 failed in 0.43s (assert 1 == 0)
+```
+
+After restoring `lib/summary.py` byte-for-byte, the targeted green run was
+`1 passed in 0.23s` with the same argv. Memory PSI full avg10 was 0.13
+before the red run and 0.02 before the green run. The production modules
+remain unchanged; only the focused oracle and close-out records changed.
+
+This test-tree change requires a fresh 208-candidate r2 judgment on the
+triage commit. After that separately read verdict, run final `r0-r1`
+(registered bare-host wrapper) and `r3` serially on the final records tip,
+only with memory PSI full avg10 below 5. No daemon or host infrastructure
+is started by this close-out.
+
+### 23. Fresh R2 on the triage commit and final survivor dispositions
+
+The fresh R2 required by item 22 completed against the exact committed tree
+`53abbf2c50d342de64016b5bf7a9198ead5ce717` (the focused test-tree triage
+commit). Its progress stream records `run` at `2026-09-13T11:55:57Z`,
+`end` at `15:10:08Z`, and `verdict_written` at `15:10:10Z`; the separately
+read `.assay/verdict-r2.json` records **208 candidates, 203 killed, 5
+survived, 0 equivalent, 0 budget_exceeded, 0 crashed**, outcome
+`FAIL/MUTANTS_SURVIVED`, exit 1. The run completed normally; there was no
+budget or crash condition.
+
+The five survivors were reconciled as follows:
+
+- `lib/serve.py:626` (`None->[]`) — accepted equivalent. The nested
+  `on_sample` result is consumed only as `bool(events)` by `Sampler.run`;
+  both values are false and no identity/type/value is persisted.
+- `lib/serve.py:704` (`and->or`) — accepted equivalent. Sampler-produced
+  CPU usage and monotonic timestamps are assigned together; when usage is
+  absent the mutant's `util.rate(None, ...)` still leaves the already-null
+  live rate unchanged, and recovery needs the same baseline tick.
+- `lib/summary.py:173` and `:177` (`None->[]`) — accepted equivalent.
+  `_parse_iso` has one call site and both results are consumed only by
+  `start_dt and end_dt`; `None` and `[]` have identical false truthiness and
+  neither value is returned or type-inspected.
+- `lib/damon.py:329` (`False->True`) — accepted equivalent after correcting
+  the old line description: line 329 is `_acquired_from_pool`, not
+  `_entered`. When `pool is None`, teardown selects the non-pool branch
+  before consulting this flag. When a pool is used, successful `acquire()`
+  unconditionally sets the flag true; an acquire failure's release path is
+  already a harmless no-op for an unacquired index. The exact temporary
+  mutation was applied and restored byte-for-byte; serial
+  `nice -n 19 ionice -c 3 timeout ... python3 -m pytest tests/test_damon.py
+  -q` passed **68 tests in 0.55s**.
+
+The prior `lib/summary.py:214` survivor is absent from this fresh verdict:
+the focused `test_limit_drift_ignores_pair_with_only_memory_high_missing`
+now kills it. Thus the mechanical assay result remains FAIL because assay
+does not classify human-accepted equivalents, while all five survivors have
+an explicit behavioral disposition and none is an untriaged oracle gap.
+
+The final gates below are run on HEAD `53abbf2c` with no HEAD movement. This
+section is intentionally recorded before the records-only close-out commit;
+the gate receipts will be appended after both lanes are green.
+
+### 24. Final gates and D-15 safety receipt
+
+Both final lanes ran serially with HEAD held at
+`53abbf2c50d342de64016b5bf7a9198ead5ce717`; no daemon or host infrastructure
+was started:
+
+- `nice -n 19 ionice -c 3 ./run-gate.py r0-r1` started at `15:26:28Z`,
+  ran for `102.811s`, and exited 0. The detached coverage gate reported
+  **1115 passed, 4 warnings, 100% line coverage and 100% branch coverage**.
+- `nice -n 19 ionice -c 3 ./run-gate.py r3` started at `15:28:46Z`, ran for
+  `17.553s`, and exited 0: **7/7 canaries rejected, 0 survived**. Its
+  container was immediately verified and constrained to `--cpus=3`.
+
+The separately read `.run-gate/history.json` records both latest entries with
+the same commit and exit 0. They are marked `dirty: true` and
+`history_eligible: false` only because this LOG/REPORT evidence was
+intentionally uncommitted while the lanes ran; the tracked executable/test
+tree was unchanged and the gate lanes themselves have `clean_tree = false`.
+The R2 history entry is clean and eligible for the exact `53abbf2c` commit.
+
+D-15 safety check: `python3 cgprofile.py serve --cap 1` refused with exit 2
+(`unrecognized arguments`), proving the daemon CLI cannot reach `--cap`.
+Static inspection confirms the daemon compose service is `privileged: true`,
+`pid: host`, `cgroup: host`, `network_mode: none`, and uses an authored
+`CGROUP_PARENT_DEV_INTERACTIVE` with only the named sessions volume; no Docker
+socket or host bind is present. `serve.SessionServer._guard_path` confines
+its direct writes/removals to the sessions root or DAMON admin root, and
+`damon._write_nr_kdamonds` independently confines its raw sysfs write. The
+daemon safety tests were included in the green r0-r1 run. The exact
+`cgprofile-host-daemon` status check found `Exited (0)`; it is down, with no
+live session or live probe left behind.
+
+### 25. Controller close-out checkpoint after direct survivor recheck (2026-09-15)
+
+The earlier mutation records above are not evidence for the current tree. A
+direct diagnostic rejudge of the then-current implementation tip `5fd0ef13`
+(using an isolated assay state directory because the registered command
+lane's old embedded assay did not propagate the required state override)
+completed with **252 candidates, 245 killed, 7 survived, 0 budget_exceeded,
+and 0 crashed**. This was diagnostic evidence only, not a registered release
+gate. The seven survivors were:
+
+- `lib/damon.py:325` (`Gt -> GtE`)
+- `lib/damon.py:589` (`And -> Or`)
+- `lib/damon.py:596` (`Gt -> GtE`)
+- `lib/serve.py:705` (`None -> []`)
+- `lib/serve.py:793` (`And -> Or`)
+- `lib/summary.py:174` (`None -> []`)
+- `lib/summary.py:178` (`None -> []`)
+
+The controller inspected each survivor's call path. The pool ownership
+conjunction at `damon.py:589` was redundant after successful pool acquisition
+and was removed. The explicit empty callback return at `serve.py:705` was
+removed while preserving the callback's null contract. A solo-teardown
+equality oracle, a partial CPU-baseline oracle, and malformed/missing ISO
+timestamp oracles were added. Those changes are committed as `8032716c`
+(`test(cgprofile): close remaining P1 survivor oracles`). The remaining
+mutation lines require the fresh registered R2 on the new tree; the old
+direct result must not be presented as a PASS.
+
+Verification on `8032716c` was green before this records checkpoint:
+
+- the focused P1 tests passed: **268 passed, 1 skipped**;
+- the full package test run passed: **1200 passed, 5 warnings** (the generic
+  `--cov=.` invocation reported aggregate coverage failure because it
+  measured unrelated zero-covered `run-gate-project` scripts; the package
+  gate below is the authoritative scoped result);
+- registered `r0-r1` passed: **1200 passed, 4 warnings, 100% line and 100%
+  branch coverage**, exit 0;
+- registered `r3` passed: **7 rejected, 0 survived**, exit 0.
+
+The records-only update does not satisfy the pending R2 identity requirement.
+Before merge, run R2 against the exact final committed tree, separately read
+its verdict, triage every survivor, and obtain the required fresh Sol xhigh
+adversarial review. No daemon was started by this checkpoint.
+
+### 26. Controller triage — R2 on `8df62f62` and new oracle
+
+The exact-tree registered R2 verdict for `8df62f628b20c6280574aef8f6e76a53f9d00e35`
+was read separately after the owner process and exact container were gone:
+250 candidates were accounted for, 248 killed, 2 survived, 0 equivalent, 0
+budget-exceeded, and 0 crashed; outcome `FAIL/MUTANTS_SURVIVED`, exit 1,
+ended `2026-09-16T15:53:48Z`.
+
+`damon.py:325` (`Gt->GtE`) is accepted as behaviorally equivalent because
+`current == expected_end` implies `current > baseline` for every reachable
+pool release with a live owned index. `damon.py:385` (`False->True`) was a
+real unobserved failure: a failed second acquire could release constructor
+index 0 belonging to the first session. The red-first regression
+`test_failed_pool_acquire_cannot_release_a_live_constructor_index` failed
+under the exact mutant and passed restored; the full `test_damon.py` file
+then passed 82 tests. The test-only repair is `8cc740a2`.
+
+That commit changes the judged tree, so the observed R2 is invalidated for
+release. A fresh R2 is required on `8cc740a2`, followed by final r0-r1/r3,
+fresh Sol xhigh review, and only then merge/release.

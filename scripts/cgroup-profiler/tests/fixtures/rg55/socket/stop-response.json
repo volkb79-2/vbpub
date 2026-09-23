@@ -127,7 +127,7 @@
   "session_dir": "/var/lib/cgprofile/sessions/s-20260912T101500Z-9f01",
   "series": {
     "samples": "samples.jsonl.gz",
-    "damon": "damon.jsonl",
+    "damon": null,
     "events": "events.jsonl",
     "host": "host.jsonl",
     "manifest": "manifest.json",

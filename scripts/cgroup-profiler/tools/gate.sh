@@ -100,9 +100,9 @@ fi
 Set CGPROFILE_HOST_WORKTREE explicitly, or run from a bind-mounted checkout."
 
 # --- placement ---------------------------------------------------------
-parent="${CGPROFILE_CGROUP_PARENT:-${CGROUP_PARENT_DEV_BACKGROUND:-}}"
+parent="${CGPROFILE_CGROUP_PARENT:-${CGROUP_PARENT_DEV_GATES:-}}"
 [ -n "$parent" ] || die "no cgroup parent resolvable.
-Set CGPROFILE_CGROUP_PARENT, or \$CGROUP_PARENT_DEV_BACKGROUND (normally
+Set CGPROFILE_CGROUP_PARENT, or \$CGROUP_PARENT_DEV_GATES (normally
 injected by devcontainer.json). Refusing to launch unplaced beside production
 — AGENTS.md, 'No hardcoded fallbacks'."
 

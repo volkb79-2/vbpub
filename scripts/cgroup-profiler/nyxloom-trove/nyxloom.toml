@@ -29,6 +29,8 @@ handoff_globs = ["nyxloom-trove/handoffs/*.md"]
 readme       = "README.md"
 design       = "DESIGN.md"
 attach_guide = "ATTACH-GUIDE.md"
+design_guide = "docs/DESIGN-GUIDE.md"
+consumers    = "docs/CONSUMERS.md"
 
 # Managed per-entry backlog (nyxloom-trove/backlog/, `nyxloom backlog` CLI),
 # adopted 2026-09-12 (RG-55 wave P0) for the daemon's own follow-up items

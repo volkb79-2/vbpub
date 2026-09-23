@@ -85,6 +85,7 @@ def _feed(scope: str, *, frames_dir: Path = FRAMES_DIR, damon_enabled: bool = Tr
             host=metrics.sample_host(proc_root=str(proc)),
             damon=_damon_frame(frames_dir, n) if damon_enabled else None,
             pids=pids,
+            mono=float(n),
         )
     return acc.finalize(ended_at="2026-09-12T10:15:04Z")
 
@@ -184,6 +185,14 @@ class TestLastReadSkipsUnreadableTrailingSample:
 # ── branch coverage: absent data, no slice, no damon, unavailable damon ────
 
 class TestAbsentInputsStayNull:
+    @pytest.mark.parametrize("text", [None, "", "not-a-timestamp"])
+    def test_parse_iso_returns_none_for_missing_or_malformed_text(self, text):
+        # `_parse_iso` is the null-preserving boundary used by duration
+        # calculation.  Its private return contract is still load-bearing:
+        # `[]` is falsy but is not an Optional[datetime], and would make a
+        # direct caller report a fabricated value type.
+        assert summary._parse_iso(text) is None
+
     def test_single_unreadable_sample_produces_an_all_null_summary(self):
         acc = _new_accumulator("container-shared", damon_enabled=False)
         acc.add_sample(cgroup={}, host={}, slice_cgroup=None)
@@ -276,6 +285,42 @@ class TestAbsentInputsStayNull:
         result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
         assert result["cpu"]["cores_max"] is None
 
+    def test_cores_max_uses_each_positive_sample_timestamp_delta(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        usages = (0, 500_000, 2_500_000)
+        monos = (0.0, 0.5, 2.0)
+        for usage, mono in zip(usages, monos):
+            acc.add_sample(cgroup={"cpu": {"usage_usec": usage}}, host={}, mono=mono)
+        result = acc.finalize(ended_at="2026-09-12T10:15:02Z")
+        # The two rates are 1.0 and 1.333... cores. A fixed configured
+        # interval would incorrectly report 2.0 cores for the second pair.
+        assert result["cpu"]["cores_max"] == 1.333
+
+    @pytest.mark.parametrize("monos", [(0.0, 0.0), (0.0, -1.0)])
+    def test_cores_max_is_null_for_a_non_positive_timestamp_delta(self, monos):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        for usage, mono in zip((0, 1_000_000), monos):
+            acc.add_sample(cgroup={"cpu": {"usage_usec": usage}}, host={}, mono=mono)
+        result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
+        assert result["cpu"]["cores_max"] is None
+
+    def test_cores_max_is_null_when_a_sample_timestamp_is_unreadable(self):
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 0}}, host={}, mono=0.0)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 1_000_000}}, host={}, mono=None)
+        result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
+        assert result["cpu"]["cores_max"] is None
+
+    def test_cores_max_is_null_when_usage_delta_is_unreadable(self):
+        # Both timestamps are valid, but the usage delta is not.  The first
+        # `or` in the guard must remain independent; Or->And would attempt to
+        # divide None after this exact missing-usage transition.
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        acc.add_sample(cgroup={}, host={}, mono=0.0)
+        acc.add_sample(cgroup={"cpu": {"usage_usec": 1_000_000}}, host={}, mono=1.0)
+        result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
+        assert result["cpu"]["cores_max"] is None
+
     def test_unparsable_timestamps_leave_duration_and_cores_avg_null(self):
         acc = _new_accumulator("container-shared", damon_enabled=False)
         acc.started_at = "not-a-timestamp"
@@ -328,6 +373,26 @@ class TestAbsentInputsStayNull:
             cgroup=dict(base_cgroup, mem_max=None, mem_high=500),
             slice_cgroup=summary.sample_slice_cgroup(str(slice_dir)), host=host,
         )
+        result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
+        assert result["events"]["limit_drift"] == 0
+
+    def test_limit_drift_ignores_pair_with_only_memory_high_missing(self):
+        # All four readings in a consecutive pair must be present before the
+        # pair can count as drift.  In particular, the final guard term
+        # (cur.memory.high) is independent: changing its preceding `or` to
+        # `and` would compare these tuples and falsely report one change.
+        acc = _new_accumulator("container-shared", damon_enabled=False)
+        target, slice_dir, proc = _frame_paths(FRAMES_DIR, 0)
+        base_cgroup = summary.sample_target_cgroup(str(target))
+        host = metrics.sample_host(proc_root=str(proc))
+        first = dict(base_cgroup, mem_max=1000, mem_high=500)
+        missing_high = dict(base_cgroup, mem_max=1000, mem_high=None)
+        for cgroup in (first, missing_high):
+            acc.add_sample(
+                cgroup=cgroup,
+                slice_cgroup=summary.sample_slice_cgroup(str(slice_dir)),
+                host=host,
+            )
         result = acc.finalize(ended_at="2026-09-12T10:15:01Z")
         assert result["events"]["limit_drift"] == 0
 

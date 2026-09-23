@@ -12,18 +12,33 @@ while observing a victim is a first-class mode, not a workaround.
 
 ```bash
 ./setup.sh                      # once
+./cgprofile --version           # prints cgprofile 0.1.0
 ./cgprofile doctor              # what can I reach?
 
 ./cgprofile run \
-  --target  slice:dev-background.slice@follow \
+  --target  slice:dev-gates.slice@follow \
   --observe container:b87c0a5b-2387-4a1c-8863-ff23e6800a1d \
   -- ./gate.sh
 ```
+
+`./cgprofile --version` is the documented operator identity probe. It prints
+exactly one `cgprofile 0.1.0` line to stdout, exits 0, and emits no stderr; the
+value comes from the project version in `pyproject.toml`. Help, usage, missing-
+argument, unknown-argument, and configuration diagnostics at every subcommand
+depth begin with `CGPROFILE 0.1.0 — cgroup resource profiler` as line 1.
+Normal profiling output is unchanged. The shell shim and `cgprofile.py`
+therefore expose the same top-level compatibility option.
 
 - **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
   Start there if you want to use it.
 - **`DESIGN.md`** — architecture and module contracts. Start there if you want
   to change it.
+- **`docs/CONSUMERS.md`** — pasteable operator probes and adoption notes.
+- **[`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#daemon-safety-and-placement)**
+  — why the always-on daemon owns only its measured state and how its contract
+  stays fail-closed.
+- **[`docs/CONSUMERS.md`](docs/CONSUMERS.md)** — pasteable daemon and run-gate
+  adoption examples.
 
 ## Verbs
 
@@ -41,6 +56,11 @@ while observing a victim is a first-class mode, not a workaround.
 The first six are the collector/report CLI (`ATTACH-GUIDE.md`); `serve`/`ctl`
 are RG-55's always-on daemon mode, a separate thing entirely — it never
 spawns a collector, and run-gate talks to it instead of to `run`/`attach`.
+Every daemon session records sample zero at start. A no-token start is always a
+new session (subject to `--max-sessions`); only the same non-null token is
+idempotent. The daemon control contract is major version 1, and `ctl` refuses
+to print a response whose object, major, `ok`, or verb-specific shape is not
+valid.
 
 ## What you get
 
@@ -97,6 +117,24 @@ docker exec cgprofile-host-daemon cgprofile ctl status --json
 ciu down                           # stops it (run from this dir); the volume survives
 ```
 
+The daemon's version response is contract major 1:
+
+```json
+{
+  "ok": true,
+  "contract": 1,
+  "cgprofile": "1.0.0",
+  "daemon": {
+    "name": "cgprofile-host-daemon",
+    "started_at": "2026-09-12T10:15:00Z",
+    "damon": "available",
+    "damon_default": "on",
+    "sessions_live": 0,
+    "max_sessions": 16
+  }
+}
+```
+
 - **One daemon per host, deliberately.** `deploy.environment_tag = "host"`
   (not `$INSTANCE_ID` like every other ciu stack in this estate) — the
   container name is the fixed literal `cgprofile-host-daemon`. A second
@@ -147,8 +185,9 @@ ciu down                           # stops it (run from this dir); the volume su
 - **Sessions live in the named volume** `cgprofile-sessions`, mounted at
   `/var/lib/cgprofile/sessions` — `ctl stop <session>`'s response names the
   exact `session_dir` and the series files inside it (`samples.jsonl.gz`,
-  `damon.jsonl`, `events.jsonl`, `host.jsonl`, `manifest.json`,
-  `summary.json`). `ciu down` preserves the volume; `ciu clean`/`--reset`
+  `events.jsonl`, `host.jsonl`, `manifest.json`, `summary.json`, plus
+  `damon.jsonl` only when actual DAMON samples were persisted). `ciu down`
+  preserves the volume; `ciu clean`/`--reset`
   removes it, same as every other named volume in this estate.
 - **Rendering a report:** `docker exec cgprofile-host-daemon cgprofile ctl
   report <session> --json` — the same interactive `report.html` a
@@ -208,7 +247,8 @@ ciu down                           # stops it (run from this dir); the volume su
   `SysfsInterface` and `Classifier` to add a hot/warm/cold breakdown alongside
   the counters.
 - `modern-debian-tools-python-debug/host-setup/` — owns the host's dev-tier
-  slice governance (`dev-interactive`, `dev-background`, `dev-buildkitd`). This
+  slice governance (`dev-interactive`, `dev-background`, `dev-gates`,
+  `dev-buildkitd`). This
   tool measures those tiers; it does not manage them. Proposals in the report
   are phrased as changes to *that* configuration.
 - `/usr/local/sbin/soulmask-zswap-monitor.sh` — live production health. The

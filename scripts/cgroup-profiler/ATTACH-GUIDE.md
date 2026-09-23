@@ -32,7 +32,7 @@ for collateral damage while it runs:
 
 ```bash
 ./cgprofile run \
-  --target  slice:dev-background.slice@follow \
+  --target  slice:dev-gates.slice@follow \
   --observe container:b87c0a5b-2387-4a1c-8863-ff23e6800a1d \
   -- ../../shared-ramdisk-depot-manager/tools/gate.sh
 ```
@@ -50,13 +50,15 @@ Where the gates on this host actually live:
 
 | repo | gate | lands in |
 |---|---|---|
-| `shared-ramdisk-depot-manager` | `tools/gate.sh` | `$CGROUP_PARENT_DEV_BACKGROUND` |
-| `cmru` | `src/cmru/tester_gate.py` | `CMRU_TESTER_CGROUP_PARENT` → same |
+| `shared-ramdisk-depot-manager` | `tools/gate.sh` | `$CGROUP_PARENT_DEV_GATES` |
+| `cmru` | `src/cmru/tester_gate.py` | `CMRU_TESTER_CGROUP_PARENT` → gates tier |
 | `ciu` | `src/ciu/governance.py` | `[<root>.governance].cgroup_parent` → same |
 
-All three resolve to `dev-background.slice` unless overridden, so
-`--target slice:dev-background.slice@follow` covers them without knowing which
-one you are about to run.
+SRDM and CMRU gate launchers resolve to `dev-gates.slice`, so
+`--target slice:dev-gates.slice@follow` covers that gate workload. CIU's
+governance value remains the background tier for long-running application
+stacks. A stack started deliberately by a gate should be profiled separately
+under `dev-background.slice` when needed.
 
 ---
 
@@ -64,7 +66,7 @@ one you are about to run.
 
 ```bash
 ./cgprofile attach --target container:my-service -d 300
-./cgprofile attach --target slice:dev-background.slice@follow --until-file /tmp/gate.done
+./cgprofile attach --target slice:dev-gates.slice@follow --until-file /tmp/gate.done
 ```
 
 `--until-file` is the clean way to bound a run whose length you do not know:
@@ -110,7 +112,7 @@ directory bind-mounted and the profiler's own path visible:
 
 ```bash
 docker run --rm \
-  --cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND" \
+  --cgroup-parent="$CGROUP_PARENT_DEV_GATES" \
   -v "$CGPROFILE_RUN_DIR:$CGPROFILE_RUN_DIR" \
   -e CGPROFILE_RUN_DIR \
   -v /workspaces/vbpub/scripts/cgroup-profiler:/cgprofile:ro \

@@ -12,6 +12,16 @@ project asserts the two copies are byte-identical.
 +`memory.high`, 10 → 12 files); RW-21 (2026-09-12, scope `container`:
 absolute-counter rule for `cpu`/`pressure`/`faults`/`events`, `§3`
 nullability note for `peak_over_baseline_bytes`, `§7` new subsection).
+**v1.1 (RW-34, 2026-09-12, §8 below):** additive under `contract: 1` —
+two carriers (§8.1), `watch` (§8.2), placement (§8.3), liveness + policy
+(§8.4), `host.gates_slice` (§8.5), `version.transports` (§8.6), Summary
+`liveness`/`placement`/`watch` (§8.7), new error codes (§8.8). Producers
+implement it in cgprofile 1.1.0 (P6); consumers in run-gate 23.9.0 (P5).
+A v1 consumer talking to a v1.1 producer, and vice versa, keeps working:
+every new field is optional and every new option is opt-in.
+**RW-43 (2026-09-12, §4.3a):** bare-host lanes — `method: "rusage"`,
+`scope: null`, `source: "rusage-maxrss"`, manifest/`meta.expected`
+`source` provenance.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
 client verb (`cgprofile ctl`), running inside the container
@@ -257,6 +267,20 @@ and the `footprint` manifest.
    from `/proc/pressure/memory` and `/proc/pressure/cpu` read directly
    (readable from the devcontainer). A lane whose container exits before the
    first sample records `resources: null` with `profile_error`.
+3a. **Bare-host lanes (RW-27b, RW-43; run-gate ≥ 23.8.0):** a lane with
+   no container is profiled through the daemon when run-gate itself runs
+   inside a container (`--scope container-shared`, `--target` = run-gate's
+   own container id, token exported into the child) and otherwise through
+   the child's own resource usage: `method: "rusage"`, `scope: null`,
+   `memory.peak_bytes = ru_maxrss × 1024` and `cpu.seconds = utime + stime`
+   taken from `os.wait4(<lane pid>)` — the lane process and what it
+   reaped, never run-gate's other children — with `memory.source:
+   "rusage-maxrss"`; every field rusage cannot give (`pressure`, `damon`,
+   `events`, `host.slice`, `target.targets_seen`) is `null`. The manifest
+   entry of such a lane carries `"source": "rusage-maxrss"` next to its
+   medians; `meta.expected` fed into `start` carries `"source"` (the
+   manifest's) so admission (RG-56) knows the provenance. Consumers of
+   the Summary MUST tolerate `scope: null`.
 4. **Record shapes (history schema 2):** each `latest`/history entry gains
    `resources` (Summary | null), `profile_error` (string | null),
    `profile_ref` (`{"daemon": name, "session": id, "session_dir": path}` |
@@ -385,3 +409,166 @@ original delta-from-`s_0` (or sampled-max / nearest-rank percentile) rule.
 Host fields (`host.*`) keep the delta rule in **both** scopes — host
 counters measure the whole host or slice, never the lane, so there is no
 "cgroup created for the lane" argument for them.
+
+---
+
+## 8. Amendment v1.1 (RW-34) — carriers, watch, placement, liveness
+
+All of §8 is additive under `contract: 1`. Consumers ignore unknown keys;
+producers never require a new option. Goldens in `fixtures/rg55/` are
+extended by the producer package (P6) with one fixture per new shape and
+verified byte-for-byte by the consumer package (P5); the existing goldens
+stay byte-identical.
+
+### 8.1 Two carriers, one protocol (D-30)
+
+The serve loop speaks newline-delimited JSON, one request per connection,
+on ONE listener `/run/cgprofile/ctl.sock`. The daemon stack bind-mounts the
+directory `/run/cgprofile` to the same host path; at every start the daemon
+asserts `root:docker 0770` on the directory and `0660` on the socket
+(belt and braces to the host's `tmpfiles.d` entry shipped by mdt host-setup).
+
+| carrier | how a request travels | who is authorised | default |
+|---|---|---|---|
+| `exec` | `docker exec cgprofile-host-daemon cgprofile ctl <verb> … --json` (v1, unchanged) | anyone who can use the docker socket; arrives as uid 0 inside the daemon | yes (v1.1 consumers) |
+| `socket` | the consumer connects to `/run/cgprofile/ctl.sock` (mounted into its container or on the host) and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon answers with the same JSON object stdout would carry, then closes (streaming verbs: one object per line until end) | members of the `docker` group (socket mode 0660) and, when `CGPROFILE_ALLOW_UIDS` is set on the daemon, only the listed uids (`SO_PEERCRED`); a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | opt-in |
+
+Rules: (1) every verb, response, error code and the `contract` field are
+IDENTICAL on both carriers — a consumer may diff them; (2) `args` on the
+socket carrier are the long-option names without dashes (`scope`, `token`,
+`damon`, `interval`, `meta` as a JSON object not a string, `place`,
+`memory_high`, …); the in-image `ctl` client is the reference translator;
+(3) timeouts are per verb (§1.5), not per carrier; on the socket the
+consumer applies the same numbers as socket timeouts; (4) the daemon's
+server-side connection timeout is 25 s for non-streaming verbs; (5) the
+exec carrier is permanent — a producer MUST keep it; a consumer's
+`transport = "auto"` means "socket if the path exists AND `version`
+answers on it within 5 s, else exec", `"socket"` means socket only (its
+absence is "unavailable" with a warning naming the path), `"exec"` means
+exec only. Environment override on the consumer: `RUN_GATE_PROFILE_TRANSPORT`.
+
+### 8.2 `cgprofile ctl watch <session> --json` (streaming, D-27)
+
+Streams one JSON object per line until the session ends (stop, kill, or
+daemon shutdown), then exits 0. Both carriers. Lines:
+```json
+{"contract": 1, "event": "reading", "session": "s-…", "at": "…", "elapsed_seconds": 91.2,
+ "live": {…as in status…}, "liveness": {…§8.4…}, "placement": {…§8.3…} | null}
+{"contract": 1, "event": "verdict", "session": "s-…", "at": "…",
+ "watch": {"state": "stalled"|"runaway"|"over_ceiling"|"hung"|"throttled"|"ok",
+           "verdict": "killed"|"reported"|"none", "reason": "…", "readings": <int>}}
+{"contract": 1, "event": "end", "session": "s-…", "at": "…", "reason": "stopped"|"killed"|"daemon-shutdown"}
+```
+Cadence: one `reading` every `--watch-interval` seconds (default 30,
+clamped [5, 300]); `verdict` lines only on a state change; exactly one
+`end`. Over exec this is ONE long-lived `docker exec` whose stdout the
+consumer reads line by line (no per-verb timeout; the consumer applies an
+idle timeout of `3 × watch-interval` and re-attaches on expiry). Unknown
+session → exit 2 `unknown-session` as a single line.
+
+### 8.3 Placement (D-20, D-25) — `start` options and the `placement` block
+
+New `start` options (all optional, all ignored without `--place`):
+
+| option | meaning |
+|---|---|
+| `--place` | create a leaf `<gates slice>/rg-<token>/` and migrate the token's pid subtree into it as the resolver discovers pids (§4.3); requires `--token`; refused (`place-refused:no-token`) without one |
+| `--memory-high <bytes>` | `memory.high` on the leaf (throttle point; the lane's request) |
+| `--memory-max <bytes>` | `memory.max` on the leaf (hard ceiling); refused when `> gates_slice.memory_max_bytes` (`place-refused:over-slice`) |
+| `--cpu-weight <1..10000>` | `cpu.weight` on the leaf |
+
+`start` response gains
+```json
+"placement": {"requested": true, "leaf": "/dev.slice/dev-gates.slice/rg-<token>",
+              "applied": {"memory.high": 805306368, "memory.max": 1073741824, "cpu.weight": 100},
+              "pids_moved": 0, "error": null}
+```
+`applied` holds the values READ BACK from the leaf after writing (never the
+requested numbers); a refused placement is `placement.error =
+"place-refused:<why>"` with `leaf: null` and the session still starts
+(placement never fails `start`). The gates slice is discovered from the
+daemon's `--gates-slice` (default `dev-gates.slice` under `dev.slice`);
+when it does not exist on the host the answer is `place-refused:no-gates-slice`.
+Daemon safety (D-25): the leaf is the ONLY cgroup the daemon writes; the
+whitelist is `cgroup.procs`, `memory.high`, `memory.max`, `cpu.weight`,
+`cgroup.kill` on `<gates slice>/rg-*` and `rmdir` of that leaf; `stop`
+moves survivors back to the container's scope and removes the leaf; the
+daemon never writes to any other cgroup file.
+
+### 8.4 Liveness and policy (D-17, D-22, D-27)
+
+`status` (per session) and `watch` readings gain
+```json
+"liveness": {"last_activity_at": "…", "idle_for_seconds": 12.0,
+             "cpu_seconds": 143.2, "cpu_seconds_recent": 0.9,
+             "io_bytes": 58720256, "stream": {"path": "…", "last_event_at": "…"|null,
+             "last_event": "candidate"|null, "cadence_hint_seconds": 45.0|null} | null,
+             "paused_for_seconds": 0.0, "pause_reason": null|"host-psi"|"slice-psi"}
+```
+New `start` options (policy authored by the consumer):
+
+| option | meaning |
+|---|---|
+| `--progress-stream <path>` | the lane's own progress NDJSON path AS THE LANE SEES IT; the daemon reads it through `/proc/<lane pid>/root/<path>` — no extra mount. The stream's `plan` event field `expect_next_event_within_s` (assay B091) is the cadence hint |
+| `--idle-bound auto\|<seconds>` | `auto` = `max(300, 3 × cadence_hint)` (D-22); the stall clock PAUSES while gates-slice or host memory `full avg10 > 5` |
+| `--ceiling auto\|<seconds>` | `auto` = `3 × meta.expected.duration_s` when known, else none; a session over its ceiling is `over_ceiling` |
+| `--on-stall kill\|report` | `kill` = `cgroup.kill` on the leaf (placed) or SIGKILL to the token's pid subtree, then verdict `killed`; `report` = verdict `reported`, nothing killed; default `report` |
+
+States: `ok`; `stalled` (idle bound exceeded with no stream event and no
+CPU growth ≥ 1 s over the trailing 30 s); `hung` (the stream reported
+completion — its last event is terminal — and the pid subtree is still
+alive 30 s later); `runaway` (idle bound exceeded WITH CPU growth — the lane
+is busy but silent; killed only when over ceiling); `throttled` (the leaf's
+`memory.pressure full avg10 > 20` while `memory.high` is applied — never
+killed, reported); `over_ceiling`.
+
+### 8.5 `host.gates_slice`
+
+`HostSnapshot` gains
+```json
+"gates_slice": {"name": "dev-gates.slice", "cgroup": "/dev.slice/dev-gates.slice",
+                "present": true, "memory_max_bytes": 6442450944, "memory_high_bytes": 4294967296,
+                "memory_current_bytes": …, "memory_swap_current_bytes": …,
+                "pressure": {"memory": {…}}, "leaves": ["rg-<token>", …],
+                "sessions_live": 1} | {"name": "dev-gates.slice", "present": false}
+```
+and the daemon reports its OWN slice as `"daemon_slice": {"cgroup": "…",
+"memory_min_bytes": …, "memory_high_bytes": …}` (null leaves when the unit
+is not installed — `ctl host` and run-gate `doctor` say "unbounded").
+
+### 8.6 `version.transports`
+
+```json
+"transports": {"exec": true, "socket": {"path": "/run/cgprofile/ctl.sock", "listening": true,
+               "allow_uids": [] , "peer_cred": true}}
+```
+
+### 8.7 Summary additions (schema 1, optional keys)
+
+`liveness` (the final §8.4 block), `placement` (the final §8.3 block),
+`watch` (`{state, verdict, reason, readings, policy: {idle_bound_s,
+ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
+`resources` verbatim; history stats gain nothing new in v1.1.
+
+### 8.8 New error codes
+
+`peer-refused` (socket carrier), `place-refused:no-token`,
+`place-refused:over-slice`, `place-refused:no-gates-slice`,
+`place-refused:write-failed:<file>`, `bad-policy` (an unparsable policy
+option — exit 2, the session is NOT started), `not-streaming` (`watch`
+requested over a carrier state that cannot stream — never expected, kept
+for completeness).
+
+### 8.9 Consumer obligations added by v1.1 (run-gate, P5)
+
+1. `transport` per §8.1; `doctor` probes BOTH carriers and prints which is
+   live and why the other is not.
+2. Every lane with a daemon session opens ONE `watch` (thread or long
+   exec), consumes readings, maps the verdict: `killed` → the lane's stall
+   exit path (R-40) with the daemon's reason in the record; `reported` →
+   a WARNING line and no verdict change (R-36h). Without a daemon the
+   in-process ProgressWatch (D-22) is the fallback and says so once.
+3. Placement requests only for exec and bare-host lanes (D-20); ephemeral
+   containers stay docker-capped; requested numbers are disclosed as
+   `resources.memory`/manifest-derived (`× 1.5`, "derived").
+4. History/inflight records gain `watch` and `placement` (nullable).

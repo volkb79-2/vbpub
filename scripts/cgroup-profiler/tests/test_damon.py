@@ -420,26 +420,50 @@ def test_preexisting_kdamonds_are_not_widened_away(fake_damon):
     assert fake_damon.state_of(0) == "on"
 
 
-def test_reusing_an_existing_kdamond_slot_leaves_the_counter_alone(fake_damon):
-    # kdamond 0 already exists (someone else's, or a prior session using the
-    # same index) *before* nr_kdamonds is captured — create_kdamond(0) is
-    # then a no-op, so teardown must see current == prev and skip the shrink
-    # entirely, not just skip it for a higher index.
+def test_pool_allocates_only_slots_beyond_the_pool_baseline(fake_damon):
+    # Index 0 belongs to another owner before the pool captures its baseline.
+    # The pool must allocate index 1, and a complete session lifecycle must
+    # leave the foreign kdamond both present and on.
     fake_damon.create_kdamond(0)
+    fake_damon.kdamond_on(0)
     assert fake_damon.nr_kdamonds() == 1
-    with damon.DamonSession([make_target()], kdamond_idx=0):
-        assert fake_damon.nr_kdamonds() == 1
+    fake_damon.calls.clear()
+    pool = damon.KdamondPool()
+    with damon.DamonSession([make_target()], pool=pool) as session:
+        assert session.kdamond_idx == 1
         assert fake_damon.state_of(0) == "on"
-    assert fake_damon.nr_kdamonds() == 1   # never shrunk — we never grew it
-    assert fake_damon.state_of(0) == "off"
-    # A raw nr_kdamonds re-write when current == prev is a no-op VALUE-wise
-    # (writing 1 over 1 reads back the same), which is why the assertion
-    # above alone cannot tell "skipped the write" from "wrote the same
-    # value" apart -- assert on the write CALL itself so `current > prev`
-    # flipped to `current >= prev`, or `and` flipped to `or` (both make the
-    # guard fire when it must not), are actually caught.
-    write_calls = [c for c in fake_damon.calls if c[0] == "_write_int" and c[1].endswith("nr_kdamonds")]
-    assert write_calls == []
+    assert fake_damon.nr_kdamonds() == 1
+    assert fake_damon.state_of(0) == "on"
+    assert not any(call[0] == "kdamond_off" and call[1] == 0 for call in fake_damon.calls)
+    assert not any(call[0] == "kdamond_on" and call[1] == 0 for call in fake_damon.calls)
+
+
+def test_pool_teardown_turns_its_owned_kdamond_off(fake_damon):
+    # The pool owns the newly-created index, while index 0 remains a foreign
+    # kdamond.  Releasing the pool slot must stop that owned kdamond before
+    # shrinking the count; otherwise the directory disappears from the
+    # registry while its monitoring state is still on.
+    fake_damon.create_kdamond(0)
+    fake_damon.kdamond_on(0)
+    pool = damon.KdamondPool()
+    with damon.DamonSession([make_target()], pool=pool) as session:
+        owned_idx = session.kdamond_idx
+        assert owned_idx == 1
+        assert fake_damon.state_of(owned_idx) == "on"
+    assert fake_damon.state_of(owned_idx) == "off"
+    assert fake_damon.state_of(0) == "on"
+    assert fake_damon.nr_kdamonds() == 1
+
+
+def test_bare_session_refuses_a_foreign_existing_slot(fake_damon):
+    fake_damon.create_kdamond(0)
+    fake_damon.kdamond_on(0)
+    fake_damon.calls.clear()
+    with pytest.raises(damon.DamonSessionError):
+        damon.DamonSession([make_target()], kdamond_idx=0).__enter__()
+    assert fake_damon.state_of(0) == "on"
+    assert fake_damon.nr_kdamonds() == 1
+    assert fake_damon.calls == [("_read_int", str(fake_damon.root / "nr_kdamonds"))]
 
 
 def test_enter_wires_a_paddr_target_too(fake_damon):
@@ -495,17 +519,16 @@ def test_teardown_survives_kdamond_off_raising_and_still_shrinks_nr_kdamonds(fak
     assert fake_damon.nr_kdamonds() == 0   # still released despite kdamond_off failing
 
 
-def test_teardown_skips_the_shrink_when_the_prior_count_could_not_be_determined(fake_damon, monkeypatch):
-    # If the pre-flight read of nr_kdamonds itself failed, we have no
-    # trustworthy basis for what to restore the shared counter to —
-    # guessing wrong risks tearing down a kdamond we never created. The
-    # deliberately conservative choice is to leave the counter alone (the
-    # kdamond is still turned off, so nothing keeps monitoring).
+def test_session_refuses_when_the_prior_count_could_not_be_determined(fake_damon, monkeypatch):
+    # If the pre-flight read of nr_kdamonds itself failed, there is no
+    # trustworthy basis for proving that the requested slot is ours. Refuse
+    # before any sysfs create/configure/on/off operation rather than creating
+    # an unowned placeholder and guessing how to tear it down.
     monkeypatch.setattr(damon, "_read_nr_kdamonds", lambda: None)
-    with damon.DamonSession([make_target()]):
-        pass
-    assert fake_damon.state_of(0) == "off"
-    assert fake_damon.nr_kdamonds() == 1   # left as-is: unknown prior state is never guessed
+    with pytest.raises(damon.DamonSessionError):
+        damon.DamonSession([make_target()]).__enter__()
+    assert fake_damon.calls == []
+    assert fake_damon.nr_kdamonds() == 0
 
 
 def test_teardown_survives_the_shrink_write_itself_failing(fake_damon):
@@ -732,6 +755,180 @@ def test_pool_stopping_every_session_shrinks_nr_kdamonds_back_to_the_pre_daemon_
     assert fake_damon.nr_kdamonds() == 0   # last one out shrinks to baseline
 
 
+def test_pool_reuse_at_expected_end_does_not_mark_foreign_growth(fake_damon):
+    # A free slot is ordinary pool reuse when the counter is exactly the
+    # highest index the pool owns plus one.  The Gt->GtE mutant at
+    # KdamondPool.acquire:275 marks this benign boundary as foreign growth,
+    # which then suppresses the required final shrink back to baseline.
+    pool = damon.KdamondPool()
+    first = pool.acquire()
+    second = pool.acquire()
+    pool.release(first)
+    assert pool.acquire() == first
+    pool.release(first)
+    pool.release(second)
+    assert fake_damon.nr_kdamonds() == 0
+
+
+def test_pool_preserves_foreign_growth_seen_during_free_slot_reuse(fake_damon):
+    # The final counter is deliberately brought back to the pool's expected
+    # end after an outside owner grew it.  That makes the foreign-growth flag,
+    # rather than the later counter inequality, the only ownership evidence
+    # preventing a destructive baseline write.
+    pool = damon.KdamondPool()
+    first = pool.acquire()
+    second = pool.acquire()
+    pool.release(first)
+    fake_damon.create_kdamond(2)  # outside owner grows nr_kdamonds to 3
+    reused = pool.acquire()
+    assert reused == first
+    (fake_damon.root / "nr_kdamonds").write_text("2")  # outside owner exits
+    fake_damon.calls.clear()
+    pool.release(reused)
+    pool.release(second)
+    nr_writes = [
+        call for call in fake_damon.calls
+        if call[0] == "_write_int" and call[1].endswith("nr_kdamonds")
+    ]
+    assert nr_writes == []
+    assert fake_damon.nr_kdamonds() == 2
+
+
+def test_pool_preserves_foreign_indices_seen_before_fresh_create(fake_damon):
+    # With no free slot, a counter ahead of the next pool index means the
+    # intervening index belongs to another owner.  The pool must preserve it
+    # when its own last slot is released.
+    pool = damon.KdamondPool()
+    own = pool.acquire()
+    fake_damon.create_kdamond(1)  # foreign index 1; nr_kdamonds becomes 2
+    fresh = pool.acquire()        # skips index 1 and creates index 2
+    assert fresh == 2
+    pool.release(own)
+    fake_damon.calls.clear()
+    pool.release(fresh)
+    nr_writes = [
+        call for call in fake_damon.calls
+        if call[0] == "_write_int" and call[1].endswith("nr_kdamonds")
+    ]
+    assert nr_writes == []
+    assert fake_damon.nr_kdamonds() == 3
+
+
+def test_solo_teardown_does_not_write_when_counter_is_below_previous(fake_damon):
+    # A non-pool session must not restore its old count after another owner
+    # has already shrunk the shared counter below that session's snapshot.
+    # The And->Or mutant at DamonSession._teardown:596 calls the write anyway;
+    # spying on the fake's write log keeps the equal-content case observable.
+    fake_damon._write_int(str(fake_damon.root / "nr_kdamonds"), 1)
+    session = damon.DamonSession([make_target()], kdamond_idx=1)
+    session.__enter__()
+    (fake_damon.root / "nr_kdamonds").write_text("0")
+    fake_damon.calls.clear()
+    session.__exit__(None, None, None)
+    nr_writes = [
+        call for call in fake_damon.calls
+        if call[0] == "_write_int" and call[1].endswith("nr_kdamonds")
+    ]
+    assert nr_writes == []
+    assert fake_damon.nr_kdamonds() == 0
+
+
+def test_solo_teardown_does_not_write_when_counter_equals_previous(fake_damon):
+    # A concurrent owner may remove this session's slot and leave the shared
+    # counter exactly at the session's pre-entry value.  Equality is not proof
+    # that this session still owns a slot; the teardown must not perform a
+    # same-value write which could become destructive if the counter changes
+    # between the read and the write.
+    fake_damon.create_kdamond(0)  # foreign slot; the session starts at index 1
+    session = damon.DamonSession([make_target()], kdamond_idx=1)
+    session.__enter__()
+    (fake_damon.root / "nr_kdamonds").write_text("1")
+    fake_damon.calls.clear()
+
+    session.__exit__(None, None, None)
+
+    nr_writes = [
+        call for call in fake_damon.calls
+        if call[0] == "_write_int" and call[1].endswith("nr_kdamonds")
+    ]
+    assert nr_writes == []
+    assert fake_damon.nr_kdamonds() == 1
+
+
+def test_solo_teardown_with_no_previous_count_fails_closed(fake_damon):
+    # The defensive solo teardown branch has no trustworthy baseline to
+    # restore.  It may still turn off the slot this session owns, but it must
+    # not guess a counter write that could tear down another owner's slot.
+    session = damon.DamonSession([make_target()])
+    session.__enter__()
+    session._prev_nr_kdamonds = None
+    fake_damon.calls.clear()
+
+    session.__exit__(None, None, None)
+
+    assert fake_damon.state_of(0) == "off"
+    assert fake_damon.nr_kdamonds() == 1
+    assert not any(call[0] == "_write_int" for call in fake_damon.calls)
+
+
+def test_pool_never_shrinks_away_foreign_growth(fake_damon):
+    pool = damon.KdamondPool()
+    with damon.DamonSession([make_target()], pool=pool) as session:
+        assert session.kdamond_idx == 0
+        fake_damon.create_kdamond(1)
+        fake_damon.kdamond_on(1)
+    assert fake_damon.nr_kdamonds() == 2
+    assert fake_damon.state_of(1) == "on"
+    assert not [c for c in fake_damon.calls if c[0] == "_write_int" and c[1].endswith("nr_kdamonds")]
+
+
+def test_pool_refuses_a_freed_owned_slot_that_disappeared(fake_damon):
+    pool = damon.KdamondPool()
+    s0 = damon.DamonSession([make_target(pid=100)], pool=pool)
+    s1 = damon.DamonSession([make_target(pid=200)], pool=pool)
+    s0.__enter__()
+    s1.__enter__()
+    s0.__exit__(None, None, None)
+    fake_damon._write_int(str(fake_damon.root / "nr_kdamonds"), 0)
+    with pytest.raises(damon.DamonSessionError):
+        pool.acquire()
+    s1.__exit__(None, None, None)
+
+
+def test_pool_marks_external_growth_while_reusing_a_free_slot(fake_damon):
+    pool = damon.KdamondPool()
+    s0 = damon.DamonSession([make_target(pid=100)], pool=pool)
+    s1 = damon.DamonSession([make_target(pid=200)], pool=pool)
+    s0.__enter__()
+    s1.__enter__()
+    s0.__exit__(None, None, None)
+    fake_damon.create_kdamond(2)
+    fake_damon.kdamond_on(2)
+    s2 = damon.DamonSession([make_target(pid=300)], pool=pool)
+    s2.__enter__()
+    assert s2.kdamond_idx == 0
+    s2.__exit__(None, None, None)
+    s1.__exit__(None, None, None)
+    assert fake_damon.nr_kdamonds() == 3
+    assert fake_damon.state_of(2) == "on"
+
+
+def test_pool_refuses_a_counter_that_shrank_before_a_fresh_acquire(fake_damon, monkeypatch):
+    readings = iter((0, -1))
+    monkeypatch.setattr(damon, "_read_nr_kdamonds", lambda: next(readings))
+    with pytest.raises(damon.DamonSessionError):
+        damon.KdamondPool().acquire()
+
+
+def test_pool_skips_foreign_indices_when_the_counter_grows_before_create(fake_damon, monkeypatch):
+    readings = iter((0, 2))
+    monkeypatch.setattr(damon, "_read_nr_kdamonds", lambda: next(readings))
+    pool = damon.KdamondPool()
+    assert pool.acquire() == 2
+    pool.release(2)
+    assert fake_damon.nr_kdamonds() == 3
+
+
 def test_pool_supports_two_full_batches_in_sequence(fake_damon):
     # After the pool fully drains once (baseline reset to None), a later,
     # unrelated batch of sessions through the SAME pool object must recapture
@@ -782,12 +979,13 @@ def test_pool_release_skips_the_write_when_nr_kdamonds_is_already_at_baseline(fa
     assert fake_damon.nr_kdamonds() == 0
 
 
-def test_pool_release_skips_the_shrink_when_the_baseline_could_not_be_read(fake_damon, monkeypatch):
+def test_pool_acquire_refuses_when_the_baseline_could_not_be_read(fake_damon, monkeypatch):
     pool = damon.KdamondPool()
     monkeypatch.setattr(damon, "_read_nr_kdamonds", lambda: None)
-    idx = pool.acquire()
-    pool.release(idx)
-    assert pool.live_indices == frozenset()   # freed regardless
+    with pytest.raises(damon.DamonSessionError):
+        pool.acquire()
+    assert pool.live_indices == frozenset()
+    assert fake_damon.calls == []
 
 
 def test_session_entering_via_pool_skips_the_manual_prev_nr_kdamonds_path(fake_damon):
@@ -805,6 +1003,35 @@ def test_session_pool_acquire_failure_during_enter_still_tears_down_cleanly(fake
             pytest.fail("should never reach the with-body")
     # Nothing was ever acquired from the pool, so nothing was released either.
     assert pool.live_indices == frozenset()
+    assert not any(call[0] == "kdamond_off" for call in fake_damon.calls)
+
+
+def test_failed_pool_acquire_cannot_release_a_live_constructor_index(fake_damon):
+    """A failed second acquire must not free the first session's slot.
+
+    ``DamonSession`` starts with constructor index zero.  If its
+    ``_acquired_from_pool`` guard were initialized true, a failed acquire for
+    a second pooled session would call ``pool.release(0)`` during exception
+    teardown and remove the first session's live index.  That is the exact
+    failure mode the flag's false initialization prevents.
+    """
+    pool = damon.KdamondPool()
+    first = damon.DamonSession([make_target(pid=100)], pool=pool)
+    first.__enter__()
+    assert first.kdamond_idx == 0
+    assert pool.live_indices == frozenset({0})
+
+    fake_damon.fail_on = "create_kdamond"
+    try:
+        second = damon.DamonSession([make_target(pid=200)], pool=pool)
+        with pytest.raises(RuntimeError):
+            second.__enter__()
+        assert pool.live_indices == frozenset({0})
+        assert fake_damon.state_of(0) == "on"
+        assert fake_damon.nr_kdamonds() == 1
+    finally:
+        fake_damon.fail_on = None
+        first.__exit__(None, None, None)
 
 
 def test_a_failed_pool_acquisition_does_not_release_the_constructor_placeholder(fake_damon):
