@@ -123,7 +123,7 @@ def _urlopen_with_retry(
 
 def pull_fresh(image: str) -> None:
     """Pull image fresh from registry.
-    
+
     Always pull to ensure we don't use cached labels from stale local copies.
     """
     result = subprocess.run(
@@ -132,7 +132,11 @@ def pull_fresh(image: str) -> None:
         capture_output=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to pull base image: {image}")
+        detail = (result.stderr or result.stdout or "").strip()
+        if len(detail) > 2000:
+            detail = detail[:2000] + "…"
+        suffix = f"\n{detail}" if detail else ""
+        raise RuntimeError(f"Failed to pull base image: {image}{suffix}")
 
 
 def fetch_registry_tags() -> set[str]:

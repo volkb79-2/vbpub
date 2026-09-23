@@ -34,6 +34,8 @@ owner_type="org"
 [targets]
 host="github"
 registry=["ghcr.io"]
+[runtime]
+kind="none"
 [project]
 id="demo"
 description="demo"
@@ -77,13 +79,26 @@ def test_config_project_required_fields_are_rejected_after_full_parse(tmp_path, 
         path.write_text(raw, encoding="utf-8")
         with pytest.raises(SystemExit):
             config.load_forge_config(path)
-        assert diagnostic in capsys.readouterr().out
+        assert diagnostic in capsys.readouterr().err
 
 
 def test_config_orchestration_valid_fixture_rejects_unordered_dependency(tmp_path, capsys):
-    project = tmp_path / "demo"; project.mkdir(); (project / "cmru.toml").write_text(project_doc())
+    project = tmp_path / "demo"; project.mkdir()
+    project_text = project_doc().replace(
+        '[github]\nowner="acme"\nrepo="vbpub"\nowner_type="org"\n'
+        '[targets]\nhost="github"\nregistry=["ghcr.io"]\n',
+        "",
+    )
+    (project / "cmru.toml").write_text(project_text)
     path = tmp_path / "cmru.orchestration.toml"
     path.write_text('''schema_version=1
+[github]
+owner="acme"
+repo="vbpub"
+owner_type="org"
+[targets]
+host="github"
+registry=["ghcr.io"]
 [orchestration]
 project_order=["demo"]
 default_projects=["demo"]
@@ -100,7 +115,7 @@ ghcr_delete_packages=[]
 ''')
     with pytest.raises(SystemExit):
         config.load_forge_config(path)
-    assert "depends_on" in capsys.readouterr().out
+    assert "depends_on" in capsys.readouterr().err
 
 
 def test_transaction_create_workspace_fetches_when_base_is_not_supplied(tmp_path):
@@ -114,7 +129,7 @@ def test_transaction_create_workspace_fetches_when_base_is_not_supplied(tmp_path
 def test_transaction_secret_overlay_and_result_record_fail_closed(tmp_path):
     root = repo(tmp_path); workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/x", "a" * 40)
     config_path = tmp_path / "outside" / "cmru.toml"; config_path.parent.mkdir()
-    with pytest.raises(RuntimeError, match="outside repository"):
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
         transaction.copy_secret_overlays(root, workspace, [config_path])
     scope = transaction._scope_dir(root); scope.mkdir(); (scope / "x.results.json").write_text("[]")
     with pytest.raises(RuntimeError, match="invalid release result"):

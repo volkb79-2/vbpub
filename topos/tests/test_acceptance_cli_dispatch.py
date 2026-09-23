@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import topos.acceptance as acceptance
+from topos.cli_diagnostics import cli_headline
 
 
 def _result(ok: bool = True) -> SimpleNamespace:
@@ -120,7 +121,7 @@ def test_acceptance_rejects_invalid_numeric_options_before_runner(
     assert acceptance.acceptance_main(argv) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err.startswith("error: ")
+    assert captured.err.startswith(cli_headline() + "\nerror: ")
     assert calls == []
 
 

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Build and push the pwmcp-playwright Docker image.
+"""Build and push the pwmcp-playwright Docker image through managed BuildKit.
 
 Usage:
-  python3 build-push.py --build   # Build images locally (docker buildx bake --load)
+  python3 build-push.py --build   # Build images locally through mdt-managed
   python3 build-push.py --push    # Login to GHCR and push images
 
-Reads PLAYWRIGHT_VERSION and PWMCP_VERSION from cmru.vars (written by
-scripts/resolve-playwright-version.py).  CMRU's prepare phase is the sole writer;
-this script refuses an absent or incomplete prepared coordinate.
+Reads the complete Playwright/PWMCP release coordinate, including the pinned
+base-image manifest digest, from cmru.vars (written by
+scripts/resolve-playwright-version.py). CMRU's prepare phase is the sole
+writer; this script refuses an absent or incomplete prepared coordinate.
 
-Credentials for push (from the CMRU environment or explicitly exported):
+The wrapper verifies the host-managed remote builder declared in ``cmru.toml``;
+it never creates an ephemeral Docker-container worker. Credentials for push
+(from the CMRU environment or explicitly exported):
   GITHUB_USERNAME
   GITHUB_PUSH_PAT
 """
@@ -52,15 +55,15 @@ def sync_ghcr_package_visibility(package_names: list[str]) -> None:
     repo = os.environ.get("GITHUB_REPO", "").strip()
     token = os.environ.get("GITHUB_PUSH_PAT", "").strip()
     owner_type = os.environ.get("GITHUB_OWNER_TYPE", "").strip()
-    if not username or not repo or not token or not owner_type:
-        missing = [
-            name for name, value in {
-                "GITHUB_USERNAME": username,
-                "GITHUB_REPO": repo,
-                "GITHUB_PUSH_PAT": token,
-                "GITHUB_OWNER_TYPE": owner_type,
-            }.items() if not value
-        ]
+    missing = [
+        name for name, value in {
+            "GITHUB_USERNAME": username,
+            "GITHUB_REPO": repo,
+            "GITHUB_PUSH_PAT": token,
+            "GITHUB_OWNER_TYPE": owner_type,
+        }.items() if not value
+    ]
+    if missing:
         fail(
             "GHCR visibility sync requires " + ", ".join(missing) +
             "; run through CMRU or export the release identity explicitly"
@@ -82,109 +85,70 @@ def run(argv: list[str], cwd: Path | None = None) -> None:
 @dataclass(frozen=True)
 class BuilderConfig:
     name: str
-    memory: str
-    memory_swap: str
-    cpu_shares: int
-    cpu_quota: int
-    cpu_period: int
+    endpoint: str
 
 
 def load_builder_config(path: Path = BUILD_CONFIG) -> BuilderConfig:
     with path.open("rb") as handle:
-        raw = tomllib.load(handle).get("project_metadata", {}).get("builder", {})
-    required = ("name", "memory", "memory_swap", "cpu_shares", "cpu_quota", "cpu_period")
+        raw = tomllib.load(handle).get("env", {})
+    required = ("BUILDX_BUILDER", "BUILDKIT_HOST")
     missing = [key for key in required if key not in raw]
     if missing:
-        fail(f"{path.name} [project_metadata.builder] is missing: {', '.join(missing)}")
-    return BuilderConfig(
-        name=str(raw["name"]),
-        memory=str(raw["memory"]),
-        memory_swap=str(raw["memory_swap"]),
-        cpu_shares=int(raw["cpu_shares"]),
-        cpu_quota=int(raw["cpu_quota"]),
-        cpu_period=int(raw["cpu_period"]),
-    )
+        fail(f"{path.name} [env] is missing managed BuildKit keys: {', '.join(missing)}")
+    name = str(raw["BUILDX_BUILDER"]).strip()
+    endpoint = str(raw["BUILDKIT_HOST"]).strip()
+    if not name:
+        fail(f"{path.name} [env].BUILDX_BUILDER must be non-empty")
+    if not endpoint.startswith("unix:///"):
+        fail(f"{path.name} [env].BUILDKIT_HOST must be an absolute Unix endpoint")
+    return BuilderConfig(name=name, endpoint=endpoint)
 
 
-def docker_size_bytes(value: str) -> int:
-    normalized = value.strip().lower()
-    suffixes = {
-        "b": 1,
-        "k": 1024,
-        "kb": 1024,
-        "kib": 1024,
-        "m": 1024**2,
-        "mb": 1024**2,
-        "mib": 1024**2,
-        "g": 1024**3,
-        "gb": 1024**3,
-        "gib": 1024**3,
-        "t": 1024**4,
-        "tb": 1024**4,
-        "tib": 1024**4,
-    }
-    digits = normalized.rstrip("abcdefghijklmnopqrstuvwxyz")
-    suffix = normalized[len(digits):] or "b"
-    if not digits.isdigit() or suffix not in suffixes:
-        fail(f"Unsupported Docker size {value!r} in {BUILD_CONFIG.name}")
-    return int(digits) * suffixes[suffix]
+def _inspect_builder(config: BuilderConfig, *, bootstrap: bool) -> str:
+    argv = ["docker", "buildx", "inspect", config.name]
+    if bootstrap:
+        argv.append("--bootstrap")
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        phase = "bootstrap" if bootstrap else "registration"
+        detail = (result.stderr or result.stdout or "command failed").strip()
+        fail(
+            f"managed BuildKit builder {config.name!r} failed {phase} verification at "
+            f"{config.endpoint}: {detail[:400]}"
+        )
+    return result.stdout
 
 
-def _create_builder(config: BuilderConfig) -> None:
-    log(f"Creating governed buildx builder {config.name!r}")
-    run([
-        "docker", "buildx", "create", "--name", config.name,
-        "--driver", "docker-container",
-        "--driver-opt", f"memory={config.memory}",
-        "--driver-opt", f"memory-swap={config.memory_swap}",
-        "--driver-opt", f"cpu-shares={config.cpu_shares}",
-        "--driver-opt", f"cpu-quota={config.cpu_quota}",
-        "--driver-opt", f"cpu-period={config.cpu_period}",
-    ])
+def _assert_remote_builder(config: BuilderConfig, output: str) -> None:
+    driver = ""
+    endpoints: list[str] = []
+    for line in output.splitlines():
+        key, separator, value = line.partition(":")
+        if not separator:
+            continue
+        value = value.strip()
+        if key.strip() == "Driver":
+            driver = value
+        elif key.strip() == "Endpoint" and value:
+            endpoints.append(value)
+    if driver != "remote":
+        fail(
+            f"builder {config.name!r} is not the managed remote builder: "
+            f"driver={driver or '<missing>'!r}; expected driver='remote'"
+        )
+    if endpoints != [config.endpoint]:
+        actual = ", ".join(endpoints) or "<missing>"
+        fail(
+            f"builder {config.name!r} endpoint is not the configured managed socket: "
+            f"got {actual!r}, expected {config.endpoint!r}"
+        )
 
 
 def ensure_builder(config: BuilderConfig) -> None:
-    exists = subprocess.run(
-        ["docker", "buildx", "inspect", config.name],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    ).returncode == 0
-    if not exists:
-        _create_builder(config)
-
-    run(["docker", "buildx", "inspect", config.name, "--bootstrap"])
-    container = f"buildx_buildkit_{config.name}0"
-    output = subprocess.check_output([
-        "docker", "inspect", container, "--format",
-        "{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.CpuShares}} "
-        "{{.HostConfig.CpuQuota}} {{.HostConfig.CpuPeriod}}",
-    ], text=True).strip()
-    actual = tuple(int(value) for value in output.split())
-    expected = (
-        docker_size_bytes(config.memory),
-        docker_size_bytes(config.memory_swap),
-        config.cpu_shares,
-        config.cpu_quota,
-        config.cpu_period,
-    )
-    if actual != expected:
-        log(f"Builder {config.name!r} limits changed; recreating it from {BUILD_CONFIG.name}")
-        run(["docker", "buildx", "rm", config.name])
-        _create_builder(config)
-        run(["docker", "buildx", "inspect", config.name, "--bootstrap"])
-        output = subprocess.check_output([
-            "docker", "inspect", container, "--format",
-            "{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.CpuShares}} "
-            "{{.HostConfig.CpuQuota}} {{.HostConfig.CpuPeriod}}",
-        ], text=True).strip()
-        actual = tuple(int(value) for value in output.split())
-    if actual != expected:
-        fail(f"Docker did not apply configured limits to builder {config.name!r}")
-    log(
-        f"Builder {config.name}: memory={actual[0]} combined-memory+swap={actual[1]} "
-        f"cpu-shares={actual[2]} cpu={actual[3]}/{actual[4]}"
-    )
+    """Verify the durable host-managed remote; never create a worker here."""
+    _assert_remote_builder(config, _inspect_builder(config, bootstrap=False))
+    _assert_remote_builder(config, _inspect_builder(config, bootstrap=True))
+    log(f"Using host-managed BuildKit remote {config.name} at {config.endpoint}")
 
 
 def do_build() -> None:

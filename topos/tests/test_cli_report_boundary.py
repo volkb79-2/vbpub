@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from topos.cli import _main_report
+from topos.cli_diagnostics import cli_headline
 
 
 REPORT_PATH = Path("/synthetic/recording.jsonl")
@@ -57,7 +58,7 @@ def test_report_rejects_invalid_numeric_options(
     assert _main_report([option, value, str(REPORT_PATH)]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == message + "\n"
+    assert captured.err == cli_headline() + "\n" + message + "\n"
 
 
 @pytest.mark.parametrize(
@@ -104,6 +105,7 @@ def test_report_rejects_malformed_assertion_spec_at_cli_boundary(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == (
+        cli_headline() + "\n"
         "invalid --assert spec 'broken-spec' — expected "
         "GROUP:METRIC:STAT<=VALUE or GROUP:METRIC:STAT>=VALUE\n"
     )

@@ -48,6 +48,15 @@ sudo ./damon_cli.py <command> [options]
 | `--verbose`, `-v` | INFO logging — shows damo commands, file paths, timing |
 | `--debug` | Full Python tracebacks on error instead of one-liners |
 
+### Version compatibility scope
+
+`damon_cli.py` is the documented primary operator CLI, but it is excluded from
+the estate top-level `--version` contract. This project has no release or
+version metadata for the script itself; the DAMON kernel and `damo` versions
+listed in `DAMON-GUIDE.md` describe host dependencies. Adding one of those
+values as the script version would misidentify the operator tool, so the CLI
+retains its existing diagnostics and subcommand surface.
+
 ### Subcommands
 
 #### `diagnose`

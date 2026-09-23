@@ -119,6 +119,12 @@ session ID when nyxloom can resolve exactly one matching file/store. Codex
 rollout lookup follows `CODEX_HOME` (default `~/.codex`) and checks local
 `~/.codex*` profiles for duplicate UUIDs; a repeated UUID fails with all
 candidate paths so the intended rollout can be selected explicitly.
+Codex generates UUIDv7 thread/session identities: the UUID carries timestamp
+and randomized material, while the rollout filename and first `session_meta`
+record repeat that identity. An existing rollout path is opened for append,
+not assigned a replacement ID, so live shared `sessions` symlinks can merge
+streams. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--2026-09-12--session-log-location-presentation-and-live-following)
+for the source-level verification and process-inspection method.
 
 For example, when a session was created in a separate Codex home, pass the
 same home while locating it, or pass the full rollout path if the UUID is
@@ -194,3 +200,19 @@ list no longer lists it as a non-goal because it shipped (P48).
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+The broad `tester-unified` CLI lane measures and enforces 100% whole-source
+line and branch coverage through Assay. The focused `session-extract` lane
+keeps its own branch, mutation, and canary contract. The rationale is in the
+[design guide](docs/DESIGN-GUIDE.md). Run these lanes through `./run-gate.py`;
+a cockpit-local pytest run is diagnostic only.
+
+### CLI diagnostics
+
+Parser help, usage, missing-argument, unknown-argument, and configuration
+diagnostics begin with `NYXLOOM <version> — operator CLI` as line 1 at every
+verb depth. The version is the existing metadata-backed `nyxloom.__version__`.
+The top-level `nyxloom --version` probe prints exactly one `nyxloom <version>`
+line on stdout, exits 0, and writes nothing to stderr. Normal command output
+is unchanged. The rationale is in the
+[design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility).

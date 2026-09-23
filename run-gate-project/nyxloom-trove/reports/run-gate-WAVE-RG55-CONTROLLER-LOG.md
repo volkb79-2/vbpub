@@ -3542,3 +3542,227 @@ then refused because memory PSI was `full avg10=8.72`, above the mandatory
 it launches only after a single wake-point PSI check at or below 5, otherwise
 it records `P1_R2_CORRECTED_PSI_BLOCKED=1`. No mutation container was started
 under the red gate.
+
+### RW-288 — 2026-09-18 10:35:53Z — prepare linear P6 final tree
+
+While P1 waits for the PSI wake point, the controller materialized
+`rg55-followups-cgprofile-final` from current main and imported the exact P6
+package snapshot from judged tree `8076246c`. The resulting linear final tree
+is clean at `c362c8dffb41cad6c7c4c57fc69e5163eacd8f3b`, with current
+source-backed Assay 6.4 and no mutation/container launch. P6 remains queued
+behind a green PSI check and the estate's two-slot mutation limit.
+
+### RW-289 — 2026-09-23 08:05:14Z — adopt B101-era main and launch fresh P1 short gate
+
+The controller has resumed the RG-55 wave on current `main` `7a3c0571`, after
+the assay B101 P1 merge and handoff. The cockpit was missing the Assay console
+and still had an older run-gate development install; both were rebuilt from
+this clean checkout into `/home/vscode/.venv`, yielding Assay
+`6.5.1.dev237+g7a3c0571` and run-gate `23.9.2.dev305+g7a3c0571` (rev 46).
+These are development identities, not stable release claims.
+
+P1 was reconciled into a new linear worktree
+`.worktrees/rg55-p1-current`, preserving current main's estate-CLI
+compatibility and CP-4 profiler backlog additions. The reconciliation commit
+is `ced40659`; the tree is held quiet for judging. With memory PSI
+`full avg10=0`, the controller launched only the short `r0-r1` gate detached
+from `scripts/cgroup-profiler/`, with wrapper PID `322897` and authoritative
+marker `/tmp/rg55-p1-r01-20260923.log`. No other RG-55 gate was active at
+launch. P6 remains queued until the assay B101 P2 shallow-seed announcement;
+its old judged tree is not reused.
+
+### RW-290 — 2026-09-23 08:08:50Z — preserve RG-55 backlog identity during P1 reconcile
+
+Current `main` contains a post-wave profiler row named CP-4 for the
+`cmd_targets` duplicate-mount defect. The P1/P6 RG-55 records already use CP-4
+for the pre-existing `test_store.py` run-id flake, and the P6 handoff reserves
+the RG-55 follow-up namespace through CP-11. The reconciliation therefore
+preserves the historical RG-55 CP-4..CP-11 identities and renumbers only the
+post-wave `cmd_targets` row to the next available CP-12 identity, updating its
+filename, frontmatter, and generated index. This is an identity collision
+repair, not a product-scope change or a claim that CP-12 is fixed.
+
+### RW-291 — 2026-09-23 08:23:42Z — discard lost P1 short-gate launch and rearm
+
+The first detached P1 `r0-r1` wrapper (PID `322897`) disappeared with empty
+stdout and no child-exit marker; no gate container was created, so it is
+inconclusive and contributes no evidence. The one-shot continuation was
+cancelled before it could launch mutation. The reconciled P1 tree then fixed
+the duplicate backlog identity by renaming the post-wave `cmd_targets` entry
+to CP-12 in commit `32ec2b3d`; the historical RG-55 CP-4 flake remains CP-4.
+
+After a fresh PSI check (`full avg10=0`) and an empty gate slot, the controller
+re-launched `r0-r1` from that quiet tree with disowned wrapper PID `354688`,
+authoritative log `/tmp/rg55-p1-r01-20260923.log`, and a single disowned
+20-minute continuation PID `355510`. No mutation verdict is claimed yet.
+
+### RW-292 — 2026-09-23 08:27:42Z — replace reaped background wrappers with PTY carrier
+
+The supposedly disowned replacement wrappers were independently verified as
+reaped immediately: their logs remained zero bytes, no child exit markers were
+written, and no RG-55 container existed. Those launches are therefore
+inconclusive and are not gate failures. The host preflight again found memory
+PSI `full avg10=0` and an empty gate slot. The controller started the fresh P1
+`r0-r1` command in tool-managed PTY session `77256` from quiet tree
+`32ec2b3d`; the session printed rev 46, the selected lane, its 20-minute
+budget, and PSI `full avg10=0.14%`. Its child marker will be written to
+`/tmp/rg55-p1-r01-pty-20260923.log` on completion. No mutation launch is
+authorized until that marker is read separately and reports PASS.
+
+### RW-293 — 2026-09-23 08:50:27Z — repair P1 short-gate coverage oracle
+
+The persistent PTY P1 `r0-r1` run completed with 1,206 tests passed but exit
+2 because total coverage was 99%: `cgprofile.py:70`, the current-main
+`CgprofileArgumentParser.format_usage()` compatibility line, was unexercised.
+This is an oracle gap in a changed line, not a product or infrastructure
+failure. The controller added the direct usage-headline regression
+`test_usage_starts_with_the_headline` in `a2c2501f` and started a fresh quiet
+rerun in PTY session `24764`, with PSI `full avg10=0.83%`. Its marker is
+`/tmp/rg55-p1-r01-rerun-pty-20260923.log`; mutation remains blocked pending a
+PASS.
+
+### RW-294 — 2026-09-23 09:06:32Z — P1 short gates green; mutation campaign healthy
+
+The repaired P1 tree passed `r0-r1` in 64.90 seconds with 1,207 tests and
+100% line and branch coverage. The required `r3` canary lane then passed with
+all seven canaries rejected and exit 0. Both lanes used the expected coarse
+profiling fallback because `cgprofile-host-daemon` is not running; no gate
+verdict was affected.
+
+After a fresh PSI `full avg10=0` check and an empty gate slot, the controller
+started P1 `r2` in PTY session `45281` from quiet HEAD `a2c2501f`; the lane
+declared its 4-hour advisory budget and created container
+`run-gate-vbpub-r2-522284-1790154369`. The 10-second health check showed the
+container active, host PSI `full avg10=2.68%`, and Assay entering its
+source-backed judge. The missing installed-distribution provenance notice is
+expected for this in-repo source-backed consumer. Prior P1 history estimates
+about 5–6 hours; no progress polling is due before the 25-minute boundary.
+
+### RW-295 — 2026-09-23 13:36:04Z — P1 R2 complete; one equivalent survivor
+
+The persistent P1 R2 carrier session `45281` completed and was read from its
+authoritative verdict, not from the wrapper status. Its exact tester container
+was `run-gate-vbpub-r2-522284-1790154369`; it has exited and no RG-55 gate
+process remains. On quiet HEAD `a2c2501fea2b576a774f1a7fcedd3a5ad251f630`,
+Assay accounted for 250 candidates: 249 killed, 1 survived, 0 equivalent,
+0 budget-exceeded, 0 crashed, 0 hung; exit 1 `MUTANTS_SURVIVED`. The sole
+survivor is `lib/damon.py:325`, `Gt->GtE` on the pool release guard. The
+existing P1 report's invariant proof applies: after a live owned slot exists,
+`current == expected_end` implies `current > baseline`, so the replacement
+cannot change a reachable outcome. It is an assay-classification limitation,
+not an untriaged oracle gap. The result remains mutation evidence, not a green
+R2 verdict; any provisional integration must retain this disclosure and the
+verdict/progress artifacts.
+
+### RW-296 — 2026-09-23 13:36:04Z — operator changes long-gate integration workflow
+
+The operator authorizes provisional package integration once full line/branch
+coverage, the short rigor gates, and the required adversarial review report no
+new issue, while a long R2 mutation run continues in an isolated `ciu
+worktree`. This provisional integration is not a release or a DONE claim.
+Mutation evidence remains authoritative per exact tree; a survivor that is not
+proven equivalent, or any discovered defect, must be fixed/backported and
+invalidates the affected provisional evidence and gates. The final merge and
+release still require the fresh Sol xhigh review requested by the operator,
+the survivor disposition recorded in the package report, and a final quiet
+gate set; no mutation result may be silently waived.
+
+### RW-297 — 2026-09-23 13:38:30Z — queue P1 R2 in a CIU-managed worktree
+
+The controller created the managed checkout
+`.worktrees/rg55-p1-r2-ciu` (`ciu worktree create rg55-p1-r2-ciu`) at exact
+judged tree `a2c2501f`, branch `rg55-p1-r2-ciu`, for the parallel long-run
+workflow. Launch is deferred because the estate's single gate slot is occupied
+by the unrelated Assay B101 gate container
+`run-gate-assay-selfhosted-687027-20849-1790170568`, whose exact command and
+process are `assay-b101-gate-clean` / PID `686965`. The controller will not
+stop or contend with that run. The P1 CIU worktree is clean and ready; no P1
+R2 container is currently running.
+
+### RW-298 — 2026-09-23 13:40:33Z — preserve R2 disposition in queued tree
+
+The P1 report now carries the current R2 evidence and the explicit
+`damon.py:325` equivalence disposition in commit `9471a9af`. That report-only
+commit was mirrored into the managed CIU checkout as `07161416`; the queued
+checkout remains clean and is the tree to judge when the single gate slot is
+free. The original R2 ran from `09:06:11Z` to `11:48:41Z` (2h42m30s), so the
+new run is expected to be a multi-hour task; it will receive the normal
+10-second health check and then no progress read more often than every 25
+minutes.
+
+### RW-299 — 2026-09-23 13:59:17Z — controller review round 2 started and recorded
+
+The controller performed a fresh read-only adversarial pass on P1's current
+integration tip `9471a9af` (source tree unchanged from the short-gated
+`a2c2501f`; the intervening commit records the R2 disposition). The review
+covered daemon write safety and lifecycle, contract/CLI validation, incremental
+summary arithmetic, subtree discovery, DAMON ownership, recovery/retention,
+image and ciu configuration, documentation, and the repaired round-1 B1–B8
+blockers. No new merge-blocking issue was found. The review record is
+`cgprofile-P1-DAEMON-REVIEW-round2.md`, commit `3455999a`, and is
+`ACCEPT-CONDITIONAL`: the one reachable-state-equivalent survivor remains
+disclosed, final quiet gates remain required, and the standing independent
+release review requirement is not waived.
+
+### RW-300 — 2026-09-23 14:00:02Z — provisionally integrate P1 while R2 runs asynchronously
+
+The operator's revised workflow is applied. P1 has 100% changed line and
+branch coverage, green short gates (`r0-r1` and `r3`), and the controller's
+round-2 review found no new blocker. The P1 implementation may therefore be
+merged provisionally while the long R2 campaign continues in the separate
+CIU-managed worktree `rg55-p1-r2-ciu` at its quiet judged tree. This does not
+claim R2 PASS, release, or wave completion. A non-equivalent survivor,
+regression, or review finding requires a backport and invalidates affected
+evidence; final quiet gates and the required release review remain mandatory.
+
+### RW-301 — 2026-09-23 14:22:05Z — P6 reconciled with current P1 and locally green
+
+The controller reconciled the P6 worktree `.worktrees/rg55-followups-cgprofile-final`
+with the current P1 implementation. The merge preserved P6's CP-12 ownership;
+the unrelated current-main backlog item was renumbered CP-13. During
+reconciliation, the initial synchronous sample was wired into the liveness
+tracker so the summary and liveness views share the same baseline. The P6
+focused daemon suite then passed 591 tests with 6 skips. The four root frozen
+contract fixtures were updated to the P6 package version 1.1.0 and remain
+byte-identical to the package copies. Reconciliation commit: `bb1042a6`.
+This is a source/test checkpoint only; registered gates, adversarial review,
+mutation disposition, merge, and release remain outstanding.
+
+### RW-302 — 2026-09-23 14:26:03Z — P6 controller review conditional; gate slot occupied
+
+The controller reviewed P6 at `13e394a0` after the P1 reconciliation and
+found no new merge-blocking defect. The review is explicitly conditional: it
+does not replace the required fresh Sol xhigh review, current-tip mutation
+evidence, fresh registered gates, or current live probes. The review also
+fixed and recorded the adopter-facing 1.1.0 examples in README,
+CONSUMERS.md, and DESIGN-GUIDE.md (`54e0a364`); the interface contract mirror
+remains byte-identical.
+
+At the first permitted 25-minute state check, P1's isolated mutation container
+`run-gate-vbpub-r2-765950-1790171671` was still up with its exact CIU runner
+(`765950`). Two unrelated Assay B101 gate containers were also active. Memory
+PSI was over the launch threshold (`full avg10=5.08`), so no P6 gate or probe
+was launched and no running job was disturbed. P6 remains queued for the next
+quiet, PSI-admitted slot.
+
+### RW-303 — 2026-09-23 14:33:20Z — retain the quiet-slot decision after takeover review
+
+The controller's next state check found P1's asynchronous R2 still active in
+`rg55-p1-r2-ciu` (`run-gate-vbpub-r2-765950-1790171671`, runner PID 765950)
+and an unrelated Assay B101 gate container still running. The memory PSI
+launch signal had fallen below the threshold (`full avg10=0.89`), but the
+estate's current one-gate-container rule still leaves no admitted slot for a
+P6 short gate. No running job was stopped, and P6 remains queued at its quiet
+reviewed tip `8e52ea08`.
+
+### RW-304 — 2026-09-23 14:36:08Z — reconcile P6 with the current source-backed Assay
+
+Before launching P6's mutation campaign, the controller compared its exact
+judged checkout with current `main`. P6 tip `8e52ea08` does not contain the
+already-merged Assay B101 shallow-snapshot seed `5bf832a4` (nor the subsequent
+current-main Assay source), while P6's `run-gate.toml` deliberately consumes
+the checkout's own `assay/src` at lane-run time. The P1 campaign is already
+running on its quiet judged tree and is not changed. P6 will be reconciled
+onto current `main`, revalidated, and only then receive its exact-tree short
+gates and R2 launch; the pre-reconciliation CIU checkout remains untouched
+until the new tip is settled.

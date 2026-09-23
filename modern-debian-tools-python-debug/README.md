@@ -356,16 +356,16 @@ image, so it lives in two places that must agree:
 
 - **Container side** — `templates/devcontainer.json` ships
   `"--cgroup-parent=dev-interactive.slice"` in `runArgs`, plus `containerEnv` vars
-  (`CGROUP_PARENT_DEV_INTERACTIVE`/`CGROUP_PARENT_DEV_BACKGROUND`) any in-container tool
+  (`CGROUP_PARENT_DEV_INTERACTIVE`/`CGROUP_PARENT_DEV_BACKGROUND`/`CGROUP_PARENT_DEV_GATES`) any in-container tool
   reads instead of hardcoding a slice name. Host setup is a prerequisite for the bounded
   behavior: if the host has no such unit, systemd may create a transient unlimited slice
   and the container can start without the intended protection. Verify the host with
   `mdt-host-check.sh` before relying on placement.
 - **Host side** — [`host-setup/`](host-setup/README.md) installs and maintains the tiers
-  themselves: `dev-interactive.slice` for devcontainers, `dev-background.slice` for the
-  test/build/gate stacks they spawn (also the Docker daemon-wide fallback via
-  `/etc/docker/daemon.json`, which this owns), one shared `dev.slice` IOPS/bandwidth
-  ceiling for both, and a health check. Run this part from the Docker host shell only;
+  themselves: `dev-interactive.slice` for devcontainers, `dev-gates.slice` for gate/lane
+  containers, and `dev-background.slice` for long-running stacks plus the Docker daemon-wide
+  fallback via `/etc/docker/daemon.json`, all under one shared `dev.slice` IOPS/bandwidth
+  ceiling and a health check. Run this part from the Docker host shell only;
   the installer, wizard, and baseline benchmark refuse a devcontainer because container
   root cannot modify the host's `/etc`, systemd, or cgroup tree.
 
@@ -547,11 +547,12 @@ docker image inspect <image> \
 ### Compression and layer topology
 
 BuildKit's generic registry exporter defaults to gzip. `cmru.toml` overrides that:
-release publication uses OCI media types, forced **zstd level 3**, and the original layer
-topology. Its persistent BuildKit cache is separate from other compression policies and is
-exported with the same zstd policy; do not point different compression policies at one
-`MDT_BUILDKIT_CACHE_DIR`. The level is deliberately modest — cold time-to-connect and
-governed export cost matter more than the last few compressed bytes.
+release publication uses OCI media types and **zstd level 3** while preserving the
+original layer topology. Forced recompression is disabled so large, already-compressed
+layers can pass through the exporter without an unnecessary second compression pass. Its
+persistent BuildKit cache is owned by the managed remote and is reused without exporting a
+second cache stream through the client API. The level is deliberately modest — cold
+time-to-connect and governed export cost matter more than the last few compressed bytes.
 
 Cold tests on both Docker stores showed native zstd level 3 faster than gzip, while a
 three-layer 2 GB repack was substantially slower despite the smaller download. Methodology,
@@ -641,6 +642,7 @@ production-quality. Windows as of June 2026:
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
 | [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md) | Cross-CLI adapter pattern; why exact versions stay in the generated inventory |
 | [docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md) | Build/repack/publication flow, cgroup boundaries, load attribution |
+| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate |
 | [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable managed BuildKit host, devcontainer, and release adoption |
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
@@ -665,13 +667,37 @@ The declared lanes run in `tester-unified`, not in the cockpit devcontainer:
 
 - `./run-gate.py smoke` runs Python syntax checks, the host-setup renderer and
   the complete `scripts/` pytest suite (73 tests at the current baseline).
+- `./run-gate.py release` is the image-release gate for the Docker/OCI release
+  flow tests; CMRU consumes this declaration instead of carrying a second
+  `tester-gate` command.
 - `./run-gate.py assay-full` runs the wizard's assay lane at R0, R1, R2 and R3.
   R2 generates and runs the full native mutation campaign for the current
   source, and resumes from the git-ignored `.assay/` progress stream after an
   interrupted session.
+- `./run-gate.py vm-system` runs the MDT host setup acceptance in the shared
+  QEMU/TCG harness. The bare-host lane only drives the runner; its assertions
+  execute inside the guest and verify systemd PID 1, cgroup v2, Docker,
+  rendered slice units, daemon configuration, and the installed host check.
 
-`assay.toml` is the judgment contract for the wizard. The shell installer and
-renderer remain command-tested because assay's Python adapter cannot judge
-shell behavior. The source checkout's `assay/` package is imported at lane
-runtime, as required for same-repository vbpub consumers; no stale vendored
-assay copy is used.
+`assay.toml` is the judgment contract for the wizard and the VM receipt. The
+shell installer and renderer remain command-tested because assay's Python
+adapter cannot judge shell behavior. The source checkout's `assay/` package is
+imported at lane runtime, as required for same-repository vbpub consumers; no
+stale vendored assay copy is used. MDT has no HTTP/OpenAPI surface, so
+Schemathesis is not applicable; Hypothesis covers pure configuration invariants
+in the Python R0-R3 lane.
+
+### CLI diagnostics
+
+The shipped MDT Python parser scripts prefix help, usage, missing-argument,
+unknown-argument, and configuration diagnostics at every parser depth with
+`MDT <version> — modern Debian tools and Python debug` as line 1. The value is
+read from the existing `MDT_VERSION` or `MDT_IMAGE_VERSION` runtime
+environment; when neither is supplied the diagnostic says `unknown` rather
+than inventing a release version.
+The declared operator entrypoints also accept top-level `--version` and print
+exactly one `MDT <version>` line on stdout with exit 0 and no stderr output.
+Normal command output is unchanged. This
+surface covers `build-push.py`, `check-mcr-devcontainer-tags.py`, the host
+setup wizard, `mdt-io-baseline.py`, and `mdt_buildkit_builder.py`; service
+watchers and build-time helper scripts remain internal interfaces.

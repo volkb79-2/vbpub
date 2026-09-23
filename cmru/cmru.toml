@@ -1,13 +1,7 @@
 schema_version = 1
 
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
+[runtime]
+kind = "none"
 
 [env]
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
@@ -34,6 +28,8 @@ bump = "conventional"
 git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
+# Release-gate outputs retained under evidence/cmru-release/<tag> with hashes.
+evidence_paths = ["coverage.json", ".assay"]
 
 [steps.run-tests]
 quiet = true

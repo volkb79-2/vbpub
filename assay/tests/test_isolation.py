@@ -533,6 +533,115 @@ def test_the_prepared_repository_exposes_its_own_spec(tmp_path: Path) -> None:
         assert prepared.spec.commit == commit
 
 
+def test_shallow_seed_carries_exact_commit_and_resolved_base_boundaries(
+    tmp_path: Path,
+) -> None:
+    repo, base = _root_repo(tmp_path)
+    (repo / "empty.txt").write_bytes(b"head bytes\n")
+    _git(repo, "add", "empty.txt")
+    _git(repo, "commit", "-q", "-m", "head")
+    head = _git(repo, "rev-parse", "HEAD")
+    scratch = _scratch(tmp_path)
+
+    with prepare_snapshot(
+        _spec(repo, scratch, head, resolved_base=base), timeout=TIMEOUT
+    ) as prepared:
+        with prepared.materialize(timeout=TIMEOUT) as baseline:
+            assert (baseline.root / ".git" / "shallow").read_text() == "".join(
+                f"{oid}\n" for oid in sorted((head, base))
+            )
+            assert _git(baseline.root, "rev-list", "--count", "HEAD") == "1"
+            assert _git(baseline.root, "diff", base, "HEAD")
+        with prepared.materialize_replacement(
+            path=PurePosixPath("empty.txt"),
+            expected=b"head bytes\n",
+            replacement=b"mutated bytes\n",
+            timeout=TIMEOUT,
+        ) as child:
+            assert _git(child.root, "rev-list", "--count", "HEAD") == "2"
+            assert _git(child.root, "diff", base, "HEAD")
+
+
+def test_full_history_is_explicit_and_has_no_shallow_file(tmp_path: Path) -> None:
+    repo, base = _root_repo(tmp_path)
+    (repo / "empty.txt").write_bytes(b"head bytes\n")
+    _git(repo, "add", "empty.txt")
+    _git(repo, "commit", "-q", "-m", "head")
+    head = _git(repo, "rev-parse", "HEAD")
+    scratch = _scratch(tmp_path)
+    policy = IsolationConfig(
+        snapshot_selection="repository",
+        unsafe_symlink_omissions=(),
+        snapshot_history="full",
+    )
+
+    with prepare_snapshot(
+        _spec(repo, scratch, head, snapshot_policy=policy), timeout=TIMEOUT
+    ) as prepared:
+        with prepared.materialize(timeout=TIMEOUT) as snapshot:
+            assert not (snapshot.root / ".git" / "shallow").exists()
+            assert _git(snapshot.root, "rev-list", "--count", "HEAD") == "2"
+            assert base in _git(snapshot.root, "rev-list", "--parents", "HEAD")
+
+
+def test_shallow_seed_avoids_historical_object_limit_but_full_history_does_not(
+    tmp_path: Path,
+) -> None:
+    """The object ceiling follows the transferred seed, not its old history."""
+    repo, _ = _root_repo(tmp_path)
+    for index in range(3):
+        (repo / f"history-{index}.txt").write_text(
+            f"historical payload {index}\n", encoding="utf-8"
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", f"history {index}")
+    head = _git(repo, "rev-parse", "HEAD")
+    shallow_oids = _git(
+        repo, "rev-list", "--objects", "--no-object-names", "--no-walk", head
+    ).split()
+    sizes = subprocess.run(
+        [shutil.which("git") or "git", "-C", str(repo), "cat-file", "--batch-check=%(objectsize)"],
+        input="\n".join(shallow_oids) + "\n",
+        text=True,
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout
+    shallow_bytes = sum(int(line) for line in sizes.splitlines())
+    values = asdict(DEFAULT_SNAPSHOT_LIMITS)
+    values["max_total_object_bytes"] = shallow_bytes
+    values["max_blob_bytes"] = min(values["max_blob_bytes"], shallow_bytes)
+    values["max_total_tree_blob_bytes"] = min(
+        values["max_total_tree_blob_bytes"], shallow_bytes
+    )
+    limits = SnapshotLimits(**values)
+    scratch = _scratch(tmp_path)
+
+    with prepare_snapshot(
+        _spec(repo, scratch, head, limits=limits), timeout=TIMEOUT
+    ) as prepared:
+        with prepared.materialize(timeout=TIMEOUT) as snapshot:
+            assert _git(snapshot.root, "rev-list", "--count", "HEAD") == "1"
+
+    full_policy = IsolationConfig(
+        snapshot_selection="repository",
+        unsafe_symlink_omissions=(),
+        snapshot_history="full",
+    )
+    with pytest.raises(AssayError) as caught:
+        with prepare_snapshot(
+            _spec(
+                repo,
+                scratch,
+                head,
+                snapshot_policy=full_policy,
+                limits=limits,
+            ),
+            timeout=TIMEOUT,
+        ):
+            pytest.fail("full history must exceed the seed-sized object ceiling")
+    assert caught.value.reason_code is ReasonCode.SNAPSHOT_LIMIT_EXCEEDED
+
+
 def test_limits_reject_incoherent_and_non_integer_bounds() -> None:
     from assay.isolation import SnapshotLimits as L
 
@@ -542,6 +651,15 @@ def test_limits_reject_incoherent_and_non_integer_bounds() -> None:
             L(**{**base, "max_entries": bad})
     with pytest.raises(ValueError, match="max_blob_bytes cannot exceed"):
         L(**{**base, "max_blob_bytes": 2048, "max_total_object_bytes": 1024})
+    with pytest.raises(ValueError, match="max_total_tree_blob_bytes cannot exceed"):
+        L(
+            **{
+                **base,
+                "max_blob_bytes": 1024,
+                "max_total_object_bytes": 1024,
+                "max_total_tree_blob_bytes": 2048,
+            }
+        )
 
 
 def test_spec_rejects_roots_and_prefixes_a_caller_would_otherwise_invent(
@@ -638,12 +756,44 @@ def test_object_limits_refuse_the_first_overrun(
         for f in DEFAULT_SNAPSHOT_LIMITS.__dataclass_fields__
     }
     limits_values.update({k: max(v, 1) for k, v in changes.items()})
+    # B101 keeps the judged-tree ceiling no larger than the overall object
+    # ceiling; this test narrows the latter to exercise the old total-object
+    # refusal, so narrow the related policy field with it.
+    limits_values["max_total_tree_blob_bytes"] = min(
+        limits_values["max_total_tree_blob_bytes"],
+        limits_values["max_total_object_bytes"],
+    )
     from assay.isolation import SnapshotLimits as L
 
     with pytest.raises(AssayError) as caught:
         isolation._enforce_object_limits(metadata, L(**limits_values))
     assert caught.value.outcome is Outcome.BUDGET_EXCEEDED
     assert caught.value.reason_code is ReasonCode.SNAPSHOT_LIMIT_EXCEEDED
+
+
+def test_judged_tree_blob_limit_counts_unique_blobs_only() -> None:
+    metadata = {
+        "a" * 40: ("blob", 10),
+        "b" * 40: ("blob", 7),
+        "c" * 40: ("tree", 30),
+    }
+    limits_values = asdict(DEFAULT_SNAPSHOT_LIMITS)
+    limits_values["max_total_tree_blob_bytes"] = 16
+    limits = SnapshotLimits(**limits_values)
+    with pytest.raises(AssayError) as caught:
+        isolation._enforce_tree_blob_limits(
+            metadata,
+            ("c" * 40, "a" * 40, "a" * 40, "b" * 40),
+            limits,
+        )
+    assert caught.value.reason_code is ReasonCode.SNAPSHOT_LIMIT_EXCEEDED
+
+    limits_values["max_total_tree_blob_bytes"] = 17
+    isolation._enforce_tree_blob_limits(
+        metadata,
+        ("c" * 40, "a" * 40, "a" * 40, "b" * 40),
+        SnapshotLimits(**limits_values),
+    )
 
 
 # --------------------------------------------------------------------------

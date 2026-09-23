@@ -1110,6 +1110,14 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
     normalized["started"] = "@STARTED@"
     normalized["ended"] = "@ENDED@"
     normalized["judgment"]["resolved"]["base"] = "@BASE_OID@"
+    # The auto budget is derived from this run's measured baseline wall time.
+    # It is evidence that the bound was calculated, but not a stable witness
+    # value: the same lane legitimately derives a different number on another
+    # host or container run.  Keep the field in the real verdict while
+    # comparing the stable contract of this qualification lane.
+    normalized.get("judgment", {}).get("r2", {}).pop(
+        "budget_per_candidate_derived_s", None
+    )
     return normalized
 
 

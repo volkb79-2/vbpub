@@ -21,7 +21,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import FakeAdapter, GitRepo, fixed_clock, make_lane, make_r1_judge
+from conftest import (
+    FakeAdapter,
+    GitRepo,
+    cut_snapshot_history,
+    fixed_clock,
+    make_lane,
+    make_r1_judge,
+)
 
 from assay import git as git_module
 from assay import runner, safeio
@@ -282,6 +289,138 @@ def test_run_lane_invokes_the_process_runner_exactly_once(git_repo: GitRepo):
     assert len(calls) == 1, "the invocation ledger: R1 must never re-run the lane's command"
 
 
+def test_run_lane_symbolic_base_passes_and_records_the_resolved_commit(
+    git_repo: GitRepo,
+):
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    git_repo.git("tag", "declared-base", base_rev)
+    judge = make_r1_judge(
+        source_root_paths=(git_repo.path / "pkg",), base="declared-base"
+    )
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.outcome is Outcome.PASS
+    assert verdict.judgment.resolved.base == base_rev
+
+
+def test_run_lane_changed_lines_r1_never_asks_a_history_cut_snapshot_for_ancestry(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
+):
+    """B101 P1: the in-snapshot R1 check is history-independent.
+
+    The symbolic base sits three commits behind HEAD and every snapshot's
+    ancestry is cut at {HEAD, resolved base} -- B101's shallow seed shape --
+    so any in-snapshot ``merge-base`` or parent walk fails. The run must
+    still PASS against the pre-snapshot resolution and record it. The probe
+    assertions prove the cut really bites (merge-base failed in every
+    snapshot the run materialized): without them the PASS could come from a
+    fixture that cut nothing. Against the pre-port code this run renders
+    R1 ERROR/GIT_FAILED.
+    """
+    git_repo.write(".gitignore", "cov.json\n")
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = git_repo.commit_all("add pkg base")
+    git_repo.git("tag", "declared-base", base_rev)
+    lines = ["BASE"]
+    for n in range(2, 6):
+        lines.append(f"LINE{n}")
+        git_repo.write("pkg/mod.zzz", "".join(f"{line}\n" for line in lines))
+        head_rev = git_repo.commit_all(f"add line {n}")
+    probes = cut_snapshot_history(monkeypatch, carried_base=base_rev)
+    judge = make_r1_judge(
+        source_root_paths=(git_repo.path / "pkg",), base="declared-base"
+    )
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert probes, "no snapshot was materialized -- the cut was never exercised"
+    assert all(p.merge_base_returncode != 0 for p in probes)
+    assert all(p.seed_parents_visible == 0 for p in probes)
+    assert verdict.outcome is Outcome.PASS, verdict.claims
+    assert verdict.claims[1].coverage.considered == 1
+    assert verdict.judgment.resolved.base == base_rev
+    assert verdict.judgment.resolved.base_resolution == "merge-base"
+
+
+def test_run_lane_merge_head_first_parent_is_decided_before_the_snapshot(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
+):
+    """B101 P1: a merge HEAD's first-parent rule is decided pre-snapshot,
+    where its parents are certainly visible, and never re-derived inside.
+
+    With the snapshot's ancestry cut, the merge HEAD shows NO parents there
+    (asserted), so an in-snapshot ``resolve_base`` would silently take the
+    merge-base branch -- and fail. The run must record the first parent and
+    ``first-parent`` exactly as a full-history run does, and judge the
+    merge's own payload (the feature's four lines).
+    """
+    git_repo.write(".gitignore", "cov.json\n")
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    fork_rev = git_repo.commit_all("add pkg base")
+    git_repo.git("tag", "declared-base", fork_rev)
+    git_repo.git("checkout", "-q", "-b", "feature")
+    git_repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\nLINE4\nLINE5\n")
+    git_repo.commit_all("feature lines")
+    git_repo.git("checkout", "-q", "main")
+    git_repo.write("NOTES.md", "unrelated\n")
+    first_parent = git_repo.commit_all("unrelated main work")
+    git_repo.git("merge", "-q", "--no-ff", "-m", "merge feature", "feature")
+    merge_rev = git_repo.head()
+    probes = cut_snapshot_history(monkeypatch, carried_base=first_parent)
+    judge = make_r1_judge(
+        source_root_paths=(git_repo.path / "pkg",), base="declared-base"
+    )
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=merge_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert probes and all(p.seed_parents_visible == 0 for p in probes)
+    assert all(p.merge_base_returncode != 0 for p in probes)
+    assert verdict.outcome is Outcome.PASS, verdict.claims
+    assert verdict.claims[1].coverage.considered == 1
+    assert verdict.judgment.resolved.base == first_parent
+    assert verdict.judgment.resolved.base_resolution == "first-parent"
+
+
 # --- O3: stale-artifact discipline ---------------------------------------------
 
 
@@ -435,6 +574,97 @@ def test_run_lane_dirtiness_outside_source_roots_still_refuses_the_r1_lane(
     assert verdict.outcome is Outcome.NO_MEASUREMENT
     assert verdict.reason_code is ReasonCode.DIRTY_TREE
     assert not marker.exists()
+
+
+def test_snapshot_lane_records_a_declared_dirty_ignore_and_keeps_snapshot_clean(
+    git_repo: GitRepo,
+):
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}),
+    )
+    git_repo.write("ledger.md", "controller notes\n")
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        dirty_ignore=("ledger.md",),
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.outcome is Outcome.PASS
+    assert verdict.worktree_integrity is not None
+    assert verdict.worktree_integrity.ignored_dirty_paths == ("ledger.md",)
+    assert verdict.worktree_integrity.overridden_dirty_paths == ()
+    assert git_module.dirty_paths(git_repo.path) == ("ledger.md",)
+
+
+def test_snapshot_lane_allow_dirty_records_an_explicit_override(
+    git_repo: GitRepo,
+):
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}),
+    )
+    git_repo.write("src/uncommitted.py", "print('not in the snapshot')\n")
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        allow_dirty=True,
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.outcome is Outcome.PASS
+    assert verdict.worktree_integrity is not None
+    assert verdict.worktree_integrity.ignored_dirty_paths == ()
+    assert verdict.worktree_integrity.overridden_dirty_paths == ("src/uncommitted.py",)
+
+
+def test_snapshot_lane_always_protects_the_loaded_lane_file(
+    git_repo: GitRepo,
+):
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    git_repo.write("assay.toml", "schema_version = 2\n")
+    git_repo.commit_all("add lane file")
+    head_rev = git_repo.head()
+    git_repo.write("assay.toml", "schema_version = 2\n# changed\n")
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        allow_dirty=True,
+        dirty_ignore=("assay.toml",),
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.outcome is Outcome.NO_MEASUREMENT
+    assert verdict.reason_code is ReasonCode.DIRTY_TREE
+    assert "assay.toml" in (verdict.claims[1].detail or "")
 
 
 def test_run_lane_refuses_a_higher_rigor_lane_whose_caller_commit_is_stale(

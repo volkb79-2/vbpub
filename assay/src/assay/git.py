@@ -81,6 +81,7 @@ package's ``scope.touch``).
 
 from __future__ import annotations
 
+import errno
 import math
 import os
 import selectors
@@ -165,9 +166,23 @@ _FIXED_CONFIG: tuple[str, ...] = (
     "-c", "core.quotePath=false",
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.fsmonitor=",
+    # Git's index-preload worker pool is an optional optimisation, not part of
+    # the repository fact being measured. A gate can run many isolated
+    # snapshots concurrently, so allowing each status call to create its own
+    # lstat threads can exhaust the tester cgroup before Git reports any
+    # useful result ("unable to create threaded lstat"). Pin the option at
+    # the Git boundary; ambient GIT_CONFIG_* is intentionally discarded above.
+    "-c", "core.preloadIndex=false",
     "-c", "commit.gpgSign=false",
     "-c", "core.excludesFile=",
 )
+
+# A tester cgroup may transiently reject fork/clone with EAGAIN while another
+# bounded Git child is being reaped.  Keep the retry at the shared spawn
+# boundary so both ordinary Git calls and P22's explicit-object calls have the
+# same finite policy.
+_GIT_SPAWN_RETRY_ATTEMPTS = 60
+_GIT_SPAWN_RETRY_SECONDS = 0.5
 
 #: The fixed ceiling on how many bytes of a git child's stdout this process
 #: will retain (O4: a FIXED byte bound, never an ambient or elapsed-time
@@ -225,6 +240,27 @@ def _sample_remaining(remaining: Remaining | None) -> float | None:
     return sampled
 
 
+def _spawn_with_eagain_retry(
+    spawn: Callable[[], subprocess.Popen[bytes]],
+    *,
+    remaining: Callable[[], float | None],
+    what: str,
+) -> subprocess.Popen[bytes]:
+    """Run one child launcher, retrying only transient fork exhaustion."""
+    for attempt in range(_GIT_SPAWN_RETRY_ATTEMPTS):
+        try:
+            return spawn()
+        except OSError as exc:
+            if exc.errno != errno.EAGAIN or attempt + 1 == _GIT_SPAWN_RETRY_ATTEMPTS:
+                raise
+            left = remaining()
+            time.sleep(
+                _GIT_SPAWN_RETRY_SECONDS
+                if left is None else min(_GIT_SPAWN_RETRY_SECONDS, left)
+            )
+    raise AssertionError(f"unreachable after {what}")
+
+
 def _kill_owned_group(proc: subprocess.Popen[bytes]) -> None:
     """Best-effort SIGKILL of the whole process group, regardless of whether
     the direct child has already exited (P26/A-212).
@@ -273,13 +309,17 @@ def _run_bounded(argv: list[str], *, remaining: Remaining | None = None, stdin=N
     """
     _sample_remaining(remaining)
     try:
-        proc = subprocess.Popen(
-            argv,
-            env=dict(_REPLACEMENT_ENV),
-            **({"stdin": stdin} if stdin is not None else {}),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
+        proc = _spawn_with_eagain_retry(
+            lambda: subprocess.Popen(
+                argv,
+                env=dict(_REPLACEMENT_ENV),
+                **({"stdin": stdin} if stdin is not None else {}),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            ),
+            remaining=lambda: _sample_remaining(remaining),
+            what="bounded Git",
         )
     except OSError as exc:
         raise _git_failed(f"could not start git: {exc}") from exc
@@ -1167,7 +1207,8 @@ def _p22_argv(
 
 
 def _p22_spawn(
-    argv: Sequence[str], *, cwd: Path, identity: bool, stdin: int
+    argv: Sequence[str], *, cwd: Path, identity: bool, stdin: int,
+    deadline: _P22Deadline,
 ) -> subprocess.Popen[bytes]:
     """Launch one P22 child in its OWN process group.
 
@@ -1176,14 +1217,18 @@ def _p22_spawn(
     running with the pipe still open. Assay owns the whole group and kills
     the group.
     """
-    return subprocess.Popen(
-        list(argv),
-        cwd=str(cwd),
-        env=_p22_env(identity=identity),
-        stdin=stdin,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
+    return _spawn_with_eagain_retry(
+        lambda: subprocess.Popen(
+            list(argv),
+            cwd=str(cwd),
+            env=_p22_env(identity=identity),
+            stdin=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        ),
+        remaining=lambda: deadline.remaining("starting a private Git child"),
+        what="private Git",
     )
 
 
@@ -1316,7 +1361,7 @@ def _p22_git(
             err.extend(chunk[:remaining])
 
     proc = _p22_spawn(
-        argv, cwd=cwd, identity=identity, stdin=subprocess.PIPE
+        argv, cwd=cwd, identity=identity, stdin=subprocess.PIPE, deadline=deadline
     )
     assert proc.stdin is not None and proc.stdout is not None
     assert proc.stderr is not None
@@ -1384,7 +1429,8 @@ def _p22_stream_pack(
         args=("index-pack", "--stdin"),
     )
     producer = _p22_spawn(
-        producer_argv, cwd=source_cwd, identity=False, stdin=subprocess.PIPE
+        producer_argv, cwd=source_cwd, identity=False, stdin=subprocess.PIPE,
+        deadline=deadline,
     )
     consumer: subprocess.Popen[bytes] | None = None
     counted = 0
@@ -1392,7 +1438,8 @@ def _p22_stream_pack(
     consumer_err = bytearray()
     try:
         consumer = _p22_spawn(
-            consumer_argv, cwd=seed_git_dir, identity=False, stdin=subprocess.PIPE
+            consumer_argv, cwd=seed_git_dir, identity=False, stdin=subprocess.PIPE,
+            deadline=deadline,
         )
         assert producer.stdin is not None and producer.stdout is not None
         assert producer.stderr is not None
@@ -1504,7 +1551,7 @@ def _p22_init_private(
         *args,
     ]
     proc = _p22_spawn(
-        argv, cwd=template, identity=False, stdin=subprocess.DEVNULL
+        argv, cwd=template, identity=False, stdin=subprocess.DEVNULL, deadline=deadline
     )
     assert proc.stdout is not None and proc.stderr is not None
     err = bytearray()

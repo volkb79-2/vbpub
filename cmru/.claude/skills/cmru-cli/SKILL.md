@@ -23,7 +23,7 @@ description: The cmru (Configurable Multi Release Utility) CLI — status/releas
 ```bash
 cmru status                        # preview what changed + the next version (no writes)
 cmru release                       # isolated: prepare → gate → integrate → tag → build → publish
-cmru cleanup [--project P] [--dry-run]           # prune old releases/images (keeps -latest)
+cmru cleanup [P] [--dry-run]           # prune old releases/images (keeps -latest)
 cmru cleanup --remove-assets 30d                  # age-based prune
 ```
 
@@ -36,7 +36,7 @@ isolated local build that also retains outputs on success.
 ## Planning verbs (read-only, no writes)
 
 ```bash
-cmru status [--config C] [--project P] [--minor|--major] [--set-version V] [--dry-run]
+cmru status [P] [--config C] [--minor|--major] [--set-version V] [--dry-run]
 cmru worktrees [--json]                     # discover retained worktrees
 cmru dependencies [--config C] [--json] [--write]   # dependency graph + preflight
 ```
@@ -44,12 +44,12 @@ cmru dependencies [--config C] [--json] [--write]   # dependency graph + preflig
 ## Release / history (writes)
 
 ```bash
-cmru release [--config C] [--project P] [--minor|--major|--set-version V] [--dry-run]
+cmru release [P] [--config C] [--minor|--major|--set-version V] [--dry-run]
              [--no-build] [--resume WORKTREE|--abandon WORKTREE|all-previous]
              [--allow-uncommitted] [--ref REF]
-cmru changelog --config C --project P --backfill-tag TAG   # catalog an already-published tagged release
-cmru build    [--config C] [--project P]      # isolated local build; retains outputs on success
-cmru publish  [--config C] [--project P]      # run the project's 'push' step
+cmru changelog [P] --config C --backfill-tag TAG   # catalog an already-published tagged release
+cmru build [P] [--config C]      # isolated local build; retains outputs on success
+cmru publish [P] [--config C]      # run the project's 'push' step
 ```
 
 `--resume WORKTREE` / `--abandon WORKTREE` / `--resume all-previous` recover
@@ -72,13 +72,13 @@ gate via `tester-unified` rather than a per-project `run-gate.toml`.
 ## Maintenance / discovery
 
 ```bash
-cmru standards [--config C] [--project P ...] [--update]     # check/update CMRU framework markers
-cmru tool-deps [--config C] [--project P ...] [--json]        # verify declared tool deps: integrity +
+cmru standards [P] [--config C] [--update]     # check/update CMRU framework markers
+cmru tool-deps [P] [--config C] [--json]        # verify declared tool deps: integrity +
                                                                # authenticity + freshness (network;
                                                                # NEVER run during tests)
-cmru resolve [--config C] [--project P|--prefix PREFIX] [--format env|json|url]
-cmru get|get-py --config C --project P [--output FILE]        # emit a standalone get.py installer
-cmru init [--layout single|monorepo] [--project ID] [--owner O] [--repo R]
+cmru resolve [P] [--config C] [--format env|json|url]
+cmru get|get-py [P] --config C [--output FILE]        # emit a standalone get.py installer
+cmru init [--root PATH] [--layout single|monorepo] [--owner O] [--repo R] [--owner-type user|org]
 cmru version                                                  # print the installed cmru version
 ```
 

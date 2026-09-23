@@ -53,8 +53,8 @@ oci_layout_bake() {
     # governed builder's content store at once. Under host memory/IO pressure the
     # loser's write blocks on the winner's lock long enough to trip the builder's
     # health check and get killed mid-write ("ref layer-... locked for Ns...
-    # unavailable" -> "context canceled" -> EOF). Serializing avoids the race, and
-    # the second target's shared layers hit the local cache-from dir for free.
+    # unavailable" -> "context canceled" -> EOF). Serializing avoids the race;
+    # the second target reuses shared layers from the persistent remote cache.
     for target in "${targets[@]}"; do
         safe="${target//[^A-Za-z0-9._-]/_}"
         bake_args=(docker buildx bake -f docker-bake.hcl "${target}")
@@ -120,36 +120,16 @@ fi
 
 bash scripts/ensure-release-builder.sh
 
-# The common Git directory is shared by disposable cmru release worktrees.
-COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
-if [[ "${COMMON_GIT_DIR}" != /* ]]; then
-    COMMON_GIT_DIR="$(pwd)/${COMMON_GIT_DIR}"
-fi
 OCI_LAYOUT_DIR="${MDT_OCI_LAYOUT_DIR:-build/oci-layouts}"
 
 configure_cache_args() {
-    # BuildKit's cache graph records the compression available for every
-    # layer.  Reusing one local cache for gzip and forced-zstd image exports
-    # makes the graph grow combinatorially (and can cancel the solve while
-    # exporting).  Keep the default cache namespace tied to the image policy,
-    # and make the cache exporter use that same policy instead of its gzip
-    # default.  An explicit MDT_BUILDKIT_CACHE_DIR remains an operator-owned
-    # override and must likewise be dedicated to one compression policy.
-    : "${IMAGE_COMPRESSION:?IMAGE_COMPRESSION must be configured}"
-    : "${IMAGE_COMPRESSION_LEVEL:?IMAGE_COMPRESSION_LEVEL must be configured}"
-    : "${IMAGE_FORCE_COMPRESSION:?IMAGE_FORCE_COMPRESSION must be configured}"
-    : "${IMAGE_OCI_MEDIA_TYPES:?IMAGE_OCI_MEDIA_TYPES must be configured}"
-
-    local policy_key
-    policy_key="${IMAGE_COMPRESSION}-${IMAGE_FORCE_COMPRESSION}-${IMAGE_COMPRESSION_LEVEL}"
-    policy_key="${policy_key//[^A-Za-z0-9._-]/_}"
-    CACHE_DIR="${MDT_BUILDKIT_CACHE_DIR:-${COMMON_GIT_DIR}/mdt-buildkit-cache-${policy_key}}"
-    mkdir -p "${CACHE_DIR}"
-    CACHE_ARGS=(
-        --set "*.cache-from=type=local,src=${CACHE_DIR}"
-        --set "*.cache-to=type=local,dest=${CACHE_DIR},mode=max,compression=${IMAGE_COMPRESSION},compression-level=${IMAGE_COMPRESSION_LEVEL},force-compression=${IMAGE_FORCE_COMPRESSION},oci-mediatypes=${IMAGE_OCI_MEDIA_TYPES}"
-    )
-    echo "[INFO] BuildKit cache namespace=${CACHE_DIR} compression=${IMAGE_COMPRESSION} force=${IMAGE_FORCE_COMPRESSION}"
+    # The managed remote owns a persistent cache volume. A type=local cache
+    # exporter streams the entire cache through the client-visible Docker API
+    # after the OCI tarball has completed; large exports can hit the same EOF
+    # boundary as any other long client stream. Keep the release path on the
+    # remote cache and do not add a second client-visible cache transfer.
+    CACHE_ARGS=()
+    echo "[INFO] Using persistent mdt-buildkitd cache; local client cache export disabled"
 }
 
 case "${FLOW}" in

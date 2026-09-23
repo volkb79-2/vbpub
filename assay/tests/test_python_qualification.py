@@ -170,6 +170,70 @@ def test_gate_script_passes_shellcheck_when_available() -> None:
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+def test_scenario_mismatch_keeps_artifact_and_command_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed disposable scenario must remain diagnosable after the gate
+    container removes its scratch tree; diagnostics never alter the expected
+    terminal or turn a command failure into a pass.
+    """
+    module = _load_harness()
+    spec = module.ScenarioSpec(
+        name="diagnostic",
+        probe_fixture="probe-pass.py",
+        test_fixture="test-probe-pass.py",
+        source_target="_assay_probe.py",
+        argv_tail=(),
+        allow_excluded=True,
+        expected_exit=0,
+        expected_outcome="PASS",
+        expected_reason=None,
+        compare_with_topos=False,
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    pytest_log = tmp_path / "pytest.log"
+    pytest_log.write_text("pytest failed: worker exited 1\n", encoding="utf-8")
+
+    def materialize(**_kwargs):
+        return repo, tmp_path / "witness.json", pytest_log, "b" * 40, "c" * 40
+
+    def invoke(_executable, _repo, artifact_path):
+        artifact = {
+            "commit": "c" * 40,
+            "assay_version": "6.2.1.dev-test",
+            "exit_code": 1,
+            "outcome": "FAIL",
+            "reason_code": "COMMAND_FAILED",
+        }
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+        return subprocess.CompletedProcess(
+            args=["assay"],
+            returncode=1,
+            stdout="assay stdout failure\n",
+            stderr="assay stderr failure\n",
+        ), artifact
+
+    monkeypatch.setattr(module, "materialize_scenario", materialize)
+    monkeypatch.setattr(module, "_invoke", invoke)
+    with pytest.raises(module.QualificationError) as excinfo:
+        module.run_scenario(
+            source_repo=REPO_ROOT,
+            scratch=tmp_path / "scratch",
+            assay_executable=tmp_path / "assay",
+            assay_version="6.2.1.dev-test",
+            spec=spec,
+        )
+
+    message = str(excinfo.value)
+    assert "expected exit 0, got 1" in message
+    assert '"reason_code": "COMMAND_FAILED"' in message
+    assert "assay stdout failure" in message
+    assert "assay stderr failure" in message
+    assert "pytest failed: worker exited 1" in message
+
+
 # --- real-git behavioral tests (always real, no container needed) -----------
 
 
@@ -337,7 +401,7 @@ def test_write_lane_refuses_an_unknown_lane_schema_version(tmp_path: Path) -> No
 #: `normalize_artifact` now refuses anything that is not `schema_version: 10`,
 #: so a stale root here would fail loudly rather than silently -- but it would
 #: fail in this consumer instead of in the thing under test.
-P25_V11_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W7" / "expected"
+P25_V12_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W8" / "expected"
 
 #: (B018/A-327) The harness now REQUIRES a judge identity, because the
 #: qualification it drives runs an installed wheel, which always has one. The
@@ -356,7 +420,7 @@ _A_COMPLETE_JUDGE_IDENTITY = {
 
 def _pass_template_actual() -> tuple[dict, dict[str, object]]:
     template = json.loads(
-        (P25_V11_EXPECTED_ROOT / "p25-pass-v11-template.json").read_text()
+        (P25_V12_EXPECTED_ROOT / "p25-pass-v12-template.json").read_text()
     )
     actual = json.loads(json.dumps(template))
     actual["judge_provenance"] = dict(_A_COMPLETE_JUDGE_IDENTITY)

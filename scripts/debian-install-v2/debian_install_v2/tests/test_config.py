@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+
 import pytest
 
-from debian_install_v2.config import Config, ConfigError, load_config
-
+from debian_install_v2.config import ConfigError, load_config
 
 BASE = {
     "schema_version": 1,
@@ -53,6 +53,35 @@ def test_closed_vocabularies_are_validated():
         data = dict(BASE, **{key: value})
         with pytest.raises(ConfigError):
             load_config(raw_json=json.dumps(data))
+
+
+@pytest.mark.parametrize("key", [
+    "zswap_compressor", "zswap_zpool", "apt_auto_upgrade_mode", "credential_mode",
+])
+def test_unhashable_closed_vocabulary_values_are_reported_as_config_errors(key):
+    with pytest.raises(ConfigError, match=key):
+        load_config(raw_json=json.dumps(dict(BASE, **{key: []})))
+
+
+@pytest.mark.parametrize("key", ["log_dir", "state_dir", "stage2_output"])
+def test_filesystem_paths_reject_nul(key):
+    with pytest.raises(ConfigError, match="NUL"):
+        load_config(raw_json=json.dumps(dict(BASE, **{key: "/tmp/invalid\x00path"})))
+
+
+def test_config_file_path_rejects_nul():
+    with pytest.raises(ConfigError, match="configuration path.*NUL"):
+        load_config(path="/tmp/invalid\x00config.json")
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r", "\x00"])
+def test_controller_ssh_key_must_be_a_single_authorized_keys_line(newline):
+    with pytest.raises(ConfigError, match="one authorized_keys line"):
+        load_config(
+            raw_json=json.dumps(
+                {"controller_ssh_pubkey": f"ssh-ed25519 AAAA operator{newline}extra"}
+            )
+        )
 
 
 def test_unsupported_minimal_v2_surface_is_refused():

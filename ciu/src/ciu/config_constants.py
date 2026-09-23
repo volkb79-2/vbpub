@@ -14,7 +14,7 @@ Naming convention (greenfield standard):
 - ``ciu.compose.yml``    = gitignored rendered compose (what CIU runs)
 - ``docker-compose.yml`` = OPTIONAL hand-written compose a maintainer MAY ship;
                            CIU never writes it. The ``--shipped`` path runs it.
-- ``ciu.env``            = gitignored workspace machine-identity env
+- ``ciu.env``            = gitignored shell export of generated machine facts
 - ``ciu.instance.generated.toml``
                          = gitignored, CIU-OWNED plain TOML (no ``.j2``): the
                            ``[ciu.instance.generated]`` identity facts, rewritten

@@ -132,6 +132,85 @@ def test_gate_script_has_valid_bash_syntax() -> None:
     assert proc.returncode == 0, proc.stderr
 
 
+def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """The inner tester container is named, detached, logged, waited, and removed.
+
+    A live Assay registered-gate run is still required to accept this Docker
+    argv against the daemon; this fake proves construction and status plumbing.
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls_path = tmp_path / "docker-calls.jsonl"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['DOCKER_CALLS'], 'a', encoding='utf-8') as out:\n"
+        "    out.write(json.dumps(args) + '\\n')\n"
+        "if args[:2] == ['run', '-d']:\n"
+        "    print('fake-container-id')\n"
+        "    if os.environ.get('DOCKER_RUN_STATUS'):\n"
+        "        raise SystemExit(int(os.environ['DOCKER_RUN_STATUS']))\n"
+        "elif args[:2] == ['logs', '--follow']:\n"
+        "    print('fake nested gate output')\n"
+        "elif args[:1] == ['wait']:\n"
+        "    print(os.environ['DOCKER_WAIT_STATUS'])\n"
+        "elif args[:2] != ['rm', '-f']:\n"
+        "    raise SystemExit(90)\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DOCKER_CALLS": str(calls_path),
+        "DOCKER_WAIT_STATUS": "17",
+        "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
+    }
+
+    proc = run_bash(
+        'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
+        '"/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 17, proc.stdout + proc.stderr
+    assert "fake nested gate output" in proc.stdout
+    assert "ASSAY_GATE_CONTAINER_EXIT=17" in proc.stdout
+    calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+    run = next(argv for argv in calls if argv[:2] == ["run", "-d"])
+    assert run[2] == "--name"
+    name = run[3]
+    assert name in proc.stdout
+    assert "--init" in run
+    assert "--cgroup-parent=dev-gates.slice" in run
+    assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
+    assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in run
+    assert "--network=none" in run
+    assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
+    assert run.index("tester-unified:local") < run.index("bash")
+    assert ["logs", "--follow", name] in calls
+    assert ["wait", name] in calls
+    assert calls[-1] == ["rm", "-f", name]
+
+    calls_path.unlink()
+    env["DOCKER_RUN_STATUS"] = "18"
+    failed_launch = run_bash(
+        'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
+        '"/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+    assert failed_launch.returncode != 0
+    failed_calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+    attempted_name = next(argv[3] for argv in failed_calls if argv[:2] == ["run", "-d"])
+    assert failed_calls[-1] == ["rm", "-f", attempted_name]
+
+
 def test_gate_script_passes_shellcheck_when_available() -> None:
     shellcheck = shutil.which("shellcheck")
     if shellcheck is None:

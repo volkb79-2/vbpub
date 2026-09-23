@@ -58,8 +58,12 @@ class StateStore:
             state = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise StateError(f"cannot load state manifest: {exc}") from exc
+        if not isinstance(state, dict):
+            raise StateError("state manifest root must be a JSON object")
         if state.get("schema_version") != 1 or not isinstance(state.get("config"), dict):
             raise StateError("state manifest has an unsupported or corrupt schema")
+        if "steps" in state and not isinstance(state["steps"], dict):
+            raise StateError("state manifest steps must be a JSON object")
         return state
 
     @staticmethod

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -17,8 +19,43 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import stage_tool_artifacts as staging  # noqa: E402
 import manifest_sections  # noqa: E402
 
+_resolver_spec = importlib.util.spec_from_file_location(
+    "resolve_devcontainers_release", ROOT / "scripts/resolve-devcontainers-release.py"
+)
+assert _resolver_spec is not None and _resolver_spec.loader is not None
+resolver = importlib.util.module_from_spec(_resolver_spec)
+_resolver_spec.loader.exec_module(resolver)
+
 
 class OciToolStagingTests(unittest.TestCase):
+    def test_base_image_pull_failure_preserves_bounded_docker_diagnostic(self) -> None:
+        failed = subprocess.CompletedProcess(
+            ["docker", "pull", "example.invalid/image:tag"],
+            1,
+            stdout="",
+            stderr="permission denied while trying to connect to the docker API",
+        )
+        with mock.patch.object(resolver.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, "permission denied.*docker API"):
+                resolver.pull_fresh("example.invalid/image:tag")
+
+    def test_base_image_pull_failure_truncates_unbounded_docker_output(self) -> None:
+        failed = subprocess.CompletedProcess(
+            ["docker", "pull", "example.invalid/image:tag"],
+            1,
+            stdout="",
+            stderr="x" * 3000,
+        )
+        with mock.patch.object(resolver.subprocess, "run", return_value=failed):
+            with self.assertRaises(RuntimeError) as raised:
+                resolver.pull_fresh("example.invalid/image:tag")
+        message = str(raised.exception)
+        self.assertLessEqual(
+            len(message),
+            len("Failed to pull base image: example.invalid/image:tag\n") + 2001,
+        )
+        self.assertTrue(message.endswith("…"))
+
     def test_live_discovery_payloads_are_never_artifact_cache_entries(self) -> None:
         self.assertFalse(
             staging._cacheable_download(

@@ -7,12 +7,14 @@ network discovery or replace it with an environment value.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 # Keys that must be present in cmru.vars for downstream scripts to work.
 _REQUIRED_KEYS = (
     "PLAYWRIGHT_VERSION",
     "PLAYWRIGHT_DISTRO",
+    "PLAYWRIGHT_IMAGE_DIGEST",
     "PLAYWRIGHT_MCP_VERSION",
     "CHROME_DEVTOOLS_MCP_VERSION",
     "MCP_PROXY_VERSION",

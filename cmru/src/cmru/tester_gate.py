@@ -19,6 +19,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from cmru.cli_support import CMRUArgumentParser
+
 
 def _unescape_mountinfo(value: str) -> str:
     """Decode the octal escapes used by Linux mountinfo paths."""
@@ -66,15 +68,13 @@ def _git_common_dir(repo_root: Path) -> Path | None:
     Returns ``None`` for an ordinary (non-worktree) checkout, where the
     mounted tree already contains everything git needs.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "--git-common-dir"],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
+    from cmru.transaction import _common_git_dir, _shared_worktree
+
+    shared = _shared_worktree()
+    try:
+        common = _common_git_dir(repo_root)
+    except shared.WorkspaceError:
         return None
-    common = Path(result.stdout.strip())
-    if not common.is_absolute():
-        common = (repo_root / common).resolve()
     if common == (repo_root / ".git").resolve():
         return None
     return common
@@ -98,18 +98,16 @@ def _resolve_worktree_context(invocation_root: Path, relative_cwd: str) -> tuple
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("--cwd must be a relative path inside the current worktree")
 
-    result = subprocess.run(
-        ["git", "-C", str(invocation_root), "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
+    from cmru.transaction import _shared_worktree
+
+    shared = _shared_worktree()
+    try:
+        repo_root, _common = shared.discover_git_root(invocation_root)
+    except shared.WorkspaceError as exc:
         raise SystemExit(
             "tester-gate: refusing to launch — the caller is not inside a Git worktree; "
             "the gate must mount the complete repository, not an inferred subtree."
-        )
-    repo_root = Path(result.stdout.strip()).resolve()
+        ) from exc
     target = (invocation_root / relative).resolve()
     try:
         container_relative = target.relative_to(repo_root)
@@ -129,6 +127,7 @@ _DIND_READY_TIMEOUT = 30.0
 _SLICE_PROBE_IMAGE_ENV = "CMRU_TESTER_CGROUP_PROBE_IMAGE"
 _CPUS_ENV = "CMRU_TESTER_CPUS"
 _DIND_IMAGE_ENV = "CMRU_TESTER_DIND_IMAGE"
+_CGROUP_PARENT_ENV = "CMRU_TESTER_CGROUP_PARENT"
 
 # The orchestration-injected environment every tester-gate step depends on
 # (KI-17). These are normally supplied by ``cmru.orchestration.toml [env]`` and
@@ -144,6 +143,7 @@ REQUIRED_TESTER_ENV = (
     "CMRU_TESTER_MEMORY_SWAP",
     _CPUS_ENV,
     _SLICE_PROBE_IMAGE_ENV,
+    _CGROUP_PARENT_ENV,
 )
 
 
@@ -306,19 +306,16 @@ def _probe_io_support(probe_image: str) -> tuple[bool | None, str]:
     )
 
 
-def resolve_cgroup_parent(explicit: str | None) -> str | None:
+def resolve_cgroup_parent(explicit: str | None) -> str:
     """Resolve the gate container's ``--cgroup-parent`` from DECLARED config
     only — no ambient reads, no hardcoded default (estate rule).
 
     Order: ``--cgroup-parent`` (explicit CLI) > ``CMRU_TESTER_CGROUP_PARENT``
-    (normally declared once in ``cmru.orchestration.toml [env]``, where the
-    value may be a ``${NAME:-default}`` environment reference so a devcontainer
-    host and a bare host can share one file). An EMPTY or unset value means
-    "no governance tier" ON PURPOSE: the launch proceeds without
-    ``--cgroup-parent`` and says so on stderr — per-container memory/CPU/IO
-    caps still apply. Per-project override works through the ordinary env
-    merge (a project's own cmru.toml [env] may declare a different slice or
-    an empty string).
+    (normally declared once in ``cmru.orchestration.toml [env]`` as a
+    ``${CGROUP_PARENT_DEV_GATES}`` reference). An EMPTY or unset value is a
+    configuration error: gate containers must never fall through to Docker's
+    unconfined default. Per-project override works through the ordinary env
+    merge or the explicit CLI flag.
 
     Whatever non-empty value resolves is verified against the HOST systemd by
     :func:`check_slice_unit` before any container launches.
@@ -328,7 +325,11 @@ def resolve_cgroup_parent(explicit: str | None) -> str | None:
     configured = (os.environ.get("CMRU_TESTER_CGROUP_PARENT") or "").strip()
     if configured:
         return configured
-    return None
+    raise SystemExit(
+        "tester-gate: cgroup_parent is required; set "
+        "$CMRU_TESTER_CGROUP_PARENT (normally from cmru.orchestration.toml "
+        "[env]) or pass --cgroup-parent"
+    )
 
 
 def resolve_memory(explicit: str | None) -> str:
@@ -451,6 +452,7 @@ def build_docker_command(
     image: str,
     cgroup_parent: str = "",
     cgroup_parent_dev_background: str = "",
+    cgroup_parent_dev_gates: str = "",
     sidecar_name: str | None = None,
     memory: str,
     memory_swap: str,
@@ -484,13 +486,12 @@ def build_docker_command(
     ``dev.slice`` tier's own aggregate IOPS/bandwidth ceiling instead of a
     per-container one."
 
-    ``cgroup_parent_dev_background``, when given, is forwarded into the
-    spawned container as ``$CGROUP_PARENT_DEV_BACKGROUND`` — Docker never
-    passes host/caller env into a container on its own, and a project's own
-    in-process governance code (e.g. ciu's own S15.2 resolver, exercised by
-    its own test suite) needs this ambient var visible *inside* the
-    container, independent of the ``--cgroup-parent`` placement of the
-    container itself.
+    ``cgroup_parent_dev_background`` and ``cgroup_parent_dev_gates``, when
+    given, are forwarded into the spawned container as their correspondingly
+    named variables. Docker never passes host/caller env into a container on
+    its own. The gate placement is the gates tier; the background value is
+    retained separately for tests that intentionally start a long-running
+    application stack.
 
     When ``repo_root`` is a linked worktree (see :func:`_git_common_dir`),
     the shared ``.git`` directory is bind-mounted read-only at the SAME
@@ -529,6 +530,8 @@ def build_docker_command(
         argv += ["--device-write-bps", device_write_bps]
     if cgroup_parent_dev_background:
         argv += ["-e", f"CGROUP_PARENT_DEV_BACKGROUND={cgroup_parent_dev_background}"]
+    if cgroup_parent_dev_gates:
+        argv += ["-e", f"CGROUP_PARENT_DEV_GATES={cgroup_parent_dev_gates}"]
     if sidecar_name:
         argv += ["--network", f"container:{sidecar_name}", "-e", "DOCKER_HOST=tcp://localhost:2375"]
     return [*argv, image, *command]
@@ -550,6 +553,7 @@ def _missing_orchestration_env(args: argparse.Namespace) -> list[str]:
         "CMRU_TESTER_MEMORY_SWAP": args.memory_swap,
         _CPUS_ENV: args.cpus,
         _SLICE_PROBE_IMAGE_ENV: args.cgroup_probe_image,
+        _CGROUP_PARENT_ENV: args.cgroup_parent,
     }
     missing = [
         name
@@ -562,7 +566,7 @@ def _missing_orchestration_env(args: argparse.Namespace) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Run a command in tester-unified for this worktree")
+    parser = CMRUArgumentParser(description="Run a command in tester-unified for this worktree")
     parser.add_argument("--cwd", required=True, help="relative directory in the current worktree")
     parser.add_argument(
         "--image",
@@ -572,11 +576,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--cgroup-parent", default=None,
         help="Overrides $CMRU_TESTER_CGROUP_PARENT (normally declared once in "
-             "cmru.orchestration.toml [env], where the value may be a "
-             "${NAME:-default} environment reference). Empty/unset means NO "
-             "governance tier on purpose: the launch proceeds unscoped and "
-             "says so. Whatever non-empty value resolves is verified against "
-             "the host systemd before launch.",
+             "cmru.orchestration.toml [env] as the host-provided gates tier). "
+             "Required: an empty/unset value refuses the launch. Whatever "
+             "resolves is verified against the host systemd before launch.",
     )
     parser.add_argument(
         "--forward-cgroup-parent-var", default=None,
@@ -584,6 +586,12 @@ def main(argv: Sequence[str] | None = None) -> None:
              "(ciu's own governance resolver reads it there); normally declared as "
              "$CMRU_TESTER_CGROUP_FORWARD_VAR in cmru.orchestration.toml [env] via "
              'a "${NAME:-default}" reference. Empty means nothing is forwarded.',
+    )
+    parser.add_argument(
+        "--forward-cgroup-parent-gates-var", default=None,
+        help="Value forwarded INTO the container as $CGROUP_PARENT_DEV_GATES; "
+             "normally declared as $CMRU_TESTER_CGROUP_FORWARD_GATES_VAR in "
+             "cmru.orchestration.toml [env]. Empty means nothing is forwarded.",
     )
     parser.add_argument(
         "--memory", default=os.environ.get("CMRU_TESTER_MEMORY"),
@@ -656,15 +664,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise SystemExit(f"tester-gate: refusing to launch — {note}")
         if exists is None:
             print(f"[WARN] tester-gate: {note}", file=sys.stderr)
-    else:
-        # Declared "no governance tier" (empty/unset CMRU_TESTER_CGROUP_PARENT):
-        # per-container memory/CPU/IO caps below still apply; the SLICE tier
-        # does not. Announced, never silent.
-        print(
-            "[INFO] tester-gate: no cgroup-parent declared — launching without "
-            "a governance slice (per-container caps still apply)",
-            file=sys.stderr,
-        )
+    else:  # pragma: no cover - resolve_cgroup_parent fails closed above
+        raise SystemExit("tester-gate: cgroup parent is required")
 
     device_caps = [dc.strip() for dc in (
         args.device_read_iops, args.device_write_iops,
@@ -691,10 +692,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         if getattr(args, "forward_cgroup_parent_var", None) is not None
         else os.environ.get("CMRU_TESTER_CGROUP_FORWARD_VAR", "")
     )
+    forward_gates_var = (
+        getattr(args, "forward_cgroup_parent_gates_var", None)
+        if getattr(args, "forward_cgroup_parent_gates_var", None) is not None
+        else os.environ.get("CMRU_TESTER_CGROUP_FORWARD_GATES_VAR", "")
+    )
     build_kwargs = dict(
         image=image,
         cgroup_parent=cgroup_parent or "",
         cgroup_parent_dev_background=(forward_var or "").strip(),
+        cgroup_parent_dev_gates=(forward_gates_var or "").strip(),
         memory=memory,
         memory_swap=memory_swap,
         cpus=cpus,

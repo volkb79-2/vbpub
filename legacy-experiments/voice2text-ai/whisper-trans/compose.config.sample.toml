@@ -1,0 +1,63 @@
+# Whisper Transcription Service Configuration
+# Voice2Text AI - Speech Recognition Stack
+
+[metadata]
+project_name = "whisper-trans"
+env_tag = "prod"
+
+[project]
+name = "whisper-trans"
+type = "application"
+
+[compinit]
+enable_env_expansion = true
+
+[global]
+project_name = "Voice2Text-AI"
+environment = "prod"
+
+[global.labels]
+prefix = "de.vxxu.volkb79"
+
+[infrastructure]
+# AUTO-DETECTED: Public FQDN via external IP lookup
+public_fqdn = '''$(curl -s https://api.ipify.org | xargs -I{} sh -c 'host {} | grep pointer | head -1 | awk '\''{print $NF}'\'' | sed '\''s/\.$//'\''; echo {}')'''
+public_tls_key_pem = "/etc/letsencrypt/live/$(echo $PUBLIC_FQDN | cut -d. -f1-)/privkey.pem"
+public_tls_crt_pem = "/etc/letsencrypt/live/$(echo $PUBLIC_FQDN | cut -d. -f1-)/fullchain.pem"
+
+[whisper]
+# Whisper service configuration
+port = 9000
+asr_engine = "faster_whisper"
+asr_model = "base"
+asr_device = "cpu"
+asr_model_path = "/data/whisper"
+omp_num_threads = "7"
+openblas_num_threads = "7"
+mkl_num_threads = "7"
+sample_rate = "16000"
+model_quantization = "float32"
+enable_post_processing = false
+min_text_length = "10"
+post_processing_prompt_path = "/config/post-processing-prompt.txt"
+post_processing_model = "gpt-4o-mini"
+resource_memory_limit = "12G"
+resource_cpu_limit = "4"
+
+# Volume host directories - CRITICAL: Must use hostdir_ prefix for pre-creation
+hostdir_cache = "./vol-whisper-cache"
+hostdir_audio_temp = "./vol-whisper-audio-temp"
+
+[health]
+interval = "10s"
+timeout = "5s"
+retries = 5
+start_period = "30s"
+
+[hooks]
+pre_compose = []
+post_compose = []
+
+[env]
+UID = "$(id -u)"
+GID = "$(id -g)"

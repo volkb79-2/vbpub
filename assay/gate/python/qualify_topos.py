@@ -99,13 +99,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # under the contract that existed when it proved it. The two W6 templates are
 # W5's own pair with `schema_version` 9 -> 10 and nothing else: the v10 cut
 # added no field that a P25 R0,R2 lane emits.
-# B070 (the v11 discarded-mutants cut) advances it a SIXTH time, to W7's
-# `p25-*-v11-template.json` pair, by the identical rule. The two W7 templates
-# are W6's own pair with `schema_version` 10 -> 11 and nothing else: v11
+# B101 (the v12 isolation/dirty provenance cut) advances it a SEVENTH time, to
+# W8's `p25-*-v12-template.json` pair, by the identical rule. The two W8
+# templates are W7's own pair with `schema_version` 11 -> 12 and the P3
+# marker absent from native P25 output: v12
 # reshapes `judgment.r2.discarded`, which is FORBIDDEN under `producer =
 # "native"`, and every P25 lane is native -- so the cut adds no field a P25
 # R0,R2 lane emits either. W6 stays frozen and unedited beside the rest.
-_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W7" / "expected"
+_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W8" / "expected"
 _QUALIFICATION_MANIFEST = (
     _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P25" / "qualification-manifest.json"
 )
@@ -601,6 +602,38 @@ def _invoke(assay_executable: Path, repo: Path, artifact_path: Path) -> tuple[su
     return proc, artifact
 
 
+def _scenario_failure(
+    *,
+    spec: ScenarioSpec,
+    message: str,
+    proc: subprocess.CompletedProcess[str],
+    artifact: Mapping[str, Any],
+    pytest_log: Path,
+) -> QualificationError:
+    """Keep a scenario mismatch diagnosable after the disposable tree dies.
+
+    The outer tester container removes the harness scratch tree when the gate
+    exits. A nonzero scenario therefore must carry the evidence in the raised
+    error itself: otherwise the gate reports only a terminal such as
+    ``COMMAND_FAILED`` and destroys the artifact, assay streams, and pytest
+    log that distinguish a product refusal from a broken disposable command.
+    This is diagnostic context only; the expectation checks still decide the
+    outcome and no failure is converted into a pass.
+    """
+    try:
+        pytest_tail = pytest_log.read_text(encoding="utf-8")[-8000:]
+    except OSError as exc:
+        pytest_tail = f"<unavailable: {exc}>"
+    artifact_text = json.dumps(dict(artifact), sort_keys=True)
+    return QualificationError(
+        f"{message}\n"
+        f"scenario artifact: {artifact_text}\n"
+        f"assay stdout:\n{proc.stdout[-8000:]}\n"
+        f"assay stderr:\n{proc.stderr[-8000:]}\n"
+        f"pytest log ({pytest_log}):\n{pytest_tail}"
+    )
+
+
 def verify_pinned_inputs(source_repo: Path) -> None:
     """Refuse drift before creating a scratch repository or environment."""
     revision = _run(["git", "-C", str(source_repo), "rev-parse", f"{INPUT_REVISION}^{{commit}}"])
@@ -726,7 +759,7 @@ def run_scenario(
     *, source_repo: Path, scratch: Path, assay_executable: Path, assay_version: str, spec: ScenarioSpec
 ) -> ScenarioResult:
     """Run one scenario and compare the complete artifact and independent result."""
-    repo, witness, _pytest_log, base_oid, head_oid = materialize_scenario(
+    repo, witness, pytest_log, base_oid, head_oid = materialize_scenario(
         source_repo=source_repo,
         scratch=scratch,
         spec=spec,
@@ -736,27 +769,67 @@ def run_scenario(
     proc, artifact = _invoke(assay_executable, repo, artifact_path)
 
     if artifact.get("commit") != head_oid:
-        raise QualificationError(f"scenario {spec.name!r}: artifact commit is not the seeded disposable HEAD")
+        raise _scenario_failure(
+            spec=spec,
+            message=f"scenario {spec.name!r}: artifact commit is not the seeded disposable HEAD",
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
+        )
     if artifact.get("assay_version") != assay_version:
-        raise QualificationError(
-            f"scenario {spec.name!r}: artifact assay_version does not match the installed owner"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: artifact assay_version does not match "
+                "the installed owner"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
     if proc.returncode != artifact.get("exit_code"):
-        raise QualificationError(
-            f"scenario {spec.name!r}: process exit code disagrees with the artifact's own exit_code"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: process exit code disagrees with the "
+                "artifact's own exit_code"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
     if proc.returncode != spec.expected_exit:
-        raise QualificationError(
-            f"scenario {spec.name!r}: expected exit {spec.expected_exit}, got {proc.returncode}"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: expected exit {spec.expected_exit}, "
+                f"got {proc.returncode}"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
     if artifact.get("outcome") != spec.expected_outcome:
-        raise QualificationError(
-            f"scenario {spec.name!r}: expected outcome {spec.expected_outcome!r}, got {artifact.get('outcome')!r}"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: expected outcome {spec.expected_outcome!r}, "
+                f"got {artifact.get('outcome')!r}"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
     if spec.expected_reason is not None and artifact.get("reason_code") != spec.expected_reason:
-        raise QualificationError(
-            f"scenario {spec.name!r}: expected reason_code {spec.expected_reason!r}, "
-            f"got {artifact.get('reason_code')!r}"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: expected reason_code {spec.expected_reason!r}, "
+                f"got {artifact.get('reason_code')!r}"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
 
     comparator: dict[str, Any] | None = None
@@ -861,8 +934,8 @@ def normalize_artifact(
 ) -> dict[str, Any]:
     """Replace only runtime identities whose real value is checked separately."""
     normalized = copy.deepcopy(dict(document))
-    if normalized.get("schema_version") != 11:
-        raise QualificationError("artifact schema_version is not the current v11 contract")
+    if normalized.get("schema_version") != 12:
+        raise QualificationError("artifact schema_version is not the current v12 contract")
     if normalized.get("assay_version") != assay_version:
         raise QualificationError("artifact assay_version is not the installed version")
     _check_judge_provenance(normalized, assay_version=assay_version)
@@ -918,8 +991,8 @@ def compare_complete_artifact(
         pytest_log=pytest_log,
     )
     expected = json.loads(template.read_text(encoding="utf-8"))
-    if expected.get("schema_version") != 11:
-        raise QualificationError("locked template is not a v11 successor")
+    if expected.get("schema_version") != 12:
+        raise QualificationError("locked template is not a v12 successor")
     if normalized != expected:
         differing = sorted(
             key
@@ -1184,7 +1257,7 @@ def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Pa
         pytest_log=pytest_log,
     )
     expected = json.loads(
-        (_EXPECTED_ROOT / "p25-missing-v11-template.json").read_text(encoding="utf-8")
+        (_EXPECTED_ROOT / "p25-missing-v12-template.json").read_text(encoding="utf-8")
     )
     differing = sorted(key for key in set(normalized) | set(expected) if normalized.get(key) != expected.get(key))
     if not differing:
@@ -1221,7 +1294,7 @@ def _check_universal_pass_mutation(missing_result: ScenarioResult) -> None:
     try:
         compare_complete_artifact(
             actual=forged,
-            template=_EXPECTED_ROOT / "p25-missing-v11-template.json",
+            template=_EXPECTED_ROOT / "p25-missing-v12-template.json",
             assay_version=forged["assay_version"],
             base_oid=missing_result.base_oid,
             head_oid=missing_result.head_oid,
@@ -1269,8 +1342,8 @@ def qualify(
     primary = results[PRIMARY.name]
     missing = results[MISSING.name]
     for result, template_name in (
-        (primary, "p25-pass-v11-template.json"),
-        (missing, "p25-missing-v11-template.json"),
+        (primary, "p25-pass-v12-template.json"),
+        (missing, "p25-missing-v12-template.json"),
     ):
         # The version and the witness/log paths come from the committed plan
         # (the owner this scenario was run with, and the deterministic scratch

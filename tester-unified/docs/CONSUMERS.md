@@ -44,7 +44,9 @@ tester-unified/run --evidence-dir /workspaces/vbpub/.assay/my-gate \
 ```
 
 Do not invoke pytest in the cockpit and do not reproduce the launch with a
-hand-written `docker run`. If the launcher refuses pressure, cgroup, mount,
+hand-written `docker run`: the launcher owns the detached `--init` reaper as
+well as the cgroup, identity, mounts, and wait/log collection. If the launcher
+refuses pressure, cgroup, mount,
 socket, image, or concurrency preflight, correct that fact and retry; the
 refusal is not a product pass or failure.
 

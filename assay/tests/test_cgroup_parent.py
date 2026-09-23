@@ -31,41 +31,41 @@ def run_probe(tmp_path: Path, verdict: str, *, slice_name: str | None):
         "DOCKER_ARGV_LOG": str(argv_log),
     }
     if slice_name is not None:
-        env["CGROUP_PARENT_DEV_BACKGROUND"] = slice_name
+        env["CGROUP_PARENT_DEV_GATES"] = slice_name
     proc = subprocess.run(
         [str(SCRIPT)], capture_output=True, text=True, env=env, check=False
     )
     return proc, argv_log
 
 
-def test_unset_background_tier_refuses_before_docker(tmp_path: Path):
+def test_unset_gates_tier_refuses_before_docker(tmp_path: Path):
     proc, argv_log = run_probe(tmp_path, "OK", slice_name=None)
 
     assert proc.returncode != 0
-    assert "CGROUP_PARENT_DEV_BACKGROUND is unset" in proc.stderr
+    assert "CGROUP_PARENT_DEV_GATES is unset" in proc.stderr
     assert not argv_log.exists()
 
 
 def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     proc, argv_log = run_probe(
-        tmp_path, "OK", slice_name="dev-background.slice"
+        tmp_path, "OK", slice_name="dev-gates.slice"
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "dev-background.slice\n"
+    assert proc.stdout == "dev-gates.slice\n"
     argv = argv_log.read_text(encoding="utf-8")
     assert "--cgroupns=host" in argv
     assert "--network=none" in argv
-    assert "CG_REL=/dev.slice/dev-background.slice" in argv
+    assert "CG_REL=/dev.slice/dev-gates.slice" in argv
 
 
 def test_missing_or_unconfigured_slice_is_refused(tmp_path: Path):
     for verdict in (
         "MISSING /sys/fs/cgroup/dev.slice/typo.slice",
-        "UNCONFIGURED /sys/fs/cgroup/dev.slice/dev-background.slice",
+        "UNCONFIGURED /sys/fs/cgroup/dev.slice/dev-gates.slice",
     ):
         proc, _ = run_probe(
-            tmp_path, verdict, slice_name="dev-background.slice"
+            tmp_path, verdict, slice_name="dev-gates.slice"
         )
         assert proc.returncode != 0
         assert "refusing" in proc.stderr or "kernel-default" in proc.stderr

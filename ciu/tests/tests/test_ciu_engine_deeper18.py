@@ -21,6 +21,7 @@ def test_vault_secret_without_token_fails_before_materialization_or_rendering(
     CIU must fail at the token preflight rather than contact Vault, materialize
     a partial secret store, or render configuration that could start a stack.
     """
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     stack = tmp_path / "stack"
     stack.mkdir()
     spec = SimpleNamespace(name="api_key", kind="ASK_VAULT", locator="apps/api", expose_env=None)
@@ -58,5 +59,5 @@ def test_vault_secret_without_token_fails_before_materialization_or_rendering(
         lambda *_args, **_kwargs: pytest.fail("missing Vault token must not render configfiles"),
     )
 
-    assert engine.main(["--dry-run", "-d", str(stack), "--define-root", str(tmp_path)]) == 1
+    assert engine.main(["--dry-run", "-d", str(stack), "--root-folder", str(tmp_path)]) == 1
     assert "vault-backed secrets are declared but no Vault token resolved" in capsys.readouterr().out

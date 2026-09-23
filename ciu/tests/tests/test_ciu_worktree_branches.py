@@ -344,7 +344,7 @@ def test_cli_branches_survey_human_output(repo, monkeypatch, capsys):
     _branch(repo, "fix/merged-cli")
     _merge_into_main(repo, "fix/merged-cli")
 
-    assert cli._worktree(["branches", "--define-root", str(repo)]) == 0
+    assert cli._worktree(["branches", "--root-folder", str(repo)]) == 0
     out = capsys.readouterr().out
     assert "branch hygiene vs 'main'" in out
     assert "1 prunable" in out
@@ -363,7 +363,7 @@ def test_cli_branches_json_dispatch(repo, monkeypatch, capsys):
     _branch(repo, "fix/merged-cli")
     _merge_into_main(repo, "fix/merged-cli")
 
-    assert cli._worktree(["branches", "--json", "--define-root", str(repo)]) == 0
+    assert cli._worktree(["branches", "--json", "--root-folder", str(repo)]) == 0
     doc = _json.loads(capsys.readouterr().out)
     assert doc["schema_version"] == 2
     assert doc["operation"] == "branches"
@@ -379,7 +379,7 @@ def test_cli_branches_yes_prunes_and_reports(repo, monkeypatch, capsys):
     _branch(repo, "fix/merged-cli")
     _merge_into_main(repo, "fix/merged-cli")
 
-    assert cli._worktree(["branches", "-y", "--define-root", str(repo)]) == 0
+    assert cli._worktree(["branches", "-y", "--root-folder", str(repo)]) == 0
     out = capsys.readouterr().out
     assert "0 prunable" in out  # already removed
     assert _git(["rev-parse", "--verify", "fix/merged-cli"], repo).returncode != 0
@@ -390,7 +390,7 @@ def test_cli_branches_unknown_base_refuses_exit_2(repo, monkeypatch, capsys):
     from ciu import cli
 
     monkeypatch.chdir(repo)
-    assert cli._worktree(["branches", "--base", "trunk", "--define-root", str(repo)]) == 2
+    assert cli._worktree(["branches", "--base", "trunk", "--root-folder", str(repo)]) == 2
     assert "LOCAL BRANCH" in capsys.readouterr().err
 
 
@@ -502,7 +502,7 @@ def test_cli_prune_surfaces_removed_failed_and_exits_nonzero_on_partial(
         return real_git(args, cwd)
 
     monkeypatch.setattr(worktree, "_git", failing)
-    code = cli._worktree(["branches", "-y", "--define-root", str(repo)])
+    code = cli._worktree(["branches", "-y", "--root-folder", str(repo)])
     out = capsys.readouterr().out
 
     assert code == 1  # partial prune is NOT a silent success
@@ -710,7 +710,7 @@ def test_managed_instance_category_is_reported_by_the_cli(repo, monkeypatch, cap
     _merge_into_main(repo, "feat/managed-cli")
 
     monkeypatch.chdir(repo)
-    assert cli._worktree(["branches", "--define-root", str(repo)]) == 0
+    assert cli._worktree(["branches", "--root-folder", str(repo)]) == 0
     out = capsys.readouterr().out
     assert "1 managed-instance" in out
     assert "managed-instance:" in out
@@ -871,7 +871,7 @@ def test_cli_json_prune_exits_nonzero_on_partial_real_subprocess(repo, tmp_path)
     assert _git(["merge", "--no-ff", "-m", "m", "fix/tracked"], repo).returncode == 0
 
     res = _run_ciu(
-        ["worktree", "branches", "-y", "--json", "--define-root", str(repo)], repo
+        ["worktree", "branches", "-y", "--json", "--root-folder", str(repo)], repo
     )
 
     assert res.returncode == 1, res.stderr
@@ -888,13 +888,13 @@ def test_cli_json_prune_and_survey_exit_zero_when_not_partial_real_subprocess(re
     _merge_into_main(repo, "fix/merged-json")
 
     survey = _run_ciu(
-        ["worktree", "branches", "--json", "--define-root", str(repo)], repo
+        ["worktree", "branches", "--json", "--root-folder", str(repo)], repo
     )
     assert survey.returncode == 0, survey.stderr
     assert json.loads(survey.stdout)["status"] == "survey"
 
     pruned = _run_ciu(
-        ["worktree", "branches", "-y", "--json", "--define-root", str(repo)], repo
+        ["worktree", "branches", "-y", "--json", "--root-folder", str(repo)], repo
     )
     assert pruned.returncode == 0, pruned.stderr
     doc = json.loads(pruned.stdout)

@@ -361,7 +361,7 @@ asserts the lifecycle AND `ciu.global.toml` are named.
 `name/kind/environment` only; the flags section documents neither semantics
 nor caveats; the environment contract is invisible until first failure:
 
-- `$CGROUP_PARENT_DEV_BACKGROUND` required for container lanes (absent = hard
+- `$CGROUP_PARENT_DEV_GATES` required for container lanes (absent = hard
   error at runtime);
 - `RUN_GATE_EXTRA_MOUNTS` colon-separated `host=container` pairs (ephemeral
   lanes only) — documented only in SPEC R-14b;
@@ -380,7 +380,7 @@ Schema change additive; one parser owns it.
 **FIXED 2026-08-24:** `usage()` gains FLAGS (`--worktree`; `--allow-dirty`
 with the explicit two-layer caveat that assay still enforces its own
 clean-tree rule) and ENVIRONMENT CONTRACT sections naming all three
-variables the tool reads — `CGROUP_PARENT_DEV_BACKGROUND`,
+variables the tool reads — `CGROUP_PARENT_DEV_GATES`,
 `RUN_GATE_EXTRA_MOUNTS`, `RUN_GATE_MOUNT_ALIAS` — with failure semantics.
 The human lane table now shows `clean_tree`, advisory `budget`, `memory`,
 and a new validated optional `description` key (one line, `--help` only).
@@ -534,7 +534,7 @@ they share the same fix surface:
    adopted project has any (verified by ls). Retro-execute during the next
    touch of each project.
 4. **No root-level discovery affordance:** repo-root has central
-   `run-gate.toml` but no pointer down to "cd <project> && ./run-gate.py
+   `run-gate.root.toml` but no pointer down to "cd <project> && ./run-gate.py
    --list"; add one line to the root README.
 5. **Budget↔timeout drift unguarded:** every project pairs run-gate `budget`
    with a consumer `timeout_seconds` by manual sync; assay pioneered the
@@ -709,7 +709,7 @@ CONSUMERS central-defaults section rewritten with a real shared-lane recipe.
 
 ### The observation
 
-dstdns' central `run-gate.toml` declared
+dstdns' central `run-gate.root.toml` declared
 `forward_env = ["SCHEMA_GATE_DSN", "SCHEMA_GATE_PG_DUMP"]` but omitted `SCHEMA_GATE_PW`.
 The schema lane's `as_role` fixture reads `os.environ["SCHEMA_GATE_PW"]`; when absent, the
 privilege oracles could not connect as service roles. The mutation helper's equivalence run
@@ -1178,7 +1178,7 @@ after: present once `forward_env` is corrected, refused loudly by
 in its own repo (cross-repo pointer, deliberately not owned here).**
 
 1. *Breaking change documented, with the migration.* SPEC `R-24a` (forwarding
-   is DECLARED, never implicit — `CGROUP_PARENT_DEV_BACKGROUND` is the sole
+   is DECLARED, never implicit — `CGROUP_PARENT_DEV_GATES` is the sole
    exception, being infrastructure the tool itself owns), CONSUMERS "BREAKING
    CHANGE — migrate if you use `mode = "exec"`" (a pasteable two-half
    migration: `forward_env` restores the old behaviour, `required_env` is
@@ -3358,10 +3358,10 @@ workaround-only lesson.
 
 **Found by:** nyxloom-P109 gate runs, 2026-09-09.
 
-`[environments.tester-unified]` in the monorepo-root `run-gate.toml` declares
+`[environments.tester-unified]` in the monorepo-root `run-gate.root.toml` declares
 `image` only — no `resources.cpus`. The gate container therefore starts
-**CPU-uncapped**, restrained only by `$CGROUP_PARENT_DEV_BACKGROUND`
-(`dev-background.slice`), which deprioritises but does not bound it. Because
+**CPU-uncapped**, restrained only by `$CGROUP_PARENT_DEV_GATES`
+(`dev-gates.slice`), which deprioritises but does not bound it. Because
 this host is shared with a live production game server, every agent prompt
 carries a standing rule to run `docker update --cpus=3` on any container it
 launches, immediately after launch. Meanwhile the lane's judged argv is
@@ -4777,7 +4777,9 @@ could be based on a gate that never ran.
   writing a 0 on a config-resolution failure before attempting execution).
 - Not fixed by this session; reported rather than worked around locally.
 
-## RG-64 — a caller-side "instance flock" convention does not compose with run-gate's own internal exec lock; checking only the convention's lock cannot detect a real holder that bypassed it
+### Update 2026-09-18 (same day, later) — independently reproduced by a second package; explains why a green gate can hide the bug
+
+`p194-b2-io-fault` hit the identical failure independently while launching its own worktree-only lanes: `cd /workspaces/dstdns && ... run-gate <lane> --worktree /workspaces/dstdns/.worktrees/p194-b2-io-fault` died with `unknown lane ... (config: /workspaces/dstdns/run-gate.toml)` — CWD was the repo root, `--worktree` pointed at the branch, and config resolution followed CWD exactly as RG-65 describes. This package also identified WHY the bug had survived eight of its own prior gate runs undetected: its `test-runner` lane happens to be declared identically in both `main`'s and the worktree's own `run-gate.toml` (a lane common to the whole project, not worktree-specific), so a CWD-rooted invocation "worked" by accident — reading the wrong file but finding the same lane definition in it. The bug only becomes visible the moment a lane exists ONLY in the worktree's own copy (any package's own newly-declared `assay-*` lanes), which is exactly the shape every Wave B2 package's own lane declarations take. This means **a package's own green `test-runner`/shared-lane results provide no assurance that its own newly-declared lanes would resolve correctly** — each must be checked independently, not inferred from a passing shared lane.
 
 **Provenance:** found live 2026-09-18 during dstdns Track B Wave B2 (same
 six-package concurrent-container wave as RG-63), by a package (`p194-b2-io-fault`)
@@ -4916,6 +4918,8 @@ A third package in the same wave (`p195-b2-ctl`/P201) measured, rather than gues
 
 **Sharpest proposed fix yet**: document explicitly, wherever R2/mutation lane declaration is taught (this project's own lane-authoring docs, `nyxloom` AUTHORING.md's R2-lane guidance, or both), that a mutation lane's argv must be scoped to the FASTEST test subset that still exercises the mutated code — never simply copy-pasted from the R1 lane's own (whole-module, broader-coverage) argv — and that `budget` should be sized as `candidate_count × per-candidate-argv-runtime × safety-margin`, not picked independent of that arithmetic. Consider whether `assay` itself could warn (not block) at lane-declaration or first-run time when a lane's own measured per-candidate cost times its candidate count would obviously blow its configured budget, so this is caught before a wasted 20-90 minute run rather than after. Not fixed by this session.
 
+**CORRECTION 2026-09-18 (same day, later) — the 533s figure above was contention-inflated; re-measured on a quiet container at 70s.** The SAME package re-measured the SAME 17-file argv once host contention had eased: 70s, not 533s — a ~7.6x difference. Ten candidates at 70s each is ~12 minutes quiet, comfortably inside a 20-45m budget without any narrowing at all. **This materially changes the conclusion above**: the per-candidate-argv-cost mechanism is still real and mathematically sound (multiplying any argv time by candidate count is a genuine cost, and narrowing the argv is still a correct, independently-verified improvement — see below), but it was NOT, on its own, sufficient to explain the original 90-minute-vs-20-minute gap this update reported. Contention was the dominant term in that specific measurement, putting this finding back closer to this entry's ORIGINAL 2026-09-18 hypothesis (queue-wait/host-load inflating a lane's effective per-candidate cost) rather than superseding it. **The corrected picture: both mechanisms are real and compound** — a broad argv makes each candidate more expensive, and contention makes each candidate more expensive on top of that; neither alone was "the" root cause. Any downstream fix (dstdns's own D-498, this session) that narrowed an argv anyway remains a real, valid improvement (verified via branch-coverage-equivalence, not just line-coverage, catching a partial-arc regression a naive narrowing would have silently introduced) — narrowing an argv is good practice regardless of which mechanism dominates on a given run. But do not carry forward "argv breadth alone explains BUDGET_EXCEEDED" as settled; both this entry's contention-based updates and its argv-based updates are each partial explanations of the same wave's failures.
+
 ### Update 2026-09-18 (same day, later still) — a fourth data point: raising the assay-level `budget` had ZERO effect, pointing at a separate, un-configured timeout surface
 
 A different package in the same wave (`p196-b2-db-ops`) hit `BUDGET_EXCEEDED/LANE_TIMEOUT` on its `worker_db_main_r2_compare` lane after having ALREADY raised that lane's own `assay.toml` `budget` from 20m to 45m specifically to get ahead of this class of failure (commit `5c3c8222`, disclosed and reasoned, not a cover-up). The run still failed at **~21.7 minutes elapsed** (`.assay/progress-worker_db_main_r2_compare.jsonl`: `end` event at `elapsed_s=1256.8`, `verdict_written` at `elapsed_s=1302.8`, `exit_code=4`, `reason_code="LANE_TIMEOUT"`) — well under half of the newly-configured 45-minute (2700s) budget, and the progress file shows all 13 declared mutation candidates actually ran to individual completion (9 killed, 3 survived, 1 internally bucketed `budget_exceeded`) before the overall verdict was still stamped as budget-exceeded.
@@ -4964,3 +4968,41 @@ Both are genuine, reproducible, PRE-EXISTING defects — neither is new,
 neither touches code this package's diff modified, and both were
 confirmed non-deterministic (pass on a retry) before being recorded here
 rather than "fixed" by silently retrying past them without a trace.
+
+### Update 2026-09-18 (same wave, sixth package) — a fifth data point corroborating the ORIGINAL queue-wait-inside-the-budget-clock hypothesis, with a nuance: partial real progress before the aggregate clock still tripped
+
+A sixth package in the same wave (`p199-b2-io-main`) hit
+`BUDGET_EXCEEDED/LANE_TIMEOUT` on its `worker_io_main_r2_compare` lane
+(`python:compare-swap` over two small target files, only 8 total
+candidates — nowhere near `max_mutants=200`, so this was never a
+candidate-volume problem). The verdict bucketed **2 killed, 1 survived,
+5 `budget_exceeded`** — i.e. real, individual candidate execution
+genuinely happened and completed for 3 of the 8 (one of them a genuine,
+non-equivalent surviving mutant, later fixed with a new test), yet the
+LANE still tripped `LANE_TIMEOUT` overall. The lane's declared aggregate
+`budget` was `"60m"`; the invoking host-side `run-gate` process itself
+had been launched (and left legitimately queued on the shared
+container's exec lock, `/tmp/run-gate-exec-<container>.lock`, contended
+by five OTHER concurrently-dispatched packages in this same wave) hours
+before assay ever got a chance to execute a single candidate. Re-running
+the SAME lane once the exec lock actually freed up (assay's own
+`--resume` picking up from `.assay/mutation-state/`, only re-testing the
+one candidate whose source had changed via the fix) completed normally,
+comfortably inside budget.
+
+This is a straightforward, low-ambiguity corroboration of the entry's
+ORIGINAL 2026-09-18 hypothesis (queue-wait counted inside the lane-wide
+deadline, not just execution time) — it does not by itself distinguish
+between "the deadline clock starts at host-side process launch" vs.
+"starts at container-exec-lock acquisition", since both readings predict
+the observed outcome here equally well. The nuance worth recording
+separately from the other data points in this thread: **partial genuine
+completion (3/8 candidates individually judged, including a real
+survivor) can still end in an aggregate `LANE_TIMEOUT`** — so seeing SOME
+real candidate outcomes in a `BUDGET_EXCEEDED` verdict's bucket counts is
+not, by itself, evidence against the queue-wait-inside-budget mechanism;
+a reader should not conclude "the lane was genuinely almost done" just
+because a few candidates completed before the clock tripped. Not fixed
+by this package's diff (same reasoning as every other update in this
+thread) — filed as a note per the standing convention (a second/Nth
+reproduction of the SAME underlying defect goes here, not a new entry).

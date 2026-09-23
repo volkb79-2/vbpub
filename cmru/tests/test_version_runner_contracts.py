@@ -134,7 +134,82 @@ def test_runner_open_aggregate_log_avoids_duplicate_and_writes_separate_file(mon
 def test_runner_parser_main_propagates_explicit_presentation_flags(monkeypatch, tmp_path):
     seen = []
     monkeypatch.setattr(runner, "run_step", lambda config, step: seen.append((config, step)))
-    runner.main(["--config", str(tmp_path / "cmru.toml"), "--step", "tests", "--show-run-details", "--log-append"])
+    config = tmp_path / "cmru.toml"
+    monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: config)
+    monkeypatch.setattr(
+        "cmru.cli.load_config",
+        lambda _path: (tmp_path, {"demo": SimpleNamespace(project_root=tmp_path)}, ["demo"], ["demo"], [], "project-first", {}, None, None, None),
+    )
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _path: SimpleNamespace(orchestration=None))
+    runner.main(["--config", str(config), "--step", "tests", "--show-run-details", "--log-append"])
     assert seen[0][1] == "tests"
     assert runner.os.environ["CMRU_SHOW_RUN_DETAILS"] == "1"
     assert runner.os.environ["CMRU_LOG_APPEND"] == "1"
+
+
+def test_runner_step_uses_nearest_central_config_for_project_path(monkeypatch, tmp_path):
+    project_root = tmp_path / "modern-debian-tools-python-debug"
+    project_root.mkdir()
+    project_config = project_root / "cmru.toml"
+    project_config.write_text("schema_version = 1\n", encoding="utf-8")
+    central = tmp_path / "cmru.orchestration.toml"
+    central.write_text("schema_version = 1\n", encoding="utf-8")
+    step = SimpleNamespace()
+    project = SimpleNamespace(
+        name="modern-debian-tools-python-debug",
+        project_root=project_root,
+        env={"RELEASE_IMAGE_FLOW": "load"},
+        build_metadata=None,
+        runner_steps={"build": step},
+    )
+    monkeypatch.setattr(
+        "cmru.config.resolve_invocation_context",
+        lambda *, cwd: SimpleNamespace(config_path=central),
+    )
+    monkeypatch.setattr(
+        "cmru.cli.load_config",
+        lambda path: (
+            tmp_path, {project.name: project}, [project.name], [], [],
+            "project-first", {}, None, SimpleNamespace(), SimpleNamespace(),
+        ),
+    )
+    monkeypatch.setattr("cmru.cli.apply_project_release_env", lambda *args: None)
+    executed = []
+    monkeypatch.setattr(
+        runner, "execute_step",
+        lambda selected, root, log_dir, **kwargs: executed.append(
+            (selected, root, kwargs["extra_env"])
+        ),
+    )
+
+    runner.run_step(project_config, "build")
+
+    assert executed == [(step, project_root, project.env)]
+
+
+def test_runner_step_refuses_central_config_without_exact_project_match(
+    monkeypatch, tmp_path
+):
+    project_root = tmp_path / "requested"
+    other_root = tmp_path / "other"
+    project_root.mkdir()
+    other_root.mkdir()
+    project_config = project_root / "cmru.toml"
+    central = tmp_path / "cmru.orchestration.toml"
+    project_config.write_text("schema_version = 1\n", encoding="utf-8")
+    central.write_text("schema_version = 1\n", encoding="utf-8")
+    project = SimpleNamespace(project_root=other_root, runner_steps={})
+    monkeypatch.setattr(
+        "cmru.config.resolve_invocation_context",
+        lambda *, cwd: SimpleNamespace(config_path=central),
+    )
+    monkeypatch.setattr(
+        "cmru.cli.load_config",
+        lambda path: (
+            tmp_path, {"other": project}, ["other"], [], [],
+            "project-first", {}, None, SimpleNamespace(), SimpleNamespace(),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="does not register exactly one project"):
+        runner.run_step(project_config, "build")

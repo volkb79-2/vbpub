@@ -126,7 +126,7 @@ def test_secrets_list_cli_prints_metadata_without_secret_values(tmp_path, monkey
         }],
     )
 
-    assert engine.main(["secrets", "list", "-d", str(tmp_path), "--define-root", str(tmp_path)]) == 0
+    assert engine.main(["secrets", "list", "-d", str(tmp_path), "--root-folder", str(tmp_path)]) == 0
 
     output = capsys.readouterr().out
     assert "NAME" in output and "db_password" in output and "ASK_EXTERNAL" in output
@@ -230,11 +230,8 @@ def test_shipped_prefers_checkout_own_env_root_over_ambient_repo_root(
     assert result["status"] == "success"
     assert seen["project"] == "wt2repo-beef42-vault"
     out = capsys.readouterr().out
-    assert "ambient REPO_ROOT points at" in out
-    assert "using the checkout's own record" in out
-    import os
-
-    assert os.environ["REPO_ROOT"] == str(nested.resolve())
+    assert "ambient REPO_ROOT points at" not in out
+    assert "using the checkout's own record" not in out
     assert "98535c" not in seen["project"]
 
 

@@ -92,11 +92,13 @@ MemoryMin key and is mirrored on the guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MA
 are the other root controls. CPUWeight, CPUQuota, IOWeight, swap, and zswap are
 walked inside each slice's flow.
 
-Current registry publication uses OCI media types and forced native zstd level
-3 compression. The release cache is namespaced by compression policy and its
-cache exporter uses the same compression settings as the image; this avoids
-mixing gzip and forced-zstd layer graphs in one local cache. BuildKit preserves
-the normal layer topology and attaches max provenance plus an SPDX SBOM. These
+Current registry publication uses OCI media types and native zstd level 3
+compression with forced recompression disabled. The persistent cache belongs to
+the managed remote; releases do not export a second local cache stream through
+the client API. Disabling forced recompression avoids an unnecessary second
+compression pass for large layers that already have a suitable encoding.
+BuildKit preserves the normal layer topology and attaches max provenance plus an
+SPDX SBOM. These
 settings live in `cmru.toml`. See
 [Image delivery benchmarks](IMAGE-DELIVERY-BENCHMARKS.md) for cold-pull
 evidence and [OCI image tooling](OCI-IMAGE-TOOLING.md) for the distinction
@@ -136,14 +138,9 @@ The phases are:
 3. `scripts/release-bake.sh` selects the governed named builder and runs the
    release matrix with OCI output, one target at a time. BuildKit performs
    Dockerfile execution, cache lookup, layer compression, and OCI export inside
-   its limited worker. The default local cache is kept beside the shared Git
-   directory under a compression-policy-specific name (for example,
-   `mdt-buildkit-cache-zstd-true-3`); an explicit `MDT_BUILDKIT_CACHE_DIR` is an
-   operator-owned single-policy override. The cache exporter is explicitly
-   configured with the same compression, level, forced-compression, and OCI
-   media-type settings as the image. This matters because BuildKit can build a
-   combinatorial graph when one cache mixes gzip and forced-zstd forms of many
-   layers. The toolkit requirements are installed before the
+   its limited worker. The persistent cache remains in the managed worker; the
+   release wrapper does not stream a second local cache export through the
+   client API after the image tarball. The toolkit requirements are installed before the
    offline first-party-wheel layer; their minimums therefore form the explicit
    runtime-dependency closure for every staged wheel (including Nyxloom's
    `rich>=15.0.0` and `pygments>=2.21.0`).
@@ -208,8 +205,9 @@ and destination layouts coexist.
 The named `mdt-managed` remote owns a persistent BuildKit cache distinct from
 Docker's embedded builder. Its first release is therefore cold even if another
 builder recently built the same Dockerfile; later releases reuse its layers
-and cache mounts. Host service replacement may interrupt active builds, but the
-named remote is preserved and verified rather than silently recreated.
+and cache mounts. The release client does not export that cache through the
+Docker API. Host service replacement may interrupt active builds, but the named
+remote is preserved and verified rather than silently recreated.
 
 Volatile OCI labels such as revision, creation time, and release version are
 applied after all filesystem instructions in the Dockerfile. Changing release
@@ -243,20 +241,23 @@ flowchart TD
     R --> V[dev.slice]
     V --> I[dev-interactive.slice]
     V --> B[dev-background.slice]
+    V --> G[dev-gates.slice]
     V --> K[dev-buildkitd.slice]
     S --> D[docker.service / dockerd]
     K --> W[mdt-buildkitd.service<br/>mdt-managed remote]
     I --> V[MDT devcontainer]
     V --> C[build-push / docker-buildx / tar]
     V --> P[docker-repack<br/>one target, concurrency 2]
-    B --> T[dstdns stacks and test-runner]
+    B --> T[dstdns and long-running stacks]
+    G --> Q[run-gate / tester-unified / VM lanes]
 ```
 
 The managed service container is intentionally in `dev-buildkitd.slice`, while
 `dockerd` remains in `system.slice`. The `mdt-managed` remote endpoint is a
 Unix socket mounted into the devcontainer; no generated Buildx worker scope is
-part of the normal path. `dev-background.slice` is shown for context: dstdns
-uses it, while release orchestration runs in the invoking devcontainer's
+part of the normal path. `dev-background.slice` holds dstdns and other
+long-running stacks, while disposable gate and VM lanes use the sibling
+`dev-gates.slice`. Release orchestration runs in the invoking devcontainer's
 `dev-interactive.slice`.
 
 | Work | Process/container to inspect | Governance |
@@ -273,7 +274,8 @@ mismatched instance fails before work starts. The important distinction is:
 
 - A systemd **slice** controls an aggregate workload tier. The shipped
   devcontainer template requests `dev-interactive.slice`; dstdns stack containers
-  normally request `dev-background.slice`. Slice policy is installed and owned by
+  normally request `dev-background.slice`, while run-gate and other disposable
+  gate lanes request `dev-gates.slice`. Slice policy is installed and owned by
   the host.
 - The managed service's Docker container is placed directly in
   `dev-buildkitd.slice`; `dockerd` itself remains in `system.slice`.

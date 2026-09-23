@@ -107,19 +107,13 @@ class TestDevProfileAndExecutionBoundaries:
         (marker_root / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
         explicit = tmp_path / "explicit"
         explicit.mkdir()
+        (explicit / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
 
-        # cwd is inside a REAL ciu-managed tree (marker_root derives cleanly),
-        # but a disagreeing ambient REPO_ROOT is set -- S1.1 REFUSES rather
-        # than silently preferring either value (ciu-P32; this line used to
-        # assert the ambient value won, which was the exact masked-default
-        # defect that fix closes).
+        # cwd is inside a REAL ciu-managed tree (marker_root derives cleanly).
+        # Ambient REPO_ROOT is an output, never a selector, so it cannot
+        # redirect the derived root.
         monkeypatch.setenv("REPO_ROOT", str(explicit))
-        with pytest.raises(ValueError) as exc_info:
-            resolve_repo_root(None, nested)
-        message = str(exc_info.value)
-        assert "[S1.1]" in message
-        assert str(explicit.resolve()) in message
-        assert str(marker_root.resolve()) in message
+        assert resolve_repo_root(None, nested) == marker_root.resolve()
 
         monkeypatch.delenv("REPO_ROOT", raising=False)
         assert resolve_repo_root(None, nested) == marker_root.resolve()

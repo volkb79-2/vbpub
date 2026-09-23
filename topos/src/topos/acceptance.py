@@ -30,6 +30,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from topos import __version__
+from topos.cli_diagnostics import ToposArgumentParser, print_cli_error
+
 # No Textual import: this module must work without the UI dependency tree.
 
 
@@ -162,10 +165,11 @@ class McpSmokeResult:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = ToposArgumentParser(
         prog="python -m topos.acceptance",
         description="topos acceptance smoke harness for rootless release-confidence checks.",
     )
+    parser.add_argument("--version", action="version", version=f"topos {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     smoke = sub.add_parser("smoke", help="Run release smoke checks.")
@@ -1580,16 +1584,16 @@ def acceptance_main(argv: list[str] | None = None) -> int:
             output = format_text(result)
     elif args.command == "steady":
         if args.samples <= 0:
-            print("error: --samples must be positive", file=sys.stderr)
+            print_cli_error("error: --samples must be positive")
             return 2
         if args.interval_s < 0:
-            print("error: --interval-s must be non-negative", file=sys.stderr)
+            print_cli_error("error: --interval-s must be non-negative")
             return 2
         if args.max_cpu_pct is not None and args.max_cpu_pct < 0:
-            print("error: --max-cpu-pct must be non-negative", file=sys.stderr)
+            print_cli_error("error: --max-cpu-pct must be non-negative")
             return 2
         if args.max_rss_kb is not None and args.max_rss_kb <= 0:
-            print("error: --max-rss-kb must be positive", file=sys.stderr)
+            print_cli_error("error: --max-rss-kb must be positive")
             return 2
         result = run_steady(
             cgroup_root=args.cgroup_root,
@@ -1604,7 +1608,7 @@ def acceptance_main(argv: list[str] | None = None) -> int:
             output = format_steady_text(result)
     elif args.command == "tui-smoke":
         if args.timeout_s <= 0:
-            print("error: --timeout-s must be positive", file=sys.stderr)
+            print_cli_error("error: --timeout-s must be positive")
             return 2
         result = run_tui_smoke(
             replay_path=args.replay,
@@ -1618,7 +1622,7 @@ def acceptance_main(argv: list[str] | None = None) -> int:
             output = format_tui_smoke_text(result)
     elif args.command == "mcp-smoke":
         if args.timeout_s <= 0:
-            print("error: --timeout-s must be positive", file=sys.stderr)
+            print_cli_error("error: --timeout-s must be positive")
             return 2
         result = run_mcp_smoke(
             socket_path=args.socket,
@@ -1629,7 +1633,7 @@ def acceptance_main(argv: list[str] | None = None) -> int:
         else:
             output = format_mcp_smoke_text(result)
     else:
-        print(f"Unknown command: {args.command}", file=sys.stderr)
+        print_cli_error(f"Unknown command: {args.command}")
         return 2
 
     print(output)

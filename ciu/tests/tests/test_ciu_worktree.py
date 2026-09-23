@@ -22,6 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import worktree  # noqa: E402
 
 
+def create_path(*args, **kwargs):
+    """Adapt path-oriented setup to CIU's typed ``create`` API."""
+    return worktree.create(*args, **kwargs).git_worktree_path
+
+
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
@@ -43,7 +48,8 @@ def tmp_repo(tmp_path: Path) -> Path:
         "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n",
         encoding="utf-8",
     )
-    assert _git(["add", "README.md", ".gitignore"], repo).returncode == 0
+    (repo / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
+    assert _git(["add", "README.md", ".gitignore", "ciu.global.defaults.toml.j2"], repo).returncode == 0
     assert _git(["commit", "-m", "init"], repo).returncode == 0
     return repo
 
@@ -84,35 +90,35 @@ def fake_generate_env(monkeypatch, write_instance_facts):
     return fake
 
 
-class TestAddRemoveList:
-    def test_add_creates_worktree_on_new_branch(self, tmp_repo, fake_generate_env):
-        target = worktree.add(tmp_repo, "feature-x", base="main")
+class TestCreateRemoveList:
+    def test_create_creates_worktree_on_new_branch(self, tmp_repo, fake_generate_env):
+        target = create_path(tmp_repo, "feature-x", base="main")
         assert target == tmp_repo / ".worktrees" / "feature-x"
         assert target.is_dir()
         assert (target / "ciu.env").is_file()
 
-    def test_add_rejects_invalid_names(self, tmp_repo):
+    def test_create_rejects_invalid_names(self, tmp_repo):
         for name in ("a/b", ".hidden", ""):
             with pytest.raises(worktree.WorktreeError):
-                worktree.add(tmp_repo, name)
+                create_path(tmp_repo, name)
 
-    def test_add_rejects_existing_target(self, tmp_repo, fake_generate_env):
-        worktree.add(tmp_repo, "dup", base="main")
+    def test_create_rejects_existing_target(self, tmp_repo, fake_generate_env):
+        create_path(tmp_repo, "dup", base="main")
         with pytest.raises(worktree.WorktreeError, match="already exists"):
-            worktree.add(tmp_repo, "dup", base="main")
+            create_path(tmp_repo, "dup", base="main")
 
-    def test_add_profile_writes_durable_instance_override(self, tmp_repo, fake_generate_env):
-        target = worktree.add(tmp_repo, "wt", base="main", profile="core,db")
+    def test_create_profile_writes_durable_instance_override(self, tmp_repo, fake_generate_env):
+        target = create_path(tmp_repo, "wt", base="main", profile="core,db")
         overlay = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         assert 'service_profiles = ["core", "db"]' in overlay
         assert "CIU_SERVICES_PROFILE" not in (target / "ciu.env").read_text(encoding="utf-8")
 
-    def test_add_generate_env_failure_raises(self, tmp_repo, monkeypatch):
+    def test_create_generate_env_failure_raises(self, tmp_repo, monkeypatch):
         monkeypatch.setattr(worktree, "_generate_env_in", lambda path, **_kw: 1)
         with pytest.raises(worktree.WorktreeError, match="ciu env generate"):
-            worktree.add(tmp_repo, "wt", base="main")
+            create_path(tmp_repo, "wt", base="main")
 
-    def test_add_surfaces_git_worktree_creation_failure(self, tmp_repo, monkeypatch):
+    def test_create_surfaces_git_worktree_creation_failure(self, tmp_repo, monkeypatch):
         monkeypatch.setattr(
             worktree,
             "_git",
@@ -121,42 +127,50 @@ class TestAddRemoveList:
             ),
         )
         with pytest.raises(worktree.WorktreeError, match="branch exists"):
-            worktree.add(tmp_repo, "wt", base="main")
+            create_path(tmp_repo, "wt", base="main")
 
     def test_list_worktrees_shows_primary_and_added(self, tmp_repo, fake_generate_env):
-        worktree.add(tmp_repo, "wt1", base="main")
+        create_path(tmp_repo, "wt1", base="main")
         infos = worktree.list_worktrees(tmp_repo)
         assert any(info.is_primary for info in infos)
         assert any(not info.is_primary and info.path.name == "wt1" for info in infos)
 
     def test_list_worktrees_preserves_git_detached_state(self, tmp_path, monkeypatch):
-        output = (
-            f"worktree {tmp_path / 'primary'}\nHEAD 11111111\nbranch refs/heads/main\n\n"
-            f"worktree {tmp_path / 'detached'}\nHEAD 22222222\ndetached\n\n"
-        )
-        monkeypatch.setattr(
-            worktree,
-            "_git",
-            lambda *_args: subprocess.CompletedProcess(["git"], 0, output, ""),
-        )
-        assert [item.branch for item in worktree.list_worktrees(tmp_path)] == [
-            "main",
-            "(detached)",
+        shared = worktree._shared_worktree()
+        output = [
+            shared.GitWorktree(
+                path=tmp_path / "primary", head="1" * 40, branch="main",
+                is_primary=True,
+            ),
+            shared.GitWorktree(
+                path=tmp_path / "detached", head="2" * 40, branch=None,
+                is_primary=False, is_detached=True,
+            ),
         ]
+        monkeypatch.setattr(
+            shared,
+            "list_git_worktrees",
+            lambda *_args: output,
+        )
+        infos = worktree.list_worktrees(tmp_path)
+        assert [item.branch for item in infos] == ["main", "(detached)"]
+        assert [item.head for item in infos] == ["11111111", "22222222"]
+        assert [item.is_primary for item in infos] == [True, False]
 
     def test_list_worktrees_surfaces_git_failure(self, tmp_path, monkeypatch):
+        shared = worktree._shared_worktree()
         monkeypatch.setattr(
-            worktree,
-            "_git",
-            lambda *_args: subprocess.CompletedProcess(
-                ["git"], 1, "", "no repository"
+            shared,
+            "list_git_worktrees",
+            lambda *_args: (_ for _ in ()).throw(
+                shared.WorkspaceError("no repository", category="git-error")
             ),
         )
         with pytest.raises(worktree.WorktreeError, match="no repository"):
             worktree.list_worktrees(tmp_path)
 
     def test_find_worktree_by_name(self, tmp_repo, fake_generate_env):
-        worktree.add(tmp_repo, "wt1", base="main")
+        create_path(tmp_repo, "wt1", base="main")
         found = worktree.find_worktree(tmp_repo, "wt1")
         assert found is not None and found.path.name == "wt1"
         assert worktree.find_worktree(tmp_repo, "nope") is None
@@ -172,7 +186,7 @@ class TestAddRemoveList:
     def test_remove_cleans_before_git_remove(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        target = worktree.add(tmp_repo, "wt1", base="main")
+        target = create_path(tmp_repo, "wt1", base="main")
         calls: list[str] = []
         monkeypatch.setattr(
             worktree, "_clean_in", lambda wt, *, yes: calls.append("clean") or 0
@@ -185,7 +199,7 @@ class TestAddRemoveList:
     def test_remove_failed_clean_aborts_without_force(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        target = worktree.add(tmp_repo, "wt1", base="main")
+        target = create_path(tmp_repo, "wt1", base="main")
         monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 1)
         with pytest.raises(worktree.WorktreeError, match="ciu clean.*failed"):
             worktree.remove(tmp_repo, "wt1", force=False)
@@ -194,7 +208,7 @@ class TestAddRemoveList:
     def test_remove_failed_clean_force_proceeds_silently(
         self, tmp_repo, fake_generate_env, monkeypatch, capsys
     ):
-        worktree.add(tmp_repo, "wt1", base="main")
+        create_path(tmp_repo, "wt1", base="main")
         monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 1)
         worktree.remove(tmp_repo, "wt1", force=True)
         assert capsys.readouterr().out == ""
@@ -202,18 +216,16 @@ class TestAddRemoveList:
     def test_remove_surfaces_git_remove_failure_after_clean(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        worktree.add(tmp_repo, "wt1", base="main")
-        real_git = worktree._git
+        create_path(tmp_repo, "wt1", base="main")
         monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kw: 0)
-
-        def fail_remove(args, cwd):
-            if args[:2] == ["worktree", "remove"]:
-                return subprocess.CompletedProcess(
-                    ["git"], 1, "", "checkout locked"
-                )
-            return real_git(args, cwd)
-
-        monkeypatch.setattr(worktree, "_git", fail_remove)
+        shared = worktree._shared_worktree()
+        monkeypatch.setattr(
+            shared,
+            "remove_workspace",
+            lambda *_a, **_kw: (_ for _ in ()).throw(
+                shared.WorkspaceError("checkout locked", category="git-error")
+            ),
+        )
         with pytest.raises(worktree.WorktreeError, match="checkout locked"):
             worktree.remove(tmp_repo, "wt1")
 
@@ -335,6 +347,10 @@ class TestManagedIdentityLifecycle:
         assert adopted.state == "ready"
         assert adopted.branch == "existing"
         assert adopted.git_worktree_path == target.resolve()
+        shared = worktree._shared_worktree()
+        common = worktree._git_common_dir(tmp_repo)
+        shared_records = shared.list_workspaces(common)
+        assert [record.worktree_path for record in shared_records] == [target.resolve()]
 
     def test_nested_ciu_root_keeps_exact_offset(
         self, tmp_path, monkeypatch, write_instance_facts
@@ -421,18 +437,19 @@ class TestManagedIdentityLifecycle:
     def test_git_add_and_overlay_failures_remain_attributable(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        real_git = worktree._git
-
-        def fail_add(args, cwd):
-            if args[:2] == ["worktree", "add"]:
-                return subprocess.CompletedProcess(args, 1, "", "cannot add")
-            return real_git(args, cwd)
-
-        monkeypatch.setattr(worktree, "_git", fail_add)
+        shared = worktree._shared_worktree()
+        monkeypatch.setattr(
+            shared,
+            "create_workspace",
+            lambda *_a, **_kw: (_ for _ in ()).throw(
+                shared.WorkspaceError("cannot add", category="git-error")
+            ),
+        )
         with pytest.raises(worktree.WorktreeError, match="cannot add"):
             worktree.create(tmp_repo, "git-fails")
 
-        monkeypatch.setattr(worktree, "_git", real_git)
+        monkeypatch.undo()
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
         monkeypatch.setattr(
             worktree, "_write_worktree_overlay",
             lambda *_a, **_kw: (_ for _ in ()).throw(worktree.WorktreeError("overlay failed")),
@@ -496,6 +513,7 @@ class TestManagedIdentityLifecycle:
         assert _git(["config", "user.email", "t@example.com"], other).returncode == 0
         assert _git(["config", "user.name", "Test"], other).returncode == 0
         (other / "README.md").write_text("x\n")
+        (other / "ciu.global.defaults.toml.j2").write_text("[ciu]\n")
         assert _git(["add", "."], other).returncode == 0
         assert _git(["commit", "-m", "init"], other).returncode == 0
 
@@ -1568,7 +1586,7 @@ class TestStructuredControlDocuments:
     # -- removal (O2) --------------------------------------------------------
 
     def test_remove_document_managed_success(self, tmp_repo, fake_generate_env, monkeypatch):
-        worktree.add(tmp_repo, "wt1", base="main")
+        create_path(tmp_repo, "wt1", base="main")
         monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 0)
         doc = worktree.remove_document(tmp_repo, "wt1")
         assert doc["schema_version"] == 1
@@ -1594,7 +1612,7 @@ class TestStructuredControlDocuments:
     def test_remove_document_failed_clean_produces_no_success_document(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        worktree.add(tmp_repo, "wt1", base="main")
+        create_path(tmp_repo, "wt1", base="main")
         monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 1)
         with pytest.raises(worktree.WorktreeError, match="NOT removing"):
             worktree.remove_document(tmp_repo, "wt1")

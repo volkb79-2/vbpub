@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import topos.cli as cli
+from topos.cli_diagnostics import cli_headline
 from conftest import fixture_frame
 from topos.collect.dockerjoin import ContainerResolveError
 
@@ -51,7 +52,9 @@ def test_record_json_requires_once_before_boundaries(
     monkeypatch.setattr(cli, "RecordWriter", lambda *_args, **_kwargs: pytest.fail("writer reached"))
 
     assert cli.main(["--record", "out.jsonl", "--json"]) == 2
-    assert capsys.readouterr().err.strip() == "--json is supported with --record only when --once is also set"
+    assert capsys.readouterr().err.strip() == (
+        cli_headline() + "\n--json is supported with --record only when --once is also set"
+    )
 
 
 def test_headless_once_forwards_writer_config_and_prints_frame(

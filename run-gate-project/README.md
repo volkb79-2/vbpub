@@ -15,7 +15,7 @@ The build stayed faithful to the intent; four things crystallized differently
 than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
 
 1. **Central defaults (controller A2):** shared environment facts live in a
-   repo-root `run-gate.toml` — the NEAREST STRICT ANCESTOR of the project
+   repo-root `run-gate.root.toml` — the NEAREST STRICT ANCESTOR of the project
    dir. At P01 build time environments only (`[lanes.*]` there was
    rejected) — **superseded by RG-16 (`R-22`)**: central `[lanes.*]` are
    legal shared lanes every consuming project inherits BY NAME. Project
@@ -25,10 +25,13 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    script path WITHOUT resolving symlinks (a symlink's parent is the
    project), CWD as fallback. CWD-first (the handoff's wording) breaks
    `nyxloom/run-gate.py --list` from the repo root.
-3. **Slice policy (controller A3):** `$CGROUP_PARENT_DEV_BACKGROUND`
-   ambient resolution is the default; `cgroup_slice` may be DECLARED on an
-   environment as explicit policy (LoadState-verified where systemd is
-   reachable). nyxloom's dev gate migrated OFF its hardcoded
+3. **Slice policy (controller A3):** the repository root's central
+   `[environments.tester-unified]` binds `cgroup_slice_env` to
+   `$CGROUP_PARENT_DEV_GATES`, so every inheriting project uses the same
+   host-provided gates tier. `cgroup_slice` remains available for an explicit
+   per-environment override, and a project may use `cgroup_slice_env` when it
+   needs a different host variable; each resolved value is LoadState-verified
+   where systemd is reachable. nyxloom's dev gate migrated OFF its hardcoded
    `nyxloom-gates.slice` literal (prod-instance intent).
 4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
    overrides; superseded by `resources.memory`), `resources` (`R-29`: a
@@ -53,6 +56,14 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `R-43h`).
 
 ## Gate and evidence
+### Version probe
+
+The script accepts `./run-gate.py --version` and prints exactly one
+`run-gate rev N` identity line on stdout before exiting 0, with no stderr. Help,
+usage, missing-argument, unknown-argument, and configuration diagnostics begin
+with `RUN-GATE rev N — per-project gate entrypoint` as line 1. Normal lane
+output is unchanged. N is the script's `__revision__` copy-drift marker;
+the wheel's SemVer remains a separate distribution identity.
 
 This project's own `run-gate.toml` declares five lanes (dogfooding — see
 "Built deltas" above):
@@ -62,8 +73,9 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    install: `python3 -m pytest tests -q --cov=. --cov-branch` followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run-gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since `main`, not a total-coverage floor (still ~47% total; that
-   campaign is Phase 2).
+   since `main`. The release contract deliberately does not claim a
+   whole-project 100% floor; the separate `assay-r1` lane is the broader
+   line-and-branch judge.
 2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND
    judge: the selected worktree's assay source running the same
    test command, `assay.toml [lanes.r1]` judging `source_roots = ["."]`
@@ -108,7 +120,7 @@ ciu checkpoint P07):
 1. The committed gate argv had **never executed end-to-end** — it was validated
    with a substitute interpreter — and carried **three defects**, each invisible
    to a green 100%-coverage suite:
-   - a missing `-e CGROUP_PARENT_DEV_BACKGROUND` (the image doesn't bake the
+   - a missing `-e CGROUP_PARENT_DEV_GATES` (the image doesn't bake the
      var; env-passthrough cannot pass what does not exist),
    - an unconditional `systemctl` LoadState check that can never pass in a
      containerized context (the devcontainer ships a *shim* systemctl that
@@ -176,6 +188,7 @@ changed-line policy, isolation snapshots) stays in `assay.toml`, and the
 `run-gate.toml` lane is a thin wrapper referencing the assay lane by name:
 
 ```toml
+schema_version = 1
 [lanes.ciu]
 kind = "assay"            # install selected ../assay + run the judge
 assay_lane = "ciu"        # judgment policy lives in assay.toml — one registry each
@@ -210,7 +223,7 @@ These are the exact behaviors whose absence caused measured failures; they are
 the tool's reason to exist and MUST be implemented + tested:
 
 - **Cgroup placement:** resolve the slice ONLY from
-  `$CGROUP_PARENT_DEV_BACKGROUND` (no literal, no fallback — absent is a hard
+  `$CGROUP_PARENT_DEV_GATES` (no literal, no fallback — absent is a hard
   error, AGENTS §4.2a), pass it BOTH as `--cgroup-parent` AND `-e` into the
   container (suites read it ambiently). LoadState pre-check ONLY where systemd
   is reachable (`[ -d /run/systemd/system ]`) — containerized contexts skip it.
@@ -231,7 +244,7 @@ the tool's reason to exist and MUST be implemented + tested:
   version pins; those are verified from the pin file's directory and the
   declared version is checked in-lane.
 - **Env forwarding is declared, never implicit (RG-23):** a container/exec
-  lane forwards `$CGROUP_PARENT_DEV_BACKGROUND` (the tool's own
+  lane forwards `$CGROUP_PARENT_DEV_GATES` (the tool's own
   infrastructure) plus exactly the environment's `forward_env` list. The
   early hardcoded `MOCK_MODE`/`RUN_LIVE_TESTS` pair is GONE — consumers
   relying on it must migrate (CONSUMERS.md "BREAKING CHANGE"), because its
@@ -249,8 +262,9 @@ the tool's reason to exist and MUST be implemented + tested:
   identity, host-lane view, and toolchain fitness, never the invoking
   checkout's under B's name (SPEC `R-37`, RG-30 — the last instance
   of the read-scope hazard RG-27 closed for `history`).
-- **Run form:** detached container + wait + logs (survives terminal loss);
-  the gate's exit status is the judged job's own — no wrapper/pipe masking.
+- **Run form:** detached container with Docker's init reaper + wait + logs
+  (survives terminal loss and reaps orphaned descendants); the gate's exit
+  status is the judged job's own — no wrapper/pipe masking.
 - **Recovery records are ownership boundaries:** if a container lane finds
   an inflight record written by the exec runner, the live invocation refuses
   with exit 2 and starts nothing. It never treats “foreign” as “absent,” even
@@ -333,3 +347,5 @@ carved after the dstdns config-cutover.)
   prose this tool turns into tested code (the section gains a pointer here
   when the tool ships, and per-project AGENTS.md name `run-gate.py` as the
   canonical starting point IN the adoption carve, never before).
+
+The standalone parser's help, usage, and argument errors begin with `RUN-GATE rev <revision> — per-project gate entrypoint`. The revision is the script's existing `__revision__` source, so a zero-install checkout can identify the exact launcher without importing another project.

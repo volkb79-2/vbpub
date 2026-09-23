@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 import topos.acceptance as acceptance
+from topos.cli_diagnostics import cli_headline
 
 
 def test_replay_and_source_labels_ignore_empty_or_malformed_payloads(
@@ -184,7 +185,7 @@ def test_acceptance_main_fails_closed_for_an_unrecognized_parser_command(
     ))
 
     assert acceptance.acceptance_main([]) == 2
-    assert capsys.readouterr().err == "Unknown command: unknown-future-command\n"
+    assert capsys.readouterr().err == cli_headline() + "\nUnknown command: unknown-future-command\n"
 
 
 def test_module_entrypoint_exits_with_validation_status_without_live_work(

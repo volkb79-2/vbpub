@@ -4,13 +4,25 @@ from pathlib import Path
 
 import pytest
 
+from topos import __version__
 from topos.cli import (
+    parse_action_args,
+    parse_bpf_args,
+    parse_compare_args,
+    parse_daemon_args,
     parse_damon_args,
+    parse_gateway_args,
+    parse_inspect_files_args,
     parse_mcp_args,
+    parse_query_args,
+    parse_report_args,
     parse_snapshot_args,
+    parse_squeeze_args,
 )
+from topos.acceptance import build_parser as build_acceptance_parser
 from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
 from topos.damon.control import APPROVAL_TEXT
+from topos.cli_diagnostics import cli_headline
 
 
 def test_damon_stop_is_explicit_and_not_destructive_by_default() -> None:
@@ -71,3 +83,70 @@ def test_mcp_requires_serve_and_rejects_invalid_redaction_ceiling() -> None:
         parse_mcp_args([])
     with pytest.raises(SystemExit):
         parse_mcp_args(["serve", "--redact-above", "classified"])
+
+
+def test_each_topos_parser_family_starts_diagnostics_with_the_headline(capsys) -> None:
+    parser_calls = (
+        (parse_damon_args, ["stop", "--bad"]),
+        (parse_snapshot_args, ["inspect", "--bad"]),
+        (parse_daemon_args, ["serve", "--bad"]),
+        (parse_mcp_args, ["serve", "--bad"]),
+        (parse_gateway_args, ["serve", "--bad"]),
+        (parse_bpf_args, ["gate", "--bad"]),
+        (parse_inspect_files_args, ["plan", "--bad"]),
+        (parse_squeeze_args, ["--bad"]),
+        (parse_action_args, ["preview", "--bad"]),
+        (parse_report_args, ["--bad"]),
+        (parse_query_args, ["--bad"]),
+        (parse_compare_args, ["--bad"]),
+    )
+    for parser_call, argv in parser_calls:
+        with pytest.raises(SystemExit):
+            parser_call(argv)
+        assert capsys.readouterr().err.splitlines()[0] == cli_headline()
+
+def test_nested_help_and_missing_required_argument_start_with_the_headline(capsys) -> None:
+    with pytest.raises(SystemExit) as help_exit:
+        parse_damon_args(["paddr", "start", "--help"])
+    help_capture = capsys.readouterr()
+    assert help_exit.value.code == 0
+    assert help_capture.err == ""
+    assert help_capture.out.splitlines()[0] == cli_headline()
+
+    with pytest.raises(SystemExit) as error_exit:
+        parse_action_args(["preview"])
+    error_capture = capsys.readouterr()
+    assert error_exit.value.code == 2
+    assert error_capture.out == ""
+    assert error_capture.err.splitlines()[0] == cli_headline()
+
+
+def test_acceptance_parser_uses_the_same_headline(capsys) -> None:
+    with pytest.raises(SystemExit):
+        build_acceptance_parser().parse_args(["--bad"])
+    assert capsys.readouterr().err.splitlines()[0] == cli_headline()
+
+
+def test_acceptance_nested_help_and_errors_start_with_the_headline(capsys) -> None:
+    with pytest.raises(SystemExit) as help_exit:
+        build_acceptance_parser().parse_args(["smoke", "--help"])
+    help_capture = capsys.readouterr()
+    assert help_exit.value.code == 0
+    assert help_capture.err == ""
+    assert help_capture.out.splitlines()[0] == cli_headline()
+
+    with pytest.raises(SystemExit) as error_exit:
+        build_acceptance_parser().parse_args(["smoke", "--bad"])
+    error_capture = capsys.readouterr()
+    assert error_exit.value.code == 2
+    assert error_capture.out == ""
+    assert error_capture.err.splitlines()[0] == cli_headline()
+
+
+def test_acceptance_top_level_version_is_one_clean_identity_line(capsys) -> None:
+    with pytest.raises(SystemExit) as version_exit:
+        build_acceptance_parser().parse_args(["--version"])
+    capture = capsys.readouterr()
+    assert version_exit.value.code == 0
+    assert capture.out == f"topos {__version__}\n"
+    assert capture.err == ""

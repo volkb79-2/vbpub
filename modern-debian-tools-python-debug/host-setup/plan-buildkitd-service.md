@@ -49,7 +49,7 @@ background soak work.
 ```
 dev.slice                     (IO ceiling only — DEV_IO_CAP_PCT, unchanged)
 ├─ dev-interactive.slice      (devcontainer / IDE)
-├─ dev-background.slice       (test/build/gate containers)
+├─ dev-background.slice       (long-running application stacks)
 └─ dev-buildkitd.slice        (NEW — the host-managed BuildKit worker)
 ```
 

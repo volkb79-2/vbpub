@@ -21,6 +21,7 @@ changes, the results are rejected even if they were written moments ago.
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import hashlib
 import os
 import re
@@ -69,7 +70,7 @@ def positive_int(value: object, label: str) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = MdtArgumentParser(
         prog="mdt-io-baseline.py",
         description=(
             "Run the official kernel io.cost coefficient matrix against a "
@@ -77,6 +78,7 @@ def parse_args() -> argparse.Namespace:
             "results. Host shell only; a container invocation is refused."
         ),
     )
+    parser.add_version_argument()
     parser.add_argument("--force", action="store_true", help="bypass current-result reuse and deliberately remeasure after the running-container warning")
     parser.add_argument("--check-results", action="store_true", help="check result identity and structure only; never run fio")
     parser.add_argument("--output", default=os.environ.get("IO_BASELINE_ENV", str(OUT)), help="benchmark-results file (default: IO_BASELINE_ENV or /var/lib/mdt/io-baseline.env)")

@@ -1,10 +1,11 @@
 # =============================================================================
 # topos project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
-# Environment facts come from the CENTRAL vbpub-root run-gate.toml. The
+# Environment facts come from the CENTRAL vbpub-root run-gate.root.toml. The
 # topos-suite argv is the pre-adoption nyxloom gate mechanics VERBATIM (only
 # re-homed) — including its hardcoded-slice removal: the central environment
-# resolves the slice from $CGROUP_PARENT_DEV_BACKGROUND instead of the old
-# `--cgroup-parent=nyxloom-gates.slice` literal. See run-gate-project/SPEC.md.
+# resolves the slice from the root policy's $CGROUP_PARENT_DEV_GATES binding
+# instead of the old `--cgroup-parent=nyxloom-gates.slice` literal. See
+# run-gate-project/SPEC.md.
 # =============================================================================
 schema_version = 1
 

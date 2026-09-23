@@ -170,7 +170,7 @@ def test_generated_bootstrap_without_network_still_runs_tls_probe(
     assert events == ["tls"]
 
 def test_generated_workspace_bootstrap_without_network_probes_tls_and_validates(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
 ) -> None:
     env_path = tmp_path / "ciu.env"
     events: list[str] = []
@@ -180,13 +180,18 @@ def test_generated_workspace_bootstrap_without_network_probes_tls_and_validates(
         # deprecation notice cannot land on `ciu check --json`'s stdout.
         assert root == tmp_path
         env_path.write_text(
-            'DOCKER_NETWORK_INTERNAL=""\nREQUIRED_FROM_GENERATED_ENV=yes\n',
+            'DOCKER_NETWORK_INTERNAL=""\n',
             encoding="utf-8",
+        )
+        write_instance_facts(
+            root,
+            repo_root=str(root),
+            physical_repo_root=str(root),
+            network="",
         )
         return env_path
 
     monkeypatch.delenv("DOCKER_NETWORK_INTERNAL", raising=False)
-    monkeypatch.delenv("REQUIRED_FROM_GENERATED_ENV", raising=False)
     monkeypatch.setattr(workspace_env, "generate_ciu_env", generate)
     monkeypatch.setattr(
         workspace_env,
@@ -201,6 +206,6 @@ def test_generated_workspace_bootstrap_without_network_probes_tls_and_validates(
         defaults_filename="ciu.global.defaults.toml.j2",
         generate_env=True,
         update_cert_permission=False,
-        required_keys=("REQUIRED_FROM_GENERATED_ENV",),
+        required_keys=("REPO_ROOT",),
     ) == tmp_path.resolve()
     assert events == ["tls"]

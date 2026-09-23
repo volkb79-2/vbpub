@@ -32,7 +32,7 @@ remains isolated and launches its own browser per audit.
 │  │  │ lease gateway→run-server│  │  @playwright/mcp         │  │  mcp-proxy   │ │ mcp-proxy │ │  │
 │  │  │  (supervisord program)  │  │  (supervisord program)   │  │  (supervisor)│ │(supervisor)│ │  │
 │  │  │                         │  │                          │  │  ↓           │ │  ↓         │ │  │
-│  │  │  :3000 WebSocket        │  │  :8931 HTTP/SSE at /mcp  │  │  chrome-     │ │ lighthouse-│ │  │
+│  │  │  :3000 WebSocket        │  │  :8931 Streamable HTTP at /mcp  │  │  chrome-     │ │ lighthouse-│ │  │
 │  │  │                         │  │                          │  │  devtools-   │ │ mcp :8933  │ │  │
 │  │  │                         │  │                          │  │  mcp :8932   │ │            │ │  │
 │  │  └─────────────────────────┘  └──────────────────────────┘  └──────────────┘ └───────────┘ │  │
@@ -50,19 +50,19 @@ remains isolated and launches its own browser per audit.
 
 ### Unified Image: `ghcr.io/volkb79-2/pwmcp:<version>`
 
-- **Base image**: `mcr.microsoft.com/playwright:v<playwright_version>-<image_distro>` (ships browser binaries)
+- **Base image**: `mcr.microsoft.com/playwright:v<playwright_version>-<image_distro>@<manifest_digest>` (ships browser binaries; the digest is pinned in the Dockerfile and bake projection)
 - **Layers added**:
   - `playwright@<playwright_version>` JS package installed globally via npm (needed for `run-server`)
-  - `@playwright/mcp@<version>` installed globally via npm (MCP HTTP/SSE server; pinned for reproducibility)
-  - `chrome-devtools-mcp@1.5.0` installed globally via npm (CDP-based MCP server; stdio-only, wrapped by mcp-proxy)
-  - `lighthouse@13.4.0` installed globally via npm (Node API for programmatic audits)
-  - `mcp-proxy@6.5.2` installed globally via npm (stdio→streamable-HTTP proxy for chrome-devtools-mcp and lighthouse-mcp)
+  - `@playwright/mcp@<version>` installed globally via npm (MCP Streamable HTTP server; pinned for reproducibility)
+  - `chrome-devtools-mcp@1.8.0` installed globally via npm (CDP-based MCP server; stdio-only, wrapped by mcp-proxy)
+  - `lighthouse@13.4.1` installed through the locked vendored Lighthouse MCP dependency set
+  - `mcp-proxy@6.7.14` installed globally via npm (stdio→streamable-HTTP proxy for chrome-devtools-mcp and lighthouse-mcp)
   - `lighthouse-mcp` vendored server at `/opt/pwmcp/lighthouse-mcp/` (in-repo, ~200 lines)
   - `supervisor` (apt) — PID-1 process manager
   - `/etc/pwmcp-chromium-path.txt` — baked chromium binary path (see below)
 - **Process manager**: `supervisord --nodaemon` as PID 1; manages the gateway, loopback run-server, `mcp`, `devtools-mcp`, and `lighthouse-mcp`
 - **Entrypoint**: `/usr/local/bin/pwmcp-entrypoint.sh` — exports `PWMCP_CHROMIUM_PATH` then execs supervisord
-- **Ports**: 3000 (WebSocket) + 8931 (HTTP/SSE @playwright/mcp) + 8932 (HTTP/SSE chrome-devtools-mcp via mcp-proxy) + 8933 (HTTP/SSE lighthouse-mcp via mcp-proxy)
+- **Ports**: 3000 (WebSocket) + 8931 (Streamable HTTP @playwright/mcp) + 8932 (Streamable HTTP chrome-devtools-mcp via mcp-proxy) + 8933 (Streamable HTTP lighthouse-mcp via mcp-proxy)
 - **Built from**: `containers/pwmcp/Dockerfile`
 
 ### Chromium Path Resolution
@@ -71,7 +71,11 @@ remains isolated and launches its own browser per audit.
 
 1. During the Docker build, `playwright.chromium.executablePath()` from the globally-installed `playwright@<version>` package is written to `/etc/pwmcp-chromium-path.txt`.
 2. The entrypoint script exports this as `PWMCP_CHROMIUM_PATH`.
-3. `supervisord.conf` passes `--executable-path %(ENV_PWMCP_CHROMIUM_PATH)s` to `playwright-mcp` and `chrome-devtools-mcp` (via mcp-proxy), bypassing the bundled chromium discovery.
+3. `supervisord.conf` passes `--executable-path %(ENV_PWMCP_CHROMIUM_PATH)s` to
+   the loopback `playwright-mcp` backend and `chrome-devtools-mcp` (via
+   mcp-proxy), bypassing bundled Chromium discovery. The public 8931 listener
+   is the stdlib stream-only gateway, which rejects `/sse` and enforces the
+   configured Host allowlist before forwarding to that backend.
    The lighthouse-mcp server reads `PWMCP_CHROMIUM_PATH` at runtime and passes it to `chrome-launcher` as `chromePath`.
 
 ### Allowed Hosts
@@ -82,7 +86,10 @@ remains isolated and launches its own browser per audit.
 PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 ```
 
-`supervisord.conf` passes `--allowed-hosts %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s` to `playwright-mcp`. The image default (for standalone use) is `localhost:8931,127.0.0.1:8931`.
+The stream-only 8931 gateway enforces `PWMCP_MCP_ALLOWED_HOSTS` before
+forwarding to the loopback `playwright-mcp` backend. The backend also receives
+loopback-only allowed hosts. The image default is
+`localhost:8931,127.0.0.1:8931`.
 
 `chrome-devtools-mcp` (via `mcp-proxy`) does **not** have a native `--allowed-hosts` flag. A parallel `PWMCP_DEVTOOLS_ALLOWED_HOSTS` env var is injected by the ciu compose template for documentation and external-mode Traefik rules:
 
@@ -103,17 +110,26 @@ See [SECURITY.md](SECURITY.md) for the host-allowlist gap analysis.
 ### Build execution boundary
 
 The release plane is separate from the runtime container. `build-push.py`
-selects the named BuildKit `docker-container` builder from `cmru.toml` and
-verifies its memory, combined memory+swap, CPU-share, and CPU-quota settings
-before Bake runs. Build executors therefore appear as descendants of the
-`buildx_buildkit_pwmcp-governed-v10` container cgroup under `system.slice`.
-`docker.service` is a sibling: CPU shown against `dockerd` is expected control,
-content-store, networking, and snapshotter work and is not evidence that the
-executor escaped its limits.
+selects the declared `mdt-managed` BuildKit remote from `cmru.toml` and
+verifies both its `remote` driver and its exact Unix socket endpoint before
+Bake runs. The host `mdt-buildkitd` service owns the executor and its
+persistent cache under the host's `dev-buildkitd.slice`; the wrapper never
+creates an ephemeral `docker-container` worker. `docker.service` remains the
+Docker control plane, content store, networking, and snapshotter, so its CPU
+activity is expected and is not the executor's cgroup accounting.
 
-The builder is intentionally persistent so BuildKit can reuse its cache. The
-limits govern concurrent build work; the published PWMCP service has its own
-Compose runtime limits and lease/session policy.
+The managed service's host slice governs concurrent build work. The published
+PWMCP service has its own Compose runtime limits and lease/session policy.
+The release environment declares the same builder identity for direct wrapper
+use and CMRU use:
+
+```toml
+schema_version = 1
+
+[env]
+BUILDX_BUILDER = "mdt-managed"
+BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
+```
 
 Versioned bundles are published to GitHub Releases following the monorepo-wide scheme:
 
@@ -135,10 +151,10 @@ sha256sum -c pwmcp-<version>.tar.xz.sha256
 - Consumers must `pip install playwright==<playwright_version>` to match the wire protocol
 
 Additional npm package pins (see `docker-bake.hcl`):
-- `@playwright/mcp@<version>` — MCP HTTP/SSE server
-- `chrome-devtools-mcp@1.5.0` — CDP profiling MCP server
-- `mcp-proxy@6.5.2` — stdio→streamable-HTTP proxy (used by both chrome-devtools-mcp and lighthouse-mcp)
-- `lighthouse@13.4.0` — Node API for programmatic Lighthouse audits
+- `@playwright/mcp@<version>` — MCP Streamable HTTP server
+- `chrome-devtools-mcp@1.8.0` — CDP profiling MCP server
+- `mcp-proxy@6.7.14` — stdio→streamable-HTTP proxy (used by both chrome-devtools-mcp and lighthouse-mcp)
+- `lighthouse@13.4.1` — Node API for programmatic Lighthouse audits
 
 ## Deployment Modes
 

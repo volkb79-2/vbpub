@@ -95,6 +95,23 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
     )
 
 
+@pytest.fixture(autouse=True)
+def mocked_invocation_context(monkeypatch):
+    """Transaction tests replace the loader with a lightweight fake config."""
+    monkeypatch.setattr(
+        cli,
+        "resolve_invocation_context",
+        lambda path: SimpleNamespace(
+            config_path=Path(path).resolve(), project_name=None, scope="estate",
+        ),
+    )
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+
+
 def test_copy_secret_overlays_preserves_root_and_project_scoped_credentials(tmp_path):
     repo_root = tmp_path / "repo"
     workspace_path = tmp_path / "workspace"
@@ -144,8 +161,8 @@ def test_child_args_replaces_absolute_config_with_snapshot_relative_path(tmp_pat
     config.write_text("", encoding="utf-8")
 
     assert cli._child_release_args(
-        ["--project", "alpha", "--config", str(config)], config, tmp_path,
-    ) == ["--project", "alpha", "--config", "nested/cmru.toml"]
+        ["alpha", "--config", str(config)], config, tmp_path,
+    ) == ["alpha", "--config", "nested/cmru.toml"]
 
 
 def test_child_args_removes_parent_only_resume_option(tmp_path):
@@ -153,8 +170,8 @@ def test_child_args_removes_parent_only_resume_option(tmp_path):
     config.write_text("", encoding="utf-8")
 
     assert cli._child_release_args(
-        ["--resume", "/tmp/retained", "--project", "alpha"], config, tmp_path,
-    ) == ["--project", "alpha", "--config", "cmru.toml"]
+        ["--resume", "/tmp/retained", "alpha"], config, tmp_path,
+    ) == ["alpha", "--config", "cmru.toml"]
 
 
 def test_required_gate_rejects_project_without_run_tests(tmp_path):
@@ -273,10 +290,10 @@ def test_release_aborts_before_creating_a_workspace_when_a_released_project_is_d
         monkeypatch.setattr(
             transaction, "create_workspace", lambda _root, *, base, **_kw: calls.append("created"),
         )
-        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
+        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
 
         with pytest.raises(SystemExit) as exc:
-            cli.main(["release", "--config", str(config), "--project", "alpha"])
+            cli.main(["release", "--config", str(config), "alpha"])
 
         assert exc.value.code == 2
         # It never got as far as fetching origin or creating the isolated worktree.
@@ -303,7 +320,7 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
+        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
         monkeypatch.setattr(
@@ -312,7 +329,7 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         )
 
         with pytest.raises(SystemExit) as exc:
-            cli.main(["release", "--config", str(config), "--project", "alpha", "--allow-uncommitted"])
+            cli.main(["release", "--config", str(config), "alpha", "--allow-uncommitted"])
 
         assert exc.value.code == 0
         assert "ran-child" in calls
@@ -341,7 +358,7 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
+        monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
         monkeypatch.setattr(
@@ -350,7 +367,7 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         )
 
         with pytest.raises(SystemExit) as exc:
-            cli.main(["release", "--config", str(config), "--project", "alpha", "--dry-run"])
+            cli.main(["release", "--config", str(config), "alpha", "--dry-run"])
 
         assert exc.value.code == 0
         assert "ran-child" in calls  # never hit the exit(2) uncommitted-changes gate
@@ -388,7 +405,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 0)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace: calls.append("backup-removed"))
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
@@ -399,14 +416,14 @@ cwd = "alpha"
 
     with pytest.raises(SystemExit) as exc:
         cli.main([
-            "release", "--config", str(config), "--project", "alpha",
+            "release", "--config", str(config), "alpha",
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
 
     assert exc.value.code == 0
     assert not any(isinstance(call, tuple) for call in calls)
     assert [
-        "--project", "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
+        "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
         "--config", "cmru.toml",
     ] in calls
     assert "backup-removed" in calls
@@ -446,11 +463,10 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
-    # Child fails (e.g. build/publish) after it already promoted origin/main.
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 1)
+    # Child fails after the candidate cycle started; the new parent must never
+    # infer that source history needs a compensating revert.
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 1)
     monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
-    monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: calls.append("checked-promotion") or True)
-    monkeypatch.setattr(transaction, "read_release_progress", lambda _root, _w: None)
     monkeypatch.setattr(
         transaction, "revert_promotion",
         lambda _w, *, from_sha=None: calls.append("reverted") or transaction.RevertResult(ok=True, reverted=True),
@@ -467,13 +483,16 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: remove_calls.append("backup-removed"))
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--config", str(config), "--project", "alpha"])
+        cli.main(["release", "--config", str(config), "alpha"])
 
     assert exc.value.code == 1
-    assert calls.index("checked-promotion") < calls.index("reverted") < calls.index("synced")
-    output = capsys.readouterr().out
+    assert "reverted" not in calls
+    assert "synced" in calls
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
     assert "caller checkout is dirty" in output
     assert "rebase conflict" not in output
+    assert "candidate was not promoted" in output
     # A failed release retains the worktree/branch for inspection — cleanup must not run.
     assert remove_calls == []
 
@@ -509,7 +528,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     # Child fails before ever reaching promote_workspace (e.g. gates failed).
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 1)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: 1)
     monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
     monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: False)
     monkeypatch.setattr(
@@ -522,7 +541,7 @@ cwd = "alpha"
     )
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--config", str(config), "--project", "alpha"])
+        cli.main(["release", "--config", str(config), "alpha"])
 
     assert exc.value.code == 1
     assert "reverted" not in calls   # nothing to revert — promotion never landed
@@ -580,7 +599,7 @@ cwd = "beta"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
@@ -591,12 +610,12 @@ cwd = "beta"
 
     with pytest.raises(SystemExit) as exc:
         cli.main([
-            "release", "--config", str(config), "--project", "alpha", "--abandon", "all-previous",
+            "release", "--config", str(config), "alpha", "--abandon", "all-previous",
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
 
     assert exc.value.code == 0
-    # --project alpha narrows the abandon scope to alpha only, not the full default set.
+    # Positional alpha narrows the abandon scope to alpha only, not the full default set.
     assert ("abandon_previous", ["alpha"]) in calls
     # Abandoning didn't stop the run — a fresh release still proceeded afterward.
     assert "ran-child" in calls
@@ -643,7 +662,7 @@ cwd = "beta"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 0)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
@@ -701,7 +720,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: fresh_workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-    monkeypatch.setattr(transaction, "run_child", lambda ws, args: calls.append(("ran", ws.branch)) or 0)
+    monkeypatch.setattr(transaction, "run_child", lambda ws, args, **kwargs: calls.append(("ran", ws.branch)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
@@ -908,8 +927,10 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
     monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
     monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev-gates.slice")
     monkeypatch.setenv("CMRU_TESTER_DIND_IMAGE", "docker:dind-test")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_FORWARD_VAR", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_FORWARD_GATES_VAR", "dev-gates.slice")
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
@@ -926,11 +947,11 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
         tester_gate.main(["--cwd", "modern-debian-tools-python-debug", "--enable-docker", "--", "true"])
 
     assert captured["sidecar_name"] == "cmru-tester-dind-fixedname"
-    # CIU-46 wave: PLACEMENT comes from the declared CMRU_TESTER_CGROUP_PARENT
-    # (unset here -> "" = no slice tier), while the FORWARDED var is a
-    # separate declaration — the two are independent now.
-    assert captured["cgroup_parent"] == ""
+    # Placement comes from the declared gates tier, while the forwarded vars
+    # are separate declarations for code running inside the gate.
+    assert captured["cgroup_parent"] == "dev-gates.slice"
     assert captured["cgroup_parent_dev_background"] == "dev-background.slice"
+    assert captured["cgroup_parent_dev_gates"] == "dev-gates.slice"
     assert captured["memory"] == "3g"
     assert captured["memory_swap"] == "16g"
     assert captured["cpus"] == "1.5"
@@ -950,7 +971,7 @@ def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp
     monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
     monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev-gates.slice")
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
@@ -974,29 +995,22 @@ def _full_tester_env(monkeypatch):
     """Every REQUIRED_TESTER_ENV value set, so the KI-17 aggregate preflight
     passes and a test can then isolate exactly ONE unresolvable input."""
     monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev-gates.slice")
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
     monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
 
 
-def test_tester_gate_main_launches_unscoped_when_no_cgroup_parent_declared(monkeypatch, tmp_path, capsys):
-    # CIU-46 wave: cgroup_parent is DECLARED-ONLY. With nothing declared the
-    # launch PROCEEDS without --cgroup-parent (announced on stderr); the
-    # per-container caps still apply.
+def test_tester_gate_main_refuses_when_no_cgroup_parent_declared(monkeypatch, tmp_path, capsys):
+    # Gate placement is mandatory. A copied-out direct invocation must fail
+    # before the Docker command rather than launching beside production.
     _full_tester_env(monkeypatch)
     monkeypatch.delenv("CMRU_TESTER_CGROUP_PARENT", raising=False)
     monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
-    argv_seen = {}
-
     def fake_run(argv, **_k):
-        argv_seen["argv"] = argv
-        # git rev-parse --git-common-dir fails here => ordinary checkout,
-        # no extra bind mount; everything else "succeeds".
-        rc = 1 if "rev-parse" in argv else 0
-        return SimpleNamespace(returncode=rc, stdout="", stderr="")
+        raise AssertionError(f"Docker/git launch should not occur: {argv}")
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
 
@@ -1004,12 +1018,9 @@ def test_tester_gate_main_launches_unscoped_when_no_cgroup_parent_declared(monke
         tester_gate, "_resolve_worktree_context", lambda _cwd, rel: (tmp_path, rel)
     )
 
-    with pytest.raises(SystemExit) as exit_info:
+    with pytest.raises(SystemExit, match="CMRU_TESTER_CGROUP_PARENT") as exit_info:
         tester_gate.main(["--cwd", "cmru", "--", "true"])
-    assert exit_info.value.code == 0  # an unscoped launch still SUCCEEDS
-    argv_seen["argv"] = argv_seen.get("argv") or []
-    assert not any(a.startswith("--cgroup-parent") for a in argv_seen["argv"])
-    assert "no cgroup-parent declared" in capsys.readouterr().err
+    assert exit_info.value.code != 0
 
 
 def test_tester_gate_main_errors_when_no_memory_resolvable(monkeypatch, tmp_path):
@@ -1166,10 +1177,10 @@ def test_tester_gate_main_refuses_to_launch_into_a_missing_slice(monkeypatch, tm
     # slice existence probe — the behaviour under test here. The slice is now
     # DECLARED (the ambient var is no longer read).
     _full_tester_env(monkeypatch)
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "missing-gates.slice")
     monkeypatch.setattr(
         tester_gate, "check_slice_unit",
-        lambda _slice, _image: (False, "dev-background.slice: LoadState=not-found — the unit is not installed on this host"),
+        lambda _slice, _image: (False, "missing-gates.slice: LoadState=not-found — the unit is not installed on this host"),
     )
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
@@ -1207,8 +1218,8 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
         return SimpleNamespace(returncode=17)
 
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
-    assert transaction.run_child(workspace, ["--project", "alpha"]) == 17
-    assert observed["command"][-4:] == ["release", "--_transaction-child", "--project", "alpha"]
+    assert transaction.run_child(workspace, ["alpha"]) == 17
+    assert observed["command"][-3:] == ["release", "--_transaction-child", "alpha"]
     assert observed["cwd"] == workspace.path
     assert observed["env"][transaction.CHILD_ENV] == "1"
     assert observed["env"][transaction.BRANCH_ENV] == workspace.branch
@@ -1229,9 +1240,8 @@ def test_promote_workspace_fast_forwards_remote_main():
         assert _git("rev-parse", "origin/main", cwd=h.repo_root) == _git("rev-parse", "HEAD", cwd=workspace_path)
 
 
-def test_promote_workspace_rebases_and_retries_past_a_concurrent_unrelated_push():
-    """This repo has other concurrent committers — a non-fast-forward rejection
-    from a race, not a real conflict, must not fail the whole release."""
+def test_promote_workspace_fails_closed_on_a_concurrent_unrelated_push():
+    """A candidate that was already built must never be rebased onto a new main."""
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/race")
         base = _git("rev-parse", "HEAD", cwd=workspace_path)
@@ -1246,16 +1256,18 @@ def test_promote_workspace_rebases_and_retries_past_a_concurrent_unrelated_push(
         _git("commit", "-q", "-m", "concurrent change", cwd=other)
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
-        transaction.promote_workspace(workspace)  # must rebase onto it and retry, not raise
+        with pytest.raises(RuntimeError, match="candidate was not promoted"):
+            transaction.promote_workspace(workspace)
 
         _git("fetch", "-q", "origin", "main", cwd=h.repo_root)
-        assert _git("rev-parse", "origin/main", cwd=h.repo_root) == _git("rev-parse", "HEAD", cwd=workspace_path)
+        assert _git("rev-parse", "origin/main", cwd=h.repo_root) != _git("rev-parse", "HEAD", cwd=workspace_path)
         remote_files = _git("ls-tree", "-r", "--name-only", "origin/main", cwd=h.repo_root)
-        assert "generated.txt" in remote_files  # this release's own change
-        assert "concurrent.txt" in remote_files  # the concurrent change, not clobbered
+        assert "generated.txt" not in remote_files
+        assert "concurrent.txt" in remote_files
+        assert _git("status", "--porcelain=v1", cwd=workspace_path) == ""
 
 
-def test_promote_workspace_aborts_and_raises_on_a_real_rebase_conflict():
+def test_promote_workspace_does_not_start_a_rebase_on_a_concurrent_conflict():
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/conflict")
         base = _git("rev-parse", "HEAD", cwd=workspace_path)
@@ -1270,7 +1282,7 @@ def test_promote_workspace_aborts_and_raises_on_a_real_rebase_conflict():
         _git("commit", "-q", "-m", "concurrent conflicting edit", cwd=other)
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
-        with pytest.raises(RuntimeError, match="real conflict"):
+        with pytest.raises(RuntimeError, match="candidate was not promoted"):
             transaction.promote_workspace(workspace)
 
         # Never left mid-rebase — a retained worktree must be immediately usable.
@@ -1279,10 +1291,8 @@ def test_promote_workspace_aborts_and_raises_on_a_real_rebase_conflict():
         assert _git("status", "--porcelain=v1", cwd=workspace_path) == ""
 
 
-def test_promote_workspace_remaps_an_earlier_projects_checkpoint_after_rebase():
-    """A multi-project run records write_release_progress() after each project's
-    own promote. A LATER project's rebase must not strand an earlier project's
-    already-recorded checkpoint on a commit its rewritten branch no longer has."""
+def test_promote_workspace_leaves_candidate_and_checkpoint_unchanged_on_race():
+    """A failed final promotion leaves the built candidate and progress intact."""
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/multi")
         base = _git("rev-parse", "HEAD", cwd=workspace_path)
@@ -1304,15 +1314,13 @@ def test_promote_workspace_remaps_an_earlier_projects_checkpoint_after_rebase():
         _git("commit", "-q", "-m", "concurrent change", cwd=other)
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
-        transaction.promote_workspace(workspace)
+        with pytest.raises(RuntimeError, match="candidate was not promoted"):
+            transaction.promote_workspace(workspace)
 
         new_checkpoint = transaction.read_release_progress(h.repo_root, workspace)
         assert new_checkpoint is not None
-        assert new_checkpoint != after_a  # the rebase gave it a brand new SHA
-        # Still sits exactly one commit before HEAD (project a done, b pending) —
-        # remapped by position, not left pointing at some other commit.
+        assert new_checkpoint == after_a
         assert _git("rev-list", "--count", f"{new_checkpoint}..HEAD", cwd=workspace_path) == "1"
-        # And it is genuinely reachable from the rebased tip.
         assert _git("merge-base", new_checkpoint, "HEAD", cwd=workspace_path) == new_checkpoint
 
 
@@ -1333,9 +1341,8 @@ def test_promote_workspace_raises_immediately_for_a_non_race_push_failure(monkey
     assert len(calls) == 1  # not a race signature — no retry attempted
 
 
-def test_promote_workspace_gives_up_after_exhausting_retries(monkeypatch, tmp_path):
+def test_promote_workspace_attempts_exactly_once_on_non_fast_forward(monkeypatch, tmp_path):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
-    monkeypatch.setattr(transaction, "read_release_progress", lambda *_a, **_k: None)
     rejected = SimpleNamespace(returncode=1, stdout="", stderr="! [rejected]  HEAD -> main (non-fast-forward)\n")
     calls = []
 
@@ -1347,11 +1354,11 @@ def test_promote_workspace_gives_up_after_exhausting_retries(monkeypatch, tmp_pa
 
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
 
-    with pytest.raises(RuntimeError, match="lost the race"):
+    with pytest.raises(RuntimeError, match="candidate was not promoted"):
         transaction.promote_workspace(workspace)
 
     push_attempts = [c for c in calls if c[:2] == ["git", "push"]]
-    assert len(push_attempts) == transaction._PROMOTE_MAX_RETRIES + 1
+    assert len(push_attempts) == 1
 
 
 def test_resume_rejects_worktree_from_another_repository(tmp_path, monkeypatch):
@@ -2536,7 +2543,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["build", "--config", str(config), "--project", "alpha"])
+        cli.main(["build", "--config", str(config), "alpha"])
 
     assert exc.value.code == 0
     assert calls == ["retained", "removed"]
@@ -2572,7 +2579,7 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["build", "--config", str(config), "--project", "alpha"])
+        cli.main(["build", "--config", str(config), "alpha"])
 
     assert exc.value.code == 1
     assert calls == []
@@ -2618,3 +2625,42 @@ def test_abandon_previous_only_abandons_overlapping_scope():
         assert not ciu_path.exists()
         assert pwmcp_path.exists()       # different scope — left alone
         assert unscoped_path.exists()    # no recorded scope — left alone
+
+
+def test_abandon_previous_uses_the_shared_record_for_new_cmru_workspaces():
+    with _OriginAndClone() as h:
+        workspace = transaction.create_workspace(
+            h.repo_root,
+            base=_git("rev-parse", "HEAD", cwd=h.repo_root),
+            purpose="release",
+            scope="ciu",
+        )
+        transaction.write_release_scope(h.repo_root, workspace, ["ciu"])
+        common = transaction._common_git_dir(h.repo_root)
+        assert len(transaction._shared_worktree().list_workspaces(common)) == 1
+
+        abandoned = transaction.abandon_previous(h.repo_root, ["ciu"])
+
+        assert abandoned == [workspace.branch]
+        assert not workspace.path.exists()
+        assert transaction._shared_worktree().list_workspaces(common) == []
+
+
+def test_cmru_does_not_claim_or_discard_a_foreign_shared_workspace(tmp_path):
+    from worktree import create_workspace, remove_workspace
+
+    with _OriginAndClone() as h:
+        target = h.repo_root / ".worktrees" / "cmru-build-owned-by-ciu"
+        context = create_workspace(
+            h.repo_root,
+            target,
+            branch="cmru-build-owned-by-ciu",
+            base="HEAD",
+            purpose="ciu",
+        )
+
+        assert transaction.list_cmru_workspaces(h.repo_root) == []
+        with pytest.raises(RuntimeError, match="not a CMRU build transaction"):
+            transaction.discard_build_workspace(h.repo_root, target, dry_run=False)
+
+        remove_workspace(context)

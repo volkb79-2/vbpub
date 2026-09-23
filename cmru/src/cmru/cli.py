@@ -22,7 +22,14 @@ from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_st
 from cmru import transaction
 from cmru import exit_codes
 from cmru.config import load_forge_config
+from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cmru.cli_support import (
+    CMRUArgumentParser,
+    TargetSelectionError,
+    select_target_names,
+    write_config_diagnostic,
+)
 from cmru.dependencies import build_report, render_text as render_dependency_report
 from cmru.output import consume_cli_flags
 
@@ -67,8 +74,10 @@ class ProjectConfig:
     runner_steps: Mapping[str, StepConfig] = None  # strict project-local runner controls
     build_metadata: Mapping[str, str] = None
     artifact_dirs: tuple[str, ...] = ()  # declared project-relative output directories
+    evidence_paths: tuple[str, ...] = ()  # declared project-relative gate evidence paths
     build_step: str = ""                # explicit [project.release].build_step
     github_token: str = ""              # root credential or explicit project-secret override
+    runtime_kind: str = "none"           # declared lifecycle owner: none | ciu
     # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
     # no declared tool dependency (today's behaviour, unchanged).
     tool_dependencies: tuple = ()
@@ -250,13 +259,44 @@ def run_project_step(
     # transaction worktree (and therefore these logs) unless the caller elected
     # to retain them after verified completion.
     stable_log_root = project_root / "logs" / "cmru"
-    execute_step(
-        step,
-        project_root,
-        stable_log_root,
-        extra_env=dict(project.env) if project.env else None,
-        build_metadata=project.build_metadata,
+    context_keys = (
+        "CMRU_WORKSPACE_ID", "CMRU_WORKSPACE_PATH", "CMRU_SOURCE_GIT_ROOT",
+        "CMRU_RELEASE_BRANCH", "CMRU_RELEASE_BASE",
     )
+    has_transaction_context = bool(
+        os.environ.get(transaction.CHILD_ENV)
+        and os.environ.get("CMRU_WORKSPACE_PATH")
+    )
+    ambient_context = {key: os.environ.get(key) for key in context_keys}
+    if not has_transaction_context:
+        # A direct caller may have sourced a sibling's shell exports. Those
+        # values are not a CMRU context and must not be handed to a project
+        # runner as if this invocation owned that workspace.
+        for key in context_keys:
+            os.environ.pop(key, None)
+    try:
+        execute_step(
+            step,
+            project_root,
+            stable_log_root,
+            extra_env={
+                **dict(project.env),
+                "CMRU_RUNTIME_KIND": getattr(project, "runtime_kind", "none"),
+                **{
+                    key: os.environ[key]
+                    for key in context_keys
+                    if os.environ.get(key)
+                },
+            },
+            build_metadata=project.build_metadata,
+        )
+    finally:
+        if not has_transaction_context:
+            for key, value in ambient_context.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 def resolve_repo_root(config_path: Path, raw_value: str) -> Path:
@@ -394,22 +434,68 @@ def load_config(
         )
         if report.errors:
             for error in report.errors:
-                print(f"[ERROR] dependency preflight: {error}", flush=True)
+                write_config_diagnostic(f"dependency preflight: {error}")
             raise SystemExit(exit_codes.CONFIG_ERROR)
     orchestration = forge.orchestration
     if orchestration is None:  # defensive: both strict loaders always supply one
         raise ValueError("cmru configuration has no project selection")
-    repo_root = forge.repo_root
+    orchestration_root = forge.repo_root
+    # A CMRU orchestration root may intentionally sit above the Git family it
+    # drives. In a transaction child, keep loading the authoritative central
+    # document, but remap each project document into the isolated source
+    # worktree before constructing executable commands.
+    child_workspace = os.environ.get("CMRU_WORKSPACE_PATH")
+    child_source_root = os.environ.get("CMRU_SOURCE_GIT_ROOT")
+    if os.environ.get(transaction.CHILD_ENV) and child_workspace and child_source_root:
+        execution_root = Path(child_workspace).expanduser().resolve()
+        source_git_root = Path(child_source_root).expanduser().resolve()
+    else:
+        execution_root = orchestration_root
+        source_git_root = orchestration_root
+    repo_root = execution_root
+    transaction_scope = os.environ.get("CMRU_TRANSACTION_PROJECTS")
+    if transaction_scope and os.environ.get(transaction.CHILD_ENV):
+        requested_names = [item for item in transaction_scope.split(",") if item]
+        if not requested_names or len(set(requested_names)) != len(requested_names):
+            raise ValueError("CMRU_TRANSACTION_PROJECTS must contain unique project names")
+        unknown = sorted(set(requested_names) - set(forge.projects))
+        if unknown:
+            raise ValueError(
+                "CMRU_TRANSACTION_PROJECTS names unknown project(s): " + ", ".join(unknown)
+            )
+        selected_project_names = [
+            name for name in orchestration.project_order if name in set(requested_names)
+        ]
+    else:
+        selected_project_names = list(forge.projects)
     projects: dict[str, ProjectConfig] = {}
-    for name, parsed in forge.projects.items():
-        project_config_path = orchestration.project_configs[name]
+    for name in selected_project_names:
+        parsed = forge.projects[name]
+        source_project_config_path = orchestration.project_configs[name]
+        try:
+            project_rel_to_source = source_project_config_path.parent.resolve().relative_to(
+                source_git_root
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"{name}: project root {source_project_config_path.parent} is outside "
+                f"the selected Git root {source_git_root}"
+            ) from exc
+        project_config_path = (
+            execution_root / project_rel_to_source / PROJECT_CONFIG_FILENAME
+        ).resolve()
+        if not project_config_path.is_file():
+            raise ValueError(
+                f"{name}: transaction project config is missing from the isolated "
+                f"worktree: {project_config_path}"
+            )
         with project_config_path.open("rb") as handle:
             document = tomllib.load(handle)
         project_raw = document["project"]
         steps_raw = document["steps"]
         project_root = project_config_path.parent.resolve()
         try:
-            project_rel = project_root.relative_to(repo_root)
+            project_rel = project_root.relative_to(execution_root)
         except ValueError as exc:  # should already be prohibited by config validation
             raise ValueError(f"{name}: project root is outside orchestration root") from exc
         cwd = project_rel.as_posix() if project_rel.parts else "."
@@ -441,9 +527,11 @@ def load_config(
             changelog=parsed.changelog, project_root=project_root,
             runner_steps=runner_steps, build_metadata=parsed.build_metadata,
             artifact_dirs=tuple(parsed.artifact_dirs),
+            evidence_paths=tuple(parsed.evidence_paths),
             build_step=parsed.build_step,
             github_token=forge.project_tokens.get(name, forge.github.token or ""),
             tool_dependencies=tuple(parsed.tool_dependencies),
+            runtime_kind=parsed.runtime_kind,
         )
 
     cleanup_raw = forge.cleanup
@@ -465,8 +553,8 @@ def load_config(
     return (
         repo_root,
         projects,
-        orchestration.project_order,
-        orchestration.default_projects,
+        [name for name in orchestration.project_order if name in projects],
+        [name for name in orchestration.default_projects if name in projects],
         orchestration.default_steps,
         orchestration.execution_mode,
         {},
@@ -1056,7 +1144,7 @@ def run_cleanup_verb(
     cleanup: "CleanupConfig",
     github_config: "GitHubConfig",
     env_config: "ReleaseEnvConfig",
-    project_filter: Optional[str],
+    project_filter: Optional[str | list[str]],
     dry_run: bool,
 ) -> None:
     """Generic ``cmru cleanup``: per project, delete old Releases, prune ghcr, delete
@@ -1071,7 +1159,9 @@ def run_cleanup_verb(
     # <prefix>-v* releases — this call does NOT set it.
     resolve_versions_from_git(repo_root, configs)
 
-    names = [project_filter] if project_filter else list(project_order)
+    names = list(project_filter) if isinstance(project_filter, list) else (
+        [project_filter] if project_filter else list(project_order)
+    )
     missing = [n for n in names if n not in configs]
     if missing:
         raise ValueError(f"Unknown project(s): {', '.join(missing)}")
@@ -1152,16 +1242,14 @@ def run_cleanup_verb(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="cmru explicit step orchestration")
+    parser = CMRUArgumentParser(description="cmru explicit step orchestration")
     parser.add_argument(
         "--config",
         help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
     )
     parser.add_argument(
-        "--project",
-        action="append",
-        default=None,
-        help="Project to operate on (default: all)",
+        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+        help="Project target; omitted uses the current project or estate default",
     )
     parser.add_argument("--run-tests", action="store_true", help="Run tests")
     parser.add_argument("--build", action="store_true", help="Build artifacts")
@@ -1200,15 +1288,9 @@ def _orchestrate() -> None:
         env_config,
     ) = load_config(config_path)
 
-    projects = args.project or default_projects
-    if "all" in projects:
-        selected_names = project_order
-    else:
-        selected_names = projects
-
-    missing = [name for name in selected_names if name not in configs]
-    if missing:
-        raise ValueError(f"Unknown project(s) in selection: {', '.join(missing)}")
+    selected_names = _select_projects(
+        config_path, getattr(args, "target", None), configs, project_order,
+    )
 
     selected = [configs[name] for name in selected_names]
 
@@ -1317,29 +1399,83 @@ def _cmru_version() -> str:
 
 
 def _default_config_path() -> Path:
-    """Select a config declared directly by the current working directory.
-
-    A portable project owns ``cmru.toml``.  A repository root may instead own
-    ``cmru.orchestration.toml``.  Looking only in the current directory keeps
-    the installed CLI independent of parent checkouts while allowing both the
-    portable and estate entry points to be used without a wrapper-specific
-    config injection.
-    """
-    cwd = Path.cwd()
-    project = cwd / PROJECT_CONFIG_FILENAME
-    if project.exists():
-        return project
-    orchestration = cwd / ORCHESTRATION_CONFIG_FILENAME
-    if orchestration.exists():
-        return orchestration
-    # Preserve the project-config error when neither source exists.  The
-    # resulting message remains actionable and stable for standalone callers.
-    return project
+    """Return the nearest discovered project or orchestration config."""
+    return resolve_invocation_context().config_path
 
 
 def _resolve_config(config_opt: Optional[str]) -> Path:
-    raw = config_opt or str(_default_config_path())
-    return Path(raw).expanduser().resolve()
+    return resolve_invocation_context(
+        Path(config_opt).expanduser() if config_opt else None,
+    ).config_path
+
+
+def _invocation_context(config_opt: Optional[str]) -> InvocationContext:
+    return resolve_invocation_context(
+        Path(config_opt).expanduser() if config_opt else None,
+    )
+
+
+def _select_projects(
+    config_path: Path, raw_target: Optional[str], configs: Mapping[str, "ProjectConfig"],
+    project_order: List[str],
+) -> List[str]:
+    # An explicit target is already authoritative and does not need a second
+    # filesystem discovery pass.  A standalone project config also establishes
+    # project context by definition; this keeps child dispatches deterministic
+    # when they are given the snapshot's project-local config path.
+    context_project: str | None = None
+    if raw_target is None:
+        if config_path.name == PROJECT_CONFIG_FILENAME and len(configs) == 1:
+            context_project = next(iter(configs))
+        else:
+            context = resolve_invocation_context(config_path)
+            context_project = context.project_name
+    try:
+        return select_target_names(
+            raw_target,
+            configs,
+            project_order,
+            context_project=context_project,
+        )
+    except TargetSelectionError as exc:
+        from cmru.cli_support import write_config_diagnostic
+
+        write_config_diagnostic(str(exc))
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+
+
+def _configure_native_release_logging(repo_root: Path, *, append: bool) -> None:
+    """Provide the former wrapper's aggregate log and live tee for release.
+
+    The real CLI uses an OS pipe so child processes inherit the same tee. Tests
+    that call ``main(argv=...)`` stay in-process and therefore do not mutate
+    their capture descriptors.
+    """
+    if os.environ.get("CMRU_NATIVE_RELEASE_LOGGING") == "0":
+        return
+    log_path = _prepare_native_release_log(repo_root, append=append)
+    tee = subprocess.Popen(["tee", "-a", str(log_path)], stdin=subprocess.PIPE)
+    assert tee.stdin is not None
+    os.dup2(tee.stdin.fileno(), 1)
+    os.dup2(1, 2)
+
+
+def _prepare_native_release_log(repo_root: Path, *, append: bool) -> Path:
+    """Prepare the aggregate log and child-process environment."""
+    log_path = Path(
+        os.environ.get("CMRU_RELEASE_LOG") or (repo_root / "cmru.release.log")
+    ).expanduser().resolve()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if append:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write("\n---\n")
+        os.environ["CMRU_LOG_APPEND"] = "1"
+    else:
+        log_path.write_text("", encoding="utf-8")
+        os.environ.pop("CMRU_LOG_APPEND", None)
+    os.environ["CMRU_RUN_LOG"] = str(log_path)
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    return log_path
 
 
 def _ordered_configs(
@@ -1450,9 +1586,9 @@ def _run_untagged_project(
     project = configs[name]
     apply_project_release_env(github_config, env_config, project)
     # Projects that extract tracked provenance must do their private build in
-    # ``prepare``. It has already been committed, gated and promoted before cmru
-    # creates any tags for this transaction; rebuilding here would both waste work
-    # and risk producing artifacts from a post-tag HEAD.
+    # ``prepare``. It has already been committed and gated before cmru creates
+    # any tags for this transaction; rebuilding here would both waste work and
+    # risk producing artifacts from a post-tag HEAD.
     artifact_step = project.build_step
     if not artifact_step:
         raise RuntimeError(f"{name}: project.release.build_step is absent")
@@ -1480,6 +1616,29 @@ def _version_strategy(proj: "ProjectConfig") -> str:
     return proj.version.strategy if getattr(proj, "version", None) else "scm"
 
 
+def _assert_release_candidate_unchanged(
+    repo_root: Path, project_name: str, expected_sha: str,
+) -> None:
+    """Require publication to have used the exact candidate commit.
+
+    Release steps may create ignored logs and artifact output, but they must not
+    move ``HEAD`` or leave a non-ignored worktree mutation behind. A later
+    promotion must therefore integrate the same commit that was gated and built.
+    """
+    actual_sha = _git(repo_root, "rev-parse", "HEAD")
+    if actual_sha != expected_sha:
+        raise RuntimeError(
+            f"{project_name}: release step moved HEAD from {expected_sha} to "
+            f"{actual_sha}; refusing to promote a different commit"
+        )
+    changed = _worktree_changed_paths(repo_root)
+    if changed:
+        raise RuntimeError(
+            f"{project_name}: release step left non-ignored changes before promotion: "
+            f"{', '.join(changed)}"
+        )
+
+
 def _release_projects_sequentially(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -1493,17 +1652,19 @@ def _release_projects_sequentially(
     major: bool = False,
     set_version: Optional[str] = None,
 ) -> List[str]:
-    """Release every named project one after another (build all projects after
-    another): each project's own prepare → gate → promote → tag → build → publish
-    cycle completes in full before the next project starts. This is what lets a
-    later project (e.g. an OCI image) resolve an earlier project's (e.g. a wheel)
-    brand-new release within this SAME run, instead of always trailing one
-    `cmru release` behind.
+    """Release every named project one after another.
+
+    Each project's own prepare → gate → tag → build → publish → promote cycle
+    completes in full before the next project starts. Promotion is intentionally
+    last: ``origin/main`` receives the exact candidate commit only after its
+    public artifact has succeeded. This is what lets a later project (e.g. an OCI
+    image) resolve an earlier project's (e.g. a wheel) brand-new release within
+    this SAME run, instead of always trailing one ``cmru release`` behind.
 
     Progress is checkpointed after each project's full success
-    (:func:`transaction.write_release_progress`) so that if a LATER project fails,
-    the caller's revert only undoes that project's promoted changes — an earlier,
-    already-succeeded, already-published project is left alone.
+    (:func:`transaction.write_release_progress`). A failed candidate remains on
+    its durable transaction branch; no source-tree revert is needed because the
+    failed project's candidate was never promoted.
 
     Returns the "{name} (...)" labels actually built/published (empty entries for
     projects released with ``no_build=True`` are omitted).
@@ -1511,10 +1672,10 @@ def _release_projects_sequentially(
     from cmru.version import release_cmd
 
     # Seed the checkpoint at this run's own starting point. Without this, a
-    # --resume reusing the same branch token would read a *previous* attempt's
-    # (older, now-invalid) checkpoint and could revert past the operator's own
-    # fix commit on --resume. read_release_progress() returning "the run's base"
-    # is exactly equivalent to "nothing has fully succeeded yet in this run".
+    # --resume reusing the same branch token would read a previous attempt's
+    # stale checkpoint and misreport the last completed source candidate.
+    # Returning "the run's base" is exactly equivalent to "nothing has fully
+    # succeeded yet in this run".
     transaction.write_release_progress(repo_root, workspace, workspace.base)
 
     released: List[str] = []
@@ -1526,60 +1687,75 @@ def _release_projects_sequentially(
         _prepare_release_projects(
             repo_root, configs, [name], minor=minor, major=major, set_version=set_version,
         )
-        _run_release_gates(repo_root, configs, [name])
-
-        transaction.promote_workspace(workspace)
-        log_info(f"{name}: promoted to origin/main")
-        # Keep the durability backup current as the run progresses — otherwise
-        # it forever holds only the pre-run base and a crash mid-run has nothing
-        # of this run's work to recover from.
+        # Keep the remote candidate branch current before the gate too. A gate
+        # failure must leave the generated candidate available for inspection.
         transaction.push_backup_branch(workspace)
+        _run_release_gates(repo_root, configs, [name])
+        gated_sha = _git(repo_root, "rev-parse", "HEAD")
 
         strategy = _version_strategy(project)
         if not getattr(project, "git_tag", True):
             if not no_build:
                 log_info(f"Building + publishing {name} (no git tag)")
+                candidate_sha = _git(repo_root, "rev-parse", "HEAD")
                 _run_untagged_project(
                     repo_root, configs, name,
                     github_config=github_config, env_config=env_config,
                 )
+                _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
                 released.append(f"{name} (no git tag)")
                 transaction.write_release_result(
                     repo_root, workspace, name, f"source-{_git(repo_root, 'rev-parse', 'HEAD')[:12]}"
                 )
             else:
                 log_info(f"{name}: --no-build — skipped build/push")
+            transaction.promote_workspace(workspace)
+            log_info(f"{name}: promoted release candidate to origin/main")
         else:
             release_cmd(repo_root, {name: project}, minor=minor, major=major, set_version=set_version)
-            # A file:-strategy tag commits a version bump *after* the promote
-            # above — push it now so it lands on origin/main this cycle, not
-            # deferred to whichever project (if any) happens to promote next.
-            # A no-op (nothing new to push) for scm/counter strategies.
-            transaction.promote_workspace(workspace)
+            # A file:-strategy tag commits a version bump here. Refresh the
+            # durable candidate before tags or public publication are touched.
+            transaction.push_backup_branch(workspace)
+            candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+            if candidate_sha != gated_sha:
+                # The file strategy adds a mechanical version commit after the
+                # initial pre-tag gate. Re-run the real gate on that exact
+                # candidate so the commit that produces the artifact has passed
+                # the same acceptance contract before publication begins.
+                log_info(f"{name}: versioning changed the candidate; re-running release gate")
+                _run_release_gates(repo_root, configs, [name])
             tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
             if tag:
                 _push_tags(repo_root, [tag])
                 if not no_build:
                     log_info(f"Building + publishing {name} ({tag})")
+                    candidate_sha = _git(repo_root, "rev-parse", "HEAD")
                     artifact_phases = [] if project.build_step == "prepare" else [project.build_step]
                     _run_project_steps(
                         repo_root, configs, [name], [*artifact_phases, "push"],
                         github_config=github_config, env_config=env_config,
                     )
+                    _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
                     released.append(f"{name} ({tag})")
                     transaction.write_release_result(repo_root, workspace, name, tag)
                 else:
                     log_info(f"{name}: --no-build — tagged {tag}, skipped build/publish")
                     transaction.write_release_result(repo_root, workspace, name, tag)
+                transaction.promote_workspace(workspace)
+                log_info(f"{name}: promoted release candidate to origin/main")
             elif not no_build:
                 raise RuntimeError(
                     f"{name}: gate passed and it was in this run's changed-project scope, "
                     "but no tag ended up on HEAD (release.git_tag produced nothing to "
                     "build/publish) — this should not happen; investigate before retrying"
                 )
+            else:
+                transaction.promote_workspace(workspace)
+                log_info(f"{name}: promoted release candidate to origin/main")
 
         # This project's whole cycle succeeded — checkpoint it so a LATER
-        # project's failure can only revert what comes after this point.
+        # project's retained candidate can be compared with the last complete
+        # source state.
         transaction.write_release_progress(repo_root, workspace, _git(repo_root, "rev-parse", "HEAD"))
 
     return released
@@ -1587,6 +1763,24 @@ def _release_projects_sequentially(
 
 def _transaction_workspace_from_env(repo_root: Path) -> transaction.ReleaseWorkspace:
     """Recover transaction provenance in the re-execed child process."""
+    shared_path = os.environ.get("CMRU_WORKSPACE_PATH")
+    if shared_path:
+        try:
+            shared = transaction._shared_worktree()
+            path = Path(shared_path).resolve()
+            _top, common, _branch, _head = shared.discover_git_context(path)
+            record = shared.find_workspace(common, path)
+            if record is not None:
+                context = shared.ensure_workspace(record)
+                return transaction.ReleaseWorkspace(
+                    repo_root=context.source_git_root,
+                    path=path,
+                    branch=context.branch,
+                    base=context.base_commit,
+                    context=context,
+                )
+        except Exception as exc:
+            raise RuntimeError(f"invalid shared workspace context: {exc}") from exc
     workspace = transaction.ReleaseWorkspace(
         repo_root=repo_root,
         path=repo_root,
@@ -1598,9 +1792,13 @@ def _transaction_workspace_from_env(repo_root: Path) -> transaction.ReleaseWorks
     return workspace
 
 
-def _child_release_args(rest: List[str], config_path: Path, repo_root: Path) -> List[str]:
-    """Point a transaction child at the matching config *inside* its snapshot."""
+def _child_release_args(
+    rest: List[str], config_path: Path, repo_root: Path, *, source_git_root: Path | None = None,
+    target_override: str | None = None, original_target: str | None = None,
+) -> List[str]:
+    """Point a transaction child at its snapshot or central CMRU config."""
     result: List[str] = []
+    removed_target = original_target is None
     skip_next = False
     for index, value in enumerate(rest):
         if skip_next:
@@ -1621,14 +1819,135 @@ def _child_release_args(rest: List[str], config_path: Path, repo_root: Path) -> 
             continue
         if value.startswith("--abandon="):
             continue
+        if not removed_target and value == original_target:
+            removed_target = True
+            continue
         result.append(value)
     try:
-        relative = config_path.resolve().relative_to(repo_root.resolve())
-    except ValueError as exc:
-        raise ValueError(
-            "isolated releases require a config tracked inside the repository"
-        ) from exc
-    result.extend(["--config", str(relative)])
+        relative = config_path.resolve().relative_to(
+            (source_git_root or repo_root).resolve()
+        )
+    except ValueError:
+        # The CMRU root is allowed to be a central directory above/around the
+        # selected Git family. Such a root is still the authoritative config
+        # source for the child; load_config remaps registered project documents
+        # into the isolated worktree.
+        config_arg = str(config_path.resolve())
+    else:
+        config_arg = str(relative)
+    if target_override is not None:
+        result.insert(0, target_override)
+    result.extend(["--config", config_arg])
+    return result
+
+
+def _dispatch_independent_git_families(
+    verb: str,
+    rest: List[str],
+    config_path: Path,
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+    *,
+    original_target: str | None,
+) -> int | None:
+    """Run one normal transaction per independent selected Git family.
+
+    Git cannot make commits in independent repositories atomic.  Keeping the
+    existing single-family transaction as the child protocol, while dispatching
+    each family as its own explicit invocation, preserves that limitation in
+    observable state: every family has its own branch, workspace record, lock,
+    promotion result, and recovery path.
+    """
+    if len(project_names) <= 1:
+        return None
+    groups = transaction.project_git_family_groups(
+        repo_root, [configs[name] for name in project_names]
+    )
+    if len(groups) <= 1:
+        return None
+    if any(flag in rest or any(item.startswith(flag + "=") for item in rest)
+           for flag in ("--resume", "--abandon")):
+        raise RuntimeError(
+            "resume/abandon must target one retained CMRU family workspace at a time; "
+            "select one Git-family project set"
+        )
+    try:
+        import shutil
+        launcher = os.environ.get("CMRU_BIN") or shutil.which("cmru")
+        if launcher:
+            command_prefix = [launcher]
+        else:
+            command_prefix = [sys.executable, "-m", "cmru"]
+        for family_root, members in groups.items():
+            names = [getattr(project, "name") for project in members]
+            child_args = _child_release_args(
+                rest,
+                config_path,
+                repo_root,
+                source_git_root=family_root,
+                target_override=",".join(names),
+                original_target=original_target,
+            )
+            completed = subprocess.run(
+                [*command_prefix, verb, *child_args],
+                cwd=Path.cwd(),
+                env=os.environ.copy(),
+            )
+            if completed.returncode:
+                return completed.returncode
+    except OSError as exc:
+        raise RuntimeError(f"could not dispatch per-Git-family {verb} transaction: {exc}") from exc
+    return 0
+
+
+def _configs_for_git_family(
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+    git_root: Path,
+) -> dict[str, "ProjectConfig"]:
+    """Rebase the execution model for read-only/direct project verbs.
+
+    ``load_config`` normally derives paths from the CMRU root.  When that root
+    is above a repository, Git-facing helpers need the same projects expressed
+    relative to the selected repository instead; command paths are rebased with
+    them so direct verbs cannot accidentally run from the orchestration root.
+    """
+    result: dict[str, ProjectConfig] = {}
+    selected_root = git_root.resolve()
+    for name in project_names:
+        project = configs[name]
+        project_root = Path(getattr(project, "project_root", None) or "")
+        if not project_root.is_absolute():
+            project_root = selected_root / project_root
+        project_root = project_root.resolve()
+        try:
+            relative = project_root.relative_to(selected_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{name}: project root {project_root} is outside selected Git root {selected_root}"
+            ) from exc
+        child_root = selected_root / relative
+        rebased_steps: dict[str, list[Command]] = {}
+        for step_name, commands in project.steps.items():
+            rebased: list[Command] = []
+            for command in commands:
+                try:
+                    command_relative = command.cwd.relative_to(project_root)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"{name}: declared command cwd escapes project root: {command.cwd}"
+                    ) from exc
+                rebased.append(replace(command, cwd=child_root / command_relative))
+            rebased_steps[step_name] = rebased
+        cwd = relative.as_posix() if relative.parts else "."
+        result[name] = replace(
+            project,
+            cwd=cwd,
+            paths=[cwd],
+            project_root=child_root,
+            steps=rebased_steps,
+        )
     return result
 
 
@@ -1663,7 +1982,7 @@ def _check_release_tool_dependencies(
     loaded estate, used only to resolve each dependency's PROVIDER project's tag
     ``prefix``. Raises :class:`cmru.version.ReleasePlanRefused` -- exactly like the
     tag-preflight beside it -- so a blocking finding is a typed, clean refusal
-    before any project's prepare/gate/promote cycle starts, never a mid-release
+    before any project's prepare/gate cycle starts, never a mid-release
     failure. A project that declares nothing is a silent no-op: zero network calls."""
     from cmru.tool_deps import is_blocking, render_status, verify_project
     from cmru.version import ReleasePlanRefused
@@ -1718,7 +2037,19 @@ def _uncommitted_release_paths(
         project = ordered.get(name)
         if project is None:
             continue
-        paths = getattr(project, "paths", None) or [getattr(project, "cwd", None) or name]
+        project_root = getattr(project, "project_root", None)
+        if project_root is None:
+            continue
+        project_root = Path(project_root)
+        if not project_root.is_absolute():
+            project_root = repo_root / project_root
+        try:
+            relative_root = project_root.resolve().relative_to(repo_root.resolve())
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{name}: project root {project_root} is outside selected Git root {repo_root}"
+            ) from exc
+        paths = [relative_root.as_posix() if relative_root.parts else "."]
         changed = _worktree_changed_paths(repo_root, paths=paths)
         if changed:
             dirty[name] = changed
@@ -1790,6 +2121,35 @@ def _prepare_release_projects(
             _commit_prepared_generated(repo_root, project)
 
 
+def _prepare_dry_run_external_versions(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: List[str],
+    *,
+    github_config: "GitHubConfig",
+    env_config: "ReleaseEnvConfig",
+) -> None:
+    """Populate disposable external-version inputs before a dry-run plan.
+
+    ``external:VAR`` is intentionally derived by the project's declared
+    ``prepare`` step. A dry run must therefore execute that narrow preparation
+    in its isolated transaction before asking the version planner what the
+    release would do; otherwise PWMCP's resolver cannot expose the version it
+    just discovered. No gate, tag, build, push, or promotion is performed.
+    """
+    log_dir = repo_root / "logs"
+    for name in project_names:
+        project = configs[name]
+        if not _version_strategy(project).startswith("external:"):
+            continue
+        if "prepare" not in (project.steps or {}):
+            continue
+        apply_project_release_env(github_config, env_config, project)
+        log_info(f"{name}: preparing external version inputs for dry-run")
+        run_project_step(project, "prepare", repo_root, log_dir)
+        _commit_prepared_generated(repo_root, project)
+
+
 def usage() -> str:
     """Return the public CLI overview, including every user-facing option.
 
@@ -1804,27 +2164,34 @@ def usage() -> str:
         f"Config: project {PROJECT_CONFIG_FILENAME}, or explicit "
         f"{ORCHESTRATION_CONFIG_FILENAME} — select with --config\n"
         "\n"
-        "TYPICAL WORKFLOW  (run from a project or repository root):\n"
+        "GETTING STARTED\n"
+        "  cmru init                  adopt a folder with the interactive wizard\n"
+        "  cmru status                preview the current project\n"
+        "  cmru status all            preview every registered project\n"
+        "\n"
+        "TYPICAL WORKFLOW  (run from a project or CMRU root):\n"
         "  1. status                  preview what changed + the next version (no writes)\n"
         "  2. release                 isolated: prepare → gate → integrate → tag → build → publish\n"
         "       build alone retains local non-release outputs; only a failed build keeps its worktree\n"
-        "  3. cleanup [--project P] [--dry-run]  prune old releases/images (keeps -latest)\n"
+        "  3. cleanup [PROJECT] [--dry-run]  prune old releases/images (keeps -latest)\n"
         "     cleanup --remove-assets AGE         age-based prune (e.g. 30d)\n"
         "\n"
         "PLANNING (read-only)\n"
-        "    status   [--config C] [--project P] [--minor|--major] [--set-version V] [--dry-run]\n"
+        "    status   [all|P[,P...]] [--config C] [--minor|--major] [--set-version V] [--dry-run]\n"
         "    worktrees [--json]                                      discover retained worktrees\n"
         "    dependencies [--config C] [--json] [--write]              graph + preflight\n"
         "\n"
         "RELEASE / HISTORY (writes)\n"
-        "    release  [--config C] [--project P] [--minor|--major|--set-version V] [--dry-run]\n"
+        "    release  [all|P[,P...]] [--config C] [--minor|--major|--set-version V] [--dry-run]\n"
         "             [--no-build] [--resume WORKTREE|--abandon WORKTREE|all-previous]\n"
         "             [--allow-uncommitted] [--show-run-details] [--log-append]\n"
-        "             [--discard-logs-on-release] [--discard-artifacts-on-release] [--ref REF]\n"
+        "             [--discard-logs-on-release] [--discard-artifacts-on-release]\n"
+        "             [--discard-evidence-on-release] [--ref REF]\n"
         "                                                  isolated source-first transaction\n"
-        "    changelog --config C --project P --backfill-tag TAG\n"
+        "    changelog [all|P[,P...]] --config C --backfill-tag TAG (repeat for all)\n"
         "                                                  catalog an already-published tagged release\n"
-        "    init [--layout single|monorepo] [--project ID] [--owner O] [--repo R]\n"
+        "    init [--root PATH] [--layout single|monorepo] [--owner O] [--repo R]\n"
+        "         [--owner-type user|org]\n"
         "                                                  guided scaffolding: writes cmru.toml (and, for a\n"
         "                                                  monorepo, cmru.orchestration.toml) after validating\n"
         "                                                  them with the real loaders; never overwrites\n"
@@ -1833,28 +2200,28 @@ def usage() -> str:
         "              [--device-read/write-bps|iops DEV:RATE] [--enable-docker]\n"
         "                                                  run one command inside tester-unified\n"
         "                                                  for this worktree (declared caps + host-verified slice)\n"
-        "    standards [--config C] [--project P ...] [--update]\n"
+        "    standards [all|P[,P...]] [--config C] [--update]\n"
         "                                                  check/update CMRU framework markers\n"
-        "    tool-deps [--config C] [--project P ...] [--json] [--timeout S]\n"
+        "    tool-deps [all|P[,P...]] [--config C] [--json] [--timeout S]\n"
         "              [--allow-stale-tool-deps] [--refresh PROVIDER_PROJECT]\n"
         "                                                  verify declared tool dependencies (S15):\n"
         "                                                  integrity + authenticity + freshness\n"
         "                                                  (network; never run during tests)\n"
-        "    build    [--config C] [--project P] [--show-run-details] [--log-append]\n"
+        "    build    [all|P[,P...]] [--config C] [--show-run-details] [--log-append]\n"
         "                                                  isolated local build; retains outputs on success\n"
-        "    publish  [--config C] [--project P] [--show-run-details] [--log-append]\n"
+        "    publish  [all|P[,P...]] [--config C] [--show-run-details] [--log-append]\n"
         "                                                  run the project 'push' step\n"
-        "    run      [--config C] [--project P ...] [--run-tests] [--build] [--push] [--validate]\n"
+        "    run      [all|P[,P...]] [--config C] [--run-tests] [--build] [--push] [--validate]\n"
         "             [--remove-assets AGE] [--dry-run] [--show-run-details] [--log-append]\n"
         "                                                  low-level: explicit steps × projects\n"
         "\n"
         "CONSUMPTION (read-only)\n"
-        "    resolve  [--config C] [--project P|--prefix PREFIX] [--format env|json|url]\n"
-        "    get|get-py --config C --project P [--output FILE]\n"
+        "    resolve  [all|P[,P...]] [--config C] [--format env|json|url]\n"
+        "    get|get-py [all|P[,P...]] [--config C] [--output FILE|--output-dir DIR]\n"
         "                                                  emit standalone get.py installer\n"
         "\n"
         "MAINTENANCE\n"
-        "    cleanup  [--config C] [--remove-assets AGE] [--project P] [--dry-run]\n"
+        "    cleanup  [all|P[,P...]] [--config C] [--remove-assets AGE] [--dry-run]\n"
         "             [--delete-unmanaged-release-tag TAG] [--delete-build-output ID]\n"
         "             [--discard-build-worktree PATH] [--yes]\n"
         "    run-step --config C --step S [--show-run-details] [--log-append]\n"
@@ -1877,6 +2244,12 @@ def _config_hint(repo_root: Path) -> str:
     return ""
 
 
+def _current_git_root() -> Path:
+    """Resolve the current repository root through the shared Git API."""
+
+    return transaction._shared_worktree().discover_git_root(Path.cwd())[0]
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Entry point for the ``cmru`` CLI.
 
@@ -1893,7 +2266,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(usage())
         return
 
-    if av[0] == "version":
+    if av[0] in ("version", "--version"):
         print(f"cmru {_cmru_version()}")
         return
 
@@ -1901,10 +2274,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     rest = av[1:]
 
     if verb == "init":
-        if "-h" in rest or "--help" in rest or not rest:
+        if "-h" in rest or "--help" in rest:
             print(
-                "cmru init [--layout single|monorepo] [--project ID]... "
-                "[--owner O] [--repo R]\n"
+                f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
+                "cmru init [--root PATH] [--layout single|monorepo] "
+                "[--owner O] [--repo R] [--owner-type user|org]\n"
                 "  Guided scaffolding. Prompts when flags are absent; every\n"
                 "  generated contract is validated with the real loaders before\n"
                 "  anything is written; existing files are never overwritten."
@@ -1918,7 +2292,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         _orchestrate()
 
     elif verb == "worktrees":
-        parser = argparse.ArgumentParser(
+        parser = CMRUArgumentParser(
             description=(
                 "List retained CMRU build/release worktrees.  This is read-only and derives "
                 "the repository from the current Git checkout; it does not require a CMRU config."
@@ -1926,12 +2300,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         parser.add_argument("--json", action="store_true", help="Emit machine-readable records")
         vargs = parser.parse_args(rest)
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False,
-        )
-        if result.returncode or not result.stdout.strip():
-            parser.error("cmru worktrees must run inside the repository whose worktrees you want to inspect")
-        repo_root = Path(result.stdout.strip()).resolve()
+        shared = transaction._shared_worktree()
+        try:
+            repo_root = _current_git_root()
+        except shared.WorkspaceError as exc:
+            parser.error(
+                "cmru worktrees must run inside the repository whose worktrees "
+                f"you want to inspect: {exc}"
+            )
         workspaces = transaction.list_cmru_workspaces(repo_root)
         if vargs.json:
             print(json.dumps([
@@ -1940,7 +2316,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "branch": workspace.branch,
                     "path": str(workspace.path),
                     "source_commit": workspace.base or None,
-                    "visible": workspace.path.is_dir(),
+                    "prunable": workspace.is_prunable,
                 }
                 for workspace in workspaces
             ], indent=2, sort_keys=True))
@@ -1950,17 +2326,20 @@ def main(argv: Optional[List[str]] = None) -> None:
             config_hint = _config_hint(repo_root)
             for workspace in workspaces:
                 purpose = transaction.workspace_purpose(workspace.branch)
-                source = workspace.base[:12] if workspace.base else "unavailable from this filesystem view"
+                source = workspace.base[:12] if workspace.base else "unknown"
                 print(f"{purpose}: {workspace.branch}\n  path: {workspace.path}\n  source: {source}")
-                if purpose == "release" and workspace.path.is_dir():
+                if purpose == "release" and not workspace.is_prunable:
                     print(f"  resume: cmru release{config_hint} --resume {shlex.quote(str(workspace.path))}")
-                elif purpose == "build" and workspace.path.is_dir():
+                elif purpose == "build" and not workspace.is_prunable:
                     print(
                         "  discard: cmru cleanup"
                         f"{config_hint} --discard-build-worktree {shlex.quote(str(workspace.path))} --yes"
                     )
-                elif not workspace.path.is_dir():
-                    print("  action: unavailable here; inspect or clean it from the filesystem view that created it")
+                elif workspace.is_prunable:
+                    print(
+                        "  action: withheld; Git marks this worktree registration prunable. "
+                        "Inspect the checkout and its Git metadata before acting."
+                    )
 
     elif verb == "run-step":
         # Raw single-step runner for the one project cmru.toml grammar.
@@ -1968,7 +2347,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         runner_main(rest)
 
     elif verb in ("dependencies", "dependency-graph", "graph"):
-        parser = argparse.ArgumentParser(
+        parser = CMRUArgumentParser(
             description=(
                 "Show and preflight the project dependency graph. Artifact inputs are "
                 "derived from first-party pip/wheels.list manifests; --write refreshes "
@@ -2016,8 +2395,11 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     elif verb in ("build", "publish"):
         import argparse as _ap
-        parser = _ap.ArgumentParser(description=f"cmru {verb}")
-        parser.add_argument("--project", help="Limit to one project (default: all orchestrated)")
+        parser = CMRUArgumentParser(description=f"cmru {verb}")
+        parser.add_argument(
+            "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+            help="Project target; omitted uses the current project or estate default",
+        )
         parser.add_argument(
             "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
         )
@@ -2031,25 +2413,38 @@ def main(argv: Optional[List[str]] = None) -> None:
         github_config, env_config = _rest[-2], _rest[-1]
         apply_release_env(github_config, env_config)
         ordered = _ordered_configs(configs, project_order)
-        names = [vargs.project] if vargs.project else list(ordered.keys())
-        missing = [n for n in names if n not in configs]
-        if missing:
-            log_error(f"Unknown project(s): {', '.join(missing)}")
-            _sys.exit(2)
+        names = _select_projects(cfg_path, vargs.target, configs, project_order)
         if verb == "publish":
             require_project_publish_credentials(configs, names)
         step = "build" if verb == "build" else "push"
 
         if verb == "build" and not vargs._transaction_child:
+            dispatched = _dispatch_independent_git_families(
+                verb,
+                rest,
+                cfg_path,
+                repo_root,
+                configs,
+                names,
+                original_target=vargs.target,
+            )
+            if dispatched is not None:
+                _sys.exit(dispatched)
             # A normal build uses the exact same isolated source boundary as a
             # release, but intentionally stops before every release action.  A
             # successful build copies its local-only evidence to the caller tree
             # and removes the worktree; a failure retains the worktree exactly
             # where the diagnostic source/log/artifact state exists.
             try:
-                child_args = _child_release_args(rest, cfg_path, repo_root)
-                with transaction.release_lock(repo_root):
-                    dirty = _uncommitted_release_paths(repo_root, configs, names)
+                transaction_root = transaction.source_git_root_for_projects(
+                    repo_root, [configs[name] for name in names]
+                )
+                child_args = _child_release_args(
+                    rest, cfg_path, repo_root, source_git_root=transaction_root,
+                    target_override=",".join(names), original_target=vargs.target,
+                )
+                with transaction.release_lock(transaction_root):
+                    dirty = _uncommitted_release_paths(transaction_root, configs, names)
                     if dirty:
                         for project_name, files in dirty.items():
                             log_error(f"{project_name}: uncommitted changes — {', '.join(files)}")
@@ -2057,27 +2452,30 @@ def main(argv: Optional[List[str]] = None) -> None:
                             "cmru build snapshots origin/main; commit and push the selected project "
                             "changes first so the isolated build cannot silently omit them."
                         )
-                    base = transaction.fetch_origin_main(repo_root)
-                    behind = transaction.assert_local_main_not_ahead(repo_root)
+                    base = transaction.fetch_origin_main(transaction_root)
+                    behind = transaction.assert_local_main_not_ahead(transaction_root)
                     if behind:
                         log_warn(
                             f"Local main is {behind} commit(s) behind origin/main; "
                             f"build uses fetched origin/main {base[:12]}."
                         )
                     workspace = transaction.create_workspace(
-                        repo_root, base=base, purpose="build", scope=vargs.project,
+                        repo_root, base=base, purpose="build", scope=','.join(names),
+                        source_git_root=transaction_root,
                     )
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
-                        [Path(project.project_root) / PROJECT_CONFIG_FILENAME for project in configs.values()
-                         if project.project_root is not None],
+                        [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in names
+                         if configs[name].project_root is not None],
                     )
                     log_info(
                         f"Build transaction {workspace.branch}: snapshot {workspace.base[:12]} "
                         f"at {workspace.path}"
                     )
-                    rc = transaction.run_child(workspace, child_args, verb="build")
+                    rc = transaction.run_child(
+                        workspace, child_args, verb="build", project_names=names,
+                    )
                     if rc:
                         log_error(
                             f"Build transaction failed; worktree retained for debugging: {workspace.path}"
@@ -2110,7 +2508,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     for name in names:
                         log_info(
                             f"{name}: remove this local record only when no longer needed:\n"
-                            f"  cmru cleanup{config_hint} --project {name} "
+                            f"  cmru cleanup{config_hint} {name} "
                             f"--delete-build-output {output_id} --yes"
                         )
                     _sys.exit(0)
@@ -2120,10 +2518,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         if verb == "build":
             _run_isolated_build_projects(repo_root, configs, names)
         else:
-            _run_project_steps(
-                repo_root, configs, names, [step],
-                github_config=github_config, env_config=env_config,
+            groups = transaction.project_git_family_groups(
+                repo_root, [configs[name] for name in names]
             )
+            for family_root, members in groups.items():
+                family_names = [getattr(project, "name") for project in members]
+                family_configs = _configs_for_git_family(configs, family_names, family_root)
+                _run_project_steps(
+                    family_root, family_configs, family_names, [step],
+                    github_config=github_config, env_config=env_config,
+                )
         log_info(f"cmru {verb} complete")
 
     elif verb == "resolve":
@@ -2138,38 +2542,58 @@ def main(argv: Optional[List[str]] = None) -> None:
         import argparse as _ap
         from cmru.changelog import backfill_release_changelog
 
-        parser = _ap.ArgumentParser(
+        parser = CMRUArgumentParser(
             description=(
                 "Backfill source-derived history for an already-published CMRU-tagged release. "
                 "Normal cmru release writes history automatically before its gate."
             )
         )
-        parser.add_argument("--project", required=True)
-        parser.add_argument("--backfill-tag", required=True, metavar="TAG")
+        parser.add_argument(
+            "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+            help="Project target; omitted uses the current project or estate default",
+        )
+        parser.add_argument("--backfill-tag", action="append", required=True, metavar="TAG")
         parser.add_argument(
             "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
         )
         vargs = parser.parse_args(rest)
         cfg_path = _resolve_config(vargs.config)
-        repo_root, configs, *_ = load_config(cfg_path)
-        project = configs.get(vargs.project)
-        if project is None:
-            log_error(f"Unknown project: {vargs.project}")
-            _sys.exit(2)
-        if not project.changelog:
-            log_error(
-                f"{vargs.project}: release history is explicitly disabled; "
-                "remove release.changelog = false before backfilling"
-            )
-            _sys.exit(2)
-        changed = backfill_release_changelog(repo_root, project, vargs.backfill_tag)
-        if changed:
-            log_info(
-                f"{vargs.project}: backfilled {project.changelog} for {vargs.backfill_tag}; "
-                "review and commit this post-release migration explicitly"
-            )
-        else:
-            log_info(f"{vargs.project}: {project.changelog} already records {vargs.backfill_tag}")
+        repo_root, configs, project_order, *_ = load_config(cfg_path)
+        selected_names = _select_projects(cfg_path, vargs.target, configs, project_order)
+        assignments: dict[str, str] = {}
+        for tag in vargs.backfill_tag:
+            matches = [
+                name for name in selected_names
+                if tag.startswith(configs[name].prefix)
+            ]
+            if len(matches) != 1:
+                parser.error(
+                    f"backfill tag {tag!r} must match exactly one selected project prefix; "
+                    f"matched {matches or 'none'}"
+                )
+            if matches[0] in assignments:
+                parser.error(f"more than one backfill tag was supplied for {matches[0]}")
+            assignments[matches[0]] = tag
+        missing_tags = [name for name in selected_names if name not in assignments]
+        if missing_tags:
+            parser.error("missing --backfill-tag for project(s): " + ", ".join(missing_tags))
+        for name in selected_names:
+            project = configs[name]
+            if not project.changelog:
+                parser.error(
+                    f"{name}: release history is explicitly disabled; "
+                    "remove release.changelog = false before backfilling"
+                )
+            tag = assignments[name]
+            print(f"===== Changelog Project: {name.upper()} " + "=" * 25)
+            changed = backfill_release_changelog(repo_root, project, tag)
+            if changed:
+                log_info(
+                    f"{name}: backfilled {project.changelog} for {tag}; "
+                    "review and commit this post-release migration explicitly"
+                )
+            else:
+                log_info(f"{name}: {project.changelog} already records {tag}")
 
     elif verb == "standards":
         from cmru.standards import standards_main
@@ -2181,8 +2605,11 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     elif verb in ("release", "status"):
         import argparse as _ap
-        parser = _ap.ArgumentParser(description=f"cmru {verb}")
-        parser.add_argument("--project", help="Limit to one project")
+        parser = CMRUArgumentParser(description=f"cmru {verb}")
+        parser.add_argument(
+            "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+            help="Project target; omitted uses the current project or estate default",
+        )
         parser.add_argument("--minor", action="store_true")
         parser.add_argument("--major", action="store_true")
         parser.add_argument("--set-version", metavar="VER")
@@ -2236,6 +2663,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                  "project.release.artifact_dirs is declared.",
         )
         parser.add_argument(
+            "--discard-evidence-on-release", action="store_true",
+            help="After a successful release, do NOT move declared gate evidence into "
+                 "<project>/evidence/cmru-release/<tag> -- retained by default when "
+                 "project.release.evidence_paths is declared.",
+        )
+        parser.add_argument(
             "--ref", metavar="REF",
             help="Evaluate against REF instead of the local main branch (KI-20): for "
                  "release, the ahead-of-origin refusal; for status, the "
@@ -2257,33 +2690,47 @@ def main(argv: Optional[List[str]] = None) -> None:
         (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
         default_projects = _rest[0]
         github_config, env_config = _rest[-2], _rest[-1]
+        if argv is None and not vargs._transaction_child:
+            _configure_native_release_logging(repo_root, append=vargs.log_append)
         apply_release_env(github_config, env_config)
         # Restrict versioning verbs to the orchestrated set so un-migrated projects
         # with their own pipelines (tls-edge, empyrion) are never auto-tagged.
         ordered = _ordered_configs(configs, project_order)
+        selected_names = _select_projects(cfg_path, vargs.target, ordered, project_order)
+        selected_ordered = {name: ordered[name] for name in selected_names}
 
         from cmru.version import status_cmd, release_cmd
         if verb == "status":
-            status_projects = ordered
-            if vargs.project:
-                if vargs.project not in ordered:
-                    log_error(f"Unknown or non-orchestrated project: {vargs.project}")
-                    _sys.exit(2)
-                status_projects = {vargs.project: ordered[vargs.project]}
-            status_cmd(
-                repo_root, status_projects,
-                minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-                ref=vargs.ref or "HEAD",
+            groups = transaction.project_git_family_groups(
+                repo_root, [configs[name] for name in selected_names]
             )
+            for family_root, members in groups.items():
+                family_names = [getattr(project, "name") for project in members]
+                family_configs = _configs_for_git_family(configs, family_names, family_root)
+                status_cmd(
+                    family_root,
+                    {name: family_configs[name] for name in family_names},
+                    minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+                    ref=vargs.ref or "HEAD",
+                )
             return
 
-        if vargs.project and vargs.project not in ordered:
-            log_error(f"Unknown or non-orchestrated project: {vargs.project}")
-            _sys.exit(2)
-
-        release_scope = [vargs.project] if vargs.project else list(ordered.keys())
+        release_scope = selected_names
         if not vargs.dry_run:
             require_project_publish_credentials(configs, release_scope)
+
+        if not vargs._transaction_child:
+            dispatched = _dispatch_independent_git_families(
+                verb,
+                rest,
+                cfg_path,
+                repo_root,
+                configs,
+                release_scope,
+                original_target=vargs.target,
+            )
+            if dispatched is not None:
+                _sys.exit(dispatched)
 
         # The normal command is a launcher, never a publisher from the caller's
         # checkout: origin/main is the only release source, built in an isolated
@@ -2294,20 +2741,26 @@ def main(argv: Optional[List[str]] = None) -> None:
         # silently left out with no warning, since the build never looks at it.
         if not vargs._transaction_child:
             try:
-                child_args = _child_release_args(rest, cfg_path, repo_root)
-                with transaction.release_lock(repo_root):
-                    scope = [vargs.project] if vargs.project else default_projects
+                transaction_root = transaction.source_git_root_for_projects(
+                    repo_root, [configs[name] for name in release_scope]
+                )
+                child_args = _child_release_args(
+                    rest, cfg_path, repo_root, source_git_root=transaction_root,
+                    target_override=",".join(release_scope), original_target=vargs.target,
+                )
+                with transaction.release_lock(transaction_root):
+                    scope = release_scope
                     if getattr(vargs, "abandon", None):
                         if vargs.abandon == "all-previous":
-                            abandoned = transaction.abandon_previous(repo_root, scope)
+                            abandoned = transaction.abandon_previous(transaction_root, scope)
                             if abandoned:
                                 for branch in abandoned:
                                     log_info(f"Abandoned previous release attempt: {branch}")
                             else:
                                 log_info("No previous release attempts to abandon.")
                         else:
-                            target = transaction.resume_workspace(repo_root, Path(vargs.abandon))
-                            transaction.abandon_workspace(repo_root, target)
+                            target = transaction.resume_workspace(transaction_root, Path(vargs.abandon))
+                            transaction.abandon_workspace(transaction_root, target)
                             log_info(f"Abandoned release attempt: {target.branch}")
 
                     # Not --dry-run: a preview has no publish step to protect, and "I have
@@ -2317,8 +2770,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                         # independently configurable from default_projects (used for the
                         # --abandon scope above) — check what will really run, not a
                         # possibly-narrower-or-wider default.
-                        release_scope = [vargs.project] if vargs.project else list(ordered.keys())
-                        dirty = _uncommitted_release_paths(repo_root, ordered, release_scope)
+                        release_scope = selected_names
+                        dirty = _uncommitted_release_paths(transaction_root, ordered, release_scope)
                         if dirty:
                             for name, files in dirty.items():
                                 log_error(f"{name}: uncommitted changes — {', '.join(files)}")
@@ -2331,49 +2784,61 @@ def main(argv: Optional[List[str]] = None) -> None:
                             _sys.exit(2)
 
                     if getattr(vargs, "resume", None):
-                        workspace = transaction.resume_workspace(repo_root, Path(vargs.resume))
+                        workspace = transaction.resume_workspace(transaction_root, Path(vargs.resume))
                     else:
-                        base = transaction.fetch_origin_main(repo_root)
-                        behind = transaction.assert_local_main_not_ahead(repo_root, ref=vargs.ref or "main")
+                        base = transaction.fetch_origin_main(transaction_root)
+                        behind = transaction.assert_local_main_not_ahead(transaction_root, ref=vargs.ref or "main")
                         if behind:
                             log_warn(
                                 f"Local main is {behind} commit(s) behind origin/main; "
                                 f"release uses fetched origin/main {base[:12]}."
                             )
-                        workspace = transaction.create_workspace(repo_root, base=base, scope=vargs.project)
+                        workspace = transaction.create_workspace(
+                            repo_root, base=base, scope=','.join(release_scope),
+                            source_git_root=transaction_root,
+                        )
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
-                        [Path(project.project_root) / PROJECT_CONFIG_FILENAME for project in configs.values()
-                         if project.project_root is not None],
+                        [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in release_scope
+                         if configs[name].project_root is not None],
                     )
                     log_info(
                         f"Release transaction {workspace.branch}: "
                         f"snapshot {workspace.base[:12]} at {workspace.path}"
                     )
-                    rc = transaction.run_child(workspace, child_args)
+                    rc = transaction.run_child(
+                        workspace, child_args, project_names=release_scope,
+                    )
                     if rc == 0:
                         retained: list[Path] = []
                         retain_logs = not vargs.discard_logs_on_release
                         retain_artifacts = not vargs.discard_artifacts_on_release
-                        if retain_logs or retain_artifacts:
+                        retain_evidence = not vargs.discard_evidence_on_release
+                        has_declared_evidence = any(
+                            bool(getattr(configs.get(name), "evidence_paths", ()) or ())
+                            for name in configs
+                        )
+                        if retain_logs or retain_artifacts or (retain_evidence and has_declared_evidence):
+                            release_results = transaction.read_release_results(transaction_root, workspace)
                             retained = transaction.retain_success_outputs(
                                 repo_root,
                                 workspace,
                                 configs,
-                                transaction.read_release_results(repo_root, workspace),
+                                release_results,
                                 retain_logs=retain_logs,
                                 retain_artifacts=retain_artifacts,
+                                retain_evidence=retain_evidence,
                             )
                         for path in retained:
                             log_info(f"Retained release output: {path}")
                         transaction.remove_backup_branch(workspace)
                         transaction.remove_workspace(workspace)
-                        transaction.forget_release_scope(repo_root, workspace)
-                        if _sync_local_main_and_report(repo_root):
+                        transaction.forget_release_scope(transaction_root, workspace)
+                        if _sync_local_main_and_report(transaction_root):
                             log_info("Local main synced with origin/main.")
                         log_info("Release transaction complete; isolated worktree removed.")
-                    elif transaction.plan_was_refused(repo_root, workspace):
+                    elif transaction.plan_was_refused(transaction_root, workspace):
                         # The release plan itself refused (S12.2a/S12.2b) before any
                         # project's cycle started: no gate ran, nothing was promoted or
                         # tagged, and `push_backup_branch` never ran either -- there is
@@ -2381,44 +2846,25 @@ def main(argv: Optional[List[str]] = None) -> None:
                         # mid-release failure. Discard it exactly like a success would
                         # (the detailed refusal was already printed by the child above).
                         transaction.remove_workspace(workspace)
-                        transaction.forget_release_scope(repo_root, workspace)
-                        _sync_local_main_and_report(repo_root)
+                        transaction.forget_release_scope(transaction_root, workspace)
+                        _sync_local_main_and_report(transaction_root)
                         log_error(
                             "Release plan refused before any project started; no changes "
                             "were made (see the error above). Worktree discarded."
                         )
                     else:
-                        if transaction.promotion_landed(repo_root, workspace):
-                            # Projects release one after another (each project's own
-                            # prepare/gate/promote/tag/build/publish finishes before the next
-                            # starts — S-REL). checkpoint is the source commit as of the last
-                            # project to fully finish (may equal workspace.base, e.g. when
-                            # every earlier project in this run had no prepare-step commit of
-                            # its own — their tags/artifacts are unaffected either way, only
-                            # source-tree commits are ever reverted). Reverting from checkpoint
-                            # rather than workspace.base leaves any earlier project's own
-                            # promoted commit alone.
-                            checkpoint = transaction.read_release_progress(repo_root, workspace)
-                            log_error(
-                                "Release failed after origin/main was already promoted; "
-                                "attempting automatic revert of the in-flight project's "
-                                "changes..."
-                            )
-                            revert = transaction.revert_promotion(workspace, from_sha=checkpoint)
-                            if revert.ok and revert.reverted:
-                                log_info("origin/main reverted to its last-known-good state.")
-                            elif revert.ok:
-                                log_info(
-                                    "Nothing to revert on origin/main — the in-flight project "
-                                    "never got as far as its own promotion."
-                                )
-                            else:
-                                log_error(
-                                    "Automatic revert did not apply cleanly (origin/main may "
-                                    "have advanced, or the revert conflicted) — manual cleanup "
-                                    f"required: inspect branch {workspace.branch}."
-                                )
-                        _sync_local_main_and_report(repo_root)
+                        # Promotion is now the final step of every project's
+                        # candidate cycle. A failed project therefore leaves its
+                        # source commit on the retained candidate branch while
+                        # origin/main contains only earlier, fully completed
+                        # projects. Never manufacture a revert commit for a
+                        # candidate whose public artifact may already exist.
+                        log_error(
+                            "Release candidate was not promoted; origin/main was left "
+                            "at the last fully completed project. The durable candidate "
+                            f"branch {workspace.branch} was retained for inspection."
+                        )
+                        _sync_local_main_and_report(transaction_root)
                         log_error(
                             f"Release transaction failed; retained {workspace.path} "
                             f"on branch {workspace.branch} for inspection/resume."
@@ -2433,10 +2879,18 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         # Scope to what this run will actually touch *before* computing the plan
         # (not by filtering the result afterward): an unrelated orchestrated
-        # project's degenerate tag state must not abort a `--project`-scoped run
+        # project's degenerate tag state must not abort a target-scoped run
         # that never touches it.
-        release_scope = [vargs.project] if vargs.project else list(ordered.keys())
+        release_scope = selected_names
         scoped_for_plan = {name: ordered[name] for name in release_scope}
+        if vargs.dry_run:
+            # External version strategies read a fact emitted by prepare. Run
+            # only that declared input-discovery step in this disposable
+            # transaction before the single release-plan comparison below.
+            _prepare_dry_run_external_versions(
+                repo_root, configs, release_scope,
+                github_config=github_config, env_config=env_config,
+            )
         # S12.2a/S12.2b (KI-12): the release plan — unlike a read-only `status`
         # preview or a `changelog` migration — MUST be a function of the pushed
         # repository, and a tag pushed but strictly ahead of the snapshot commit
@@ -2502,8 +2956,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             # Preview only: show what would be tagged for every changed project, no
             # commits/gates/promotion/tags — nothing here has side effects.
             release_cmd(
-                repo_root, ordered,
-                project_filter=vargs.project,
+                repo_root, selected_ordered,
                 minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
                 dry_run=True,
             )
@@ -2515,17 +2968,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             return
 
         # Build all projects after another (S-REL): each project's own
-        # prepare → gate → promote → tag → build → publish cycle runs to completion
+        # prepare → gate → tag → build → publish → promote cycle runs to completion
         # before the next project starts. This is what lets a later project (e.g. an
         # OCI image) resolve an earlier project's (e.g. a wheel) brand-new release
         # within this SAME `cmru release` run, instead of always trailing one run
-        # behind. Each project's promotion is independent: if project N fails, the
-        # already-published projects before it are left alone (see
-        # transaction.write_release_progress / the parent's scoped-revert handling).
+        # behind. If project N fails, its exact candidate remains on the retained
+        # transaction branch and already-published projects before it are left alone.
         workspace = _transaction_workspace_from_env(repo_root)
         transaction.write_release_scope(repo_root, workspace, release_names)
         transaction.push_backup_branch(workspace)
-        log_info(f"Backed up release branch {workspace.branch} to origin (durability).")
+        log_info(f"Pushed release candidate {workspace.branch} to origin (durability).")
 
         released = _release_projects_sequentially(
             repo_root, configs, workspace, release_names,
@@ -2543,16 +2995,16 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     elif verb == "cleanup":
         import argparse as _ap
-        parser = _ap.ArgumentParser(
+        parser = CMRUArgumentParser(
             description=(
                 "cmru cleanup — delete old Releases, stale tags, and prune ghcr.\n\n"
                 "Without --remove-assets: project-aware cleanup driven by [cleanup] config\n"
                 "  (keeps <prefix>-latest + keep_release_tags; deletes the rest).\n"
                 "With --remove-assets AGE: age-based cleanup.\n"
                 "With --delete-unmanaged-release-tag TAG: delete that exact old GitHub Release only; "
-                "requires --project and --yes (or --dry-run).\n"
+                "requires one project target and --yes (or --dry-run).\n"
                 "With --delete-build-output ID: delete one verified local non-release build record; "
-                "requires --project and --yes (or --dry-run).\n"
+                "requires one project target and --yes (or --dry-run).\n"
                 "With --discard-build-worktree PATH: delete one inspected failed build worktree; "
                 "requires --yes (or --dry-run)."
             ),
@@ -2562,7 +3014,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             "--remove-assets", metavar="AGE",
             help="Age-based cleanup: remove Releases/ghcr versions older than AGE (e.g. 30d, 2w)",
         )
-        parser.add_argument("--project", help="Limit or scope a project-aware cleanup operation")
+        parser.add_argument(
+            "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+            help="Project target; omitted uses the current project or estate default",
+        )
         parser.add_argument("--dry-run", action="store_true",
                             help="List what would be deleted without deleting")
         parser.add_argument(
@@ -2590,6 +3045,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         (repo_root, configs, project_order, _default_projects, _default_steps,
          _execution_mode, _step_project_order, cleanup, github_config, env_config) = load_config(cfg_path)
+        selected_names = _select_projects(cfg_path, vargs.target, configs, project_order)
 
         exclusive_modes = [
             ("--remove-assets", vargs.remove_assets),
@@ -2602,19 +3058,20 @@ def main(argv: Optional[List[str]] = None) -> None:
             parser.error(f"{' and '.join(selected_modes)} are mutually exclusive")
 
         if vargs.delete_unmanaged_release_tag:
-            if not vargs.project:
-                parser.error("--delete-unmanaged-release-tag requires --project to scope the operation")
+            if len(selected_names) != 1:
+                parser.error("--delete-unmanaged-release-tag requires exactly one project target")
             if not (vargs.yes or vargs.dry_run):
                 parser.error("--delete-unmanaged-release-tag requires --yes (or --dry-run)")
-            project = configs.get(vargs.project)
+            selected_name = selected_names[0]
+            project = configs.get(selected_name)
             if project is None:
-                parser.error(f"unknown project: {vargs.project}")
+                parser.error(f"unknown project: {selected_name}")
             prefix = project.prefix or ""
             bare = _bare_prefix(prefix)
             tag = vargs.delete_unmanaged_release_tag
             if not bare or not tag.startswith(f"{bare}-"):
                 parser.error(
-                    f"{tag!r} is outside project {vargs.project!r}'s release namespace {bare!r}"
+                    f"{tag!r} is outside project {selected_name!r}'s release namespace {bare!r}"
                 )
             if tag.startswith(prefix) or tag == f"{bare}-latest":
                 parser.error(
@@ -2629,23 +3086,24 @@ def main(argv: Optional[List[str]] = None) -> None:
                 dry_run=vargs.dry_run,
             )
         elif vargs.delete_build_output:
-            if not vargs.project:
-                parser.error("--delete-build-output requires --project to scope the operation")
+            if len(selected_names) != 1:
+                parser.error("--delete-build-output requires exactly one project target")
             if not (vargs.yes or vargs.dry_run):
                 parser.error("--delete-build-output requires --yes (or --dry-run)")
-            project = configs.get(vargs.project)
+            selected_name = selected_names[0]
+            project = configs.get(selected_name)
             if project is None:
-                parser.error(f"unknown project: {vargs.project}")
+                parser.error(f"unknown project: {selected_name}")
             targets = transaction.delete_retained_build_output(
-                repo_root, project, vargs.project, vargs.delete_build_output,
+                repo_root, project, selected_name, vargs.delete_build_output,
                 dry_run=vargs.dry_run,
             )
             action = "Would delete" if vargs.dry_run else "Deleted"
             for target in targets:
                 log_info(f"{action} retained local build output: {target}")
         elif vargs.discard_build_worktree:
-            if vargs.project:
-                parser.error("--discard-build-worktree is already exactly scoped; do not pass --project")
+            if vargs.target:
+                parser.error("--discard-build-worktree is already exactly scoped; do not pass a project target")
             if not (vargs.yes or vargs.dry_run):
                 parser.error("--discard-build-worktree requires --yes (or --dry-run)")
             workspace = transaction.discard_build_workspace(
@@ -2661,12 +3119,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             run_cleanup_verb(
                 repo_root, configs, project_order, cleanup,
                 github_config, env_config,
-                project_filter=vargs.project,
+                project_filter=selected_names,
                 dry_run=vargs.dry_run,
             )
 
     else:
-        log_error(f"Unknown verb '{verb}'. Run 'cmru --help' for usage.")
+        write_config_diagnostic(f"Unknown verb '{verb}'. Run 'cmru --help' for usage.")
         _sys.exit(2)
 
 

@@ -847,6 +847,22 @@ def test_cmd_verify_matches_the_cli_wiring_directly(tmp_path: Path):
     assert err.getvalue() == ""
 
 
+def test_verify_accepts_but_explicitly_warns_on_allow_dirty_override():
+    document = _load("r0_pass.json")
+    document["worktree_integrity"] = {
+        "ignored_dirty_paths": ["ledger.md"],
+        "overridden_dirty_paths": ["src/uncommitted.py"],
+    }
+    assert verify_document(document) == []
+
+    err = io.StringIO()
+    code = cmd_verify(
+        "-", stdin=io.StringIO(json.dumps(document)), stderr=err
+    )
+    assert code == 0
+    assert "valid verdict overrides dirty paths" in err.getvalue()
+
+
 # ============================================================================
 # O2 (P16, stage 3) -- independent re-derivation of R1/R2/R3 status from
 # payload plus recorded policy, and the judgment.r1 <-> R1-coverage raw
@@ -1188,7 +1204,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-            "schema_version": 11,
+            "schema_version": 12,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1300,9 +1316,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 11: a verdict "
+        "schema_version 2 is not this verifier's version 12: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 11"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 12"
     ]
 
 
@@ -1321,7 +1337,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 11" in failures[0]
+    assert "schema_version 3 is not this verifier's version 12" in failures[0]
 
 
 # ============================================================================

@@ -23,6 +23,7 @@ You can subscribe to repo releases or use GitHub’s RSS for releases.
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import json
 import sys
 import urllib.request
@@ -154,9 +155,10 @@ def write_text(path: str | None, content: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = MdtArgumentParser(
         description="Check availability of devcontainers/python tags on MCR",
     )
+    parser.add_version_argument()
     parser.add_argument(
         "--debian",
         action="append",

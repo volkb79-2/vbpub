@@ -15,6 +15,8 @@ from ciu import engine
 def test_main_execution_validates_required_certs_before_reset(monkeypatch, tmp_path: Path):
     """Certificate requirements gate destructive reset before auto-generation/compose work."""
 
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+
     stack = tmp_path / "stack"
     stack.mkdir()
     events: list[object] = []

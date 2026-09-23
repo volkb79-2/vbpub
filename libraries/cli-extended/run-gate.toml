@@ -1,0 +1,54 @@
+# cli-extended's executable gate matrix. All lanes run inside tester-unified;
+# no test, mutation, or canary command runs in the cockpit.
+schema_version = 1
+
+[lanes.r0-r1]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/libraries/cli-extended && PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q --cov=cli_extended --cov-branch --cov-fail-under=100 --cov-report=term-missing --cov-report=json:coverage.json",
+]
+clean_tree = false
+budget = "10m"
+artifacts = ["coverage.json"]
+
+[lanes.r0-r1.resources]
+memory = "512m"
+
+[lanes.r2]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "export PYTHONPATH={worktree}/assay/src && cd {worktree}/libraries/cli-extended && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run cli-extended --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+]
+clean_tree = false
+budget = "60m"
+artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
+
+[lanes.r2.resources]
+memory = "1g"
+
+[lanes.r3]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/libraries/cli-extended && CLI_EXTENDED_PYTHON=/opt/tester-venv/bin/python3 exec tools/canary-run.sh",
+]
+clean_tree = false
+budget = "10m"
+
+[lanes.r3.resources]
+memory = "512m"
+
+[lanes.gate]
+kind = "command"
+environment = "bare-host"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/libraries/cli-extended && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
+]
+clean_tree = false
+budget = "90m"

@@ -23,6 +23,7 @@ def test_hook_secret_lookup_denies_unknown_name_before_secret_materialization(
     undeclared name must raise ``KeyError`` rather than yield a writable path;
     the hook failure is red and the pipeline cannot materialize or deploy.
     """
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     stack = tmp_path / "stack"
     stack.mkdir()
     spec = SimpleNamespace(name="shared", kind="GEN_LOCAL", locator="team/token")
@@ -62,5 +63,5 @@ def test_hook_secret_lookup_denies_unknown_name_before_secret_materialization(
         lambda *_args, **_kwargs: pytest.fail("failed secret lookup must not materialize secrets"),
     )
 
-    assert engine.main(["--dry-run", "-d", str(stack), "--define-root", str(tmp_path)]) == 1
+    assert engine.main(["--dry-run", "-d", str(stack), "--root-folder", str(tmp_path)]) == 1
     assert "unknown secret denied" in capsys.readouterr().out

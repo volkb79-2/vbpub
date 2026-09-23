@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from topos.cli import _main_compare
+from topos.cli_diagnostics import cli_headline
 from topos.compare import CompareError
 
 
@@ -135,4 +136,4 @@ def test_invalid_assertion_exits_2_without_evaluation_or_rendering(
     monkeypatch.setattr("topos.compare.evaluate_compare_rules", lambda *_args: pytest.fail("evaluation called"))
     monkeypatch.setattr("topos.compare.format_compare", lambda *_args, **_kwargs: pytest.fail("formatter called"))
     assert _main_compare([str(current_path), str(baseline_path), "--json", "--assert", "bad"]) == 2
-    assert capsys.readouterr().err == "invalid rule\n"
+    assert capsys.readouterr().err == cli_headline() + "\ninvalid rule\n"

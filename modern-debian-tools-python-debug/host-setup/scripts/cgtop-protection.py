@@ -18,6 +18,7 @@
 #   sudo python3 cgtop-protection.py [--root /sys/fs/cgroup] [--depth N] [--watch SECS]
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import os
 import time
 from pathlib import Path
@@ -94,7 +95,7 @@ def render(rows):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = MdtArgumentParser()
     ap.add_argument("--root", default="/sys/fs/cgroup")
     ap.add_argument("--depth", type=int, default=4)
     ap.add_argument("--watch", type=float, default=0)

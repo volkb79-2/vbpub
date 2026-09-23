@@ -16,6 +16,8 @@ from ciu import engine
 def test_pre_secret_hook_resolves_relative_ask_file_and_stack_store_paths(monkeypatch, tmp_path: Path):
     """Hooks receive only the directive's real path, never an invented secret location."""
 
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+
     stack = tmp_path / "stack"
     stack.mkdir()
     ask_file = SimpleNamespace(name="certificate", kind="ASK_FILE", locator="certs/tls.pem")

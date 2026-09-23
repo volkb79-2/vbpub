@@ -9,6 +9,7 @@ install over something merely informational.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import re
@@ -21,13 +22,15 @@ from typing import Any, Dict, List, Optional
 
 _PUBLIC_IP_SERVICE_URL = "https://ifconfig.me/ip"
 _UNKNOWN = "unknown"
+_LOG = logging.getLogger("debian_install_v2.host_facts")
 
 
 def _safe(fn, default):
     try:
         return fn()
     except Exception as exc:  # best-effort only - never let a fact break the install
-        print(f"[WARN] host_facts: {fn.__name__ if hasattr(fn, '__name__') else fn} failed: {exc}", flush=True)
+        name = fn.__name__ if hasattr(fn, "__name__") else fn
+        _LOG.warning("host fact %s failed: %s", name, exc)
         return default
 
 

@@ -44,6 +44,8 @@ def test_agent_cli_parser_requires_known_agent_verb_and_preserves_options():
     assert args.verb == "once" and args.scope == "system" and args.release_root == "/srv/cmru"
     with pytest.raises(SystemExit):
         agent_cli._build_parser().parse_args(["unknown"])
+    with pytest.raises(SystemExit):
+        agent_cli._build_parser().parse_args([])
 
 
 def test_resolve_format_env_omits_absent_digest_and_url_is_empty():

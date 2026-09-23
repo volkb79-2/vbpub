@@ -33,6 +33,7 @@ import sys
 import tarfile
 import tempfile
 import textwrap
+import uuid
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 from unittest import mock
@@ -52,6 +53,8 @@ owner_type = "user"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 """
 
 
@@ -1219,7 +1222,7 @@ class TestGetPyCLI:
     def test_getpy_main_no_config_exits_2(self, capsys):
         from cmru.getpy import getpy_main
         with pytest.raises(SystemExit) as exc:
-            getpy_main(["--project", "demo"])
+            getpy_main(["demo"])
         assert exc.value.code == 2
 
     def test_getpy_main_missing_project_exits(self, tmp_path):
@@ -1227,7 +1230,7 @@ class TestGetPyCLI:
         cfg_path = _write(tmp_path, toml)
         from cmru.getpy import getpy_main
         with pytest.raises((ValueError, SystemExit)):
-            getpy_main(["--project", "nonexistent", "--config", str(cfg_path)])
+            getpy_main(["nonexistent", "--config", str(cfg_path)])
 
     def test_getpy_main_to_stdout(self, tmp_path):
         toml = _minimal_toml("""
@@ -1241,7 +1244,7 @@ install_dir_user   = "demo"
         from cmru.getpy import getpy_main
         buf = io.StringIO()
         with redirect_stdout(buf):
-            getpy_main(["--project", "demo", "--config", str(cfg_path)])
+            getpy_main(["demo", "--config", str(cfg_path)])
         output = buf.getvalue()
         remaining = re.findall(r"\[\[[A-Z_]+\]\]", output)
         assert remaining == [], f"Unreplaced placeholders in stdout: {remaining}"
@@ -1257,7 +1260,7 @@ install_dir_user   = "demo"
         from cmru.getpy import getpy_main
         out_file = tmp_path / "get.py"
         getpy_main([
-            "--project", "demo",
+            "demo",
             "--config", str(cfg_path),
             "--output", str(out_file),
         ])
@@ -1277,7 +1280,7 @@ install_dir = "/opt/demo"
         cfg_path = _write(tmp_path, toml)
         from cmru.getpy import getpy_main
         with pytest.raises(SystemExit) as exc:
-            getpy_main(["--project", "demo", "--config", str(cfg_path)])
+            getpy_main(["demo", "--config", str(cfg_path)])
         assert exc.value.code == 2
 
 
@@ -1501,7 +1504,7 @@ class TestEnrollCLIShape:
         assert args.docker is False and args.no_install is False
 
     def test_get_py_cli_render_carries_enroll(self, tmp_path):
-        """The `cmru get-py --project <name>` path (O6's own entry point)."""
+        """The `cmru get-py <name>` path (O6's own entry point)."""
         toml = _minimal_toml("""
 [project.installer]
 install_dir_system = "/opt/demo"
@@ -1511,13 +1514,13 @@ install_dir_user   = "demo"
         from cmru.getpy import getpy_main
         out_file = tmp_path / "rendered-get.py"
         getpy_main([
-            "--project", "demo", "--config", str(cfg_path),
+            "demo", "--config", str(cfg_path),
             "--output", str(out_file),
         ])
         text = self._help(out_file, "enroll", "--help")
         assert self._flags_in(text) == ENROLL_EXPECTED_FLAGS
 
-    def test_real_project_config_renders_enroll(self, capsys):
+    def test_real_project_config_renders_enroll(self, capsys, monkeypatch):
         """The one [project.installer] this monorepo actually ships renders it too.
 
         tls-edge declares required_commands, and ``main()`` runs
@@ -1528,8 +1531,10 @@ install_dir_user   = "demo"
         real = Path(__file__).resolve().parents[2] / "tls-edge" / "cmru.toml"
         if not real.exists():
             pytest.skip(f"no real installer config at {real}")
+        monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
         from cmru.getpy import render_from_config
-        src = render_from_config("tls-edge", real)
+        central = Path(__file__).resolve().parents[2] / "cmru.orchestration.toml"
+        src = render_from_config("tls-edge", central)
         ns: dict = {}
         exec(compile(src, "<tls-edge-get.py>", "exec"), ns)
         ns["check_prerequisites"] = lambda: None
@@ -2011,10 +2016,10 @@ def _docker_unavailable_reason() -> Optional[str]:
     if probe.returncode != 0:
         return f"docker daemon unreachable: {probe.stderr.strip()[:200]}"
     # AGENTS.md "Host cgroup placement": no hardcoded fallback slice — a
-    # container we cannot place on the host's dev-background tier is one we do
-    # not start next to production.
-    if not os.environ.get("CGROUP_PARENT_DEV_BACKGROUND", "").strip():
-        return "CGROUP_PARENT_DEV_BACKGROUND unset — refusing an unplaced container"
+    # gate fixture we cannot place on the host's dedicated gates tier is one
+    # we do not start next to production.
+    if not os.environ.get("CGROUP_PARENT_DEV_GATES", "").strip():
+        return "CGROUP_PARENT_DEV_GATES unset — refusing an unplaced container"
     return None
 
 
@@ -2059,21 +2064,21 @@ def rendered_get_py(tmp_path) -> Path:
 def _enroll_container(image: str, script: Path, *, network: str = "bridge") -> Iterator[str]:
     """A short-lived fixture container carrying the rendered installer.
 
-    Placed on the estate's dev-background cgroup tier and capped, per the shared
-    production host's rules; removed in a finally so a failing assertion never
-    leaves one running.
+    Placed on the estate's gate cgroup tier with a 2 GiB hard RAM cap and ample
+    swap; named for operator visibility
+    and removed in a finally so a failing assertion never leaves one running.
     """
-    slice_name = os.environ["CGROUP_PARENT_DEV_BACKGROUND"]
+    slice_name = os.environ["CGROUP_PARENT_DEV_GATES"]
+    container = f"cmru-enroll-{os.getpid()}-{uuid.uuid4().hex[:12]}"
     started = subprocess.run(
-        ["docker", "run", "-d",
+        ["docker", "run", "-d", "--init", f"--name={container}",
          f"--cgroup-parent={slice_name}",
-         "--cpus=3", "--memory=1g", "--memory-swap=4g",
+         "--cpus=3", "--memory=2g", "--memory-swap=16g",
          f"--network={network}",
          image, "sleep", "600"],
         capture_output=True, text=True,
     )
-    assert started.returncode == 0, started.stderr
-    container = started.stdout.strip()
+    assert started.returncode == 0, f"{container}: {started.stderr}"
     try:
         copied = subprocess.run(
             ["docker", "cp", str(script), f"{container}:/tmp/get.py"],

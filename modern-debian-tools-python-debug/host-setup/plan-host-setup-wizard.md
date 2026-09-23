@@ -63,7 +63,7 @@ without touching the render/apply machinery it feeds.
    `write_cache_atomic` (~line 237, the atomic-write pattern — temp file in
    the same directory + `os.replace` — your own `/etc/mdt/host-setup.env`
    write must use the identical pattern), `main()` (~line 273).
-6. `run-gate.toml` (repo root) — read its header comment. This subproject's
+6. `run-gate.root.toml` (repo root) — read its header comment. This subproject's
    gate is a `py_compile` syntax smoke over every tracked `.py` file, by
    deliberate policy ("Image-build tooling: no unit suite exists"). Do not
    introduce a pytest requirement this project has explicitly opted out of;

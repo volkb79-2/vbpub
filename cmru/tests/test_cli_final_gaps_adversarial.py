@@ -48,7 +48,7 @@ def test_cli_load_config_reports_dependency_preflight_errors(monkeypatch, capsys
     with pytest.raises(SystemExit) as error:
         cli.load_config(cfg)
     assert error.value.code == cli.exit_codes.CONFIG_ERROR
-    assert "dependency preflight: cycle" in capsys.readouterr().out
+    assert "dependency preflight: cycle" in capsys.readouterr().err
 
 
 def test_cli_load_config_rejects_missing_orchestration_selection(monkeypatch, tmp_path):

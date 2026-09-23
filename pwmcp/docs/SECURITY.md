@@ -44,6 +44,13 @@ The guard htpasswd hash is stored in `ciu.toml.j2` (the operator's override file
 
 The guard covers the Playwright WebSocket route, the @playwright/mcp HTTP route, the chrome-devtools-mcp HTTP route, and the lighthouse-mcp HTTP route independently.
 
+Bearer-token authentication is a future edge feature, not a second PWMCP
+authentication path. `tls-edge/KNOWN_ISSUES_TODO_BACKLOG.md` FEAT-01 tracks a shared
+Traefik `forwardAuth` verifier for `Authorization: Bearer <token>` requests.
+Until that feature is implemented, external PWMCP access remains protected by
+TLS plus the existing BasicAuth guard. `mcp-proxy`'s native `X-API-Key` option
+is limited to its own proxy routes and is not the estate-wide solution.
+
 ## Credential Hygiene
 
 - The guard htpasswd hash is a bcrypt hash (`htpasswd -nbB`), not a plaintext password

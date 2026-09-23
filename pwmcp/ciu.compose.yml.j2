@@ -12,7 +12,7 @@ services:
   # ── Unified single-image service ──────────────────────────────────────────
   {{ pwmcp.unified.name }}:
     # Unified image: Playwright run-server (:{{ pwmcp.unified.ws_port }}) +
-    # @playwright/mcp HTTP/SSE (:{{ pwmcp.unified.mcp_port }}) +
+    # @playwright/mcp Streamable HTTP (:{{ pwmcp.unified.mcp_port }}) +
     # chrome-devtools-mcp via mcp-proxy (:{{ pwmcp.unified.devtools_port }}) +
     # lighthouse-mcp via mcp-proxy (:{{ pwmcp.unified.lighthouse_port }}) in one container.
     image: {{ pwmcp.unified.image.registry }}/{{ pwmcp.unified.image.namespace }}/{{ pwmcp.unified.image.name }}:{{ pwmcp.unified.image.tag }}
@@ -31,8 +31,9 @@ services:
     shm_size: "{{ pwmcp.hardening.shm_size }}"
     restart: unless-stopped
     environment:
-      # Inject the deployment-specific allowed-hosts for the MCP server.
-      # supervisord reads %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s and passes it to playwright-mcp.
+      # Inject the deployment-specific allowed-hosts for the MCP gateway.
+      # The stream-only gateway reads this value before forwarding to the
+      # loopback playwright-mcp backend.
       # The two values below are always correct for sibling-container access:
       #   short service alias (compose DNS)     : {{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}
       #   full container name (Docker hostname) : {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}

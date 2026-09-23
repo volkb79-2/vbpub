@@ -16,6 +16,13 @@ id_prefix = "CIU"                     # your project's issue sequence
 
 Then:
 
+### Check the installed CLI
+
+    nyxloom --version
+
+This prints `nyxloom <version>` on stdout and exits 0 without accessing the
+project registry.
+
 ```bash
 nyxloom lint                 # BLG2/BLG3 now active (silent before adoption)
 nyxloom backlog new "clean leaves instance-scoped networks" \
@@ -67,6 +74,18 @@ test -n "$session_file" || {
 }
 nyxloom extract "$session_file"
 ```
+
+Codex does not reserve IDs separately for each `CODEX_HOME`. New thread IDs
+are UUIDv7 values, and the same identity is repeated in the rollout filename
+and its first `session_meta` record. A pre-existing filename is opened for
+append, so do not symlink live `sessions` directories between independently
+authenticated profiles. To identify a live instance, inspect its process
+argument (`codex resume <SESSION_ID>` when resumed) and its `CODEX_HOME`, then
+corroborate the currently active ID from the first metadata record of the
+rollout path held open by `/proc/<pid>/fd`; the command-line ID can be only the
+launch target if the interactive process later switches to a new thread.
+If the UUID is present in multiple homes, use the full path; renaming the file
+alone does not rewrite its embedded identity.
 
 For an opencode database containing more than one session, use the store path
 and select the row explicitly:
@@ -175,3 +194,13 @@ Set `carved_handoff` in the entry's frontmatter (or let your carve flow do
 it); when that handoff merges, the merge auto-tick sets `status=merged` +
 `merge_commit`. A `carved` status with a `carved_handoff` link is all the
 auto-tick needs.
+
+When recording CLI diagnostics, preserve the first line at every verb depth:
+`NYXLOOM <version> — operator CLI`, using the package metadata version exposed
+by `nyxloom.__version__`. `nyxloom --version` is exactly one identity line;
+normal command output is unchanged.
+
+The broad `tester-unified` lane is Assay-judged with 100% whole-source line and
+branch coverage. The `session-extract` lane additionally carries its declared
+mutation and canary checks. Invoke both through the project's `./run-gate.py`
+entrypoint; local cockpit test results do not certify a release.

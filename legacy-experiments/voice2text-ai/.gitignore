@@ -1,0 +1,46 @@
+# Voice2Text AI - Git Ignore
+# Standalone project config
+
+# Active config files (gitignored - contain secrets/runtime values)
+ciu-global.toml
+**/ciu.toml
+.env.ciu
+
+# Generated docker-compose files (rendered from .j2 templates)
+**/docker-compose.yml
+
+# Legacy config naming (deprecated)
+**/compose.config.active.toml
+
+# Volumes and data directories
+**/vol-*/
+**/.cache/
+**/.transformers_cache/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# SSL certificates (generated)
+**/ssl/
+**/certs/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Model files (too large for git)
+**/models/*.gguf
+**/models/*.bin
+**/models/*.safetensors

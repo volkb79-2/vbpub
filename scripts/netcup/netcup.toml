@@ -1,0 +1,9 @@
+# netcup.toml
+#
+# The single shared API endpoint configuration for scp-api.py, install-host.py,
+# and monitor-task.py. The refresh token remains in .env and is never stored
+# here.
+
+[api]
+base_url = "https://www.servercontrolpanel.de/scp-core"
+keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"

@@ -123,6 +123,7 @@ from .errors import AssayError, Outcome, ReasonCode
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
 from .verdict import (
+    DISCARD_REASONS,
     MUTATION_BUCKETS,
     MAX_CANDIDATE_CEILING,
     MAX_SHARD_COUNT,
@@ -2838,6 +2839,10 @@ INGESTED_STATUS_BUCKETS: Mapping[str, str] = MappingProxyType(
 _INGESTED_DISCARDED_STATUSES: frozenset[str] = frozenset(
     {"CompileError", "RuntimeError"}
 )
+_DISCARD_REASON_BY_STATUS: Mapping[str, str] = {
+    "CompileError": DISCARD_REASONS[0],
+    "RuntimeError": DISCARD_REASONS[1],
+}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3002,6 +3007,7 @@ def ingest_mutation_report(
             replacement_sha256=mutant.replacement_sha256,
             operator=mutant.operator,
             description=mutant.description,
+            discard_reason=_DISCARD_REASON_BY_STATUS.get(mutant.status),
         )
         if mutant.status in _INGESTED_DISCARDED_STATUSES:
             # B070: RECORDED, not dropped. The record is built above, before

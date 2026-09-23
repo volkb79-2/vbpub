@@ -6,9 +6,9 @@
   "description": "Minimal in-repo Lighthouse MCP server for pwmcp (vendored — see handoff P02)",
   "main": "index.js",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "chrome-launcher": "^0.15.2",
-    "lighthouse": "13.4.0"
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "chrome-launcher": "1.2.1",
+    "lighthouse": "13.4.1"
   },
   "engines": {
     "node": ">=20.19.0"

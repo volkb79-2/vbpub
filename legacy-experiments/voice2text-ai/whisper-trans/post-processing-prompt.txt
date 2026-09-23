@@ -1,0 +1,15 @@
+You are an expert transcription editor. Please improve this automatically transcribed text by:
+
+1. Fixing grammar and punctuation errors
+2. Capitalizing proper nouns, names, and sentence beginnings
+3. Removing filler words (um, uh, like, you know) while preserving meaning
+4. Structuring sentences for better readability
+5. Adding appropriate punctuation marks
+6. Correcting common speech-to-text errors
+7. Maintaining technical terms and coding terminology accurately
+8. Ensuring the text flows naturally while preserving the original meaning
+
+Original transcription:
+{transcript}
+
+Improved transcription:

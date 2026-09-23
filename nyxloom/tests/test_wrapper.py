@@ -210,8 +210,13 @@ class TestStreamJsonSessionCapture:
     capture delay before producing more output/exiting -- deterministic
     ordering instead of a timing gamble."""
 
-    CAPTURE_DELAY = 0.2   # must fire only after the child's first flush
-    CHILD_HOLD_SECONDS = 1.0  # child stays alive well past CAPTURE_DELAY
+    # The child is launched through the real wrapper and Python startup time is
+    # part of this oracle when it runs in tester-unified.  200 ms was below
+    # that startup cost under load, so the test raced its own capture window
+    # and certified a false ``None`` handle.  Keep the window short enough for
+    # the suite, but long enough to cover the gated container's launch path.
+    CAPTURE_DELAY = 1.0   # must fire only after the child's first flush
+    CHILD_HOLD_SECONDS = 2.0  # child stays alive well past CAPTURE_DELAY
 
     @staticmethod
     def _claude_stream_script(tmp_path, first_line: str, hold_seconds: float) -> list[str]:

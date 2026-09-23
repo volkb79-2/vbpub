@@ -15,6 +15,7 @@ but AUTHORING's own "test the private function directly" precedent
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from pathlib import Path
@@ -170,3 +171,63 @@ def test_a_resolved_git_dir_that_is_not_an_existing_absolute_directory_is_refuse
         git_module._resolve_repo(project, git_executable)
     assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
     assert "not an absolute, existing directory" in str(excinfo.value)
+
+
+def test_every_git_child_disables_optional_index_preload_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The closed Git argv pins the resource-affecting option.
+
+    ``GIT_CONFIG_*`` cannot be used for this assertion: the replacement
+    environment deliberately removes ambient configuration. Capture both the
+    bootstrap and substantive children instead, proving the setting is
+    applied at the boundary every caller shares.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    captured: list[tuple[str, ...]] = []
+
+    def fake_bounded(argv, *, remaining=None):
+        captured.append(tuple(argv))
+        if "--absolute-git-dir" in argv:
+            return 0, str(project / ".git").encode(), b""
+        return 0, b"", b""
+
+    monkeypatch.setattr(git_module, "_run_bounded", fake_bounded)
+    git_module._run_raw(project, "status", "--porcelain=v1", "-z")
+
+    assert len(captured) == 2
+    for argv in captured:
+        assert ("-c", "core.preloadIndex=false") in tuple(zip(argv, argv[1:]))
+
+
+def test_p22_git_child_retries_transient_resource_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A transient tester-cgroup ``fork`` refusal is retried under P22's budget."""
+    attempts = 0
+    sleeps: list[float] = []
+    child = object()
+
+    def fake_popen(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError(errno.EAGAIN, "temporarily unavailable")
+        return child
+
+    monkeypatch.setattr(git_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(git_module.time, "sleep", sleeps.append)
+
+    result = git_module._p22_spawn(
+        ["git", "status"],
+        cwd=tmp_path,
+        identity=False,
+        stdin=git_module.subprocess.DEVNULL,
+        deadline=git_module._P22Deadline(10),
+    )
+
+    assert result is child
+    assert attempts == 3
+    assert sleeps == [git_module._GIT_SPAWN_RETRY_SECONDS] * 2

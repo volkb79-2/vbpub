@@ -10,6 +10,7 @@ systemd can restart it; it is never treated as approval.
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import json
 import re
 import selectors
@@ -329,7 +330,7 @@ def watch(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = MdtArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("/etc/mdt/host-setup.env"))
     parser.add_argument("--docker", default="/usr/bin/docker")
     parser.add_argument("--verify-managed-container", metavar="CONTAINER_ID")

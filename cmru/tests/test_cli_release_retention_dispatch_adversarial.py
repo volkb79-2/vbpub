@@ -5,8 +5,20 @@ import pytest
 from cmru import cli, transaction
 
 
-def _dispatch_fixture(monkeypatch, tmp_path, retained):
-    project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v", github_token="token")
+@pytest.fixture(autouse=True)
+def fake_git_family(monkeypatch):
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+
+
+def _dispatch_fixture(monkeypatch, tmp_path, retained, *, evidence_paths=()):
+    project = cli.ProjectConfig(
+        "demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v",
+        github_token="token", evidence_paths=evidence_paths,
+    )
     config = (
         tmp_path, {"demo": project}, ["demo"], ["demo"], ["demo"], "project-first", {},
         cli.CleanupConfig([], [], [], []), cli.GitHubConfig("o", "r", "token", "user"),
@@ -41,7 +53,9 @@ def test_resumed_release_retains_by_default_with_no_flags(monkeypatch, tmp_path,
         cli.main(["release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 0
     assert seen[0][0][3] == {"demo": "demo-v1"}
-    assert seen[0][1] == {"retain_logs": True, "retain_artifacts": True}
+    assert seen[0][1] == {
+        "retain_logs": True, "retain_artifacts": True, "retain_evidence": True,
+    }
     out = capsys.readouterr().out
     assert f"Retained release output: {retained[0]}" in out
     assert f"Retained release output: {retained[1]}" in out
@@ -54,11 +68,13 @@ def test_resumed_release_discard_artifacts_flag_keeps_logs_only(monkeypatch, tmp
         cli.main(["release", "--resume", str(workspace.path), "--discard-artifacts-on-release", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 0
     assert seen[0][0][3] == {"demo": "demo-v1"}
-    assert seen[0][1] == {"retain_logs": True, "retain_artifacts": False}
+    assert seen[0][1] == {
+        "retain_logs": True, "retain_artifacts": False, "retain_evidence": True,
+    }
     assert f"Retained release output: {retained[0]}" in capsys.readouterr().out
 
 
-def test_resumed_release_both_discard_flags_skip_retention_entirely(monkeypatch, tmp_path, capsys):
+def test_resumed_release_existing_discard_flags_skip_undeclared_evidence_retention(monkeypatch, tmp_path, capsys):
     workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, [])
     with pytest.raises(SystemExit) as exc:
         cli.main([
@@ -69,3 +85,38 @@ def test_resumed_release_both_discard_flags_skip_retention_entirely(monkeypatch,
     assert exc.value.code == 0
     assert seen == []
     assert "Retained release output:" not in capsys.readouterr().out
+
+
+def test_resumed_release_discarding_logs_and_artifacts_still_retains_declared_evidence(
+    monkeypatch, tmp_path, capsys,
+):
+    retained = [tmp_path / "demo" / "evidence" / "cmru-release" / "demo-v1"]
+    workspace, seen = _dispatch_fixture(
+        monkeypatch, tmp_path, retained, evidence_paths=("coverage.json",),
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main([
+            "release", "--resume", str(workspace.path),
+            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--config", str(tmp_path / "cmru.toml"),
+        ])
+    assert exc.value.code == 0
+    assert seen[0][1] == {
+        "retain_logs": False, "retain_artifacts": False, "retain_evidence": True,
+    }
+    assert f"Retained release output: {retained[0]}" in capsys.readouterr().out
+
+
+def test_resumed_release_discard_evidence_flag_is_independent(monkeypatch, tmp_path, capsys):
+    retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1"]
+    workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, retained)
+    with pytest.raises(SystemExit) as exc:
+        cli.main([
+            "release", "--resume", str(workspace.path), "--discard-evidence-on-release",
+            "--config", str(tmp_path / "cmru.toml"),
+        ])
+    assert exc.value.code == 0
+    assert seen[0][1] == {
+        "retain_logs": True, "retain_artifacts": True, "retain_evidence": False,
+    }
+    assert f"Retained release output: {retained[0]}" in capsys.readouterr().out

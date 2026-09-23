@@ -1,0 +1,36 @@
+{
+  "name": "public-services-admin-restricted",
+  "description": "Public web services; SSH and the admin port are allow-listed",
+  "rules": [
+    {
+      "description": "Allow SSH from the operations network",
+      "direction": "INGRESS",
+      "protocol": "TCP",
+      "action": "ACCEPT",
+      "sources": ["198.51.100.0/24"],
+      "destinationPorts": "22"
+    },
+    {
+      "description": "Drop public SSH except the allow-list above",
+      "direction": "INGRESS",
+      "protocol": "TCP",
+      "action": "DROP",
+      "destinationPorts": "22"
+    },
+    {
+      "description": "Allow the private admin service from the VPN range",
+      "direction": "INGRESS",
+      "protocol": "TCP",
+      "action": "ACCEPT",
+      "sources": ["10.42.0.0/16"],
+      "destinationPorts": "8443"
+    },
+    {
+      "description": "Do not expose the admin service publicly",
+      "direction": "INGRESS",
+      "protocol": "TCP",
+      "action": "DROP",
+      "destinationPorts": "8443"
+    }
+  ]
+}

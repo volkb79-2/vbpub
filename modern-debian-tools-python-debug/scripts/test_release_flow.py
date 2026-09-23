@@ -33,10 +33,19 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("if explicit_build_date:", source)
         self.assertIn("build_date = explicit_build_date", source)
 
+    def test_release_gate_runs_from_the_candidate_repository_root(self) -> None:
+        commands = self.config["steps"]["run-tests"]["commands"]
+        self.assertEqual(commands[0]["argv"], ["./run-gate.py", "release"])
+
+    def test_vm_acceptance_resolves_the_project_and_shared_harness_roots(self) -> None:
+        source = (ROOT / "host-setup/tests/run-vm-acceptance.sh").read_text()
+        self.assertIn('MDT_ROOT="$(cd "$HERE/../.." && pwd)"', source)
+        self.assertIn('"$WORKTREE_ROOT/scripts/debian-install-v2/testing/vm"', source)
+
     def test_registry_release_uses_native_zstd_and_standard_attestations(self) -> None:
         self.assertEqual(self.env["IMAGE_COMPRESSION"], "zstd")
         self.assertEqual(self.env["IMAGE_COMPRESSION_LEVEL"], "3")
-        self.assertEqual(self.env["IMAGE_FORCE_COMPRESSION"], "true")
+        self.assertEqual(self.env["IMAGE_FORCE_COMPRESSION"], "false")
         self.assertEqual(self.env["IMAGE_OCI_MEDIA_TYPES"], "true")
         self.assertEqual(self.env["IMAGE_PROVENANCE_MODE"], "max")
         self.assertEqual(self.env["IMAGE_SBOM"], "true")
@@ -80,6 +89,15 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertLess(reconcile, wheels_layer)
         self.assertIn("--upgrade", dockerfile[aider:wheels_layer])
 
+    def test_staged_ai_cli_installer_has_its_parser_module(self) -> None:
+        """The installer runs from /tmp and must receive its local import too."""
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("COPY scripts/mdt_cli.py /tmp/mdt_cli.py", dockerfile)
+        self.assertLess(
+            dockerfile.index("COPY scripts/mdt_cli.py /tmp/mdt_cli.py"),
+            dockerfile.index("COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py"),
+        )
+
     def test_cockpit_declares_headless_vm_tooling_without_a_vm_daemon(self) -> None:
         package_names = {
             line.split("#", 1)[0].strip()
@@ -101,26 +119,17 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertNotIn("--device=/dev/kvm", consumers)
         self.assertNotIn("--device=/dev/net/tun", consumers)
 
-    def test_release_build_persists_cache_outside_disposable_worktrees(self) -> None:
+    def test_release_build_uses_persistent_remote_cache_without_client_export(self) -> None:
         wrapper = (ROOT / "scripts/release-bake.sh").read_text()
-        self.assertIn('git rev-parse --git-common-dir', wrapper)
-        self.assertIn('mdt-buildkit-cache-${policy_key}', wrapper)
-        self.assertIn('*.cache-from=type=local,src=${CACHE_DIR}', wrapper)
-        self.assertIn(
-            '*.cache-to=type=local,dest=${CACHE_DIR},mode=max,compression=${IMAGE_COMPRESSION},'
-            'compression-level=${IMAGE_COMPRESSION_LEVEL},force-compression=${IMAGE_FORCE_COMPRESSION},'
-            'oci-mediatypes=${IMAGE_OCI_MEDIA_TYPES}',
-            wrapper,
-        )
+        self.assertIn("CACHE_ARGS=()", wrapper)
+        self.assertIn("persistent mdt-buildkitd cache", wrapper)
+        self.assertNotIn("cache-from=type=local", wrapper)
+        self.assertNotIn("cache-to=type=local", wrapper)
 
-    def test_release_cache_policy_matches_forced_image_compression(self) -> None:
+    def test_release_cache_export_is_not_a_client_visible_stream(self) -> None:
         wrapper = (ROOT / "scripts/release-bake.sh").read_text()
-        self.assertIn("policy_key=\"${IMAGE_COMPRESSION}-${IMAGE_FORCE_COMPRESSION}-${IMAGE_COMPRESSION_LEVEL}\"", wrapper)
         self.assertIn("configure_cache_args", wrapper)
-        self.assertIn(
-            "Reusing one local cache for gzip and forced-zstd image exports",
-            wrapper,
-        )
+        self.assertIn("client-visible cache transfer", wrapper)
 
     def test_volatile_staging_metadata_does_not_invalidate_tool_install_layers(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text()

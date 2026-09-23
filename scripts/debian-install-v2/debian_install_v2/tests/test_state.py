@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from debian_install_v2.config import Config
-from debian_install_v2.state import StateStore
+from debian_install_v2.state import StateError, StateStore
 
 
 def test_state_manifest_never_serializes_bot_token(tmp_path: Path):
@@ -20,3 +22,11 @@ def test_state_manifest_never_serializes_bot_token(tmp_path: Path):
     assert "telegram_bot_token" not in manifest["config"]
     assert "123:secret" not in raw
     assert manifest["config"]["telegram_chat_id"] == "123123"
+
+
+@pytest.mark.parametrize("payload", ["[]", "null", '"state"'])
+def test_state_load_rejects_non_object_json_roots(tmp_path: Path, payload: str):
+    path = tmp_path / "state.json"
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(StateError, match="root must be a JSON object"):
+        StateStore(str(tmp_path)).load()

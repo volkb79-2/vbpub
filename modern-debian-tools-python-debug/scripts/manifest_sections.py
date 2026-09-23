@@ -9,6 +9,7 @@ always identical.
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import json
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -880,7 +881,7 @@ def _load_artifact_map(artifact_metadata_path: str | None) -> dict[str, dict]:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render manifest markdown sections")
+    parser = MdtArgumentParser(description="Render manifest markdown sections")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     installed = subparsers.add_parser("installed", help="Render full installed-tools manifest")

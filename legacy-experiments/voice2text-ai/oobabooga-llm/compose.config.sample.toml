@@ -1,0 +1,58 @@
+# Oobabooga LLM Service Configuration
+# Voice2Text AI - Language Model Stack
+
+[metadata]
+project_name = "oobabooga-llm"
+env_tag = "prod"
+
+[project]
+name = "oobabooga-llm"
+type = "application"
+
+[compinit]
+enable_env_expansion = true
+
+[global]
+project_name = "Voice2Text-AI"
+environment = "prod"
+
+[global.labels]
+prefix = "de.vxxu.volkb79"
+
+[infrastructure]
+# AUTO-DETECTED: Public FQDN via external IP lookup
+public_fqdn = '''$(curl -s https://api.ipify.org | xargs -I{} sh -c 'host {} | grep pointer | head -1 | awk '\''{print $NF}'\'' | sed '\''s/\.$//'\''; echo {}')'''
+public_tls_key_pem = "/etc/letsencrypt/live/$(echo $PUBLIC_FQDN | cut -d. -f1-)/privkey.pem"
+public_tls_crt_pem = "/etc/letsencrypt/live/$(echo $PUBLIC_FQDN | cut -d. -f1-)/fullchain.pem"
+
+[llm]
+# LLM service configuration
+service_port = 5000
+shim_port = 8300
+model_name = "TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf"
+model_threads = "6"
+model_context_length = "2048"
+shim_model_alias = "gpt-3.5-turbo"
+max_tokens = "2048"
+log_level = "info"
+prompt_system_path = "/config/system-prompt.txt"
+resource_memory_limit = "10G"
+resource_cpu_limit = "6"
+
+# Volume host directories - CRITICAL: Must use hostdir_ prefix for pre-creation
+hostdir_models = "./vol-oobabooga-models"
+hostdir_cache = "./vol-oobabooga-cache"
+
+[health]
+interval = "15s"
+timeout = "5s"
+retries = 10
+start_period = "30s"
+
+[hooks]
+pre_compose = []
+post_compose = []
+
+[env]
+UID = "$(id -u)"
+GID = "$(id -g)"

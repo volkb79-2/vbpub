@@ -25,7 +25,11 @@ def main() -> int:
     )
     measured.start()
     try:
-        test_exit = int(pytest.main(["host-setup/tests/test_buildkit_governance.py", "-q"]))
+        test_exit = int(pytest.main([
+            "host-setup/tests/test_buildkit_governance.py",
+            "host-setup/tests/test_cli_diagnostics.py",
+            "-q",
+        ]))
     finally:
         measured.stop()
         measured.save()

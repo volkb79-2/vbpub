@@ -158,7 +158,7 @@ series       = "nyxloom-trove/handoffs/README.md"
 # zero. The controller preserves that log/digest; the disposable `--rm`
 # container is not evidence.
 #
-# `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_BACKGROUND and verifies the
+# `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_GATES and verifies the
 # named unit against the host cgroup tree before Docker sees it. An unset
 # variable or a missing/unconfigured slice refuses the launch; there is no
 # hardcoded fallback to Docker's unconfined default. Preserved EXACTLY as

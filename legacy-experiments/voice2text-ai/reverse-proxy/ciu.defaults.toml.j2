@@ -1,0 +1,44 @@
+# ============================================================================
+# VOICE2TEXT AI REVERSE PROXY - PROJECT-SPECIFIC CONFIGURATION
+# This section contains ONLY project-specific settings.
+# Shared defaults are inherited from ../ciu-global.defaults.toml.j2.
+# ============================================================================
+
+[compinit]
+enable_env_expansion = true
+
+# ============================================================================
+# PROXY CONFIGURATION
+# ============================================================================
+
+[proxy]
+# External port for HTTPS access (host port mapped to container port 443)
+external_port = 9443
+
+[proxy.hostdir]
+logs = ""  # Empty = auto-generates ./vol-reverse-proxy-logs
+
+# Service routes (relative URL paths)
+[proxy.routes]
+api = "/api"
+docs = "/docs"
+whisper = "/whisper"
+whisper_stream = "/whisper-stream"  # NEW: Streaming transcription via WebSocket
+llm = "/llm"
+
+# Backend services resolved via [services.*] in ciu-global.defaults.toml.j2
+
+# ============================================================================
+# HOOKS
+# ============================================================================
+
+[hooks]
+pre_compose = ["./render_nginx_conf.py"]
+post_compose = []
+
+# ============================================================================
+# ENVIRONMENT VARIABLES (Flat structure - no nesting)
+# ============================================================================
+
+[env]
+# Auto-detection of UID/GID handled by global config

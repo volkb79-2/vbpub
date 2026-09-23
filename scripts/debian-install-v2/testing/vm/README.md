@@ -71,7 +71,7 @@ guest to report QEMU/KVM and all partition/swap tools, and verifies by JUnit
 that both real commit tests actually passed. Its remote setup, copy, and test
 phases are bounded; one run per worktree is admitted at a time.
 
-The outer runner is placed in `$CGROUP_PARENT_DEV_BACKGROUND`; the wrapper
+The outer runner is placed in `$CGROUP_PARENT_DEV_GATES`; the wrapper
 fails closed if that variable or the known interactive probe tier is absent or
 not installed on the Docker host. Before building the runner image it also
 requires `BUILDX_BUILDER` and invokes `docker buildx build --builder

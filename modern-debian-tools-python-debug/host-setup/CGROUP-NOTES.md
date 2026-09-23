@@ -609,8 +609,8 @@ anything of its own. A child with no declared `memory.min` defaults to `0` as
 its own base claim, but if the parent has protection left unclaimed by
 explicitly-declaring siblings, that surplus still flows to it, proportional to
 its own usage share. Concretely: add `MemoryMin=800M` directly to
-`dev-background.slice` today, and every ordinary gate/test-runner container
-already living there — none of which asked for any protection — would start
+`dev-background.slice` today, and every ordinary stack container already
+living there — none of which asked for any protection — would start
 absorbing a share of that 800M under contention, simply by virtue of using
 memory. That's a silent behavior change for a large, heterogeneous, shared
 tier, not a no-op for anyone who doesn't opt in.
@@ -704,7 +704,7 @@ a reason to add reconciliation machinery.
 
 | Alternative | What actually happens | Verdict |
 |---|---|---|
-| `MemoryMin` directly on `dev-background.slice` | Surplus redistributes to every existing gate/test-runner container using memory, not just the intended one | Rejected — see above |
+| `MemoryMin` directly on `dev-background.slice` | Surplus redistributes to every existing stack container using memory, not just the intended one | Rejected — see above |
 | `dev.slice` given a "generous" `MemoryMin` (more than the guaranteed slice's own ceiling) | Surplus leaks to `dev-interactive.slice`/`dev-background.slice`, unbounded by how generous the headroom was | Rejected — pin the two values exactly equal instead |
 | Skip `dev.slice`, set `MemoryMin` only on `dev-memory_min_guaranteed.slice` | Ancestor-chain rule caps effective protection at what `dev.slice` (0 today) hands down — the leaf's `MemoryMin` is silently inert, `systemctl show` reports the value, nothing is actually protected | Rejected — both levels are required, not either/or |
 | Disable `memory_recursiveprot` host-wide to force stricter, non-cascading semantics | It's a mount flag on `/sys/fs/cgroup`, not scoped to one hierarchy — `dev-interactive.slice`'s own `MemoryLow` and the game server's `soulmask_tmpfs.slice` hierarchy both already depend on it being enabled; turning it off to fix one new leaf slice breaks two unrelated, already-working protections | Rejected — see §5 above, `mdt-host-check.sh` already FAILs when this flag is missing, for good reason |

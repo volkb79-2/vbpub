@@ -594,14 +594,14 @@ older than N days" expressible for the first time.
 > `S2.6a`'s sibling, `S-CLI.5b`):
 >
 > ```
-> cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
->   e.g.  cmru-release-20260819_143022-assay-a3ae580d   (branch string == worktree dir string)
+> cmru-release-<YYYYMMDD_HHMMSS>-<scope>
+>   e.g.  cmru-release-20260819_143022-assay   (branch string == worktree dir string)
 > ```
 >
-> Two deliberate divergences from ciu, decided with the operator: the trailing **`uuid8` is
-> kept** — this section's own "collision-freedom is non-negotiable" argument stands, and ciu's
-> suffix-free name cannot make it, so cmru is ciu-*shaped* but not byte-identical — and the
-> date/time separator is **`_`** to match ciu exactly. The nested `cmru/release/` and
+> The shared allocator derives a six-character lower-case base-36 identity from the canonical
+> physical worktree path and records it with the transaction context; a same-second/same-scope
+> allocation receives a numeric suffix, while a short-identity collision refuses with both
+> paths. The date/time separator is **`_`** to match ciu exactly. The nested `cmru/release/` and
 > `cmru/build/` prefixes are **still recognised** for discovery/resume/cleanup (predicates
 > `_is_release_branch`/`_is_build_branch`), so the ~50 worktrees retained under the old naming
 > in this checkout are not stranded. The retention-policy point above is still open.
@@ -620,8 +620,9 @@ precedence and, if anything is missing, aborts **once, naming every missing vari
 `cmru.orchestration.toml [env]` (inherited through `cmru release`) as the real source, and say
 it is NOT usually the project's own `cmru.toml [env]` (b). The required set is one shared
 constant, `REQUIRED_TESTER_ENV`, that `cmru standards` imports for its static config check — so
-the runtime preflight and the static validator can never drift. `cgroup_parent` is deliberately
-excluded (it has the ambient `CGROUP_PARENT_DEV_BACKGROUND` fallback). The workaround formerly
+the runtime preflight and the static validator can never drift. `cgroup_parent` is required as
+`CMRU_TESTER_CGROUP_PARENT`, normally bound to `$CGROUP_PARENT_DEV_GATES`; there is no ambient
+fallback. The workaround formerly
 in `docs/CONTRIBUTING.md §3` now records the fix.
 
 **Original report (kept for the record).** The `argv` entries in a project's `[steps.*]` depend on environment injected by the
@@ -997,7 +998,7 @@ UNCONFIRMED); `do_enroll` at L1373; parser at L1540; dispatch at L1572. Tests:
 `TestEnrollAgainstRealSystem` at L2097 — the repo's first container-backed
 "run the installer for real and assert on real system state" oracle; its fixture
 image is built and torn down by the test file itself and the group SKIPS where
-docker or `$CGROUP_PARENT_DEV_BACKGROUND` is absent, which is the case inside
+docker or `$CGROUP_PARENT_DEV_GATES` is absent, which is the case inside
 the gate's own tester-unified container). `src/cmru/getpy.py` needed no change:
 the template is placeholder-substituted, not parsed.
 
@@ -1264,3 +1265,44 @@ child-failure and plan-refusal tests prove false cleanup results are reported
 without calling them conflicts. The normative contract is `docs/SPEC.md`
 S-CLI.5/S-CLI.5a; operator steps are in `docs/RELEASE-TRANSACTIONS.md` under
 Caller-main cleanup.
+
+### KI-29 — Release abandonment needs a first-class, dry-run-safe operation
+
+**Status:** OPEN 2026-09-22.
+
+The current release surface hides a whole cleanup operation behind
+`--abandon`. That makes a destructive lifecycle action easy to miss and
+leaves its relationship with `--dry-run` ambiguous. Replace it with a
+top-level `cmru abandon` verb:
+
+* With no branch argument, discover the retained release candidates, show the
+  exact branch, worktree, transaction/scope, and any remote refs or release
+  assets involved, then ask for explicit interactive confirmation. `--yes`
+  may pre-confirm that complete candidate set.
+* With a branch-name argument, resolve exactly that managed release branch,
+  verify its worktree and transaction metadata, and abandon/clean only that
+  candidate. Do not infer a different branch from a prefix or silently widen
+  the selection.
+* The operation must fail closed for a promoted/published transaction or for
+  ambiguous/stale metadata. Its help and confirmation must state what is
+  removed and what evidence is retained. Any compatibility path for the old
+  option must not retain a hidden multi-step destructive operation.
+* `--dry-run` is a strict no-mutation mode. Candidate discovery, confirmation
+  rendering, branch/worktree inspection, and remote-state inspection may run,
+  but no abandon, worktree removal, branch deletion, sidecar deletion, or
+  remote cleanup may execute. Add a regression test for the currently
+  suspected ordering bug where `--abandon` can run before ordinary dry-run
+  handling.
+* Clarify `cleanup` in help and consumer documentation: it cleans the remote
+  release assets on the configured `origin` (for example the origin release,
+  tag, and GHCR assets covered by the selected cleanup policy); it is not a
+  synonym for abandoning a retained local release transaction or its worktree.
+  The docs must say which remote asset classes are actually in scope rather
+  than implying that every origin ref is removed.
+
+The implementation must add parser/help tests, candidate-discovery and exact
+selection tests, interactive/`--yes` confirmation tests, promoted-transaction
+refusal tests, remote-origin cleanup tests, and a dry-run mutation oracle.
+Update `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and
+`docs/SPEC.md` together so the user-facing operation and its safety boundary
+are discoverable and normative.

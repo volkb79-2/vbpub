@@ -7,8 +7,9 @@ release child there.  The caller's uncommitted files therefore cannot leak into 
 wheel, image, tag, or release asset.
 
 The parent process owns a repository-local flock for the lifetime of its child.
-The child may fast-forward ``origin/main`` from the prepared release branch; a
-concurrent remote update fails closed before tags or publication.
+The child builds and publishes from the fixed candidate, then fast-forwards
+``origin/main`` from that exact branch tip; a concurrent remote update fails
+closed without rebasing the candidate.
 """
 from __future__ import annotations
 
@@ -21,12 +22,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
@@ -47,9 +47,27 @@ def _git(repo_root: Path, *args: str, check: bool = True) -> str:
 
 
 def _common_git_dir(repo_root: Path) -> Path:
-    raw = _git(repo_root, "rev-parse", "--git-common-dir")
-    path = Path(raw)
-    return path if path.is_absolute() else (repo_root / path).resolve()
+    return _shared_worktree().discover_git_root(repo_root)[1]
+
+
+def _shared_workspace_record(shared: Any, common: Path, path: Path) -> Any | None:
+    """Find the shared lifecycle record for one literal Git worktree path."""
+    return shared.find_workspace(common, path)
+
+
+def _require_cmru_record_purpose(record: Any, purpose: str, path: Path) -> None:
+    """Refuse to treat another product's shared checkout as a CMRU transaction.
+
+    ``cmru-legacy`` is the one intermediate record purpose written by the
+    compatibility removal bridge; its branch still has to match the requested
+    CMRU operation before that record can be resumed or discarded.
+    """
+    expected = f"cmru-{purpose}"
+    if record.purpose not in {expected, "cmru-legacy"}:
+        raise RuntimeError(
+            f"{path} is recorded as workspace purpose {record.purpose!r}, "
+            f"not a CMRU {purpose} transaction"
+        )
 
 
 @dataclass(frozen=True)
@@ -60,6 +78,93 @@ class ReleaseWorkspace:
     path: Path
     branch: str
     base: str
+    context: object | None = None
+    is_prunable: bool = False
+
+    @property
+    def workspace_id(self) -> str | None:
+        value = getattr(self.context, "workspace_id", None)
+        if value:
+            return str(value)
+        return _shared_worktree().workspace_id_for_path(self.path)
+
+
+def _shared_worktree():
+    """Load the internal source dependency in checkout and wheel modes."""
+    try:
+        import worktree
+        return worktree
+    except ModuleNotFoundError:
+        # Source-tree test runners import cmru/src directly.  Wheels include
+        # this same package through pyproject's package-dir mapping; this
+        # fallback only makes direct source execution use that canonical source.
+        library_src = Path(__file__).resolve().parents[3] / "libraries" / "worktree" / "src"
+        if library_src.is_dir():
+            sys.path.insert(0, str(library_src))
+            import worktree
+            return worktree
+        raise
+
+
+def project_git_family_groups(
+    repo_root: Path, projects: Sequence[object],
+) -> dict[Path, list[object]]:
+    """Group selected projects by their actual Git object/ref family.
+
+    The CMRU root is orchestration scope, not automatically a Git root.  A
+    central orchestration file may therefore coordinate projects from several
+    repositories, but each family gets its own transaction workspace.  The
+    insertion order is retained so release ordering remains the configured
+    project order within each family.
+    """
+
+    shared = _shared_worktree()
+    groups: dict[tuple[Path, Path], list[object]] = {}
+    for project in projects:
+        project_root = getattr(project, "project_root", None)
+        if project_root is None:
+            raise RuntimeError("CMRU project has no project_root; cannot resolve its Git family")
+        selected = Path(project_root)
+        if not selected.is_absolute():
+            selected = repo_root / selected
+        selected = selected.resolve()
+        try:
+            top, common, _branch, _head = shared.discover_git_context(selected)
+        except Exception as exc:
+            raise RuntimeError(
+                f"CMRU project root {selected} is not inside a usable Git worktree: {exc}"
+            ) from exc
+        groups.setdefault((common, top), []).append(project)
+    if not groups:
+        try:
+            top, _common, _branch, _head = shared.discover_git_context(repo_root)
+        except Exception as exc:
+            raise RuntimeError(
+                f"CMRU root {repo_root} has no selected project Git family: {exc}"
+            ) from exc
+        return {top: []}
+    by_root: dict[Path, list[object]] = {}
+    for (_common, top), members in groups.items():
+        by_root[top] = members
+    return by_root
+
+
+def source_git_root_for_projects(repo_root: Path, projects: Sequence[object]) -> Path:
+    """Resolve the sole Git family for one transaction child.
+
+    Multi-family callers split the operation with
+    :func:`project_git_family_groups`; retaining this strict helper prevents a
+    single child from accidentally treating independent repositories as one
+    worktree.
+    """
+    groups = project_git_family_groups(repo_root, projects)
+    if len(groups) != 1:
+        details = ", ".join(str(root) for root in sorted(groups))
+        raise RuntimeError(
+            "selected CMRU projects belong to independent Git families; split the "
+            f"transaction by family before allocating a worktree ({details})"
+        )
+    return next(iter(groups))
 
 
 class _SyncLocalMainResult(NamedTuple):
@@ -136,7 +241,7 @@ _SCOPE_INVALID_RE = re.compile(r"[^a-z0-9-]+")
 
 
 def _sanitize_scope(scope: str | None) -> str:
-    """Normalise ``--project`` (or the unscoped ``all``) into a branch/path-safe
+    """Normalise a target (or the unscoped ``all``) into a branch/path-safe
     token (KI-16): lowercase, ``[a-z0-9-]`` only, collapsed, never empty. A
     project name is already constrained by config validation, but this feeds
     directly into a branch name and a worktree directory and must not assume
@@ -193,23 +298,27 @@ def workspace_purpose(branch: str) -> str:
     return parts[1] if len(parts) >= 2 else branch
 
 
-def _new_transaction_branch(purpose: str, scope: str | None) -> str:
-    """``cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>`` (KI-16, ciu-aligned).
+def _new_transaction_branch(
+    purpose: str,
+    scope: str | None,
+    *,
+    identity: str,
+    suffix: int = 1,
+) -> str:
+    """Return a readable transaction branch without a second UUID identity.
 
     Flat single-token name -- no nested ref path -- so the branch string IS the
     worktree directory basename (see :func:`_worktree_dirname`). The ``_``
     between date and time matches ciu's ``<prefix>-<YYYYMMDD_HHMMSS>-<feature>``
     scheme and keeps the date/time boundary visually distinct from the ``-``
-    field separators. UTC timestamp for chronological sort; sanitized scope for
-    readability; a trailing 8 hex from ``uuid4`` for collision-freedom --
-    cleanup depends on a transaction being able to assume it exclusively owns
-    the name it created, so the random suffix is required, not decorative, and
-    this name is deliberately NOT made purely deterministic from
-    timestamp+scope alone.
+    field separators. UTC timestamp for chronological sort and a numeric suffix
+    for the rare same-second/same-scope allocation collision. The shared
+    allocator's six-character path identity is the ownership identity and is
+    persisted in its record; CMRU does not invent a second UUID namespace.
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    token = uuid.uuid4().hex[:8]
-    return f"cmru-{purpose}-{timestamp}-{_sanitize_scope(scope)}-{token}"
+    suffix_text = "" if suffix == 1 else f"-{suffix}"
+    return f"cmru-{purpose}-{timestamp}-{_sanitize_scope(scope)}-{identity}{suffix_text}"
 
 
 def _worktree_dirname(branch: str) -> str:
@@ -226,13 +335,14 @@ def _worktree_dirname(branch: str) -> str:
 
 def create_workspace(
     repo_root: Path, *, base: str | None = None, purpose: str = "release", scope: str | None = None,
+    source_git_root: Path | None = None,
 ) -> ReleaseWorkspace:
     """Create a worktree at one already-fetched authoritative remote commit.
 
     ``purpose`` is intentionally visible in the branch/path. A successful release
     is ephemeral; a normal build is retained for inspection and must therefore
     never be mistaken for a failed, resumable release attempt. ``scope`` is the
-    ``--project`` value when the run is scoped, else ``None`` (recorded as
+    target value when the run is scoped, else ``None`` (recorded as
     ``all``) -- see :func:`_new_transaction_branch`.
 
     Discovery, resume, and cleanup recognise a transaction branch through
@@ -244,28 +354,73 @@ def create_workspace(
     """
     if purpose not in {"release", "build"}:
         raise ValueError(f"unknown CMRU workspace purpose: {purpose}")
+    source_root = (source_git_root or repo_root).resolve()
     if base is None:
-        base = fetch_origin_main(repo_root)
-    branch = _new_transaction_branch(purpose, scope)
-    parent = repo_root / ".worktrees"
+        base = fetch_origin_main(source_root)
+    shared = _shared_worktree()
+    parent = source_root / ".worktrees"
     parent.mkdir(exist_ok=True)
+    # The visible allocation identity is derived before the final branch/path
+    # is named. This avoids the impossible self-reference of hashing a path
+    # whose basename contains the hash itself; the durable shared record stores
+    # this explicit canonical seed path, so ownership admission and resume use
+    # the same identity input.
+    seed_branch = _new_transaction_branch(
+        purpose, scope, identity=_shared_worktree().workspace_id_for_path(parent / "allocation-seed")
+    )
+    visible_identity = _shared_worktree().workspace_id_for_path(parent / seed_branch)
+    branch = _new_transaction_branch(purpose, scope, identity=visible_identity)
     path = parent / _worktree_dirname(branch)
-    # Uniqueness comes from the branch's own uuid8 now, so there is nothing to
-    # mkdtemp+rmdir for. Explicitly refuse an existing path rather than
+    # Uniqueness is admitted by the shared family allocator and its path-derived
+    # record identity, so there is nothing to mkdtemp+rmdir for. Explicitly
+    # refuse an existing path rather than
     # trusting `git worktree add` to: git only fails closed on a NON-EMPTY
     # existing directory -- it silently ADOPTS an empty pre-existing one,
     # which would not be "this ONE transaction exclusively owns the name it
-    # created" if that ever happened (uuid8 collision, or a stale leftover).
+    # created" if that ever happened (an allocation collision or stale leftover).
     if path.exists():
         raise RuntimeError(
-            f"worktree path already exists: {path} (uuid8 collision or a stale leftover "
-            "directory -- this should not happen; inspect and remove it manually before "
-            "retrying)"
+            f"worktree path already exists: {path}; refusing to reuse an occupied transaction name"
         )
-    subprocess.run(
-        ["git", "worktree", "add", "-b", branch, str(path), base], cwd=repo_root, check=True,
-    )
-    return ReleaseWorkspace(repo_root=repo_root, path=path, branch=branch, base=base)
+    try:
+        context = shared.create_workspace(
+            source_root,
+            # The workspace allocator must operate on the selected Git
+            # family, never on an orchestration directory above it.
+            path,
+            branch=branch,
+            base=base,
+            purpose=f"cmru-{purpose}",
+                labels={"cmru.purpose": purpose, "cmru.scope": _sanitize_scope(scope)},
+                metadata={"transaction_scope": _sanitize_scope(scope)},
+                identity_path=parent / seed_branch,
+        )
+        # The neutral allocator deliberately admits a checkout with no
+        # files so CIU can write its adapter record before its own reset.
+        # CMRU has no such staged allocation phase: its child must see the
+        # committed project documents before it starts, so materialize the
+        # exact requested snapshot before returning the workspace.
+        checkout = subprocess.run(
+            ["git", "reset", "--hard", base],
+            cwd=path,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if checkout.returncode:
+            try:
+                shared.remove_workspace(context, force=True)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"git reset --hard {base} failed ({checkout.returncode}): "
+                f"{(checkout.stderr or checkout.stdout).strip()}"
+            )
+        return ReleaseWorkspace(
+            repo_root=source_root, path=path, branch=branch, base=base, context=context,
+        )
+    except shared.WorkspaceError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
@@ -274,32 +429,69 @@ def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
     path = path.resolve()
     if not path.is_dir():
         raise RuntimeError(f"release worktree does not exist: {path}")
-    if _common_git_dir(path) != _common_git_dir(repo_root):
+    shared = _shared_worktree()
+    try:
+        path_top, path_common, _path_branch, _path_head = shared.discover_git_context(path)
+    except Exception as exc:
+        raise RuntimeError(f"{path} is not a worktree: {exc}") from exc
+    try:
+        expected_common = _common_git_dir(repo_root)
+    except RuntimeError:
+        expected_common = None
+    if expected_common is not None and path_common != expected_common:
         raise RuntimeError(f"{path} is not a worktree of {repo_root}")
+    # New transactions are resumed from the shared record. Legacy retained
+    # worktrees have no record and use the compatibility reader below.
+    try:
+        _top, common, _branch, _head = shared.discover_git_context(path)
+        record = _shared_workspace_record(shared, common, path)
+        if record is not None:
+            _require_cmru_record_purpose(record, "release", path)
+            context = shared.ensure_workspace(record)
+            if not _is_release_branch(context.branch):
+                raise RuntimeError(
+                    f"{path} is not a retained cmru release branch (got {context.branch!r})"
+                )
+            return ReleaseWorkspace(
+                repo_root=repo_root.resolve(),
+                path=path,
+                branch=context.branch,
+                base=context.base_commit,
+                context=context,
+            )
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
     branch = _git(path, "branch", "--show-current")
     if not _is_release_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
-    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
-    return ReleaseWorkspace(repo_root=repo_root, path=path, branch=branch, base=_git(path, "rev-parse", "HEAD"))
+    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=path_top, check=True)
+    return ReleaseWorkspace(repo_root=repo_root.resolve(), path=path, branch=branch, base=_git(path, "rev-parse", "HEAD"))
 
 
 def copy_secret_overlays(
     repo_root: Path, workspace: ReleaseWorkspace, project_config_paths: Sequence[Path],
 ) -> None:
     """Copy the root credential and explicit project overlays into a child worktree."""
+    source_root = workspace.repo_root.resolve()
     source = repo_root.resolve() / "cmru.secret.toml"
     if source.exists() and not source.is_file():
         raise RuntimeError(f"repository credential path is not a regular file: {source}")
-    if source.is_file():
+    if source.is_file() and repo_root.resolve() == source_root:
         target = workspace.path / "cmru.secret.toml"
         shutil.copyfile(source, target)
         target.chmod(0o600)
+    # A central CMRU root can be outside the selected Git family. In that
+    # layout the child receives the absolute orchestration config and reads the
+    # central root secret directly; copying it into an unrelated worktree would
+    # make ownership ambiguous.
     for config_path in project_config_paths:
         config_path = config_path.resolve()
         try:
-            relative = config_path.parent.relative_to(repo_root.resolve())
+            relative = config_path.parent.relative_to(source_root)
         except ValueError as exc:
-            raise RuntimeError(f"project config is outside repository: {config_path}") from exc
+            raise RuntimeError(
+                f"project config is outside selected Git workspace {source_root}: {config_path}"
+            ) from exc
         source = config_path.with_name("cmru.secret.toml")
         if source.exists() and not source.is_file():
             raise RuntimeError(f"project credential path is not a regular file: {source}")
@@ -313,17 +505,26 @@ def copy_secret_overlays(
 
 def remove_workspace(workspace: ReleaseWorkspace) -> None:
     """Remove a successful ephemeral worktree and its private branch."""
-    subprocess.run(
-        ["git", "worktree", "remove", "--force", str(workspace.path)],
-        cwd=workspace.repo_root, check=True,
-    )
-    subprocess.run(
-        ["git", "branch", "-D", workspace.branch], cwd=workspace.repo_root, check=True,
-    )
+    if workspace.context is not None:
+        try:
+            _shared_worktree().remove_workspace(workspace.context)
+            return
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc
+    try:
+        _shared_worktree().remove_unrecorded_workspace(
+            workspace.repo_root,
+            workspace.path,
+            expected_branch=workspace.branch,
+            purpose="cmru-legacy",
+            force=True,
+        )
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _release_token(workspace: ReleaseWorkspace) -> str:
-    """The ``<timestamp>_<scope>-<uuid8>`` token that names this transaction's
+    """The ``<timestamp>_<scope>`` token that names this transaction's
     sidecar state files, stripped of its scheme prefix so the token is stable
     and prefix-free under both naming schemes: a flat ``cmru-<purpose>-<token>``
     branch drops the ``cmru-release-``/``cmru-build-`` head; a legacy nested
@@ -514,10 +715,77 @@ def _project_roots_for_retention(
         raise RuntimeError(f"{name}: cannot retain outputs without project_root")
     main_project_root = Path(project_root).resolve()
     try:
-        relative = main_project_root.relative_to(repo_root.resolve())
+        relative = main_project_root.relative_to(workspace.repo_root.resolve())
     except ValueError as exc:
-        raise RuntimeError(f"{name}: project_root is outside repository: {main_project_root}") from exc
+        raise RuntimeError(
+            f"{name}: project_root is outside selected Git workspace "
+            f"{workspace.repo_root}: {main_project_root}"
+        ) from exc
     return main_project_root, workspace.path / relative
+
+
+def _declared_evidence_path(name: str, raw_path: object) -> Path:
+    """Validate one runtime evidence declaration and return its safe path."""
+    if not isinstance(raw_path, str) or not raw_path:
+        raise RuntimeError(f"{name}: evidence_paths must contain non-empty strings")
+    relative = Path(raw_path)
+    if relative.is_absolute() or ".." in relative.parts or relative == Path("."):
+        raise RuntimeError(
+            f"{name}: evidence path must be project-relative and may not contain '..' or '.'"
+        )
+    return relative
+
+
+def _assert_no_symlink_components(root: Path, path: Path, name: str) -> None:
+    """Refuse a path that reaches its source or destination through a symlink."""
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"{name}: evidence path escaped its project root: {path}") from exc
+    if root.is_symlink():
+        raise RuntimeError(f"{name}: evidence project root is a symlink: {root}")
+    current = root
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise RuntimeError(f"{name}: evidence path is or crosses a symlink: {current}")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _evidence_hashes(path: Path, coordinate: Path, name: str) -> list[dict[str, str]]:
+    """Validate a retained evidence path and return hashes relative to its record."""
+    if path.is_symlink():
+        raise RuntimeError(f"{name}: declared evidence path is a symlink: {path}")
+    if path.is_file():
+        return [{
+            "path": coordinate.as_posix(),
+            "sha256": _sha256_file(path),
+            "bytes": str(path.stat().st_size),
+        }]
+    if not path.is_dir():
+        raise RuntimeError(f"{name}: declared evidence path is missing or not a file/directory: {path}")
+
+    entries: list[dict[str, str]] = []
+    for item in sorted(path.rglob("*")):
+        if item.is_symlink():
+            raise RuntimeError(f"{name}: declared evidence contains a symlink: {item}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise RuntimeError(f"{name}: declared evidence contains a non-regular path: {item}")
+        entries.append({
+            "path": (coordinate / item.relative_to(path)).as_posix(),
+            "sha256": _sha256_file(item),
+            "bytes": str(item.stat().st_size),
+        })
+    return entries
 
 
 def retain_successful_build_outputs(
@@ -575,7 +843,7 @@ def retain_successful_build_outputs(
         if target_logs.exists() or target_artifacts.exists():
             raise RuntimeError(
                 f"{name}: build output {output_id} already exists; inspect it or remove it with "
-                f"cmru cleanup --project {name} --delete-build-output {output_id} --yes"
+                f"cmru cleanup {name} --delete-build-output {output_id} --yes"
             )
 
         stage = Path(tempfile.mkdtemp(prefix=".cmru-build-retain-", dir=main_project_root))
@@ -714,11 +982,22 @@ def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> Re
     branch = _git(path, "branch", "--show-current")
     if not _is_build_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru build worktree (got {branch!r})")
+    context = None
+    shared = _shared_worktree()
+    try:
+        _top, common, _branch, _head = shared.discover_git_context(path)
+        record = _shared_workspace_record(shared, common, path)
+        if record is not None:
+            _require_cmru_record_purpose(record, "build", path)
+            context = shared.ensure_workspace(record)
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
     workspace = ReleaseWorkspace(
         repo_root=repo_root,
         path=path,
         branch=branch,
         base=_git(path, "rev-parse", "HEAD"),
+        context=context,
     )
     if not dry_run:
         remove_workspace(workspace)
@@ -733,6 +1012,7 @@ def retain_success_outputs(
     *,
     retain_logs: bool,
     retain_artifacts: bool,
+    retain_evidence: bool = True,
 ) -> list[Path]:
     """Move selected completed-release evidence out before deleting the worktree.
 
@@ -743,7 +1023,9 @@ def retain_success_outputs(
     is skipped without error (retention is now the release default, applied across
     every orchestrated project, not all of which build a local artifact). A
     project that DOES declare ``artifact_dirs`` and then fails to produce one is a
-    real build defect and still raises.
+    real build defect and still raises. Declared gate evidence follows the same
+    all-or-nothing transaction, but lives under a separate ``evidence`` coordinate
+    and has its own integrity manifest; it is never treated as a publishable artifact.
     """
     retained: list[Path] = []
     for name, immutable_id in results.items():
@@ -754,7 +1036,7 @@ def retain_success_outputs(
         if project_root is None:
             raise RuntimeError(f"{name}: cannot retain outputs without project_root")
         project_root = Path(project_root).resolve()
-        relative = project_root.relative_to(repo_root.resolve())
+        relative = project_root.relative_to(workspace.repo_root.resolve())
         child_root = workspace.path / relative
         source_logs = child_root / "logs"
         target_logs = project_root / "logs" / "cmru-release" / immutable_id
@@ -788,12 +1070,54 @@ def retain_success_outputs(
                     raise RuntimeError(f"{name}: artifact directory destination already exists: {target}")
                 artifact_sources.append((target_name, source, target))
 
+        evidence_paths = tuple(getattr(project, "evidence_paths", ()) or ())
+        evidence_root = project_root / "evidence" / "cmru-release" / immutable_id
+        evidence_sources: list[tuple[str, Path, Path, str]] = []
+        attempt_evidence = retain_evidence and bool(evidence_paths)
+        if attempt_evidence:
+            _assert_no_symlink_components(project_root, evidence_root, name)
+            if evidence_root.exists() or evidence_root.is_symlink():
+                raise RuntimeError(f"{name}: retained evidence destination already exists: {evidence_root}")
+            seen_paths: list[tuple[Path, str]] = []
+            for raw_path in evidence_paths:
+                relative = _declared_evidence_path(name, raw_path)
+                if relative == Path("evidence.json"):
+                    raise RuntimeError(
+                        f"{name}: evidence path collides with the retention manifest: {raw_path}"
+                    )
+                for previous, previous_raw in seen_paths:
+                    if relative == previous or previous in relative.parents or relative in previous.parents:
+                        raise RuntimeError(
+                            f"{name}: evidence path collision/overlap: {previous_raw} and {raw_path}"
+                        )
+                seen_paths.append((relative, raw_path))
+                source = child_root / relative
+                _assert_no_symlink_components(child_root, source, name)
+                if source.is_symlink():
+                    raise RuntimeError(f"{name}: declared evidence path is a symlink: {source}")
+                if not source.exists():
+                    raise RuntimeError(f"{name}: declared evidence path is missing: {source}")
+                kind = "file" if source.is_file() else "directory" if source.is_dir() else "other"
+                if kind == "other":
+                    raise RuntimeError(
+                        f"{name}: declared evidence path is not a file/directory: {source}"
+                    )
+                _evidence_hashes(source, relative, name)
+                target = evidence_root / relative
+                _assert_no_symlink_components(project_root, target, name)
+                if target.exists() or target.is_symlink():
+                    raise RuntimeError(f"{name}: evidence destination already exists: {target}")
+                evidence_sources.append((relative.as_posix(), source, target, kind))
+
         log_parent = target_logs.parent
         log_parent_existed = log_parent.exists()
         artifact_parent = target_root.parent
         artifact_parent_existed = artifact_parent.exists()
+        evidence_parent = evidence_root.parent
+        evidence_parent_existed = evidence_parent.exists()
         moved_sources: list[tuple[Path, Path]] = []
         created_target_root = False
+        created_evidence_root = False
         moved_logs = False
         try:
             # All destination creation is deliberately before the first move.
@@ -803,6 +1127,13 @@ def retain_success_outputs(
                 artifact_parent.mkdir(parents=True, exist_ok=True)
                 target_root.mkdir()
                 created_target_root = True
+            if attempt_evidence:
+                evidence_root.parent.mkdir(parents=True, exist_ok=True)
+                evidence_root.mkdir()
+                created_evidence_root = True
+                for _raw_path, _source, target, _kind in evidence_sources:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    _assert_no_symlink_components(project_root, target, name)
 
             if retain_logs and source_logs.exists():
                 shutil.move(str(source_logs), str(target_logs))
@@ -824,10 +1155,35 @@ def retain_success_outputs(
                 (target_root / "release.json").write_text(
                     json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                 )
+            if attempt_evidence:
+                for _raw_path, source, target, _kind in evidence_sources:
+                    shutil.move(str(source), str(target))
+                    moved_sources.append((source, target))
+                evidence_manifest = {
+                    "schema_version": 1,
+                    "kind": "cmru-release-evidence",
+                    "project": name,
+                    "immutable_id": immutable_id,
+                    "source_commit": _git(workspace.path, "rev-parse", "HEAD"),
+                    "paths": [
+                        {
+                            "path": raw_path,
+                            "type": kind,
+                            "files": _evidence_hashes(target, Path(raw_path), name),
+                        }
+                        for raw_path, _source, target, kind in evidence_sources
+                    ],
+                }
+                (evidence_root / "evidence.json").write_text(
+                    json.dumps(evidence_manifest, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
             if moved_logs:
                 retained.append(target_logs)
             if attempt_artifacts:
                 retained.append(target_root)
+            if attempt_evidence:
+                retained.append(evidence_root)
         except Exception:
             rollback_errors: list[Exception] = []
             for source, target in reversed(moved_sources):
@@ -840,6 +1196,11 @@ def retain_success_outputs(
                     shutil.rmtree(target_root)
                 except Exception as rollback_exc:
                     rollback_errors.append(rollback_exc)
+            if created_evidence_root and evidence_root.exists():
+                try:
+                    shutil.rmtree(evidence_root)
+                except Exception as rollback_exc:
+                    rollback_errors.append(rollback_exc)
             if not artifact_parent_existed and artifact_parent.exists():
                 try:
                     artifact_parent.rmdir()
@@ -850,6 +1211,14 @@ def retain_success_outputs(
                     log_parent.rmdir()
                 except OSError:
                     pass
+            if not evidence_parent_existed:
+                current = evidence_parent
+                while current != project_root and current.exists():
+                    try:
+                        current.rmdir()
+                    except OSError:
+                        break
+                    current = current.parent
             if rollback_errors:
                 raise RuntimeError(f"{name}: retention rollback failed") from rollback_errors[0]
             raise
@@ -859,11 +1228,10 @@ def retain_success_outputs(
 def write_release_progress(repo_root: Path, workspace: ReleaseWorkspace, sha: str) -> None:
     """Record the commit SHA as of the last *fully completed* project in a
     per-project release run (build-all-projects-after-another: S-REL — each
-    project's prepare/gate/promote/tag/build/publish cycle finishes before the
-    next project's starts). On a later failure, the parent uses this instead of
-    the transaction's original base commit so it only reverts the in-flight
-    project's promoted changes, never an earlier project's already-published
-    release."""
+    project's prepare/gate/tag/build/publish/promote cycle finishes before the
+    next project's starts). It identifies the last complete source candidate
+    for inspection and resume reporting; current releases never use it to
+    manufacture a source-tree revert."""
     scope_dir = _scope_dir(repo_root)
     scope_dir.mkdir(parents=True, exist_ok=True)
     (scope_dir / f"{_release_token(workspace)}.progress").write_text(sha, encoding="utf-8")
@@ -871,8 +1239,7 @@ def write_release_progress(repo_root: Path, workspace: ReleaseWorkspace, sha: st
 
 def read_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> str | None:
     """The last-fully-completed-project checkpoint for a workspace, or None if no
-    project has completed yet (or this predates the feature) — callers should
-    fall back to ``workspace.base`` (revert everything) in that case."""
+    project has completed yet (or this predates the feature)."""
     path = _scope_dir(repo_root) / f"{_release_token(workspace)}.progress"
     if not path.exists():
         return None
@@ -893,52 +1260,89 @@ def list_cmru_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
     ``cmru/release/*``/``cmru/build/*`` one.
 
     ``git worktree add`` records the absolute path it was given at creation
-    time, and ``git worktree list`` always reports that same literal path
-    back — it never re-resolves it from the *current* process's vantage
-    point. This repo is bind-mounted at two different absolute paths (the
-    devcontainer's ``/workspaces/vbpub`` and the host's own checkout path),
-    so a worktree created from one side is invisible — its recorded path
-    genuinely does not exist — when this runs from the other side.  Keep it
-    in this discovery listing with an empty ``base`` so an operator still sees
-    the path; callers that need to mutate a worktree must require visibility.
+    time, and ``git worktree list --porcelain -z`` reports that literal path
+    without re-resolving it from the current process's vantage point. This
+    repository is bind-mounted at different absolute paths in the cockpit and
+    on the Docker host. The shared Git inventory carries Git's ``prunable``
+    fact, so this adapter need not stat a path belonging to another namespace.
+    That marker describes Git's registration state, not path visibility;
+    preserve the reported HEAD for prunable worktrees too. Callers that need to
+    mutate a worktree must withhold actions for prunable entries and let
+    lifecycle preflight validate every non-prunable target.
     """
-    raw = _git(repo_root, "worktree", "list", "--porcelain")
+    shared = _shared_worktree()
+    entries = shared.list_git_worktrees(repo_root)
+    records = {
+        record.worktree_path: record
+        for record in shared.list_workspaces(_common_git_dir(repo_root))
+    }
     workspaces: list[ReleaseWorkspace] = []
-    for block in raw.split("\n\n"):
-        fields: dict[str, str] = {}
-        for line in block.splitlines():
-            key, _, value = line.partition(" ")
-            if value:
-                fields[key] = value
-        wt_path, branch_ref = fields.get("worktree"), fields.get("branch")
-        if not wt_path or not branch_ref:
+    cmru_purposes = {"cmru-release", "cmru-build", "cmru-legacy"}
+    for record in records.values():
+        purpose_matches_branch = (
+            record.purpose == "cmru-release" and _is_release_branch(record.branch)
+        ) or (
+            record.purpose == "cmru-build" and _is_build_branch(record.branch)
+        ) or (
+            record.purpose == "cmru-legacy" and _is_transaction_branch(record.branch)
+        )
+        if record.purpose in cmru_purposes and not purpose_matches_branch:
+            raise RuntimeError(
+                f"shared CMRU record {record.record_path} has purpose "
+                f"{record.purpose!r} but branch {record.branch!r}; refusing to "
+                "classify it as a retained transaction"
+            )
+    for entry in entries:
+        branch = entry.branch
+        if not branch:
             continue
-        branch = branch_ref[len("refs/heads/"):] if branch_ref.startswith("refs/heads/") else branch_ref
         if not _is_transaction_branch(branch):
             continue
-        path = Path(wt_path)
-        if not path.is_dir():
-            workspaces.append(ReleaseWorkspace(repo_root, path, branch, ""))
-            continue
-        base = _git(path, "rev-parse", "HEAD", check=False) or ""
-        workspaces.append(ReleaseWorkspace(repo_root, path, branch, base))
+        purpose = workspace_purpose(branch)
+        record = records.get(entry.path)
+        context = None
+        if record is not None:
+            # A branch-name collision with another product is not CMRU
+            # ownership. Legacy CMRU worktrees have no shared record; those
+            # remain discoverable by their historical branch convention.
+            if record.purpose not in {f"cmru-{purpose}", "cmru-legacy"}:
+                continue
+            if record.branch != branch:
+                raise RuntimeError(
+                    f"Git reports branch {branch!r} at {entry.path}, but its "
+                    f"shared record says {record.branch!r}"
+                )
+            context = record.context()
+        base = entry.head or ""
+        workspaces.append(
+            ReleaseWorkspace(
+                repo_root,
+                entry.path,
+                branch,
+                base,
+                context=context,
+                is_prunable=entry.is_prunable,
+            )
+        )
     return workspaces
 
 
 def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
-    """Visible retained release worktrees, for release-resume machinery only."""
+    """Non-prunable retained release worktrees, for release-resume machinery only."""
     return [
         workspace
         for workspace in list_cmru_workspaces(repo_root)
-        if _is_release_branch(workspace.branch) and workspace.path.is_dir()
+        if _is_release_branch(workspace.branch) and not workspace.is_prunable
     ]
 
 
 def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:
-    """Fully discard a retained, never-promoted release attempt: its origin backup
-    branch, local worktree/branch, and scope marker. Unlike remove_workspace() (the
-    success path) this never touches origin/main — a failed release's gates ran
-    before promote, so there is nothing there to undo."""
+    """Fully discard a retained release attempt and its origin candidate branch.
+
+    Unlike ``remove_workspace`` (the success path), this never touches
+    ``origin/main``. The current release order leaves a failed candidate out of
+    main, so deleting the candidate is the only source cleanup required here.
+    """
     remove_backup_branch(workspace)
     remove_workspace(workspace)
     forget_release_scope(repo_root, workspace)
@@ -961,95 +1365,43 @@ def abandon_previous(repo_root: Path, current_projects: Sequence[str]) -> list[s
     return abandoned
 
 
-_PROMOTE_MAX_RETRIES = 5
-
-
 def promote_workspace(workspace: ReleaseWorkspace) -> None:
-    """Fast-forward remote main from the prepared branch, or fail before publication.
+    """Fast-forward ``origin/main`` from the exact release candidate tip.
 
-    This repo has other concurrent committers (see AGENTS.md) — a project's own
-    prepare/gate cycle can run long enough (an OCI image build especially) that
-    ``origin/main`` moves before this push lands. A plain, unretried push would
-    fail the WHOLE release over a race that a bare ``git pull --rebase && push``
-    would have resolved by hand. So: on a non-fast-forward rejection, fetch and
-    rebase this branch's own commits onto the new ``origin/main`` tip and retry,
-    bounded to :data:`_PROMOTE_MAX_RETRIES` attempts (a busy-fought repo should
-    fail loud, not spin forever). A rebase that hits a REAL conflict is never
-    auto-resolved — abort back to a clean state and raise immediately, exactly
-    as an unretriable failure would, so the retained worktree stays inspectable.
-
-    Rebasing rewrites every commit SHA in the branch, including any earlier
-    project's already-recorded :func:`write_release_progress` checkpoint from
-    EARLIER in this same multi-project run — left stale, a later revert would
-    compute its undo range against commits that no longer exist on this branch.
-    Each successful rebase re-anchors that checkpoint to its rebased equivalent
-    by commit COUNT (a plain, non-interactive rebase preserves commit order and
-    count 1:1), not by content-matching, which would be fragile.
+    The candidate is built and published before this function is called. It is
+    therefore unsafe to fetch and rebase here: rebasing would change the commit
+    that was gated and used to produce the public artifact. A concurrent update
+    is a deliberate, fail-closed outcome. The candidate branch and its durable
+    backup remain available for inspection; a later attempt can start from a
+    freshly fetched main without pretending that the already-published artifact
+    came from a different commit.
     """
-    checkpoint = read_release_progress(workspace.repo_root, workspace)
-    checkpoint_depth = (
-        int(_git(workspace.path, "rev-list", "--count", f"{checkpoint}..HEAD"))
-        if checkpoint else None
+    result = subprocess.run(
+        ["git", "push", "origin", "HEAD:refs/heads/main"],
+        cwd=workspace.path, capture_output=True, text=True,
     )
-    # Every iteration either succeeds or raises.  An explicit unbounded loop
-    # makes that contract structural: there is no phantom fall-through after
-    # the bounded retry policy for coverage (or callers) to mistake for a
-    # successful promotion.
-    attempt = 0
-    while True:
-        result = subprocess.run(
-            ["git", "push", "origin", "HEAD:refs/heads/main"],
-            cwd=workspace.path, capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            return
-        stderr = result.stderr or ""
-        # Git uses "(non-fast-forward)" when it can tell locally that the
-        # remote is ahead, and the more generic "(fetch first)" when it can't
-        # (e.g. no recent fetch) — both mean the same thing: the remote moved,
-        # rebase and retry. Anything else "[rejected]" (a protected-branch
-        # hook, say) would just keep failing every retry too, surfacing as
-        # the same "lost the race" error once attempts are exhausted below.
-        if "[rejected]" not in stderr:
-            raise RuntimeError(f"git push origin HEAD:refs/heads/main failed:\n{stderr}")
-        if attempt == _PROMOTE_MAX_RETRIES:
-            raise RuntimeError(
-                f"git push origin HEAD:refs/heads/main lost the race to a concurrent "
-                f"push {_PROMOTE_MAX_RETRIES} time(s) in a row — resolve manually "
-                "(this repo has other concurrent committers; see AGENTS.md)."
-            )
-        subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=workspace.path, check=True)
-        rebase = subprocess.run(
-            ["git", "rebase", "origin/main"], cwd=workspace.path, capture_output=True, text=True,
-        )
-        if rebase.returncode != 0:
-            subprocess.run(["git", "rebase", "--abort"], cwd=workspace.path, check=False)
-            raise RuntimeError(
-                "A concurrent push landed on origin/main while this release was "
-                "running, and rebasing this release's own commits onto it hit a "
-                "real conflict — not auto-resolvable. Resolve manually in the "
-                f"retained worktree:\n{rebase.stdout}\n{rebase.stderr}"
-            )
-        if checkpoint_depth is not None:
-            checkpoint = _git(workspace.path, "rev-parse", f"HEAD~{checkpoint_depth}")
-            write_release_progress(workspace.repo_root, workspace, checkpoint)
-        attempt += 1
+    if result.returncode == 0:
+        return
+    stderr = result.stderr or ""
+    raise RuntimeError(
+        "release candidate was not promoted to origin/main; the candidate may "
+        "have lost a fast-forward race or the remote rejected the push. The "
+        f"candidate branch {getattr(workspace, 'branch', '<unknown>')} was retained "
+        f"for inspection.\n{stderr}"
+    )
 
 
 def push_backup_branch(workspace: ReleaseWorkspace) -> None:
-    """Push the validated, gated branch to origin under its own name, before promotion.
+    """Push the current release candidate to its durable origin branch.
 
-    Purely additive durability: a crashed machine or lost worktree after this point
-    still leaves an inspectable, resumable copy of the prepared release on origin —
+    This is called initially, after each prepare/tag commit, and before each
+    public build or publish step. A crashed machine or lost worktree after any
+    such call still leaves an inspectable copy of the exact candidate on origin;
     ``main`` itself is untouched by this push.
 
-    ``--force`` is safe here specifically because ``workspace.branch`` is a
-    uuid-scoped name this ONE transaction created and exclusively owns (never a
-    shared or human-authored branch) — required, not just permissive, once
-    :func:`promote_workspace` has rebased: origin's own copy of this same branch
-    name (pushed by an EARLIER call in this same run, before the rebase) then
-    diverges from the local rewritten history, and a plain push would itself
-    hit the identical non-fast-forward rejection this function exists to avoid.
+    ``--force`` is safe here because ``workspace.branch`` is an allocator-scoped name
+    this ONE transaction created and exclusively owns. Each refresh deliberately
+    replaces that branch's prior candidate tip as the local transaction advances.
 
     Records that THIS transaction actually pushed the backup
     (:func:`mark_backup_pushed`, KI-15) — the state :func:`remove_backup_branch`
@@ -1092,12 +1444,11 @@ def remove_backup_branch(workspace: ReleaseWorkspace) -> None:
 
 
 def promotion_landed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
-    """True if ``origin/main`` still sits exactly at this workspace's branch tip.
+    """Legacy inspector for transactions created by the pre-candidate-order flow.
 
-    Used after a failed release to distinguish "promote_workspace() ran, then a
-    later step (tag/build/publish) failed" from "the failure happened before
-    promotion" or "origin/main has since moved past this release entirely" — the
-    latter two are not safe to auto-revert.
+    The current release path promotes only after publication and does not call
+    this function. It remains available to inspect an older retained attempt
+    without making that historical state part of the normal failure path.
     """
     subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
     origin_main = _git(repo_root, "rev-parse", "origin/main")
@@ -1112,7 +1463,12 @@ class RevertResult:
 
 
 def revert_promotion(workspace: ReleaseWorkspace, *, from_sha: str | None = None) -> RevertResult:
-    """Best-effort: undo this release's commits on ``origin/main`` by pushing a revert.
+    """Legacy recovery helper for a transaction created by the old release order.
+
+    The current release path never calls this function: failed candidates are
+    withheld from ``origin/main`` and retained on their own branch. For an older
+    retained attempt, this still best-effort undoes source commits on
+    ``origin/main`` by pushing a revert.
 
     ``from_sha`` scopes the revert to ``(from_sha, branch tip]`` instead of the whole
     transaction (``workspace.base``) — pass the last-fully-completed-project checkpoint
@@ -1317,6 +1673,7 @@ def sync_local_main(repo_root: Path) -> bool:
 
 def run_child(
     workspace: ReleaseWorkspace, child_args: Sequence[str], *, verb: str = "release",
+    project_names: Sequence[str] | None = None,
 ) -> int:
     """Run a CMRU verb from the snapshot, preserving terminal output.
 
@@ -1328,6 +1685,12 @@ def run_child(
     env[CHILD_ENV] = "1"
     env[BRANCH_ENV] = workspace.branch
     env[BASE_ENV] = workspace.base
+    if workspace.workspace_id:
+        env["CMRU_WORKSPACE_ID"] = workspace.workspace_id
+    env["CMRU_WORKSPACE_PATH"] = str(workspace.path)
+    env["CMRU_SOURCE_GIT_ROOT"] = str(workspace.repo_root)
+    if project_names is not None:
+        env["CMRU_TRANSACTION_PROJECTS"] = ",".join(project_names)
     launcher = [os.environ.get("CMRU_BIN") or shutil.which("cmru") or "cmru"]
     command = [*launcher, verb, "--_transaction-child", *child_args]
     return subprocess.run(command, cwd=workspace.path, env=env).returncode

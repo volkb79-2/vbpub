@@ -28,7 +28,7 @@
 # (run-gate RG-43): as of rev 36, plain "host" is a CONTAINER default
 # (DEFAULT_HOST_IMAGE), not bare execution, and that image has no pytest at
 # all. tester-unified (the shared [environments.tester-unified] in the
-# repo-root run-gate.toml — already built, already what every vbpub-internal
+# repo-root run-gate.root.toml — already built, already what every vbpub-internal
 # project's ordinary lanes use) DOES carry test tooling, but in its own
 # dedicated venv at /opt/tester-venv/, not on the default PATH/python3 — every
 # argv below that needs pytest/pip/assay says so explicitly
@@ -49,7 +49,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && python3 -m compileall -q debian_install_v2 && PYTHONPATH=. /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests -q --cov=debian_install_v2 --cov-branch --cov-report=term-missing",
+    "cd {worktree}/scripts/debian-install-v2 && python3 -m compileall -q debian_install_v2 && PYTHONPATH=.:../../libraries/cli-extended/src /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests -q --cov=debian_install_v2 --cov-branch --cov-report=term-missing",
 ]
 clean_tree = false
 budget = "5m"
@@ -99,7 +99,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=. /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q",
+    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=.:../../libraries/cli-extended/src /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q",
 ]
 clean_tree = false
 budget = "3m"
@@ -117,7 +117,7 @@ budget = "3m"
 kind = "command"
 environment = "bare-host"
 description = "Real loop/swap commit tests inside an isolated QEMU/TCG guest"
-required_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER"]
+required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER"]
 argv = [
     "bash", "{worktree}/scripts/debian-install-v2/testing/vm/run-vm-tests.sh",
 ]

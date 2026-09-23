@@ -12,6 +12,14 @@ On the Docker host, review and apply the shipped host configuration:
 sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
+To identify the MDT build before choosing an operation, run:
+
+    ./build-push.py --version
+
+The declared MDT entrypoints use the same top-level probe and print exactly one
+`MDT <version>` line on stdout, exit 0, and write nothing to stderr. Their
+parser help, usage, and configuration diagnostics begin with the MDT headline
+as line 1 at every parser depth; normal command output is unchanged.
 
 On a fresh host, use the wizard: a plain first run refuses the incomplete
 example and leaves `/etc/mdt` untouched. A manual `install.sh` run requires a
@@ -159,7 +167,7 @@ slice and keep its guest disks on disposable storage:
 
 ```bash
 docker run --rm -d --name debian-vm-test \
-  --cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND" \
+  --cgroup-parent="$CGROUP_PARENT_DEV_GATES" \
   --tmpfs /run --tmpfs /tmp \
   -v "$PWD/.vm-state:/vm:rw" \
   <vm-runner-image>
@@ -179,6 +187,20 @@ would silently broaden the cockpit's privilege. KVM may be selected explicitly
 on hosts that provide it; otherwise TCG is slower but keeps the runner
 unprivileged. Keep VM disks under disposable storage and never attach a
 production block device.
+
+MDT's system acceptance uses the repository's shared Debian-install VM
+harness. From the MDT project root, run `./run-gate.py vm-system`; the lane
+requires the governed `CGROUP_PARENT_DEV_GATES`,
+`CGROUP_PARENT_DEV_INTERACTIVE`, and `BUILDX_BUILDER` variables. The harness
+maps the selected worktree's physical source mount and runs the installer,
+systemd, cgroup, Docker, and slice assertions inside the QEMU guest. It does
+not run those product checks in the cockpit. The harness override is
+`MDT_VM_SOURCE_DIR`, which is resolved through Docker's authoritative mount
+table and refuses an unmapped or missing source.
+
+The image release gate is `./run-gate.py release`. CMRU invokes that declared
+lane, so the OCI release-flow tests remain in `tester-unified` and do not have
+a second hand-written tester command in `cmru.toml`.
 
 ### Persistent AI CLI state
 
@@ -242,9 +264,10 @@ builder is unavailable, the release stops; it cannot silently create an
 ungoverned replacement. `load` is the shipped source-first OCI-layout flow:
 the build phase creates the artifact once and the push phase publishes that
 same artifact with digest verification. Set `push` for direct registry export,
-or `repack` for the optional validated OCI-layout compression path. Release
-builds keep their cache beside the shared Git directory in a name such as
-`mdt-buildkit-cache-zstd-true-3`; the cache export uses the same compression
-policy as the image. If you set `MDT_BUILDKIT_CACHE_DIR` yourself, dedicate it
-to one compression policy rather than sharing it between gzip and forced-zstd
-builds.
+or `repack` for the optional validated OCI-layout compression path. The named
+`mdt-managed` remote owns the persistent BuildKit cache; the release wrapper
+reuses that cache without streaming a second local cache export through the
+client API. Forced recompression is disabled so large layers that already have
+a suitable encoding do not take a second compression pass.
+
+When collecting an MDT script failure, keep the first diagnostic line: `MDT <version> — modern Debian tools and Python debug`, with the version read from `MDT_VERSION` or `MDT_IMAGE_VERSION` at invocation time.

@@ -22,7 +22,7 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
      sweeps compare it; update by re-copying.
 2. **Declare lanes** in `run-gate.toml` next to it (final schema below —
    parsed by run-gate.py ONLY; no other tool may read this file). Shared
-   environment facts do NOT belong here if a repo-root central config
+   environment facts do NOT belong here if a repo-root `run-gate.root.toml`
    already defines them (see below).
 3. **Point consumers at lanes** — e.g. nyxloom's `[gates.<name>]`:
    `argv = ["bash", "-c", "cd {worktree}/<proj> && ./run-gate.py --worktree {worktree} <lane>"]`.
@@ -90,7 +90,8 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    name — a mistyped override is a refusal, never a silent no-op.
 
    ```toml
-   # run-gate.toml — [profile]: central/project, whole-table shadowing
+   # run-gate.toml or run-gate.root.toml — [profile]: central/project,
+   # whole-table shadowing
    # (the SAME rule [history] uses — a project's own [profile] REPLACES a
    # central one entirely, never a per-key merge)
    [profile]
@@ -104,7 +105,8 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
 
-   # run-gate.toml — [footprint]: same whole-table shadowing rule; consumed
+   # run-gate.toml or run-gate.root.toml — [footprint]: same whole-table
+   # shadowing rule; consumed
    # by `doctor`'s staleness/drift check and by `footprint --write`
    [footprint]
    tolerance_pct = 25             # default 25; doctor WARNs when the live
@@ -116,9 +118,9 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
 
 ## Central defaults (vbpub monorepo)
 
-`run-gate.toml` at the REPO ROOT holds environment facts once for all
-internal projects (`[environments.<name>]`: `image`, optional
-`cgroup_slice`) and, since RG-16, SHARED LANES too: every package can use
+`run-gate.root.toml` at the REPO ROOT holds environment facts once for all
+internal projects (`[environments.<name>]`: `image`, optional `cgroup_slice`
+or `cgroup_slice_env`) and, since RG-16, SHARED LANES too: every package can use
 the identical lane without copying definitions. Discovery: nearest STRICT
 ancestor of the project dir; project entries shadow a central name entirely
 (whole table, no field merging — same rule for environments and lanes).
@@ -126,10 +128,10 @@ Internal assay lanes omit `assay_command` and `pins`; run-gate installs the
 selected worktree's `assay/` source in the lane environment, and the verdict
 records the runtime version and source commit. Explicit command + pin sidecars
 remain available for copied/external consumers. Copied-script repos (dstdns)
-are self-contained unless they grow their own root file.
+are self-contained unless they grow their own `run-gate.root.toml`.
 
 ```toml
-# repo-root run-gate.toml — one shared internal assay lane every package
+# repo-root run-gate.root.toml — one shared internal assay lane every package
 # inherits; the selected worktree's ../assay source is installed at run time:
 [lanes.assay-shared]
 kind = "assay"
@@ -144,11 +146,16 @@ clean_tree = false
 # run-gate.toml — parsed by run-gate.py only
 schema_version = 1
 
-[lanes.<name>]
-kind = "assay" | "command"
-environment = "tester-unified" | "test-runner" | "host" | "<any central/project env name>"
+[environments.tester-unified]
+image = "tester-unified:local"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+forward_env = ["SCHEMA_GATE_PW"]
+
+[lanes.suite]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "pytest -q"]  # {worktree} may be substituted
 budget = "20m"                      # advisory wall-clock; printed, never enforced here
-memory = "4g"                       # optional docker --memory (per-lane RAM override)
 clean_tree = true                   # default TRUE; false needs a written reason
 description = "one-line what/why"   # optional; shown by --help (never by --list)
 required_env = ["SCHEMA_GATE_PW"]   # optional; gate refuses to start if unset/empty,
@@ -162,9 +169,9 @@ profile = false                     # optional (RG-55): opt this lane OUT of pro
                                     # [profile]'s own defaults for this lane only
 
 # RG-20 resources (optional sub-table — declare RAM so admission can protect
-# the host; supersedes the top-level `memory` key, never both):
-[lanes.<name>.resources]
-memory = "1g"                       # hard RAM cap (--memory) + admission accounting:
+# the host; `resources.memory` supersedes lane-level `memory`, never declare both):
+[lanes.suite.resources]
+memory = "2g"                       # hard RAM cap (--memory) + admission accounting:
                                     # refused if slice usage + this exceeds memory.max
 memory_swap = "16g"                 # --memory-swap; tight RAM + ample swap absorbs bursts
 cpu_weight = 100                    # advisory 1..10000 (printed; no portable docker flag)
@@ -175,36 +182,18 @@ cpus = "2"                          # RG-48: docker run --cpus (decimal string, 
                                     # FALLBACK for lanes that declare none of their own
                                     # (this lane's own value wins when both are set) --
                                     # the only resources key an environment accepts.
-
-# command kind:
-argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
-
-# assay kind: assay_lane is required. Internal source mode omits both
-# assay_command and pins; run-gate installs the selected worktree's assay/.
-assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
-
-# External/copy-consumer mode may instead supply both an explicit command and
-# its immutable pin:
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz"]
-[lanes.<name>.pins.assay]
-version = "<version>"               # checked against the command's --version
-sha256 = "tools/assay/assay-<version>.pyz.sha256"   # verified from its own directory
-# ...and NOTHING else. A pin table takes these two keys; any other is
-# refused at load (RG-32, rev 34). In particular `budget` here was never
-# enforced and is now a refusal: a kind = "assay" lane's real budget lives
-# in the TARGET assay.toml's [lanes.<assay_lane>], and run-gate's own
-# lane-level `budget` (one level up, no `pins` in the path) stays advisory.
-# A pin key that is itself a legal LANE key is named as one — "'clean_tree'
-# is a lane key; it belongs one level up in [lanes.<n>], where it is
-# load-bearing — move it, do not delete it". MOVE it: under a pin table it
-# never did anything, so the lane has been running with the default.
-# `budget` is the one exception and keeps its own message: its value belongs
-# in the target assay.toml, so there really is nothing to move.
 ```
 
+For an `assay` lane, replace `kind`/`argv` with `kind = "assay"` and
+`assay_lane = "<name declared in assay.toml>"`. Internal source mode omits
+`assay_command` and pins. External immutable mode supplies both, plus the
+`[lanes.<name>.pins.assay]` version and SHA-256 table; the target assay lane,
+not the pin table, owns its mutation budget.
+
 Environment facts resolution order (no silent fallbacks anywhere):
-`cgroup_slice` declared on the environment → `$CGROUP_PARENT_DEV_BACKGROUND`
-(hard error if absent); physical repo root DERIVED from `/proc/self/mountinfo`;
+`cgroup_slice` declared on the environment → the variable named by
+`cgroup_slice_env` → `$CGROUP_PARENT_DEV_GATES` (hard error if the selected
+source is absent); physical repo root DERIVED from `/proc/self/mountinfo`;
 LoadState pre-check only where systemd is reachable. Container lanes
 dual-mount the repo (physical + namespace views) for worktree gitfiles;
 outside the devcontainer namespace — where no second view is derivable — the
@@ -284,7 +273,7 @@ exit 0 for drift); `required_env` is the mechanism that actually refuses.
 ### `kind = "assay"` — projects that adopt assay (the quality partnership)
 
 run-gate.py does the ORCHESTRATION (environment, mounts, cgroup, optional
-artifact verification, clean tree, detached run), then invokes assay; **assay
+artifact verification, clean `--init` detached run), then invokes assay; **assay
 does the JUDGMENT** — its lane in `assay.toml` owns argv-under-test, coverage
 floors, R-levels, changed-line policy, snapshot isolation. Two files, two
 owners, no duplicated registry. Internal vbpub projects use source mode:
@@ -712,7 +701,7 @@ same-runner stale container, where `--fresh` owns the cleanup.
 ```toml
 [gates.test-runner]
 argv = ["bash", "-lc", '''cd /workspaces/dstdns &&
-    CGROUP_PARENT_DEV_BACKGROUND="${CGROUP_PARENT_DEV_BACKGROUND:?...}" &&
+    CGROUP_PARENT_DEV_GATES="${CGROUP_PARENT_DEV_GATES:?...}" &&
     ./run-gate.py gate --worktree {worktree}''']
 phase = "implementation"
 timeout_seconds = 4500
@@ -849,7 +838,7 @@ a note in the margin, never the product. The vbpub root `.gitignore` already
 carries the entry for internal projects; a **copied-script repo must add it**.
 
 Optionally declare how much trend to keep (default 10 commits per lane; a
-central `run-gate.toml` may declare it once and a project shadows it whole,
+central `run-gate.root.toml` may declare it once and a project shadows it whole,
 the R-09 rule):
 
 ```toml
@@ -1209,3 +1198,10 @@ says.
   clone with zero installs.
 - NO silent defaults for environment facts (slice names, physical paths):
   DERIVE or READ or FAIL, per AGENTS §4.2a.
+
+Parser help, usage, and argument errors start with `RUN-GATE rev <revision> — per-project gate entrypoint`. Preserve that line in gate diagnostics; the revision is read from the shipped script's `__revision__` value.
+Before selecting a lane, a consumer can run `./run-gate.py --version`. It
+prints exactly one `run-gate rev <revision>` line on stdout, exits 0 without
+loading project configuration, and writes nothing to stderr. The revision is
+the script copy-drift marker; the
+wheel's SemVer is a separate distribution identity.

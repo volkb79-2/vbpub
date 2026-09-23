@@ -308,7 +308,7 @@ the first. Design choices, all in `tests/test_installer.py:1987-2095`:
   and **skips** (never fails) if the build cannot run. No live host is ever
   touched.
 - **Cgroup placement, no hardcoded fallback.** Containers run with
-  `--cgroup-parent=$CGROUP_PARENT_DEV_BACKGROUND` per root `AGENTS.md`. If that
+  `--cgroup-parent=$CGROUP_PARENT_DEV_GATES` per root `AGENTS.md`. If that
   variable is unset the whole group **skips** rather than launching an unplaced
   container next to production — the doctrine's "refuse to launch, never fall
   through to Docker's unconfined default".

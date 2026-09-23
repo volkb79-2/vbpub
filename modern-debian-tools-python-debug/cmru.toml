@@ -1,20 +1,14 @@
 schema_version = 1
 
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
+[runtime]
+kind = "none"
 
 [env]
 CMRU_TESTER_DIND_IMAGE = "docker:dind"
 RELEASE_IMAGE_FLOW = "load"
 IMAGE_COMPRESSION = "zstd"
 IMAGE_COMPRESSION_LEVEL = "3"
-IMAGE_FORCE_COMPRESSION = "true"
+IMAGE_FORCE_COMPRESSION = "false"
 IMAGE_OCI_MEDIA_TYPES = "true"
 IMAGE_PROVENANCE_MODE = "max"
 IMAGE_SBOM = "true"
@@ -63,7 +57,7 @@ commands = [
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "modern-debian-tools-python-debug: release-flow tests", argv = ["cmru", "tester-gate", "--cwd", ".", "--enable-docker", "--", "/opt/tester-venv/bin/python", "-m", "unittest", "scripts.test_release_flow", "scripts.test_oci_tool_staging", "scripts.test_oci_layout_push"], cwd = "." },
+  { label = "modern-debian-tools-python-debug: run-gate release lane", argv = ["./run-gate.py", "release"], cwd = "." },
 ]
 
 [steps.build]

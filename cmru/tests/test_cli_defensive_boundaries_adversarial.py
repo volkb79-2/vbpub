@@ -32,7 +32,7 @@ def test_load_config_refuses_project_root_outside_orchestration_root(monkeypatch
         targets=SimpleNamespace(registry=[]), cleanup=None, env={},
     )
     monkeypatch.setattr(cli, "load_forge_config", lambda _: forge)
-    with pytest.raises(ValueError, match="project root is outside orchestration root"):
+    with pytest.raises(ValueError, match="project root .* outside the selected Git root"):
         cli.load_config(tmp_path / "cmru.toml", validate_dependencies=False)
 
 

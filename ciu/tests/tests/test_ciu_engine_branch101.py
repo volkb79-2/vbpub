@@ -184,6 +184,7 @@ def _stub_native_pipeline(monkeypatch: pytest.MonkeyPatch, merged: dict) -> None
 def test_interrupted_native_compose_preserves_output_and_skips_post_hooks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     stack = tmp_path / "stack"
     stack.mkdir()
     (stack / "compose.yml").write_text("services: {}\n", encoding="utf-8")
@@ -215,6 +216,7 @@ def test_successful_native_compose_preserves_output_and_runs_post_hook(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A normal compose result continues past the interrupted-only branch."""
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     stack = tmp_path / "stack"
     stack.mkdir()
     (stack / "compose.yml").write_text("services: {}\n", encoding="utf-8")

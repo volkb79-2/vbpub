@@ -1,0 +1,44 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    build-essential \
+    mingw-w64 \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Add Windows target for Rust
+RUN rustup target add x86_64-pc-windows-gnu
+
+# Install Node.js 18.x
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
+    apt-get install -y nodejs
+
+# Install Tauri CLI
+RUN cargo install tauri-cli --version "^1.5"
+
+# Configure cargo for MinGW cross-compilation
+RUN mkdir -p /root/.cargo && \
+    echo '[target.x86_64-pc-windows-gnu]' >> /root/.cargo/config.toml && \
+    echo 'linker = "x86_64-w64-mingw32-gcc"' >> /root/.cargo/config.toml && \
+    echo 'ar = "x86_64-w64-mingw32-ar"' >> /root/.cargo/config.toml
+
+# Set working directory
+WORKDIR /app
+
+# Build script
+COPY build.sh /build.sh
+RUN chmod +x /build.sh
+
+ENTRYPOINT ["/build.sh"]

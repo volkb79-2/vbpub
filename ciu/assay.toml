@@ -1,14 +1,14 @@
 # CIU's implementation gate claim (P07 — Assay-backed qualification).
 #
-# The lane command is deliberately CIU's existing release-gate runner
-# (run-ciu-tests.py): the full suite under pytest-cov with a 100% line AND
-# branch fail-under, emitting coverage.json. R1 makes Assay JUDGE that
-# coverage: the changed-line floor on base..HEAD (the role the retired
-# nyxloom.coverage_gate used to play), the 100% whole-source floor, and a
-# verifiable verdict artifact. tester-unified supplies the environment; the
-# selected-worktree assay source is installed by run-gate and is the Assay
-# CLI boundary; no consumer-owned artifact is imported and no nyxloom
-# evidence-judgment command remains in the gate (see nyxloom.toml).
+# The lane invokes pytest directly, with argv kept byte-for-byte aligned to
+# run-ciu-tests.py's shared pytest_args() helper. The full suite runs under
+# pytest-cov with a 100% line AND branch floor and emits coverage.json. Direct
+# invocation is intentional: Assay's argv contract can then require R2
+# liveness instead of silently disabling it behind a wrapper.
+# tester-unified supplies the environment; the selected-worktree assay source
+# is installed by run-gate and is the Assay CLI boundary; no consumer-owned
+# artifact is imported and no nyxloom evidence-judgment command remains in the
+# gate (see nyxloom.toml).
 #
 # snapshot_selection = "repository-minus-unsafe-symlinks": this monorepo
 # tracks exactly three security-fixture symlinks whose targets are absolute
@@ -19,9 +19,22 @@ schema_version = 2
 
 [lanes.ciu]
 scope = "S1"
-rigor = ["R0", "R1"]
+rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "run-ciu-tests.py"]
+argv = [
+  "/opt/tester-venv/bin/python", "-m", "pytest", "tests",
+  "--cov=ciu", "-n", "0", "--dist", "loadfile", "--cov-branch",
+  "--cov-report=term-missing", "--cov-report=json:coverage.json",
+  "--cov-fail-under=100", "--maxfail=1", "-rs",
+]
+# Assay's Git boundary pins resource-affecting Git options for every child.
+# Keep the full suite in one process in the mutation container: mutation
+# already runs one candidate at a time, and even one xdist worker adds a child
+# process while snapshots are being materialized. `0` retains the same tests
+# and 100% line+branch floor without that extra process. --maxfail=1 lets an
+# R2 mutant's first failure terminate that candidate before later tests can
+# cascade into resource/lock failures; passing full-suite runs still execute
+# every test.
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 # The suite genuinely reads these from the ambient environment: the four
 # governance tests read CGROUP_PARENT_DEV_BACKGROUND by design (S15.2), xdist
@@ -29,7 +42,7 @@ env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 # that write ~/.config / ~/.cache. Stripping them (env_passthrough = []) reds
 # the lane; passing them keeps the run hermetic (everything else is dropped).
 env_passthrough = ["CGROUP_PARENT_DEV_BACKGROUND", "HOME", "PATH", "TERM", "LANG"]
-budget = "20m"
+budget = "8h"
 allow_argv_append = false
 
 [lanes.ciu.isolation]
@@ -59,3 +72,24 @@ base = "main"
 [lanes.ciu.judge.coverage]
 format = "coverage-py-json"
 artifact = "coverage.json"
+
+[lanes.ciu.judge.mutation]
+# Keep mutation candidates serial: the baseline already fans out through the
+# project's normal xdist runner, and the host shares capacity with production.
+jobs = 1
+max_mutants = 10000
+operators = [
+  "python:compare-swap",
+  "python:boolop-swap",
+  "python:bool-const-flip",
+  "python:falsy-swap",
+]
+budget_per_candidate = "5m"
+liveness = true
+
+[lanes.ciu.judge.canary]
+# Import-break proves that the complete declared CIU gate rejects a known-bad
+# source snapshot independently of individual test mutations.
+mechanism = "import-break"
+target = "src/ciu/worktree.py"
+budget_per_attempt = "20m"

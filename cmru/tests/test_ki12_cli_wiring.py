@@ -8,7 +8,7 @@ not just that ``version.detect_changed_projects`` supports them.
 * ``--allow-tag-ahead-of-head`` (and only that flag) flips
   ``allow_tag_ahead_of_head``; its deprecated alias ``--allow-tag-at-head``
   maps to the exact same thing;
-* the plan is computed over the run's own scope (``--project X``, else every
+* the plan is computed over the run's own scope (a positional ``X``, else every
   orchestrated project) -- not blindly over every orchestrated project
   regardless of what this run will actually touch;
 * a ``ReleasePlanRefused`` from the plan computation makes the PARENT process
@@ -35,7 +35,9 @@ def _config(tmp_path):
 
 def _run_release(monkeypatch, tmp_path, extra_args):
     calls = []
-    monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
+    config_path = tmp_path / "cmru.orchestration.toml"
+    monkeypatch.setattr(cli, "_resolve_config", lambda _: config_path)
+    monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: type("Context", (), {"project_name": None, "scope": "estate"})())
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
 
@@ -49,7 +51,7 @@ def _run_release(monkeypatch, tmp_path, extra_args):
     # so it is stubbed out exactly like test_cli_release_final_dispatch.py does.
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: None)
     cli.main(
-        ["release", "--_transaction-child", "--dry-run", "--config", str(tmp_path / "cmru.toml")]
+        ["release", "--_transaction-child", "--dry-run", "--config", str(config_path)]
         + extra_args
     )
     return calls
@@ -84,9 +86,9 @@ def test_deprecated_allow_tag_at_head_alias_maps_to_the_same_flag(monkeypatch, t
 
 def test_project_scoped_release_plan_only_checks_the_scoped_project(monkeypatch, tmp_path):
     """An unrelated orchestrated project's degenerate tag state must never
-    abort a --project-scoped run that never touches it -- the plan must be
+    abort a positional-project run that never touches it -- the plan must be
     computed over exactly the run's own scope, not silently over everything."""
-    calls = _run_release(monkeypatch, tmp_path, ["--project", "alpha"])
+    calls = _run_release(monkeypatch, tmp_path, ["alpha"])
     projects, kwargs = calls[0]
     assert set(projects) == {"alpha"}
     assert kwargs["require_pushed_baseline"] is True
@@ -115,6 +117,11 @@ def test_child_side_marks_plan_refused_and_exits_nonzero(monkeypatch, tmp_path, 
     config = _loaded(tmp_path)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setenv(transaction.BRANCH_ENV, "cmru/release/child")
     monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
@@ -146,6 +153,7 @@ def test_parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure(
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
@@ -180,7 +188,7 @@ def test_parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure(
     )
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--project", "alpha", "--config", str(tmp_path / "cmru.toml")])
+        cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
 
     assert exc.value.code == 1
     assert removed == ["removed"]

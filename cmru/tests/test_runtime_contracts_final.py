@@ -40,6 +40,8 @@ owner_type = "org"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 [project]
 id = "{name}"
 description = "test"
@@ -64,8 +66,19 @@ commands = [{{label = "push", argv = ["echo", "ok"], cwd = "."}}]
 '''
 
 
+def central_project_toml(name: str = "demo") -> str:
+    return "schema_version = 1\n[runtime]\nkind = \"none\"\n[project]\n" + project_toml(name).split("[project]\n", 1)[1]
+
+
 def orchestration_toml(entry: str = 'config = "demo/cmru.toml"', *, order: str = '["demo"]') -> str:
     return f'''schema_version = 1
+[github]
+owner = "acme"
+repo = "vbpub"
+owner_type = "org"
+[targets]
+host = "github"
+registry = []
 [orchestration]
 project_order = {order}
 default_projects = ["demo"]
@@ -83,7 +96,7 @@ ghcr_delete_packages = []
 
 def test_config_orchestration_refuses_invalid_schema_entries_and_dependency_order(tmp_path):
     project = tmp_path / "demo"; project.mkdir()
-    (project / "cmru.toml").write_text(project_toml(), encoding="utf-8")
+    (project / "cmru.toml").write_text(central_project_toml(), encoding="utf-8")
     path = tmp_path / "cmru.orchestration.toml"
     cases = [
         orchestration_toml().replace("schema_version = 1", "schema_version = 2"),
@@ -100,7 +113,7 @@ def test_config_orchestration_refuses_invalid_schema_entries_and_dependency_orde
 
 def test_config_orchestration_accepts_project_and_cleanup_contract(tmp_path):
     project = tmp_path / "demo"; project.mkdir()
-    (project / "cmru.toml").write_text(project_toml(), encoding="utf-8")
+    (project / "cmru.toml").write_text(central_project_toml(), encoding="utf-8")
     path = tmp_path / "cmru.orchestration.toml"
     path.write_text(orchestration_toml(), encoding="utf-8")
     loaded = config.load_forge_config(path)
@@ -113,7 +126,7 @@ def test_config_read_toml_requires_named_table_and_cleanup_requires_lists(tmp_pa
     with pytest.raises(SystemExit):
         config._read_toml(wrong, "cmru.toml")
     table = tmp_path / "cmru.toml"; table.write_text("'not-a-table'\n", encoding="utf-8")
-    with pytest.raises(config.tomllib.TOMLDecodeError):
+    with pytest.raises(SystemExit):
         config._read_toml(table, "cmru.toml")
     with pytest.raises(SystemExit):
         config._parse_cleanup({"max_age_days": 0, "release_tag_prefixes": [], "keep_release_tags": [], "ghcr_packages": [], "ghcr_delete_packages": []})
@@ -160,7 +173,7 @@ def test_transaction_build_output_and_project_root_require_authenticated_source(
         with pytest.raises(RuntimeError, match="source commit"):
             transaction.build_output_id(workspace)
     project = SimpleNamespace(project_root=tmp_path / "outside")
-    with pytest.raises(RuntimeError, match="outside repository"):
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
         transaction._project_roots_for_retention(root, workspace, project, "demo")
 
 

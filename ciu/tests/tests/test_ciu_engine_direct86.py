@@ -15,6 +15,8 @@ from ciu import engine
 def test_main_execution_explicit_network_override_reaches_network_boundary(monkeypatch, tmp_path: Path):
     """A CLI override wins over global auto-connect configuration before deployment work."""
 
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+
     stack = tmp_path / "stack"
     stack.mkdir()
     observed: list[bool] = []

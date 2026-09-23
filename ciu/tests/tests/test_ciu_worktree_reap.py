@@ -626,7 +626,7 @@ class TestClosedPartition:
         """A record mid-allocation claims no INSTANCE_ID yet; it cannot
         attribute anything, and the checkout's own ciu.env answers instead."""
         root = add_instance(
-            repo, logical="allocating", instance_id=None, state="allocating",
+            repo, logical="allocating", instance_id=None, state="allocating", env=False,
         )
         write_env(root, "ab0003")
         project = deploy_instance(docker, root, "ab0003")
@@ -646,7 +646,7 @@ class TestClosedPartition:
         ciu.env still attributes its resources, and they stay `owned`.
         """
         root = add_instance(
-            repo, logical="halfallocated", instance_id=None, state="allocating",
+            repo, logical="halfallocated", instance_id=None, state="allocating", env=False,
         )
         write_record(
             root, logical="halfallocated", branch="a-branch-git-does-not-have",
@@ -1517,21 +1517,27 @@ class TestClockDiscipline:
         assert categories(survey(repo, now=one_hour_later))[project] == "lease-expired"
 
     def test_an_unparseable_stored_expiry_does_not_crash_and_is_not_expired(
-        self, tmp_path
+        self, tmp_path, monkeypatch
     ):
         """#15's tail: the read path already refuses a naive timestamp, but if
         one ever reaches here, "I cannot read the claim" must never be rounded
         down to "there is no claim"."""
+        lease = worktree.WorktreeLease(
+            holder="h", acquired_at_utc=_stamp(NOW), renewed_at_utc=_stamp(NOW),
+            expires_at_utc=_stamp(NOW + timedelta(hours=1)), mode="held",
+        )
         record = worktree.WorktreeInstanceRecord(
             logical_name="x", display_name="x", branch="b",
             git_worktree_path=tmp_path, ciu_root_offset=Path("."),
             created_at_utc=_stamp(NOW), base_ref="main", state="ready",
             instance_id="aa0003", network=network_of("aa0003"),
             schema_version=2,
-            lease=worktree.WorktreeLease(
-                holder="h", acquired_at_utc=_stamp(NOW),
-                renewed_at_utc=_stamp(NOW),
-                expires_at_utc="2026-08-25 12:00:00 yesterday-ish", mode="held",
+            lease=lease,
+        )
+        monkeypatch.setattr(
+            worktree, "_parse_utc_timestamp",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                worktree.WorktreeError("indeterminate")
             ),
         )
         assert worktree._lease_is_expired(record, NOW) is False
@@ -1620,7 +1626,7 @@ class TestCapabilitiesAndCli:
         deploy_instance(docker, root, "bb0001")
         monkeypatch.setattr(worktree, "_utc_now", lambda: NOW)
 
-        code = cli._worktree(["reap", "--define-root", str(repo), "--json"])
+        code = cli._worktree(["reap", "--root-folder", str(repo), "--json"])
 
         assert code == 0
         doc = json.loads(capsys.readouterr().out)
@@ -1640,7 +1646,7 @@ class TestCapabilitiesAndCli:
         docker.container("h" * 32, "stranger-1", "stranger")
         monkeypatch.setattr(worktree, "_utc_now", lambda: NOW)
 
-        code = cli._worktree(["reap", "--define-root", str(repo)])
+        code = cli._worktree(["reap", "--root-folder", str(repo)])
         out = capsys.readouterr().out
 
         assert code == 0
@@ -1657,7 +1663,7 @@ class TestCapabilitiesAndCli:
         monkeypatch.setattr(worktree, "_utc_now", lambda: NOW)
 
         code = cli._worktree(
-            ["reap", "-y", "--dry-run", "--define-root", str(repo)]
+            ["reap", "-y", "--dry-run", "--root-folder", str(repo)]
         )
         out = capsys.readouterr().out
 
@@ -1673,7 +1679,7 @@ class TestCapabilitiesAndCli:
                          instance="bb0004", repo_root=str(repo))
         monkeypatch.setattr(worktree, "_utc_now", lambda: NOW)
 
-        code = cli._worktree(["reap", "-y", "--define-root", str(repo)])
+        code = cli._worktree(["reap", "-y", "--root-folder", str(repo)])
         out = capsys.readouterr().out
 
         assert code == 0
@@ -1690,13 +1696,13 @@ class TestCapabilitiesAndCli:
         docker.fail(lambda a: a[:2] == ["rm", "-f"] and "aa" * 16 in a, "nope")
         monkeypatch.setattr(worktree, "_utc_now", lambda: NOW)
 
-        human = cli._worktree(["reap", "-y", "--define-root", str(repo)])
+        human = cli._worktree(["reap", "-y", "--root-folder", str(repo)])
         text = capsys.readouterr().out
         assert human == 1
         assert "FAILED: aa-project" in text
 
         docker.fail(lambda a: a[:2] == ["rm", "-f"], "nope")
-        machine = cli._worktree(["reap", "-y", "--json", "--define-root", str(repo)])
+        machine = cli._worktree(["reap", "-y", "--json", "--root-folder", str(repo)])
         doc = json.loads(capsys.readouterr().out)
         assert machine == 1
         assert doc["status"] == "partial"
@@ -1709,7 +1715,7 @@ class TestCapabilitiesAndCli:
         monkeypatch.setattr(worktree, "_utc_now", lambda: NOW)
 
         code = cli._worktree(
-            ["reap", "-y", "--category", "ambiguous", "--define-root", str(repo)]
+            ["reap", "-y", "--category", "ambiguous", "--root-folder", str(repo)]
         )
 
         assert code == 2

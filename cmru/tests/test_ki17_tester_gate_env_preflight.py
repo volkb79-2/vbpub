@@ -30,13 +30,15 @@ _ALL_REQUIRED = (
     "CMRU_TESTER_MEMORY_SWAP",
     "CMRU_TESTER_CPUS",
     "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+    "CMRU_TESTER_CGROUP_PARENT",
 )
 
 
 def _args(**overrides) -> argparse.Namespace:
     base = dict(
         image=None, memory=None, memory_swap=None, cpus=None,
-        cgroup_probe_image=None, dind_image=None, enable_docker=False,
+        cgroup_probe_image=None, cgroup_parent=None, dind_image=None,
+        enable_docker=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -49,7 +51,7 @@ def _clear_env(monkeypatch) -> None:
 
 def test_reports_every_missing_variable_at_once_not_one_at_a_time(monkeypatch):
     """The core KI-17 (a) behaviour: with nothing set, the report lists ALL
-    five required variables in one shot, in declared order."""
+    six required variables in one shot, in declared order."""
     _clear_env(monkeypatch)
     assert tester_gate._missing_orchestration_env(_args()) == list(_ALL_REQUIRED)
 
@@ -75,7 +77,7 @@ def test_explicit_flags_suppress_missing_env_matching_resolver_precedence(monkey
     _clear_env(monkeypatch)
     args = _args(
         image="img", memory="3g", memory_swap="16g", cpus="1.5",
-        cgroup_probe_image="debian:test",
+        cgroup_probe_image="debian:test", cgroup_parent="dev-gates.slice",
     )
     assert tester_gate._missing_orchestration_env(args) == []
 

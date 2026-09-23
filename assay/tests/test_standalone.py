@@ -339,7 +339,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 11,
+        "schema_version": 12,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -650,7 +650,7 @@ def _expected_r2_artifact(
     mutation payload must emit."""
     argv = ["/bin/sh", "-c", script]
     document = {
-        "schema_version": 11,
+        "schema_version": 12,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1179,7 +1179,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 11,
+        "schema_version": 12,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1548,7 +1548,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 11,
+        "schema_version": 12,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,

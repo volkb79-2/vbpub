@@ -14,6 +14,7 @@ from ciu import engine
 
 
 def _setup(monkeypatch, tmp_path: Path, materialized: dict):
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     stack = tmp_path / "stack"
     stack.mkdir()
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)

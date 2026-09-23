@@ -1,0 +1,163 @@
+{
+  "name": "speech-to-copilot",
+  "displayName": "Speech-to-Copilot Enhanced",
+  "description": "Enhanced speech-to-text with repository-aware context for GitHub Copilot",
+  "version": "0.1.0",
+  "publisher": "vbpro",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "AI",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "speech-to-text",
+    "copilot",
+    "whisper",
+    "voice",
+    "ai"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "speechToCopilot.startRecording",
+        "title": "Start Voice Recording",
+        "category": "Speech-to-Copilot",
+        "icon": "$(mic)"
+      },
+      {
+        "command": "speechToCopilot.stopRecording",
+        "title": "Stop Voice Recording",
+        "category": "Speech-to-Copilot",
+        "icon": "$(mic-filled)"
+      },
+      {
+        "command": "speechToCopilot.openDashboard",
+        "title": "Open Speech Dashboard",
+        "category": "Speech-to-Copilot",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "speechToCopilot.scanRepository",
+        "title": "Scan Repository for Context",
+        "category": "Speech-to-Copilot"
+      },
+      {
+        "command": "speechToCopilot.insertLastTranscription",
+        "title": "Insert Last Transcription",
+        "category": "Speech-to-Copilot",
+        "icon": "$(insert)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "speechToCopilot.startRecording",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "speechToCopilot.stopRecording",
+        "key": "ctrl+shift+s",
+        "mac": "cmd+shift+s",
+        "when": "speechToCopilot.isRecording"
+      }
+    ],
+    "configuration": {
+      "title": "Speech-to-Copilot",
+      "properties": {
+        "speechToCopilot.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:8001",
+          "description": "API endpoint for speech processing service"
+        },
+        "speechToCopilot.enableStreaming": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable real-time audio streaming"
+        },
+        "speechToCopilot.enableRepositoryContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use repository context for enhanced accuracy"
+        },
+        "speechToCopilot.audioQuality": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "default": "medium",
+          "description": "Audio recording quality"
+        },
+        "speechToCopilot.insertMode": {
+          "type": "string",
+          "enum": [
+            "cursor",
+            "selection",
+            "comment"
+          ],
+          "default": "cursor",
+          "description": "Where to insert transcribed text"
+        }
+      }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "speechToCopilotExplorer",
+          "name": "Speech-to-Copilot",
+          "when": "speechToCopilot.enabled"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "speechToCopilot",
+          "title": "Speech-to-Copilot",
+          "icon": "$(mic)"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "16.x",
+    "@types/vscode": "^1.74.0",
+    "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^5.45.0",
+    "@typescript-eslint/parser": "^5.45.0",
+    "@vscode/test-electron": "^2.2.0",
+    "@vscode/vsce": "^2.15.0",
+    "eslint": "^8.28.0",
+    "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.0",
+    "ws": "^8.13.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vbpro/speech-to-copilot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vbpro/speech-to-copilot/issues"
+  },
+  "homepage": "https://github.com/vbpro/speech-to-copilot#readme"
+}

@@ -5,7 +5,7 @@ DIFFERENT checkout's sourced ``ciu.env`` used to silently outrank a successful
 walk-up derivation from where the operator was actually standing (the OLD
 buggy order checked ``$REPO_ROOT`` before ``define_root`` at all). This is the
 exact live scenario the operator hit: standing inside a real ciu-managed
-repo, no ``--define-root``, and a conflicting ambient ``$REPO_ROOT`` from a
+repo, no ``--root-folder``, and a conflicting ambient ``$REPO_ROOT`` from a
 sibling checkout silently winning. `resolve_repo_root` now REFUSES on a
 genuine disagreement instead of silently preferring either value -- this
 resolver decides which repo destructive verbs (``worktree rm``, ``branches
@@ -28,18 +28,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import cli, dev  # noqa: E402
 
 
-def test_live_scenario_refuses_conflicting_ambient_repo_root(
+def test_live_scenario_ignores_conflicting_ambient_repo_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Reproduce the operator's EXACT live scenario, not a simplification.
 
     A real ciu-managed tree (``ciu.global.defaults.toml.j2`` present at its
-    root), cwd nested a few levels inside it, no ``--define-root`` -- exactly
+    root), cwd nested a few levels inside it, no ``--root-folder`` -- exactly
     how ``ciu worktree list``/``ciu dev``/etc. are invoked day-to-day -- and an
     ambient ``$REPO_ROOT`` set to a DIFFERENT, also-real-looking repo path
     (standing in for a sibling checkout's sourced ``ciu.env``). Before this
-    fix, the ambient value would have silently won; now it must refuse,
-    naming BOTH paths, rather than quietly operating on the wrong repo.
+    fix, the ambient value would have silently won; now the local marker
+    wins and the ambient value is ignored.
     """
     standing_in = tmp_path / "vbpub" / "ciu"
     nested_cwd = standing_in / "src" / "ciu"
@@ -51,20 +51,8 @@ def test_live_scenario_refuses_conflicting_ambient_repo_root(
 
     monkeypatch.setenv("REPO_ROOT", str(sibling_checkout))
 
-    with pytest.raises(ValueError) as exc_info:
-        dev.resolve_repo_root(None, nested_cwd)
-
-    message = str(exc_info.value)
-    assert "[S1.1]" in message
-    # Both values are named -- an operator must be able to tell what CIU saw
-    # and what it derived, without re-deriving it themselves.
-    assert str(sibling_checkout.resolve()) in message
-    assert str(standing_in.resolve()) in message
-    # The three documented remedies (unset / --define-root / cd) are surfaced
-    # here, not only in SPEC.md -- see O5 for the same note in --help.
-    assert "REPO_ROOT" in message
-    assert "--define-root" in message
-    assert "cd" in message
+    assert dev.resolve_repo_root(None, nested_cwd) == standing_in.resolve()
+    assert sibling_checkout.exists()
 
 
 def test_uncontaminated_case_is_completely_unaffected(
@@ -89,10 +77,11 @@ def test_uncontaminated_case_is_completely_unaffected(
 def test_define_root_wins_outright_even_over_conflicting_ambient(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An explicit ``--define-root`` is operator intent -- it is never second-
+    """An explicit ``--root-folder`` is operator intent -- it is never second-
     guessed against ambient ``$REPO_ROOT``, even when they disagree."""
     explicit = tmp_path / "explicit-root"
     explicit.mkdir()
+    (explicit / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     ambient = tmp_path / "ambient-root"
     ambient.mkdir()
 
@@ -101,7 +90,7 @@ def test_define_root_wins_outright_even_over_conflicting_ambient(
     assert dev.resolve_repo_root(explicit, tmp_path) == explicit.resolve()
 
 
-def test_consistent_ambient_repo_root_is_silently_accepted(
+def test_consistent_ambient_repo_root_is_silently_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Ambient REPO_ROOT that agrees with the derived root never refuses."""
@@ -115,12 +104,10 @@ def test_consistent_ambient_repo_root_is_silently_accepted(
     assert dev.resolve_repo_root(None, nested_cwd) == repo_root.resolve()
 
 
-def test_walkup_finds_nothing_falls_back_to_ambient_repo_root(
+def test_walkup_finds_nothing_refuses_even_with_ambient_repo_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No marker anywhere above start_dir: nothing was derived, so there is
-    no disagreement to refuse -- ambient REPO_ROOT is used (unchanged from
-    today's behavior when nothing is derivable at all)."""
+    """No marker anywhere above start_dir is a typed refusal."""
     unrelated = tmp_path / "unrelated" / "nested"
     unrelated.mkdir(parents=True)
     ambient = tmp_path / "ambient-root"
@@ -128,19 +115,21 @@ def test_walkup_finds_nothing_falls_back_to_ambient_repo_root(
 
     monkeypatch.setenv("REPO_ROOT", str(ambient))
 
-    assert dev.resolve_repo_root(None, unrelated) == ambient.resolve()
+    with pytest.raises(ValueError, match=r"\[no-ciu-root\]"):
+        dev.resolve_repo_root(None, unrelated)
 
 
-def test_walkup_finds_nothing_and_no_ambient_falls_back_to_start_dir(
+def test_walkup_finds_nothing_and_no_ambient_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Today's ultimate fallback, unchanged: no marker, no ambient -> start_dir."""
+    """No marker and no explicit override is a typed refusal."""
     unrelated = tmp_path / "unrelated" / "nested"
     unrelated.mkdir(parents=True)
 
     monkeypatch.delenv("REPO_ROOT", raising=False)
 
-    assert dev.resolve_repo_root(None, unrelated) == unrelated.resolve()
+    with pytest.raises(ValueError, match=r"\[no-ciu-root\]"):
+        dev.resolve_repo_root(None, unrelated)
 
 
 # ---------------------------------------------------------------------------
@@ -189,21 +178,18 @@ def _conflicting_repo_root_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         ["dev", "web"],
     ],
 )
-def test_every_cli_call_site_refuses_cleanly_on_conflicting_ambient_root(
+def test_every_cli_call_site_ignores_conflicting_ambient_root(
     argv: list[str],
     _conflicting_repo_root_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Every real `dev.resolve_repo_root` call site in cli.py surfaces the
-    new refusal as a clean `[ERROR] ...` message + exit 2 -- never a raw
-    traceback, never a downgrade to a warning that lets the verb proceed."""
+    """Every real resolver call site ignores ambient identity."""
     exit_code = _run_cli(monkeypatch, argv)
 
-    assert exit_code == 2
     err = capsys.readouterr().err
-    assert "[ERROR]" in err
-    assert "[S1.1]" in err
+    assert not ("REPO_ROOT" in err and "not a CIU root" in err)
+    assert exit_code in (0, 1, 2)
 
 
 def test_worktree_exec_refuses_before_running_anything(
@@ -211,9 +197,7 @@ def test_worktree_exec_refuses_before_running_anything(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`worktree exec` is parsed by hand (not the shared subparser) -- confirm
-    its own call site refuses cleanly too, and never reaches `exec_instance`
-    (the negative constraint: a caller must not proceed on either path)."""
+    """`worktree exec` still refuses a non-Git selected base."""
     from ciu import worktree as wt_mod
 
     monkeypatch.setattr(
@@ -228,28 +212,24 @@ def test_worktree_exec_refuses_before_running_anything(
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "[ERROR]" in err
-    assert "[S1.1]" in err
+    assert "[no-git-root]" in err
 
 
-def test_dev_verb_refuses_before_running_dev(
+def test_dev_verb_uses_derived_root_before_running_dev(
     _conflicting_repo_root_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`ciu dev` resolves the root directly in `main()`, with no surrounding
-    try/except at all -- confirm the refusal still exits cleanly and never
-    reaches `run_dev` (which would launch a container)."""
+    """`ciu dev` resolves the marker-selected root before dispatch."""
     monkeypatch.setattr(
         dev, "run_dev",
-        lambda *a, **k: pytest.fail("must not run dev: refusal should abort first"),
+        lambda *a, **k: 17,
     )
 
     exit_code = _run_cli(monkeypatch, ["dev", "web"])
 
-    assert exit_code == 2
-    err = capsys.readouterr().err
-    assert "[ERROR]" in err
-    assert "[S1.1]" in err
+    assert exit_code == 17
+    assert capsys.readouterr().err == ""
 
 
 def test_resolve_repo_root_cli_helper_reraises_as_clean_system_exit(

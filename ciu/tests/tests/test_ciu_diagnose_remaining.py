@@ -120,4 +120,11 @@ def test_run_turns_boundary_failure_into_exit_two(monkeypatch, capsys, error):
     monkeypatch.setattr(diagnose, "collect", fail)
 
     assert diagnose.run(project=None, log_lines=100, json_output=False) == 2
-    assert capsys.readouterr().out == f"[ERROR] diagnose failed: {error}\n"
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    from ciu.cli_utils import cli_headline
+
+    assert captured.err.splitlines() == [
+        cli_headline(),
+        f"[ERROR] diagnose failed: {error}",
+    ]

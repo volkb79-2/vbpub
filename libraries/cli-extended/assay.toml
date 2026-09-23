@@ -1,0 +1,53 @@
+# cli-extended's test lane is consumed through run-gate.toml in tester-unified.
+schema_version = 2
+
+[lanes.cli-extended]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+argv = [
+  "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
+  "--cov=cli_extended", "--cov-branch", "--cov-report=json:coverage.json",
+]
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "60m"
+allow_argv_append = false
+
+[lanes.cli-extended.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.cli-extended.judge]
+language = "python"
+source_roots = ["src/cli_extended"]
+mode = "whole_target"
+targets = [
+  "src/cli_extended/__init__.py",
+  "src/cli_extended/identity.py",
+  "src/cli_extended/output.py",
+  "src/cli_extended/parser.py",
+  "src/cli_extended/progress.py",
+  "src/cli_extended/testing.py",
+]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+
+[lanes.cli-extended.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.cli-extended.judge.mutation]
+jobs = 2
+max_mutants = 1200
+operators = [
+  "python:compare-swap",
+  "python:boolop-swap",
+  "python:bool-const-flip",
+  "python:falsy-swap",
+]

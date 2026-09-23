@@ -33,9 +33,9 @@ The VM runner itself is an unprivileged Docker container that executes QEMU
 with TCG software emulation and QEMU user-mode networking. It passes no host
 `/dev`, raw block device, KVM device, or TAP device into the guest.
 It must be started from a governed cockpit/gate environment with
-`CGROUP_PARENT_DEV_BACKGROUND` and `CGROUP_PARENT_DEV_INTERACTIVE` set by the
+`CGROUP_PARENT_DEV_GATES` and `CGROUP_PARENT_DEV_INTERACTIVE` set by the
 host setup. The wrapper refuses to start if either is missing or if the
-background value is not a live, installed host slice.
+gates value is not a live, installed host slice.
 
 ```bash
 cd scripts/debian-install-v2/testing/vm

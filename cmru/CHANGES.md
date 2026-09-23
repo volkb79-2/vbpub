@@ -11,6 +11,55 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.4.1] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=39c2a8f94c42965ad3bd07570580a2811ab34426 -->
+
+### Fixed
+- fix(cmru): resolve central config for project runner steps (06f1d19c)
+
+### Testing
+- test(cmru): cover central runner project mismatch (39c2a8f9)
+- test(cmru): pin runner context in local config contract (1ebacd54)
+
+## [5.4.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=240caa0f7776390a902f58e7c1c32ee69e176902 -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Changed
+- Merge branch 'feat/estate-cli-version-20260919' (0795ebb9)
+- cmru: retain declared release gate evidence (1e149e49)
+
+## [5.3.1] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=32950335ea21e1b22f9dea04920cfb1a6a69246d -->
+
+### Changed
+- cmru: promote release candidates after publication (1a7b5941)
+- merge: adopt contextual cmru configuration (f4151963)
+- cmru: complete contextual config migration fixes (3af75077)
+- cmru: adopt contextual config and positional targets (16961d15)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Documentation
+- docs: record cmru and isolated gate lane plans (6091cfef)
+
+### Testing
+- test: declare gates tier in cmru config fixtures (8c56f6b3)
+
+## [5.3.0] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=32511a4273f266bb202030da18056b461f79c2e6 -->
+
+### Added
+- feat(skills): add canonical single-tool skills for ciu, run-gate, assay, cmru, cgprofile (33c0b0c2)
+
+### Fixed
+- fix(skills): repair defects found by independent review of new canonical skills (abcb6e27)
+
 ## [5.2.2] - 2026-09-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=2bc07098c881d10ecbb6cdc522d3c20a39a9abdb -->

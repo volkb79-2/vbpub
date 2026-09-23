@@ -4,6 +4,105 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-f10a9ada3ccd] - 2026-09-22
+<!-- cmru: generated -->
+<!-- cmru: source-end=f10a9ada3ccd8234bff1376b879ef2329f973552 -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Fixed
+- fix(gates): correct release and VM lane contexts (a4bba60d)
+- fix(mdt): stage CLI parser with AI installer (90a37794)
+- fix(mdt): preserve Docker pull diagnostics (a4420c42)
+
+### Changed
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Documentation
+- docs(mdt): explain VM and Assay test boundaries (5885cd03)
+- docs: record cmru and isolated gate lane plans (6091cfef)
+
+### Testing
+- test(mdt): add governed VM and assay lanes (79a0d5ee)
+- test(mdt): make assay source imports explicit (46744b07)
+
+## [source-b0210c0e25a2] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=b0210c0e25a2dab723abcd50eb456bc1cc2d9abc -->
+
+### Changed
+- Release metadata prepared by CMRU.
+
+## [source-3bdb473105fe] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=3bdb473105febf0a995610b7b085b7b4134d1a97 -->
+
+### Fixed
+- fix(mdt): keep release cache on managed BuildKit remote (98015f29)
+- fix(mdt): avoid forced recompression during large OCI exports (0c338a87)
+
+### Documentation
+- docs(mdt): align cache example with non-forced compression policy (2063f1a1)
+
+## [source-32e006235d05] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=32e006235d051df3e865a73c827dfc40840e4ed9 -->
+
+### Changed
+- Release metadata prepared by CMRU.
+
+## [source-69c5fd50af56] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=69c5fd50af5655f99a08af760faab15d3052a81a -->
+
+### Added
+- feat(mdt): add headless VM tooling (fcce2d80)
+- feat(mdt): harden host setup wizard and io baseline (5ed374f7)
+- feat(mdt): persist Pi and ClaudeLink state (80d393f5)
+- feat(mdt): add BuildKit governance (51245d69)
+
+### Fixed
+- fix(mdt): isolate BuildKit caches by compression policy (c2deb87f)
+- fix(mdt): reconcile shared venv after aider install (0ce89ad2)
+- fix(mdt): close offline Nyxloom wheel dependencies (880b98c9)
+- fix(mdt): make wizard auto controls and watcher fail safe (9a2f1275)
+- fix(mdt): harden wizard validation and explain watcher policy (f706ce87)
+- fix(mdt): clear stale caps and validate wizard candidates (422f526f)
+- fix(mdt): disable unmeasured per-container IO caps (d4074266)
+- fix(mdt): use tester coverage report syntax (6d83f3e3)
+- fix(mdt): initialize assay state and declare gate resources (697f2e85)
+- fix(mdt): repair IO watchers and memory wizard UX (7f182139)
+- fix(mdt): close host setup wizard review findings (d93492b7)
+- fix(mdt): make host setup wizard host-only (c594c185)
+- fix(mdt): document dynamic host config source (85142e9f)
+- fix(mdt): validate host config before mutation (2c4a670e)
+- fix(mdt): align release docs and host-scaled wizard defaults (aec4df70)
+- fix(mdt): align wizard and managed-builder guidance (df3f514b)
+- fix(mdt): close BuildKit governance correctness gaps (1ebe42d5)
+- fix(mdt): publish load-flow OCI layouts after gate (dd370563)
+
+### Changed
+- chore(nyxloom): archive historical handoffs and reports (28801a95)
+- Merge remote-tracking branch 'origin/main' into mdt-origin-merge-probe-20260916 (05900455)
+- WIP: modernize MDT host setup and IO governance (d1bd75db)
+
+### Documentation
+- docs(mdt): require VMs for host-kernel tests (950ba935)
+- docs(mdt): clarify derived wizard values (d10671b9)
+- docs(mdt): align wizard proposal rationale (2bb110f2)
+- docs(mdt): migrate container persistence safely (ea0529cf)
+- docs(mdt): document source-first release flow (dd6c95e6)
+
+### Testing
+- test(mdt): cover finalizer builder wiring (e9ff4f29)
+- test(mdt): make assay baseline process-tree safe (50e45ce4)
+- test(mdt): clarify wizard hierarchy and harden coverage (7ddf3859)
+- test(mdt): bound native mutation candidates (3d637cca)
+- test(mdt): clarify wizard and run full tester gate (1b47f3ee)
+- test(mdt): cover fail-closed host config staging (a0293524)
+
 ## [source-652a118cb83f] - 2026-09-14
 <!-- cmru: generated -->
 <!-- cmru: source-end=652a118cb83f7440ff2c79488f757d580093279c -->

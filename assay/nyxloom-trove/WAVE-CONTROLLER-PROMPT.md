@@ -277,7 +277,7 @@ Run the exact registered gate from assay/nyxloom-trove/nyxloom.toml
   argv = ["bash", "{worktree}/assay/tools/tester-unified-gate.sh", "{worktree}"]
   timeout_seconds = 3600
 Run it in its dedicated gate container, NOT this devcontainer. Place every spawned
-container under the validated $CGROUP_PARENT_DEV_BACKGROUND. Verify the variable
+container under the validated $CGROUP_PARENT_DEV_GATES. Verify the variable
 is set AND that the named slice actually exists before use — a missing slice fails
 OPEN and silently unconfines the run. Never hardcode a cgroup and never fall back
 to one. If it is unset or the slice is absent, STOP.

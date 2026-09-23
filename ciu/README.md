@@ -4,11 +4,11 @@ CIU renders and runs Docker Compose stacks from layered templates, with secrets,
 host-aware paths, and multi-stack orchestration built in. It ships **one**
 console entrypoint, **`ciu`**, a flat verb dispatcher:
 
-- identity and evidence: `ciu version`, `ciu provenance [--json]`
+- identity and evidence: `ciu --version` (also `ciu version`), `ciu provenance [--json]`
 - **Cross-profile secret producers are declarable** (`produced_by`, S13.6): an ASK_VAULT directive names the profile whose deployment provisions its Vault path, so a partial selection refuses upfront naming producer + path + remedies instead of failing mid-deploy with only the path.
 - **Honest provenance for mixed fleets** (`[deploy.provenance] vendor_images`, S17.5): declare third-party image references; running pins report `vendor-pinned`, drifted pins report `mismatch`, and `verified-match` becomes reachable on all-vendor deployments (provenance JSON at schema_version 2).
 - **Guided repo scaffolding** (`ciu init`, S19): generates a validated global defaults template, gitignore entries, and optional stack skeletons — templates ship inside the wheel, existing files are never overwritten. `--hooks NAME1,NAME2` (S19.1) additionally copies shipped, revision-stamped hook templates into every scaffolded stack.
-- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|lease|branches|reap` (`add` remains shorthand) — `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates); `reap` is the same survey-then-act shape for DOCKER resources — it sorts every resource group into seven closed categories and on `-y` destroys exactly the four that a record, a lease or a `ciu.instance` label proves are disposable, never the unattributable or ambiguous ones (which no flag can select), and disposes of a surviving checkout by running `ciu clean` there rather than by a bare docker removal
+- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|lease|branches|reap` — `create` allocates one Git workspace and prepares every committed CIU root inside it; root-specific profile work remains an ordinary stack command from that root. `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates); `reap` is the same survey-then-act shape for DOCKER resources — it sorts every resource group into seven closed categories and on `-y` destroys exactly the four that a record, a lease or a `ciu.instance` label proves are disposable, never the unattributable or ambiguous ones (which no flag can select), and disposes of a surviving checkout by running `ciu clean` there rather than by a bare docker removal
 - machine interfaces: `ciu capabilities [--json]` — a versioned, closed capability allowlist
 - single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
@@ -20,9 +20,30 @@ verbs.) The canonical feature list and CLI surface is **[docs/FEATURES.md](docs/
 normative behaviour is defined in [docs/SPEC.md](docs/SPEC.md); the task guides
 under [docs/](docs/README.md) are the place to start.
 
-CIU v5 intentionally removes the legacy top-level `ciu --version` form:
-use `ciu version`. See [CHANGES.md](CHANGES.md) for the historical release
-record and the change list generated for each future release.
+The top-level `ciu --version` option is supported for estate-wide CLI
+compatibility and prints `ciu <version>` on stdout before exiting 0.
+`ciu version` remains the equivalent verb. The rationale is in
+[the design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility).
+See [CHANGES.md](CHANGES.md) for the historical release record and the change
+list generated for each future release.
+
+## Workspace identity and nested roots
+
+CIU selects the nearest committed `ciu.global.defaults.toml.j2` above the
+invocation directory (or `--dir`). Use `--root-folder PATH` when an explicit
+containing root is required; CIU never uses ambient `REPO_ROOT` to choose a
+root. `ciu worktree create` scans the selected base commit with `git ls-tree`,
+so ignored or uncommitted `ciu.global.instance.toml.j2` overlays cannot create
+an accidental runtime root.
+
+The shared workspace identity is a six-character lower-case base-36 value
+derived from the physical checkout path. A nested CIU root receives its own
+path-derived identity; generated facts are written to the exact, versioned
+`<ciu-root>/ciu.instance.generated.toml` record. Runtime names include both
+identities when they differ, which keeps same-named stacks under two roots
+isolated. The rationale and collision/namespace rules are in
+[docs/DESIGN-GUIDE.md#workspace-and-root-identity](docs/DESIGN-GUIDE.md#workspace-and-root-identity);
+copyable commands and config are in [docs/CONSUMERS.md](docs/CONSUMERS.md).
 
 > **ciu builds-and-runs; cmru releases.** ciu is the **inner loop** (build local images,
 > run the stack on this host); its sibling **cmru** is the **outer loop** (version + publish
@@ -123,6 +144,10 @@ write-only** machine-identity export — see below), and, for managed linked
 checkouts, `ciu.worktree-instance.json` (gitignored durable
 identity/lifecycle state).
 
+The shared family record at `<git-common-dir>/.workspace-instances/` owns the
+generic Git lifecycle and lease; the CIU record remains the compatibility-facing
+view for CIU root preparation and its existing JSON contract.
+
 **Where instance identity lives (7.7.0, BREAKING).** `ciu env generate` writes
 its six identity facts — `repo_name`, `instance_id`, `network`,
 `physical_repo_root`, `repo_root`, `public_fqdn` — into
@@ -133,9 +158,11 @@ identity fact is read back from it. Every verb also **seeds those six
 variables into its own environment from the table, overwriting whatever your
 shell exported** — that is what stops a sibling checkout's sourced `ciu.env`
 from steering this one, and it means `ciu env generate` (or the table itself),
-not an `export`, is how identity changes. The machine facts `ciu.env` also
-carries (`CONTAINER_UID`, `DOCKER_GID`, `ENV_TYPE`, `PUBLIC_TLS_*`, …) are
-unaffected. If you have tooling that PARSES `ciu.env` (rather than sourcing
+not an `export`, is how identity changes. The machine facts are also written
+to the versioned `[ciu.instance.machine]` table; `ciu.env` carries their
+shell-export spelling (`CONTAINER_UID`, `DOCKER_GID`, `ENV_TYPE`,
+`PUBLIC_TLS_*`, …) for consumers that explicitly source it. If you have
+tooling that PARSES `ciu.env` (rather than sourcing
 it), see
 [docs/CONSUMERS.md §11b](docs/CONSUMERS.md) for the migration, and
 [docs/SPEC.md S3.1c](docs/SPEC.md) for why the source of truth moved.
@@ -166,7 +193,7 @@ Full reference: [docs/CONFIG.md](docs/CONFIG.md#file-roles-and-layering-s31s33).
 
 ```bash
 pip install -e .                 # install (see docs/README.md for build/wheel)
-ciu env generate --define-root <repo>           # detect machine facts → identity table + ciu.env (S2.8)
+ciu env generate --root-folder <repo>           # detect machine facts → identity table + ciu.env (S2.8)
 eval "$(ciu env print)"                          # export them into THIS shell (S3.1c)
 ciu up --dir <repo>/<stack>                      # render + run one stack
 ciu up --profile <host-profile>                  # orchestrate many
@@ -199,9 +226,9 @@ this table cannot drift out of sync with it.
 | `schema` | `pip install 'ciu[schema]'` | `jsonschema` | JSON Schema validation of a `[<root>.<service>.configfile.<name>]` block's optional `schema = "..."` key, on the up/dev render path (S5.7). |
 | `registry` | `pip install 'ciu[registry]'` | `pydantic` | `ciu check`'s stage 7 validation of `[registry.postgresql].database` and `[registry.consul].token_vault_path` (S13.4b). |
 
-The dev-only `test` extra (pytest plus the same jsonschema/pydantic pins, for
-CIU's own test suite) is not listed here — it exists for CIU's own
-contributors, not for consumers.
+The dev-only `test` extra (pytest, Hypothesis property tests, and the same
+jsonschema/pydantic pins, for CIU's own test suite) is not listed here — it
+exists for CIU's own contributors, not for consumers.
 
 ## Release: portable CMRU project contract
 
@@ -233,11 +260,16 @@ from the selected vbpub worktree**. run-gate installs `assay/` into the lane
 environment at run time with no dependency resolution; no consumer-owned
 zipapp or fixed version is copied. The lane
 (`assay.toml`) executes the full suite under pytest-cov (whole-source 100%
-line+branch) inside Assay's isolated snapshot, and Assay itself judges the
-changed-line floor on `base..HEAD` plus the coverage artifact (R1). The
+line+branch) inside Assay's isolated snapshot. The lane declares the complete
+R0-R3 ladder: changed-line coverage from `base..HEAD` (R1), native Python
+mutation with active liveness and fail-fast candidate execution (R2), and an
+import-break canary (R3), all bound to the same verdict. `--maxfail=1` stops a
+failing mutant at its first failing test; green runs still execute the full
+suite.
+The
 verdict is retained at `.assay/verdict-ciu.json` (gitignored) as review
 evidence. The gate resolves the container slice ONLY from
-`$CGROUP_PARENT_DEV_BACKGROUND` (no literal, no fallback), verifies the named
+`$CGROUP_PARENT_DEV_GATES` (no literal, no fallback), verifies the named
 slice is `LoadState=loaded` before `docker run` (fail-closed), and its final
 status is the Assay job's own exit status. See [SPEC S18](docs/SPEC.md#s18--implementation-gate-assay-backed) and
 [CONSUMERS §10](docs/CONSUMERS.md#12-the-implementation-gate-assay-backed-s18).
@@ -365,3 +397,12 @@ ciu version
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+### CLI diagnostics
+
+`ciu --version` is the one-line identity probe: it prints `ciu <version>` to
+stdout, exits 0, and writes nothing to stderr. At every parser depth,
+`--help`, usage, missing-argument, unknown-argument, and other configuration
+diagnostics start with `CIU <version> — Container Infrastructure Utility` as
+line 1, before usage text. Normal command output is unchanged. The value is
+read from CIU's existing generated or package version source.

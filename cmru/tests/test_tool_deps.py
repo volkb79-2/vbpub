@@ -30,6 +30,20 @@ from cmru.config import ToolDependency
 VALID_SHA = "6224f784f96f5ad9d10264a69dd69594639959c5eda847dcede822a7adc515bf"
 
 
+@pytest.fixture(autouse=True)
+def _mock_context_for_loader_fixtures(monkeypatch):
+    """These tests replace load_config with an in-memory registry.
+
+    Keep the contextual selector contract exercised by the CLI tests while
+    preventing the real filesystem resolver from reopening that synthetic
+    fixture and attempting to parse a nonexistent file.
+    """
+    monkeypatch.setattr(
+        "cmru.config.resolve_invocation_context",
+        lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"),
+    )
+
+
 def _dep(**overrides) -> ToolDependency:
     fields = dict(
         project="assay", version="1.0.0", path="tools/assay/assay-1.0.0.pyz", sha256=VALID_SHA,
@@ -1009,7 +1023,7 @@ def test_tool_deps_main_errors_on_an_unknown_project(monkeypatch, tmp_path, caps
     monkeypatch.setattr("cmru.cli._resolve_config", lambda cfg: tmp_path / "cmru.orchestration.toml")
     monkeypatch.setattr("cmru.cli.load_config", lambda cfg: _cli_config(tmp_path))
     with pytest.raises(SystemExit) as exc:
-        tool_deps.tool_deps_main(["--project", "ghost"])
+        tool_deps.tool_deps_main(["ghost"])
     assert exc.value.code == 2
 
 

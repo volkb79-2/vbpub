@@ -65,7 +65,7 @@ def test_project_step_constructs_stable_root_and_passes_project_environment(monk
     cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
     assert calls[0][0][0] is step
     assert calls[0][0][2] == tmp_path / "demo" / "logs" / "cmru"
-    assert calls[0][1]["extra_env"] == {"X": "1"}
+    assert calls[0][1]["extra_env"] == {"X": "1", "CMRU_RUNTIME_KIND": "none"}
 
 
 @pytest.mark.parametrize("raw, expected", [(None, None), ("bad", "table"), ({"bump": "bad"}, "bump")])
@@ -178,7 +178,7 @@ def test_push_tags_has_no_side_effect_for_empty_and_warns_on_failure(monkeypatch
 def test_config_cleanup_and_project_document_reject_invalid_shapes(capsys):
     with pytest.raises(SystemExit):
         config._parse_cleanup({"max_age_days": 0, "release_tag_prefixes": [], "keep_release_tags": [], "ghcr_packages": [], "ghcr_delete_packages": []})
-    assert "positive" in capsys.readouterr().out
+    assert "positive" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         config._parse_cleanup({"release_tag_prefixes": [], "keep_release_tags": [], "ghcr_packages": []})
-    assert "ghcr_delete_packages" in capsys.readouterr().out
+    assert "ghcr_delete_packages" in capsys.readouterr().err

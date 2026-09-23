@@ -170,17 +170,10 @@ def test_bootstrap_env_init_warns_on_network_failure_but_still_probes_tls(
     assert events == ["tls"]
 
 
-def test_bootstrap_env_init_nonidentity_ambient_values_are_preserved(
+def test_bootstrap_env_init_machine_facts_override_ambient_values(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
 ) -> None:
-    """The overwrite scope is exactly the SIX overlay identity facts (CIU-75,
-    which absorbed CIU-41's derived tuple and CIU-47's PUBLIC_FQDN). Any OTHER
-    key already present in os.environ — a MACHINE fact like `ENV_TYPE`, which
-    describes the host and not the instance — keeps its ambient value.
-
-    Note `ENV_TYPE` is deliberately different in the two records: it proves the
-    machine half is still skip-if-present while the identity half overrides.
-    """
+    """Both generated tables override inherited shell state at bootstrap."""
     env_path = tmp_path / "ciu.env"
     env_path.write_text(
         'export DOCKER_NETWORK_INTERNAL="stale-file-net"\n'
@@ -206,4 +199,5 @@ def test_bootstrap_env_init_nonidentity_ambient_values_are_preserved(
     import os
     assert os.environ["PUBLIC_FQDN"] == "file-value.example"
     assert os.environ["DOCKER_NETWORK_INTERNAL"] == "fresh-net"
-    assert os.environ["ENV_TYPE"] == "native"
+    assert os.environ["ENV_TYPE"] == workspace_env.read_generated_machine_facts(tmp_path)["env_type"]
+    assert os.environ["ENV_TYPE"] != "native"

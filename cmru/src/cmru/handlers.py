@@ -147,14 +147,13 @@ def _git_common_dir(cwd_parent: Path) -> Optional[Path]:
     `cmd_wheel_build` rejects that source tree before the builder is invoked:
     no static package version may stand in for Git-derived release evidence.
     """
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-common-dir"], cwd=str(cwd_parent),
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
+    from cmru.transaction import _common_git_dir, _shared_worktree
+
+    shared = _shared_worktree()
+    try:
+        return _common_git_dir(cwd_parent)
+    except shared.WorkspaceError:
         return None
-    raw = Path(result.stdout.strip())
-    return raw if raw.is_absolute() else (cwd_parent / raw).resolve()
 
 
 def _wheel_builder_git_mount_args(
@@ -426,11 +425,14 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
 
 
 def main(argv: list | None = None) -> None:
-    parser = argparse.ArgumentParser(
+    from cmru.cli_support import CMRUArgumentParser
+    parser = CMRUArgumentParser(
         prog="cmru.handlers",
         description="cmru explicit project-step command library",
     )
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(
+        dest="cmd", required=True, parser_class=CMRUArgumentParser,
+    )
 
     p_build = sub.add_parser("wheel-build", help="build the project's wheel into dist/")
     p_build.add_argument("--cwd", required=True, help="project directory (holds pyproject.toml)")

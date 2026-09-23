@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from cmru.cli_support import CMRUArgumentParser
+
 import tomllib
 
 
@@ -412,7 +414,7 @@ def run_bundle(config_path: Path) -> Path:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build a stack bundle from TOML config")
+    parser = CMRUArgumentParser(description="Build a stack bundle from TOML config")
     parser.add_argument("--config", required=True, help="Path to bundle TOML config")
     return parser
 

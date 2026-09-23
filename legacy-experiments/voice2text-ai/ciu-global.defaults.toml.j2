@@ -1,0 +1,198 @@
+# =============================================================================
+# VOICE2TEXT-AI GLOBAL CONFIGURATION (STANDALONE ROOT)
+# =============================================================================
+# All sub-stacks (whisper-trans, whisper-live, localai, speech-to-copilot,
+# oobabooga-llm, reverse-proxy) inherit from this configuration.
+# =============================================================================
+
+[ciu]
+repo_root = "$REPO_ROOT"
+physical_repo_root = "$PHYSICAL_REPO_ROOT"
+workspace_env_file = ".env.ciu"
+fail_fast = true
+auto_connect_network = true
+
+[deploy]
+project_name = "voice2text"
+environment_tag = "prod"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+log_level = "INFO"
+
+[deploy.registry]
+url = ""
+namespace = "voice2text"
+
+[deploy.labels]
+prefix = "de.vxxu.volkb79"
+
+[deploy.health]
+interval = "15s"
+timeout = "5s"
+retries = 5
+start_period = "30s"
+
+[deploy.env.defaults]
+TZ = "UTC"
+PYTHONUNBUFFERED = "1"
+LANG = "en_US.UTF-8"
+
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+DOCKER_GID = "$DOCKER_GID"
+CONTAINER_GID = "$DOCKER_GID"
+REPO_ROOT = "$REPO_ROOT"
+PHYSICAL_REPO_ROOT = "$PHYSICAL_REPO_ROOT"
+PUBLIC_FQDN = "$PUBLIC_FQDN"
+PUBLIC_TLS_CRT_PEM = "$PUBLIC_TLS_CRT_PEM"
+PUBLIC_TLS_KEY_PEM = "$PUBLIC_TLS_KEY_PEM"
+
+[deploy.groups]
+core = ["phase_1", "phase_2", "phase_3"]
+proxy = ["phase_4"]
+streaming = ["phase_5", "phase_4"]
+full = ["phase_1", "phase_2", "phase_3", "phase_4", "phase_5"]
+
+[deploy.phases.phase_1]
+name = "Whisper Transcription"
+description = "Batch transcription service"
+enabled = true
+
+[[deploy.phases.phase_1.services]]
+path = "whisper-trans"
+name = "Whisper Transcription"
+enabled = true
+
+[deploy.phases.phase_2]
+name = "LLM Services"
+description = "LocalAI + optional oobabooga"
+enabled = true
+
+[[deploy.phases.phase_2.services]]
+path = "localai"
+name = "LocalAI"
+enabled = true
+
+[[deploy.phases.phase_2.services]]
+path = "oobabooga-llm"
+name = "Oobabooga LLM"
+enabled = false
+comment = "Disabled by default (see IMPLEMENTATION-STATUS.md)"
+
+[deploy.phases.phase_3]
+name = "Speech-to-Copilot"
+description = "API + Redis for voice workflow"
+enabled = true
+
+[[deploy.phases.phase_3.services]]
+path = "speech-to-copilot"
+name = "Speech-to-Copilot"
+enabled = true
+
+[deploy.phases.phase_4]
+name = "Reverse Proxy"
+description = "External HTTPS access"
+enabled = true
+
+[[deploy.phases.phase_4.services]]
+path = "reverse-proxy"
+name = "Reverse Proxy"
+enabled = true
+
+[deploy.phases.phase_5]
+name = "WhisperLive Streaming"
+description = "Streaming transcription service"
+enabled = true
+
+[[deploy.phases.phase_5.services]]
+path = "whisper-live"
+name = "WhisperLive"
+enabled = true
+
+# =============================================================================
+# SERVICE DEFINITIONS (used by reverse-proxy routing and templates)
+# =============================================================================
+[services.whisper]
+name = "whisper-service"
+internal_port = 9000
+image_name = "onerahmet/openai-whisper-asr-webservice"
+image_tag = "latest"
+
+[services.whisper_live]
+name = "whisperlive-service"
+internal_port = 80
+image_name = "voice2text/whisperlive"
+image_tag = "latest"
+
+[services.localai]
+name = "localai"
+internal_port = 80
+image_name = "localai/localai"
+image_tag = "latest-aio-cpu"
+
+[services.llm_webui]
+name = "llm-webui"
+internal_port = 80
+image_name = "voice2text/llm-webui"
+image_tag = "latest"
+
+[services.openai_shim]
+name = "openai-shim"
+internal_port = 80
+image_name = "voice2text/openai-shim"
+image_tag = "latest"
+
+[services.speech_api]
+name = "speech-to-copilot-api"
+internal_port = 80
+image_name = "voice2text/speech-api"
+image_tag = "latest"
+
+[services.speech_redis]
+name = "speech-to-copilot-redis"
+internal_port = 6379
+image_name = "redis"
+image_tag = "7-alpine"
+
+[services.reverse_proxy]
+name = "voice2text-reverse-proxy"
+internal_http_port = 80
+internal_https_port = 443
+external_https_port = 9443
+image_name = "nginx"
+image_tag = "alpine"
+
+# =============================================================================
+# PROXY ROUTES CONFIGURATION
+# =============================================================================
+[proxy.routes.api]
+path = "/api"
+backend_service = "speech_api"
+strip_path = false
+
+[proxy.routes.docs]
+path = "/docs"
+backend_service = "speech_api"
+strip_path = false
+
+[proxy.routes.whisper]
+path = "/whisper"
+backend_service = "whisper"
+strip_path = true
+
+[proxy.routes.whisper_stream]
+path = "/whisper-stream"
+backend_service = "whisper_live"
+strip_path = true
+
+[proxy.routes.llm]
+path = "/llm"
+backend_service = "openai_shim"
+strip_path = true
+
+[proxy.routes.localai]
+path = "/localai"
+backend_service = "localai"
+strip_path = true
+
+[auto_generated]
+# uid, gid, docker_gid, build_version, build_time populated at runtime

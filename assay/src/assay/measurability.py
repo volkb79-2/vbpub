@@ -19,6 +19,7 @@ module's, so this module does no diff parsing of its own.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -26,7 +27,12 @@ from typing import Sequence
 from . import git
 from .errors import AssayError, Outcome, ReasonCode
 
-__all__ = ["ResolvedBase", "check_base_is_head", "check_dirty_tree"]
+__all__ = [
+    "ResolvedBase",
+    "check_base_is_head",
+    "check_resolved_base_is_head",
+    "check_dirty_tree",
+]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -88,9 +94,45 @@ def check_dirty_tree(
 def check_base_is_head(
     repo: Path, base: str, *, remaining: git.Remaining | None = None
 ) -> ResolvedBase:
-    """Resolve *base* (:func:`assay.git.resolve_base`) and raise
-    ``NO_MEASUREMENT`` / ``BASE_IS_HEAD`` if it equals ``HEAD``; otherwise
-    return both revisions as a :class:`ResolvedBase`.
+    """Resolve *base* (:func:`assay.git.resolve_base`), then check it.
+
+    The resolving variant, for a caller working in a repository whose refs
+    and ancestry are the consumer's own (a direct, non-snapshot call).
+    :func:`check_resolved_base_is_head` is the snapshot-side sibling for
+    callers that resolved the declaration before materializing a P22
+    snapshot; the refusal both share is documented there.
+    """
+    head = git.head_rev(repo, remaining=remaining)
+    resolved = git.resolve_base(repo, base, remaining=remaining)
+    return _check_resolved_base_is_head(resolved, head)
+
+
+#: A full commit OID (SHA-1 or SHA-256 object format), the only spelling
+#: :func:`check_resolved_base_is_head` accepts.
+_FULL_OID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def check_resolved_base_is_head(
+    repo: Path, resolved_base: str, *, remaining: git.Remaining | None = None
+) -> ResolvedBase:
+    """Check an already-resolved comparison commit against ``HEAD``.
+
+    Higher-rigor callers resolve the lane's declared spelling against the
+    consumer repository before P22 materializes a snapshot
+    (``runner._resolve_declared_base``: the merge-base, or a merge ``HEAD``'s
+    first parent). Nothing inside the snapshot may re-derive that answer:
+    the snapshot carries no refs, so a symbolic spelling does not resolve
+    there, and resolution walks ancestry (``rev-list --parents``,
+    ``merge-base``) that a snapshot whose seed omits history cannot answer
+    -- or, for a merge ``HEAD`` whose parents are cut off, answers
+    differently (B101). This function therefore runs no resolution at all:
+    it reads ``HEAD`` and compares. The caller owns the preceding
+    declaration-resolution proof.
+
+    *resolved_base* must be a full commit OID. Anything else is a caller
+    bug (a declared spelling passed where the resolution belongs), refused
+    with :class:`ValueError` rather than handed to a later ``git diff`` that
+    would resolve it inside the snapshot after all.
 
     A resolved base identical to ``HEAD`` means there is no delta between the
     two sides being diffed, by construction — this is what ``--base main``
@@ -99,8 +141,16 @@ def check_base_is_head(
     before any diff is parsed, so a vacuous base never reaches
     :func:`assay.diff.parse_added_lines` at all.
     """
+    if not isinstance(resolved_base, str) or _FULL_OID_RE.fullmatch(resolved_base) is None:
+        raise ValueError(
+            f"check_resolved_base_is_head needs a full commit OID resolved "
+            f"before the snapshot existed, got {resolved_base!r}"
+        )
     head = git.head_rev(repo, remaining=remaining)
-    resolved = git.resolve_base(repo, base, remaining=remaining)
+    return _check_resolved_base_is_head(resolved_base, head)
+
+
+def _check_resolved_base_is_head(resolved: str, head: str) -> ResolvedBase:
     if resolved == head:
         raise AssayError(
             f"resolved base ({resolved[:12]}) IS HEAD ({head[:12]}) — there "

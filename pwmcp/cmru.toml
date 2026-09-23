@@ -1,15 +1,11 @@
 schema_version = 1
 
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
+[runtime]
+kind = "none"
 
 [env]
+BUILDX_BUILDER = "mdt-managed"
+BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
 
 [project]
 id = "pwmcp"
@@ -25,27 +21,20 @@ bump = "conventional"
 [project.release]
 git_tag = true
 build_step = "build"
-commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "pwmcp.contract.json"]
+commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "containers/pwmcp/Dockerfile", "pwmcp.contract.json"]
 artifact_dirs = ["dist"]
-
-[project_metadata.builder]
-name = "pwmcp-governed-v1"
-memory = "4g"
-memory_swap = "12g"
-cpu_shares = 128
-cpu_quota = 400000
-cpu_period = 100000
+evidence_paths = ["coverage.json", ".assay"]
 
 [steps.prepare]
 quiet = true
 commands = [
-  { label = "pwmcp: resolve and pin publishable Playwright inputs", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "." },
+  { label = "pwmcp: validate committed publishable version inputs", argv = ["python3", "scripts/resolve-playwright-version.py", "--check"], cwd = "." },
 ]
 
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "pwmcp: resolver and build-contract tests", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
+  { label = "pwmcp: Assay R1 tester gate", argv = ["./run-gate.py", "r1"], cwd = "." },
 ]
 
 [steps.build]

@@ -10,10 +10,10 @@ PROBE_IMAGE="${ASSAY_CGROUP_PROBE_IMAGE:-tester-unified:local}"
 
 die() { printf 'cgroup-parent: %s\n' "$*" >&2; exit 1; }
 
-slice="${CGROUP_PARENT_DEV_BACKGROUND:-}"
+slice="${CGROUP_PARENT_DEV_GATES:-}"
 if [ -z "$slice" ]; then
-  die 'CGROUP_PARENT_DEV_BACKGROUND is unset. Refusing to launch a gate
-container without an explicitly declared background cgroup tier.'
+  die 'CGROUP_PARENT_DEV_GATES is unset. Refusing to launch a gate
+container without an explicitly declared gates cgroup tier.'
 fi
 
 case "$slice" in

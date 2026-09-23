@@ -204,6 +204,8 @@ owner_type = "user"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 [project]
 id = "demo"
 description = "demo"
@@ -237,6 +239,8 @@ owner_type = "user"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 [project]
 id = "demo"
 description = "demo"
@@ -278,6 +282,8 @@ owner_type = "user"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 [project]
 id = "demo"
 description = "demo"

@@ -1033,4 +1033,4 @@ a second gate that is harder to satisfy accidentally.
 | `ingress_public` east-west visibility | Containers on ingress can attempt connections to each other | Keep ingress membership minimal; add DOCKER-USER rules for strict isolation |
 | Static config changes (log level, entrypoints, ACME) require re-render + restart | No live override via env vars once config file is mounted | Re-render via `scripts/render.sh` or ciu, then `docker compose restart traefik` |
 
-Additional known issues and open items are tracked in `KNOWN_ISSUES.md`.
+Additional known issues and open items are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md`.

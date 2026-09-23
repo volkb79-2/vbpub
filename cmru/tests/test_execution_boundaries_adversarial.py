@@ -181,10 +181,10 @@ class TestTesterGateContracts:
         import cmru.tester_gate as gate
         monkeypatch.delenv(env, raising=False)
         if fn == "resolve_cgroup_parent":
-            # Declared-only (CIU-46 wave): unset resolves to None — the
-            # unscoped launch is announced in main(), not a refusal here.
-            monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
-            assert gate.resolve_cgroup_parent(None) is None
+            # Gate placement is mandatory: an absent declared tier must refuse
+            # before any Docker command can be assembled.
+            with pytest.raises(SystemExit, match="cgroup_parent"):
+                gate.resolve_cgroup_parent(None)
             monkeypatch.setenv(env, "from-env")
             assert gate.resolve_cgroup_parent(None) == "from-env"
             assert gate.resolve_cgroup_parent("explicit") == "explicit"

@@ -23,6 +23,7 @@ def test_pre_secret_hook_treats_malformed_inspect_as_not_found_and_stops_red(
     result; a hook rejecting that state returns the runtime failure code and
     secret materialization never starts.
     """
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     stack = tmp_path / "stack"
     stack.mkdir()
     merged = {
@@ -72,6 +73,6 @@ def test_pre_secret_hook_treats_malformed_inspect_as_not_found_and_stops_red(
         lambda *_args, **_kwargs: pytest.fail("failed pre-secrets hook must not materialize secrets"),
     )
 
-    assert engine.main(["--dry-run", "-d", str(stack), "--define-root", str(tmp_path)]) == 1
+    assert engine.main(["--dry-run", "-d", str(stack), "--root-folder", str(tmp_path)]) == 1
     assert observed == {"status": "not-found"}
     assert "api is not ready" in capsys.readouterr().out

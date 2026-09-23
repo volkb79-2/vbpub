@@ -46,17 +46,17 @@ def test_installer_config_rejects_missing_or_ambiguous_fields(raw, message, caps
     with pytest.raises(SystemExit) as exc:
         config._parse_installer("demo", raw)
     assert exc.value.code == 2
-    assert message in capsys.readouterr().out
+    assert message in capsys.readouterr().err
 
 
 def test_installer_config_rejects_unknown_wheel_and_installer_keys(capsys):
     base = {"install_dir_system": "/x", "install_dir_user": "/y"}
     with pytest.raises(SystemExit):
         config._parse_installer("demo", {**base, "unknown": True})
-    assert "unknown keys" in capsys.readouterr().out
+    assert "unknown keys" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         config._parse_installer("demo", {**base, "wheels": [{"path": "x", "distribution": "d", "extra": 1}]})
-    assert "unknown keys" in capsys.readouterr().out
+    assert "unknown keys" in capsys.readouterr().err
 
 
 def test_variants_parse_filename_safe_unique_names():
@@ -77,28 +77,28 @@ def test_variants_reject_non_contract_entries(items, expected, capsys):
     with pytest.raises(SystemExit) as exc:
         config._parse_variants("demo", {"variants": items})
     assert exc.value.code == 2
-    assert expected in capsys.readouterr().out
+    assert expected in capsys.readouterr().err
 
 
 def test_project_document_helpers_fail_closed_for_paths_and_targets(tmp_path, capsys):
     with pytest.raises(SystemExit):
         config._read_toml(tmp_path / "wrong-name", "cmru.toml")
-    assert "expected cmru.toml" in capsys.readouterr().out
+    assert "expected cmru.toml" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         config._read_toml(tmp_path / "cmru.toml", "cmru.toml")
-    assert "not found" in capsys.readouterr().out
+    assert "not found" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         config._targets({"host": "github", "registry": [""]})
-    assert "non-empty strings" in capsys.readouterr().out
+    assert "non-empty strings" in capsys.readouterr().err
 
 
 def test_secret_overlay_and_github_validation_refuse_wrong_shapes(capsys):
     with pytest.raises(SystemExit):
         config._github({"owner": "o", "repo": "r", "owner_type": "team"})
-    assert "owner_type" in capsys.readouterr().out
+    assert "owner_type" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         config._secret_token({"token": ""}, "secret.github")
-    assert "non-empty" in capsys.readouterr().out
+    assert "non-empty" in capsys.readouterr().err
 
 
 def test_validate_runner_steps_checks_login_and_command_contract(capsys):
@@ -109,7 +109,7 @@ def test_validate_runner_steps_checks_login_and_command_contract(capsys):
                              "login": {"registry": "ghcr.io", "username_env": "USER", "token_env": "TOKEN", "required": "yes"}}}
     with pytest.raises(SystemExit):
         config._validate_runner_steps(broken)
-    assert "required" in capsys.readouterr().out
+    assert "required" in capsys.readouterr().err
 
 
 class _Engine:

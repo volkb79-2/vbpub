@@ -72,7 +72,7 @@ escalate_if:
   - "any table/key from proposal CIU-V8-TESTING-GATE-PROPOSAL.md §4.5 (groups A1-A7, B, D, E, F) needs a Kind, ScalarType, or KeySpec/TableSpec field this packet's schema_spec.py design does not already provide, AND the gap cannot be closed by adding a same-shaped enum member/scalar-type name (i.e. it needs a genuinely new STRUCTURAL capability, not a new value of an existing field) — stop, do not invent a new dataclass field ad hoc, write BLOCKED naming the exact table/key and what shape it would need"
   - "a table/key needs a referential or graph check (S3.8.3: 'a name that must resolve') to be expressed correctly and this packet's KeySpec/TableSpec format has no field for cross-key or cross-table conditions (S3.8.3 is explicitly `ciu check` stage 4's job, NOT this package's — if you find yourself wanting to write one, STOP: record the table/key/rule as a 'stage 4 forward item' in the REPORT instead of encoding it here)"
   - "the vendored tools/assay/assay-4.1.0.pyz sha256 does not match /workspaces/vbpub/cmru/tools/assay/assay-4.1.0.pyz.sha256's recorded digest (a1a5b09ca63370ed3b533b6a76089ea9f96e7dd0e612436e2e82f7cba688f931 as of this carve -- re-verify, do not trust this copy)"
-  - "/workspaces/vbpub/run-gate.toml has no [environments.tester-unified] table, or its image is not tester-unified:local"
+  - "/workspaces/vbpub/run-gate.root.toml has no [environments.tester-unified] table, or its image is not tester-unified:local"
   - "the current /workspaces/vbpub/ciu/docs/SPEC-V8.md text for S3.4.7, S6.10, or S13.1 no longer matches the exact expected frozensets given in this packet's 'S3.8.6 self-check harness' section (the document moved since input_revision was frozen) -- do not silently adapt the extractor to the new text; write BLOCKED naming the diff, this is a D-<NNN>-worthy staleness signal for the carver/controller, not a mechanical fix"
   - "checkpoint clause (E-008): ARM at ~120k context tokens or ~60 tool calls (whichever comes first); CUT at the next coherent boundary (green gate > commit > LOG/REPORT write > edit-cluster end; never on a red gate); repeat every ~40-55 calls; STOP when fewer than ~40 calls remain. At the cut: write a continuation brief to `nyxloom-trove/reports/ciu8-P001-BRIEF.md` (current state: which of Part A's 11 bootstrap items and which traceability-table groups are done/pending, exact file:line seams, last green/red gate run) and a self-authored `/compact`-style retention prompt to `nyxloom-trove/reports/ciu8-P001-COMPACT.md` (KEEP: current package/gate state, load-bearing file:line seams named above; DROP: resolved sub-threads), commit both, stop. Do NOT resume or fork yourself across a cut -- the controller dispatches a FRESH successor seeded with the brief (nyxloom LESSONS L23)."
 ---
@@ -150,7 +150,7 @@ forbidden path to make a gate pass.
    `/workspaces/vbpub/ciu/src/ciu/__init__.py`, `/workspaces/vbpub/ciu/src/ciu/__main__.py`
    — the v7 files Part A mirrors. Copy the SHAPE, substitute every `ciu` ->
    `ciu8`, `7.x` -> `8.0.0.dev`, `ciu-v` -> `ciu8-v`.
-7. `/workspaces/vbpub/run-gate.toml` (central, vbpub root) — confirms
+7. `/workspaces/vbpub/run-gate.root.toml` (central, vbpub root) — confirms
    `[environments.tester-unified]` is inherited, not redeclared per-project.
 8. `/workspaces/vbpub/AGENTS.md` "Manual tester-unified gate runs — the four
    traps" section, and this session's own host-load-sharing rule (serial
@@ -314,7 +314,7 @@ correctly; verify with `readlink -f run-gate.py` after creating it.
 
 ```toml
 # ciu8 project gate lanes -- parsed ONLY by run-gate.py (one parser, D-110).
-# Environment facts come from the CENTRAL vbpub-root run-gate.toml (nearest
+# Environment facts come from the CENTRAL vbpub-root run-gate.root.toml (nearest
 # ancestor); judgment policy lives in assay.toml [lanes.ciu8].
 schema_version = 1
 

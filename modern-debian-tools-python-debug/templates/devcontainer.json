@@ -159,11 +159,10 @@
     //
     // CGROUP_PARENT_DEV_GATES (RG-55 D-19/D-24): gate/lane containers, the
     // admission capacity object — see host-setup/README.md "dev-gates: why".
-    // Consumer fallback rule (D-24): a consumer that reads an unset value
-    // (the var absent, or the host not yet re-run through
-    // host-setup/install.sh) falls back to TODAY's placement,
-    // CGROUP_PARENT_DEV_BACKGROUND. Nothing breaks before a host opts in;
-    // `doctor` on each consumer says which slice is actually in effect. Note
+    // Consumer rule: gate consumers require this value and fail closed when
+    // the host has not been upgraded through host-setup/install.sh; they do
+    // not fall back to CGROUP_PARENT_DEV_BACKGROUND. Long-running application
+    // stacks receive the background value separately. Note
     // the host-level cgprofile-host-daemon is NOT a consumer of this block —
     // per design amendment A1/D-29 it is a host deployment with its own
     // top-level `cgprofile.slice`, authored directly in its own compose
@@ -196,7 +195,8 @@
     // Cgroup placement is CREATE-TIME ONLY, so it must be set here.
     // HOST PREREQUISITE: /etc/systemd/system/dev-interactive.slice unit with
     // desired limits (MemoryHigh/MemoryMax/CPUWeight/...), plus the
-    // dev-background tier for test/build/gate containers — both installed by
+    // dev-gates tier for gate/lane containers and dev-background for
+    // long-running stacks — all installed by
     // mdt's host-setup/ companion:
     //   sudo <mdt>/host-setup/install.sh   (see host-setup/README.md)
     // GRACEFUL DEGRADATION: if that unit is missing, systemd creates a transient

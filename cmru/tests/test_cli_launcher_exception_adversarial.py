@@ -14,6 +14,11 @@ def test_release_launcher_surfaces_workspace_creation_failure_and_stops(monkeypa
     )
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
@@ -22,6 +27,6 @@ def test_release_launcher_surfaces_workspace_creation_failure_and_stops(monkeypa
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("worktree unavailable")))
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("child")))
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])
+        cli.main(["release", "demo", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 1
     assert "worktree unavailable" in capsys.readouterr().err

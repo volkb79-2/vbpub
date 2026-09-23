@@ -101,12 +101,12 @@ and a second agent process on the same host would be a second container.
 ```bash
 sudo usermod -aG docker buildkite-agent
 sudo mkdir -p /etc/systemd/system/buildkite-agent.service.d
-printf '[Service]\nSlice=dev-background.slice\n' \
+printf '[Service]\nSlice=dev-gates.slice\n' \
   | sudo tee /etc/systemd/system/buildkite-agent.service.d/slice.conf
 sudo systemctl daemon-reload
 ```
 
-`dev-background.slice` is the dev-tier slice `mdt host-setup` governs; if the
+`dev-gates.slice` is the disposable-lane slice `mdt host-setup` governs; if the
 host also carries production, add `CPUQuota=` to the same drop-in so a lane
 cannot take every core, and keep the shared-host rule from `AGENTS.md` in
 mind: this is exactly how the 8-core dev host reached a load of 85.
@@ -395,7 +395,7 @@ implemented, and `collect` takes the build number for now.
 ## 5. The image on the remote host
 
 run-gate's central config names the environment image as `tester-unified:local`
-(`run-gate.toml` at the repo root). Two ways for a remote host to have it:
+(`run-gate.root.toml` at the repo root). Two ways for a remote host to have it:
 
 - **Build from the checkout.** `docker build -f tester-unified/Dockerfile -t
   tester-unified:local .` from the repo root, in an agent `pre-command` hook or
@@ -436,7 +436,7 @@ API. **Seam 1 has not landed** (below). Seams 3, 5 and 6 are untouched.
 |---|---|---|---|---|
 | 1 | Artifacts contract | run-gate (docs) + each lane | **docs seam, not started** (E5-R5) | the generator's two `.assay/` globs plus `.run-gate/history.json` are FIXED, and they are its only executable evidence; **no lane in the estate declares the set** (every `artifacts =` in the repo today is a single file, and `run-gate-project/selftest`'s own `coverage.json` matches none of the globs), and a lane's declared `artifacts` outside `.assay/` and `.run-gate/` do not travel. The authoring side of the reconciliation has landed — **`LANE-AUTHORING.md` §5 requires a remote-capable lane to keep every artifact it wants back under `.assay/`**, which is what makes the fixed globs sufficient — but no lane declares such a set yet, so the seam itself has not started; RG-45's `--list --json` could later expose `artifacts` and retire the rule |
 | 2 | Pipeline generator | `run-gate-project/tools/buildkite/pipeline.sh` | **landed (no live build yet)** | consumes `./run-gate.py --list` only (no second parser of `run-gate.toml`); emits the §3 step shape; selects by `RUN_GATE_LANES`; refuses (exit 2) an unknown or duplicated lane, a missing `RUN_GATE_QUEUE`, a leading-zero timeout, or a listing wider than the three documented columns |
-| 3 | Image provenance | `tester-unified/` cmru project, `run-gate.toml` central config | not started | build-from-checkout first; GHCR publish via `oci-image-push` later; `image_digest` key in the environment table (new RG item) |
+| 3 | Image provenance | `tester-unified/` cmru project, `run-gate.root.toml` central config | not started | build-from-checkout first; GHCR publish via `oci-image-push` later; `image_digest` key in the environment table (new RG item) |
 | 4 | Trigger + collector | `run-gate-project/tools/buildkite/bk-lane.sh` on the controller host | **landed (no live build yet)** | `run` creates + waits (exit 3 when `BK_MAX_WAIT_MINUTES` runs out), `status` reads, `collect` downloads into a commit-addressed directory with both path components gated; token file must be 0600; exit codes 0/1/2/3 as §4.2 states. Still open: feeding run-gate history with a `host` field (new RG item), dstdns's inbox, and lookup by commit instead of build number (§4.4) |
 | 5 | Async evidence | assay Tier 3 (A-O08 shape) | not started | fuzz findings and nightly campaign verdicts land as attested, commit-bound evidence; assay proves staleness, never truth |
 | 6 | Stack-needing lanes on a remote host | ciu (v8 `ciu gate`, or v7 `ciu up` today) | not started | the Buildkite step runs `ciu` LOCALLY on that host under the agent user; ciu stays the local orchestrator, Buildkite the trigger |

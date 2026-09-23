@@ -1,6 +1,6 @@
 """get.py emitter — render templates/get.py.tmpl for a project.
 
-CLI: cmru get-py --project <name> [--config <toml>] [--output <file>]
+CLI: cmru get-py [all|project[,project...]] [--config <toml>] [--output <file>]
 
 The emitted get.py is a self-contained Python 3 transactional installer that handles
 install, update, rollback, status, scope (system/user), bundled-wheel venv, SHA256 +
@@ -166,25 +166,66 @@ def render_from_config(project_name: str, config_path: Path) -> str:
 
 def getpy_main(argv: Optional[list] = None) -> None:
     """Entry point for ``cmru get-py``."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Emit get.py for a project")
-    parser.add_argument("--project", required=True)
+    from cmru.cli_support import CMRUArgumentParser, TargetSelectionError, select_target_names
+    parser = CMRUArgumentParser(description="Emit get.py for registered projects")
+    parser.add_argument(
+        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+        help="Project target; omitted uses the current project or estate default",
+    )
     parser.add_argument(
         "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
     )
     parser.add_argument("--output", help="Write to file instead of stdout")
+    parser.add_argument("--output-dir", help="Write one named installer per selected project")
     args = parser.parse_args(argv)
+    from cmru.cli import _resolve_config, load_config
+    from cmru.config import resolve_invocation_context
 
-    if not args.config:
-        print("[ERROR] --config is required for cmru get-py", file=sys.stderr)
-        sys.exit(2)
-
-    script = render_from_config(args.project, Path(args.config).expanduser().resolve())
-
+    cfg_path = _resolve_config(args.config)
+    loaded = load_config(cfg_path)
+    configs, project_order = loaded[1], loaded[2]
+    if args.target is None and cfg_path.name == PROJECT_CONFIG_FILENAME and len(configs) == 1:
+        context_project = next(iter(configs))
+        estate_scope = False
+    elif args.target is None:
+        context = resolve_invocation_context(cfg_path)
+        context_project = context.project_name
+        estate_scope = context.scope == "estate"
+    else:
+        context_project = None
+        estate_scope = False
+    try:
+        names = select_target_names(
+            args.target, configs, project_order,
+            context_project=context_project,
+            estate_scope=estate_scope,
+        )
+    except TargetSelectionError as exc:
+        parser.error(str(exc))
+    if args.output and len(names) != 1:
+        parser.error("--output FILE is only valid for one project; use --output-dir for multiple projects")
+    if args.output and args.output_dir:
+        parser.error("--output and --output-dir are mutually exclusive")
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            out = output_dir / f"{name}-get.py"
+            out.write_text(render_from_config(name, cfg_path), encoding="utf-8")
+            out.chmod(0o755)
+            print(f"[INFO] Written to {out}")
+        return
+    scripts = {name: render_from_config(name, cfg_path) for name in names}
     if args.output:
         out = Path(args.output)
-        out.write_text(script, encoding="utf-8")
+        out.write_text(next(iter(scripts.values())), encoding="utf-8")
         out.chmod(0o755)
         print(f"[INFO] Written to {out}")
+    elif len(scripts) == 1:
+        sys.stdout.write(next(iter(scripts.values())))
     else:
-        sys.stdout.write(script)
+        for name, script in scripts.items():
+            print(f"===== get.py Project: {name.upper()} =====")
+            sys.stdout.write(script)
+            if not script.endswith("\n"):
+                sys.stdout.write("\n")

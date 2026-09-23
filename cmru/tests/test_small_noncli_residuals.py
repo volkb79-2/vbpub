@@ -64,7 +64,7 @@ def test_standards_main_unknown_project_is_refused(monkeypatch):
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: Path("cmru.toml"))
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
     with pytest.raises(SystemExit) as error:
-        standards.standards_main(["--project", "missing"])
+        standards.standards_main(["missing"])
     assert error.value.code == 2
 
 
@@ -73,7 +73,7 @@ def test_standards_update_requires_project_local_config(monkeypatch):
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: Path("cmru.toml"))
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
     with pytest.raises(ValueError, match="project-local"):
-        standards.standards_main(["--project", "demo", "--update"])
+        standards.standards_main(["demo", "--update"])
 
 
 def test_standards_atomic_write_cleans_temporary_file_after_replace_failure(monkeypatch, tmp_path):

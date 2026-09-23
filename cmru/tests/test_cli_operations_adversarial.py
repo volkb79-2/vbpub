@@ -44,12 +44,12 @@ def test_orchestrate_project_first_runs_selected_steps_in_declared_order(monkeyp
 
 def test_orchestrate_step_first_uses_step_order_and_rejects_unknown_project(monkeypatch, tmp_path):
     project = _project(project_root=tmp_path / "demo", runner_steps={"test": object(), "build": object()})
-    args = SimpleNamespace(project=["missing"], run_tests=False, build=True, push=False, validate=False,
+    args = SimpleNamespace(target="missing", run_tests=False, build=True, push=False, validate=False,
                             remove_assets=None, dry_run=False, show_run_details=False, log_append=False, config=None)
     monkeypatch.setattr(cli, "build_arg_parser", lambda: _Parser(args))
     monkeypatch.setattr(cli, "_resolve_config", lambda value: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda path: _config(tmp_path, project, mode="step-first"))
-    with pytest.raises(ValueError, match="Unknown project"):
+    with pytest.raises(SystemExit):
         cli._orchestrate()
 
 

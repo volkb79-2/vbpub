@@ -1,14 +1,15 @@
 """KI-16 (ciu-aligned): chronologically-sortable, true 1:1 release/build naming.
 
-    branch:     cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
-    directory:  .worktrees/cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
+    branch:     cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>
+    directory:  .worktrees/cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>
 
 (SPEC S-CLI.5b). The branch is a FLAT single token with no nested ref path, so
 the branch string and the worktree directory basename are one and the same —
 true 1:1, matching ciu's ``<prefix>-<YYYYMMDD_HHMMSS>-<feature>`` scheme, with
 ``_`` separating date from time so that boundary stays visually distinct from
-the ``-`` field separators. The trailing uuid8 (not the old scheme's 12-hex
-token) is what keeps two transactions from ever colliding, which is what lets
+the ``-`` field separators. The trailing six-character workspace identity is
+what connects the transaction to the shared allocator and keeps two
+transactions from ever colliding, which is what lets
 cleanup assume it exclusively owns whatever it created. Retained worktrees from
 the OLD nested ``cmru/<purpose>/<12-hex>`` naming must keep working unchanged:
 discovery/cleanup recognise a transaction branch under EITHER scheme and never
@@ -54,7 +55,7 @@ def _repo(tmp_path: Path) -> Path:
 
 
 _BRANCH_RE = re.compile(
-    r"^cmru-(release|build)-(\d{8})_(\d{6})-([a-z0-9-]+)-([0-9a-f]{8})$"
+    r"^cmru-(release|build)-(\d{8})_(\d{6})-([a-z0-9-]+)-([0-9a-z]{6})$"
 )
 
 
@@ -87,7 +88,7 @@ def test_sanitize_scope_normalises_or_falls_back_to_all(raw, expected):
 
 @pytest.mark.parametrize("purpose", ["release", "build"])
 def test_new_transaction_branch_matches_the_documented_shape(purpose):
-    branch = transaction._new_transaction_branch(purpose, "assay")
+    branch = transaction._new_transaction_branch(purpose, "assay", identity="a1b2c3")
     match = _BRANCH_RE.match(branch)
     assert match, branch
     assert match.group(1) == purpose
@@ -95,19 +96,17 @@ def test_new_transaction_branch_matches_the_documented_shape(purpose):
 
 
 def test_new_transaction_branch_defaults_unscoped_run_to_all():
-    branch = transaction._new_transaction_branch("release", None)
+    branch = transaction._new_transaction_branch("release", None, identity="a1b2c3")
     match = _BRANCH_RE.match(branch)
     assert match.group(4) == "all"
 
 
-def test_new_transaction_branch_uuid8_is_random_never_deterministic():
-    first = transaction._new_transaction_branch("release", "assay")
-    second = transaction._new_transaction_branch("release", "assay")
+def test_new_transaction_branch_uses_shared_identity_and_suffix():
+    first = transaction._new_transaction_branch("release", "assay", identity="a1b2c3")
+    second = transaction._new_transaction_branch("release", "assay", identity="a1b2c3", suffix=2)
     assert first != second
-    first_uuid = _BRANCH_RE.match(first).group(5)
-    second_uuid = _BRANCH_RE.match(second).group(5)
-    assert first_uuid != second_uuid
-    assert len(first_uuid) == 8
+    assert _BRANCH_RE.match(first).group(5) == "a1b2c3"
+    assert second.endswith("-a1b2c3-2")
 
 
 def test_new_transaction_branch_timestamp_is_utc_in_yyyymmdd_hhmmss_order():
@@ -128,9 +127,9 @@ def test_new_transaction_branch_timestamp_is_utc_in_yyyymmdd_hhmmss_order():
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(transaction, "datetime", _FixedDatetime)
-        branch = transaction._new_transaction_branch("release", "demo")
+        branch = transaction._new_transaction_branch("release", "demo", identity="a1b2c3")
 
-    assert branch == "cmru-release-20260818_230507-demo-" + branch.rsplit("-", 1)[-1]
+    assert branch == "cmru-release-20260818_230507-demo-a1b2c3"
     match = _BRANCH_RE.match(branch)
     assert match.group(2) == "20260818"
     assert match.group(3) == "230507"
@@ -225,6 +224,9 @@ def test_create_workspace_branch_and_directory_are_1to1_derivable(tmp_path, purp
         assert _BRANCH_RE.match(workspace.branch), workspace.branch
         # True 1:1: the branch string IS the worktree directory basename.
         assert workspace.path.name == workspace.branch
+        visible_identity = workspace.branch.rsplit("-", 1)[-1]
+        assert workspace.workspace_id == visible_identity
+        assert re.fullmatch(r"[0-9a-z]{6}", visible_identity)
         # Discovery/cleanup recognise this flat prefix (transaction.py
         # _is_release_branch / _is_build_branch) — the new scheme must satisfy it.
         assert workspace.branch.startswith(f"cmru-{purpose}-")
@@ -240,8 +242,8 @@ def test_create_workspace_fails_closed_when_target_path_already_exists_nonempty(
     (mkdtemp+rmdir is gone) and explicitly refuses before ever calling git."""
     root = _repo(tmp_path)
     base = _git(root, "rev-parse", "HEAD")
-    branch = transaction._new_transaction_branch("release", "demo")
-    monkeypatch.setattr(transaction, "_new_transaction_branch", lambda purpose, scope: branch)
+    branch = transaction._new_transaction_branch("release", "demo", identity="a1b2c3")
+    monkeypatch.setattr(transaction, "_new_transaction_branch", lambda purpose, scope, **kwargs: branch)
     collision = root / ".worktrees" / transaction._worktree_dirname(branch)
     collision.mkdir(parents=True)
     (collision / "occupied.txt").write_text("already here\n")
@@ -259,8 +261,8 @@ def test_create_workspace_fails_closed_when_target_path_already_exists_empty(tmp
     must refuse this itself, not rely on git's inconsistent behaviour."""
     root = _repo(tmp_path)
     base = _git(root, "rev-parse", "HEAD")
-    branch = transaction._new_transaction_branch("release", "demo")
-    monkeypatch.setattr(transaction, "_new_transaction_branch", lambda purpose, scope: branch)
+    branch = transaction._new_transaction_branch("release", "demo", identity="a1b2c3")
+    monkeypatch.setattr(transaction, "_new_transaction_branch", lambda purpose, scope, **kwargs: branch)
     collision = root / ".worktrees" / transaction._worktree_dirname(branch)
     collision.mkdir(parents=True)  # empty -- git itself would silently adopt this
 
@@ -296,6 +298,7 @@ def test_old_style_worktrees_remain_discoverable_resumable_and_removable(tmp_pat
     # stranded by this change.
     old_release_token = uuid.uuid4().hex[:12]
     old_release_branch = f"cmru/release/{old_release_token}"
+    (root / ".worktrees").mkdir()
     old_release_path = root / ".worktrees" / f"cmru-release-{old_release_token}-legacy"
     _git(root, "worktree", "add", "-q", "-b", old_release_branch, str(old_release_path), base)
 

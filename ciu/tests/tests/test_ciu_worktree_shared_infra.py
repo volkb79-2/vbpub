@@ -3,8 +3,8 @@
 
 Covers the handoff's three oracles:
 
-- O1: add-time validation (`_preflight_shared_infra_for_add`,
-  `worktree.add`'s all-or-nothing group) and the recorded intent grammar
+- O1: create-time validation (`_preflight_shared_infra_for_add`,
+  `worktree.create`'s all-or-nothing group) and the recorded intent grammar
   (`parse_shared_infra_config`).
 - O2/O3: the post-up join (`connect_shared_infra_after_up`) — reference
   revalidation, target-service discovery, Docker-STATE (never Docker
@@ -33,6 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import worktree  # noqa: E402
 
 
+def create_path(*args, **kwargs):
+    """Adapt path-oriented setup to CIU's typed ``create`` API."""
+    return worktree.create(*args, **kwargs).git_worktree_path
+
+
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
@@ -56,7 +61,8 @@ def tmp_repo(tmp_path: Path) -> Path:
         "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n",
         encoding="utf-8",
     )
-    assert _git(["add", "README.md", ".gitignore"], repo).returncode == 0
+    (repo / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
+    assert _git(["add", "README.md", ".gitignore", "ciu.global.defaults.toml.j2"], repo).returncode == 0
     assert _git(["commit", "-m", "init"], repo).returncode == 0
     return repo
 
@@ -91,8 +97,8 @@ def fake_generate_env(monkeypatch, write_instance_facts):
 @pytest.fixture
 def ref_worktree(tmp_repo, fake_generate_env):
     """A registered reference worktree with a real ciu.env (created via an
-    ordinary, non-shared-infra `add`)."""
-    path = worktree.add(tmp_repo, "primary-ref", base="main")
+    ordinary, non-shared-infra `create`)."""
+    path = create_path(tmp_repo, "primary-ref", base="main")
     return path, _network_for(path)
 
 
@@ -195,7 +201,7 @@ def _is_disconnect(args, network, cid):
 # ---------------------------------------------------------------------------
 
 
-class TestAddSharedInfra:
+class TestCreateSharedInfra:
     def test_success_records_all_four_fields_in_order(self, tmp_repo, fake_generate_env, ref_worktree, monkeypatch):
         ref_path, ref_network = ref_worktree
         fake = ScriptedDocker()
@@ -204,7 +210,7 @@ class TestAddSharedInfra:
         fake.on(lambda a: _is_ref_project_ps(a, ref_network, "vault-dev-vault"), _proc(0, stdout="cid2\n"))
         monkeypatch.setattr(worktree.procutil, "docker", fake)
 
-        target = worktree.add(
+        target = create_path(
             tmp_repo, "child", base="main", profile="core,db",
             shared_infra="primary-ref",
             shared_infra_services="api,worker",
@@ -228,7 +234,7 @@ class TestAddSharedInfra:
         fake.on(lambda a: _is_ref_project_ps(a, ref_network, "idp-dev-idp"), _proc(0, stdout="cid1\n"))
         monkeypatch.setattr(worktree.procutil, "docker", fake)
 
-        target = worktree.add(
+        target = create_path(
             tmp_repo, "child", base="main", profile="core",
             shared_infra="primary-ref",
             shared_infra_services="api",
@@ -247,7 +253,7 @@ class TestAddSharedInfra:
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match="does not resolve"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="nonexistent",
                 shared_infra_services="api",
@@ -263,7 +269,7 @@ class TestAddSharedInfra:
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match="partial group"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -275,8 +281,8 @@ class TestAddSharedInfra:
     def test_missing_profile_fails_as_partial_group(self, tmp_repo, track_git_add_calls, monkeypatch):
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
-        with pytest.raises(worktree.WorktreeError, match="partial group"):
-            worktree.add(
+        with pytest.raises(worktree.WorktreeError, match="does not resolve"):
+            create_path(
                 tmp_repo, "child", base="main",  # no profile
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -285,12 +291,12 @@ class TestAddSharedInfra:
         assert track_git_add_calls == []
         assert fake.calls == []
 
-    def test_ordinary_add_without_any_shared_infra_flag_is_unaffected(
+    def test_ordinary_create_without_any_shared_infra_flag_is_unaffected(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         fake = ScriptedDocker()  # any call would raise -- proves none happens
         monkeypatch.setattr(worktree.procutil, "docker", fake)
-        target = worktree.add(tmp_repo, "child", base="main", profile="core")
+        target = create_path(tmp_repo, "child", base="main", profile="core")
         overlay_text = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         assert "shared_infra" not in overlay_text
         assert fake.calls == []
@@ -300,7 +306,7 @@ class TestAddSharedInfra:
         write_instance_facts,
     ):
         # A reference worktree whose generated facts carry no network at all.
-        ref = worktree.add(tmp_repo, "primary-ref", base="main")
+        ref = create_path(tmp_repo, "primary-ref", base="main")
         write_instance_facts(ref, instance_id="x", network="")
         track_git_add_calls.clear()  # discard the ref's OWN legitimate add call
 
@@ -309,7 +315,7 @@ class TestAddSharedInfra:
         with pytest.raises(
             worktree.WorktreeError, match="declares no generated instance network"
         ):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -326,7 +332,7 @@ class TestAddSharedInfra:
         fake.on(lambda a: _is_network_inspect_exists(a, ref_network), _proc(1, stderr="no such network"))
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match="does not exist or is not inspectable"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -350,7 +356,7 @@ class TestAddSharedInfra:
         monkeypatch.setattr(worktree.procutil, "docker", fake)
 
         with pytest.raises(worktree.WorktreeError, match="does not look live"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -371,7 +377,7 @@ class TestAddSharedInfra:
         monkeypatch.setattr(worktree.procutil, "docker", fake)
 
         with pytest.raises(worktree.WorktreeError, match="vault-dev-vault"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -385,7 +391,7 @@ class TestAddSharedInfra:
         fake.on(lambda a: _is_network_inspect_exists(a, ref_network), _proc(0))
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match="blank items"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api,,worker",
@@ -401,7 +407,7 @@ class TestAddSharedInfra:
         fake.on(lambda a: _is_network_inspect_exists(a, ref_network), _proc(0))
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match="duplicate item"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -428,7 +434,7 @@ class TestAddSharedInfra:
         with pytest.raises(
             worktree.WorktreeError, match="declares no generated instance network"
         ):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -445,7 +451,7 @@ class TestAddSharedInfra:
             fake = ScriptedDocker()
             monkeypatch.setattr(worktree.procutil, "docker", fake)
             with pytest.raises(worktree.WorktreeError, match="could not read"):
-                worktree.add(
+                create_path(
                     tmp_repo, "child", base="main", profile="core",
                     shared_infra="primary-ref",
                     shared_infra_services="api",
@@ -472,7 +478,7 @@ class TestAddSharedInfra:
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.1\] could not read"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -494,7 +500,7 @@ class TestAddSharedInfra:
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.1\] could not read"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -509,7 +515,7 @@ class TestAddSharedInfra:
         fake.on(lambda a: _is_network_inspect_exists(a, ref_network), FileNotFoundError("docker missing"))
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match="could not inspect network"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -527,7 +533,7 @@ class TestAddSharedInfra:
         )
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match="could not query reference project"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
                 shared_infra_services="api",
@@ -1172,7 +1178,7 @@ def ref_instance(tmp_repo, fake_generate_env, write_instance_facts):
     facts pin instance_id=aaaaaa, so its own rendered config derives
     `dstdns-aaaaaa-<service>` (CIU-75: those facts, not `ciu.env`, are what
     the reference's chain renders against)."""
-    path = worktree.add(tmp_repo, "primary-ref", base="main")
+    path = create_path(tmp_repo, "primary-ref", base="main")
     network = _network_for(path)
     write_instance_facts(
         path,
@@ -1201,7 +1207,7 @@ def _add_fake(ref_network, *, vault_live=(REF_VAULT,), services=("vault",)):
 
 
 def _add_child(tmp_repo, ref_services, **kw):
-    return worktree.add(
+    return create_path(
         tmp_repo, kw.pop("name", "child"), base="main", profile="core",
         shared_infra="primary-ref",
         shared_infra_services="api",
@@ -1514,7 +1520,7 @@ class TestRefServicesBackwardCompatibility:
         )
         monkeypatch.setattr(worktree.procutil, "docker", without)
 
-        target = worktree.add(
+        target = create_path(
             tmp_repo, "child", base="main", profile="core",
             shared_infra="primary-ref",
             shared_infra_services="api",
@@ -1539,17 +1545,18 @@ class TestRefServicesBackwardCompatibility:
             'ref_projects = ["idp-dev-idp"]\n'
         )
         # The identity facts landed in their own file, in full, unchanged.
-        assert (target / "ciu.instance.generated.toml").read_text(
-            encoding="utf-8"
-        ).endswith(
-            "[ciu.instance.generated]\n"
-            'repo_name = "repo"\n'
-            f'instance_id = "{hashlib.sha256(str(target).encode()).hexdigest()[:6]}"\n'
-            f'network = "{_network_for(target)}"\n'
-            f'physical_repo_root = "{target}"\n'
-            f'repo_root = "{target}"\n'
-            'public_fqdn = ""\n'
-        )
+        generated = tomllib.loads(
+            (target / "ciu.instance.generated.toml").read_text(encoding="utf-8")
+        )["ciu"]["instance"]["generated"]
+        assert generated == {
+            "schema_version": 2,
+            "repo_name": "repo",
+            "instance_id": hashlib.sha256(str(target).encode()).hexdigest()[:6],
+            "network": _network_for(target),
+            "physical_repo_root": str(target),
+            "repo_root": str(target),
+            "public_fqdn": "",
+        }
         assert without.calls == [
             ["network", "inspect", ref_network],
             [
@@ -1747,7 +1754,7 @@ class TestRefServicesGrammarRefusals:
         monkeypatch.setattr(worktree.procutil, "docker", fake)
 
         with pytest.raises(worktree.WorktreeError, match="partial group"):
-            worktree.add(
+            create_path(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra_ref_services="vault",
             )
@@ -1902,7 +1909,7 @@ class TestRefServicesJoinTimeReverification:
         message = str(exc_info.value)
         assert "recorded reference container" in message
         assert REF_VAULT in message and C_VAULT in message
-        assert "re-run `ciu worktree add --shared-infra`" in message
+        assert "re-run `ciu worktree create --shared-infra`" in message
         assert [c for c in fake.calls if c[:2] == ["network", "connect"]] == []
         # and never even reached this instance's own target discovery
         assert not any(_is_service_ps(c, COMPOSE_PROJECT, "api") for c in fake.calls)

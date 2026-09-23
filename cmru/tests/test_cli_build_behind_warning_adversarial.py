@@ -16,6 +16,11 @@ def test_build_warns_when_local_main_is_behind_but_uses_fetched_origin(monkeypat
     retained = [tmp_path / "demo" / "artifacts" / "build-id"]
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
@@ -29,10 +34,13 @@ def test_build_warns_when_local_main_is_behind_but_uses_fetched_origin(monkeypat
     monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
     with pytest.raises(SystemExit) as exc:
-        cli.main(["build", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])
+        cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 0
     assert child
-    assert workspace_args == {"base": "b" * 40, "purpose": "build", "scope": "demo"}
+    assert workspace_args == {
+        "base": "b" * 40, "purpose": "build", "scope": "demo",
+        "source_git_root": tmp_path,
+    }
     output = capsys.readouterr().out
     assert "2 commit(s) behind origin/main" in output
     assert "uses fetched origin/main bbbbbbbbbbbb" in output

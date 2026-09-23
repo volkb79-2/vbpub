@@ -121,7 +121,7 @@ tls-edge/
 
   ARCHITECTURE.md             ← design rationale, tradeoffs, rejected alternatives
   CONSUMER_GUIDE.md           ← onboarding guide for service teams
-  KNOWN_ISSUES.md             ← current limitations and roadmap
+  KNOWN_ISSUES_TODO_BACKLOG.md             ← current limitations and roadmap
 ```
 
 ---
@@ -446,4 +446,4 @@ The tarball contains a single top-level directory `tls-edge-v<ver>/` so
   future options.
 - **CONSUMER_GUIDE.md** — step-by-step onboarding for service teams: label
   reference, consumer patterns (A/B/C), verification commands.
-- **KNOWN_ISSUES.md** — current limitations, workarounds, and roadmap items.
+- **KNOWN_ISSUES_TODO_BACKLOG.md** — current limitations, workarounds, and roadmap items.

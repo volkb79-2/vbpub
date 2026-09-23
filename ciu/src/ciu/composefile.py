@@ -1247,7 +1247,12 @@ def generate_overlay(
                 # is the explicit form. A cached artifact is reused (and still
                 # re-verified), so this is a no-op after the first render.
                 from . import ksm as ksm_mod
-                base = repo_root or Path(os.environ.get("REPO_ROOT", Path.cwd()))
+                if repo_root is None:
+                    raise ValueError(
+                        "repo_root is required for the builtin KSM source; "
+                        "resolve the CIU root before rendering"
+                    )
+                base = repo_root
                 # physical_root=None is the NORMAL call shape (engine.py passes
                 # it that way): to_physical_path resolves it from the
                 # environment. Resolve it the same way rather than refusing —
@@ -1276,7 +1281,12 @@ def generate_overlay(
             elif ksm_rel:
                 ksm_path = Path(ksm_rel)
                 if not ksm_path.is_absolute():
-                    base = repo_root or Path(os.environ.get("REPO_ROOT", Path.cwd()))
+                    if repo_root is None:
+                        raise ValueError(
+                            "repo_root is required for a relative KSM source; "
+                            "resolve the CIU root before rendering"
+                        )
+                    base = repo_root
                     ksm_path = base / ksm_path
                 physical_ksm_path = to_physical_path(
                     ksm_path, repo_root=repo_root, physical_root=physical_root

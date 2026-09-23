@@ -20,7 +20,7 @@ def test_worktrees_existing_release_prints_resume_command(monkeypatch, tmp_path,
     config.write_text("", encoding="utf-8")
     retained = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/abc", "a" * 40)
     retained.path.mkdir()
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"))
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [retained])
     cli.main(["worktrees"])
     output = capsys.readouterr().out

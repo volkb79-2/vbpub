@@ -71,14 +71,14 @@ architecture = "docs/ARCHITECTURE.md"
 # docker/mounts/cgroup/detached-run incantation that lived in this argv is now
 # TESTED CODE (run-gate-project/, see its SPEC.md; adoption contract in its
 # CONSUMERS.md). This entry is scheduling policy only.
-# Cgroup (controller A3): the slice resolves at run time from
-# $CGROUP_PARENT_DEV_BACKGROUND via run-gate.py — the hardcoded
+# Cgroup (controller A3): the gate slice resolves at run time from
+# $CGROUP_PARENT_DEV_GATES via run-gate.py — the hardcoded
 # `nyxloom-gates.slice` literal was intended for a future PROD instance
 # outside this repo, not for dev gates here. Its measured IO/CPU policy
 # (infra/slices/) travels with that prod deployment.
 # SSOT pointer (D-110/D-111): all test definitions live in
 # nyxloom/run-gate.toml; this entry owns only scheduling policy.
-# run-gate resolves the slice from $CGROUP_PARENT_DEV_BACKGROUND,
+# run-gate resolves the gate slice from $CGROUP_PARENT_DEV_GATES,
 # dual-mounts the repo, and runs the source-backed assay lane
 # (assay.toml [lanes.tester-unified]) in tester-unified. NL-1 landed
 # 2026-09-02 (nyxloom-P48): judgment moved off `nyxloom.coverage_gate`.

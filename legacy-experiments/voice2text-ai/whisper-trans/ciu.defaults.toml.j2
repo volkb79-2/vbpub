@@ -1,0 +1,51 @@
+# ============================================================================
+# WHISPER TRANSCRIPTION SERVICE - PROJECT-SPECIFIC CONFIGURATION
+# This section contains ONLY project-specific settings.
+# Shared defaults are inherited from ../ciu-global.defaults.toml.j2.
+# ============================================================================
+
+[compinit]
+enable_env_expansion = true
+
+# ============================================================================
+# WHISPER SERVICE CONFIGURATION
+# ============================================================================
+
+[whisper]
+# Whisper service configuration
+port = 9000
+asr_engine = "faster_whisper"
+asr_model = "base"
+asr_device = "cpu"
+asr_model_path = "/data/whisper"
+omp_num_threads = "7"
+openblas_num_threads = "7"
+mkl_num_threads = "7"
+sample_rate = "16000"
+model_quantization = "float32"
+enable_post_processing = false
+min_text_length = "10"
+post_processing_prompt_path = "/config/post-processing-prompt.txt"
+post_processing_model = "gpt-4o-mini"
+resource_memory_limit = "12G"
+resource_cpu_limit = "4"
+
+# Volume host directories
+[whisper.hostdir]
+cache = ""  # Empty = auto-generates ./vol-whisper-cache
+audio_temp = ""  # Empty = auto-generates ./vol-whisper-audio-temp
+
+# ==========================================================================
+# HOOKS
+# ==========================================================================
+
+[hooks]
+pre_compose = []
+post_compose = []
+
+# ==========================================================================
+# ENVIRONMENT VARIABLES (Flat structure - no nesting)
+# ==========================================================================
+
+[env]
+# Auto-detection of UID/GID handled by global config
