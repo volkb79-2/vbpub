@@ -3799,3 +3799,22 @@ records `exit_code=0`, `dirty=false`, and the same tree. Tester container
 `upbeat_elbakyan` ran under `dev-gates.slice` at 3 CPUs; it exited and was
 removed by the lane. Host memory PSI `full avg10=0.00`; the slot was free at
 the follow-up check. P6 `r3` is next; no mutation or merge has started.
+
+### RW-307 — 2026-09-23 19:08:43Z — P6 `r3` green; version identity needs resolution
+
+P6's registered `r3` canary lane passed on quiet tree
+`4392bece345d828e88f25f2b13cd7b239f7d711a`: all 7 canaries were rejected,
+zero survived, and run-gate reported exit 0. The final detached gate
+container was `run-gate-vbpub-r3-1174471-1790190183`, under
+`dev-gates.slice`; its 10-second health receipt records `cpus=3000000000`
+while running. The container and runner had exited by the subsequent check;
+memory PSI `full avg10=0.00` and the slot is free. The earlier `r0-r1` and
+`r3` receipts are for this exact pre-reconciliation P6 tree, not evidence for
+any later tree.
+
+The controller review found that CMRU's OCI release coordinate (planned
+1.1.0) is injected into image tags/labels, while `lib/serve.py` still
+hardcodes `CGPROFILE_VERSION = "1.0.0"` and the CLI reports the separate
+`pyproject.toml` version `0.1.0`. Before P6 release, resolve whether this
+separation is intentional under the frozen contract; if not, propagate the
+release coordinate to the running daemon's self-description and test it.
