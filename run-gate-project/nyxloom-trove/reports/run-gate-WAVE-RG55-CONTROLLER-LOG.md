@@ -3595,3 +3595,16 @@ After a fresh PSI check (`full avg10=0`) and an empty gate slot, the controller
 re-launched `r0-r1` from that quiet tree with disowned wrapper PID `354688`,
 authoritative log `/tmp/rg55-p1-r01-20260923.log`, and a single disowned
 20-minute continuation PID `355510`. No mutation verdict is claimed yet.
+
+### RW-292 — 2026-09-23 08:27:42Z — replace reaped background wrappers with PTY carrier
+
+The supposedly disowned replacement wrappers were independently verified as
+reaped immediately: their logs remained zero bytes, no child exit markers were
+written, and no RG-55 container existed. Those launches are therefore
+inconclusive and are not gate failures. The host preflight again found memory
+PSI `full avg10=0` and an empty gate slot. The controller started the fresh P1
+`r0-r1` command in tool-managed PTY session `77256` from quiet tree
+`32ec2b3d`; the session printed rev 46, the selected lane, its 20-minute
+budget, and PSI `full avg10=0.14%`. Its child marker will be written to
+`/tmp/rg55-p1-r01-pty-20260923.log` on completion. No mutation launch is
+authorized until that marker is read separately and reports PASS.
