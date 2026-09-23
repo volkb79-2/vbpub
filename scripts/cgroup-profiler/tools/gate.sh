@@ -112,10 +112,12 @@ injected by devcontainer.json). Refusing to launch unplaced beside production
 # a configured slice has a directory, a typo has nothing.
 #
 # The probe itself must be placed too — "any container you start is placed" has
-# no exception for a one-second `ls`. It cannot use the slice it is validating
-# (that is the question), so it borrows the interactive tier, which is
-# known-good because this process is already running in it.
-probe_parent="${CGROUP_PARENT_DEV_INTERACTIVE:-$parent}"
+# no exception for a one-second probe. It cannot use the slice it is
+# validating (that is the question), so it borrows the explicitly injected
+# interactive tier. Falling back to the target under validation would let a
+# missing trusted tier create the very cgroup path the probe then certifies.
+probe_parent="${CGROUP_PARENT_DEV_INTERACTIVE:-}"
+[ -n "$probe_parent" ] || die "no trusted probe parent resolvable. Set \$CGROUP_PARENT_DEV_INTERACTIVE; refusing to validate a slice from inside itself."
 probe_name="cgprofile-gate-probe-$$-$(date +%s)"
 printf 'gate: placement probe container=%s parent=%s\n' "$probe_name" "$probe_parent"
 probe_cid="$(docker run -d --name "$probe_name" \
