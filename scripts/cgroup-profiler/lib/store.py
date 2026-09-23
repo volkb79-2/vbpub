@@ -190,17 +190,23 @@ class RunDir:
                     continue
 
     def write_manifest(self, obj: Dict) -> None:
-        """Write ``manifest.json`` atomically: tmp file + ``os.replace``.
+        """Write ``manifest.json`` atomically — see :meth:`write_json`, which
+        this is a thin, name-fixed wrapper around."""
+        self.write_json("manifest.json", obj)
 
-        Unlike the streams, the manifest is rewritten wholesale a handful of
-        times per run (not appended once per sample), so there is no reason
-        to accept a partially-written read of it the way ``read()`` tolerates
-        a torn line — instead a reader (``analyze.py`` running concurrently,
-        a human ``cat``) only ever observes the previous complete manifest or
-        the new complete one, because ``os.replace`` is a single rename on
-        the same filesystem.
+    def write_json(self, name: str, obj: Dict) -> None:
+        """Write ``name`` (e.g. ``manifest.json``, ``summary.json``)
+        atomically: tmp file + ``os.replace``.
+
+        Unlike the streams, a whole-object file like this is rewritten
+        wholesale a handful of times per run (not appended once per sample),
+        so there is no reason to accept a partially-written read of it the
+        way ``read()`` tolerates a torn line — instead a reader
+        (``analyze.py`` running concurrently, a human ``cat``) only ever
+        observes the previous complete file or the new complete one, because
+        ``os.replace`` is a single rename on the same filesystem.
         """
-        path = self.stream_path("manifest.json")
+        path = self.stream_path(name)
         tmp = f"{path}.tmp-{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(obj, fh, indent=2, sort_keys=True)

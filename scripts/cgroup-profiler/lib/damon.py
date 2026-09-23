@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import signal
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -174,6 +175,169 @@ def _read_nr_kdamonds() -> Optional[int]:
         return None
 
 
+class HostWriteError(RuntimeError):
+    """Raised when this module is about to write outside the one host
+    location it is allowed to mutate: the DAMON admin sysfs root
+    (RG-55 C4's ``WRITABLE_ROOTS`` boundary — the other half lives in
+    ``lib.serve``, guarding the sessions directory).
+
+    Every real mutation this module performs — creating a kdamond, a
+    context, a target, a scheme, turning a kdamond on/off — is delegated to
+    ``SysfsInterface`` (a sibling library this module does not own, and does
+    not re-guard: it never writes anywhere but under ``KDAMONDS_DIR`` by
+    construction). The one write this module issues directly is
+    ``nr_kdamonds`` itself, in :func:`_write_nr_kdamonds` below — and that is
+    the write this guard exists for.
+    """
+
+
+def _write_nr_kdamonds(value: int) -> None:
+    """The one raw sysfs write this module performs directly, checked
+    against the DAMON admin root before it happens.
+
+    ``admin_root`` is derived from ``KDAMONDS_DIR`` itself (its parent
+    directory) rather than hardcoded, so a test that monkeypatches
+    ``damon.KDAMONDS_DIR`` to a fake tree is guarded against exactly that
+    fake tree, and the real daemon is guarded against the real
+    ``/sys/kernel/mm/damon/admin``. ``os.path.realpath`` on both sides means
+    a symlink planted at (or above) ``KDAMONDS_DIR`` cannot smuggle this
+    write outside the intended root.
+    """
+    path = os.path.join(KDAMONDS_DIR, "nr_kdamonds")
+    admin_root = os.path.realpath(os.path.dirname(KDAMONDS_DIR))
+    if not os.path.realpath(path).startswith(admin_root + os.sep):
+        raise HostWriteError(
+            f"refusing to write outside the DAMON admin root ({admin_root!r}): {path!r}"
+        )
+    SysfsInterface._write_int(path, value)
+
+
+class KdamondPool:
+    """Owns ``nr_kdamonds`` across every concurrent :class:`DamonSession`
+    (RG-55 C3 — DAMON multiplexing).
+
+    A bare ``DamonSession`` captures "what ``nr_kdamonds`` was before me"
+    once, at its own ``__enter__``, and restores exactly that at its own
+    ``__exit__`` — correct for exactly one session at a time, and provably
+    wrong for two: a second session's acquire grows ``nr_kdamonds`` further,
+    so the first session's "before me" snapshot is now stale, and its
+    teardown writes ``nr_kdamonds`` back down past the second session's
+    still-live, higher index, tearing that kdamond down from underneath it
+    (writing ``nr_kdamonds`` down is documented, both here and in
+    ``damon_analysis``, as tearing down every kdamond dir above the new
+    count). A daemon that runs more than one profiling session at a time
+    (``lib.serve``) must therefore route every session through ONE shared
+    pool rather than let each session manage the counter itself.
+
+    Allocation is the lowest free index *created by this pool*. The pool's
+    baseline is an ownership boundary: indices below it already existed and
+    are foreign, so they are never configured, turned on/off, released, or
+    removed by this class. Freeing an index never touches ``nr_kdamonds``
+    while any OTHER index is still live. Only once every index the pool
+    handed out has been freed does it shrink ``nr_kdamonds`` back to the
+    value it first observed before any of its own sessions existed — and only
+    when no outside growth was observed. An unreadable baseline is a refusal,
+    not permission to invent index zero.
+    """
+
+    def __init__(self) -> None:
+        self._live: set = set()
+        self._owned: set = set()
+        self._free: set = set()
+        self._baseline: Optional[int] = None
+        self._foreign_growth = False
+        self._lock = threading.RLock()
+
+    def acquire(self) -> int:
+        """Claim the lowest free kdamond index and return it. Propagates
+        whatever :func:`SysfsInterface.create_kdamond` raises (a real sysfs
+        write failure) rather than swallowing it — the caller
+        (``DamonSession.__enter__``) already has the tear-down-on-exception
+        discipline for that."""
+        with self._lock:
+            if self._baseline is None:
+                baseline = _read_nr_kdamonds()
+                if baseline is None or baseline < 0:
+                    raise DamonSessionError(
+                        "cannot determine nr_kdamonds baseline; refusing to claim a slot"
+                    )
+                self._baseline = baseline
+
+            baseline = self._baseline
+            if self._free:
+                idx = min(self._free)
+                current = _read_nr_kdamonds()
+                if current is None or current <= idx:
+                    raise DamonSessionError(
+                        f"cannot prove pool-owned kdamond slot {idx} still exists"
+                    )
+                expected_end = max(self._owned, default=baseline - 1) + 1
+                if current > expected_end:
+                    self._foreign_growth = True
+            else:
+                # ``current`` is the first index that did not exist at the
+                # pool baseline. If another owner grew the shared counter,
+                # skip all of those indices rather than treating one as ours.
+                idx = max(self._owned, default=baseline - 1) + 1
+                current = _read_nr_kdamonds()
+                if current is None or current < idx:
+                    raise DamonSessionError(
+                        f"cannot prove fresh kdamond slot {idx} from nr_kdamonds"
+                    )
+                if current > idx:
+                    self._foreign_growth = True
+                    idx = current
+
+            try:
+                SysfsInterface.create_kdamond(idx)
+            except Exception:
+                # Nothing has been added to the ownership sets, so a failed
+                # create cannot cause the session to stop a placeholder slot.
+                raise
+
+            self._owned.add(idx)
+            self._free.discard(idx)
+            self._live.add(idx)
+            return idx
+
+    def release(self, idx: int) -> None:
+        """Free ``idx`` back to the pool. Never raises — this runs from the
+        same teardown paths (normal exit, mid-exception, signal handler,
+        reentrant signal handler) as ``DamonSession._teardown`` itself, and
+        none of those may fail because releasing a slot failed."""
+        with self._lock:
+            if idx not in self._live:
+                return
+            self._live.remove(idx)
+            self._free.add(idx)
+            if self._live:
+                return
+            baseline = self._baseline
+            try:
+                current = _read_nr_kdamonds() if baseline is not None else None
+                expected_end = max(self._owned, default=baseline - 1) + 1 if baseline is not None else None
+                if (
+                    baseline is not None
+                    and not self._foreign_growth
+                    and current is not None
+                    and expected_end is not None
+                    and current == expected_end
+                    and current > baseline
+                ):
+                    _write_nr_kdamonds(baseline)
+            except Exception:
+                pass
+            finally:
+                self._baseline = None
+                self._owned.clear()
+                self._free.clear()
+                self._foreign_growth = False
+
+    @property
+    def live_indices(self) -> frozenset:
+        return frozenset(self._live)
+
+
 class DamonSession:
     """One DAMON monitoring session, scoped to a ``with`` block.
 
@@ -189,6 +353,11 @@ class DamonSession:
         sample_us: int = 100_000,
         aggr_us: int = 2_000_000,
         kdamond_idx: int = 0,
+        pool: Optional["KdamondPool"] = None,
+        hot_rate_pct: float = 50.0,
+        warm_rate_pct: float = 5.0,
+        cold_age_sec: float = 30.0,
+        idle_age_sec: float = 120.0,
     ):
         if not targets:
             raise ValueError("DamonSession needs at least one target")
@@ -208,14 +377,47 @@ class DamonSession:
         self.sample_us = sample_us
         self.aggr_us = aggr_us
         self.kdamond_idx = kdamond_idx
+        self.pool = pool
         self.update_us = aggr_us * 20
         self._ctx_idx = 0
         self._scheme_idx = 0
         self._prev_nr_kdamonds: Optional[int] = None
+        self._acquired_from_pool = False
+        self._owns_kdamond = False
         self._prev_handlers: Dict[int, Any] = {}
         self._torn_down = True   # nothing to tear down until __enter__ acquires it
         self._entered = False
         self.last_summary: Dict[str, Any] = {}
+        self._hot_rate_pct = hot_rate_pct
+        self._warm_rate_pct = warm_rate_pct
+        self._cold_age_sec = cold_age_sec
+        self._idle_age_sec = idle_age_sec
+        self._classifier: Any = None
+
+    @property
+    def thresholds(self) -> Dict[str, float]:
+        """Contract §3 ``damon.thresholds`` — this session's classifier
+        cutoffs, in the units the summary reports them (seconds, not the
+        microseconds ``Classifier`` itself takes internally)."""
+        return {
+            "hot_rate_pct": self._hot_rate_pct,
+            "warm_rate_pct": self._warm_rate_pct,
+            "cold_age_s": self._cold_age_sec,
+            "idle_age_s": self._idle_age_sec,
+        }
+
+    @property
+    def last_class_bytes(self) -> Dict[str, int]:
+        """The last :meth:`collect` rollup reshaped to the flat
+        ``{"hot": bytes, "warm": bytes, "cold": bytes, "idle": bytes}`` dict
+        ``SummaryAccumulator.add_sample(damon=...)`` consumes per aggregation
+        interval (contract §3; see ``lib/summary.py``'s module docstring).
+        Zero, not missing, for a class with no regions yet — a session that
+        has collected at least once always has all four keys."""
+        return {
+            cls: self.last_summary.get(cls, {}).get("bytes", 0)
+            for cls in ("hot", "warm", "cold", "idle")
+        }
 
     def __enter__(self) -> "DamonSession":
         if not available():
@@ -226,9 +428,30 @@ class DamonSession:
             )
         self._prev_handlers = _install_signal_teardown(self._teardown)
         self._torn_down = False
+        self._classifier = Classifier(
+            hot_access_rate_pct=self._hot_rate_pct,
+            warm_access_rate_pct=self._warm_rate_pct,
+            cold_age_sec=self._cold_age_sec,
+            idle_age_sec=self._idle_age_sec,
+        )
         try:
-            self._prev_nr_kdamonds = _read_nr_kdamonds()
-            SysfsInterface.create_kdamond(self.kdamond_idx)
+            if self.pool is not None:
+                self.kdamond_idx = self.pool.acquire()
+                self._acquired_from_pool = True
+                self._owns_kdamond = True
+            else:
+                self._prev_nr_kdamonds = _read_nr_kdamonds()
+                if self._prev_nr_kdamonds is None:
+                    raise DamonSessionError(
+                        "cannot determine nr_kdamonds baseline; refusing to claim a slot"
+                    )
+                if self.kdamond_idx != self._prev_nr_kdamonds:
+                    raise DamonSessionError(
+                        f"refusing to claim foreign kdamond slot {self.kdamond_idx}; "
+                        f"fresh slot is {self._prev_nr_kdamonds}"
+                    )
+                SysfsInterface.create_kdamond(self.kdamond_idx)
+                self._owns_kdamond = True
             SysfsInterface.create_context(self.kdamond_idx, self._ctx_idx)
             SysfsInterface.set_operations(self.kdamond_idx, self._ctx_idx, self.targets[0].kind)
             SysfsInterface.set_intervals(
@@ -254,10 +477,26 @@ class DamonSession:
             )
             SysfsInterface.kdamond_commit(self.kdamond_idx)
             SysfsInterface.kdamond_on(self.kdamond_idx)
-        except Exception:
+        except Exception as exc:
             self._teardown()
             _restore_signal_handlers(self._prev_handlers)
-            raise
+            if isinstance(exc, DamonSessionError):
+                raise
+            # RG-55 live acceptance (2026-09-12): `SysfsInterface`'s own
+            # writes raise plain `OSError` (verified live —
+            # `kdamond_commit` -> EINVAL, a kernel DAMON context this host
+            # cannot actually commit despite `available()` reporting the
+            # sysfs tree present and writable). A bare `raise` here left
+            # that as an untranslated OSError, which `_create_session_locked`
+            # 's own `except damon_mod.DamonSessionError` never catches —
+            # it propagated all the way out of the socket dispatch loop and
+            # killed the WHOLE daemon process (every other live session
+            # with it), not just this one `start` call. The contract's own
+            # promise (§2.2: "an unavailable DAMON never fails start") only
+            # holds if every failure mode reaching this method surfaces as
+            # `DamonSessionError` — wrap whatever else comes through
+            # `SysfsInterface`, never let a foreign exception type escape.
+            raise DamonSessionError(f"{type(exc).__name__}: {exc}") from exc
         self._entered = True
         return self
 
@@ -275,10 +514,44 @@ class DamonSession:
             raise DamonSessionError("collect() called outside the session's `with` block")
         SysfsInterface.kdamond_update_tried_regions(self.kdamond_idx)
         regions = SysfsInterface.read_tried_regions(self.kdamond_idx, self._ctx_idx, self._scheme_idx)
-        classifier = Classifier()
-        classified = classifier.classify_regions(regions, self.sample_us, self.aggr_us)
-        self.last_summary = classifier.summary(classified)
+        classified = self._classifier.classify_regions(regions, self.sample_us, self.aggr_us)
+        self.last_summary = self._classifier.summary(classified)
         return classified
+
+    def recommit_targets(self, pids: List[int]) -> None:
+        """Re-point this session's vaddr targets at a newly-discovered pid
+        set without tearing the kdamond down, for a subtree
+        (``lib.subtree.SubtreeResolver``) whose membership changes mid-session.
+
+        A no-op when ``pids`` is empty: an empty target list is not valid
+        DAMON input (construction itself refuses it), and a momentary gap in
+        a fast-moving subtree — a process forking, its parent already gone —
+        is exactly the transient this must ride out rather than tear
+        monitoring down over. Growing the target count re-uses
+        ``create_target``'s own idempotent grow-only behaviour (the same
+        pattern ``nr_kdamonds`` uses); a target count that shrinks leaves the
+        now-unused higher-indexed target dirs in place rather than attempt
+        to shrink ``nr_targets`` — by the same "shrinking tears down every
+        dir above the new count" reasoning ``nr_kdamonds`` documents, and
+        there is no shrink primitive exposed for it in any case. A stale
+        higher target simply stops accumulating meaningful accesses once its
+        pid exits; it never produces wrong data for the pids still current.
+        """
+        if not self._entered:
+            raise DamonSessionError(
+                "recommit_targets() called outside the session's `with` block"
+            )
+        if self.targets[0].kind != "vaddr":
+            raise DamonSessionError("recommit_targets() only applies to vaddr sessions")
+        if not pids:
+            return
+        for index, pid in enumerate(pids):
+            SysfsInterface.create_target(self.kdamond_idx, self._ctx_idx, index)
+            SysfsInterface.set_pid_target(self.kdamond_idx, self._ctx_idx, index, pid)
+        SysfsInterface.kdamond_commit(self.kdamond_idx)
+        self.targets = [
+            DamonTarget(kind="vaddr", pid=pid, label=str(pid)) for pid in pids
+        ]
 
     def _teardown(self) -> None:
         """Idempotent by design: called from ``__exit__``, from the exception
@@ -301,25 +574,36 @@ class DamonSession:
         """
         if self._torn_down:
             return
-        try:
-            SysfsInterface.kdamond_off(self.kdamond_idx)
-        except Exception:
-            pass
-        prev = self._prev_nr_kdamonds
-        if prev is not None:
+        if self._owns_kdamond:
             try:
-                current = _read_nr_kdamonds()
-                if current is not None and current > prev:
-                    # Shrink back to exactly what was there before this
-                    # session — verified on this host that writing
-                    # nr_kdamonds back down tears the higher-indexed kdamond
-                    # dir(s) down. Restoring the prior count rather than
-                    # unconditionally writing 0 means a kdamond some other
-                    # process already owned before we started is left
-                    # running, never destroyed out from under it.
-                    SysfsInterface._write_int(os.path.join(KDAMONDS_DIR, "nr_kdamonds"), prev)
+                SysfsInterface.kdamond_off(self.kdamond_idx)
             except Exception:
                 pass
+        if self.pool is not None:
+            # A shared pool: release is a no-op unless this session actually
+            # acquired an index from it (acquire() can fail mid-__enter__,
+            # e.g. a sysfs write error, before ever adding this index to the
+            # pool's live set — nothing to release in that case, and calling
+            # release() with the constructor's placeholder index would risk
+            # freeing an unrelated session that happens to share it).
+            if self._acquired_from_pool:
+                self.pool.release(self.kdamond_idx)
+        elif self._owns_kdamond:
+            prev = self._prev_nr_kdamonds
+            if prev is not None:
+                try:
+                    current = _read_nr_kdamonds()
+                    if current is not None and current > prev:
+                        # Shrink back to exactly what was there before this
+                        # session — verified on this host that writing
+                        # nr_kdamonds back down tears the higher-indexed kdamond
+                        # dir(s) down. Restoring the prior count rather than
+                        # unconditionally writing 0 means a kdamond some other
+                        # process already owned before we started is left
+                        # running, never destroyed out from under it.
+                        _write_nr_kdamonds(prev)
+                except Exception:
+                    pass
         self._torn_down = True
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:

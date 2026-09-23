@@ -30,12 +30,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import tomllib
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -72,6 +74,15 @@ class CgprofileArgumentParser(argparse.ArgumentParser):
         self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
         self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
         self.exit(2)
+
+# RG55-INTERFACE-CONTRACT.md §1.8 — kept as literals here (rather than
+# imported from lib.serve) so `build_parser()` never has to import that
+# module just to read a default; `lib.serve.DEFAULT_SOCKET_PATH` /
+# `DEFAULT_SESSIONS_DIR` are the same two values (a test asserts the two
+# stay in sync, the same "drift guard, not a second source of truth" shape
+# `pyproject.toml`'s own header comment already uses for its lock file).
+DEFAULT_CTL_SOCKET = "/run/cgprofile/ctl.sock"
+DEFAULT_CGPROFILE_SESSIONS = "/var/lib/cgprofile/sessions"
 
 
 # ── small helpers ───────────────────────────────────────────────────────────
@@ -708,7 +719,7 @@ def cmd_targets(args: argparse.Namespace) -> int:
     if mode == "helper":
         _note("resolving through a helper container (no host cgroup view here)")
         specs = _tag_role(_predigest_specs(args.target), "subject")
-        spec = access.build_helper_spec(HERE, HERE, args.helper_image,
+        spec = access.build_helper_spec(HERE, DEFAULT_OUT, args.helper_image,
                                        getattr(args, "helper_cgroup_parent", None))
         command = [access.docker_bin(), *spec.docker_args(), "python3",
                    os.path.join(HERE, "cgprofile.py"), "targets", "--mode", "direct"]
@@ -776,6 +787,270 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(f"  helper unavailable   {exc}")
             return 1
     return 0
+
+
+# ── daemon side: `serve` / `ctl` (RG55-INTERFACE-CONTRACT.md) ───────────────
+#
+# Both verbs are COLLECTOR tier (DESIGN.md §1: stdlib only) — `lib.serve`
+# imports nothing beyond this package's own stdlib-only modules, so both
+# `cmd_serve` and `cmd_ctl` run on the bare system python3, exactly the
+# split the `cgprofile` bash shim's own header comment already draws
+# between `_collect`/`mark` (system python) and everything else (the venv).
+# `ctl report` is the one exception threaded through: `lib.serve.
+# SessionServer.handle_report` itself shells out to the venv (RW-14) so this
+# CLI layer needs no special-casing for it at all — it is just another verb.
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the profiling daemon. Refuses `--cap` structurally (this parser
+    defines no such flag — see build_parser()'s `serve_parser`) and refuses
+    to start at all without the host's own cgroup v2 view, since a
+    namespaced view cannot see the containers run-gate wants profiled
+    (RG55-INTERFACE-CONTRACT.md §5).
+    """
+    if not access.have_host_cgroup_view(access.CGROUP_ROOT):
+        _err(
+            "serve needs the host's cgroup v2 view, not a namespaced subtree — "
+            "run this container with --privileged --cgroupns=host --pid=host "
+            "(RG55-INTERFACE-CONTRACT.md §5)"
+        )
+    from lib import serve as serve_mod
+
+    observe_slices = tuple(
+        name for name in (s.strip() for s in args.observe_slices.split(",")) if name
+    ) if args.observe_slices else ()
+    server = serve_mod.SessionServer(
+        sessions_dir=args.sessions,
+        socket_path=args.socket,
+        damon_default=args.damon_default,
+        interval=args.interval,
+        keep_sessions=args.keep_sessions,
+        keep_days=args.keep_days,
+        observe_slices=observe_slices,
+        max_sessions=args.max_sessions,
+    )
+    server.serve_forever()
+    return 0
+
+
+def _ctl_request(args: argparse.Namespace) -> Dict[str, Any]:
+    """Build the wire request for `args.verb` — RG55-INTERFACE-CONTRACT.md
+    §2's own field names, kept close enough to the CLI flag names that no
+    translation table is needed to audit one against the other. A malformed
+    `--meta` is a client-side argument error (never reaches the socket),
+    handled the same way every other bad argument in this file is:
+    `_err()`, stderr + exit 2.
+    """
+    if args.verb == "start":
+        try:
+            meta = json.loads(args.meta)
+        except json.JSONDecodeError as exc:
+            _err(f"--meta must be valid JSON: {exc}")
+        if not isinstance(meta, dict):
+            _err("--meta must be a JSON object")
+        return {
+            "verb": "start", "target": args.target, "scope": args.scope,
+            "token": args.token, "damon": args.damon, "interval": args.interval,
+            "meta": meta,
+        }
+    if args.verb == "status":
+        return {"verb": "status", "session": args.session}
+    if args.verb == "stop":
+        return {"verb": "stop", "session": args.session}
+    if args.verb == "report":
+        return {"verb": "report", "session": args.session}
+    # "version", "host", "gc" — every other verb takes no arguments at all.
+    return {"verb": args.verb}
+
+
+def _ctl_roundtrip(socket_path: str, req: Dict[str, Any], timeout: float = 25.0) -> Any:
+    """One request, one line in, one line out, over `socket_path`
+    (RG55-INTERFACE-CONTRACT.md §1.1/§1.5's own 25 s client-side budget,
+    distinct from run-gate's own `subprocess.run(timeout=)` on the `ctl`
+    process itself). Raises `OSError` (connect refused, timeout) or
+    `ValueError` (empty/unparsable response) — `cmd_ctl` treats both the
+    same way: a daemon fault, contract exit code 3.
+    """
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(timeout)
+        client.connect(socket_path)
+        client.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    if not data.strip():
+        raise ValueError("empty response from daemon")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"malformed response: {exc}") from exc
+
+
+def _validate_ctl_response(verb: str, resp: Any) -> None:
+    """Validate the complete response shape before the CLI accepts it.
+
+    A socket peer can be reachable and still be an incompatible daemon, a
+    proxy, or a stale test double. Treating any JSON object with a truthy
+    ``ok`` member as success would print false evidence and can turn a
+    protocol mismatch into a successful controller lane. The validator keeps
+    contract-major and verb-specific checks in one client-side gate.
+    """
+    if not isinstance(resp, dict):
+        raise ValueError("invalid response: expected a JSON object")
+    if type(resp.get("contract")) is not int or resp["contract"] != 1:
+        raise ValueError("invalid response: unsupported contract major")
+    if type(resp.get("ok")) is not bool:
+        raise ValueError("invalid response: missing boolean ok")
+    if not resp["ok"]:
+        error = resp.get("error")
+        if (
+            not isinstance(error, dict)
+            or not isinstance(error.get("code"), str)
+            or not error["code"]
+            or not isinstance(error.get("message"), str)
+        ):
+            raise ValueError("invalid response: error must contain code and message")
+        return
+
+    def require(*keys: str) -> None:
+        missing = [key for key in keys if key not in resp]
+        if missing:
+            raise ValueError(f"invalid response: {verb} missing {', '.join(missing)}")
+
+    def object_at(key: str) -> Dict[str, Any]:
+        value = resp.get(key)
+        if not isinstance(value, dict):
+            raise ValueError(f"invalid response: {verb}.{key} must be an object")
+        return value
+
+    def string_at(obj: Dict[str, Any], key: str) -> None:
+        if not isinstance(obj.get(key), str) or not obj[key]:
+            raise ValueError(f"invalid response: {verb}.{key} must be a non-empty string")
+
+    def host_at(key: str) -> None:
+        host = object_at(key)
+        for required in ("at", "loadavg", "meminfo", "pressure", "slices"):
+            if required not in host:
+                raise ValueError(f"invalid response: {verb}.{key} missing {required}")
+        string_at(host, "at")
+        if not isinstance(host["loadavg"], (list, type(None))):
+            raise ValueError(f"invalid response: {verb}.{key}.loadavg must be a list or null")
+        if not isinstance(host["meminfo"], dict) or not isinstance(host["pressure"], dict):
+            raise ValueError(f"invalid response: {verb}.{key} has invalid metrics objects")
+        if not isinstance(host["slices"], dict):
+            raise ValueError(f"invalid response: {verb}.{key}.slices must be an object")
+
+    def status_entry_at(entry: Dict[str, Any]) -> None:
+        for required in ("session", "started_at", "scope", "elapsed_seconds", "target", "meta", "live"):
+            if required not in entry:
+                raise ValueError(f"invalid response: {verb}.session entry missing {required}")
+        string_at(entry, "session")
+        string_at(entry, "started_at")
+        if entry["scope"] not in ("container", "container-shared"):
+            raise ValueError("invalid response: status session has an invalid scope")
+        if not isinstance(entry["elapsed_seconds"], (int, float)) or not math.isfinite(entry["elapsed_seconds"]):
+            raise ValueError("invalid response: status.elapsed_seconds must be finite")
+        if not isinstance(entry["target"], dict) or not isinstance(entry["live"], dict):
+            raise ValueError("invalid response: status session has invalid target/live objects")
+
+    if verb == "version":
+        require("cgprofile", "daemon")
+        if not isinstance(resp["cgprofile"], str) or not resp["cgprofile"]:
+            raise ValueError("invalid response: version.cgprofile must be a string")
+        daemon = object_at("daemon")
+        for key in ("name", "started_at", "damon", "damon_default"):
+            string_at(daemon, key)
+        for key in ("sessions_live", "max_sessions"):
+            if type(daemon.get(key)) is not int or daemon[key] < 0:
+                raise ValueError(f"invalid response: version.daemon.{key} must be a non-negative integer")
+    elif verb == "start":
+        require("session", "reused", "started_at", "scope", "damon", "interval_seconds", "target")
+        string_at(resp, "session")
+        string_at(resp, "started_at")
+        if resp["scope"] not in ("container", "container-shared"):
+            raise ValueError("invalid response: start.scope is not a contract scope")
+        if (
+            resp["damon"] not in ("on", "off")
+            and (not isinstance(resp["damon"], str) or not resp["damon"].startswith("unavailable:"))
+        ):
+            raise ValueError("invalid response: start.damon is not a contract status")
+        if (
+            type(resp["reused"]) is not bool
+            or type(resp["interval_seconds"]) not in (int, float)
+            or isinstance(resp["interval_seconds"], bool)
+            or not math.isfinite(resp["interval_seconds"])
+            or not 0.25 <= resp["interval_seconds"] <= 30.0
+        ):
+            raise ValueError("invalid response: start has invalid reused or interval_seconds")
+        target = object_at("target")
+        string_at(target, "container_id")
+        string_at(target, "cgroup")
+        if type(target.get("pids_at_start")) is not int or target["pids_at_start"] < 0:
+            raise ValueError("invalid response: start.target.pids_at_start must be a non-negative integer")
+    elif verb == "status":
+        require("at", "host")
+        string_at(resp, "at")
+        host_at("host")
+        if "session" in resp:
+            entry = object_at("session")
+            status_entry_at(entry)
+        else:
+            sessions = resp.get("sessions")
+            if not isinstance(sessions, list) or any(not isinstance(item, dict) for item in sessions):
+                raise ValueError("invalid response: status.sessions must be a list of objects")
+            for entry in sessions:
+                status_entry_at(entry)
+    elif verb == "host":
+        require("host")
+        host_at("host")
+    elif verb == "stop":
+        require("session", "already_stopped", "summary", "session_dir", "series")
+        string_at(resp, "session")
+        if (
+            type(resp["already_stopped"]) is not bool
+            or not isinstance(resp["summary"], dict)
+            or resp["summary"].get("schema") != 1
+        ):
+            raise ValueError("invalid response: stop has invalid summary or already_stopped")
+        string_at(resp, "session_dir")
+        series = object_at("series")
+        for key in ("samples", "events", "host", "manifest", "summary"):
+            string_at(series, key)
+        if series.get("damon") is not None and not isinstance(series["damon"], str):
+            raise ValueError("invalid response: stop.series.damon must be a path or null")
+    elif verb == "report":
+        require("path")
+        string_at(resp, "path")
+    elif verb == "gc":
+        require("removed", "kept")
+        if not isinstance(resp["removed"], list) or any(not isinstance(item, str) for item in resp["removed"]):
+            raise ValueError("invalid response: gc.removed must be a list of strings")
+        if type(resp["kept"]) is not int or resp["kept"] < 0:
+            raise ValueError("invalid response: gc.kept must be a non-negative integer")
+
+
+def cmd_ctl(args: argparse.Namespace) -> int:
+    """Thin socket client. Always prints exactly one JSON document to
+    stdout on success (RG55-INTERFACE-CONTRACT.md §1.2); a connection
+    failure or a malformed response prints ONE line to stderr instead and
+    exits 3 (daemon fault, §1.3) — never a JSON document nobody asked for
+    and never a traceback.
+    """
+    req = _ctl_request(args)
+    try:
+        resp = _ctl_roundtrip(args.socket, req)
+    except (OSError, ValueError) as exc:
+        _note(f"ctl {args.verb} could not reach the daemon at {args.socket}: {exc}")
+        return 3
+    try:
+        _validate_ctl_response(args.verb, resp)
+    except ValueError as exc:
+        _note(f"ctl {args.verb} received an invalid response: {exc}")
+        return 3
+    print(json.dumps(resp))
+    return 0 if resp["ok"] else 2
 
 
 # ── argument parsing ────────────────────────────────────────────────────────
@@ -908,6 +1183,90 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser.add_argument("--damon", action="store_true")
     collect_parser.add_argument("--caps", default=None)
     collect_parser.set_defaults(func=cmd_collect)
+
+    serve_parser = sub.add_parser(
+        "serve", help="run the profiling daemon (RG55-INTERFACE-CONTRACT.md)"
+    )
+    # Deliberately NOT `_add_common(serve_parser)` — that is what "refuses
+    # --cap" means structurally: this parser has no such flag to refuse at
+    # runtime, argparse itself rejects it.
+    serve_parser.add_argument("--sessions", default=DEFAULT_CGPROFILE_SESSIONS,
+                              help=f"sessions directory (default {DEFAULT_CGPROFILE_SESSIONS})")
+    serve_parser.add_argument("--socket", default=DEFAULT_CTL_SOCKET,
+                              help=f"control socket path (default {DEFAULT_CTL_SOCKET})")
+    serve_parser.add_argument("--damon-default", choices=("on", "off"), default="on",
+                              help="DAMON state a `start` with no --damon inherits")
+    serve_parser.add_argument("--interval", type=float, default=1.0,
+                              help="sampling cadence in seconds, fixed for a session's "
+                                   "whole lifetime (default 1.0)")
+    serve_parser.add_argument("--keep-sessions", type=int, default=200)
+    serve_parser.add_argument("--keep-days", type=int, default=14)
+    serve_parser.add_argument("--observe-slices", default="",
+                              help="comma-separated extra *.slice names for `ctl host`")
+    serve_parser.add_argument("--max-sessions", type=int, default=16)
+    serve_parser.set_defaults(func=cmd_serve)
+
+    # RG55-INTERFACE-CONTRACT.md's own examples always place `--json` AFTER
+    # the verb (`cgprofile ctl version --json`, `cgprofile ctl host --json`,
+    # …) — argparse subparsers only recognize what the SELECTED subparser
+    # itself defines once dispatch has happened, so `--json` (and `--socket`,
+    # for the same "works wherever you'd expect it" reason) has to be
+    # declared on every verb subparser too, not just the parent `ctl`
+    # parser. `default=SUPPRESS` on this shared child mixin is load-bearing,
+    # not decoration: without it, EVERY verb subparser re-applies its own
+    # (identical-looking) default over whatever the parent `ctl` parser's
+    # own `--socket`/`--json` already set from a LEADING flag
+    # (`ctl --socket X version`), silently discarding it — verified live
+    # (parses to the DEFAULT socket, not `X`) before this fix. SUPPRESS
+    # means "only touch the namespace if the user actually typed this flag
+    # at the child (trailing) position," which is exactly the fallback
+    # order wanted: trailing beats leading beats the real default.
+    _ctl_common = argparse.ArgumentParser(add_help=False)
+    _ctl_common.add_argument("--socket", default=argparse.SUPPRESS)
+    _ctl_common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                             help="accepted for run-gate's benefit; ctl always emits "
+                                  "exactly one JSON document on stdout regardless")
+
+    ctl_parser = sub.add_parser(
+        "ctl", help="talk to a running `serve` daemon over its control socket",
+    )
+    ctl_parser.add_argument("--socket", default=DEFAULT_CTL_SOCKET)
+    ctl_parser.add_argument("--json", action="store_true",
+                            help="accepted for run-gate's benefit; ctl always emits "
+                                 "exactly one JSON document on stdout regardless")
+    ctl_parser.set_defaults(func=cmd_ctl)
+    ctl_sub = ctl_parser.add_subparsers(dest="verb", required=True)
+
+    ctl_sub.add_parser("version", help="daemon self-description", parents=[_ctl_common])
+
+    ctl_start = ctl_sub.add_parser(
+        "start", help="begin profiling a target", parents=[_ctl_common]
+    )
+    ctl_start.add_argument("--target", required=True, metavar="containerid:<64 hex>")
+    ctl_start.add_argument("--scope", required=True, choices=("container", "container-shared"))
+    ctl_start.add_argument("--token", default=None)
+    ctl_start.add_argument("--damon", choices=("on", "off"), default=None)
+    ctl_start.add_argument("--interval", type=float, default=None)
+    ctl_start.add_argument("--meta", required=True, help="JSON object, RG55 contract §2.2")
+
+    ctl_status = ctl_sub.add_parser(
+        "status", help="registry + host snapshot", parents=[_ctl_common]
+    )
+    ctl_status.add_argument("session", nargs="?", default=None)
+
+    ctl_sub.add_parser("host", help="host + slices snapshot", parents=[_ctl_common])
+
+    ctl_stop = ctl_sub.add_parser(
+        "stop", help="end a session, return its summary", parents=[_ctl_common]
+    )
+    ctl_stop.add_argument("session")
+
+    ctl_report = ctl_sub.add_parser(
+        "report", help="render the interactive HTML report", parents=[_ctl_common]
+    )
+    ctl_report.add_argument("session")
+
+    ctl_sub.add_parser("gc", help="run retention now", parents=[_ctl_common])
 
     return parser
 

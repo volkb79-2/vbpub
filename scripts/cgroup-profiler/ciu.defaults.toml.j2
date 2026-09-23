@@ -1,0 +1,48 @@
+# ==========================================================================
+# cgprofile — the RG-55 profiling daemon, ciu stack defaults
+# ==========================================================================
+#
+# One service, `daemon`: `cgprofile serve` as PID 1 inside
+# `cgprofile-host-daemon` (RG55-INTERFACE-CONTRACT.md §1.8). It is
+# `--privileged --pid=host --cgroupns=host --network=none` — a HOST
+# SINGLETON (see ciu.global.defaults.toml.j2's own comment on
+# `deploy.environment_tag = "host"`), never a per-instance/per-worktree
+# stack. `ciu up` from this directory (or `tools/daemon-run.sh` if ciu
+# refuses one of these three flags — see the P1 REPORT for which, if any).
+
+[cgprofile]
+# The image this stack deploys. `local` for dev (`build-push.py --build`
+# tags `cgprofile:local`); a real release overrides `tag` to the resolved
+# ghcr.io coordinate (C8, scm versioning) in an override.
+[cgprofile.image]
+registry = "" # empty = local dev image, no registry prefix
+namespace = ""
+name = "cgprofile"
+tag = "local"
+
+[cgprofile.daemon]
+name = "daemon"
+# Contract §1.8 defaults, restated here as the single place an operator
+# tunes them without touching the compose template. `serve`'s own CLI
+# flags (cgprofile.py build_parser()) share these exact names.
+socket_path = "/run/cgprofile/ctl.sock"
+sessions_dir = "/var/lib/cgprofile/sessions"
+damon_default = "on"
+interval = "1.0"
+keep_sessions = 200
+keep_days = 14
+observe_slices = ""
+max_sessions = 16
+
+# Explicit, not governance-injected (C7): the daemon samples memory across
+# every profiled session concurrently and must never itself be the thing
+# that gets OOM-killed mid-run — an ample, hand-picked ceiling rather than
+# whatever governance's own default happens to be. memswap_limit = 2x
+# mem_limit (a swap cushion, not a second independent cap — compose/Docker
+# semantics: memswap_limit is the COMBINED mem+swap ceiling).
+[cgprofile.hardening]
+mem_limit = "1g"
+memswap_limit = "2g"
+
+[state]
+initialized = false

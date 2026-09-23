@@ -1,0 +1,57 @@
+# ==========================================================================
+# Global CIU defaults for cgprofile — standalone ciu root (RG-55 C7)
+# ==========================================================================
+# `scripts/cgroup-profiler/` is its own ciu root (like pwmcp/, ciu.defaults
+# ships the daemon service; see that project's own ciu.global.defaults.toml.j2
+# for the general "standalone build-test root" pattern this follows).
+#
+# UNLIKE pwmcp, environment_tag is the FIXED LITERAL "host", never
+# "$INSTANCE_ID" — this is a DELIBERATE host singleton, not a per-worktree
+# instance: exactly ONE cgprofile daemon may ever run on a given host (it
+# owns the whole host's DAMON facility and cgroup v2 view via
+# --cgroupns=host, RG55-INTERFACE-CONTRACT.md §5) — a second one started
+# from a second worktree must COLLIDE on the same container name
+# (cgprofile-host-daemon) and refuse to start twice, not spin up a sibling.
+# CIU-104 (the cross-checkout name-collision bug fixed by moving OTHER
+# projects onto `environment_tag = "$INSTANCE_ID"`, nyxloom-worktree-cli-rule
+# memory) applies here in reverse: the collision is the wanted safety
+# property, not the bug.
+
+[deploy]
+project_name = "cgprofile"
+environment_tag = "host"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+log_level = "INFO"
+
+# Hostdir ownership values (ciu S6/S7), expanded from ciu.env. The daemon
+# mounts no host bind (only the named `cgprofile-sessions` volume), but ciu
+# requires these to be present regardless.
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+# Resource governance (ciu S15.10). `cgroup_parent` here is the SAME
+# `$CGROUP_PARENT_DEV_INTERACTIVE` the daemon service itself authors
+# directly (see ciu.compose.yml.j2) — a single source of truth, not two
+# tiers that could drift. This table's OWN value is never actually
+# INJECTED into the daemon service (S15.3: an author-set key is left
+# untouched), but `governance.build_injections()` resolves it unconditionally
+# up front regardless of whether any service ends up needing it, so it must
+# still be a valid, render-time-refusing expression — no hardcoded slice
+# fallback here either, same AGENTS.md rule the service-level value follows.
+[governance]
+enabled = true
+cgroup_parent = "{{ env.CGROUP_PARENT_DEV_INTERACTIVE }}"
+mem_limit = "1g"
+
+[ciu]
+standalone_root = true
+# The daemon terminates no TLS and serves no HTTP at all — its only
+# surface is a Unix socket inside its own container, and its own service
+# block sets `network_mode: none` (RG55-INTERFACE-CONTRACT.md §5) — so,
+# unlike pwmcp (which creates/joins a project network for its HTTP/WS
+# endpoints), this stack auto-connects to NOTHING.
+require_certs = false
+require_fqdn = false
+auto_connect_network = false

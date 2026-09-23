@@ -1,0 +1,8 @@
+{
+  "interval_seconds": 1.0,
+  "scope_cgroup": "dev.slice/dev-background.slice/docker-deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233.scope",
+  "slice": "dev-background.slice",
+  "frames": ["0", "1", "2", "3", "4"],
+  "started_at": "2026-09-12T10:15:00Z",
+  "ended_at": "2026-09-12T10:15:04Z"
+}
