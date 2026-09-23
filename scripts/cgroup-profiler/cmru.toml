@@ -1,7 +1,7 @@
 # =============================================================================
 # cgroup-profiler release contract — parsed ONLY by cmru (one parser per
-# format, D-110). Same [github]/[targets]/[project]/[steps] shape as
-# run-gate-project/ciu/nyxloom/pwmcp (RG-55 C8).
+# format, D-110). Repository identity and targets are owned by the root
+# cmru.orchestration.toml; this is the project's lifecycle/build contract.
 #
 # `project.id` below MUST equal the key this project is registered under in
 # the root cmru.orchestration.toml ([orchestration.project.cgroup-profiler])
@@ -20,14 +20,8 @@
 # =============================================================================
 schema_version = 1
 
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
+[runtime]
+kind = "ciu"
 
 [env]
 

@@ -66,6 +66,17 @@ restarted before a sample, or otherwise has no persisted classified sample.
 It reports `"damon.jsonl"` only when that evidence exists. No response field
 turns an unreadable metric into zero.
 
+## Release identity
+
+The daemon image version is the exact `cgprofile-v<version>` CMRU tag at
+`HEAD`. The build script reads the prefix from `cmru.toml`, rejects ambiguous
+or malformed matching tags, and supplies the resolved version to the OCI tag,
+image label, CLI identity, and daemon self-description. This keeps build
+metadata and live probes on one release fact rather than asking operators to
+type a second version. Untagged local images are marked `0.0.0-dev`; publish
+without an exact tag or explicit manual version refuses. No version lookup
+depends on network access at runtime.
+
 ## Decisions intentionally left outside this repair
 
 This repair does not invent policy for the S1–S5 follow-up surfaces. Those
