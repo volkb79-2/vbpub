@@ -288,6 +288,7 @@ Declare commands once with `cli_extended.CliRegistry`, `VerbSpec`,
 grouped help, per-command help, handler dispatch, common options, and Markdown
 reference output. It also provides clean default-no confirmation and redacted
 progress/logging output. See the package's
+[`SPEC`](../libraries/cli-extended/SPEC.md) for the behavioral contract,
 [`README`](../libraries/cli-extended/README.md) for a complete example and its
 [`consumer guide`](../libraries/cli-extended/docs/CONSUMERS.md) for the
 adoption boundary.

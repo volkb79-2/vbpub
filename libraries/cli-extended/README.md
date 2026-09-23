@@ -224,11 +224,10 @@ a documented compatibility exception. The consumer must also assert that
 help/version cause no API calls, credential reads, or filesystem changes using
 its own fakes or state probes.
 
-See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for install, migration, and
-responsibility guidance; [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) for
-the design rationale; and the repository-wide
-[CLI standard](../../docs/CLI-STANDARD.md) for the complete behavioral
-contract.
+See [`SPEC.md`](SPEC.md) for the complete behavioral contract;
+[`docs/CONSUMERS.md`](docs/CONSUMERS.md) for install, migration, and
+responsibility guidance; and [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md)
+for the design rationale.
 
 ## Test and gate
 

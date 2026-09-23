@@ -1,9 +1,10 @@
 # cli-extended consumer guide
 
 `cli-extended` standardizes CLI mechanics; it is not an application framework
-and does not own product behavior. The adopting CLI declares its public
-interface once with `CliRegistry`, then supplies domain-specific parsers and
-handlers only where needed. The package's
+and does not own product behavior. The normative behavioral contract is in
+[`SPEC.md`](../SPEC.md). The adopting CLI declares its public interface once
+with `CliRegistry`, then supplies domain-specific parsers and handlers only
+where needed. The package's
 [`README`](../README.md) contains the complete registration pattern.
 
 ## Install and choose a version source

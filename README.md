@@ -80,7 +80,8 @@ protected-server denylist; guarded mutating commands refuse those servers.
 User-facing Python CLIs can share the estate-wide parser, diagnostics,
 verbosity, colour, progress, and cancellation contract through
 [`libraries/cli-extended/`](libraries/cli-extended/). Its rationale and
-adoption examples are linked from that library's README.
+adoption examples are linked from that library's README; the normative
+contract is [`libraries/cli-extended/SPEC.md`](libraries/cli-extended/SPEC.md).
 
 ## Repository setup and initial CMRU build
 

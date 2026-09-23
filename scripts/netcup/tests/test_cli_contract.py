@@ -172,7 +172,7 @@ def test_cli_guides_have_resolving_local_markdown_links():
         NETCUP_DIR / "README.md",
         NETCUP_DIR / "DESIGN-GUIDE.md",
         REPO_ROOT / "docs" / "CONSUMERS.md",
-        REPO_ROOT / "docs" / "CLI-STANDARD.md",
+        REPO_ROOT / "libraries" / "cli-extended" / "SPEC.md",
         REPO_ROOT / "libraries" / "cli-extended" / "README.md",
         REPO_ROOT / "libraries" / "cli-extended" / "docs" / "DESIGN-GUIDE.md",
         REPO_ROOT / "libraries" / "cli-extended" / "docs" / "CONSUMERS.md",

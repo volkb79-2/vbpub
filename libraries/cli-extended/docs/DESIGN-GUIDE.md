@@ -1,9 +1,8 @@
 # cli-extended design guide
 
 This document explains why `cli-extended` is a small adapter layer instead of
-a new CLI framework. The observable rules live in the repository-wide
-[CLI standard](../../../docs/CLI-STANDARD.md); adoption steps live in
-[`CONSUMERS.md`](CONSUMERS.md).
+a new CLI framework. The observable rules live in the normative
+[`SPEC.md`](../SPEC.md); adoption steps live in [`CONSUMERS.md`](CONSUMERS.md).
 
 ## Keep the parser convention adopters already know
 

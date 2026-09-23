@@ -1,8 +1,9 @@
-# User-facing Python CLI standard
+# cli-extended specification
 
-This document defines the common command-line contract for user-facing Python
-CLIs in this repository. It applies to installed commands, repository scripts,
-and executable Python entrypoints. A tool may add domain-specific behavior, but
+This document is the normative specification for `cli-extended`. It defines
+the common command-line contract for user-facing Python CLIs in this
+repository. It applies to installed commands, repository scripts, and
+executable Python entrypoints. A tool may add domain-specific behavior, but
 must not silently contradict this contract. If a compatibility requirement
 requires an exception, the exception is documented in that tool's own guide
 and tested at its boundary.
