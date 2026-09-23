@@ -116,14 +116,37 @@ injected by devcontainer.json). Refusing to launch unplaced beside production
 # (that is the question), so it borrows the interactive tier, which is
 # known-good because this process is already running in it.
 probe_parent="${CGROUP_PARENT_DEV_INTERACTIVE:-$parent}"
-probe="$(docker run --rm --cgroupns=host --network=none \
-  --cgroup-parent="$probe_parent" \
+probe_name="cgprofile-gate-probe-$$-$(date +%s)"
+printf 'gate: placement probe container=%s parent=%s\n' "$probe_name" "$probe_parent"
+probe_cid="$(docker run -d --name "$probe_name" \
+  --cgroup-parent="$probe_parent" --network=none --cpus=3 \
   -v /sys/fs/cgroup:/hostcg:ro "$image" \
-  bash -c 'ls -d "/hostcg/${1%%-*}.slice"/*"$1" 2>/dev/null | head -1' _ "$parent" \
-  2>/dev/null || true)"
+  bash -c 'set -eu
+    base="${1%%-*}.slice"
+    for candidate in /hostcg/"$base"/*"$1"; do
+      [ -d "$candidate" ] || continue
+      printf "%s\\n" "$candidate"
+      sleep 1
+      exit 0
+    done
+    exit 1' _ "$parent")"
+[ -n "$probe_cid" ] || die "placement probe container did not start"
+trap 'docker rm -f "$probe_name" >/dev/null 2>&1 || true' EXIT
+docker update --cpus=3 "$probe_name" >/dev/null
+probe_cap="$(docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.CgroupParent}}' "$probe_name")"
+printf 'gate: placement probe cap=%s\n' "$probe_cap"
+read -r probe_nano_cpus probe_actual_parent <<<"$probe_cap"
+[ "$probe_nano_cpus" = "3000000000" ] || die "placement probe CPU cap is $probe_nano_cpus, expected 3000000000"
+[ "$probe_actual_parent" = "$probe_parent" ] || die "placement probe parent is $probe_actual_parent, expected $probe_parent"
+probe_rc="$(docker wait "$probe_name")"
+probe="$(docker logs "$probe_name" 2>&1)"
+docker rm "$probe_name" >/dev/null
+trap - EXIT
 [ -n "$probe" ] || die "cgroup parent \"$parent\" is not a configured slice on this host.
 A name systemd does not know fails OPEN into an unlimited transient slice
 beside production, so this refuses rather than launching there."
+[ "$probe_rc" = "0" ] || die "cgroup parent probe exited ${probe_rc:-unknown}"
+printf 'gate: verified host cgroup path %s\n' "$probe"
 
 # --- run ---------------------------------------------------------------
 if [ "$target" = "coverage" ]; then
@@ -133,12 +156,14 @@ else
   suite='"$TESTER_VENV"/bin/python -m pytest tests/ -q'
 fi
 
-cid="$(docker run -d \
+container_name="cgprofile-gate-$$-$(date +%s)"
+printf 'gate: test container=%s parent=%s\n' "$container_name" "$parent"
+cid="$(docker run -d --name "$container_name" \
   --cgroup-parent="$parent" \
   --network=none \
   --memory="${CGPROFILE_GATE_MEMORY:-3g}" \
   --memory-swap="${CGPROFILE_GATE_MEMORY_SWAP:-8g}" \
-  --cpus="${CGPROFILE_GATE_CPUS:-1.5}" \
+  --cpus=3 \
   -v "$host_worktree:/work:ro" \
   -w "/work/$project_rel" \
   -e PYTHONPATH="/work/$project_rel" \
@@ -151,11 +176,18 @@ cid="$(docker run -d \
     export COVERAGE_FILE=/tmp/.coverage
     mkdir -p /tmp/pt
     $suite")"
+[ -n "$cid" ] || die "tester-unified container did not start"
+docker update --cpus=3 "$container_name" >/dev/null
+container_cap="$(docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.CgroupParent}}' "$container_name")"
+printf 'gate: test container cap=%s\n' "$container_cap"
+read -r container_nano_cpus container_actual_parent <<<"$container_cap"
+[ "$container_nano_cpus" = "3000000000" ] || die "test container CPU cap is $container_nano_cpus, expected 3000000000"
+[ "$container_actual_parent" = "$parent" ] || die "test container parent is $container_actual_parent, expected $parent"
 
-trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
 
 # Read the verdict separately from the stream — see doctrine 3 above.
-rc="$(docker wait "$cid")"
-docker logs "$cid" 2>&1
+rc="$(docker wait "$container_name")"
+docker logs "$container_name" 2>&1
 
 exit "${rc:-1}"
