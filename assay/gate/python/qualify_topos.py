@@ -601,6 +601,38 @@ def _invoke(assay_executable: Path, repo: Path, artifact_path: Path) -> tuple[su
     return proc, artifact
 
 
+def _scenario_failure(
+    *,
+    spec: ScenarioSpec,
+    message: str,
+    proc: subprocess.CompletedProcess[str],
+    artifact: Mapping[str, Any],
+    pytest_log: Path,
+) -> QualificationError:
+    """Keep a scenario mismatch diagnosable after the disposable tree dies.
+
+    The outer tester container removes the harness scratch tree when the gate
+    exits. A nonzero scenario therefore must carry the evidence in the raised
+    error itself: otherwise the gate reports only a terminal such as
+    ``COMMAND_FAILED`` and destroys the artifact, assay streams, and pytest
+    log that distinguish a product refusal from a broken disposable command.
+    This is diagnostic context only; the expectation checks still decide the
+    outcome and no failure is converted into a pass.
+    """
+    try:
+        pytest_tail = pytest_log.read_text(encoding="utf-8")[-8000:]
+    except OSError as exc:
+        pytest_tail = f"<unavailable: {exc}>"
+    artifact_text = json.dumps(dict(artifact), sort_keys=True)
+    return QualificationError(
+        f"{message}\n"
+        f"scenario artifact: {artifact_text}\n"
+        f"assay stdout:\n{proc.stdout[-8000:]}\n"
+        f"assay stderr:\n{proc.stderr[-8000:]}\n"
+        f"pytest log ({pytest_log}):\n{pytest_tail}"
+    )
+
+
 def verify_pinned_inputs(source_repo: Path) -> None:
     """Refuse drift before creating a scratch repository or environment."""
     revision = _run(["git", "-C", str(source_repo), "rev-parse", f"{INPUT_REVISION}^{{commit}}"])
@@ -726,7 +758,7 @@ def run_scenario(
     *, source_repo: Path, scratch: Path, assay_executable: Path, assay_version: str, spec: ScenarioSpec
 ) -> ScenarioResult:
     """Run one scenario and compare the complete artifact and independent result."""
-    repo, witness, _pytest_log, base_oid, head_oid = materialize_scenario(
+    repo, witness, pytest_log, base_oid, head_oid = materialize_scenario(
         source_repo=source_repo,
         scratch=scratch,
         spec=spec,
@@ -736,27 +768,67 @@ def run_scenario(
     proc, artifact = _invoke(assay_executable, repo, artifact_path)
 
     if artifact.get("commit") != head_oid:
-        raise QualificationError(f"scenario {spec.name!r}: artifact commit is not the seeded disposable HEAD")
+        raise _scenario_failure(
+            spec=spec,
+            message=f"scenario {spec.name!r}: artifact commit is not the seeded disposable HEAD",
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
+        )
     if artifact.get("assay_version") != assay_version:
-        raise QualificationError(
-            f"scenario {spec.name!r}: artifact assay_version does not match the installed owner"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: artifact assay_version does not match "
+                "the installed owner"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
     if proc.returncode != artifact.get("exit_code"):
-        raise QualificationError(
-            f"scenario {spec.name!r}: process exit code disagrees with the artifact's own exit_code"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: process exit code disagrees with the "
+                "artifact's own exit_code"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
     if proc.returncode != spec.expected_exit:
-        raise QualificationError(
-            f"scenario {spec.name!r}: expected exit {spec.expected_exit}, got {proc.returncode}"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: expected exit {spec.expected_exit}, "
+                f"got {proc.returncode}"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
     if artifact.get("outcome") != spec.expected_outcome:
-        raise QualificationError(
-            f"scenario {spec.name!r}: expected outcome {spec.expected_outcome!r}, got {artifact.get('outcome')!r}"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: expected outcome {spec.expected_outcome!r}, "
+                f"got {artifact.get('outcome')!r}"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
     if spec.expected_reason is not None and artifact.get("reason_code") != spec.expected_reason:
-        raise QualificationError(
-            f"scenario {spec.name!r}: expected reason_code {spec.expected_reason!r}, "
-            f"got {artifact.get('reason_code')!r}"
+        raise _scenario_failure(
+            spec=spec,
+            message=(
+                f"scenario {spec.name!r}: expected reason_code {spec.expected_reason!r}, "
+                f"got {artifact.get('reason_code')!r}"
+            ),
+            proc=proc,
+            artifact=artifact,
+            pytest_log=pytest_log,
         )
 
     comparator: dict[str, Any] | None = None

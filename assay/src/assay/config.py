@@ -2255,8 +2255,8 @@ def _load_judge(
         # inert `base` (the inverse of docs/CONSUMERS.md's own rule) while
         # never firing on an R2 lane at all, and it left `judge.base`
         # REQUIRED on a whole-target R2 lane that reads it nowhere:
-        # `whole_file_r2` skips both `check_base_is_head` and the `git diff`,
-        # and a whole-target R1 never resolves a base either (evaluate_r1's
+        # `whole_file_r2` skips both `check_resolved_base_is_head` and the
+        # `git diff`, and a whole-target R1 never resolves a base either (evaluate_r1's
         # own docstring). Whole-target scope and a comparison commit are
         # mutually exclusive by construction, in every language.
         if "base" in required:

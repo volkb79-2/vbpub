@@ -1646,7 +1646,12 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                     targets=lane.judge.targets or (),
                 )
             else:
-                checked = measurability.check_base_is_head(
+                # B101 P1: the same carried-OID guard `run`'s R2 diff uses,
+                # so the plan predicts the run exactly. This runs against
+                # the consumer's repository (plan never materializes a
+                # snapshot), where re-resolving would give the same OID;
+                # consuming it keeps "resolved once" true here as well.
+                checked = measurability.check_resolved_base_is_head(
                     prepared.spec.repo_top,
                     resolved_base,
                     remaining=deadline.remaining,

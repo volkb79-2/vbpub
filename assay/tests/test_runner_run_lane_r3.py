@@ -24,7 +24,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timezone
 
-from conftest import GitRepo, fixed_clock, make_lane, make_r3_judge
+from conftest import GitRepo, cut_snapshot_history, fixed_clock, make_lane, make_r3_judge
 
 from assay import runner
 from assay.adapters.python import PythonAdapter
@@ -241,6 +241,52 @@ def test_r3_proves_the_uncovered_line_canary_for_its_own_reason_when_r1_is_decla
     assert verdict.claims[1].coverage.considered == 1
     assert verdict.claims[1].coverage.executable == 2
     assert git_repo.git("status", "--porcelain") == ""
+
+
+def test_r3_canary_halves_consume_carried_bases_in_a_history_cut_snapshot(
+    git_repo: GitRepo, monkeypatch
+):
+    """B101 P1: both R3 halves' R1 checks consume an already-resolved base
+    -- the control half the lane's pre-snapshot resolution, the transformed
+    half the seed commit (its child's only parent, by construction) -- and
+    never walk ancestry inside the snapshot.
+
+    Every snapshot's history is cut at {seed commit, base}; the probes prove
+    ``merge-base`` fails there. Before this port the control half re-ran
+    ``resolve_base`` inside its snapshot, so under this cut its R1 rendered
+    GIT_FAILED, the control was not a known-good PASS, and the claim was
+    ``CANARY_INCONCLUSIVE`` rather than a proved canary.
+    """
+    base_rev = _seed_covered_package(git_repo)
+    probes = cut_snapshot_history(monkeypatch, carried_base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1", "R3"),
+        judge=_r1_r3_judge(
+            git_repo, base_rev=base_rev, mechanism="uncovered-line", target="pkg/mod.py"
+        ),
+        argv=_COV_ARGV,
+        env=_ENV,
+        env_passthrough=("PATH",),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=git_repo.head(),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    # baseline + canary control + canary transform, each one cut.
+    assert len(probes) == 3
+    assert all(p.merge_base_returncode != 0 for p in probes)
+    r3_claim = verdict.claims[-1]
+    assert r3_claim.status is Outcome.PASS, r3_claim
+    assert r3_claim.canary.attempts[0].control_outcome is Outcome.PASS
+    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.FAIL
+    assert r3_claim.canary.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert verdict.judgment.resolved.base == base_rev
 
 
 def test_r3_reports_a_real_wrong_cause_as_survived_with_the_unmocked_adapter(

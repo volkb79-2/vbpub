@@ -30,6 +30,7 @@ from conftest import (
     fixed_clock,
     make_lane,
     make_r1_judge,
+    prepared_snapshot,
     r1_verdict_fixture,
     write_coverage_json,
 )
@@ -663,6 +664,41 @@ def test_on_base_resolved_fires_once_with_the_real_resolved_base(git_repo: GitRe
 
     assert claim.status is Outcome.PASS
     assert seen == [base_rev]
+
+
+def test_evaluate_r1_uses_a_carried_base_resolution_inside_a_snapshot(
+    git_repo: GitRepo, tmp_path: Path
+):
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    git_repo.git("tag", "declared-base", base_rev)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
+        with prepared.materialize(timeout=60) as snapshot:
+            write_coverage_json(
+                snapshot.root / "cov.json",
+                {"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}},
+            )
+            judge = make_r1_judge(
+                source_root_paths=(snapshot.root / "pkg",), base="declared-base"
+            )
+            lane = make_lane(rigor=("R0", "R1"), judge=judge)
+            seen: list[str] = []
+
+            claim = runner.evaluate_r1(
+                lane,
+                repo=snapshot.root,
+                project_root=snapshot.root,
+                base="declared-base",
+                resolved_base=base_rev,
+                adapter=ADAPTER,
+                on_base_resolved=seen.append,
+            )
+
+    assert claim.status is Outcome.PASS
+    assert seen == [base_rev]
+    assert head_rev != base_rev
 
 
 def test_on_base_resolved_never_fires_when_the_base_is_head_guard_trips(

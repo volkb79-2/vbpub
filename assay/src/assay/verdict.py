@@ -3167,8 +3167,8 @@ class Judgment:
         # check used to encode -- "R2 always compares a base" -- was
         # therefore false from the moment `whole_file_r2` shipped: a
         # whole-target R2 mutates whole declared files and skips both
-        # `check_base_is_head` and the `git diff`, exactly as a whole-target
-        # R1 resolves nothing against a base. So on a whole-target lane
+        # `check_resolved_base_is_head` and the `git diff`, exactly as a
+        # whole-target R1 resolves nothing against a base. So on a whole-target lane
         # NEITHER tier compares a base, and A-223a's own "present exactly
         # when a tier that reads one is" makes the base FORBIDDEN there.
         #
