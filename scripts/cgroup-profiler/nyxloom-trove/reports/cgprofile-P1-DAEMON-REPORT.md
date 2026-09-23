@@ -1652,3 +1652,23 @@ with 100% line and branch coverage, and `r3` rejected all seven canaries.
 The controller's read-only adversarial review found no additional blocker.
 These facts support provisional integration under RW-296, but do not replace
 the fresh Sol xhigh review or the final release gate set.
+
+## Controller addendum — repeat R2 on `07161416`
+
+The follow-on registered R2 ran against quiet tree
+`071614168b2a96cab0b90b1f0d4c439972bf54dc` and completed at
+`2026-09-23T16:50:08.347346Z` after 10,536.3 seconds. Its terminal progress
+event records `candidate_total=250`, `killed=249`, `survived=1`, and zero
+equivalent, budget-exceeded, crashed, or hung candidates. The separate verdict
+records R0 PASS and R2 `FAIL/MUTANTS_SURVIVED`, exit 1. The tree's
+`scripts/cgroup-profiler/lib` and tests are identical to the already-reviewed
+and short-gated P1 source tree `a2c2501f`; this run adds exact-tree R2 evidence
+for the report-only follow-on commit.
+
+The single survivor is `lib/damon.py:325`, `Gt->GtE`, replacement SHA-256
+`92a00d7d91da9f0f06c3f218c49c9b98323469962b291365b85d3c16b6b7f95f`. It is
+the same reachable-state equivalent described above: after the owned pool
+slot is live, `current == expected_end` and `expected_end = max(_owned) + 1`
+imply `current > baseline`. The mutant cannot alter a reachable release
+decision. No new oracle gap was found; the mechanical Assay verdict remains
+FAIL because Assay does not encode this human equivalence classification.
