@@ -3666,3 +3666,15 @@ invalidates the affected provisional evidence and gates. The final merge and
 release still require the fresh Sol xhigh review requested by the operator,
 the survivor disposition recorded in the package report, and a final quiet
 gate set; no mutation result may be silently waived.
+
+### RW-297 — 2026-09-23 13:38:30Z — queue P1 R2 in a CIU-managed worktree
+
+The controller created the managed checkout
+`.worktrees/rg55-p1-r2-ciu` (`ciu worktree create rg55-p1-r2-ciu`) at exact
+judged tree `a2c2501f`, branch `rg55-p1-r2-ciu`, for the parallel long-run
+workflow. Launch is deferred because the estate's single gate slot is occupied
+by the unrelated Assay B101 gate container
+`run-gate-assay-selfhosted-687027-20849-1790170568`, whose exact command and
+process are `assay-b101-gate-clean` / PID `686965`. The controller will not
+stop or contend with that run. The P1 CIU worktree is clean and ready; no P1
+R2 container is currently running.
