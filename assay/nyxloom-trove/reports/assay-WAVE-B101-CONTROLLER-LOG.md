@@ -81,6 +81,8 @@ seed/materialization proof rather than be masked by `--no-walk`.
 | config + isolation focused tests | PASS: 133 tests |
 | P1 runner suites | PASS: 71 tests |
 | tester-unified gate | PASS on `4ed15f31`: all required phases, self-hosted lane, Topos, cmru B006(a), independent self-hosting, and pyflakes |
+| full local suite after commit | PASS: 4799 passed, 19 skipped, 95 deselected |
+| v12 distribution/packaging follow-up | PASS: 41 tests; pyflakes gate test PASS |
 | verdict schema / B079 question | PASS: operator answered yes; A-452--A-455 record the v12 decisions |
 
 The first gate attempt on `5bf832a4` ran the full self-hosted suite successfully
@@ -122,7 +124,28 @@ The current deterministic evidence ledger is:
 | ingested mutation/verifier payload suites | PASS: 152 tests |
 | config, CLI, runner, and liveness suites | PASS: 150 tests |
 | gate harness, W8, Python qualification | PASS: 138 passed, 9 skipped |
-| prior authoritative tester-unified gate | PASS on `4ed15f31`, `GATE_EXIT=0`; v12 rerun pending provisional merge |
+| authoritative tester-unified rerun | PASS on `c183a371`, all 12 phase markers, `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0` |
+
+## Provisional post-merge execution
+
+The provisional merge was made with `--no-ff` before the long-running work, so
+the following jobs ran from the CIU-managed worktree
+`assay-b101-long-20260923` rather than blocking the main line:
+
+- the CIU lane finished in about 4m28s with R0/R1/R3 PASS and a truthful
+  R2 `INCONCLUSIVE/NO_MUTANTS` result (`CIU_GATE_EXIT=5`); this lane does not
+  declare mutation candidates;
+- the requested CMRU mutation campaign started and was checked after kickoff,
+  but stopped in about 10s because the declared source diff produced no
+  mutation candidates (`CMRU_MUTATION_EXIT=1`), so this is not reported as a
+  mutation pass;
+- the authoritative assay tester-unified rerun was checked after kickoff and
+  completed in about 19m with every registered phase passing. Its only defect
+  was a stale W3 dstdns witness schema version, found by the first run and
+  fixed in `f0339e3a`, then backported to main as `c183a371` before the rerun.
+
+The gate's final evidence is `/tmp/assay-b101-provisional-tester-unified-rerun.log`;
+the temporary CIU worktree can now be removed after this record is committed.
 
 ## History-walk audit
 
@@ -139,5 +162,5 @@ config/isolation tests, `assay/README.md`, `assay/docs/{DESIGN-GUIDE.md,
 CONSUMERS.md,INTERNAL-CONSUMERS.md}`, `assay/CHANGES.md`,
 `assay/nyxloom-trove/decisions.md`, this log, B101/B102/B093 backlog evidence,
 and the W8 v12 verdict generations. P3 is no longer pending the operator
-decision; the only remaining long-running work is the post-merge campaign and
-authoritative gate in the CIU worktree.
+decision; the post-merge gate is green. The mutation attempt produced no
+candidates and therefore remains an explicitly recorded non-pass outcome.
