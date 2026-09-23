@@ -1265,3 +1265,44 @@ child-failure and plan-refusal tests prove false cleanup results are reported
 without calling them conflicts. The normative contract is `docs/SPEC.md`
 S-CLI.5/S-CLI.5a; operator steps are in `docs/RELEASE-TRANSACTIONS.md` under
 Caller-main cleanup.
+
+### KI-29 — Release abandonment needs a first-class, dry-run-safe operation
+
+**Status:** OPEN 2026-09-22.
+
+The current release surface hides a whole cleanup operation behind
+`--abandon`. That makes a destructive lifecycle action easy to miss and
+leaves its relationship with `--dry-run` ambiguous. Replace it with a
+top-level `cmru abandon` verb:
+
+* With no branch argument, discover the retained release candidates, show the
+  exact branch, worktree, transaction/scope, and any remote refs or release
+  assets involved, then ask for explicit interactive confirmation. `--yes`
+  may pre-confirm that complete candidate set.
+* With a branch-name argument, resolve exactly that managed release branch,
+  verify its worktree and transaction metadata, and abandon/clean only that
+  candidate. Do not infer a different branch from a prefix or silently widen
+  the selection.
+* The operation must fail closed for a promoted/published transaction or for
+  ambiguous/stale metadata. Its help and confirmation must state what is
+  removed and what evidence is retained. Any compatibility path for the old
+  option must not retain a hidden multi-step destructive operation.
+* `--dry-run` is a strict no-mutation mode. Candidate discovery, confirmation
+  rendering, branch/worktree inspection, and remote-state inspection may run,
+  but no abandon, worktree removal, branch deletion, sidecar deletion, or
+  remote cleanup may execute. Add a regression test for the currently
+  suspected ordering bug where `--abandon` can run before ordinary dry-run
+  handling.
+* Clarify `cleanup` in help and consumer documentation: it cleans the remote
+  release assets on the configured `origin` (for example the origin release,
+  tag, and GHCR assets covered by the selected cleanup policy); it is not a
+  synonym for abandoning a retained local release transaction or its worktree.
+  The docs must say which remote asset classes are actually in scope rather
+  than implying that every origin ref is removed.
+
+The implementation must add parser/help tests, candidate-discovery and exact
+selection tests, interactive/`--yes` confirmation tests, promoted-transaction
+refusal tests, remote-origin cleanup tests, and a dry-run mutation oracle.
+Update `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and
+`docs/SPEC.md` together so the user-facing operation and its safety boundary
+are discoverable and normative.
