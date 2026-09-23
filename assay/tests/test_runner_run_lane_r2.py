@@ -19,7 +19,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo, fixed_clock, make_lane, make_r1_judge, make_r2_judge
+from conftest import (
+    GitRepo,
+    cut_snapshot_history,
+    fixed_clock,
+    make_lane,
+    make_r1_judge,
+    make_r2_judge,
+)
 
 from assay import git as git_module
 from assay import runner
@@ -111,10 +118,47 @@ def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
     assert verdict.judgment.r1 is None
 
 
+def test_r2_without_r1_diffs_the_carried_base_in_a_history_cut_snapshot(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
+):
+    """B101 P1: R2's own target-scoping diff (no R1 to reuse) consumes the
+    pre-snapshot resolution. Every snapshot -- baseline and mutant -- has its
+    ancestry cut at {HEAD, base} and the base is a symbolic tag, so neither
+    re-resolving the tag nor a ``merge-base`` could answer there (the probes
+    prove the latter). Against the pre-port code R2 renders GIT_FAILED.
+    """
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
+    git_repo.git("tag", "declared-base", base_rev)
+    probes = cut_snapshot_history(monkeypatch, carried_base=base_rev)
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base="declared-base",
+        mutation=_MUTATION,
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("check",))
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=_kill_on_mutation(),
+    )
+
+    assert probes and all(p.merge_base_returncode != 0 for p in probes)
+    assert verdict.outcome is Outcome.PASS, verdict.claims
+    r2_claim = verdict.claims[1]
+    assert r2_claim.mutation.total == 1
+    assert len(r2_claim.mutation.killed) == 1
+    assert verdict.judgment.resolved.base == base_rev
+
+
 def test_r2_without_r1_refuses_on_base_is_head(git_repo: GitRepo):
-    """R2's own independent guard sequence -- the IDENTICAL
-    ``check_base_is_head`` R1 uses -- fires when no R1 claim resolved a
-    diff to reuse."""
+    """R2's own independent guard sequence -- the same carried-OID
+    ``check_resolved_base_is_head`` guard R1 uses inside the snapshot --
+    fires when no R1 claim resolved a diff to reuse."""
     head = git_repo.head()
     judge = make_r2_judge(
         source_root_paths=(git_repo.path,), base=head, mutation=_MUTATION

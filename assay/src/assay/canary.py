@@ -409,6 +409,14 @@ def _judge_unit(
     every other lane-owned call does. The legacy standalone
     :func:`run_python_canary`/:func:`_run_pipeline` path is unaffected and
     keeps its own ``remaining=None``.
+
+    *base* is always an ALREADY-RESOLVED commit decided outside the snapshot
+    (B101 P1): the lane's pre-snapshot resolution for the control half, the
+    seed commit -- by construction the transformed child's only parent --
+    for the transformed half. It is forwarded as ``resolved_base`` so R1
+    consumes it directly and never re-runs ``merge-base``/``rev-list
+    --parents`` inside a snapshot that carries no refs and may carry no
+    history. ``None`` only where no changed-line R1 reads a base at all.
     """
     r0_claim = build_r0_claim(unit.result)
     if r0_claim.status is not Outcome.PASS or "R1" not in lane.rigor:
@@ -424,6 +432,7 @@ def _judge_unit(
         project_root=scratch_project_root,
         base=base,
         adapter=adapter,
+        resolved_base=base,
         profile=unit.profile,
         remaining=deadline.remaining,
     )
@@ -473,7 +482,9 @@ def run_isolated_canary(
     (:func:`~assay.runner._execute_snapshot_unit`) the lane's own baseline
     uses, each with its OWN fresh coverage reservation when ``"R1"`` is
     declared (O2: no cross-unit profile reuse) -- the control's R1 diff
-    compares ``judge.base..seed commit``, while the transform's compares
+    compares the lane's PRE-SNAPSHOT resolved base (never ``judge.base``'s
+    spelling, which the ref-free snapshot cannot resolve; B101 P1)
+    ``..seed commit``, while the transform's compares
     ``seed commit..its own deterministic child commit``, mirroring exactly
     what two real, sequential commits would mean in the old live-copy
     orchestration.

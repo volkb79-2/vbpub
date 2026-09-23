@@ -390,6 +390,73 @@ def prepared_snapshot(
     return isolation.prepare_snapshot(spec, timeout=timeout)
 
 
+@dataclass(frozen=True)
+class HistoryCutProbe:
+    """What one history-cut snapshot could still answer (B101 P1 fixture).
+
+    ``merge_base_returncode`` is ``git merge-base <carried base> <seed
+    commit>`` run inside the cut snapshot, and ``seed_parents_visible`` is
+    how many parents ``git rev-list --parents -n 1 <seed commit>`` reports
+    there -- the two questions :func:`assay.git.resolve_base` asks. A test
+    asserts on them to prove the cut really bites (in-snapshot resolution
+    fails) rather than trusting the fixture.
+    """
+
+    root: Path
+    seed_commit: str
+    merge_base_returncode: int
+    seed_parents_visible: int
+
+
+def cut_snapshot_history(monkeypatch, *, carried_base: str) -> list[HistoryCutProbe]:
+    """Make every P22 snapshot materialized from now on SHALLOW, the way
+    B101's shallow seed will: after the snapshot's own ``_verify`` has
+    proven it, write ``.git/shallow`` listing the seed commit and
+    *carried_base* as history boundaries. Every object stays present
+    (``status``, ``diff <base> HEAD`` and ``rev-parse`` keep working); only
+    ancestry is cut, so ``merge-base`` across the two boundaries finds no
+    common ancestor and a merge commit's parents become invisible.
+
+    Real git, not a spy on :func:`assay.git.resolve_base`: it catches ANY
+    in-snapshot ancestry walk, whichever function performs it. Returns the
+    live list of :class:`HistoryCutProbe` records, one per materialization.
+    """
+    from assay import isolation
+
+    original = isolation.SnapshotRepository._verify
+    probes: list[HistoryCutProbe] = []
+
+    def verify_then_cut_history(self, root, git_dir, commit, run):
+        original(self, root, git_dir, commit, run)
+        seed_commit = self._spec.commit
+        boundary = sorted({seed_commit, carried_base})
+        (git_dir / "shallow").write_text(
+            "".join(f"{oid}\n" for oid in boundary), encoding="ascii"
+        )
+        merge_base = subprocess.run(
+            ["git", "-C", str(root), "merge-base", carried_base, seed_commit],
+            capture_output=True,
+            text=True,
+        )
+        parents = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "--parents", "-n", "1", seed_commit],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        probes.append(
+            HistoryCutProbe(
+                root=Path(root),
+                seed_commit=seed_commit,
+                merge_base_returncode=merge_base.returncode,
+                seed_parents_visible=len(parents.stdout.split()) - 1,
+            )
+        )
+
+    monkeypatch.setattr(isolation.SnapshotRepository, "_verify", verify_then_cut_history)
+    return probes
+
+
 def make_plan(
     lane: Lane,
     *,

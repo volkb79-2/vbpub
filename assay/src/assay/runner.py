@@ -1728,6 +1728,7 @@ def evaluate_r1(
     project_root: Path,
     base: str | None,
     adapter: LanguageAdapter,
+    resolved_base: str | None = None,
     on_base_resolved: Callable[[str], None] | None = None,
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
     profile: CoverageProfile | None = None,
@@ -1767,7 +1768,16 @@ def evaluate_r1(
     :mod:`assay.config`'s loader for any lane that actually declares R1
     rigor, which is the only way a caller should reach this function.
     *base* is the declared comparison ref, exactly as ``judge.base``
-    declares it (a caller resolves nothing before passing it in).
+    declares it. *resolved_base* is an optional full commit already resolved
+    against the consumer repository before a P22 snapshot was materialized
+    (B101 P1); when supplied, the base-is-HEAD guard consumes it directly
+    (:func:`~assay.measurability.check_resolved_base_is_head`) and *base* is
+    not read at all, because the snapshot carries no symbolic refs and must
+    not be asked an ancestry question (``merge-base``, a merge ``HEAD``'s
+    parents) it may not be able to answer. ``None`` keeps the resolving
+    :func:`~assay.measurability.check_base_is_head` path for a direct caller
+    in a full repository. The two values remain separate so the recorded
+    judgment is the resolved commit, never the declaration.
 
     *profile* (P20): when given, it is the artifact :func:`run_lane` already
     consumed and parsed through its own single-owner reservation -- used
@@ -1778,8 +1788,8 @@ def evaluate_r1(
 
     *on_base_resolved* (P17), if given, is called EXACTLY ONCE with the
     resolved full base commit (:attr:`~assay.measurability.ResolvedBase.
-    base_rev`) the moment :func:`assay.measurability.check_base_is_head`
-    produces it -- never on a path where that guard itself trips. This is
+    base_rev`) the moment the base-is-HEAD guard produces it -- never on a
+    path where that guard itself trips. This is
     how :func:`run_lane` builds ``judgment.resolved.base`` (V5-1 hoisted it out
     of ``judgment.r1``; P16's "the FULL
     resolved comparison commit, never the lane's own possibly-symbolic
@@ -1825,7 +1835,14 @@ def evaluate_r1(
 
         resolved = None
         if effective_mode == "changed_lines":
-            resolved = measurability.check_base_is_head(repo, base, remaining=remaining)
+            if resolved_base is None:
+                resolved = measurability.check_base_is_head(
+                    repo, base, remaining=remaining
+                )
+            else:
+                resolved = measurability.check_resolved_base_is_head(
+                    repo, resolved_base, remaining=remaining
+                )
             if on_base_resolved is not None:
                 on_base_resolved(resolved.base_rev)
 
@@ -3438,10 +3455,13 @@ def _resolve_declared_base(
     merge-base HERE, once, against the consumer's own full repository, is
     what makes the result an ANCESTOR of the resolved commit by construction
     -- and therefore always present inside the snapshot's own closure.
-    :func:`~assay.measurability.check_base_is_head` still calls
-    :func:`~assay.git.resolve_base` again, inside the snapshot, but merge-base
-    is idempotent on an already-ancestor value, so that second call reproduces
-    the identical OID rather than re-deriving a different one.
+    Snapshot-side guards -- R1, R2's own diff, and both R3 canary halves --
+    consume this OID directly through
+    :func:`~assay.measurability.check_resolved_base_is_head` (B101 P1); the
+    declaration is never re-resolved after P22 has removed symbolic refs,
+    and the first-parent rule for a merge ``HEAD`` is decided HERE, where
+    ``HEAD``'s parents are certainly visible, never inside a snapshot whose
+    seed may cut them off.
     """
     if base is None:
         return None
@@ -3810,8 +3830,18 @@ def _run_prepared_lane(
                     relocated_lane,
                     repo=baseline_snapshot.root,
                     project_root=baseline_snapshot.project_root,
+                    # B101 P1: the carried pre-snapshot resolution is what
+                    # R1 consumes; nothing is re-resolved inside the
+                    # snapshot. `base` is only evaluate_r1's fallback for a
+                    # direct (non-snapshot) caller and is never read when
+                    # `resolved_base` is supplied. The effective
+                    # declaration (possibly request-supplied, B019) is not
+                    # known at this layer, so the resolved OID -- a valid
+                    # spelling of itself -- stands in rather than
+                    # `judge.base`, which is None for a request-owned lane.
                     base=resolved_base,
                     adapter=adapter,
+                    resolved_base=resolved_base,
                     profile=unit.profile,
                     diagnostics=diagnostics,
                     on_base_resolved=resolved_base_holder.append,
@@ -3883,18 +3913,18 @@ def _run_prepared_lane(
                     ReasonCode.TARGET_NOT_MEASURED,
                 )
                 if r1_attempted:
-                    # (P33/A-223f) v5 collapses two independently-resolved
-                    # `base` values into ONE field, so which wins is stated
-                    # rather than left to whoever writes the code next:
-                    # `judgment.resolved.base` is the PRE-SNAPSHOT resolution
-                    # against the consumer's own repository, and R1's
-                    # in-snapshot resolution must EQUAL it. Merge-base is
-                    # idempotent on an already-ancestor value, so the second
-                    # call reproduces the first's OID -- and if it ever
-                    # stops doing so, that is a real divergence between the
-                    # commit assay measured and the one it recorded, which
-                    # must be loud rather than silently resolved in favour
-                    # of whichever value happened to be assigned last.
+                    # (P33/A-223f) `judgment.resolved.base` is the
+                    # PRE-SNAPSHOT resolution against the consumer's own
+                    # repository, and the base R1 actually diffed against
+                    # must EQUAL it. Since B101 P1, R1 no longer re-resolves
+                    # inside the snapshot -- it consumes that same carried
+                    # OID (`evaluate_r1(resolved_base=...)`) -- so this is
+                    # an invariant check rather than a reconciliation: if a
+                    # future path ever hands R1 a different commit, the
+                    # divergence between the commit assay measured and the
+                    # one it recorded must be loud rather than silently
+                    # resolved in favour of whichever value was assigned
+                    # last.
                     # wave-1 §5/A-260: a whole-target R1 never resolves a
                     # base at all (`on_base_resolved` is never called on
                     # that path, evaluate_r1's own docstring), so
@@ -3961,8 +3991,12 @@ def _run_prepared_lane(
             )
             if added is None and not whole_file_r2:
                 try:
-                    resolved = measurability.check_base_is_head(
-                        baseline_snapshot.root, resolved_base, remaining=deadline.remaining
+                    # B101 P1: consume the carried pre-snapshot resolution;
+                    # never re-resolve inside the snapshot.
+                    resolved = measurability.check_resolved_base_is_head(
+                        baseline_snapshot.root,
+                        resolved_base,
+                        remaining=deadline.remaining,
                     )
                     diff_text = git.run(
                         baseline_snapshot.root,
@@ -4568,8 +4602,8 @@ def _run_prepared_lane(
         # tier that READS a base ran", and whole-target scope is exactly
         # where the two diverge. A whole-target R1 never resolves a base
         # (`on_base_resolved` is never called on that path), and a
-        # whole-target R2 skips both `check_base_is_head` and the `git diff`
-        # -- so on a whole-target lane NEITHER tier compares against a
+        # whole-target R2 skips both `check_resolved_base_is_head` and the
+        # `git diff` -- so on a whole-target lane NEITHER tier compares against a
         # comparison commit, and recording one would be the invented fact
         # `_build_judgment_resolved`'s own docstring forbids.
         whole_target_scope = lane.judge.mode == "whole_target"
@@ -5134,7 +5168,8 @@ def _run_higher_rigor_lane(
     try:
         # A P22 snapshot carries the resolved commit's full reachable OBJECT
         # closure, never a branch/tag REF -- a symbolic `judge.base` (the
-        # common case) only the CONSUMER's own repository can resolve.
+        # common case) only the CONSUMER's own repository can resolve. The
+        # resolved OID is carried into the snapshot-side checks below.
         # Resolved once, here, before any snapshot exists.
         # B019/A-328: ONE effective declaration, decided by
         # `resolve_base_declaration` in `run_lane` before the dispatch, then

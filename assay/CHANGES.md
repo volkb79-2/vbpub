@@ -11,6 +11,30 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `tester-unified/run` evidence. JSON is the default output; verdict inspection
   also offers a concise text summary. No runtime dependencies are added.
 
+### Fixed
+- fix(assay): base checks inside a P22 snapshot (R1, R2's own target diff,
+  both R3 canary halves) and `assay plan`'s diff now use the base commit
+  resolved before the snapshot. They no longer re-run
+  `merge-base`/`rev-list --parents` inside it (B101 P1, port of
+  `assay-b096` `84baffb4`). Verdicts on today's full-history seed are
+  unchanged. B101's upcoming shallow seed needs this change. `judgment.resolved.base`
+  stays the resolved commit, `BASE_IS_HEAD` still refuses, and a merge
+  HEAD's first-parent rule is still decided before the snapshot.
+- fix(assay): a P25 qualification scenario TERMINAL mismatch now carries the
+  scenario artifact, assay stdout/stderr tails and the pytest log tail in its
+  error (witness/comparator/cleanliness mismatches and a missing artifact
+  still raise without them).
+  Previously the gate container removed that evidence. Expected terminals are
+  unchanged.
+
+### Testing
+- test(assay): history-cut snapshot regressions (real git, `.git/shallow` at
+  {seed commit, carried base}) for R1, a merge HEAD's first parent, R2 without
+  R1, and the R3 canary control. The tests prove `merge-base` fails inside
+  the snapshot and that the run still passes. All four fail against the
+  pre-port code. The cut keeps the R3 transformed half's parent visible, so
+  that half is not exercised by it.
+
 <!-- cmru: release history -->
 
 ## [6.5.0] - 2026-09-19

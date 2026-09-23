@@ -1985,8 +1985,9 @@ class JudgmentResolved:
       works in (A-149). A consumer reading ``/tmp/...`` learns nothing about
       the project.
     * :attr:`base` is the PRE-SNAPSHOT resolution against the consumer's own
-      repository. R1's in-snapshot resolution must equal it — merge-base is
-      idempotent on an already-ancestor value — and v5 records one field
+      repository. Snapshot-side checks consume this OID directly and never
+      re-resolve it (B101 P1: a snapshot carries no refs and, once B101's
+      shallow seed lands, no ancestry to walk) — and v5 records one field
       where v4 had two independently-resolved values, so which one wins is
       stated rather than left to an implementer.
 
@@ -3167,8 +3168,8 @@ class Judgment:
         # check used to encode -- "R2 always compares a base" -- was
         # therefore false from the moment `whole_file_r2` shipped: a
         # whole-target R2 mutates whole declared files and skips both
-        # `check_base_is_head` and the `git diff`, exactly as a whole-target
-        # R1 resolves nothing against a base. So on a whole-target lane
+        # `check_resolved_base_is_head` and the `git diff`, exactly as a
+        # whole-target R1 resolves nothing against a base. So on a whole-target lane
         # NEITHER tier compares a base, and A-223a's own "present exactly
         # when a tier that reads one is" makes the base FORBIDDEN there.
         #
