@@ -12,7 +12,7 @@ while observing a victim is a first-class mode, not a workaround.
 
 ```bash
 ./setup.sh                      # once
-./cgprofile --version           # prints cgprofile 0.1.0
+./cgprofile --version           # source checkout: cgprofile 0.1.0
 ./cgprofile doctor              # what can I reach?
 
 ./cgprofile run \
@@ -21,13 +21,15 @@ while observing a victim is a first-class mode, not a workaround.
   -- ./gate.sh
 ```
 
-`./cgprofile --version` is the documented operator identity probe. It prints
-exactly one `cgprofile 0.1.0` line to stdout, exits 0, and emits no stderr; the
-value comes from the project version in `pyproject.toml`. Help, usage, missing-
-argument, unknown-argument, and configuration diagnostics at every subcommand
-depth begin with `CGPROFILE 0.1.0 — cgroup resource profiler` as line 1.
-Normal profiling output is unchanged. The shell shim and `cgprofile.py`
-therefore expose the same top-level compatibility option.
+`./cgprofile --version` is the documented operator identity probe. In a source
+checkout it uses the `pyproject.toml` version; a built image embeds the exact
+CMRU release version as `CGPROFILE_VERSION`, so the CLI and daemon identify
+the same release (for example, `1.0.0`). An untagged local image is explicitly
+identified as `0.0.0-dev`. Help, usage, missing-argument, unknown-argument,
+and configuration diagnostics at every subcommand depth begin with the
+matching `CGPROFILE <version> — cgroup resource profiler` headline. Normal
+profiling output is unchanged. The shell shim and `cgprofile.py` therefore
+expose the same top-level compatibility option.
 
 - **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
   Start there if you want to use it.

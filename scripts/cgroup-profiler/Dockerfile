@@ -42,6 +42,8 @@ FROM python:3.14-slim
 ARG CGPROFILE_VERSION=1.0.0
 ARG GIT_REVISION=unknown
 
+ENV CGPROFILE_VERSION="${CGPROFILE_VERSION}"
+
 LABEL org.opencontainers.image.title="cgprofile" \
       org.opencontainers.image.description="RG-55 cgroup/DAMON profiling daemon (RG55-INTERFACE-CONTRACT.md)" \
       org.opencontainers.image.source="https://github.com/volkb79-2/vbpub" \

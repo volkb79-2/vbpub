@@ -7,13 +7,31 @@ The supported operator front door is the repository shell shim:
 # cgprofile 0.1.0
 ```
 
-The probe prints the version sourced from `pyproject.toml` to stdout, exits 0,
-emits no stderr, and is exactly one identity line. The shim routes `--version`
+The probe prints one identity line and exits 0. In a source checkout it uses
+`pyproject.toml`; a built image reports the CMRU release version embedded as
+`CGPROFILE_VERSION` (for example, `1.0.0`). The shim routes `--version`
 directly to `cgprofile.py`, so this check does not require the analysis/reporting
 venv. Help, usage, and configuration diagnostics at every subcommand depth
-begin with the CGPROFILE headline as line 1; normal profiling output is
-unchanged. Use
+begin with the matching CGPROFILE headline as line 1; normal profiling output
+is unchanged. Use
 `ATTACH-GUIDE.md` for the complete gate integration recipe.
+
+## Build or publish the daemon image
+
+From the repository root, preview and release the registered project:
+
+```bash
+cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
+cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
+```
+
+Use the explicit `1.0.0` override for the first release; later releases can
+omit it and follow CMRU's normal tag-based bump. CMRU creates the release tag
+before image build. `build-push.py` reads that exact tag to set the OCI
+tag/label and embedded runtime version, so CMRU releases need no manual
+`CGPROFILE_VERSION` export. An untagged local `--build` uses `0.0.0-dev`; a
+manual `--push` needs an exact release tag or a validated `CGPROFILE_VERSION`
+override.
 ## Daemon adoption
 
 This is the adoption guide: commands here are intended to be copied by an
