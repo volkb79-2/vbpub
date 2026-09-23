@@ -1,8 +1,14 @@
 # Assay backlog audit — 2026-09-23
 
-**Status: IN PROGRESS.** This report is committed early and updated
-incrementally per the audit's own instructions. Sections marked `[PENDING]`
-are not yet filled.
+**Status: COMPLETE.** All 103 entries (B001-B103) now carry an evidenced
+`**Status: ...**` line, the frontmatter index is complete and schema-valid,
+and every section below is filled (no `[PENDING]` markers remain). This
+report was built across two sequential agent sessions on the same task (a
+checkpoint/continuation handoff mid-task, per this estate's own long-running-
+agent doctrine) — the Method, frontmatter repair, WIP-branch findings, and ID
+collisions sections below are carried over verbatim from the first session's
+already-thorough investigation; the verdict table (B001-B087), UNCLEAR items,
+and prose-wrong findings were completed by the second.
 
 ## Method
 
@@ -100,14 +106,100 @@ verdicts below; correction invited.
 
 ## Verdict table
 
-Batch B088-B103 (15 entries + 1 stub) is done; see the body of each entry
-for its normalized `**Status: ...**` line and cited evidence — not
-duplicated here to avoid drift between two copies of the same fact. B001-
-B087 are in progress (dispatched as four parallel research passes; folded in
-as they complete). Summary counts so far (B088-B103 only):
+All 103 entries; see the body of each entry for its normalized
+`**Status: ...**` line and full cited evidence — this table is a compact
+index, not a duplicate of the detail. Physical file order (not strict id
+order after B061) is preserved to match the actual heading sequence.
 
 | id | verdict | version/date | one-line evidence |
 |---|---|---|---|
+| B001 | DONE | v2.1.0 (2026-08-18) | merge `ccf9ca55` "wave 3 -- P34/B001 SQL/DDL adapter" |
+| B002 | DONE | v2.0.0/v2.1.0 | A-249/A-250; two real cmru-cut releases |
+| B003 | DONE | v2.0.0/v2.1.0 | `.pyz`+`.sha256` published both releases |
+| B004 | DONE | v5.0.0 (2026-09-03) | A-442, `d9fc22eb` via `d761838d`; own prose stale, see prose-wrong findings |
+| B005 | DONE | v2.0.0 (2026-08-17) | merge `e7e2c616`; A-260 |
+| B006 | DONE | v2.0.0 (2026-08-17) | same merge `e7e2c616`; A-269 |
+| B007 | DONE | v5.0.0 (2026-09-03) | A-440, `d30b313b` via `d761838d` |
+| B008 | DONE | v2.4.0 (2026-08-25) | `e2169d46`; A-301 |
+| B009 | DONE | v5.0.0 Wave D (2026-09-02) | docs-only, DA-D16 |
+| B010 | PARTIAL | 2026-08-25 | environment preflight shipped; image-baking half unaddressed |
+| B011 | DONE | v2.2.0 (2026-08-24) | `f64307a9` |
+| B012 | DONE | v2.2.0/v2.4.0 | `8a2a4731`, `e2169d46`; A-296 |
+| B013 | DONE | v2.4.0 (2026-08-25) | `11b20645`/`7941fdcb`; A-297 |
+| B014 | DONE | v2.3.0 (2026-08-24) | `37462618` |
+| B015 | WITHDRAWN | 2026-08-26 | A-326; byte-identical subset of compare-swap |
+| B016 | DONE | v2.4.0 (2026-08-25) | not reproducible; hardened, `00da6510`; A-295 |
+| B017 | WITHDRAWN | reverted 2026-08-25 (A-290) | fixed per-consumer via `.gitignore`, not assay code |
+| B018 | DONE | v3.0.0 (2026-08-30) | A-327/A-332, `b6aca39d` |
+| B019 | DONE | v3.0.0 (2026-08-30) | A-328, `b6aca39d` |
+| B020 | OPEN | filed 2026-08-25 | design-first, A-294 confirms still open |
+| B021 | DONE | v2.4.0 (2026-08-25) | part of `e2169d46`; A-302 |
+| B022 | DONE | v2.4.0 (2026-08-25) | part of `e2169d46`; A-303/A-305/A-306 |
+| B023 | OPEN | filed 2026-08-25 | no CLI producer/consumer, zero hits |
+| B024 | DONE | v2.4.0 sweep / v5.0.0 wiring | `7c9e8dd1`; A-417 |
+| B025 | PARTIAL | v2.4.0/2.4.1 | A-308; one acceptance box unmet |
+| B026 | PARTIAL | v2.4.0 (2026-08-25) | A-309/A-310, documented asymmetry not eliminated |
+| B027 | DONE | v2.4.0 (2026-08-25) | A-300, all boxes closed |
+| B028 | DONE | v5.0.0 Wave D | A-415, `dd8f4d2c` |
+| B029 | DONE | v5.0.0 Wave D | A-416, `81228b25` |
+| B030 | DONE | v2.4.1 (2026-08-26) | A-319, `6a0f9a04` |
+| B031 | DONE | v2.4.1 (2026-08-25) | A-320/A-323, `ae09425d`/`3f47d5fa` |
+| B032 | DONE | v2.4.1 (2026-08-25) | A-321/A-322, same commits |
+| B033 | DONE | v2.4.2 (2026-08-26) | A-325, `6e0dca84`+`a667862c` |
+| B034 | DONE (withdrawal) | v2.4.2 (2026-08-26) | A-326, `6e0dca84` |
+| B035 | DONE | v3.0.0 (2026-08-30), schema v8 | A-329/A-330, `b6aca39d` |
+| B036 | DONE | v3.1.0 (2026-08-30) | `26c92be9`+`d019b624` |
+| B037 | DONE | v4.0.0 (2026-08-31), schema v9 | resolved by B046, A-375-A-383 |
+| B038 | DONE | v4.0.0 (2026-08-31), schema v9 | resolved by B045, A-356/A-357/A-358 |
+| B039 | DONE | v3.2.0 (2026-08-30) | A-348, `1eeab9db` |
+| B040 | PARTIAL | (b) v4.0.0; (a) open | v8 provider refused by name; upstream bug never filed |
+| B041 | DONE | (a)(c) v3.2.0; (b) v4.0.0 | R3 wiring explicitly deferred as scope cut |
+| B042 | DONE | v3.2.0 (2026-08-30) | `5bd20c71` |
+| B043 | DONE | v4.0.0 (2026-08-31), schema v9 | `143e927e` |
+| B044 | DONE (assay side) | v3.2.0 (2026-08-30) | `04ad5688`; ciu-side CIU-72 out of scope |
+| B045 | DONE | v4.0.0 (2026-08-31), schema v9 | `fac1b73b`/`cc4e955f` |
+| B046 | DONE | v4.0.0 (2026-08-31), schema v9 | `d0aab6fd` |
+| B047 | PARTIAL | items 1-5 v4.1.0; item 6 unticked | item 6 may be `394c6cc2`/F008-A4 but unconfirmed — UNCLEAR |
+| B048 | DONE (assay side) | v3.2.0 (2026-08-30) | `0fbe1261`; dstdns-side fixture out of scope |
+| B049 | DONE | v5.0.0 (2026-09-02) | A-408, `3b2b8e62` |
+| B050 | DONE | v5.0.0, schema v10 | A-436, `962211cd` |
+| B051 | DONE (by ruling) | v5.0.0 (2026-09-02) | A-437, `5b2730b6`; residual filed as B070 |
+| B052 | DONE | v5.0.0 (2026-09-02) | A-438, `83c31f18` |
+| B053 | DONE | v5.0.0 (2026-09-02) | A-409/A-414/A-439 |
+| B054 | DONE | v5.0.0 (2026-09-02) | A-410, `c37ca3fb` |
+| B055 | DONE (by ruling) | v5.0.0 (2026-09-02) | A-413, documented line-granularity limit |
+| B056 | DONE | v5.0.0 (2026-09-02) | A-412, `c80b3452` |
+| B057 | DONE | v4.1.0 Wave C gen 6 | `394c6cc2`; stale trailing sentence, see prose-wrong |
+| B058 | OPEN | filed 2026-08-31 | all 3 boxes unchecked, no fix commit |
+| B059 | DONE | v4.1.0 (2026-09-02) | A-404, `4b5e7707` |
+| B060 | DONE | v5.0.0 (2026-09-02) | A-411, `c80b3452` |
+| B061 | DONE | v4.1.0 (2026-09-02) | `875382d2` |
+| B065 | DONE | v5.2.0 (2026-09-08) | `940b5ba2` |
+| B066 | DONE | v5.2.0 (2026-09-08) | `243de634` |
+| B067 | DONE | v5.2.0 (2026-09-08), corrected round-1 | A-444/A-447 |
+| B068 | DONE | v5.1.0 (2026-09-08) | `96973575`; own discriminator theory refuted by the fix, see prose-wrong |
+| B062 | DONE | v5.1.0 (2026-09-08) | `c2d89888` |
+| B063 | DONE | v5.1.0 (2026-09-08) | `e426c29f` |
+| B064 | PARTIAL | R0/R1 v5.2.0; R3 unbuilt | A-444; R3 progress coupled to B007 |
+| B069 | DONE | resolved at filing, 2026-09-02 | `test_gate_harness_version_pins.py`, A-435 |
+| B070 | DONE | v6.0.0 (2026-09-08) | schema v10->v11 |
+| B071 | DONE (crashed bucket only) | v5.1.0 (2026-09-08) | `_crash_diagnostic_tails`; other buckets not wired |
+| B072 | DONE | v5.1.0 (2026-09-08) | `attestation.py` RecursionError caught; sweep -> B074/B075 |
+| B073 | OPEN | filed 2026-09-08 | no live-stream reader exists; deliberately not started |
+| B074 | DONE | v6.1.0 (2026-09-09) | `allow_test_path_targets`; third veto left open as B085 |
+| B075 | DONE | v5.1.0 (2026-09-08) | `verify_text` RecursionError caught, 11-site sweep test present |
+| B076 | OPEN | filed 2026-08-25/restated 2026-09-08 | deliberately deferred, no A-row |
+| B077 | DONE | v6.1.0 (2026-09-09) | symlink-destination refusal in `cli.py` |
+| B078 | PARTIAL | checkpoint 1 v6.1.0; 2/3 open | only vitest report reader exists |
+| B079 | OPEN | v12 candidate, filed 2026-09-08 | "FILE, DO NOT BUILD" |
+| B080 | OPEN | filed 2026-09-08 | recurred live a second time (dstdns D-433) |
+| B081 | OPEN | filed 2026-08-25 | no remedy message in `git.py` |
+| B082 | OPEN | filed 2026-08-25 | `CONSUMERS.md` still missing the bullet |
+| B083 | OPEN | filed 2026-08-25 | Go section still silent on shallow-clone refusal |
+| B084 | OPEN | filed 2026-08-25 | pin table restructured but still stale (`assay-4.0.0.pyz`) |
+| B085 | OPEN | filed 2026-09-09 | R3 veto still ignores `allow_test_path_targets` |
+| B086 | OPEN | design-first, filed 2026-09-09 | `generate_mutation_sites` still `UNSUPPORTED` |
+| B087 | OPEN | filed 2026-09-09 | R3 still not registered for javascript |
 | B088 | DONE | v6.1.1 (2026-09-11) | `judge_sha256` resume identity; fd08df8f/fd50183e/dd62d88b/e5455b2b |
 | B089 | OPEN | 2026-09-22 | non-blocking mitigation only; root cause in istanbul parser unexamined; reproduced 4x through 6.4.0 |
 | B090 | DONE (mitigated) | v6.2.0 (2026-09-12/13) | superseded by B091's auto budget/os._exit/LivenessRunner/--rejudge |
@@ -232,8 +324,65 @@ gitignored test-run byproducts (`.pytest_cache`, `.hypothesis`, `.coverage`,
 
 ## UNCLEAR items
 
-[PENDING — batches B001-B087 in progress]
+- **B047 item 6**: cannot confirm from CHANGES.md alone whether `394c6cc2`
+  (F008-A4, "the Go coverage fixtures are real toolchain output") is the
+  *same* fixture-regeneration work item 6 asks for — same release, same Go
+  wave, plausible, but not directly diffed. Would need the actual
+  `394c6cc2` diff or
+  `nyxloom-trove/reports/assay-WAVE-C-go-REPORT.md`'s F008-A4 section (not
+  read in this pass).
+- **B058**: genuinely unresolved in this repo — no fix commit, all 3
+  acceptance boxes unchecked. What would resolve it: evidence from srdm's
+  own backlog (a separate project, out of scope for this audit) that the
+  finding was relayed and dispositioned there; assay's own decisions.md has
+  no row addressing whether assay should ever consume a `covergate` verdict.
+- **`assay-b096` branch's residual question** (beyond what's already
+  resolved above): whether any call site OTHER than the two audited in
+  `runner.py`'s `_run_prepared_lane` (the R1 evaluator's `base=resolved_base`
+  argument, and the R2 early-claim path) still threads a *symbolic*
+  (non-pre-resolved) base into `measurability.check_base_is_head` from
+  inside a P22 snapshot. Both audited call sites already pass an
+  already-resolved SHA, so the branch's specific failure mode does not
+  reproduce there today; its qualification evidence (`assay-B096-BRIEF-4.md`)
+  is consistent with that ("the P25 base-resolution repair at `84baffb4` is
+  working," with the actual red being an unrelated Topos UI test). What
+  would resolve this fully: an exhaustive `git grep -n check_base_is_head`
+  across `src/assay/` with each call site's `base` argument traced to its
+  origin — not done in this pass for budget reasons.
+- **Uncommitted WIP in worktrees not already swept**: this audit's committed-
+  branch sweep is exhaustive (shared refs are visible regardless of which
+  worktree a session is pinned to), but a full `git status --porcelain`
+  inside every OTHER worktree was not possible from this sandboxed session
+  (the guard refuses `-C`/`cd` into any worktree but its own). A spot check
+  (byte-diffing `CHANGES.md` between each `assay-*`-named worktree's live
+  file and its own branch tip, via `git archive`, not `-C`) found no drift
+  in the ones checked, but this is not a complete guarantee against an
+  uncommitted, never-pushed edit sitting in some worktree this audit did not
+  think to name.
 
 ## Entries whose prose looks factually wrong vs. the code
 
-[PENDING — batches B001-B087 in progress]
+- **B004**: body text (lines ~490-585) still reads "CARVED, REVIEWED and
+  DEFERRED, wave 2... blocked twice," with no mention that it later shipped
+  whole in v5.0.0 (A-442, `d9fc22eb`). The correction is recorded only in
+  **B007's** section of this same file, not B004's own — a reader of B004
+  alone would conclude it's still blocked.
+- **B057**: acceptance box 3's trailing sentence ("The other two boxes stay
+  open and both still depend on F008-A4...") is leftover from an earlier
+  draft; boxes 1 and 2 are individually marked `[x]` with "Landed"/"REMOVED"
+  evidence directly above it. Stale prose, not a functional defect, but
+  self-contradictory as written.
+- **B068**: the entry's own "a useful discriminator" section builds a theory
+  (R0/R1 hits a git-resolution path R2 doesn't) and states it as if
+  established ("Whatever code path... differs from R2's, in a way worth
+  tracing"). The entry's own later Resolution section explicitly refutes
+  this: `_resolve_repo` runs identically at every rigor level; the real
+  field observation was a container-mounting difference, not an assay code
+  path difference. A reader stopping at the "useful discriminator" framing
+  would draw the wrong conclusion.
+- **B080**: the entry frames its own prediction ("this WILL recur") as a
+  single hypothetical risk, but by the time of this audit the predicted
+  "latent tripwire" had already fired a second time live (dstdns D-433,
+  noted in the entry's own addendum) — the body text of the main proposal
+  section still reads as if this were a one-off, not a confirmed recurring
+  pattern.
