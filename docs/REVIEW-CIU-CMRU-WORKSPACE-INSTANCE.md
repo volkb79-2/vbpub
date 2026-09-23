@@ -334,7 +334,10 @@ reviewer requirement.
 
 ## Final adversarial review and gate receipts (2026-09-22)
 
-The reviewed tip is `6b5d7fe39a6885fa9866ac2e1ed5e9037e87df3c`.
+The implementation/spec tip qualified by the final gates is
+`c61eabe7a944f05c620ab7c305bb9eddff13188e`. The later evidence-only commit
+contains only this receipt update and does not alter implementation, specs, or
+tests.
 
 - **CIU specification and adapter:** S16 now says that `worktree list` exposes
   the native Git inventory, including unmanaged linked checkouts, matching
@@ -366,17 +369,17 @@ The reviewed tip is `6b5d7fe39a6885fa9866ac2e1ed5e9037e87df3c`.
   deterministic `derandomize=True, database=None` settings. The final lanes
   require branch coverage and a 100% floor.
 - **Final tester-unified receipts:**
-  - `run-gate-vbpub-worktree-3182024-1790105147`: library R0-R3 PASS;
+  - `run-gate-vbpub-worktree-3458975-1790114451`: library R0-R3 PASS;
     67 tests locally, 100% line/branch coverage, and 183/183 mutation
     candidates killed with zero survivors, hangs, crashes, or budget overruns.
-  - `run-gate-vbpub-ciu-3223416-1790106689`: CIU R0-R3 PASS; 65/65
+  - `run-gate-vbpub-ciu-3510055-1790115971`: CIU R0-R3 PASS; 65/65
     mutation candidates killed with zero survivors, hangs, crashes, or budget
     overruns; peak 851 MiB.
-  - `run-gate-vbpub-assay-3315120-1790109732`: CMRU aggregate PASS. Its
-    serialized child containers were `run-gate-vbpub-coverage-3374356-1790111661`
+  - `run-gate-vbpub-assay-3589014-1790118639`: CMRU aggregate PASS. Its
+    serialized child containers were `run-gate-vbpub-coverage-3654870-1790120776`
     (1885 passed, 10 skipped, 100% line/branch),
-    `run-gate-vbpub-mutation-3375729-1790111703` (72/72 killed), and
-    `run-gate-vbpub-canary-3435992-1790113558` (PASS); the bare-host
+    `run-gate-vbpub-mutation-3657245-1790120823` (72/72 killed), and
+    `run-gate-vbpub-canary-3710435-1790122857` (PASS); the bare-host
     enrollment lane also passed 8 tests. Aggregate exit was 0.
 
 The branch is technically green and merge-ready. The only checklist item not
