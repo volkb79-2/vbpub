@@ -3754,3 +3754,15 @@ launch signal had fallen below the threshold (`full avg10=0.89`), but the
 estate's current one-gate-container rule still leaves no admitted slot for a
 P6 short gate. No running job was stopped, and P6 remains queued at its quiet
 reviewed tip `8e52ea08`.
+
+### RW-304 — 2026-09-23 14:36:08Z — reconcile P6 with the current source-backed Assay
+
+Before launching P6's mutation campaign, the controller compared its exact
+judged checkout with current `main`. P6 tip `8e52ea08` does not contain the
+already-merged Assay B101 shallow-snapshot seed `5bf832a4` (nor the subsequent
+current-main Assay source), while P6's `run-gate.toml` deliberately consumes
+the checkout's own `assay/src` at lane-run time. The P1 campaign is already
+running on its quiet judged tree and is not changed. P6 will be reconciled
+onto current `main`, revalidated, and only then receive its exact-tree short
+gates and R2 launch; the pre-reconciliation CIU checkout remains untouched
+until the new tip is settled.
