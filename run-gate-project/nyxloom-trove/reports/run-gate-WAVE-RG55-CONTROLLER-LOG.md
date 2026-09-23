@@ -3551,3 +3551,22 @@ package snapshot from judged tree `8076246c`. The resulting linear final tree
 is clean at `c362c8dffb41cad6c7c4c57fc69e5163eacd8f3b`, with current
 source-backed Assay 6.4 and no mutation/container launch. P6 remains queued
 behind a green PSI check and the estate's two-slot mutation limit.
+
+### RW-289 — 2026-09-23 08:05:14Z — adopt B101-era main and launch fresh P1 short gate
+
+The controller has resumed the RG-55 wave on current `main` `7a3c0571`, after
+the assay B101 P1 merge and handoff. The cockpit was missing the Assay console
+and still had an older run-gate development install; both were rebuilt from
+this clean checkout into `/home/vscode/.venv`, yielding Assay
+`6.5.1.dev237+g7a3c0571` and run-gate `23.9.2.dev305+g7a3c0571` (rev 46).
+These are development identities, not stable release claims.
+
+P1 was reconciled into a new linear worktree
+`.worktrees/rg55-p1-current`, preserving current main's estate-CLI
+compatibility and CP-4 profiler backlog additions. The reconciliation commit
+is `ced40659`; the tree is held quiet for judging. With memory PSI
+`full avg10=0`, the controller launched only the short `r0-r1` gate detached
+from `scripts/cgroup-profiler/`, with wrapper PID `322897` and authoritative
+marker `/tmp/rg55-p1-r01-20260923.log`. No other RG-55 gate was active at
+launch. P6 remains queued until the assay B101 P2 shallow-seed announcement;
+its old judged tree is not reused.
