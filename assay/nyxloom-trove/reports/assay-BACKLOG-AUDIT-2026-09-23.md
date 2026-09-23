@@ -100,21 +100,140 @@ verdicts below; correction invited.
 
 ## Verdict table
 
-[PENDING — filled incrementally as each batch of entries is processed; see
-counts below for current progress.]
+Batch B088-B103 (15 entries + 1 stub) is done; see the body of each entry
+for its normalized `**Status: ...**` line and cited evidence — not
+duplicated here to avoid drift between two copies of the same fact. B001-
+B087 are in progress (dispatched as four parallel research passes; folded in
+as they complete). Summary counts so far (B088-B103 only):
+
+| id | verdict | version/date | one-line evidence |
+|---|---|---|---|
+| B088 | DONE | v6.1.1 (2026-09-11) | `judge_sha256` resume identity; fd08df8f/fd50183e/dd62d88b/e5455b2b |
+| B089 | OPEN | 2026-09-22 | non-blocking mitigation only; root cause in istanbul parser unexamined; reproduced 4x through 6.4.0 |
+| B090 | DONE (mitigated) | v6.2.0 (2026-09-12/13) | superseded by B091's auto budget/os._exit/LivenessRunner/--rejudge |
+| B091 | DONE | v6.2.0 (2026-09-13) | A1-A6 all shipped, CHANGES.md 6.2.0 |
+| B092 | DONE | v6.3.0 (2026-09-13) | `judge.mutation.identity_exclude` shipped |
+| B093 | OPEN | deferred 2026-09-13 | P7 S1, excluded from the B091 fold-in commit, absent from CHANGES.md entirely |
+| B094 | OPEN | deferred 2026-09-13 | P7 S3/N5, same as B093 |
+| B095 | OPEN | deferred 2026-09-13 | P7 S5, same as B093 |
+| B096 | DONE | v6.3.0 (2026-09-13) | confirmed in main `cli.py`; branch name later reused for unrelated unmerged work, see WIP findings |
+| B097 | DONE | v6.3.0 (2026-09-13) | 1daf6e62 via merge 260c4013 |
+| B098 | DONE | v6.3.0 (2026-09-13) | CHANGES.md 6.3.0 |
+| B099 | DONE | v6.3.1 (2026-09-16) | CHANGES.md 6.3.1; **ID COLLISION**, see below |
+| B100 | OPEN | 2026-09-19 | no `assay analyze report` subcommand on main |
+| B101 | OPEN | 2026-09-23 | direction decided, not carved (already correctly labeled, from ffa1264a) |
+| B102 | OPEN | 2026-09-23 | direction decided, not carved (already correctly labeled, from ffa1264a) |
+| B103 | OPEN (stub) | n/a | id reservation only, see WIP findings |
 
 ## WIP-branch findings
 
-[PENDING]
+**`assay-b096`** (7 commits ahead of the point it diverged, 15 files touched
+vs. main). Two unrelated pieces of work share this branch name:
+1. `6f76e471` "B096 derive rejudge outcome help from vocabulary" — this IS
+   backlog item B096 — merged to main via `260c4013` ("Merge assay B092 B098
+   B096 B097"), confirmed `git merge-base --is-ancestor 6f76e471 main`.
+   Fully shipped, v6.3.0. No action needed.
+2. Everything after that merge point (`84baffb4` "carry resolved bases
+   through P22 snapshots" onward) is a SEPARATE, unrelated, UNMERGED repair
+   for a P25/Topos-qualification bug, confirmed `git merge-base
+   --is-ancestor 84baffb4 main` → **not an ancestor of main**. This fix adds
+   `measurability.check_resolved_base_is_head()`, a snapshot-safe sibling of
+   `check_base_is_head()` that consumes an ALREADY-resolved commit directly
+   instead of re-resolving it. **The bug this fixes still exists on main:**
+   `runner.py`'s `_run_prepared_lane` (main, ~line 3964) calls
+   `measurability.check_base_is_head(baseline_snapshot.root, resolved_base,
+   remaining=...)` — passing an already-resolved commit as `base`, which
+   `check_base_is_head` then re-resolves via `git.resolve_base` A SECOND
+   TIME, now against the materialized P22 snapshot. Per the fix's own
+   reasoning (confirmed by reading `isolation.py`'s snapshot writer), P22
+   snapshots intentionally carry bare commit objects with no refs/tags, so a
+   symbolic spelling that resolved correctly against the real repository
+   before the snapshot was made can come back `GIT_FAILED` when re-resolved
+   a second time inside the ref-less snapshot. This is a real, still-open
+   correctness gap on main, not merely a design preference.
+   **Branch state: abandoned mid-repair.** After implementing the fix with
+   tests (`84baffb4`), the branch moved into live `tester-unified`
+   reproduction of the triggering P25/Topos scenario (checkpoints
+   `99e588e9`, `5d828bb0` "Topos command failure"), then stopped after one
+   formatting-only commit (`0f640587`) — no completion report, no merge, no
+   further commits. Prior art cited directly by B101's own operator-decided
+   text (this backlog file, committed at `ffa1264a`), so whoever picks this
+   up should read `84baffb4` before reinventing the seam.
+
+**P35 "execution interruption boundary" package** (`assay-next-wave` →
+`assay-b099-p35-repair` and `review/assay-p35-execution-interruption-
+boundary`, siblings off the same carve point `c132d598`). Real state:
+**NOT READY**, per the package's own most recent independent review.
+Timeline: carved (`bcb70320`, `c132d598`) → adversarial design review
+REJECTED it (`9c9f6d99`, "NOT READY — do not dispatch or implement", F-1:
+no producer maps an RG-55 `cgprofile ctl watch --on-stall kill` to the
+receipt vocabulary, so a daemon kill can leave the receipt `running`/absent
+and assay can still emit a guessed functional verdict) → a corrected design
+landed on `assay-b099-p35-repair` (`40b2106e`) → a FIX-VERIFICATION review
+of that correction (`9bc3ea84`) again found it **NOT READY**: F-2/F-3/F-4
+closed at design level (implementation proof still required), F-6 closed at
+policy level, but **F-1, F-5, F-7, F-8 still NOT CLOSED** (no daemon-side
+owner for the pre-kill receipt guarantee; the pre-start journal has no
+implementable cross-component owner; the receipt contract contradicts
+itself on `intent_nonce` width; D-449 doesn't exist and P36 isn't a
+lintable handoff). `assay-b099-p35-repair` then added one more commit
+(`6d34f0d7`, "close P35 residual handoff blockers", ~24 minutes after the
+review's NOT READY verdict) claiming to close the remaining findings — but
+this claim has **no independent re-review** on record; treat the package as
+NOT READY until a fresh review says otherwise, not as quietly fixed.
 
 ## ID collisions
 
-[PENDING]
+**B099 / A-448 (confirmed, verified by direct diff, not just description):**
+`assay-b099-p35-repair`'s frontmatter and `decisions.md` diffs reassign the
+id `B099` (previously slotted `B100` in that lineage) to the P35 design, and
+graft new content onto `A-448`. Both ids are ALREADY real, different,
+already-shipped/settled items on main:
+- Main's real `B099` = "a JSON `null` mutation resume record crashes the
+  native R2 lane" — **DONE**, v6.3.1. `git diff main
+  assay-b099-p35-repair -- assay/nyxloom-trove/4-backlog.md` shows the
+  branch's diff **deletes this entry's entire body** (confirmed directly,
+  not inferred) if merged as-is.
+- Main's real `A-448` = "Ship review evidence creation and consumption as
+  `assay analyze`" (the `analyze`/`collect`/`receipt` work in CHANGES.md's
+  Unreleased section). The branch's `decisions.md` diff **replaces this row
+  outright** with the P35 interruption-terminal decision, and adds `A-449`/
+  `A-450` (new, non-colliding numbers) alongside it.
+- The branch is also based on a stale `main` (predates several 2026-09-2x
+  additions, e.g. B089's later reproduction paragraph), so a naive merge
+  would ALSO silently regress unrelated content added to main after the
+  branch's base — another reason this needs a deliberate rebase-and-
+  renumber at merge time, never a fast-forward or naive `git merge`.
+- Repair applied on this branch: reserved **B103** as a stub (title,
+  status, and pointers only — the branch's full design text was
+  deliberately NOT copied in, to avoid this file presenting an unreviewed,
+  currently-NOT-READY design as settled backlog prose) and added an
+  explicit collision warning to the real B099's new status line. The real
+  A-448 decision was left untouched, per instruction (`decisions.md` is out
+  of scope for edits here) — the operator still needs to decide the A-448/
+  A-449/A-450 renumbering when/if P35 is ever carved for real.
+
+**`codex/cmru-contextual-config`** — its assay CLI headline parser
+(`AssayArgumentParser`, `cli_headline()` in `assay/src/assay/cli.py`) is
+**confirmed superseded**: byte-identical code already exists on `main`,
+apparently shipped estate-wide via `cli: universalize vbpub parser
+diagnostics (aa0e69fa)`, CHANGES.md v6.5.0 (2026-09-19). No action needed on
+the assay side of that branch.
+
+**General branch/worktree sweep** (`git diff --name-only main...<branch> --
+assay/` over every local branch, plus uncommitted-change checks in every
+assay-named worktree): no OTHER branch or worktree carries assay changes
+beyond the ones already covered above. `assay-b088-resume-identity`,
+`assay-b092-b098`, `assay-b097`, `assay-liveness`, `rg49-assay-b9`,
+`rg49-assay-state`, `rg55-p5-assay63-reconcile` are all fully merged/stale
+(zero diff from main) and carry no uncommitted source changes — only
+gitignored test-run byproducts (`.pytest_cache`, `.hypothesis`, `.coverage`,
+`.run-gate`, ciu instance files).
 
 ## UNCLEAR items
 
-[PENDING]
+[PENDING — batches B001-B087 in progress]
 
 ## Entries whose prose looks factually wrong vs. the code
 
-[PENDING]
+[PENDING — batches B001-B087 in progress]
