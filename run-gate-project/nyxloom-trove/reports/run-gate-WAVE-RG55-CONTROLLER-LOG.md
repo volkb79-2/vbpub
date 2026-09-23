@@ -3703,3 +3703,14 @@ blockers. No new merge-blocking issue was found. The review record is
 `ACCEPT-CONDITIONAL`: the one reachable-state-equivalent survivor remains
 disclosed, final quiet gates remain required, and the standing independent
 release review requirement is not waived.
+
+### RW-300 — 2026-09-23 14:00:02Z — provisionally integrate P1 while R2 runs asynchronously
+
+The operator's revised workflow is applied. P1 has 100% changed line and
+branch coverage, green short gates (`r0-r1` and `r3`), and the controller's
+round-2 review found no new blocker. The P1 implementation may therefore be
+merged provisionally while the long R2 campaign continues in the separate
+CIU-managed worktree `rg55-p1-r2-ciu` at its quiet judged tree. This does not
+claim R2 PASS, release, or wave completion. A non-equivalent survivor,
+regression, or review finding requires a backport and invalidates affected
+evidence; final quiet gates and the required release review remain mandatory.
