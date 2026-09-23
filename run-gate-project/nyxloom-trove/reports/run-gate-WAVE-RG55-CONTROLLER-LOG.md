@@ -3689,3 +3689,17 @@ free. The original R2 ran from `09:06:11Z` to `11:48:41Z` (2h42m30s), so the
 new run is expected to be a multi-hour task; it will receive the normal
 10-second health check and then no progress read more often than every 25
 minutes.
+
+### RW-299 — 2026-09-23 13:59:17Z — controller review round 2 started and recorded
+
+The controller performed a fresh read-only adversarial pass on P1's current
+integration tip `9471a9af` (source tree unchanged from the short-gated
+`a2c2501f`; the intervening commit records the R2 disposition). The review
+covered daemon write safety and lifecycle, contract/CLI validation, incremental
+summary arithmetic, subtree discovery, DAMON ownership, recovery/retention,
+image and ciu configuration, documentation, and the repaired round-1 B1–B8
+blockers. No new merge-blocking issue was found. The review record is
+`cgprofile-P1-DAEMON-REVIEW-round2.md`, commit `3455999a`, and is
+`ACCEPT-CONDITIONAL`: the one reachable-state-equivalent survivor remains
+disclosed, final quiet gates remain required, and the standing independent
+release review requirement is not waived.
