@@ -3608,3 +3608,15 @@ PSI `full avg10=0` and an empty gate slot. The controller started the fresh P1
 budget, and PSI `full avg10=0.14%`. Its child marker will be written to
 `/tmp/rg55-p1-r01-pty-20260923.log` on completion. No mutation launch is
 authorized until that marker is read separately and reports PASS.
+
+### RW-293 — 2026-09-23 08:50:27Z — repair P1 short-gate coverage oracle
+
+The persistent PTY P1 `r0-r1` run completed with 1,206 tests passed but exit
+2 because total coverage was 99%: `cgprofile.py:70`, the current-main
+`CgprofileArgumentParser.format_usage()` compatibility line, was unexercised.
+This is an oracle gap in a changed line, not a product or infrastructure
+failure. The controller added the direct usage-headline regression
+`test_usage_starts_with_the_headline` in `a2c2501f` and started a fresh quiet
+rerun in PTY session `24764`, with PSI `full avg10=0.83%`. Its marker is
+`/tmp/rg55-p1-r01-rerun-pty-20260923.log`; mutation remains blocked pending a
+PASS.
