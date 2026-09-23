@@ -6,11 +6,20 @@
 # that is what keeps the contract honest, and it is what lets `mark` work from
 # inside a gate container that has no venv. Everything else needs pandas and
 # plotly and so runs on the profiler's own venv.
+#
+# `serve` (the RG-55 daemon, PID 1 in `cgprofile-host-daemon`) and `ctl`
+# (its socket client) are COLLECTOR-tier too — RG55-INTERFACE-CONTRACT.md
+# and DESIGN.md §1 — so they run here on system python3 exactly like
+# `_collect`/`mark`, never needing the venv to even exist for the daemon to
+# start. `ctl report` is the one apparent exception, and it is not actually
+# one at THIS layer: the running daemon's own `handle_report` shells out to
+# the venv itself (RW-14, see lib/serve.py) as a subprocess, so `ctl`
+# (report included) stays on system python here regardless of verb.
 set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 case "${1:-}" in
-  _collect|mark)
+  _collect|mark|serve|ctl)
     exec python3 "$here/cgprofile.py" "$@"
     ;;
 esac

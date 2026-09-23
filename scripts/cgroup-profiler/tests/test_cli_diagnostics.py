@@ -41,6 +41,10 @@ def test_nested_help_starts_with_the_headline(capsys):
     assert captured.out.splitlines()[0] == cg.cli_headline()
 
 
+def test_usage_starts_with_the_headline():
+    assert cg.build_parser().format_usage().splitlines()[0] == cg.cli_headline()
+
+
 def test_nested_missing_required_argument_starts_with_the_headline(capsys):
     with pytest.raises(SystemExit) as exc_info:
         cg.build_parser().parse_args(["mark"])

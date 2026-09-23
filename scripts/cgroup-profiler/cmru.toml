@@ -1,0 +1,75 @@
+# =============================================================================
+# cgroup-profiler release contract — parsed ONLY by cmru (one parser per
+# format, D-110). Same [github]/[targets]/[project]/[steps] shape as
+# run-gate-project/ciu/nyxloom/pwmcp (RG-55 C8).
+#
+# `project.id` below MUST equal the key this project is registered under in
+# the root cmru.orchestration.toml ([orchestration.project.cgroup-profiler])
+# — cmru's config loader errors ("config declares project.id=X, expected Y")
+# if they diverge; that key, not the id, is what drives change-detection
+# (the directory holding whatever `config = "..."` names). It equals this
+# directory's OWN basename by convention (run-gate-project/cmru.toml's own
+# header explains the same convention), even though the project actually
+# lives two levels down (scripts/cgroup-profiler/), not at the repo root.
+#
+# `strategy = "scm"`: the FIRST release must pass `--set-version 1.0.0`
+# (the controller cuts it, per the P1 handoff — this is a brand-new
+# `cgprofile-v` tag prefix, so unlike run-gate-project's own transitional
+# gotcha there is no pre-existing non-semver tag to collide with). Every
+# release after that auto-bumps normally from the previous real semver tag.
+# =============================================================================
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+
+[project]
+id = "cgroup-profiler"
+description = "cgprofile — cgroup/DAMON resource profiler: a wrap/attach CLI for ad hoc use, and the RG-55 host daemon run-gate talks to per lane"
+template_revision = 4
+prefix = "cgprofile-v"
+artifacts = ["oci-image"]
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+
+# SSOT pointer, dogfooding run-gate-project's own convention: the release
+# gate IS this project's own two run-gate lanes, not a duplicated pytest
+# line. r0-r1 (unit + coverage, 100% line+branch) then r3 (canary rejection)
+# — BOTH must pass for a release. r2 (assay mutation-of-changed-lines) is
+# deliberately NOT here: it is a PRE-MERGE lane a package implementer runs
+# ONCE before handoff (RG55 wave plan §3), not a release gate every cmru
+# release re-runs — assay mutation testing against the full diff-since-last-
+# release would re-litigate lines a prior release already accepted, and its
+# 45-90m budget has no business blocking every routine release.
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "cgprofile: r0-r1 (unit + 100% line/branch coverage)", argv = ["./run-gate.py", "r0-r1"], cwd = "." },
+  { label = "cgprofile: r3 (canary rejection)", argv = ["./run-gate.py", "r3"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "cgprofile: build daemon image", argv = ["python3", "build-push.py", "--build"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "cgprofile: push daemon image", argv = ["python3", "build-push.py", "--push"], cwd = "." },
+]
