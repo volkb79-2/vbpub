@@ -3620,3 +3620,20 @@ failure. The controller added the direct usage-headline regression
 rerun in PTY session `24764`, with PSI `full avg10=0.83%`. Its marker is
 `/tmp/rg55-p1-r01-rerun-pty-20260923.log`; mutation remains blocked pending a
 PASS.
+
+### RW-294 — 2026-09-23 09:06:32Z — P1 short gates green; mutation campaign healthy
+
+The repaired P1 tree passed `r0-r1` in 64.90 seconds with 1,207 tests and
+100% line and branch coverage. The required `r3` canary lane then passed with
+all seven canaries rejected and exit 0. Both lanes used the expected coarse
+profiling fallback because `cgprofile-host-daemon` is not running; no gate
+verdict was affected.
+
+After a fresh PSI `full avg10=0` check and an empty gate slot, the controller
+started P1 `r2` in PTY session `45281` from quiet HEAD `a2c2501f`; the lane
+declared its 4-hour advisory budget and created container
+`run-gate-vbpub-r2-522284-1790154369`. The 10-second health check showed the
+container active, host PSI `full avg10=2.68%`, and Assay entering its
+source-backed judge. The missing installed-distribution provenance notice is
+expected for this in-repo source-backed consumer. Prior P1 history estimates
+about 5–6 hours; no progress polling is due before the 25-minute boundary.
