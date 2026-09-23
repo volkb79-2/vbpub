@@ -76,15 +76,16 @@ No CMRU product code was changed, as required by the handoff.
 
 ### P0 review and gate
 
-Independent adversarial review completed with no remaining findings. The
-first pass caught the missing B104 release detail, conflated CIU/CMRU mutation
-outcomes, B079's incomplete-status boundary, and the B104 Docker-test
-contradiction. Repairs were reviewed again; a further pass corrected the
-B104 witness-regeneration recipe to derive identity values from the disposable
-repository rather than the artifact being checked. Final reviewer result:
-P0 closed, no blockers, no gates/tests run by the reviewer. The initially
-selected `gpt-6-astra` reviewer hit its usage limit; the completed fresh review
-used `gpt-6-sol` at xhigh effort.
+Independent adversarial review completed with no remaining findings. An
+earlier P0 review pass found the missing B104 release detail and conflated
+CIU/CMRU mutation outcomes, then hit its usage limit before formal closeout.
+The completed fresh review found B079's incomplete-status boundary and the
+B104 Docker-test/checklist contradiction. Those repairs were rechecked; a
+further pass corrected the B104 witness-regeneration recipe to derive identity
+values from the disposable repository rather than the artifact being checked.
+Final reviewer result: P0 closed, no blockers, no gates/tests run by the
+reviewer. The initially selected `gpt-6-astra` reviewer hit its usage limit;
+the completed fresh review used `gpt-6-sol` at xhigh effort.
 
 Local record checks before gate:
 
