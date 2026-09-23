@@ -1627,3 +1627,48 @@ with the exact tree held quiet; the redundant `Gt->GtE` may remain as a
 written equivalent, while the new regression must kill the initialization
 mutant. Final r0-r1/r3, the fresh Sol xhigh review, and the release remain
 pending.
+
+## Controller addendum — current P1 R2 on `a2c2501f`
+
+The fresh source-backed R2 on quiet tree
+`a2c2501fea2b576a774f1a7fcedd3a5ad251f630` completed at the terminal event
+`2026-09-23T11:48:41.057125+00:00`. Its separately read verdict accounts for
+**250 candidates: 249 killed, 1 survived, 0 equivalent, 0 budget-exceeded,
+0 crashed, and 0 hung**; Assay reported `FAIL/MUTANTS_SURVIVED` with exit 1.
+The exact tester container was
+`run-gate-vbpub-r2-522284-1790154369`, and it has exited.
+
+The sole survivor is `lib/damon.py:325`, `Gt->GtE` on the pool release guard.
+It is the same reachable-state equivalent documented above: after a live
+pool-owned slot exists, the preceding `current == expected_end` condition and
+`expected_end = max(_owned) + 1` imply `current > baseline`. The replacement
+cannot alter any reachable teardown decision. No new oracle gap was found, and
+no production repair is warranted for this survivor. The verdict and progress
+artifacts remain the authoritative mutation evidence; this equivalence is
+disclosed rather than relabeled as an assay PASS.
+
+The current tree's short evidence is independent: `r0-r1` passed 1,207 tests
+with 100% line and branch coverage, and `r3` rejected all seven canaries.
+The controller's read-only adversarial review found no additional blocker.
+These facts support provisional integration under RW-296, but do not replace
+the fresh Sol xhigh review or the final release gate set.
+
+## Controller addendum — repeat R2 on `07161416`
+
+The follow-on registered R2 ran against quiet tree
+`071614168b2a96cab0b90b1f0d4c439972bf54dc` and completed at
+`2026-09-23T16:50:08.347346Z` after 10,536.3 seconds. Its terminal progress
+event records `candidate_total=250`, `killed=249`, `survived=1`, and zero
+equivalent, budget-exceeded, crashed, or hung candidates. The separate verdict
+records R0 PASS and R2 `FAIL/MUTANTS_SURVIVED`, exit 1. The tree's
+`scripts/cgroup-profiler/lib` and tests are identical to the already-reviewed
+and short-gated P1 source tree `a2c2501f`; this run adds exact-tree R2 evidence
+for the report-only follow-on commit.
+
+The single survivor is `lib/damon.py:325`, `Gt->GtE`, replacement SHA-256
+`92a00d7d91da9f0f06c3f218c49c9b98323469962b291365b85d3c16b6b7f95f`. It is
+the same reachable-state equivalent described above: after the owned pool
+slot is live, `current == expected_end` and `expected_end = max(_owned) + 1`
+imply `current > baseline`. The mutant cannot alter a reachable release
+decision. No new oracle gap was found; the mechanical Assay verdict remains
+FAIL because Assay does not encode this human equivalence classification.

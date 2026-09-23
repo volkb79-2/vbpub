@@ -81,6 +81,8 @@ seed/materialization proof rather than be masked by `--no-walk`.
 | config + isolation focused tests | PASS: 133 tests |
 | P1 runner suites | PASS: 71 tests |
 | tester-unified gate | PASS on `4ed15f31`: all required phases, self-hosted lane, Topos, cmru B006(a), independent self-hosting, and pyflakes |
+| full local suite after commit | PASS: 4799 passed, 19 skipped, 95 deselected |
+| v12 distribution/packaging follow-up | PASS: 41 tests; pyflakes gate test PASS |
 | verdict schema / B079 question | PASS: operator answered yes; A-452--A-455 record the v12 decisions |
 
 The first gate attempt on `5bf832a4` ran the full self-hosted suite successfully
@@ -122,7 +124,62 @@ The current deterministic evidence ledger is:
 | ingested mutation/verifier payload suites | PASS: 152 tests |
 | config, CLI, runner, and liveness suites | PASS: 150 tests |
 | gate harness, W8, Python qualification | PASS: 138 passed, 9 skipped |
-| prior authoritative tester-unified gate | PASS on `4ed15f31`, `GATE_EXIT=0`; v12 rerun pending provisional merge |
+| authoritative tester-unified rerun | PASS on `c183a371`, all 12 phase markers, `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0` |
+
+## Provisional post-merge execution
+
+The provisional merge was made with `--no-ff` before the long-running work, so
+the following jobs ran from the CIU-managed worktree
+`assay-b101-long-20260923` rather than blocking the main line:
+
+- the CIU lane finished in about 4m28s with R0/R1/R3 PASS and a truthful
+  R2 `INCONCLUSIVE/NO_MUTANTS` result (`CIU_GATE_EXIT=5`); this lane does not
+  declare mutation candidates;
+- the requested CMRU mutation campaign started and was checked after kickoff,
+  but stopped in about 10s because the declared source diff produced no
+  mutation candidates (`CMRU_MUTATION_EXIT=1`), so this is not reported as a
+  mutation pass. The CIU assay lane likewise reported `NO_MUTANTS`; inspection
+  found `assay/run-gate.toml` declares only `tester-unified` and the in-tree
+  `tester-unified` assay lane is R0-only, so no full-source R2 campaign is
+  declared for assay;
+- the authoritative assay tester-unified rerun was checked after kickoff and
+  completed in about 19m with every registered phase passing. Its only defect
+  was a stale W3 dstdns witness schema version, found by the first run and
+  fixed in `f0339e3a`, then backported to main as `c183a371` before the rerun.
+
+The gate's final evidence is `/tmp/assay-b101-provisional-tester-unified-rerun.log`;
+the temporary CIU worktree has since been removed.
+
+## Release and final closeout
+
+The major release completed on 2026-09-23:
+
+- `assay-v7.0.0` is tagged and published from release candidate commit
+  `47435679`; the release tester-unified gate passed all 12 phase markers and
+  `ASSAY_REGISTERED_GATE_COMPLETE=1` in 1261.1 seconds;
+- the retained wheel is `assay-7.0.0-py3-none-any.whl` with SHA-256
+  `f8124aa7edc9bc60765d36ac035d46a5be21451277510415a14653577571b9e5`, and
+  the zipapp is `assay-7.0.0.pyz` with SHA-256
+  `3e6f24bbf43d25936a9d4cc080ad1d4f94cb29d5b79aa5d987a4e053a7d638a5`;
+- the wheel was installed in `/home/vscode/.venv`; both `pip show assay` and
+  `assay --version` report `7.0.0`;
+- `/workspaces/dstdns/.assay-inbox/release.json` now contains the v7.0.0
+  notice and the zipapp hash from its release sidecar.
+
+The installed CMRU 5.4.1 could not parse the current `[runtime]` project
+configuration, so it was rebuilt from the checked-out source per the release
+instructions. CMRU's child remapper then nested the relative orchestration
+config under the candidate path and could not find the assay project config.
+A temporary wrapper passed the authoritative central config by absolute path;
+that let the release dry-run and the authorized release complete. The wrapper
+and failed dry-run worktrees were removed. No CMRU product files were changed.
+
+The release result is `CMRU_RELEASE_EXIT=0` in
+`/tmp/assay-b101-release.log`. The remaining mutation result is explicitly
+limited: the attempted CIU/CMRU campaigns found no candidates, and assay has no
+registered full-source R2 lane. The release gate and all configured acceptance
+gate passed; no mutation pass is claimed. The CIU lane's R2 status remains
+`INCONCLUSIVE/NO_MUTANTS`.
 
 ## History-walk audit
 
@@ -139,5 +196,6 @@ config/isolation tests, `assay/README.md`, `assay/docs/{DESIGN-GUIDE.md,
 CONSUMERS.md,INTERNAL-CONSUMERS.md}`, `assay/CHANGES.md`,
 `assay/nyxloom-trove/decisions.md`, this log, B101/B102/B093 backlog evidence,
 and the W8 v12 verdict generations. P3 is no longer pending the operator
-decision; the only remaining long-running work is the post-merge campaign and
-authoritative gate in the CIU worktree.
+decision; assay-v7.0.0 is released, deployed, and notified. The mutation
+attempts produced no candidates and remain explicitly recorded as non-pass
+outcomes.

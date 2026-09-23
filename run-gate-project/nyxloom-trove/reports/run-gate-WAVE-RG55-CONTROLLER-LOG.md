@@ -3766,3 +3766,55 @@ running on its quiet judged tree and is not changed. P6 will be reconciled
 onto current `main`, revalidated, and only then receive its exact-tree short
 gates and R2 launch; the pre-reconciliation CIU checkout remains untouched
 until the new tip is settled.
+
+### RW-305 — 2026-09-23 14:39:49Z — P6 current-main reconciliation reviewed
+
+P6 was reconciled with current `main` in private merge commit
+`cc9d13b6`, retaining the P6 cgprofile implementation while adopting the
+current source-backed Assay tree and its B101 shallow snapshot seed. The
+reviewed P6 CIU checkout is now exact tree `4392bece` after the report-only
+controller review round 2; it is clean and no mutation has started. The
+focused local suite passed `445 passed, 6 skipped`; the full tester-unified
+gate remains authoritative because the cockpit lacks NumPy/report-tier
+dependencies. The short registered gates remain deferred until the already
+active P1 mutation and unrelated B101 gate release the estate's one gate
+slot.
+
+### RW-306 — 2026-09-23 18:58:14Z — P1 R2 terminal and P6 `r0-r1` green
+
+The P1 CIU mutation run finished on quiet tree
+`071614168b2a96cab0b90b1f0d4c439972bf54dc`. The terminal side-file event
+records 250 candidates: 249 killed, one survivor, and zero equivalent,
+budget-exceeded, crashed, or hung outcomes. The separate verdict records R0
+PASS and R2 `FAIL/MUTANTS_SURVIVED`, exit 1. Its sole survivor is the already
+documented equivalent `lib/damon.py:325 Gt->GtE` on the pool release guard,
+with the same replacement hash and invariant proof. The CIU tree's package
+source is unchanged from the reviewed and short-gated P1 source; its exact
+result is in the P1 report.
+
+P6's registered `r0-r1` lane passed on quiet tree
+`4392bece345d828e88f25f2b13cd7b239f7d711a`: 1,474 tests passed, and coverage
+reported 5,560/5,560 statements and 1,862/1,862 branches. Run-gate history
+records `exit_code=0`, `dirty=false`, and the same tree. Tester container
+`upbeat_elbakyan` ran under `dev-gates.slice` at 3 CPUs; it exited and was
+removed by the lane. Host memory PSI `full avg10=0.00`; the slot was free at
+the follow-up check. P6 `r3` is next; no mutation or merge has started.
+
+### RW-307 — 2026-09-23 19:08:43Z — P6 `r3` green; version identity needs resolution
+
+P6's registered `r3` canary lane passed on quiet tree
+`4392bece345d828e88f25f2b13cd7b239f7d711a`: all 7 canaries were rejected,
+zero survived, and run-gate reported exit 0. The final detached gate
+container was `run-gate-vbpub-r3-1174471-1790190183`, under
+`dev-gates.slice`; its 10-second health receipt records `cpus=3000000000`
+while running. The container and runner had exited by the subsequent check;
+memory PSI `full avg10=0.00` and the slot is free. The earlier `r0-r1` and
+`r3` receipts are for this exact pre-reconciliation P6 tree, not evidence for
+any later tree.
+
+The controller review found that CMRU's OCI release coordinate (planned
+1.1.0) is injected into image tags/labels, while `lib/serve.py` still
+hardcodes `CGPROFILE_VERSION = "1.0.0"` and the CLI reports the separate
+`pyproject.toml` version `0.1.0`. Before P6 release, resolve whether this
+separation is intentional under the frozen contract; if not, propagate the
+release coordinate to the running daemon's self-description and test it.
