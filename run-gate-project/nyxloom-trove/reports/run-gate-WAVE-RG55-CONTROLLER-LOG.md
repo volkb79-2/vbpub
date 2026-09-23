@@ -3727,3 +3727,20 @@ contract fixtures were updated to the P6 package version 1.1.0 and remain
 byte-identical to the package copies. Reconciliation commit: `bb1042a6`.
 This is a source/test checkpoint only; registered gates, adversarial review,
 mutation disposition, merge, and release remain outstanding.
+
+### RW-302 — 2026-09-23 14:26:03Z — P6 controller review conditional; gate slot occupied
+
+The controller reviewed P6 at `13e394a0` after the P1 reconciliation and
+found no new merge-blocking defect. The review is explicitly conditional: it
+does not replace the required fresh Sol xhigh review, current-tip mutation
+evidence, fresh registered gates, or current live probes. The review also
+fixed and recorded the adopter-facing 1.1.0 examples in README,
+CONSUMERS.md, and DESIGN-GUIDE.md (`54e0a364`); the interface contract mirror
+remains byte-identical.
+
+At the first permitted 25-minute state check, P1's isolated mutation container
+`run-gate-vbpub-r2-765950-1790171671` was still up with its exact CIU runner
+(`765950`). Two unrelated Assay B101 gate containers were also active. Memory
+PSI was over the launch threshold (`full avg10=5.08`), so no P6 gate or probe
+was launched and no running job was disturbed. P6 remains queued for the next
+quiet, PSI-admitted slot.
