@@ -20,8 +20,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   unchanged. B101's upcoming shallow seed needs this change. `judgment.resolved.base`
   stays the resolved commit, `BASE_IS_HEAD` still refuses, and a merge
   HEAD's first-parent rule is still decided before the snapshot.
-- fix(assay): a P25 qualification scenario mismatch now carries the scenario
-  artifact, assay stdout/stderr tails and the pytest log tail in its error.
+- fix(assay): a P25 qualification scenario TERMINAL mismatch now carries the
+  scenario artifact, assay stdout/stderr tails and the pytest log tail in its
+  error (witness/comparator/cleanliness mismatches and a missing artifact
+  still raise without them).
   Previously the gate container removed that evidence. Expected terminals are
   unchanged.
 
@@ -30,7 +32,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   {seed commit, carried base}) for R1, a merge HEAD's first parent, R2 without
   R1, and the R3 canary control. The tests prove `merge-base` fails inside
   the snapshot and that the run still passes. All four fail against the
-  pre-port code.
+  pre-port code. The cut keeps the R3 transformed half's parent visible, so
+  that half is not exercised by it.
 
 <!-- cmru: release history -->
 

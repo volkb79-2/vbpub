@@ -482,7 +482,9 @@ def run_isolated_canary(
     (:func:`~assay.runner._execute_snapshot_unit`) the lane's own baseline
     uses, each with its OWN fresh coverage reservation when ``"R1"`` is
     declared (O2: no cross-unit profile reuse) -- the control's R1 diff
-    compares ``judge.base..seed commit``, while the transform's compares
+    compares the lane's PRE-SNAPSHOT resolved base (never ``judge.base``'s
+    spelling, which the ref-free snapshot cannot resolve; B101 P1)
+    ``..seed commit``, while the transform's compares
     ``seed commit..its own deterministic child commit``, mirroring exactly
     what two real, sequential commits would mean in the old live-copy
     orchestration.

@@ -156,9 +156,9 @@ def test_r2_without_r1_diffs_the_carried_base_in_a_history_cut_snapshot(
 
 
 def test_r2_without_r1_refuses_on_base_is_head(git_repo: GitRepo):
-    """R2's own independent guard sequence -- the IDENTICAL
-    ``check_base_is_head`` R1 uses -- fires when no R1 claim resolved a
-    diff to reuse."""
+    """R2's own independent guard sequence -- the same carried-OID
+    ``check_resolved_base_is_head`` guard R1 uses inside the snapshot --
+    fires when no R1 claim resolved a diff to reuse."""
     head = git_repo.head()
     judge = make_r2_judge(
         source_root_paths=(git_repo.path,), base=head, mutation=_MUTATION

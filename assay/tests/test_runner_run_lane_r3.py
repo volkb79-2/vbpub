@@ -252,10 +252,14 @@ def test_r3_canary_halves_consume_carried_bases_in_a_history_cut_snapshot(
     never walk ancestry inside the snapshot.
 
     Every snapshot's history is cut at {seed commit, base}; the probes prove
-    ``merge-base`` fails there. Before this port the control half re-ran
-    ``resolve_base`` inside its snapshot, so under this cut its R1 rendered
-    GIT_FAILED, the control was not a known-good PASS, and the claim was
-    ``CANARY_INCONCLUSIVE`` rather than a proved canary.
+    ``merge-base`` fails there. Against the pre-port source this test fails
+    earlier -- the lane's baseline R1 already re-resolves and errors, so only
+    one snapshot is ever made (``len(probes) == 3`` fails). With only the
+    canary's ``resolved_base`` threading reverted, the control half re-runs
+    ``resolve_base`` in its snapshot and the claim is ``CANARY_INCONCLUSIVE``
+    (review-verified 2026-09-23). The transformed half is NOT exercised by
+    this cut: its child's single parent (the seed commit) stays visible, so
+    in-snapshot resolution would still succeed there.
     """
     base_rev = _seed_covered_package(git_repo)
     probes = cut_snapshot_history(monkeypatch, carried_base=base_rev)

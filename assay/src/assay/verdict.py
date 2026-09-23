@@ -1985,8 +1985,9 @@ class JudgmentResolved:
       works in (A-149). A consumer reading ``/tmp/...`` learns nothing about
       the project.
     * :attr:`base` is the PRE-SNAPSHOT resolution against the consumer's own
-      repository. R1's in-snapshot resolution must equal it — merge-base is
-      idempotent on an already-ancestor value — and v5 records one field
+      repository. Snapshot-side checks consume this OID directly and never
+      re-resolve it (B101 P1: a snapshot carries no refs and, once B101's
+      shallow seed lands, no ancestry to walk) — and v5 records one field
       where v4 had two independently-resolved values, so which one wins is
       stated rather than left to an implementer.
 
