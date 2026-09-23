@@ -3766,3 +3766,16 @@ running on its quiet judged tree and is not changed. P6 will be reconciled
 onto current `main`, revalidated, and only then receive its exact-tree short
 gates and R2 launch; the pre-reconciliation CIU checkout remains untouched
 until the new tip is settled.
+
+### RW-305 — 2026-09-23 14:39:49Z — P6 current-main reconciliation reviewed
+
+P6 was reconciled with current `main` in private merge commit
+`cc9d13b6`, retaining the P6 cgprofile implementation while adopting the
+current source-backed Assay tree and its B101 shallow snapshot seed. The
+reviewed P6 CIU checkout is now exact tree `4392bece` after the report-only
+controller review round 2; it is clean and no mutation has started. The
+focused local suite passed `445 passed, 6 skipped`; the full tester-unified
+gate remains authoritative because the cockpit lacks NumPy/report-tier
+dependencies. The short registered gates remain deferred until the already
+active P1 mutation and unrelated B101 gate release the estate's one gate
+slot.
