@@ -123,7 +123,7 @@ The daemon's version response is contract major 1:
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "1.0.0",
+  "cgprofile": "1.1.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",
