@@ -3848,3 +3848,21 @@ the helper's own visible PID membership in the mounted cgroup tree and local
 `/proc/self/cgroup`, then normalize each observed process path against that
 derived root. Reject missing/ambiguous membership or an absent resolved
 cgroup; do not use a host cgroup namespace to avoid the translation.
+
+### RW-310 — 2026-09-24 06:04:07Z — record current cockpit source and BuildKit socket remediation
+
+The operator confirms the running devcontainer is based on
+`/workspaces/dstdns/.devcontainer/devcontainer.json`. This is context only:
+the controller must not inspect or modify `/workspaces/dstdns`; all durable
+host-setup changes belong upstream in
+`modern-debian-tools-python-debug/host-setup`.
+
+The rootless BuildKit socket was inaccessible because it was created as
+`1000:1000` mode `0660`, while the cockpit has the Docker group GID but not
+GID 1000. The live host was corrected to use a sticky shared runtime directory
+and a post-start socket `chgrp docker`/`chmod 0660`; no service restart was
+performed. Matching upstream source is committed on
+`rg55-buildkit-socket-gid` at `7f0f46f3`; its registered `smoke` lane passed
+(`85 passed, 6 skipped`, exit 0). This branch remains unmerged and requires
+independent review; the smoke result is not release evidence. No file under
+`/workspaces/dstdns` was read or changed.
