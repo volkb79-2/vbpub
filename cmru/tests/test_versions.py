@@ -216,10 +216,11 @@ def test_versions_config_is_strict_and_deep_merges_project_tables():
 
 
 def test_versions_config_loader_maps_bad_policy_and_overlay_to_config_errors(tmp_path):
-    project_path = tmp_path / "cmru.toml"
-    project_path.write_text(_project_config("demo", "[versions]\nage_window_days = 0"), encoding="utf-8")
+    root_config, _project_root = _estate(
+        tmp_path / "bad-root", root_versions="[versions]\nage_window_days = 0",
+    )
     with pytest.raises(SystemExit) as caught:
-        config_module.load_forge_config(project_path)
+        config_module.load_forge_config(root_config)
     assert caught.value.code == 2
 
     root_config, _project_root = _estate(
