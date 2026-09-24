@@ -9,6 +9,7 @@ existing target file is never overwritten. Templates ship inside the wheel
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import sys
@@ -384,11 +385,27 @@ def validate(files: list[tuple[Path, str]], root: Path) -> None:
             # The generated contracts must ALSO pass cmru's own conformance
             # gate (review finding: template drifted from standards).
             import subprocess as _sp
+            import cli_extended as _cli_extended
+            import worktree as _worktree
+
+            # Validate with this installation's CMRU and its actual sibling
+            # libraries. The subprocess cwd is `src/` for a source checkout,
+            # so inheriting a relative PYTHONPATH would resolve `src` as
+            # `src/src` and miss the sibling packages. Package origins are the
+            # authoritative import roots for both source and wheel installs.
+            import_roots = dict.fromkeys((
+                str(Path(__file__).resolve().parents[1]),
+                str(Path(_cli_extended.__file__).resolve().parents[1]),
+                str(Path(_worktree.__file__).resolve().parents[1]),
+            ))
+            env = os.environ.copy()
+            env["PYTHONPATH"] = os.pathsep.join(import_roots)
 
             res = _sp.run(
                 [sys.executable, "-m", "cmru.cli", "standards", "--config",
                  str(temp_root / "cmru.orchestration.toml")],
                 capture_output=True, text=True, cwd=str(Path(__file__).parent.parent),
+                env=env,
             )
             if res.returncode != 0:
                 _init_error(
