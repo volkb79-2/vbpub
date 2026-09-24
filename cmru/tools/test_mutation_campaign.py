@@ -59,7 +59,7 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
         ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
         stdout=subprocess.PIPE,
     ).stdout.strip()
-    jobs = [_job(line=7), _job(line=8)]
+    jobs = [_job(line=7), _job(line=8), _job(line=9)]
     previous = {
         "schema_version": 1,
         "base": head,
@@ -69,7 +69,8 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
         "max_mutants": 10,
         "operators": list(mutation_campaign.OPERATORS),
         "test_argv": ["pytest", "tests"],
-        "candidate_count": 2,
+        "timeout_seconds": 120,
+        "candidate_count": 3,
         "results": [
             {
                 "path": jobs[0].path,
@@ -84,6 +85,15 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
                 "operator": jobs[1].site.operator,
                 "description": jobs[1].site.description,
                 "outcome": "crashed",
+            },
+            {
+                "path": jobs[2].path,
+                "line": jobs[2].site.lineno,
+                "operator": jobs[2].site.operator,
+                "description": jobs[2].site.description,
+                "exit_code": 124,
+                "outcome": "killed",
+                "termination": "timeout",
             },
         ],
     }
@@ -102,9 +112,28 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
         test_argv=["pytest", "tests"],
         jobs=jobs,
         max_mutants=10,
+        timeout_seconds=120,
     )
     assert resumed[0] == previous["results"][0]
     assert resumed[1] is None
+    assert resumed[2] == previous["results"][2]
+
+    shorter_timeout = mutation_campaign._resume_results(
+        evidence_path=evidence,
+        repo_root=repo,
+        resume=True,
+        base=head,
+        head=head,
+        project_prefix=Path("cmru"),
+        assay_source_commit="assay-commit",
+        test_argv=["pytest", "tests"],
+        jobs=jobs,
+        max_mutants=10,
+        timeout_seconds=60,
+    )
+    assert shorter_timeout[0] == previous["results"][0]
+    assert shorter_timeout[1] is None
+    assert shorter_timeout[2] is None
 
 
 def test_resume_refuses_changed_source(tmp_path):
@@ -169,4 +198,5 @@ def test_resume_refuses_changed_source(tmp_path):
             test_argv=["pytest", "tests"],
             jobs=[job],
             max_mutants=1,
+            timeout_seconds=120,
         )
