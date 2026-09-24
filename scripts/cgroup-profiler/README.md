@@ -125,9 +125,11 @@ profiling — that would add exactly the load the tool exists to measure.
 
 RG-55 added a second, always-on mode: a host daemon that run-gate (or anyone
 else) talks to over a Unix socket instead of spawning a collector per lane.
-It keeps PID/cgroup namespaces private and receives explicit read-only host
-`/proc` and cgroup-v2 mounts; only its DAMON interface and session storage are
-writable. It is `scripts/cgroup-profiler/`'s own **standalone ciu root** —
+It keeps PID/cgroup namespaces private and receives a read-only host `/proc`
+view plus an explicitly writable host cgroup-v2 view for opt-in P6 placement.
+`CgroupWriteGuard` limits cgroup writes to the placement whitelist; the
+one-shot helper keeps its cgroup view read-only. It is
+`scripts/cgroup-profiler/`'s own **standalone ciu root** —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
 
 ```bash

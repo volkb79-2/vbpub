@@ -6,30 +6,35 @@ feature list is in [`README.md`](../README.md); worked adoption belongs in
 
 ## Daemon safety and placement
 
-The daemon is a host-view observer. D-15 deliberately excludes host mutation:
-`serve` has no capability-changing option, does not import `TempCaps`, has no
-Docker socket, and writes only its session volume plus the DAMON admin sysfs
-state required to observe DAMON. A consumer that needs a cap change must use a
-separate, explicitly authorized tool; adding a hidden fallback here would make
-the observer change the workload it is measuring.
+The daemon never joins host PID, cgroup, or network namespaces and has no
+Docker socket. D-15's no-hidden-mutation boundary remains: cap and migration
+writes exist only through the explicit, opt-in D-20/D-25 placement request.
+That feature creates a token-named `rg-*` leaf under the verified gates slice,
+applies and reads back its caps, moves the lane's processes into it, and moves
+survivors back on stop; explicit `--on-stall kill` may write that leaf's
+`cgroup.kill`. `CgroupWriteGuard` is the program-level allowlist for those
+operations, including controller delegation and the original scope's
+`cgroup.procs` restoration path. The daemon's host cgroup-v2 bind is therefore
+writable: Linux cgroupfs placement cannot work through a read-only bind. This
+is a deliberate, bounded exception to observation-only operation, not a
+general host-control surface.
 
-Host visibility does not require joining host namespaces. Both daemon and
-one-shot helper keep private PID/cgroup namespaces and bind the host cgroup
-tree read-only; the host proc tree is also bound read-only at `/hostproc` and
-selected through `CGPROFILE_PROC_ROOT`. The daemon checks that PID 1 in that
-view belongs to a PID namespace distinct from the daemon's before serving.
-Host-visible PIDs from `/hostproc` are useful for reading process details, but
-they cannot be matched against `cgroup.procs` from the private PID namespace:
-the kernel translates host tasks to PID 0 there. Accordingly, container names,
-labels, and helper-mode `self` are resolved on the Docker-aware caller to full
-container IDs; the observer locates those IDs in the read-only cgroup tree.
+Host visibility does not require joining host namespaces. The daemon and
+one-shot helper keep private PID/cgroup namespaces; host `/proc` is explicitly
+bound read-only at `/hostproc` and selected through `CGPROFILE_PROC_ROOT`. The
+one-shot helper also keeps its host cgroup bind read-only because it does not
+perform daemon placement. The daemon checks that PID 1 in its host-proc view
+belongs to a PID namespace distinct from its own before serving. Host-visible
+PIDs from `/hostproc` are useful for reading process details, but they cannot
+be matched against `cgroup.procs` from the private PID namespace: the kernel
+translates host tasks to PID 0 there. Accordingly, container names, labels,
+and helper-mode `self` are resolved on the Docker-aware caller to full
+container IDs; the daemon locates those IDs in its explicit host cgroup view.
 Token-scoped sessions find the exact token in host `/proc` and walk its
 process descendants there, rather than treating a namespace-local PID as a
-host PID. This keeps observations explicit and fail-closed without namespace
-sharing or a Docker socket in the daemon. Token roots remain constrained to
-the selected target cgroup; only their descendants may be attributed after
-moving elsewhere. The DAMON sysfs and session directory remain the only
-intended writes.
+host PID. Token roots remain constrained to the selected target cgroup; only
+their descendants may be attributed after moving elsewhere. DAMON sysfs and
+the session directory remain separate intended write surfaces.
 
 ### Private namespaces and host views
 

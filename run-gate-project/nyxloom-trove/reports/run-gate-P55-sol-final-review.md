@@ -304,25 +304,27 @@ required final adversarial review.
 
 ### `P6`: cgprofile 1.1.0 follow-ups
 
-Worktree: `.worktrees/rg55-followups-cgprofile`, branch
-`rg55-followups-cgprofile`, current tip `8076246c`. Read:
+Worktree: `.worktrees/rg55-followups-cgprofile-final`, branch
+`rg55-followups-cgprofile-final`. The controller will set the exact base
+(`main`) and committed candidate tip in the fresh review dispatch after all
+required gates are green. Do not review the current failed-gate tree as a
+final candidate. Read:
 
 ```
 scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-HANDOFF.md
-scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-BRIEF-10.md
 scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-HANDOFF.md
+scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REPORT.md
+run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md
 ```
 
-At packet creation, the fresh R2 was still running as PID `3403254` in exact
-container `run-gate-vbpub-r2-3403254-1789439415`, after the timeout-oracle
-repair commit `8076246c`. Do not edit this worktree while it runs. The repair's
-targeted `tests/test_summary.py tests/test_serve.py` suite was 143/143. The
-older aggregate had five budget placeholders caused by summary/status tests;
-that evidence is stale for this repaired tree. On completion, read the new
-verdict and progress separately, then triage all survivors and any incomplete
-candidate. Verify CP-2..CP-12, socket peer credentials, watch role, placement
-guard, `cgprofile.slice`, host-PSI seam, kill-finalizes behavior, and both
-carriers. No release follows from an incomplete mutation lane.
+The reconciled candidate currently descends from `main` plus the P1 daemon and
+P6 follow-ups; review that complete diff, including private PID/cgroup/network
+namespaces, read-only host `/proc`, writable daemon cgroup view guarded by the
+D-25 allowlist, and the one-shot helper's read-only cgroup view. Review only in
+a genuine fresh Sol xhigh session. The P6-specific handoff supplies the attack
+surface, live probes, safety constraints, and round artifact path. Do not
+review, merge, or release until the controller confirms the exact candidate
+tree has passing final gates and complete mutation disposition.
 
 ### `CMRU`: release-recovery repair encountered during this wave
 

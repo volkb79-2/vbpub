@@ -147,9 +147,12 @@ def _no_session_outlives_its_test(tmp_path):
 
 
 def _server(tmp_path: Path, root: Path, **kw: Any) -> serve.SessionServer:
+    proc_root = kw.pop("proc_root", None)
+    if proc_root is None:
+        proc_root = _fake_proc(tmp_path)
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"), socket_path=str(tmp_path / "ctl.sock"),
-        cgroup_root=str(root), proc_root=str(_fake_proc(tmp_path)), clock=lambda: EPOCH_START,
+        cgroup_root=str(root), proc_root=str(proc_root), clock=lambda: EPOCH_START,
         session_id_fn=lambda: SESSION_ID, accept_timeout=0.05, **kw,
     )
     server.cgroup_rmdir = _fake_rmdir
@@ -879,7 +882,13 @@ def _check_golden(name: str, doc: Any) -> None:
 
 def test_the_placed_start_golden_is_the_live_document(tmp_path):
     root = _fake_cgroup_root(tmp_path, procs="101\n")
-    server = _server(tmp_path, root)
+    proc_root = _fake_proc(tmp_path)
+    proc_pid = proc_root / "101"
+    proc_pid.mkdir()
+    (proc_pid / "environ").write_bytes(
+        f"RUN_GATE_PROFILE_SESSION={TOKEN}".encode("utf-8") + b"\0"
+    )
+    server = _server(tmp_path, root, proc_root=proc_root)
     resp = server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})
     _check_golden("start-placed-v1.1.json", resp)
 

@@ -22,7 +22,7 @@
       "memory.max": 1073741824,
       "cpu.weight": 100
     },
-    "pids_moved": 0,
+    "pids_moved": 1,
     "error": null
   }
 }

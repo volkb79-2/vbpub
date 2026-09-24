@@ -1416,3 +1416,24 @@ to the same exact tree and remains clean. The controller's second review is
 cgprofile blocker. The focused local suite passed `445 passed, 6 skipped`, and
 `git diff --check` passed. The full tester-unified gate, exact-tree R2, fresh
 Sol review, and live probes remain required.
+
+## Session 13 — private-namespace/main reconciliation and P6 gate repair
+
+After merging P1's private-namespace daemon work and reconciling current main,
+the registered `r0-r1` run on `dce2b91a061c4d0cbb2f1d102ac87582cc7c9122`
+ran from 06:48:35Z to 06:50:44Z (129.062 s) and failed: 1,589 passed, 3
+failed. Two CLI `serve` tests had not stubbed the host-proc view preflight.
+The placed-start live-document test's fake `/proc` had no token-bearing
+environment, so it had not represented the process the test intended to
+place. Adding `RUN_GATE_PROFILE_SESSION=rg55-place-token-01` to fake PID 101
+makes the observed response correctly report `pids_at_start: 1` and
+`pids_moved: 1`; the golden was updated accordingly. No production behavior
+was weakened.
+
+The repaired affected set passed locally: `tests/test_serve.py`,
+`tests/test_serve_placement.py`, and `tests/test_deployment_contract.py` —
+247 passed, 6 skipped in 25.39 s. The golden/deployment subset passed 3 tests,
+and `git diff --check` passed. These are diagnostic local results, not the
+registered gate. The exact candidate still needs a clean committed-tree
+`r0-r1`, `r3`, current-tree mutation disposition, Sol xhigh adversarial review
+and required live probes. No merge or release is authorized by this entry.

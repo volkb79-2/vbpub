@@ -3953,3 +3953,30 @@ flag. After P1/P6 source reconciliation and test corrections, the socket test
 file passed (40 tests) and the targeted deployment/version/build/CLI/access
 set passed (178 tests) locally under the PSI gate. Those are diagnostic
 results only; registered `r0-r1` and `r3` must pass on a quiet committed tree.
+
+### RW-316 — 2026-09-24 07:00:46Z — disposition of the reconciled P6 R0/R1 run
+
+The registered `r0-r1` run on `dce2b91a061c4d0cbb2f1d102ac87582cc7c9122`
+started at 06:48:35Z and ended at 06:50:44Z (129.062 s), exit 1. It reported
+1,589 passed and three failed. Two CLI serve tests had stale test seams after
+private-host-proc preflight was added: they stubbed the host-cgroup check but
+not `have_host_proc_view`. The placed-start live-document test now supplies a
+token-bearing fake `/proc/101/environ`; its actual `pids_moved: 1` correctly
+differs from the old golden's `pids_moved: 0`. The test harness repairs are
+uncommitted at this ruling; the golden will be updated to the demonstrated
+behavior. This is a test-oracle/harness correction, not a production-code
+change. Focused verification and fresh registered gates remain required.
+
+### RW-317 — 2026-09-24 07:05:25Z — close the P6 gate-harness mismatch with behavioral proof
+
+The token-owning fake process made the placed-start oracle exercise the
+intended behavior: `pids_at_start` and `pids_moved` both report one. The
+`start-placed-v1.1.json` golden is now updated from zero to one, and the two
+CLI tests stub the newly required host-proc preflight. The corrected focused
+set (`tests/test_serve.py`, `tests/test_serve_placement.py`,
+`tests/test_deployment_contract.py`) passed 247 tests with 6 skipped in
+25.39 s; the individual golden/deployment subset passed 3 tests. README,
+DESIGN-GUIDE, the P6 Sol handoff, and this global review packet were reconciled
+to the private-namespace / writable-guarded-daemon-cgroup design. These edits
+are still uncommitted and do not validate the registered gate; run fresh
+`r0-r1` and `r3` on the exact committed tree.

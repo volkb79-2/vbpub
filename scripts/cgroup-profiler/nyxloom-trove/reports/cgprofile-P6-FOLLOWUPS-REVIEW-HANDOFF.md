@@ -1,22 +1,26 @@
 # cgprofile-P6-FOLLOWUPS — adversarial review handoff (RG-55 wave, package P6)
 
-**Reviewer:** FRESH session (Opus, xhigh), never a fork of any implementer or
-the controller. **Your job is to BREAK this before merge.** 3-round cap;
-fix-verification rounds resume YOUR session (the controller messages you the
-repair commit). Records: `scripts/cgroup-profiler/nyxloom-trove/reports/
-cgprofile-P6-FOLLOWUPS-REVIEW-round<n>.md`. Edit tool only for that file; no
-commits to the branch — repairs are the implementer's.
+**Reviewer:** a genuinely fresh Sol xhigh session, never a fork of any
+implementer or the controller. Confirm the actual route from session metadata;
+do not infer it from this file. **Your job is to BREAK this before merge.**
+Three rounds maximum. Fix-verification rounds resume this same live reviewer;
+the controller supplies the repair commit and preserves earlier rounds.
+Record each verdict at
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-round<n>.md`.
+You may make and commit scoped fixes in the isolated P6 worktree, but may not
+merge, tag, publish, install, or start/stop the main daemon.
 
-Branch `rg55-followups-cgprofile`, worktree
-`/workspaces/vbpub/.worktrees/rg55-followups-cgprofile`, project dir
-`scripts/cgroup-profiler/`. Base: the P1 tip named in the dispatch message
-(the branch merged it before the final gates). The tip hash is in the
-dispatch message. Review the FULL diff `<base>...<tip>` — every file, every
-type (lib, cgprofile.py, tests, goldens under `tests/fixtures/rg55/` AND the
-frozen cross-package copy `run-gate-project/nyxloom-trove/fixtures/rg55/`,
-`infra/`, ciu templates, Dockerfile, docs, CHANGES, backlog rows, the eight
-session briefs, LOG/REPORT). Use absolute paths; ignore whatever primary
-working directory the environment reminder names.
+Branch `rg55-followups-cgprofile-final`, worktree
+`/workspaces/vbpub/.worktrees/rg55-followups-cgprofile-final`, project dir
+`scripts/cgroup-profiler/`. At dispatch the controller supplies the exact
+current `main` base and committed candidate tip; review the FULL diff
+`<base>...<tip>` and verify the worktree state. The candidate includes the P1
+daemon plus P6 follow-ups and their reconciliation with current main. Review
+every changed file: library and CLI code, tests, both fixture copies, `infra/`,
+CIU templates, Dockerfile, README, DESIGN-GUIDE, CONSUMERS, CHANGES, backlog,
+controller log, P6 LOG/REPORT/briefs. The root and mirrored interface
+contracts must remain byte-identical. Use absolute paths; ignore any different
+primary working directory in the environment reminder.
 
 ## Phase 1 — BLIND (before any LOG/REPORT/BRIEF)
 
@@ -159,11 +163,15 @@ Write the round file, then return the verdict line first in your message.
 ## HOST LOAD (binding)
 
 8 cores shared with a production game server; PSI is the signal
-(`cat /proc/pressure/memory`; back off while `full avg10` > 5). pytest
+(`cat /proc/pressure/memory`; launch nothing while `full avg10` > 5). pytest
 SERIAL only, `nice -n 19 ionice -c 3`; targeted files while iterating, the
-whole suite at most once. ≤ 2 gate containers estate-wide (`docker ps` for
+whole suite at most once. At most 2 mutation containers estate-wide; each
+container must have an exact unique name, a verified loaded `dev-gates.slice`
+parent and immediate `docker update --cpus=3` (`docker ps` for
 `run-gate-`/`tester-unified`/`cgprofile-` first; other packages' mutation
-runs may be live); one image build, under PSI; `docker update --cpus=3`
-after any launch; remove in a `finally`. No container may use host
-PID/cgroup/network namespace modes. Never touch `run-gate-project/run-gate.py`,
-`ciu/src/`, `/workspaces/dstdns`, other worktrees.
+runs may be live); one image build, under PSI; remove only your exact named
+container in a `finally`. No container may use host PID/cgroup/network
+namespace modes. Never touch `run-gate-project/run-gate.py`, `ciu/src/`,
+`/workspaces/dstdns`, or other worktrees. Read-only access to the interface
+contract and controller-owned review packet is allowed; do not edit them as a
+reviewer.
