@@ -679,7 +679,7 @@ def test_resolver_refuses_invalid_overrides_registry_states_and_target_shapes(mo
     monkeypatch.setattr(versions, "candidates", lambda *_: {
         "old": _candidate("3.0.0", now - timedelta(days=30)),
     })
-    with pytest.raises(versions.VersionsError, match="no version supported by the declared constraint syntax"):
+    with pytest.raises(versions.VersionsError, match="registry returned no compatible candidates"):
         versions._resolve_target("requests", _pypi_target(), age_window_days=14, resolved_at=now, owner="root")
     with pytest.raises(versions.VersionsError, match="is not a table"):
         versions._resolve_targets({"bad": "value"}, age_window_days=14, resolved_at=now, owner="root")
