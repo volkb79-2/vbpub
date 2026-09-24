@@ -1,7 +1,8 @@
 # CMRU's release-gate test claim.  The outer command in cmru.toml invokes the
 # selected-worktree Assay source installed by run-gate in tester-unified; this lane's command is deliberately
 # the existing project test command, rather than recursively invoking CMRU's
-# tester-gate wrapper.
+# tester-gate wrapper. CLI implementation dependencies are sibling source
+# packages in this monorepo, so they are explicit import roots alongside CMRU.
 #
 # CMRU uses the same source-backed tester-unified Assay lane for the complete
 # Python rigor ladder.  The repository-minus-unsafe-symlinks selection is the
@@ -21,7 +22,7 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--maxfail
 # lock tests; R2 liveness independently bounds and cleans up stalled candidates.
 # These are project test facts, not ambient conveniences: pytest must import
 # the source snapshot it is judging, and it must not create bytecode there.
-env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+env = { PYTHONPATH = "src:../libraries/cli-extended/src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = []
 budget = "8h"
 allow_argv_append = false
