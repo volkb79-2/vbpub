@@ -685,6 +685,7 @@ def test_go_proxy_uses_latest_and_constraint_pseudo_version(monkeypatch):
     assert "https://proxy.golang.org/example.com/mod/@latest" in requests
     assert registry.candidate_for("go", source, seed).version == seed
     assert registry._go_pseudo_versions_in_constraint(f">={seed},<{latest},!={latest},=={seed}") == {seed}
+    assert registry._go_pseudo_versions_in_constraint(f">={seed},not-a-comparison") == {seed}
 
     def missing_seed(url, _headers=None):
         if url.endswith("/@latest"):
@@ -720,6 +721,13 @@ def test_go_proxy_uses_latest_and_constraint_pseudo_version(monkeypatch):
     monkeypatch.setattr(registry, "_request", lambda *_args, **_kwargs: (b"", {}))
     with pytest.raises(registry.RegistryError, match="does not provide @latest"):
         registry.go_candidates(source, "*")
+
+    monkeypatch.setattr(registry, "_request", lambda *_args, **_kwargs: (b"v1.0.0\n", {}))
+    monkeypatch.setattr(registry, "_json", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        registry.RegistryNotFoundError("listed version metadata missing"),
+    ))
+    with pytest.raises(registry.RegistryNotFoundError, match="listed version metadata missing"):
+        registry.go_candidates(source, ">=1.0.0")
 
 
 @pytest.mark.parametrize(
