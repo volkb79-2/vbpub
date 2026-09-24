@@ -53,12 +53,13 @@ formats").
    Every producer of this format reaches this parser identically; only the
    documentation says which ones to trust.
 
-**``statementMap``/``s`` classify lines; ``branchMap``/``b`` are read only
-under an arc-bearing producer (below); ``fnMap``/``f`` are never read** —
-they are function-entry counts, not line classification.
-Neither is needed to answer this registry's one question ("which physical
-lines did this format measure, and did they run"), and every field this parser
-does not need is ignored rather than rejected — the same rule
+**``statementMap``/``s`` classify statement lines; ``branchMap``/``b`` are read
+only under an arc-bearing producer (below).** For a ``default-arg`` node on a
+line no statement covers, with an arm of that same branch attributed to the
+node's physical line, ``fnMap``/``f`` classify that signature line from its
+enclosing function's call count (B080/A-456/A-459). Those fields are unread in
+every other case. Every field this parser does not need is ignored rather
+than rejected — the same rule
 :mod:`~assay.coverage_parsers.lcov` applies to legal-but-unread record types.
 That includes each record's own ``path`` field (a duplicate of its key in
 every artifact witnessed here) and the ``all`` flag ``@vitest/coverage-v8``
@@ -105,9 +106,28 @@ continuation) is classified with that statement's status, so it counts toward
 the denominator. That is the visible-false-failure direction, chosen over the
 silent-excuse one (srdm's asymmetry, ``adapters/base.py``'s
 ``has_executable_code`` docstring). A line no statement extent covers at all
-(a comment, a blank line, and — under ``@vitest/coverage-istanbul`` — a
-function's own signature line) stays unclassified and falls to rule 4, exactly
-as it does for every other format.
+(a comment, a blank line, or a function signature without a qualifying default-argument
+node) stays unclassified and falls to rule 4.
+
+**Signature-line default arcs use function calls (B080/A-456/A-459).** Under
+an arc-bearing producer, a ``default-arg`` node's ``loc.start`` identifies
+the signature line. Recovery requires an arm of that same branch attributed
+to that physical line by the existing per-arm location/fallback rule. Without
+one, the node line stays unclassified and arc aggregation is unchanged. This
+preserves prior PASS counts for multiline defaults whose arms start on a
+later, already-classified line; their signature gap remains. A qualifying
+node maps to exactly one function by
+``fnMap.decl.start <= node_start < fnMap.loc.start``, comparing both line and
+column. The latter boundary starts the function BODY, so matching inside
+``fnMap.loc`` would miss the signature. A positive ``f[id]`` classifies the
+line executed; zero classifies it missing. A zero ``b[id]`` says only that
+the default was unused, even if the function ran. Multiple nodes sharing an
+otherwise unclassified physical line combine by maximum function call count;
+statement-derived classifications always win. Missing, malformed, or
+ambiguous required function metadata refuses ``ERROR/UNREADABLE_ARTIFACT``.
+The arcs themselves are unchanged. The independent missing-line/nonzero-arc
+integrity check and B054's isolation of non-default contradictions still
+apply; neither invariant is relaxed.
 
 **``excluded`` is always ``None`` (A-008, A-343).** Neither real producer's
 output carries a per-line exclusion field: measured directly, an
@@ -291,9 +311,13 @@ def _parse_record(
         budget.spend(end - start + 1, path)
 
     hits = _paint(extents)
+    branches = _branch_arcs(path, record) if read_arcs else None
+    if read_arcs:
+        signature_hits = _default_arg_hits(path, record, hits)
+        budget.spend(len(signature_hits), path)
+        hits.update(signature_hits)
     executed = frozenset(line for line, count in hits.items() if count > 0)
     missing = frozenset(line for line, count in hits.items() if count == 0)
-    branches = _branch_arcs(path, record) if read_arcs else None
 
     # The `branches is None` path can violate none of `FileCoverage`'s
     # invariants: `_position_line` already refuses a non-positive line
@@ -348,13 +372,109 @@ def _parse_record(
         ) from exc
 
 
+def _default_arg_hits(
+    path: str, record: dict, statement_hits: dict[int, int]
+) -> dict[int, int]:
+    """Classify statement-less default-argument node lines from function hits.
+
+    ``_branch_arcs`` has validated the branch entries first. Function metadata
+    is needed only for a default-argument node outside all statement extents
+    with an arm of that same branch attributed to the node's physical line
+    (A-459). Keep it unread otherwise. Compare full source positions:
+    a function's ``loc`` starts at its BODY, after its parameters (A-456).
+    Multiple nodes on one physical line combine by maximum function count,
+    without replacing any statement-derived classification on that line.
+    """
+    headers: list[tuple[str, tuple[int, int], tuple[int, int]]] | None = None
+    hits: dict[int, int] = {}
+    for branch_id, entry in record["branchMap"].items():
+        if entry["type"] != "default-arg":
+            continue
+        subject = f"default-arg branch {branch_id!r}"
+        location = entry.get("loc")
+        if not isinstance(location, dict):
+            raise _malformed(f"record for {path!r}: {subject} has no 'loc' object")
+        line = _position_line(path, subject, location, "start")
+        if line in statement_hits:
+            continue
+        entry_line = _entry_line(path, branch_id, entry)
+        if not any(
+            _arm_line(path, branch_id, index, arm, entry_line) == line
+            for index, arm in enumerate(entry["locations"])
+        ):
+            continue
+        node = _start_position(path, subject, location)
+        if headers is None:
+            function_map = record.get("fnMap")
+            if not isinstance(function_map, dict):
+                raise _malformed(
+                    f"record for {path!r}: 'fnMap' must be an object to classify "
+                    f"{subject}'s statement-less signature line"
+                )
+            headers = []
+            for function_id, function in function_map.items():
+                if not isinstance(function, dict):
+                    raise _malformed(
+                        f"record for {path!r}: function {function_id!r} "
+                        f"must be an object"
+                    )
+                positions = []
+                for field in ("decl", "loc"):
+                    location = function.get(field)
+                    function_subject = f"function {function_id!r} {field}"
+                    if not isinstance(location, dict):
+                        raise _malformed(
+                            f"record for {path!r}: {function_subject} must be an object"
+                        )
+                    positions.append(_start_position(path, function_subject, location))
+                headers.append((function_id, positions[0], positions[1]))
+        matches = [
+            function_id
+            for function_id, declaration, body in headers
+            if declaration <= node < body
+        ]
+        if len(matches) != 1:
+            raise _malformed(
+                f"record for {path!r}: {subject} at {node} maps to "
+                f"{len(matches)} functions by decl.start <= node < loc.start; "
+                f"expected exactly one"
+            )
+        function_id = matches[0]
+        counts = record.get("f")
+        if not isinstance(counts, dict) or function_id not in counts:
+            raise _malformed(
+                f"record for {path!r}: {subject} requires f[{function_id!r}] "
+                f"for its enclosing function"
+            )
+        count = counts[function_id]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise _malformed(
+                f"record for {path!r}: f[{function_id!r}] is {count!r}, "
+                f"expected a nonnegative integer function call count"
+            )
+        hits[line] = max(hits.get(line, 0), count)
+    return hits
+
+
+def _start_position(path: str, subject: str, location: dict) -> tuple[int, int]:
+    """A declaration, body, or default node start; end columns remain unread."""
+    line = _position_line(path, subject, location, "start")
+    column = location["start"].get("column")
+    if isinstance(column, bool) or not isinstance(column, int) or column < 0:
+        raise _malformed(
+            f"record for {path!r}: {subject} has start.column = {column!r}, "
+            f"expected a nonnegative integer"
+        )
+    return line, column
+
+
 def _contradictory_branch_lines(
     executed: frozenset[int],
     missing: frozenset[int],
     branches: "BranchCoverage | None",
 ) -> frozenset[int]:
     """The branch source lines that contradict this record's own
-    ``statementMap``/``s`` classification (B054/A-410).
+    line classification (B054/A-410, after B080's default-argument recovery).
 
     Exactly the two :meth:`FileCoverage.__post_init__` invariants that an
     honest istanbul producer can trip on a real file, computed here so the
@@ -609,10 +729,11 @@ def _statement_lines(path: str, statement_id: str, location: object) -> tuple[in
 
 def _position_line(path: str, subject: str, location: dict, side: str) -> int:
     """*location*'s ``start``/``end`` line number. Only ``line`` is read;
-    ``column`` is deliberately never validated, because real
+    ``column`` is deliberately not validated by this helper, because real
     ``@vitest/coverage-istanbul`` output writes ``"column": null`` on an end
     position and a parser that required an integer there would reject its
-    genuine output.
+    genuine output. Signature recovery separately validates START columns
+    through ``_start_position``; end columns remain unread there too.
 
     *subject* is the already-rendered noun phrase naming what carries the
     position (``"statement '3'"``, ``"branch 0 arm 1"``) rather than a bare
