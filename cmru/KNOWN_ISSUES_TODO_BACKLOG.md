@@ -103,8 +103,8 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 ---
 
 
-### FEAT-03 — `cmru versions`: multi-source dependency resolution with an age window — *implemented, merge pending*
-**Status:** implemented on the FEAT-03 branch with code, tests, user docs, and SPEC in sync; not yet merged.
+### FEAT-03 — `cmru versions`: multi-source dependency resolution with an age window — *implemented*
+**Status:** implemented on `feat/cmru-feat03-age-window-20260923` with code, tests, user docs, and SPEC in sync; the tester-unified coverage lane passed at 100% statement and branch coverage.
 **SPEC:** `S-CLI.6`, `S2.7`, `V29`.
 
 `cmru versions init` derives supported targets from Python, npm, and Go manifests;
