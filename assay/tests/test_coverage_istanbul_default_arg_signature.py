@@ -292,3 +292,52 @@ def test_signature_lines_spend_the_existing_artifact_line_budget(monkeypatch):
     with pytest.raises(AssayError) as error:
         parser.parse(json.dumps(document), producer="istanbul")
     assert error.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+@pytest.mark.parametrize("unmatched_calls", [9, "must remain unread"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unmatched_same_line_default_cannot_cover_a_fallback_recovered_uncalled_function(
+    unmatched_calls, reverse
+):
+    """A-459 plus same-line aggregation, fallback attribution and nesting.
+
+    Two function declarations share line 34. Only the first default has an
+    arm there, through the existing empty-start fallback, and its function
+    never ran. The second default's arm and nested return are on 35. Its
+    positive (or unreadable) function count cannot cover 34 or cause refusal;
+    another branch's matching arm does not make that default eligible.
+    """
+    record = specimen()
+    record["branchMap"]["0"]["locations"] = [{"start": {}, "end": {}}]
+    record["f"]["0"] = 0
+    record["b"]["0"] = [0]
+
+    record["fnMap"]["later"] = {
+        "decl": {"start": {"line": 34, "column": 110}},
+        "loc": {"start": {"line": 36, "column": 0}},
+    }
+    record["f"]["later"] = unmatched_calls
+    record["fnMap"]["nested"] = {
+        "decl": {"start": {"line": 35, "column": 2}},
+        "loc": {"start": {"line": 35, "column": 8}},
+    }
+    record["f"]["nested"] = None
+    record["branchMap"]["later"] = {
+        "type": "default-arg",
+        "loc": {"start": {"line": 34, "column": 150}},
+        "locations": [{"start": {"line": 35, "column": 2}}],
+    }
+    record["b"]["later"] = [9]
+    record["statementMap"]["nested-return"] = {
+        "start": {"line": 35, "column": 10},
+        "end": {"line": 35, "column": 25},
+    }
+    record["s"]["nested-return"] = 9
+    if reverse:
+        record["branchMap"] = dict(reversed(list(record["branchMap"].items())))
+
+    result = parse(record)
+    assert result.executed == frozenset({35})
+    assert result.missing == frozenset({34})
+    assert result.branches.by_line == {34: (0, 1), 35: (1, 1)}
+    assert result.contradictory_branch_lines is None

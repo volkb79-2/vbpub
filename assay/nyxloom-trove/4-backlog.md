@@ -132,7 +132,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B079 — closed v12 `discard_reason` split — SHIPPED (`assay-v7.0.0`, A-454, release commit `47435679`; tester-unified gate PASS); two original acceptance items remain open: correct the rationale in all five locations, and produce a genuine `RuntimeError` fixture or record an explicit deferral.
 
 **Wave C (current; B080, B081, B094, B025, B095, B076; B100 conditional)**
-- B080 — istanbul default-arg branch on the signature line — OPEN (P1; B089 is its withdrawn duplicate)
+- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; P1 implementation, independent review READY; authoritative gate pending; B089 is its withdrawn duplicate)
 - B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (P2)
 - B094 — unknown `--rejudge` reason mapping — OPEN (P2)
 - B025 — unresolvable infrastructure refusals lack their own verdict — PARTIAL (P2 closes the final attestation-timeout oracle)
