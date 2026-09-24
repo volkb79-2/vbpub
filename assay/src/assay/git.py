@@ -587,7 +587,8 @@ def _resolve_repo(
     ]
     returncode, stdout, stderr = _run_bounded(argv, remaining=remaining)
     if returncode != 0:
-        detail = stderr.decode("utf-8", errors="replace").strip()[:200]
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        detail = stderr_text[:200]
         # (B068) The bare git `fatal:` is kept -- it is the primary evidence
         # and must not be renamed -- but when the cause is the one this
         # project has actually measured in the field, it is NAMED first,
@@ -599,7 +600,10 @@ def _resolve_repo(
                 f"{gap}. git rev-parse --absolute-git-dir failed resolving "
                 f"{repo_top} ({returncode}): {detail}"
             )
-        ownership_gap = _dubious_ownership_gap(repo_top, detail)
+        # Keep the historical cap on generic stderr passthrough, but inspect
+        # the already-bounded raw stderr for Git's ownership fatal line: a
+        # legitimate long checkout path can make that line exceed 200 chars.
+        ownership_gap = _dubious_ownership_gap(repo_top, stderr_text)
         if ownership_gap is not None:
             raise _git_failed(ownership_gap)
         raise _git_failed(

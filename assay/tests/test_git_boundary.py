@@ -201,6 +201,32 @@ def test_dubious_ownership_message_replaces_gits_unreachable_remedy(
     assert "git config --global --add safe.directory" not in message
 
 
+def test_dubious_ownership_preserves_the_full_fatal_line_for_a_long_path(
+    tmp_path: Path,
+):
+    """B081 requires Git's own fatal line, including a long checkout path."""
+    project = tmp_path / ("checkout-" + "x" * 160)
+    project.mkdir()
+    (project / ".git").mkdir()
+    fatal_line = f"fatal: detected dubious ownership in repository at '{project}'"
+    assert len(fatal_line) > 200
+    stderr = (
+        f"{fatal_line}\n"
+        "To add an exception for this directory, call:\n\n"
+        f"\tgit config --global --add safe.directory {project}\n"
+    )
+
+    with pytest.raises(AssayError) as excinfo:
+        git_module._resolve_repo(project, _fake_git(tmp_path, stderr=stderr))
+
+    assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
+    message = str(excinfo.value)
+    assert "dubious ownership mismatch" in message
+    assert message.endswith(fatal_line)
+    assert "To add an exception" not in message
+    assert "git config --global --add safe.directory" not in message
+
+
 def test_healthy_bootstrap_does_not_consult_the_ownership_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

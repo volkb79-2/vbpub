@@ -2713,12 +2713,11 @@ attestation-timeout call's infrastructure kwargs are removed.
       test per crash site (four total, two per round), all verified
       red-first.
 
-**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), except the
-one known, narrow, pre-existing gap noted above (attestation-timeout
-forward test) and the DIFFERENT, wider "lane-wide `LANE_TIMEOUT` also
-writes no verdict" gap round 2 review found and filed separately as
-B028 (same family, bigger blast radius, needs its own design pass).**
-See A-308.
+**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), with the
+separate attestation-timeout forward-test gap closed in Wave C P2 on
+2026-09-24.** The different, wider "lane-wide `LANE_TIMEOUT` also writes no
+verdict" gap found by round 2 review remains filed separately as B028 (same
+family, bigger blast radius, needs its own design pass). See A-308.
 
 ---
 
@@ -8987,7 +8986,8 @@ ownership is the only thing that works.
 - [x] the OTHER bootstrap failures stay exactly as they are — the linked-
       worktree gap (B068) still wins where it applies, and an unrecognised
       cause still passes through unchanged;
-- [x] regression tests pin Git's captured fatal line, strip its remedy, keep
+- [x] regression tests pin Git's captured fatal line, including a path longer
+      than the generic 200-character diagnostic cap, strip its remedy, keep
       healthy resolution probe-free, and preserve an unrecognised bootstrap
       failure's existing message (`tests/test_git_boundary.py`).
 
