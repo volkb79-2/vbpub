@@ -270,12 +270,15 @@ scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-HANDOFF
 ```
 
 The former detached campaign and stale `5917d362`/`9b70a46e` gate receipts are
-not evidence for the private-namespace candidate. The valid current-tree
-`r0-r1`/`r3` receipts at `ea6c90f1` passed before this packet/ruling update;
-the controller will commit those records and rerun the affected short gates,
-then launch a fresh R2 against that exact final candidate. At review dispatch,
-verify the final tree's own explicit R2 verdict, completion marker, and every
-candidate disposition. Do not review or infer from a prior-tree count.
+not evidence for the private-namespace candidate. On `0daa66e2`, the corrected
+`r0-r1` receipt passed with 1,324 tests and 100% line/branch coverage; `r3`
+passed with seven canaries rejected and zero survivors. Both exact-tree
+history records are PASS/exit 0. This review-packet refresh itself changes the
+candidate tree; the controller will commit it, rerun the final short gates on
+the new exact tip, and then launch a fresh R2. At review dispatch, verify the
+final tree's own explicit R2 verdict, completion marker, every candidate
+disposition, and final short-gate history. Do not infer from any prior-tree
+count.
 
 Review the daemon's serve/ctl protocol, socket carrier, watch and placement
 behavior, liveness/finalization, safety on daemon absence, host/container
