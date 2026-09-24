@@ -4,14 +4,45 @@ This document records why CMRU's configuration and command selection work the wa
 The [README](../README.md) describes the shipped surface; [CONSUMERS.md](CONSUMERS.md)
 shows the files an adopter can copy and load.
 
-The closed runtime contract is intentionally small and versioned:
+The closed runtime contract is intentionally small and versioned: `runtime.kind` is either
+`none` or `ciu`. The full project grammar is exercised by the shipped config reader and the
+loadable pair in [CONSUMERS.md](CONSUMERS.md#1-the-two-files).
 
-```toml
-schema_version = 1
+## Supply-chain age-windowed version determination
 
-[runtime]
-kind = "none" # or "ciu"
-```
+Version selection is an explicit data refresh. Builds and releases consume committed native
+artifacts, so an upstream publication cannot silently change the dependency graph during a
+release. `cmru versions check` performs a read-only registry query; `cmru versions resolve`
+records the decision and writes the language-native outputs. There is no build, release, gate,
+or scheduled refresh hook.
+
+The 14-day default is a policy window, not a claim that age alone proves safety. A `single`
+target chooses the newest eligible release from one source. An `aligned` target chooses the
+newest version available and age-eligible in every declared source. The shared constraint
+grammar is a SemVer-compatible subset so one target means the same version across PyPI, npm,
+Go, and OCI tags. An exact override requires a reason; when its source timestamp is newer
+than the cutoff, it also requires a future expiry date. The reviewable config and artifact diff
+remains the control for deliberate holds and urgent fixes.
+
+Shared targets and their resolved records belong to `cmru.orchestration.toml`. A project may
+redeclare a target under its own `[versions.targets]`; that project's age window and resolved
+record then live in its `cmru.toml`, while the shared root result remains independent. A
+project-level age-window value alone does not change a root target.
+
+Age evidence is source-specific. PyPI JSON upload timestamps and npm registry version times
+drive those sources. The Go proxy's `.info` time is the VCS commit time, not proxy publication
+time; CMRU records that source name and prints a warning when using it. OCI registries may
+provide an HTTP `Last-Modified` value; when they do not, CMRU accepts the publisher-provided
+`org.opencontainers.image.created` annotation or image-config `created` field as the documented
+fallback, with a warning. A source that provides no usable timestamp fails closed. These limits
+are visible in the report so an age cutoff does not claim stronger evidence than it has.
+
+The registry clients determine direct target versions and the Python writer asks uv to compile
+their transitive dependency closure under the same cutoff. npm and Go use their native commands
+to update lock/module state. OCI selection writes a small JSON record; projects that need another
+manifest can opt into a Jinja2 output without adding a runtime dependency to ordinary CMRU use.
+See the consumer guide for output paths, template context, credential variable names, and the
+exact registry timestamp evidence.
 
 ## Top-level version compatibility
 

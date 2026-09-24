@@ -28,6 +28,7 @@ from cmru.config_names import (
     ORCHESTRATION_CONFIG_FILENAME,
     PROJECT_CONFIG_FILENAME,
 )
+from cmru.version_config import deep_merge_versions, parse_versions_section
 
 
 # ─── Config dataclasses (S2) ─────────────────────────────────────────────────
@@ -131,6 +132,7 @@ class ProjectS2Config:
     evidence_paths: List[str] = field(default_factory=list)
     build_step: str = ""
     runtime_kind: str = "none"
+    versions: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,7 @@ class ForgeConfig:
     repo_root: Path          # directory containing the config file
     env: Mapping[str, str] = field(default_factory=dict)
     project_tokens: Mapping[str, str] = field(default_factory=dict)
+    versions: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -227,6 +230,13 @@ def _error(message: str) -> "None":
 
     write_config_diagnostic(message)
     raise SystemExit(exit_codes.CONFIG_ERROR)
+
+
+def _parse_versions(raw: object, where: str, *, allow_partial: bool = False) -> dict:
+    try:
+        return parse_versions_section(raw, where, allow_partial=allow_partial)
+    except ValueError as exc:
+        _error(str(exc))
 
 
 def _reject_unknown(raw: dict, known: set[str], where: str) -> None:
@@ -760,7 +770,7 @@ def _parse_project_document(
     raw = _read_toml(config_path, PROJECT_CONFIG_FILENAME)
     _reject_unknown(
         raw,
-        {"schema_version", "github", "targets", "env", "build_metadata", "project", "runtime", "steps", "project_metadata"},
+        {"schema_version", "github", "targets", "env", "build_metadata", "project", "runtime", "steps", "project_metadata", "versions"},
         PROJECT_CONFIG_FILENAME,
     )
     if raw.get("schema_version") != 1:
@@ -785,6 +795,10 @@ def _parse_project_document(
         targets = None
     env = _scalar_env(raw.get("env", {}), "env")
     metadata = _scalar_env(raw.get("build_metadata", {}), "build_metadata")
+    versions = _parse_versions(
+        raw.get("versions"), f"{PROJECT_CONFIG_FILENAME} [versions]",
+        allow_partial=not require_repository_facts,
+    )
     if set(metadata) - {"date_env", "date_format"}:
         _error("build_metadata only permits date_env and date_format")
     if "project_metadata" in raw and not isinstance(raw["project_metadata"], dict):
@@ -898,6 +912,7 @@ def _parse_project_document(
             evidence_paths=evidence_paths,
             build_step=build_step,
             runtime_kind=runtime_kind,
+            versions=versions,
         ),
         github,
         targets,
@@ -947,13 +962,16 @@ def _load_project_config(config_path: Path) -> ForgeConfig:
 def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     raw = _read_toml(config_path, ORCHESTRATION_CONFIG_FILENAME)
     _reject_unknown(
-        raw, {"schema_version", "github", "targets", "orchestration", "cleanup"},
+        raw, {"schema_version", "github", "targets", "orchestration", "cleanup", "versions"},
         ORCHESTRATION_CONFIG_FILENAME,
     )
     if raw.get("schema_version") != 1:
         _error(f"{ORCHESTRATION_CONFIG_FILENAME}.schema_version must be exactly 1")
     github = _github(raw.get("github"))
     targets = _targets(raw.get("targets"))
+    versions = _parse_versions(
+        raw.get("versions"), f"{ORCHESTRATION_CONFIG_FILENAME} [versions]",
+    )
     orch_raw = raw.get("orchestration")
     if not isinstance(orch_raw, dict):
         _error("[orchestration] is required")
@@ -1001,6 +1019,17 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         )
         if project.name != project_id:
             _error(f"{where}.config declares project.id={project.name!r}, expected {project_id!r}")
+        # Project version tables may be partial overlays. Validate the effective
+        # target shape now, while preserving the ownership boundary used by the
+        # resolver: root targets keep root policy/state; project-declared targets
+        # use this project's policy and state.
+        try:
+            parse_versions_section(
+                deep_merge_versions(versions, dict(project.versions)),
+                f"{project_path}: effective [versions]",
+            )
+        except ValueError as exc:
+            _error(str(exc))
         try:
             project_path.parent.relative_to(config_path.parent.resolve())
         except ValueError:
@@ -1059,7 +1088,7 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         ),
         cleanup=_parse_cleanup(raw.get("cleanup")), projects=docs,
         repo_root=config_path.parent.resolve(), env=shared_env,
-        project_tokens=project_tokens,
+        project_tokens=project_tokens, versions=versions,
     )
 
 
@@ -1075,6 +1104,24 @@ def load_forge_config(config_path: Path, *, require_orchestration: bool = False)
     if require_orchestration and config_path.name != ORCHESTRATION_CONFIG_FILENAME:
         _error(f"this estate-level verb requires {ORCHESTRATION_CONFIG_FILENAME}")
     return config
+
+
+def effective_versions_for_project(forge: ForgeConfig, project_name: str) -> dict:
+    """Return root defaults plus the selected project's version declarations.
+
+    The caller still resolves shared root targets separately under the root
+    age window. A project overlay can change only its own target resolutions.
+    """
+    project = forge.projects.get(project_name)
+    if project is None:
+        _error(f"unknown project {project_name!r} in effective version selection")
+    try:
+        return parse_versions_section(
+            deep_merge_versions(dict(forge.versions), dict(project.versions)),
+            f"effective [versions] for project {project_name}",
+        )
+    except ValueError as exc:
+        _error(str(exc))
 
 
 def _ancestors(path: Path) -> list[Path]:

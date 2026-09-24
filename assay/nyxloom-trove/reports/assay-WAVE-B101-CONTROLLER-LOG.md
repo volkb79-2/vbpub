@@ -138,8 +138,9 @@ the following jobs ran from the CIU-managed worktree
 - the requested CMRU mutation campaign started and was checked after kickoff,
   but stopped in about 10s because the declared source diff produced no
   mutation candidates (`CMRU_MUTATION_EXIT=1`), so this is not reported as a
-  mutation pass. The CIU assay lane likewise reported `NO_MUTANTS`; inspection
-  found `assay/run-gate.toml` declares only `tester-unified` and the in-tree
+  mutation pass. This CMRU campaign result is distinct from the CIU lane's
+  `INCONCLUSIVE/NO_MUTANTS`; inspection found `assay/run-gate.toml` declares
+  only `tester-unified` and the in-tree
   `tester-unified` assay lane is R0-only, so no full-source R2 campaign is
   declared for assay;
 - the authoritative assay tester-unified rerun was checked after kickoff and
@@ -179,7 +180,24 @@ The release result is `CMRU_RELEASE_EXIT=0` in
 limited: the attempted CIU/CMRU campaigns found no candidates, and assay has no
 registered full-source R2 lane. The release gate and all configured acceptance
 gate passed; no mutation pass is claimed. The CIU lane's R2 status remains
-`INCONCLUSIVE/NO_MUTANTS`.
+`INCONCLUSIVE/NO_MUTANTS` (`CIU_GATE_EXIT=5`); the separate CMRU mutation
+campaign stopped with exit 1 because the declared source diff produced no
+candidates (`CMRU_MUTATION_EXIT=1`). Raw campaign logs are
+`/tmp/assay-b101-provisional-ciu-r2.log` and
+`/tmp/assay-b101-provisional-cmru-mutation.log`.
+
+The distinct raw outcome lines were:
+
+```text
+ciu: INCONCLUSIVE/NO_MUTANTS (exit 5)
+CIU_GATE_EXIT=5
+RuntimeError: the declared source diff produced no mutation candidates
+run-gate: lane 'mutation' failed with exit 1
+CMRU_MUTATION_EXIT=1
+```
+
+The CIU lines are its R2 evidence; the remaining lines are the separate CMRU
+campaign's no-candidate failure. Neither is a mutation pass.
 
 ## History-walk audit
 

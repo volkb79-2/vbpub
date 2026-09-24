@@ -19,3 +19,8 @@ release_tag_prefixes = ["*"]
 keep_release_tags = ["example-latest"]
 ghcr_packages = ["*"]
 ghcr_delete_packages = []
+
+# Shared dependency-version age policy. Project-local target overrides and
+# their resolved records live in each project's cmru.toml.
+[versions]
+age_window_days = 14

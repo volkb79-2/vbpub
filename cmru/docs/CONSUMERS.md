@@ -57,6 +57,18 @@ bump = "conventional"             # version derived from Conventional Commits si
 git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
+
+[versions]
+age_window_days = 21 # project policy for its local copy of pypi.requests
+
+[versions.targets."pypi.requests"]
+mode = "single"
+constraint = ">=2.31.0,<3.0.0"
+
+[versions.targets."pypi.requests".pypi]
+name = "requests"
+registry = "https://pypi.org"
+
 # Add only outputs the release gate actually writes; these are retained separately
 # from publishable artifacts and bound to the gated commit.
 # evidence_paths = ["coverage.json"]
@@ -120,6 +132,17 @@ release_tag_prefixes = ["*"]
 keep_release_tags = ["example-wheel-latest"]
 ghcr_packages = ["*"]
 ghcr_delete_packages = []
+
+[versions]
+age_window_days = 14
+
+[versions.targets."pypi.requests"]
+mode = "single"
+constraint = ">=2.31.0,<3.0.0"
+
+[versions.targets."pypi.requests".pypi]
+name = "requests"
+registry = "https://pypi.org"
 ```
 
 The two snippets above are a complete loadable pair: save the project snippet as
@@ -135,6 +158,84 @@ required field are **rejected with exit 2**, not ignored. Validate before you re
 ```
 cmru standards        # conformance of every declared project's contract
 ```
+
+## Using a supply-chain age window
+
+The pair above declares one shared `pypi.requests` target with a 14-day root age window and a
+project-local copy with a 21-day window. Shared target state is written to
+`cmru.orchestration.toml`; the project's resolved state is written to its `cmru.toml`. The
+project-local window applies because that project redeclares the target. A project-level
+`age_window_days` by itself does not change shared root targets.
+
+For `cmru versions init`, package names and ranges come from the project's normal manifests.
+For example, `example-wheel/requirements.in` can contain:
+
+```requirements
+requests>=2.31.0,<3.0.0
+```
+
+Then preview and apply the explicit refresh:
+
+```bash
+cmru versions init all --dry-run
+cmru versions init all
+cmru versions resolve all --dry-run
+cmru versions resolve all
+cmru versions check all --json
+```
+
+`init` derives targets from `requirements.in`, `pyproject.toml` project dependencies,
+`package.json` dependency tables, and `go.mod` require entries. Go entries marked `// indirect`
+are included because they are explicit module graph requirements too. CMRU reports manifest
+entries whose syntax, shape, or source cannot be resolved (including Python environment markers)
+instead of silently treating them as managed. OCI image targets are declared explicitly; an OCI `tag` template contains exactly one
+`{version}` placeholder and keeps any suffix or prefix literal (for example, `v{version}-alpine`).
+
+Source tables use the closed family values `.pypi`, `.npm`, `.go`, and `.oci`. PyPI/npm tables
+use `name` and `registry`; Go tables use `module` and `proxy`; OCI tables use a fully-qualified
+`image` and `tag` template. Use `mode = "single"` for one source or `mode = "aligned"` for a
+version shared by multiple sources. The constraint is a comma-separated SemVer-compatible range
+(`>=`, `>`, `<=`, `<`, `==`, `!=`, `^`, `~`, `~=`, or `*`). Exact `version` overrides require a
+`reason`; an override newer than the age cutoff also requires a future `expires` date.
+
+For a private source, add either `token_env` or the pair `username_env` and `password_env` to that
+source table. These values name environment variables; the credentials themselves stay outside
+the config. CMRU exits 3 when a named variable is unset or empty. `cmru versions init` uses the
+public default registries and does not infer private credentials.
+
+Release timestamp evidence depends on the source. PyPI uses release-file upload time; npm uses
+the registry's per-version time. Go uses module proxy `.info` `Time`, which represents the VCS
+commit time rather than proxy publication time; CMRU prints a warning whenever it uses this
+evidence. OCI uses registry HTTP `Last-Modified` when available; otherwise it uses the
+publisher-supplied `org.opencontainers.image.created` manifest annotation or image-config
+`created` time. CMRU warns when it uses this fallback and records the chosen timestamp and its
+`age_source` with each result so the source of age evidence is reviewable. An image-created time
+is not registry publication time. Missing or malformed timestamps fail closed.
+
+`resolve` writes a dated `constraints/constraints-YYYYMMDD.txt` plus the stable
+`constraints/constraints.txt` for PyPI targets in Python projects; set `PIP_CONSTRAINT` or pass
+`-c` to consume it. npm targets update direct package versions, overrides, and the lockfile with
+scripts disabled. When an override or looser per-target cutoff needs a package-specific age
+exception, npm 11.5.0 or newer is required. Go targets update `go.mod`/`go.sum`. OCI targets
+write a dated and stable JSON record at `versions/oci-images-YYYYMMDD.json` and
+`versions/oci-images.json`; each record has
+`schema_version`, `generated_by`, `resolved_at`, and a `targets` mapping containing image, chosen
+version/tag, timestamp, evidence source, and override reason. Existing built-in constraints and
+OCI outputs are overwritten only when they carry CMRU's generated marker.
+
+Optional Jinja2 outputs let a project render another format from the same resolution. Each
+`versions.outputs.<id>` table has `template`, `path`, and `dated_path`; both output paths are
+relative to the project, and `dated_path` contains `{date}`. The template receives `resolved_at`
+and a `targets` mapping with each selected version, override/reason/expiry, owner, cutoff, and
+per-source version, timestamp, evidence source, and OCI tag. These explicitly configured files
+are replaced on resolve. Install CMRU with the `versions-templates` extra to use this feature.
+
+For Python targets, CMRU runs `uv pip compile` with the selected direct packages pinned and the
+target cutoff supplied as `--exclude-newer`; project-specific cutoffs use uv's per-package age
+option. Consume these committed constraints as native inputs rather than editing them by hand.
+
+Resolved state and native artifacts do not change during `cmru build`, `cmru release`, or a gate.
+Review and commit the `resolve` diff as an ordinary source change before relying on the update.
 
 ---
 
@@ -272,21 +373,9 @@ and the [caller-main cleanup operations](RELEASE-TRANSACTIONS.md#caller-main-cle
 
 ### Retaining gate evidence
 
-If the release gate writes commit-bound evidence, declare each exact file or directory under
-`[project.release]`:
-
-```toml
-schema_version = 1
-
-[runtime]
-kind = "none"
-
-[project]
-id = "example-wheel"
-
-[project.release]
-evidence_paths = ["coverage.json", ".assay"]
-```
+If the release gate writes commit-bound evidence, add exact files or directories to
+`[project.release].evidence_paths` in the complete `cmru.toml` example above (for example,
+`evidence_paths = ["coverage.json", ".assay"]`).
 
 CMRU moves those paths into `<project>/evidence/cmru-release/<immutable-id>/` after the whole
 release succeeds and writes `evidence.json` with the gated source commit and SHA-256 hashes.

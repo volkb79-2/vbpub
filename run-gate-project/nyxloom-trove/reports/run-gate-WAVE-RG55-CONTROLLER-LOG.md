@@ -3887,7 +3887,6 @@ tag, so P1's first release must keep the settled explicit `--set-version
 version/build/CLI tests pass (`26 passed`); registered P6 `r0-r1` is running
 on the clean `dfef6bad` tree, and `r3`, P6 R2, independent review, and release
 remain outstanding.
-
 ### RW-312 — 2026-09-24 00:49:07Z — scope token roots to the selected cgroup
 
 Imported from the P1 branch-local log, where this was originally numbered

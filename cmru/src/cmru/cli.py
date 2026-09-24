@@ -2207,6 +2207,9 @@ def usage() -> str:
         "                                                  verify declared tool dependencies (S15):\n"
         "                                                  integrity + authenticity + freshness\n"
         "                                                  (network; never run during tests)\n"
+        "    versions init [all|P[,P...]] [--dry-run]    derive targets from package manifests\n"
+        "    versions resolve [all|P[,P...]] [--dry-run] resolve and write dated artifacts\n"
+        "    versions check [all|P[,P...]] [--json]      compare recorded and eligible values\n"
         "    build    [all|P[,P...]] [--config C] [--show-run-details] [--log-append]\n"
         "                                                  isolated local build; retains outputs on success\n"
         "    publish  [all|P[,P...]] [--config C] [--show-run-details] [--log-append]\n"
@@ -2286,6 +2289,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             return 0
         from cmru.scaffold import init_main
         return init_main(rest)
+
+    if verb == "versions":
+        from cmru.versions import main as versions_main
+        return versions_main(rest)
 
     if verb == "run":
         _sys.argv = ["cmru"] + rest
