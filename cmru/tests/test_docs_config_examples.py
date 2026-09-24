@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 
 from cmru.config import load_forge_config
+from cmru.version_config import SOURCE_FIELDS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,13 +20,18 @@ def _slug(heading: str) -> str:
 
 
 def test_every_documented_toml_example_is_current_toml_and_versioned():
+    block_counts = {}
     for document in DOCS:
         text = document.read_text(encoding="utf-8")
         blocks = re.findall(r"```toml\n(.*?)```", text, flags=re.DOTALL)
-        assert blocks, f"{document} has no TOML example"
+        block_counts[document.name] = len(blocks)
         for block in blocks:
             parsed = tomllib.loads(block)
             assert parsed.get("schema_version") == 1, document
+    # The consumer document owns the only complete config pair. README and the
+    # design guide link to it rather than publishing partial TOML fragments
+    # that cannot pass the installed reader.
+    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 2}
 
 
 def test_runtime_vocabulary_and_workspace_contract_are_documented():
@@ -35,6 +41,16 @@ def test_runtime_vocabulary_and_workspace_contract_are_documented():
     for document in (ROOT / "README.md", ROOT / "docs" / "SPEC.md", ROOT / "docs" / "RELEASE-TRANSACTIONS.md"):
         text = document.read_text(encoding="utf-8")
         assert "cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>" in text
+
+
+def test_version_policy_vocabulary_is_documented():
+    corpus = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
+    for source_type in SOURCE_FIELDS:
+        assert f".{source_type}" in corpus
+    for value in ('mode = "single"', 'mode = "aligned"'):
+        assert value in corpus
+    for field in ("age_window_days", "constraint", "version", "reason", "expires", "resolved"):
+        assert field in corpus
 
 
 def test_assay_lane_declares_the_complete_rigor_ladder():
@@ -107,3 +123,8 @@ def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Pat
     assert config.orchestration.execution_mode == "project-first"
     assert config.cleanup is not None
     assert config.projects["example-wheel"].name == "example-wheel"
+    assert config.versions["age_window_days"] == 14
+    assert config.versions["targets"]["pypi.requests"]["pypi"]["name"] == "requests"
+    project_versions = config.projects["example-wheel"].versions
+    assert project_versions["age_window_days"] == 21
+    assert project_versions["targets"]["pypi.requests"]["mode"] == "single"
