@@ -479,10 +479,16 @@ def test_agent_and_controller_version_flags(monkeypatch, capsys):
         assert captured.err == ""
 
 def test_module_console_dispatch_accepts_top_level_version():
-    source = str(Path(__file__).resolve().parents[1] / "src")
+    project_dir = Path(__file__).resolve().parents[1]
+    library_sources = project_dir.parent / "libraries"
+    python_path = os.pathsep.join((
+        str(project_dir / "src"),
+        str(library_sources / "cli-extended" / "src"),
+        str(library_sources / "worktree" / "src"),
+    ))
     proc = subprocess.run(
         [sys.executable, "-m", "cmru.cli", "--version"],
-        env={**os.environ, "PYTHONPATH": source},
+        env={**os.environ, "PYTHONPATH": python_path},
         capture_output=True,
         text=True,
         check=False,
@@ -605,7 +611,7 @@ def test_cleanup_uses_current_directory_orchestration_without_a_shim(tmp_path, m
 
 def test_source_module_invocation_works_from_the_cmru_project_directory():
     project_dir = Path(__file__).resolve().parents[1]
-    cli_extended_src = project_dir.parent / "libraries" / "cli-extended" / "src"
+    library_sources = project_dir.parent / "libraries"
     result = subprocess.run(
         [
             os.environ.get("PYTHON", "python3"), "-m", "cmru.handlers", "--help",
@@ -613,7 +619,11 @@ def test_source_module_invocation_works_from_the_cmru_project_directory():
         cwd=project_dir,
         env={
             **os.environ,
-            "PYTHONPATH": os.pathsep.join((str(project_dir / "src"), str(cli_extended_src))),
+            "PYTHONPATH": os.pathsep.join((
+                str(project_dir / "src"),
+                str(library_sources / "cli-extended" / "src"),
+                str(library_sources / "worktree" / "src"),
+            )),
         },
         capture_output=True,
         text=True,
