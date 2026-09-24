@@ -2464,6 +2464,21 @@ def test_resolve_native_writer_guards_and_transaction_rollback(tmp_path, monkeyp
     versions._run_resolve(forge, context, ["demo"], dry_run=False)
     assert tool_calls[-1][0] == "go"
 
+    declarations_state = {
+        "one": {"go": {"module": "example.com/lib", "proxy": "https://proxy.golang.org"}},
+    }
+    native_state = ({"go": {"one": types.SimpleNamespace(sources={})}}, {})
+    with pytest.raises(versions.VersionsError, match="Go candidate missing"):
+        versions._run_resolve(forge, context, ["demo"], dry_run=False)
+
+    # An orchestration config can be selected with no root-owned targets. It
+    # should leave the shared file untouched while resolving project targets.
+    native_state = ({"go": {"one": one_go}}, {})
+    root_context = types.SimpleNamespace(config_kind="orchestration", config_path=root_config)
+    root_before = root_config.read_bytes()
+    versions._run_resolve(forge, root_context, ["demo"], dry_run=False)
+    assert root_config.read_bytes() == root_before
+
 
 def test_go_workspace_outputs_are_tracked_and_rolled_back_with_native_writes(tmp_path, monkeypatch):
     project_versions = '''[versions]
