@@ -733,6 +733,22 @@ def test_go_proxy_uses_latest_and_constraint_pseudo_version(monkeypatch):
         registry.go_candidates(source, ">=1.0.0")
 
 
+def test_go_proxy_strict_pseudo_version_bound_excludes_seed(monkeypatch):
+    seed = "v0.0.0-20250101000000-abcdefabcdef"
+    latest = "v0.0.0-20260301000000-bcdefabcdefa"
+    source = {"module": "example.com/mod", "proxy": "https://proxy.golang.org"}
+    monkeypatch.setattr(registry, "_request", lambda *_args, **_kwargs: (b"", {}))
+
+    def info(url, _headers=None):
+        version = latest if url.endswith("/@latest") else seed
+        stamp = "2026-03-01T00:00:00Z" if version == latest else "2025-01-01T00:00:00Z"
+        return {"Version": version, "Time": stamp}, {}
+
+    monkeypatch.setattr(registry, "_json", info)
+    found = registry.go_candidates(source, f">{seed}")
+    assert set(found) == {registry.normalized_version(latest)}
+
+
 @pytest.mark.parametrize(
     "payload",
     [None, [], {}, {"Version": "1.2.3", "Time": "2026-01-01T00:00:00Z"},

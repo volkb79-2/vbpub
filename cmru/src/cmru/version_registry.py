@@ -398,7 +398,8 @@ def go_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Candi
                     # is inconsistent proxy metadata.
                     continue
                 raise
-            result[normalized_version(candidate.version)] = candidate
+            if version_satisfies(candidate.version, constraint):
+                result[normalized_version(candidate.version)] = candidate
 
     # The Go proxy protocol excludes pseudo-versions from @v/list. Match the
     # Go command's fallback and consult @latest only when the constraint has no
