@@ -77,6 +77,7 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
                 "line": jobs[0].site.lineno,
                 "operator": jobs[0].site.operator,
                 "description": jobs[0].site.description,
+                "exit_code": 1,
                 "outcome": "killed",
             },
             {
