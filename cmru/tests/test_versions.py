@@ -371,6 +371,11 @@ def test_versions_config_rejects_malformed_sources_state_and_partial_overlays():
         parse_versions_section({"targets": {"pin": _pypi_target(version="2.32.0", reason="hold", expires="2026-02-30")}}, "root")
     with pytest.raises(ValueError, match="expires requires"):
         parse_versions_section({"targets": {"pin": _pypi_target(expires="2026-10-01")}}, "root")
+    with pytest.raises(ValueError, match="fully-qualified registry"):
+        parse_versions_section(
+            {"targets": {"oci.partial": {"oci": {"image": "ghcr.io/../bad"}}}},
+            "project", allow_partial=True,
+        )
 
     partial = parse_versions_section(
         {"targets": {"pypi.requests": {"pypi": {"registry": "https://packages.example/simple"}}},
@@ -400,6 +405,20 @@ def test_versions_config_parser_covers_source_override_state_and_shape_edges():
     assert partial["targets"]["go.mod"]["go"] == {"proxy": "https://proxy.example"}
     assert partial["targets"]["oci.app"]["oci"]["tag"] == "v{version}-alpine"
     assert partial["targets"]["oci.image"]["oci"]["image"] == "ghcr.io/acme/app"
+
+    # A complete target must supply each required top-level field independently.
+    for target in (
+        {"mode": "single", "pypi": {"name": "x", "registry": "https://pypi.org"}},
+        {"constraint": "*", "pypi": {"name": "x", "registry": "https://pypi.org"}},
+    ):
+        with pytest.raises(ValueError, match="requires mode and constraint"):
+            parse_versions_section({"targets": {"incomplete": target}}, "root")
+    aligned = parse_versions_section({"targets": {"matched": {
+        "mode": "aligned", "constraint": "*",
+        "pypi": {"name": "x", "registry": "https://pypi.org"},
+        "npm": {"name": "x", "registry": "https://registry.npmjs.org"},
+    }}}, "root")
+    assert set(aligned["targets"]["matched"]) == {"mode", "constraint", "pypi", "npm"}
 
     invalid_targets = (
         ([], "targets must be a table"),
@@ -476,6 +495,12 @@ def test_versions_config_auth_fields_and_output_partial_rules():
 
     partial = parse_versions_section({"outputs": {"out": {}}}, "project", allow_partial=True)
     assert partial["outputs"]["out"] == {}
+    partial = parse_versions_section({"outputs": {
+        "template-only": {"template": "templates/constraints.j2"},
+        "dated-only": {"dated_path": "out/{date}.txt"},
+    }}, "project", allow_partial=True)
+    assert partial["outputs"]["template-only"] == {"template": "templates/constraints.j2"}
+    assert partial["outputs"]["dated-only"] == {"dated_path": "out/{date}.txt"}
     reason_partial = parse_versions_section({"targets": {"pin": {"reason": "under review"}}}, "project", allow_partial=True)
     assert reason_partial["targets"]["pin"]["reason"] == "under review"
     with pytest.raises(ValueError, match="must be a non-empty string"):
@@ -484,6 +509,20 @@ def test_versions_config_auth_fields_and_output_partial_rules():
         parse_versions_section({"targets": {"pin": {
             **_pypi_target(version="2.32.0", reason="hold"), "expires": "2026-02-30",
         }}}, "root")
+    exact = parse_versions_section({"targets": {"pin": {
+        **_pypi_target(version="2.32.0", reason="temporary reviewed pin", expires="2026-10-01"),
+    }}}, "root")
+    assert exact["targets"]["pin"]["version"] == "2.32.0"
+    assert exact["targets"]["pin"]["expires"] == "2026-10-01"
+
+
+@pytest.mark.parametrize("port", [1, 65535])
+def test_versions_registry_url_accepts_valid_port_boundaries(port):
+    cleaned = parse_versions_section({"targets": {"demo": {
+        "mode": "single", "constraint": "*",
+        "pypi": {"name": "demo", "registry": f"https://packages.example:{port}"},
+    }}}, "root")
+    assert cleaned["targets"]["demo"]["pypi"]["registry"] == f"https://packages.example:{port}"
 
 
 @pytest.mark.parametrize("url", [
@@ -851,6 +890,9 @@ def test_registry_redirect_policy_keeps_secure_redirects_and_scopes_authorizatio
             "https://[broken/blob",
         )
 
+    assert handler._origin("https://registry.example:1/v2") == ("https", "registry.example", 1)
+    assert handler._origin("https://registry.example:65535/v2") == ("https", "registry.example", 65535)
+
     class FakeOpener:
         def __init__(self, redirect_handler):
             self.redirect_handler = redirect_handler
@@ -1070,6 +1112,17 @@ def test_oci_tag_list_rejects_external_pagination_and_created_time_fallback(monk
     monkeypatch.setattr(client, "_json", lambda *_: ({"tags": ["v1.0.0"]}, {"link": '<https://attacker.example/x>; rel="next"'}))
     with pytest.raises(registry.RegistryError, match="unsafe pagination"):
         client.tag_list()
+
+    for link in (
+        '</v2/acme/app/manifests/latest>; rel="next"',
+        '<https://attacker.example/v2/acme/app/tags/list?n=1000&last=v1.0.0>; rel="next"',
+    ):
+        client = registry._OCIClient("https://registry.example", "acme/app", {})
+        monkeypatch.setattr(client, "_json", lambda *_args, _link=link: (
+            {"tags": ["v1.0.0"]}, {"link": _link},
+        ))
+        with pytest.raises(registry.RegistryError, match="unsafe pagination"):
+            client.tag_list()
 
     client = registry._OCIClient("https://registry.example", "acme/app", {})
     monkeypatch.setattr(client, "_json", lambda *_: (
@@ -1657,6 +1710,14 @@ def test_registry_exact_candidate_and_redundant_oci_tags(monkeypatch):
     )
     assert found["1.0.0"].tag == "v1.0.0"
 
+    monkeypatch.setattr(registry._OCIClient, "tag_list", lambda _self: ["v1.0.0", "1.0.0"])
+    stamp = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(registry._OCIClient, "tag_timestamp", lambda _self, _tag: (
+        stamp, "oci-registry-last-modified",
+    ))
+    tied = original_oci_candidates({"image": "ghcr.io/acme/app", "tag": "{version}"}, "*")
+    assert tied["1.0.0"].tag == "v1.0.0"
+
 
 def test_registry_dispatch_and_oci_candidate_limit(monkeypatch):
     original_oci_candidates = registry.oci_candidates
@@ -2077,6 +2138,8 @@ def test_apply_state_age_policy_and_native_output_collision_edges(tmp_path, monk
         versions._apply_resolved_state(config, {"requests": result})
     with pytest.raises(versions.VersionsError, match="positive integer"):
         versions._age_window({"age_window_days": True})
+    with pytest.raises(versions.VersionsError, match="positive integer"):
+        versions._age_window({"age_window_days": 0})
     malformed = tmp_path / "malformed-targets.toml"
     malformed.write_text('schema_version = 1\n[versions]\ntargets = "bad"\n', encoding="utf-8")
     with pytest.raises(versions.VersionsError, match="targets is not a table"):
@@ -2169,6 +2232,22 @@ def test_resolve_context_and_manifest_compatibility_paths(monkeypatch, tmp_path)
         project_root, {"pypi.requests": target_result},
         {"pypi.requests": {"pypi": {"registry": "https://pypi.org"}}},
     )
+
+    go_project = tmp_path / "go-project"
+    go_project.mkdir()
+    (go_project / "go.mod").write_text(
+        "module example.com/demo\nrequire example.com/lib v1.2.0\n", encoding="utf-8",
+    )
+    go_result = _result(
+        "go.example.com.lib", "go", "v1.0.0", datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+    with pytest.raises(versions.VersionsError, match="manifest requires"):
+        versions._validate_manifest_target_compatibility(
+            go_project, {"go.example.com.lib": go_result},
+            {"go.example.com.lib": {"go": {
+                "module": "example.com/lib", "proxy": "https://proxy.golang.org",
+            }}},
+        )
 
 
 def test_native_results_choose_manifest_matched_and_project_local_sources(tmp_path):
@@ -2277,8 +2356,13 @@ def test_versions_main_reports_text_and_maps_domain_failures(monkeypatch, capsys
     monkeypatch.setattr(versions, "load_forge_config", lambda _path: forge)
     monkeypatch.setattr(versions, "_selected_projects", lambda *_args: ["demo"])
     monkeypatch.setattr(versions, "_resolve_all_for_command", lambda *_args, **_kwargs: ({}, {"demo": {}}, {"demo": {}}))
+    with pytest.raises(SystemExit) as missing_action:
+        versions.main([])
+    assert missing_action.value.code == 2
     assert versions.main(["check"]) == 0
     assert "No version targets" in capsys.readouterr().out
+    assert versions.main(["check", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["schema_version"] == 1
 
     cases = (
         (versions.VersionsPrerequisiteError("missing tool"), versions.exit_codes.PREREQ_MISSING),
@@ -2328,6 +2412,14 @@ def test_resolve_native_writer_guards_and_transaction_rollback(tmp_path, monkeyp
     native_state = ({"npm": {"one": one}}, {})
     before = package.read_bytes()
     with pytest.raises(versions.VersionsError, match="npm source declaration missing"):
+        versions._run_resolve(forge, context, ["demo"], dry_run=False)
+    assert package.read_bytes() == before
+
+    declarations_state = {
+        "one": {"npm": {"name": "pkg", "registry": "https://registry.npmjs.org"}},
+    }
+    native_state = ({"npm": {"one": types.SimpleNamespace(sources={})}}, {})
+    with pytest.raises(versions.VersionsError, match="npm candidate missing"):
         versions._run_resolve(forge, context, ["demo"], dry_run=False)
     assert package.read_bytes() == before
 
@@ -2660,6 +2752,7 @@ def test_init_facts_covers_all_manifest_forms_and_deduplicates_constraints(tmp_p
     }), encoding="utf-8")
     (tmp_path / "go.mod").write_text(
         "module example.com/demo\n"
+        "retract v0.9.0\n"
         "require example.com/single v1.0.0 // indirect\n"
         "require (\n"
         "  example.com/block v1.2.0\n"
@@ -2751,10 +2844,13 @@ def test_manifest_identity_target_id_and_native_dependency_readers(tmp_path):
     assert versions._npm_declared_names(tmp_path) == {"direct", "3", "explicit", "fallback", "@scope/child"}
 
     (tmp_path / "go.mod").write_text(
-        "module example.com/demo\nrequire example.com/direct v1.2.3 // indirect\n"
+        "module example.com/demo\nretract v1.0.0\n"
+        "require example.com/direct v1.2.3 // indirect\n"
         "require (\n example.com/block v2.0.0\n\n // comment\n bad\n example.com/no-version latest\n)\n",
         encoding="utf-8",
     )
+    with (tmp_path / "go.mod").open("a", encoding="utf-8") as go_mod:
+        go_mod.write("retract v2.0.0\n")
     assert versions._go_required_modules(tmp_path) == {"example.com/direct", "example.com/block"}
 
 
@@ -3373,17 +3469,20 @@ def test_go_native_writer_uses_private_netrc_and_reports_tool_failure(monkeypatc
     )
     command, kwargs = captured[0]
     assert command == ["go", "get", "example.com/lib@v1.2.3"]
+    assert kwargs["text"] is True
+    assert kwargs["capture_output"] is True
+    assert kwargs["check"] is False
     assert kwargs["env"]["GOPROXY"] == "https://proxy.example"
     assert kwargs["env"]["GONOPROXY"] == "none"
     assert not Path(kwargs["env"]["NETRC"]).exists()
 
     class Failed:
         returncode = 1
-        stdout = ""
-        stderr = "module resolution failed"
+        stdout = "useful Go diagnostic"
+        stderr = ""
 
     monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: Failed())
-    with pytest.raises(versions.VersionsOperationError, match="Go module update failed"):
+    with pytest.raises(versions.VersionsOperationError, match="Go module update failed.*useful Go diagnostic"):
         versions._run_go(
             tmp_path, {"example.com/lib": ("v1.2.3", "go.example.lib")},
             {"example.com/lib": {"module": "example.com/lib", "proxy": "https://proxy.example"}},

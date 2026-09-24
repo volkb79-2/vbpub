@@ -971,7 +971,7 @@ def _versions_init(forge: ForgeConfig, projects: list[str], *, dry_run: bool) ->
             try:
                 effective = (
                     deep_merge_versions(dict(forge.versions), versions)
-                    if forge.orchestration is not None else versions
+                    if forge.orchestration else versions
                 )
                 parse_versions_section(effective, f"{config_path}: effective [versions]")
             except ValueError as exc:
@@ -1757,8 +1757,9 @@ def _run_resolve(
         _assert_unique_output_paths(prepared_native[name])
 
     transaction = _FileTransaction()
-    if root_path is not None and root_results:
-        transaction.track(root_path)
+    if root_path is not None:
+        if root_results:
+            transaction.track(root_path)
     for name, path in project_paths.items():
         if project_results[name]:
             transaction.track(path)
@@ -1776,8 +1777,9 @@ def _run_resolve(
             transaction.track(project_root / "go.sum")
 
     try:
-        if root_path is not None and root_results:
-            _apply_resolved_state(root_path, root_results)
+        if root_path is not None:
+            if root_results:
+                _apply_resolved_state(root_path, root_results)
         for name, path in project_paths.items():
             if project_results[name]:
                 _apply_resolved_state(path, project_results[name])
@@ -1793,8 +1795,10 @@ def _run_resolve(
                 declaration = declarations[name].get(target_id, {})
                 source = declaration.get("npm", {})
                 candidate = result.sources.get("npm")
-                if not isinstance(source, dict) or candidate is None:
+                if not isinstance(source, dict):
                     raise VersionsError(f"npm source declaration missing for target {target_id!r}")
+                if candidate is None:
+                    raise VersionsError(f"npm candidate missing for target {target_id!r}")
                 package_name = str(source["name"])
                 previous_package = package_versions.get(package_name)
                 if previous_package and previous_package[0] != candidate.version:
@@ -1808,8 +1812,10 @@ def _run_resolve(
                 declaration = declarations[name].get(target_id, {})
                 source = declaration.get("go", {})
                 candidate = result.sources.get("go")
-                if not isinstance(source, dict) or candidate is None:
+                if not isinstance(source, dict):
                     raise VersionsError(f"Go source declaration missing for target {target_id!r}")
+                if candidate is None:
+                    raise VersionsError(f"Go candidate missing for target {target_id!r}")
                 module_name = str(source["module"])
                 previous_module = module_versions.get(module_name)
                 if previous_module and normalized_version(previous_module[0]) != normalized_version(candidate.version):

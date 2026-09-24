@@ -577,7 +577,9 @@ class _OCIClient:
                     raise RegistryError(
                         f"OCI registry returned an unsafe pagination link for {self.repository}"
                     ) from exc
-                if next_origin != expected_origin or parsed.fragment or parsed.path != expected.path:
+                # _origin rejects any literal fragment marker, including an empty
+                # fragment. Keep this comparison focused on origin and endpoint path.
+                if next_origin != expected_origin or parsed.path != expected.path:
                     raise RegistryError(
                         f"OCI registry returned an unsafe pagination link for {self.repository}"
                     )
@@ -723,10 +725,13 @@ def oci_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Cand
             key = normalized_version(version)
             previous = result.get(key)
             candidate = Candidate(version=version, released_at=stamp, age_source=age_source, tag=tag)
-            if previous is None or (candidate.released_at, candidate.tag or "") > (
-                previous.released_at, previous.tag or "",
-            ):
+            if previous is None:
                 result[key] = candidate
+            else:
+                result[key] = max(
+                    (previous, candidate),
+                    key=lambda item: (item.released_at, item.tag or "", item.age_source),
+                )
     return result
 
 
