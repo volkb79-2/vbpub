@@ -41,7 +41,8 @@ The Go proxy's `@v/list` omits pseudo-versions. CMRU checks a pseudo-version nam
 constraint through its `.info` endpoint and consults the proxy's `@latest` endpoint when no listed
 version satisfies the constraint. In workspace mode, `go get` may also update `go.work` and
 `go.work.sum`; resolve snapshots those files so a later writer failure rolls them back with
-`go.mod` and `go.sum`.
+`go.mod` and `go.sum`. If `.info` and `@latest` report different commit times for the same version,
+CMRU refuses the result because the age evidence is inconsistent.
 
 The registry clients determine direct target versions and the Python writer asks uv to compile
 their transitive dependency closure under the same cutoff. npm and Go use their native commands

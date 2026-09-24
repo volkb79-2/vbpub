@@ -703,17 +703,20 @@ def test_go_proxy_uses_latest_and_constraint_pseudo_version(monkeypatch):
     monkeypatch.setattr(registry, "_json", no_latest)
     assert set(registry.go_candidates(source, f">={seed}")) == {registry.normalized_version(seed)}
 
-    for latest_time, expected_year in (
-        ("2026-03-01T00:00:00Z", 2026),
-        ("2024-03-01T00:00:00Z", 2025),
-    ):
-        def same_latest(url, _headers=None):
-            stamp = latest_time if url.endswith("/@latest") else "2025-01-01T00:00:00Z"
-            return {"Version": seed, "Time": stamp}, {}
+    def same_latest(url, _headers=None):
+        return {"Version": seed, "Time": "2025-01-01T00:00:00Z"}, {}
 
-        monkeypatch.setattr(registry, "_json", same_latest)
-        selected = registry.go_candidates(source, f">={seed}")
-        assert selected[registry.normalized_version(seed)].released_at.year == expected_year
+    monkeypatch.setattr(registry, "_json", same_latest)
+    selected = registry.go_candidates(source, f">={seed}")
+    assert selected[registry.normalized_version(seed)].released_at.year == 2025
+
+    def conflicting_latest(url, _headers=None):
+        stamp = "2024-01-01T00:00:00Z" if url.endswith("/@latest") else "2025-01-01T00:00:00Z"
+        return {"Version": seed, "Time": stamp}, {}
+
+    monkeypatch.setattr(registry, "_json", conflicting_latest)
+    with pytest.raises(registry.RegistryError, match="inconsistent timestamps"):
+        registry.go_candidates(source, f">={seed}")
 
     monkeypatch.setattr(registry, "_json", lambda *_args, **_kwargs: (_ for _ in ()).throw(
         registry.RegistryNotFoundError("optional latest endpoint unavailable"),
@@ -755,6 +758,18 @@ def test_go_proxy_refuses_invalid_version_metadata_and_candidate_overflow(monkey
     monkeypatch.setattr(registry, "_request", lambda *_: (many, {}))
     with pytest.raises(registry.RegistryError, match="more than"):
         registry.go_candidates({"module": "example.com/mod", "proxy": "https://proxy.golang.org"}, "*")
+
+
+def test_go_proxy_allows_candidate_limit_boundary(monkeypatch):
+    monkeypatch.setattr(registry, "MAX_REGISTRY_ITEMS", 1)
+    monkeypatch.setattr(registry, "_request", lambda *_args, **_kwargs: (b"v1.0.0\n", {}))
+    monkeypatch.setattr(registry, "_go_info", lambda *_args, **_kwargs: registry.Candidate(
+        "v1.0.0", datetime(2026, 1, 1, tzinfo=timezone.utc), "go-proxy-info-vcs-commit-time",
+    ))
+    found = registry.go_candidates(
+        {"module": "example.com/mod", "proxy": "https://proxy.golang.org"}, "*",
+    )
+    assert set(found) == {"1.0.0"}
 
 
 def test_oci_tag_list_rejects_external_pagination_and_created_time_fallback(monkeypatch):
@@ -1982,9 +1997,19 @@ proxy = "https://proxy.golang.org"
     ],
 )
 def test_go_workspace_file_discovery_uses_go_env(monkeypatch, tmp_path, reported, expected):
-    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: types.SimpleNamespace(
-        returncode=0, stdout=reported, stderr="",
-    ))
+    def run(command, **kwargs):
+        assert command == ["go", "env", "GOWORK"]
+        assert kwargs == {
+            "cwd": tmp_path,
+            "text": True,
+            "capture_output": True,
+            "check": False,
+            "timeout": 20,
+            "env": {},
+        }
+        return types.SimpleNamespace(returncode=0, stdout=reported, stderr="")
+
+    monkeypatch.setattr(versions.subprocess, "run", run)
     actual = versions._go_workspace_files(tmp_path, {})
     if reported == "go.work":
         assert actual == [tmp_path / path for path in expected]
@@ -1996,7 +2021,7 @@ def test_go_workspace_file_discovery_reports_probe_failures(monkeypatch, tmp_pat
     monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: types.SimpleNamespace(
         returncode=2, stdout="", stderr="invalid GOWORK",
     ))
-    with pytest.raises(versions.VersionsOperationError, match="could not determine the Go workspace"):
+    with pytest.raises(versions.VersionsOperationError, match="could not determine the Go workspace.*invalid GOWORK"):
         versions._go_workspace_files(tmp_path, {})
 
 

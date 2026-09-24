@@ -220,7 +220,8 @@ exception, npm 11.5.0 or newer is required. Go targets update `go.mod`/`go.sum`;
 workspace mode, the Go tool may also update `go.work`/`go.work.sum`. CMRU snapshots those files
 before `go get` and restores them if a later writer fails. For pseudo-versions, CMRU checks a
 version named by the target constraint and uses the proxy's `@latest` fallback when no listed
-version matches. OCI targets
+version matches. If the proxy reports different commit times for the same version through `.info`
+and `@latest`, CMRU refuses the result. OCI targets
 write a dated and stable JSON record at `versions/oci-images-YYYYMMDD.json` and
 `versions/oci-images.json`; each record has
 `schema_version`, `generated_by`, `resolved_at`, and a `targets` mapping containing image, chosen

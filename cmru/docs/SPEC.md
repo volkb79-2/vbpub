@@ -737,8 +737,10 @@ package-specific `--min-release-age-exclude` for explicit overrides/looser proje
 CMRU age-checks each declared Go module target against proxy `.info` metadata before `go get`
 writes its native files. Because Go proxy `@v/list` omits pseudo-versions, CMRU also checks a
 pseudo-version named by the target constraint and requests `@latest` when no listed version
-satisfies that constraint. In active workspace mode, `go get` may update `go.work` and
-`go.work.sum`; resolve MUST snapshot those files and restore them if any later writer fails.
+satisfies that constraint. If `.info` and `@latest` return the same version with different commit
+times, CMRU MUST refuse the inconsistent age evidence. In active workspace mode, `go get` may
+update `go.work` and `go.work.sum`; resolve MUST snapshot those files and restore them if any later
+writer fails.
 
 The built-in OCI output is JSON schema 1 at `versions/oci-images-YYYYMMDD.json` and the stable
 `versions/oci-images.json`; existing files may be replaced only when their `generated_by` marker

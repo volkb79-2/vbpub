@@ -1457,7 +1457,9 @@ def _go_workspace_files(project_root: Path, environment: Mapping[str, str]) -> l
         raise VersionsOperationError("Go workspace detection did not finish within 20 seconds") from exc
     if completed.returncode:
         detail = (completed.stderr or completed.stdout).strip()
-        raise VersionsOperationError(f"could not determine the Go workspace (exit {completed.returncode}): {detail[-1200:]}")
+        raise VersionsOperationError(
+            f"could not determine the Go workspace (exit {completed.returncode}): {detail[-1200:]}"
+        )
     value = completed.stdout.strip()
     if not value or value == "off":
         return []

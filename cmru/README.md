@@ -104,7 +104,8 @@ constraint outputs; `check` queries registries and reports the current recorded 
 versions without writing. Go `.info` commit-time and OCI image-created fallback evidence are
 called out in warnings and the report. Go targets also check a constrained pseudo-version and use
 the proxy's `@latest` fallback when no listed version matches. A resolve inside a Go workspace can
-update `go.work` and `go.work.sum` along with module files. These commands do not run as part of
+update `go.work` and `go.work.sum` along with module files; inconsistent Go timestamps fail closed.
+These commands do not run as part of
 build, release, gate, or a schedule. Read [the design guide](docs/DESIGN-GUIDE.md#supply-chain-age-windowed-version-determination)
 for the policy and timestamp choices, and use the [consumer examples](docs/CONSUMERS.md#using-a-supply-chain-age-window)
 to configure targets and consume the generated artifacts.

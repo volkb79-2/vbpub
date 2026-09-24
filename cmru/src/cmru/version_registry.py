@@ -416,8 +416,12 @@ def go_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Candi
             if version_satisfies(latest.version, constraint):
                 key = normalized_version(latest.version)
                 existing = result.get(key)
-                if existing is None or latest.released_at > existing.released_at:
+                if existing is None:
                     result[key] = latest
+                elif latest.released_at != existing.released_at:
+                    raise RegistryError(
+                        f"Go proxy returned inconsistent timestamps for {module}@{latest.version}"
+                    )
     return result
 
 
