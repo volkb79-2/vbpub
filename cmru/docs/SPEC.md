@@ -31,6 +31,9 @@ cmru worktrees              # discover retained failed build/release worktrees (
 cmru tool-deps [--allow-stale-tool-deps] [--refresh PROJECT]
                              # verify declared tool dependencies (S15): integrity/authenticity/freshness
                              # (network; also runs inside `release`'s preflight — never during tests)
+cmru versions init [all|P[,P...]] [--dry-run]    # derive source targets from package manifests
+cmru versions resolve [all|P[,P...]] [--dry-run] # explicitly resolve and write native artifacts
+cmru versions check [all|P[,P...]] [--json]      # read-only fresh registry comparison
 cmru changelog P --backfill-tag TAG  # migration: catalog an already-published tagged release
 cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
 cmru cleanup P --delete-unmanaged-release-tag TAG --yes
@@ -57,8 +60,13 @@ KI-06.
 (`orchestration.project_order`); a project is released only once it is listed there.
 
 **S-CLI.3** Verbs that write to the host or source tree (`release`, `changelog`, `build`,
-`publish`, `run`) MUST be
-clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `get`).
+`publish`, `run`, `versions init`, `versions resolve`) MUST be clearly distinguished in
+`--help` from read-only verbs (`status`, `resolve`, `get`, `versions check`).
+
+**S-CLI.6 — Version refresh is explicit.** `cmru versions init` and `cmru versions resolve`
+are the only CMRU commands that create or refresh version targets and their native outputs.
+`cmru build`, `cmru release`, tester gates, and schedules MUST NOT invoke them implicitly.
+`cmru versions check` performs fresh registry reads and MUST NOT write files.
 
 **S-CLI.4 — Retained-worktree discovery.** `cmru worktrees` is read-only and derives the
 current Git repository without loading a CMRU config. It MUST list every CMRU-managed
@@ -682,6 +690,61 @@ document stays portable to a fresh repository root, S2's own design
 constraint) — that cross-project check is performed by `cmru.dependencies`'
 `build_report`, alongside the analogous check for `depends_on` (S15.1).
 
+**S2.7 — Version policy and generated state** (`[versions]`). Both
+`cmru.orchestration.toml` and `cmru.toml` MAY declare `[versions]` with a positive
+`age_window_days` (default 14), `targets`, and optional `outputs`. Unknown keys and source
+families are rejected (exit 2). Target source tables use the closed values `.pypi`, `.npm`,
+`.go`, and `.oci`; `mode` is exactly `single` or `aligned`. Constraints use the documented
+common SemVer-compatible subset. A single target has exactly one source; an aligned target has
+at least two and CMRU MUST find the same version in every source whose timestamp is at or before
+the target's cutoff. OCI source tables name a fully-qualified image and a tag template with
+exactly one `{version}` placeholder; every other tag character is literal.
+
+Each registry source table MUST name only environment-variable references (`token_env` or the
+complete `username_env`/`password_env` pair) for credentials; it MUST NOT contain credential
+values or embedded-credential URLs. Missing referenced credentials are unavailable prerequisites
+(exit 3). CMRU MUST NOT forward credentials to an OCI bearer-token realm outside the configured
+registry origin, except Docker Hub's documented `auth.docker.io` token host.
+
+A target's exact `version` override MUST carry a non-empty `reason`. If its version is newer
+than the age cutoff in any configured source, it MUST carry a future ISO-date `expires`; CMRU
+refuses an expired override. Otherwise CMRU selects the highest SemVer-compatible, age-eligible
+version. The cutoff is `resolve time - age_window_days`, and releases exactly at the cutoff are
+eligible.
+
+Root targets and their `resolved` state belong to `cmru.orchestration.toml` and use the root age
+window. A project target declaration or overlay is project-local: it uses that project's
+effective age window and stores `resolved` in that project's `cmru.toml`. A project age-window
+setting alone MUST NOT alter a root target. Deep table values merge recursively; scalars and
+arrays replace.
+
+`cmru versions init` derives supported dependency facts from `requirements.in`,
+`pyproject.toml` project dependencies, npm manifest dependency tables, and Go `go.mod` require
+entries (including `// indirect` entries); skipped
+non-registry or unsupported entries MUST be reported. `cmru versions resolve` writes the
+generated result plus native outputs: Python constraints, npm direct versions/overrides and
+lockfile, Go `go.mod`/`go.sum`, OCI JSON, and any configured strict Jinja2 output. `cmru versions
+check` performs a fresh read-only comparison. None of these actions is coupled to build, release,
+gates, or scheduling.
+
+Timestamp evidence is recorded per source. PyPI uses upload time; npm uses registry version
+time; Go uses module proxy `.info` `Time`, which is VCS commit time rather than proxy publication
+time, and MUST emit a warning; OCI uses HTTP `Last-Modified` when present and may fall back to the
+publisher-provided `org.opencontainers.image.created` annotation or image config `created`, also
+with a warning. A missing usable timestamp MUST fail closed. Native Python constraints apply
+uv's age cutoff to the transitive resolution; npm's lock update applies `--before` and the
+package-specific `--min-release-age-exclude` for explicit overrides/looser project cutoffs. Go
+CMRU age-checks each declared Go module target against proxy `.info` metadata before `go get`
+writes its native files.
+
+The built-in OCI output is JSON schema 1 at `versions/oci-images-YYYYMMDD.json` and the stable
+`versions/oci-images.json`; existing files may be replaced only when their `generated_by` marker
+is `cmru versions resolve`. A configured `[versions.outputs.<id>]` requires `template`, `path`,
+and `dated_path` (with `{date}`), all project-relative. It renders with Jinja2 `StrictUndefined`
+and is an optional feature requiring the `versions-templates` extra. The context contains
+`resolved_at` and `targets`, whose entries contain `version`, `override`, `reason`, `expires`,
+`owner`, `age_cutoff`, and per-source `version`, `released_at`, `age_source`, and optional `tag`.
+
 ---
 
 ## S3 — Single Runner Contract
@@ -946,7 +1009,7 @@ asset `<tag><asset_suffix>`).
 
 ---
 
-## S7 — External (third-party) supply-chain tooling (not yet a CMRU config feature)
+## S7 — External third-party tool integration (not yet config-enabled)
 
 CMRU does **not** accept a `[project.delegated]` table. Earlier documentation
 advertised one even though no release lifecycle invoked it; the strict schema rejects it.
@@ -974,9 +1037,9 @@ cmru uses a four-value exit code scheme identical to CIU S10.3:
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Build or publish failure (artifact error, upload failed, tag push failed) |
+| `1` | Build/publish failure or native version-artifact writer failure |
 | `2` | Configuration error (missing required field, unknown key, parse error) |
-| `3` | Missing prerequisite (required environment variable, installer command, or external tool absent) |
+| `3` | Missing prerequisite, including an unavailable registry metadata source, required environment variable, or external tool |
 
 ---
 
@@ -1052,6 +1115,7 @@ _This section enumerates all config validation rules. Each rule references the s
 | V26 | `[[project.tool_dependencies]].sha256` is exactly 64 lowercase hex characters | 2 |
 | V27 | `[[project.tool_dependencies]].project` names a real first-party project in the loaded estate (cross-project check, `cmru.dependencies.build_report`, S15.1) | 2 |
 | V28 | A tool dependency (S15) whose integrity, authenticity, or (absent `--allow-stale-tool-deps`) freshness check fails MUST refuse `cmru release`; `cmru tool-deps` exits the same way on demand | 2 |
+| V29 | `[versions]` keys, modes, source tables, timestamp state, and exact-override requirements validate strictly (S2.7) | 2 |
 
 ---
 

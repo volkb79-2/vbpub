@@ -3849,7 +3849,7 @@ the helper's own visible PID membership in the mounted cgroup tree and local
 derived root. Reject missing/ambiguous membership or an absent resolved
 cgroup; do not use a host cgroup namespace to avoid the translation.
 
-### RW-310 — 2026-09-24 00:49:07Z — scope token roots to the selected cgroup
+### RW-312 — 2026-09-24 00:49:07Z — scope token roots to the selected cgroup
 
 The private-PID fix must preserve §2.2's attribution boundary: resolve the
 positive PIDs directly in the selected target cgroup (using the explicit host
@@ -3861,7 +3861,7 @@ This also avoids resolving the no-token PID list a second time on token-backed
 session startup. P1 source and regression tests now encode this ruling; fresh
 registered gates are still required after the edits.
 
-### RW-311 — 2026-09-24 00:49:07Z — distinct gate worktrees may run concurrently
+### RW-313 — 2026-09-24 00:49:07Z — distinct gate worktrees may run concurrently
 
 The operator clarified that independent CIU worktrees may host concurrent gate
 containers; the other controller's local one-at-a-time scheduling choice is
@@ -3873,8 +3873,65 @@ guard (`full avg10` must be at most 5 before launching work). The Wave C
 `run-gate-assay-selfhosted-1477047-21288-1790210014` and P1
 `cgprofile-gate-1478779-1790210092` containers did overlap; P1's exact-tree
 `r0-r1` completed cleanly with 1,324 tests and 100% statement/branch coverage
-in 72.891 seconds. The P1 tree changed afterward under RW-310, so this result
+in 72.891 seconds. The P1 tree changed afterward under RW-312, so this result
 is historical, not final evidence. Earlier this session I also mistakenly
 launched a local targeted pytest when memory PSI full avg10 was 6.97; collection
 stopped because the devcontainer lacked `numpy`, and no test body ran. I will
 not launch further validation until the admission threshold is met.
+
+The P1-local RW-310/RW-311 were renumbered RW-312/RW-313 because canonical
+main already assigns RW-310/RW-311 to cockpit/BuildKit and release-identity
+rulings. The P1 meanings are preserved above.
+
+### RW-310 — 2026-09-24 06:04:07Z — record current cockpit source and BuildKit socket remediation
+
+The operator confirms the running devcontainer is based on
+`/workspaces/dstdns/.devcontainer/devcontainer.json`. This is context only:
+the controller must not inspect or modify `/workspaces/dstdns`; all durable
+host-setup changes belong upstream in
+`modern-debian-tools-python-debug/host-setup`.
+
+The rootless BuildKit socket was inaccessible because it was created as
+`1000:1000` mode `0660`, while the cockpit has the Docker group GID but not
+GID 1000. The live host was corrected to use a sticky shared runtime directory
+and a post-start socket `chgrp docker`/`chmod 0660`; no service restart was
+performed. Matching upstream source is committed on
+`rg55-buildkit-socket-gid` at `7f0f46f3`; its registered `smoke` lane passed
+(`85 passed, 6 skipped`, exit 0). This branch remains unmerged and requires
+independent review; the smoke result is not release evidence. No file under
+`/workspaces/dstdns` was read or changed.
+
+### RW-311 — 2026-09-24 06:14:06Z — bind daemon version identity to CMRU's release tag
+
+RW-307's version-identity question is resolved: CMRU is the authoritative
+source of the OCI release coordinate, so the built CLI and daemon self-report
+must both use that same coordinate. In the P6 worktree, commit `dfef6bad`
+reads the `cgprofile-v<version>` tag at `HEAD`, validates it, passes the exact
+value through the build to `CGPROFILE_VERSION`, and uses that embedded value
+for both CLI and daemon identity. Untagged local builds identify as
+`0.0.0-dev`; an explicitly present but empty/malformed version now refuses
+rather than silently falling back. The README, DESIGN-GUIDE, and CONSUMERS
+examples were updated with the behavior and release flow.
+
+The controller verified CMRU's order locally: project gates run before tag
+creation, then the release tag is created/pushed before build and publish. A
+read-only CMRU status against the P6 worktree reports no existing cgprofile
+tag, so P1's first release must keep the settled explicit `--set-version
+1.0.0` rather than accepting the SCM first-release default `0.1.0`. Focused
+version/build/CLI tests pass (`26 passed`); registered P6 `r0-r1` is running
+on the clean `dfef6bad` tree, and `r3`, P6 R2, independent review, and release
+remain outstanding.
+
+### RW-318 — 2026-09-24 07:26:57Z — disqualify the legacy P1 gate receipt
+
+The nested `r0-r1` invocation on stale candidate
+`9b70a46e902b5ea63ea9de699165593ddae8bd54` reported exit 0, 1,202 tests
+passed and 100% line/branch coverage (history duration 69.198 s). The exact
+test container `bold_dewdney` was in `dev-background.slice`, not the required
+loaded `dev-gates.slice`; inspection showed the gate's placement probe used
+`--cgroupns=host`. I applied `docker update --cpus=3` and verified
+`NanoCpus=3000000000`, then stopped that exact container. This receipt is
+therefore NOT accepted as RG-55 shipping evidence despite the test/coverage
+PASS. The P1-private-ns branch carries the corrected named-container launcher
+and private-namespace probe; its reconciled exact-tree gate is still required.
+No unrelated container was stopped.
