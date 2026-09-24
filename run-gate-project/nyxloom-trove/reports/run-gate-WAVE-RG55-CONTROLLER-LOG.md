@@ -3866,3 +3866,24 @@ performed. Matching upstream source is committed on
 (`85 passed, 6 skipped`, exit 0). This branch remains unmerged and requires
 independent review; the smoke result is not release evidence. No file under
 `/workspaces/dstdns` was read or changed.
+
+### RW-311 — 2026-09-24 06:14:06Z — bind daemon version identity to CMRU's release tag
+
+RW-307's version-identity question is resolved: CMRU is the authoritative
+source of the OCI release coordinate, so the built CLI and daemon self-report
+must both use that same coordinate. In the P6 worktree, commit `dfef6bad`
+reads the `cgprofile-v<version>` tag at `HEAD`, validates it, passes the exact
+value through the build to `CGPROFILE_VERSION`, and uses that embedded value
+for both CLI and daemon identity. Untagged local builds identify as
+`0.0.0-dev`; an explicitly present but empty/malformed version now refuses
+rather than silently falling back. The README, DESIGN-GUIDE, and CONSUMERS
+examples were updated with the behavior and release flow.
+
+The controller verified CMRU's order locally: project gates run before tag
+creation, then the release tag is created/pushed before build and publish. A
+read-only CMRU status against the P6 worktree reports no existing cgprofile
+tag, so P1's first release must keep the settled explicit `--set-version
+1.0.0` rather than accepting the SCM first-release default `0.1.0`. Focused
+version/build/CLI tests pass (`26 passed`); registered P6 `r0-r1` is running
+on the clean `dfef6bad` tree, and `r3`, P6 R2, independent review, and release
+remain outstanding.
