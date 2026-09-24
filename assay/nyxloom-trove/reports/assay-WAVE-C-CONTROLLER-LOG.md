@@ -96,5 +96,24 @@ Local record checks before gate:
 | new cross-file report links | PASS |
 | shared `/workspaces/vbpub` checkout | clean at kickoff SHA |
 
-The detached tester-unified gate and all 12 phase markers remain pending. Add
-its captured log and exit markers here before merging.
+The detached tester-unified gate passed on the P0 branch tip
+`26ec6b3905ffe0b8c3a4eebdbdc11e81b4b0efaa`. The exact captured output is
+[`assay-WAVE-C-P0-gate-2026-09-24.log`](assay-WAVE-C-P0-gate-2026-09-24.log),
+SHA-256 `db36280ce66ea5c36dfc8cbb61c87c41e747de643b043c805bb52c7027194b85`.
+
+- Container: `run-gate-assay-selfhosted-1477047-21288-1790210014`; inspected
+  after `docker update --cpus=3`: `cpus=3000000000`, parent
+  `dev-gates.slice`.
+- Started at `2026-09-24T00:33:34.207416Z`; the detached log completed at
+  `00:48:43Z` (about 15m 9s). At the required 90-second check, wheel creation
+  had completed and six phase markers were present. The historical estimate
+  was 19–21m; this run finished earlier, and the next read found its terminal
+  markers.
+- Exit evidence: `ASSAY_GATE_CONTAINER_EXIT=0`,
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, all 12 `ASSAY_GATE_PHASE=` markers, and
+  `GATE_EXIT=0`. No container remained afterward.
+- Run-gate warned that the optional `cgprofile-host-daemon` was absent and
+  used coarse rusage sampling; this did not change the registered gate result.
+
+P0 was merged after that branch-tip gate passed; the later report commit adds
+the durable log and result summary.
