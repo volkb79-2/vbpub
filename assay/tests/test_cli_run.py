@@ -818,6 +818,251 @@ operators = ["python:compare-swap"]
 """
 
 
+def _seed_cli_rejudge_store(
+    git_repo: GitRepo, state_dir: Path
+) -> tuple[Path, tuple[str, ...]]:
+    lane = _r2_lane_with_two_candidates(git_repo)
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add rejudge CLI lane")
+    code, out, err = run(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--resume",
+            "--state-dir",
+            str(state_dir),
+            "--verdict-json",
+            "-",
+        ]
+    )
+    assert code == 1, err
+    first = json.loads(out)
+    assert first["claims"][1]["mutation"]["candidate_count"] == 2
+    records = sorted(state_dir.glob("*.json"))
+    assert len(records) == 2
+    ids = tuple(
+        json.loads(record.read_text(encoding="utf-8"))["candidate_id"]
+        for record in records
+    )
+    return path, ids
+
+
+def _cli_verify_document(document: dict, tmp_path: Path, name: str) -> None:
+    artifact = tmp_path / name
+    artifact.write_text(json.dumps(document), encoding="utf-8")
+    code, out, err = run(["verify", str(artifact)])
+    assert code == 0, f"assay verify rejected producer output: {err}\n{out}"
+
+
+def test_unknown_rejudge_id_is_a_verified_whole_lane_refusal_including_r3(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B094/D3/A-458: invalid ids are checked before replaying state and
+    use the pre-existing whole-lane refusal so every declared tier has the
+    same verify-accepted BAD_LANE_CONFIG pair.
+    """
+    state_dir = tmp_path / "mutation-state"
+    path, old_ids = _seed_cli_rejudge_store(git_repo, state_dir)
+
+    lane = path.read_text(encoding="utf-8")
+    lane = set_key(lane, "rigor", '["R0", "R2", "R3"]')
+    lane += (
+        '\n[lanes.package.judge.canary]\n'
+        'mechanism = "import-break"\n'
+        'target = "src/mod.py"\n'
+    )
+    git_repo.write("assay.toml", lane)
+    git_repo.commit_all("declare R3 for refusal coverage")
+
+    # If the implementation replays records before rejecting the unknown id,
+    # this corrupt record would win with UNREADABLE_ARTIFACT instead.
+    next(iter(sorted(state_dir.glob("*.json")))).write_text("{", encoding="utf-8")
+    unknown_id = "0" * 64
+    assert unknown_id not in old_ids
+    code, out, err = run(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--resume",
+            "--rejudge",
+            unknown_id,
+            "--state-dir",
+            str(state_dir),
+            "--verdict-json",
+            "-",
+        ]
+    )
+
+    assert code == 2
+    document = json.loads(out)
+    assert (document["outcome"], document["reason_code"]) == (
+        "ERROR",
+        "BAD_LANE_CONFIG",
+    )
+    assert [claim["rigor"] for claim in document["claims"]] == ["R0", "R2", "R3"]
+    assert [claim["status"] for claim in document["claims"]] == ["ERROR"] * 3
+    assert [claim["reason_code"] for claim in document["claims"]] == [
+        "BAD_LANE_CONFIG"
+    ] * 3
+    assert "current candidate set" in err
+    assert "UNREADABLE_ARTIFACT" not in err
+    _cli_verify_document(document, tmp_path, "unknown-rejudge-verdict.json")
+
+
+def test_stale_source_rejudge_id_is_bad_lane_config_and_verifiable(
+    git_repo: GitRepo, tmp_path: Path
+):
+    state_dir = tmp_path / "mutation-state"
+    path, old_ids = _seed_cli_rejudge_store(git_repo, state_dir)
+    source = git_repo.path / "src/mod.py"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n# source bytes changed\n",
+        encoding="utf-8",
+    )
+    git_repo.commit_all("change source bytes without changing the baseline command")
+
+    code, out, err = run(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--resume",
+            "--rejudge",
+            old_ids[0],
+            "--state-dir",
+            str(state_dir),
+            "--verdict-json",
+            "-",
+        ]
+    )
+
+    assert code == 2
+    document = json.loads(out)
+    assert (document["outcome"], document["reason_code"]) == (
+        "ERROR",
+        "BAD_LANE_CONFIG",
+    )
+    assert "source bytes changed" in err
+    assert verify_document(document) == []
+    _cli_verify_document(document, tmp_path, "stale-rejudge-verdict.json")
+
+
+def test_stale_rejudge_id_refuses_when_source_edit_removes_all_candidates(
+    git_repo: GitRepo, tmp_path: Path
+):
+    state_dir = tmp_path / "mutation-state"
+    path, old_ids = _seed_cli_rejudge_store(git_repo, state_dir)
+    git_repo.write(
+        "src/mod.py",
+        "def f(x):\n    return 0  # x > 0\n\ndef g(y):\n    return 0\n",
+    )
+    git_repo.commit_all("remove both candidate sites")
+
+    code, out, err = run(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--resume",
+            "--rejudge",
+            old_ids[0],
+            "--state-dir",
+            str(state_dir),
+            "--verdict-json",
+            "-",
+        ]
+    )
+
+    assert code == 2, err
+    document = json.loads(out)
+    assert (document["outcome"], document["reason_code"]) == (
+        "ERROR",
+        "BAD_LANE_CONFIG",
+    )
+    assert "current candidate set" in err
+    _cli_verify_document(document, tmp_path, "no-candidates-rejudge-verdict.json")
+
+
+def test_corrupt_rejudge_store_keeps_unreadable_artifact_classification(
+    git_repo: GitRepo, tmp_path: Path
+):
+    state_dir = tmp_path / "mutation-state"
+    path, _ids = _seed_cli_rejudge_store(git_repo, state_dir)
+    next(iter(sorted(state_dir.glob("*.json")))).write_text("{", encoding="utf-8")
+
+    code, out, err = run(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--resume",
+            "--state-dir",
+            str(state_dir),
+            "--verdict-json",
+            "-",
+        ]
+    )
+
+    assert code == 2
+    document = json.loads(out)
+    assert (document["outcome"], document["reason_code"]) == (
+        "ERROR",
+        "UNREADABLE_ARTIFACT",
+    )
+    assert document["claims"][0]["status"] == "PASS"
+    assert document["claims"][1]["reason_code"] == "UNREADABLE_ARTIFACT"
+    assert verify_document(document) == []
+    _cli_verify_document(document, tmp_path, "corrupt-state-verdict.json")
+
+
+def test_valid_rejudge_id_reexecutes_only_its_selected_record(
+    git_repo: GitRepo, tmp_path: Path
+):
+    state_dir = tmp_path / "mutation-state"
+    path, ids = _seed_cli_rejudge_store(git_repo, state_dir)
+    selected_id = ids[0]
+    progress = tmp_path / "rejudge-progress.jsonl"
+
+    code, out, err = run(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--resume",
+            "--rejudge",
+            selected_id,
+            "--state-dir",
+            str(state_dir),
+            "--progress",
+            str(progress),
+            "--verdict-json",
+            "-",
+        ]
+    )
+
+    assert code == 1, err  # the unselected candidate's recorded survivor resumes.
+    document = json.loads(out)
+    assert document["claims"][1]["mutation"]["candidate_count"] == 2
+    events = [
+        json.loads(line)
+        for line in progress.read_text(encoding="utf-8").splitlines()
+    ]
+    resume_event = next(event for event in events if event["event"] == "resume")
+    assert (resume_event["resumed_total"], resume_event["rejudged_total"]) == (1, 1)
+    candidate_events = [event for event in events if event["event"] == "candidate"]
+    assert [event["candidate_id"] for event in candidate_events] == [selected_id]
+    assert verify_document(document) == []
+    _cli_verify_document(document, tmp_path, "valid-rejudge-verdict.json")
+
+
 def test_run_refuses_an_out_of_range_shard_with_a_clean_verdict_not_a_crash(
     git_repo: GitRepo,
 ):
@@ -1920,6 +2165,77 @@ evidence = [
     # ...and neither successor ever started
     assert adapter_calls == [], "no adapter may be resolved after batch expiry"
     assert not sentinel_file.exists(), "the lane command must never have run"
+
+
+def test_attestation_timeout_refusal_records_resolved_infrastructure_facts(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """B025's final acceptance box: the attestation timeout's own
+    ``refuse_lane`` must receive the caller's already-resolved infrastructure
+    facts, not only the adjacent adapter-refusal call.
+    """
+    lane_text = """\
+schema_version = 2
+
+[lanes.attested]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "exit 0"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.attested.judge]
+attestation_dir = ".assay/attestations"
+evidence = [{source="attested",key="slow"}]
+
+[lanes.attested.infrastructure]
+img = "derived:deploy.image"
+"""
+    git_repo.write(".gitignore", ".assay/\n")
+    git_repo.write("src/reviewed/child.py", "old\n")
+    git_repo.write("ciu.global.toml", "[deploy]\nimage = 'postgres:18'\n")
+    path = _write_and_commit_lane(git_repo, lane_text)
+    head = git_repo.head()
+    attestations = git_repo.path / ".assay/attestations"
+    attestations.mkdir(parents=True, exist_ok=True)
+    (attestations / "slow.json").write_text(
+        json.dumps(
+            {
+                "producer": "human:alice",
+                "attested_commit": head,
+                "reviewed_paths": ["src/reviewed"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    timeout = AssayError(
+        "lane budget exhausted inside the attestation batch",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+    def expire(*args, **kwargs):
+        raise timeout
+
+    monkeypatch.setattr(git, "verify_exact_commit", expire, raising=False)
+    destination = tmp_path / "attestation-timeout-verdict.json"
+    code, _, _ = run(
+        ["run", "attested", "--file", str(path), "--verdict-json", str(destination)]
+    )
+
+    assert code == 4
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert verify_document(document) == []
+    assert (document["outcome"], document["reason_code"]) == (
+        "BUDGET_EXCEEDED",
+        "LANE_TIMEOUT",
+    )
+    assert document["env_effective"]["img"] == "postgres:18"
+    assert "env_effective_incomplete" not in document
 
 
 # --- B004/A-430: a lane declaring BOTH attested and adjudicated evidence -----

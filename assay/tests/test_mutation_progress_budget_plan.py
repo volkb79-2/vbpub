@@ -794,9 +794,9 @@ def test_rejudge_unknown_id_refuses_before_any_execution(tmp_path):
 
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
         with pytest.raises(
-            mutation.MutationStateError,
+            mutation.InvalidRejudgeIdError,
             match="not present in this lane's current candidate set",
-        ):
+        ) as excinfo:
             run_mutation(
                 baseline=baseline,
                 prepared=prepared,
@@ -813,6 +813,7 @@ def test_rejudge_unknown_id_refuses_before_any_execution(tmp_path):
                 resume=True,
                 rejudge_ids=frozenset({"0" * 64}),
             )
+    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
 
 
 def test_resume_progress_event_gains_rejudged_total(tmp_path):

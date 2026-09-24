@@ -18,12 +18,27 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from assay import git as git_module
 from assay.errors import AssayError, Outcome, ReasonCode
+
+
+def _fake_git(tmp_path: Path, *, stderr: str, returncode: int = 128) -> Path:
+    executable = tmp_path / "fake-git"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        f"sys.stderr.write({stderr!r})\n"
+        f"sys.exit({returncode})\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable
 
 
 # --- _resolve_git_executable ---------------------------------------------------
@@ -143,6 +158,84 @@ def test_an_invalid_gitfile_is_refused_as_git_failed(tmp_path: Path):
     with pytest.raises(AssayError) as excinfo:
         git_module._resolve_repo(project, git_executable)
     assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
+
+
+def test_dubious_ownership_message_replaces_gits_unreachable_remedy(
+    tmp_path: Path,
+):
+    """B081: replay Git 2.55's captured ownership diagnostic hermetically."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+
+    # Captured with Git 2.55.0, GIT_TEST_ASSUME_DIFFERENT_OWNER=1, and
+    # system/global configuration directed at /dev/null. Only the temporary
+    # repository path varies; the fake executable emits these exact lines.
+    real_stderr = (
+        f"fatal: detected dubious ownership in repository at '{project}'\n"
+        "To add an exception for this directory, call:\n"
+        "\n"
+        f"\tgit config --global --add safe.directory {project}\n"
+    )
+    fatal_line = next(
+        line
+        for line in real_stderr.splitlines()
+        if line.startswith("fatal: detected dubious ownership in repository at ")
+    )
+    assert "To add an exception for this directory" in real_stderr
+    assert "git config --global --add safe.directory" in real_stderr
+
+    with pytest.raises(AssayError) as excinfo:
+        git_module._resolve_repo(project, _fake_git(tmp_path, stderr=real_stderr))
+
+    message = str(excinfo.value)
+    assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
+    assert "dubious ownership mismatch" in message
+    assert "safe.directory" in message
+    assert "GIT_CONFIG_NOSYSTEM=1" in message
+    assert f"GIT_CONFIG_GLOBAL={os.devnull}" in message
+    assert "Run assay as the repository owner" in message
+    assert "fix the tree's ownership/uid mapping" in message
+    assert message.endswith(fatal_line)
+    assert "To add an exception" not in message
+    assert "git config --global --add safe.directory" not in message
+
+
+def test_healthy_bootstrap_does_not_consult_the_ownership_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    real_git = git_module._resolve_git_executable()
+    subprocess.run([str(real_git), "init", "-q", str(project)], check=True)
+
+    def unexpected_probe(*args, **kwargs):
+        raise AssertionError("healthy repository resolution must not probe ownership")
+
+    monkeypatch.setattr(git_module, "_dubious_ownership_gap", unexpected_probe)
+    resolved = git_module._resolve_repo(project, real_git)
+    assert resolved.repo_top == project
+    assert resolved.git_dir == project / ".git"
+
+
+def test_unrecognised_bootstrap_failure_keeps_its_existing_message(
+    tmp_path: Path,
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    git_executable = _fake_git(
+        tmp_path, stderr="fatal: unable to read repository configuration\n"
+    )
+
+    with pytest.raises(AssayError) as excinfo:
+        git_module._resolve_repo(project, git_executable)
+
+    assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
+    assert str(excinfo.value) == (
+        f"git rev-parse --absolute-git-dir failed resolving {project} "
+        f"(128): fatal: unable to read repository configuration"
+    )
 
 
 def test_a_resolved_git_dir_that_is_not_an_existing_absolute_directory_is_refused(

@@ -27,6 +27,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   and the current dstdns assay pin (B082-B084/B101)
 - docs(assay): document verdict schema v12, dirty-tree provenance, liveness
   cleanup, and ingested discard reasons (B079/B093/B102)
+- docs(assay): explain Git ownership refusals, rejudge input classification,
+  and the consumer remedies (B081/B094)
 
 ### Fixed
 - fix(assay): refresh the W3 dstdns SQL witness for the shipped v11 liveness
@@ -45,6 +47,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   still raise without them).
   Previously the gate container removed that evidence. Expected terminals are
   unchanged.
+- fix(assay): replace Git's unreachable `safe.directory` remedy on dubious-
+  ownership failures, and classify unknown/stale `--rejudge` ids as
+  `BAD_LANE_CONFIG` while preserving corrupt-store errors (B081/B094)
 
 ### Testing
 - test(assay): history-cut snapshot regressions (real git, `.git/shallow` at
@@ -53,6 +58,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   the snapshot and that the run still passes. All four fail against the
   pre-port code. The cut keeps the R3 transformed half's parent visible, so
   that half is not exercised by it.
+- test(assay): drive unknown, stale, valid, and corrupt `--rejudge` state
+  through the CLI and `assay verify`; guard the attestation-timeout
+  infrastructure forward (B094/B025)
 
 <!-- cmru: release history -->
 

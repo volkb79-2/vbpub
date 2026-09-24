@@ -1006,6 +1006,35 @@ separately as an alias for canonical `crashed`; it must never become a verdict
 or resume-state bucket. The parser and runtime therefore share the canonical
 source without making the alias look like a second canonical outcome.
 
+**(B094/A-458) An unknown or stale `--rejudge` id is bad input, not corrupt
+state.** Candidate IDs are checked against the current selected candidates
+before resume records are loaded. The current set exists only after the lane
+baseline has passed and mutation discovery has run, so the CLI cannot use the
+early `--rejudge` syntax preflight for this check. The check raises
+`ERROR`/`BAD_LANE_CONFIG` through the existing whole-lane refusal, which puts
+the same pair on every declared rigor level and is accepted by `assay verify`.
+That choice deliberately discards any already-measured R0 or R1 result: an
+R2-only `BAD_LANE_CONFIG` beside a passing baseline is not an accepted
+post-baseline terminal. Extending `verify.py`'s accepted reason set would be a
+verification-policy change; this package keeps the existing verifier
+contract. Actual unreadable or corrupt records still report
+`ERROR`/`UNREADABLE_ARTIFACT`, and a valid id still drops and re-executes
+only its matching record.
+
+### Git dubious ownership and safe directory (B081)
+
+Git's dubious-ownership fatal line is retained as evidence, but its following
+`safe.directory` instruction is removed from assay's refusal. The child
+environment replaces ambient Git configuration, sets
+`GIT_CONFIG_NOSYSTEM=1`, and points `GIT_CONFIG_GLOBAL` at `/dev/null` (A-173),
+so Git cannot read the configuration that command would write. The diagnostic
+names the ownership mismatch and directs the operator to run assay as the
+repository owner or fix the tree's ownership/uid mapping. It does not disable
+Git's ownership protection with a command-line exception. As with B068, this
+probe runs only after bootstrap fails; the linked-worktree diagnostic keeps
+precedence, healthy resolution never consults it, and other Git failures pass
+through unchanged. See the [consumer remedy](CONSUMERS.md#b081-ownership-remedy).
+
 ### Filtered native-R2 judge identity (B092)
 
 Some repositories deliberately keep generated reports and trove evidence in
