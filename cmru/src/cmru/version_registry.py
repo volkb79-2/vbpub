@@ -511,8 +511,8 @@ class _OCIClient:
         realm_url = challenge["realm"]
         try:
             _RegistryRedirectHandler._origin(realm_url)
-        except RegistryError:
-            raise RegistryError(f"OCI registry provided an unsafe bearer-token realm for {url}")
+        except RegistryError as exc:
+            raise RegistryError(f"OCI registry provided an unsafe bearer-token realm for {url}") from exc
         realm = urllib.parse.urlsplit(realm_url)
         if "#" in realm_url:
             raise RegistryError(f"OCI registry provided an unsafe bearer-token realm for {url}")
