@@ -3935,3 +3935,22 @@ therefore NOT accepted as RG-55 shipping evidence despite the test/coverage
 PASS. The P1-private-ns branch carries the corrected named-container launcher
 and private-namespace probe; its reconciled exact-tree gate is still required.
 No unrelated container was stopped.
+
+### RW-319 — 2026-09-24 07:41:38Z — permit a third mutation lane under verified gate capacity
+
+The operator supersedes the earlier hard two-lane ceiling. The host's
+`dev-gates.slice` is verified loaded with `CPUQuotaPerSecUSec=5s` (five CPU
+equivalents); allow up to **three** concurrent mutation containers estate-wide.
+This is permission to use the bounded capacity, not a claim that three
+three-CPU containers can receive five CPUs simultaneously: CPU scheduling and
+contention are expected, allowed conditions. Each lane gets a unique exact
+container name, the declared and verified `dev-gates.slice` parent, and an
+immediate verified `docker update --cpus=3`. Check memory PSI before launch and
+do not launch while `full avg10 > 5`.
+
+Functional outcomes and mutation classifications must be deterministic and
+agnostic to scheduler contention. Time/budget controls exist only for safety
+and resumability; timeout, interruption, pressure, or an unjudged candidate is
+incomplete/infrastructure evidence, never a product verdict. Do not change
+test semantics or classify a candidate from elapsed wall time. The controller
+must update review/dispatch packets that still encode the former two-lane cap.

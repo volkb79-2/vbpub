@@ -1,15 +1,21 @@
 # cgprofile-P1-DAEMON — adversarial review handoff (RG-55 wave, package P1)
 
-**Reviewer:** FRESH session (Opus, xhigh), never a fork of the implementer or
-the controller. **Your job is to BREAK this before merge.** 3-round cap;
-fix-verification rounds resume YOUR session (the controller messages you the
-repair commit). Records: `scripts/cgroup-profiler/nyxloom-trove/reports/
-cgprofile-P1-DAEMON-REVIEW-round<n>.md`.
+**Reviewer:** a genuinely fresh Sol xhigh session, never a fork of the
+implementer or controller. Verify the actual route from session metadata; do
+not infer it from this handoff. **Your job is to BREAK this before merge.**
+Three rounds maximum. Fix-verification rounds resume your same live session;
+if it is gone, the controller seeds a fresh one with all prior rounds. The
+operator authorizes you to make and commit scoped fixes in this isolated P1
+worktree. You may not merge, release, tag, publish, install, or start/stop the
+main daemon. Records:
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round<n>.md`.
 
-Branch `rg55-profiler-daemon`, worktree `/workspaces/vbpub/.worktrees/rg55-profiler-daemon`,
-project dir `scripts/cgroup-profiler/`. Base: `main` at the P0 freeze
-(`63b928da`). The tip hash is in the dispatch message. Review the FULL diff
-`main...<tip>` — every file, every type.
+Branch `rg55-p1-private-ns`, worktree
+`/workspaces/vbpub/.worktrees/rg55-p1-private-ns`, project dir
+`scripts/cgroup-profiler/`. At dispatch the controller supplies the exact
+current `main` base and committed P1 candidate tip. Review the FULL diff
+`<base>...<tip>` — every file, every type — and verify the actual git state
+before editing.
 
 ## Phase 1 — BLIND (before any LOG/REPORT/BRIEF)
 
@@ -20,7 +26,7 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-RW-47, and RW-48 bind this package), the
+RW-47, RW-48, RW-318, and RW-319 bind this package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,
 `lib/serve.py`, `lib/store.py` changes, `cgprofile.py`, the shim, the
@@ -42,12 +48,12 @@ each claim against what you found; list claims you could not verify.
    Grep for `open(..., "w")`, `write_text`, `os.replace`, `shutil`, `subprocess`
    in `lib/serve.py`, `lib/damon.py`, `lib/store.py`, `cgprofile.py`. Is
    `--cap`/`TempCaps` reachable from `serve` or `ctl` by any argv? Does the
-   compose template really give `network_mode: none`, no docker socket, the
-   interactive `cgroup_parent` AUTHORED (not governance-injected), `pid:
-   host`, `cgroupns: host`, `privileged: true`, `mem_limit`? Does SIGTERM
-   restore `nr_kdamonds` and never tear down a foreign kdamond? Does a crash
-   mid-session leak a kdamond (plant an exception in the sampler thread and
-   watch)?
+   compose template keep PID and cgroup namespaces private, use
+   `network_mode: none`, omit the Docker socket, author its cgroup parent,
+   mount host `/proc` and cgroup v2 explicitly read-only, retain only the
+   DAMON sysfs write surface, and set the documented memory limits? Any host
+   namespace mode is a blocker. Does SIGTERM restore `nr_kdamonds` and never
+   tear down a foreign kdamond? Can a crash mid-session leak a kdamond?
 2. **Contract conformance.** Every `ctl` verb's response vs contract §2 and
    the goldens; exit codes 0/2/3; `contract: 1` on every response incl.
    errors; ONE JSON document on stdout (plant a stray print and watch the
@@ -87,7 +93,8 @@ each claim against what you found; list claims you could not verify.
    contract-fixture identity test really compares bytes against
    `run-gate-project/nyxloom-trove/fixtures/rg55/`.
 9. **Rulings honored.** RW-3 one-liner present; RW-13/RW-15/RW-16 as ruled;
-   RW-19/RW-21/RW-23/RW-47/RW-48 recorded and reflected in code/tests;
+   RW-19/RW-21/RW-23/RW-47/RW-48/RW-318/RW-319 recorded and reflected in
+   code/tests and the exact gate-launch evidence;
    CP-4..CP-7 entries real and honest. Read `.assay/verdict-r2.json`
    separately and reconcile every survivor with REPORT's concrete
    disposition; in particular, independently attack the focused oracle for
@@ -100,12 +107,17 @@ each claim against what you found; list claims you could not verify.
 
 - `python3 build-push.py --build` (or confirm `cgprofile:local` is current
   for the tip: compare the image's revision label to the tip).
-- `ciu up` from the project dir (or the documented fallback); `docker inspect
-  cgprofile-host-daemon` shows the interactive slice, privileged, pid host,
-  cgroupns host, network none; `ctl version --json` verbatim.
+- Use a separate, uniquely named review-daemon container built from this tip;
+  never replace, stop, or `ciu down` an existing `cgprofile-host-daemon`.
+  Derive its argv and explicit mounts from the rendered candidate Compose:
+  privileged, private PID/cgroup namespaces, `network_mode: none`, read-only
+  host `/proc` and cgroup v2, and the separate DAMON sysfs mount. Verify the
+  authored cgroup parent is a loaded unit and apply/verify the 3-CPU cap on
+  that exact name. Check `ctl version --json` verbatim.
 - Ephemeral probe with DAMON on (100 MiB held 12 s in a throwaway
-  `cmru-enroll-fixture:local` container under `dev-background.slice`, token
-  set) → summary sanity (peak ≥ 100 MiB, `source: memory.peak`, cpu > 0,
+  `cmru-enroll-fixture:local` container under the loaded `dev-gates.slice`,
+  capped at 3 CPUs, token set) → summary sanity (peak ≥ 100 MiB,
+  `source: memory.peak`, cpu > 0,
   damon on with hot bytes or `unavailable:<reason>`); `ctl report` on it →
   open the HTML.
 - Shared probe (sleep container + `docker exec -e RUN_GATE_PROFILE_SESSION=…
@@ -113,8 +125,9 @@ each claim against what you found; list claims you could not verify.
   `source: sampled-max`.
 - Two sessions concurrently (both probes at once) → two kdamond indices,
   independent summaries.
-- `finally`: remove probes; `ciu down` the daemon (leave the host as you
-  found it).
+- `finally`: remove only the exact reviewer-owned workload and daemon
+  containers (and their dedicated scratch data); leave any pre-existing
+  singleton untouched.
 
 ## Verdict
 
@@ -126,13 +139,14 @@ Write the round file, then return the verdict line first in your message.
 
 ## HOST LOAD (binding)
 
-8 cores shared with a production game server; PSI is the signal. pytest
-SERIAL only, `nice -n 19 ionice -c 3`; targeted files while iterating, the
-whole suite at most once. ≤ 2 gate containers estate-wide (`docker ps` for
-`tester-unified:local` first; a P2 package may hold one); `docker update
---cpus=3` after launch; remove in a `finally`. No container may use host
-PID/cgroup/network namespaces. The daemon probe must use private namespaces
-plus explicit read-only host `/proc` and cgroup binds, matching the compose
-template. Never touch `run-gate-project/`, `ciu/src/`,
-`/workspaces/dstdns`. Edit tool only if you must write (round files); no
-commits to the branch — repairs are the implementer's.
+8 cores shared with a production game server; host contention is an allowed
+condition and must not alter a functional verdict or mutation classification.
+The host `dev-gates.slice` is loaded and capped at 5 CPUs; at most 3 mutation
+lanes may run estate-wide, each with its own unique exact container name and
+immediate verified `docker update --cpus=3`. Check memory PSI before launch
+and do not launch while `full avg10 > 5`. pytest is serial and load-niced;
+the scheduler is not to be tuned to make a test pass. No container may use
+host PID/cgroup/network namespace modes. Read-only access to
+`run-gate-project/` is required for contract/ruling context; do not edit it
+as reviewer. Never touch `ciu/src/` or `/workspaces/dstdns`. Remove only
+your exact temporary containers in a `finally`.
