@@ -216,7 +216,11 @@ is not registry publication time. Missing or malformed timestamps fail closed.
 `constraints/constraints.txt` for PyPI targets in Python projects; set `PIP_CONSTRAINT` or pass
 `-c` to consume it. npm targets update direct package versions, overrides, and the lockfile with
 scripts disabled. When an override or looser per-target cutoff needs a package-specific age
-exception, npm 11.5.0 or newer is required. Go targets update `go.mod`/`go.sum`. OCI targets
+exception, npm 11.5.0 or newer is required. Go targets update `go.mod`/`go.sum`; in active Go
+workspace mode, the Go tool may also update `go.work`/`go.work.sum`. CMRU snapshots those files
+before `go get` and restores them if a later writer fails. For pseudo-versions, CMRU checks a
+version named by the target constraint and uses the proxy's `@latest` fallback when no listed
+version matches. OCI targets
 write a dated and stable JSON record at `versions/oci-images-YYYYMMDD.json` and
 `versions/oci-images.json`; each record has
 `schema_version`, `generated_by`, `resolved_at`, and a `targets` mapping containing image, chosen

@@ -30,6 +30,10 @@ class RegistryError(RuntimeError):
     """A registry request or its age evidence could not be trusted."""
 
 
+class RegistryNotFoundError(RegistryError):
+    """A registry explicitly returned HTTP 404 for a requested resource."""
+
+
 @dataclass(frozen=True)
 class Candidate:
     version: str
@@ -88,7 +92,8 @@ def _request(url: str, headers: Mapping[str, str] | None = None) -> tuple[bytes,
         body = exc.read(MAX_METADATA_BYTES + 1) if exc.fp else b""
         excerpt = body[:500].decode("utf-8", errors="replace").replace("\n", " ")
         detail = f": {excerpt}" if excerpt else ""
-        raise RegistryError(f"registry returned HTTP {exc.code} for {url}{detail}") from exc
+        error_type = RegistryNotFoundError if exc.code == 404 else RegistryError
+        raise error_type(f"registry returned HTTP {exc.code} for {url}{detail}") from exc
     except urllib.error.URLError as exc:
         raise RegistryError(f"could not reach registry {url}: {exc.reason}") from exc
     except TimeoutError as exc:
@@ -307,6 +312,52 @@ def _go_info(proxy: str, module: str, version: str, source: Mapping[str, str]) -
     )
 
 
+_GO_PSEUDO_VERSION = re.compile(
+    r"^v\d+\.\d+\.\d+-(?:[0-9A-Za-z.-]*\.)?\d{14}-[0-9a-f]{12}$"
+)
+
+
+def _go_pseudo_versions_in_constraint(constraint: str) -> set[str]:
+    """Return published Go pseudo-versions that can seed a constrained search.
+
+    The proxy's @v/list intentionally omits pseudo-versions. A go.mod-derived
+    lower bound is nevertheless an exact, already-known candidate and can be
+    checked through its .info endpoint.
+    """
+    found: set[str] = set()
+    for part in constraint.split(","):
+        match = _COMPARATOR.fullmatch(part.strip())
+        if not match:
+            continue
+        operator = match.group(1) or "=="
+        version = match.group(2).strip()
+        if (
+            operator in {"==", ">", ">="}
+            and _GO_PSEUDO_VERSION.fullmatch(version)
+        ):
+            found.add(version)
+    return found
+
+
+def _go_latest(proxy: str, module: str, source: Mapping[str, str]) -> Candidate:
+    escaped_module = "/".join(_go_escape(part) for part in module.split("/"))
+    url = f"{proxy.rstrip('/')}/{escaped_module}/@latest"
+    payload, _headers = _json(url, _auth_headers(source))
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("Version"), str)
+        or not payload["Version"].startswith("v")
+        or _semver_key(payload["Version"]) is None
+    ):
+        raise RegistryError(f"Go proxy returned invalid latest-version metadata for {module}")
+    version = payload["Version"]
+    return Candidate(
+        version=version,
+        released_at=_iso_datetime(payload.get("Time"), f"Go module {module}@{version}"),
+        age_source="go-proxy-info-vcs-commit-time",
+    )
+
+
 def go_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Candidate]:
     module = source["module"]
     proxy = source["proxy"].rstrip("/")
@@ -317,22 +368,56 @@ def go_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Candi
         listed = body.decode("utf-8", errors="strict").splitlines()
     except UnicodeDecodeError as exc:
         raise RegistryError(f"Go proxy returned invalid UTF-8 for {module} version list") from exc
+    listed_versions = {
+        line.strip() for line in listed if line.strip()
+    }
     versions = sorted(
-        {line.strip() for line in listed if line.strip()},
+        listed_versions,
         key=lambda v: _semver_key(v) or (-1,), reverse=True,
     )
     versions = [v for v in versions if version_satisfies(v, constraint)]
-    if len(versions) > MAX_REGISTRY_ITEMS:
+    pseudo_seeds = _go_pseudo_versions_in_constraint(constraint) - listed_versions
+    if len(versions) + len(pseudo_seeds) > MAX_REGISTRY_ITEMS:
         raise RegistryError(f"Go proxy listed more than {MAX_REGISTRY_ITEMS} candidates for {module}")
     result: dict[str, Candidate] = {}
+    candidates_to_check = [*versions, *sorted(pseudo_seeds)]
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(_go_info, proxy, module, version, source): version
-            for version in versions
+            for version in candidates_to_check
         }
         for future in as_completed(futures):
-            candidate = future.result()
+            version = futures[future]
+            try:
+                candidate = future.result()
+            except RegistryNotFoundError:
+                if version in pseudo_seeds:
+                    # Constraint bounds are useful seeds only when the proxy
+                    # actually publishes that pseudo-version. Other failures
+                    # remain hard errors; a listed version missing its .info
+                    # is inconsistent proxy metadata.
+                    continue
+                raise
             result[normalized_version(candidate.version)] = candidate
+
+    # The Go proxy protocol excludes pseudo-versions from @v/list. Match the
+    # Go command's fallback and consult @latest only when the constraint has no
+    # listed candidate. Seeded pseudo-versions still let an existing go.mod
+    # baseline participate when the proxy has no @latest endpoint.
+    if not versions:
+        try:
+            latest = _go_latest(proxy, module, source)
+        except RegistryNotFoundError:
+            if not result:
+                raise RegistryError(
+                    f"Go proxy returned no listed versions and does not provide @latest for {module}"
+                )
+        else:
+            if version_satisfies(latest.version, constraint):
+                key = normalized_version(latest.version)
+                existing = result.get(key)
+                if existing is None or latest.released_at > existing.released_at:
+                    result[key] = latest
     return result
 
 

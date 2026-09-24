@@ -614,6 +614,13 @@ def test_registry_time_parsing_and_http_failures(monkeypatch):
     monkeypatch.setattr(registry.urllib.request, "urlopen", http_error)
     with pytest.raises(registry.RegistryError, match="HTTP 403"):
         registry._request("https://registry.example/meta")
+
+    def not_found(*_args, **_kwargs):
+        raise urllib.error.HTTPError("https://registry.example", 404, "missing", Message(), io.BytesIO(b"no"))
+
+    monkeypatch.setattr(registry.urllib.request, "urlopen", not_found)
+    with pytest.raises(registry.RegistryNotFoundError, match="HTTP 404"):
+        registry._request("https://registry.example/meta")
     monkeypatch.setattr(registry.urllib.request, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.URLError("offline")))
     with pytest.raises(registry.RegistryError, match="could not reach registry"):
         registry._request("https://registry.example/meta")
@@ -650,6 +657,84 @@ def test_go_proxy_uses_info_time_and_reports_bad_protocol(monkeypatch):
     monkeypatch.setattr(registry, "_request", lambda *_: (b"\xff", {}))
     with pytest.raises(registry.RegistryError, match="invalid UTF-8"):
         registry.go_candidates({"module": "example.com/mod", "proxy": "https://proxy.golang.org"}, "*")
+
+
+def test_go_proxy_uses_latest_and_constraint_pseudo_version(monkeypatch):
+    seed = "v0.0.0-20250101000000-abcdefabcdef"
+    latest = "v0.0.0-20260301000000-bcdefabcdefa"
+    source = {"module": "example.com/mod", "proxy": "https://proxy.golang.org"}
+    requests = []
+
+    def request(url, _headers=None):
+        requests.append(url)
+        assert url == "https://proxy.golang.org/example.com/mod/@v/list"
+        return b"", {}
+
+    def info(url, _headers=None):
+        requests.append(url)
+        if url.endswith("/@latest"):
+            return {"Version": latest, "Time": "2026-03-01T00:00:00Z"}, {}
+        assert url.endswith(f"/@v/{seed}.info")
+        return {"Version": seed, "Time": "2025-01-01T00:00:00Z"}, {}
+
+    monkeypatch.setattr(registry, "_request", request)
+    monkeypatch.setattr(registry, "_json", info)
+    found = registry.go_candidates(source, f">={seed}")
+    assert found[registry.normalized_version(seed)].released_at.year == 2025
+    assert found[registry.normalized_version(latest)].released_at.year == 2026
+    assert "https://proxy.golang.org/example.com/mod/@latest" in requests
+    assert registry.candidate_for("go", source, seed).version == seed
+    assert registry._go_pseudo_versions_in_constraint(f">={seed},<{latest},!={latest},=={seed}") == {seed}
+
+    def missing_seed(url, _headers=None):
+        if url.endswith("/@latest"):
+            return {"Version": latest, "Time": "2026-03-01T00:00:00Z"}, {}
+        raise registry.RegistryNotFoundError("pseudo-version unavailable")
+
+    monkeypatch.setattr(registry, "_json", missing_seed)
+    assert set(registry.go_candidates(source, f">={seed}")) == {registry.normalized_version(latest)}
+
+    def no_latest(url, _headers=None):
+        if url.endswith("/@latest"):
+            raise registry.RegistryNotFoundError("optional latest endpoint unavailable")
+        return {"Version": seed, "Time": "2025-01-01T00:00:00Z"}, {}
+
+    monkeypatch.setattr(registry, "_json", no_latest)
+    assert set(registry.go_candidates(source, f">={seed}")) == {registry.normalized_version(seed)}
+
+    for latest_time, expected_year in (
+        ("2026-03-01T00:00:00Z", 2026),
+        ("2024-03-01T00:00:00Z", 2025),
+    ):
+        def same_latest(url, _headers=None):
+            stamp = latest_time if url.endswith("/@latest") else "2025-01-01T00:00:00Z"
+            return {"Version": seed, "Time": stamp}, {}
+
+        monkeypatch.setattr(registry, "_json", same_latest)
+        selected = registry.go_candidates(source, f">={seed}")
+        assert selected[registry.normalized_version(seed)].released_at.year == expected_year
+
+    monkeypatch.setattr(registry, "_json", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        registry.RegistryNotFoundError("optional latest endpoint unavailable"),
+    ))
+    monkeypatch.setattr(registry, "_request", lambda *_args, **_kwargs: (b"", {}))
+    with pytest.raises(registry.RegistryError, match="does not provide @latest"):
+        registry.go_candidates(source, "*")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, [], {}, {"Version": "1.2.3", "Time": "2026-01-01T00:00:00Z"},
+     {"Version": "vnot-semver", "Time": "2026-01-01T00:00:00Z"}],
+)
+def test_go_latest_refuses_invalid_proxy_metadata(monkeypatch, payload):
+    monkeypatch.setattr(registry, "_json", lambda *_args, **_kwargs: (payload, {}))
+    with pytest.raises(registry.RegistryError, match="invalid latest-version metadata"):
+        registry._go_latest("https://proxy.example", "example.com/mod", {})
+
+    monkeypatch.setattr(registry, "_json", lambda *_args, **_kwargs: ({"Version": "v1.2.3"}, {}))
+    with pytest.raises(registry.RegistryError, match="no release timestamp"):
+        registry._go_latest("https://proxy.example", "example.com/mod", {})
 
 
 def test_go_proxy_refuses_invalid_version_metadata_and_candidate_overflow(monkeypatch):
@@ -1810,6 +1895,103 @@ def test_resolve_native_writer_guards_and_transaction_rollback(tmp_path, monkeyp
     assert tool_calls[-1][0] == "go"
 
 
+def test_go_workspace_outputs_are_tracked_and_rolled_back_with_native_writes(tmp_path, monkeypatch):
+    project_versions = '''[versions]
+age_window_days = 14
+[versions.targets."go.lib"]
+mode = "single"
+constraint = ">=1.0.0"
+[versions.targets."go.lib".go]
+module = "example.com/lib"
+proxy = "https://proxy.golang.org"
+'''
+    root_config, project_root = _estate(tmp_path, project_versions=project_versions)
+    forge = versions.load_forge_config(root_config)
+    project_config = project_root / "cmru.toml"
+    context = types.SimpleNamespace(config_kind="project", config_path=project_config)
+    go_mod = project_root / "go.mod"
+    go_sum = project_root / "go.sum"
+    workspace = tmp_path / "go.work"
+    workspace_sum = tmp_path / "go.work.sum"
+    output = project_root / "generated.out"
+    original_files = {
+        go_mod: b"module example.com/demo\n",
+        go_sum: b"example.com/old v1.0.0 h1:old\n",
+        workspace: b"go 1.24.0\nuse ./demo\n",
+        workspace_sum: b"example.com/old v1.0.0/go.mod h1:old\n",
+        project_config: project_config.read_bytes(),
+    }
+    for path, contents in original_files.items():
+        path.write_bytes(contents)
+    monkeypatch.setenv("GOWORK", str(workspace))
+
+    result = _result(
+        "go.lib", "go", "v1.2.0", datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+    project_results = {"go.lib": result}
+    declarations = {"demo": forge.projects["demo"].versions["targets"]}
+    monkeypatch.setattr(versions, "_resolve_all_for_command", lambda *_args, **_kwargs: (
+        {}, {"demo": project_results}, declarations,
+    ))
+    monkeypatch.setattr(versions, "_native_results_for_project", lambda *_args: (
+        {"go": project_results}, {},
+    ))
+    monkeypatch.setattr(versions, "_native_output_files", lambda *_args, **_kwargs: [(output, "new artifact\n")])
+    monkeypatch.setattr(versions, "_compile_python_constraints", lambda *_args: [])
+
+    def run(command, **_kwargs):
+        if command == ["go", "env", "GOWORK"]:
+            return types.SimpleNamespace(returncode=0, stdout=str(workspace), stderr="")
+        assert command == ["go", "get", "example.com/lib@v1.2.0"]
+        go_mod.write_text("module changed\n", encoding="utf-8")
+        go_sum.write_text("sum changed\n", encoding="utf-8")
+        workspace.write_text("go 1.25.0\nuse ./demo\n", encoding="utf-8")
+        workspace_sum.write_text("sum changed\n", encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(versions.subprocess, "run", run)
+    write_text_atomic = versions._write_text_atomic
+
+    def fail_generated_output(path, contents):
+        if path == output:
+            raise OSError("simulated output write failure")
+        write_text_atomic(path, contents)
+
+    monkeypatch.setattr(versions, "_write_text_atomic", fail_generated_output)
+    with pytest.raises(OSError, match="simulated output write failure"):
+        versions._run_resolve(forge, context, ["demo"], dry_run=False)
+    assert all(path.read_bytes() == contents for path, contents in original_files.items())
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("", []),
+        ("off", []),
+        ("go.work", [Path("go.work"), Path("go.work.sum")]),
+        ("/workspace/go.work", [Path("/workspace/go.work"), Path("/workspace/go.work.sum")]),
+    ],
+)
+def test_go_workspace_file_discovery_uses_go_env(monkeypatch, tmp_path, reported, expected):
+    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: types.SimpleNamespace(
+        returncode=0, stdout=reported, stderr="",
+    ))
+    actual = versions._go_workspace_files(tmp_path, {})
+    if reported == "go.work":
+        assert actual == [tmp_path / path for path in expected]
+    else:
+        assert actual == expected
+
+
+def test_go_workspace_file_discovery_reports_probe_failures(monkeypatch, tmp_path):
+    monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: types.SimpleNamespace(
+        returncode=2, stdout="", stderr="invalid GOWORK",
+    ))
+    with pytest.raises(versions.VersionsOperationError, match="could not determine the Go workspace"):
+        versions._go_workspace_files(tmp_path, {})
+
+
 def test_resolver_empty_provider_and_aligned_spelling_guard(monkeypatch):
     now = datetime(2026, 9, 24, tzinfo=timezone.utc)
     empty = _pypi_target()
@@ -2663,12 +2845,18 @@ def test_go_writer_prerequisites_and_npm_dependency_reader_failures(monkeypatch,
     source = {"module": "example.com/lib", "proxy": "https://proxy.example"}
     monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("go")))
     with pytest.raises(versions.VersionsPrerequisiteError, match="go on PATH"):
-        versions._run_go(tmp_path, {"example.com/lib": ("v1.2.3", "go.lib")}, {"example.com/lib": source})
+        versions._run_go(
+            tmp_path, {"example.com/lib": ("v1.2.3", "go.lib")},
+            {"example.com/lib": source}, versions._FileTransaction(),
+        )
     monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(
         subprocess.TimeoutExpired("go", 900),
     ))
     with pytest.raises(versions.VersionsOperationError, match="did not finish"):
-        versions._run_go(tmp_path, {"example.com/lib": ("v1.2.3", "go.lib")}, {"example.com/lib": source})
+        versions._run_go(
+            tmp_path, {"example.com/lib": ("v1.2.3", "go.lib")},
+            {"example.com/lib": source}, versions._FileTransaction(),
+        )
 
     package_json = tmp_path / "package.json"
     package_json.unlink(missing_ok=True)

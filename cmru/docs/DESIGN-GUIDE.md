@@ -37,6 +37,12 @@ provide an HTTP `Last-Modified` value; when they do not, CMRU accepts the publis
 fallback, with a warning. A source that provides no usable timestamp fails closed. These limits
 are visible in the report so an age cutoff does not claim stronger evidence than it has.
 
+The Go proxy's `@v/list` omits pseudo-versions. CMRU checks a pseudo-version named by a Go
+constraint through its `.info` endpoint and consults the proxy's `@latest` endpoint when no listed
+version satisfies the constraint. In workspace mode, `go get` may also update `go.work` and
+`go.work.sum`; resolve snapshots those files so a later writer failure rolls them back with
+`go.mod` and `go.sum`.
+
 The registry clients determine direct target versions and the Python writer asks uv to compile
 their transitive dependency closure under the same cutoff. npm and Go use their native commands
 to update lock/module state. OCI selection writes a small JSON record; projects that need another

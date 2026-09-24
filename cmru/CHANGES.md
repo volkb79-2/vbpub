@@ -15,6 +15,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Changed
 - Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
 
+### Fixed
+- Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
+
 ### Testing
 - Add registry, age-policy, project/root ownership, output transaction, and adopter-doc contract tests.
 

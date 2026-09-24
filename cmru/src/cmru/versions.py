@@ -1444,10 +1444,34 @@ def _temporary_netrc(
             pass
 
 
+def _go_workspace_files(project_root: Path, environment: Mapping[str, str]) -> list[Path]:
+    """Ask Go which workspace it will use and return every mutable workspace file."""
+    try:
+        completed = subprocess.run(
+            ["go", "env", "GOWORK"], cwd=project_root, text=True,
+            capture_output=True, check=False, timeout=20, env=dict(environment),
+        )
+    except FileNotFoundError as exc:
+        raise VersionsPrerequisiteError("Go targets require go on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise VersionsOperationError("Go workspace detection did not finish within 20 seconds") from exc
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise VersionsOperationError(f"could not determine the Go workspace (exit {completed.returncode}): {detail[-1200:]}")
+    value = completed.stdout.strip()
+    if not value or value == "off":
+        return []
+    workspace = Path(value)
+    if not workspace.is_absolute():
+        workspace = project_root / workspace
+    return [workspace, Path(str(workspace) + ".sum")]
+
+
 def _run_go(
     project_root: Path,
     module_versions: Mapping[str, tuple[str, str]],
     module_sources: Mapping[str, Mapping[str, str]],
+    transaction: _FileTransaction | None = None,
 ) -> None:
     if not module_versions:
         return
@@ -1477,6 +1501,9 @@ def _run_go(
     with _temporary_netrc(proxy, token_env, username_env, password_env) as netrc:
         if netrc is not None:
             environment["NETRC"] = str(netrc)
+        if transaction is not None:
+            for workspace_path in _go_workspace_files(project_root, environment):
+                transaction.track(workspace_path)
         try:
             completed = subprocess.run(
                 command, cwd=project_root, text=True, capture_output=True, check=False,
@@ -1782,7 +1809,7 @@ def _run_resolve(
             if package_versions:
                 _run_npm(project_root, package_versions, results, previous, package_sources)
             if module_versions:
-                _run_go(project_root, module_versions, module_sources)
+                _run_go(project_root, module_versions, module_sources, transaction)
             for path, content in prepared_native[name]:
                 _write_text_atomic(path, content)
     except BaseException:
