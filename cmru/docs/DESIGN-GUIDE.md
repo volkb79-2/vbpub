@@ -42,8 +42,10 @@ URLs. The [OCI Distribution Specification](https://github.com/opencontainers/dis
 permits redirects and says clients must not forward `Authorization` across hosts unless configured
 to do so. CMRU retains it on redirects to the same HTTPS origin (scheme, host, and port), but
 removes it when the origin changes. HTTPS-to-HTTP redirects and redirect URLs with embedded
-credentials are refused. A redirected host that requires its own credentials must be configured
-as the source's canonical registry endpoint.
+credentials or fragments are refused. Registry and Go proxy endpoint URLs also reject embedded
+credentials, queries, and fragments so secrets and endpoint selection stay in the declared
+environment-backed auth fields. A redirected host that requires its own credentials must be
+configured as the source's canonical registry endpoint.
 
 The Go proxy's `@v/list` omits pseudo-versions. CMRU checks a pseudo-version named by a Go
 constraint through its `.info` endpoint and consults the proxy's `@latest` endpoint when no listed
