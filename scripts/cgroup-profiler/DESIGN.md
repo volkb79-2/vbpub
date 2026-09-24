@@ -612,9 +612,11 @@ cgprofile ctl     <version|start|status|host|stop|report|gc>    RG-55 socket cli
 
 ### 4.13 `subtree.py` (RG-55 C2) — token → pid-subtree resolver
 
-`SubtreeResolver(cgroup_abs_path, token, proc_root)`: `cgroup.procs` gives
-every pid directly in the target cgroup; a pid belongs to the profiled
-lane iff `/proc/<pid>/environ` (NUL-separated, `errors="replace"`) carries
+`SubtreeResolver(cgroup, cgroup_root, token, proc_root)`: direct target-cgroup
+PIDs come from `cgroup.procs`, or from host `/proc/<pid>/cgroup` resolution
+when a private PID namespace renders those entries as zero. A pid belongs to
+the profiled lane iff it is directly in the target cgroup and
+`/proc/<pid>/environ` (NUL-separated, `errors="replace"`) carries
 `RUN_GATE_PROFILE_SESSION=<token>`, plus every descendant of such a pid
 (walked via `/proc/<pid>/task/*/children` when the kernel exposes it, else
 a ppid map built from `/proc/*/stat`, parsed past the last `)` since a

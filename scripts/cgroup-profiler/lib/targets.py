@@ -38,8 +38,8 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import unquote
 
-from . import util
-from .access import CGROUP_ROOT, PROC_ROOT, docker_bin, have_host_proc_view
+from . import access, util
+from .access import CGROUP_ROOT, PROC_ROOT, docker_bin
 
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 # Both cgroup drivers docker can be configured with: systemd names the leaf
@@ -215,7 +215,7 @@ def pids_in_cgroup(
         return []
     target = posixpath.normpath(cgroup)
 
-    if have_host_proc_view(proc_root):
+    if access.have_host_proc_view(proc_root):
         namespace_root = _cgroup_namespace_root(root, proc_root)
         if namespace_root is None:
             return []
@@ -233,11 +233,7 @@ def pids_in_cgroup(
             resolved = _cgroup_path_for_pid(pid, root, proc_root, namespace_root)
             if resolved is None:
                 continue
-            if target == "/":
-                in_target = True
-            else:
-                in_target = resolved == target
-            if in_target:
+            if resolved == target:
                 out.append(pid)
         return sorted(out)
 

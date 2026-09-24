@@ -504,8 +504,10 @@ class TestCgroupOfPid:
             root, "dev.slice/dev-background.slice/target.scope/worker.scope", "0\n",
         )
         _write_cgroup_members(root, "dev.slice/dev-background.slice/other.scope", "0\n")
+        _write_cgroup_members(root, "", "9002\n")
         proc = tmp_path / "hostproc"
         _write_pid_cgroup(proc, 9001, "0::/\n")
+        _write_pid_cgroup(proc, 9002, "0::/../../..\n")
         _write_pid_cgroup(proc, 4242, "0::/../../dev-background.slice/target.scope\n")
         _write_pid_cgroup(
             proc, 4243,
@@ -515,21 +517,21 @@ class TestCgroupOfPid:
         _write_pid_cgroup(proc, 0, "0::/../../dev-background.slice/target.scope\n")
         _write_pid_cgroup(proc, 4245, "1:name=systemd:/ignored\n")
         (proc / "not-a-pid").mkdir()
-        monkeypatch.setattr(t, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(t.access, "have_host_proc_view", lambda _root: True)
         _install_local_proc_cgroup(monkeypatch, "/")
         monkeypatch.setattr(t.os, "getpid", lambda: 9001)
 
         assert t.pids_in_cgroup(
             "/dev.slice/dev-background.slice/target.scope", str(root), str(proc),
         ) == [4242]
-        assert t.pids_in_cgroup("/", str(root), str(proc)) == [4242, 4243, 4244, 9001]
+        assert t.pids_in_cgroup("/", str(root), str(proc)) == [9002]
 
     def test_private_namespace_unavailable_root_or_proc_listing_is_empty(
         self, tmp_path: Path, monkeypatch,
     ):
         root = tmp_path / "cg"
         proc = tmp_path / "hostproc"
-        monkeypatch.setattr(t, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(t.access, "have_host_proc_view", lambda _root: True)
         monkeypatch.setattr(t, "_cgroup_namespace_root", lambda *_args: None)
         assert t.pids_in_cgroup("/target", str(root), str(proc)) == []
 
@@ -542,7 +544,7 @@ class TestCgroupOfPid:
 
     @pytest.mark.parametrize("cgroup", ["relative", "/../outside", "/target//worker"])
     def test_invalid_target_path_is_rejected(self, tmp_path: Path, monkeypatch, cgroup):
-        monkeypatch.setattr(t, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(t.access, "have_host_proc_view", lambda _root: True)
         assert t.pids_in_cgroup(cgroup, str(tmp_path / "cg"), str(tmp_path / "proc")) == []
 
     def test_non_host_proc_view_uses_visible_positive_cgroup_pids(
@@ -550,7 +552,7 @@ class TestCgroupOfPid:
     ):
         root = tmp_path / "cg"
         _write_cgroup_members(root, "target.scope", "0\n101\n102\n")
-        monkeypatch.setattr(t, "have_host_proc_view", lambda _root: False)
+        monkeypatch.setattr(t.access, "have_host_proc_view", lambda _root: False)
 
         assert t.pids_in_cgroup("/target.scope", str(root), str(tmp_path / "proc")) == [101, 102]
 

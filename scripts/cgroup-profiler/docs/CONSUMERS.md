@@ -56,7 +56,8 @@ cgroup v2 is bind-mounted read-only at `/sys/fs/cgroup`, and
 namespace modes. On startup `serve` verifies that PID 1 in that proc view
 belongs to a PID namespace distinct from the daemon's and refuses if either
 view is missing. Container targets arrive as full Docker IDs; token-scoped
-sessions discover the token in host `/proc` and walk its process tree there.
+sessions resolve direct PIDs in that target cgroup, match the exact token in
+host `/proc`, then walk those owners' process trees.
 The daemon has no Docker socket and does not accept `--cap`; it writes session
 data under `/var/lib/cgprofile/sessions` and its own DAMON kdamonds under
 sysfs.

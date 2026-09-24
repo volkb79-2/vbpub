@@ -26,6 +26,7 @@ def mkproc(
     environ: Optional[List[str]] = None,
     task_children: Optional[Dict[int, List[int]]] = None,
     bare_task_dir: bool = False,
+    cgroup: Optional[str] = None,
 ) -> Path:
     """One ``/proc/<pid>`` directory.
 
@@ -43,6 +44,8 @@ def mkproc(
     # Padding to a handful of zero fields is enough — _parse_ppid only reads
     # index 1 (ppid).
     (pdir / "stat").write_text(f"{pid} (proc{pid}) S {ppid} 0 0 0 0 0 0\n")
+    if cgroup is not None:
+        (pdir / "cgroup").write_text(cgroup)
     if environ is not None:
         (pdir / "environ").write_bytes(("\x00".join(environ) + "\x00").encode())
     if task_children is not None:
@@ -68,26 +71,45 @@ NEEDLE = f"RUN_GATE_PROFILE_SESSION={TOKEN}"
 
 
 def resolver(cgroup_abs: str, proc_root: Path, token: str = TOKEN) -> subtree.SubtreeResolver:
-    return subtree.SubtreeResolver(cgroup_abs_path=cgroup_abs, token=token, proc_root=str(proc_root))
+    target_path = Path(cgroup_abs)
+    cgroup_root = target_path.parents[1]
+    cgroup = "/" + target_path.relative_to(cgroup_root).as_posix()
+    return subtree.SubtreeResolver(
+        cgroup=cgroup, cgroup_root=str(cgroup_root), token=token,
+        proc_root=str(proc_root),
+    )
 
 
 # ── token ownership ─────────────────────────────────────────────────────────
 
 class TestTokenOwnership:
-    def test_private_pid_namespace_finds_token_owner_in_host_proc_not_cgroup_procs(
+    def test_private_pid_namespace_filters_token_roots_to_target_cgroup(
         self, tmp_path: Path, monkeypatch,
     ):
         proc = tmp_path / "hostproc"
-        mkproc(proc, 3100, environ=[NEEDLE], task_children={3100: [3101]})
-        mkproc(proc, 3101, ppid=3100, task_children={3101: []})
-        mkproc(proc, 0, environ=[])
-        (proc / "self").symlink_to("3100")
-        cgroup = mkcgroup(tmp_path, "cgroup/lane", [0])
-        monkeypatch.setattr(subtree.access, "have_host_proc_view", lambda root: True)
-        monkeypatch.setattr(
-            subtree, "read_cgroup_pids",
-            lambda path: pytest.fail("private PID namespace must not trust cgroup.procs PIDs"),
+        mkproc(proc, 3000, cgroup="0::/\n")
+        mkproc(
+            proc, 3100, environ=[NEEDLE], task_children={3100: [3101]},
+            cgroup="0::/lane.scope\n",
         )
+        mkproc(
+            proc, 3101, ppid=3100, task_children={3101: []},
+            cgroup="0::/outside.scope\n",
+        )
+        mkproc(proc, 3200, environ=[NEEDLE], cgroup="0::/outside.scope\n")
+        cgroup = mkcgroup(tmp_path, "cgroup/helper.scope/lane.scope", [0])
+        mkcgroup(tmp_path, "cgroup/helper.scope", [3000])
+        mkcgroup(tmp_path, "cgroup/helper.scope/outside.scope", [0])
+        monkeypatch.setattr(subtree.targets_mod.access, "have_host_proc_view", lambda root: True)
+        monkeypatch.setattr(subtree.targets_mod.os, "getpid", lambda: 3000)
+        real_read_text = subtree.targets_mod.util.read_text
+
+        def local_and_remote_cgroups(path):
+            if path == "/proc/self/cgroup":
+                return "0::/\n"
+            return real_read_text(path)
+
+        monkeypatch.setattr(subtree.targets_mod.util, "read_text", local_and_remote_cgroups)
 
         r = resolver(cgroup, proc)
 
@@ -98,12 +120,23 @@ class TestTokenOwnership:
         self, tmp_path: Path, monkeypatch,
     ):
         proc = tmp_path / "hostproc"
-        cgroup = mkcgroup(tmp_path, "cgroup/lane", [0])
-        monkeypatch.setattr(subtree.access, "have_host_proc_view", lambda root: True)
+        cgroup = mkcgroup(tmp_path, "cgroup/helper.scope/lane.scope", [0])
+        mkcgroup(tmp_path, "cgroup/helper.scope", [3000])
+        monkeypatch.setattr(subtree.targets_mod.access, "have_host_proc_view", lambda root: True)
+        monkeypatch.setattr(subtree.targets_mod.os, "getpid", lambda: 3000)
+        real_read_text = subtree.targets_mod.util.read_text
         monkeypatch.setattr(
-            subtree.os, "listdir",
-            lambda path: (_ for _ in ()).throw(PermissionError(path)),
+            subtree.targets_mod.util, "read_text",
+            lambda path: "0::/\n" if path == "/proc/self/cgroup" else real_read_text(path),
         )
+        real_listdir = subtree.targets_mod.os.listdir
+
+        def fail_proc_listing(path):
+            if str(path) == str(proc):
+                raise PermissionError(path)
+            return real_listdir(path)
+
+        monkeypatch.setattr(subtree.targets_mod.os, "listdir", fail_proc_listing)
 
         assert resolver(cgroup, proc).refresh() == set()
 

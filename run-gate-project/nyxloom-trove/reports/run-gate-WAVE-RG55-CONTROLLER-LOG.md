@@ -3848,3 +3848,33 @@ the helper's own visible PID membership in the mounted cgroup tree and local
 `/proc/self/cgroup`, then normalize each observed process path against that
 derived root. Reject missing/ambiguous membership or an absent resolved
 cgroup; do not use a host cgroup namespace to avoid the translation.
+
+### RW-310 — 2026-09-24 00:49:07Z — scope token roots to the selected cgroup
+
+The private-PID fix must preserve §2.2's attribution boundary: resolve the
+positive PIDs directly in the selected target cgroup (using the explicit host
+proc view when `cgroup.procs` exposes only zero), then match the exact token
+among those PIDs. Do not search all host processes for token roots. Their
+descendants remain attributed if they later move to another cgroup. A target
+of `/` means processes directly in the hierarchy root, not every descendant.
+This also avoids resolving the no-token PID list a second time on token-backed
+session startup. P1 source and regression tests now encode this ruling; fresh
+registered gates are still required after the edits.
+
+### RW-311 — 2026-09-24 00:49:07Z — distinct gate worktrees may run concurrently
+
+The operator clarified that independent CIU worktrees may host concurrent gate
+containers; the other controller's local one-at-a-time scheduling choice is
+not a host-wide exclusion rule. Each container still needs its own unique
+exact name, read-only source bind, verified loaded `dev-gates.slice` parent,
+and immediate 3-CPU cap. Worktree isolation separates source/evidence, not host
+resources; keep the two-mutation-lane ceiling and the memory-PSI admission
+guard (`full avg10` must be at most 5 before launching work). The Wave C
+`run-gate-assay-selfhosted-1477047-21288-1790210014` and P1
+`cgprofile-gate-1478779-1790210092` containers did overlap; P1's exact-tree
+`r0-r1` completed cleanly with 1,324 tests and 100% statement/branch coverage
+in 72.891 seconds. The P1 tree changed afterward under RW-310, so this result
+is historical, not final evidence. Earlier this session I also mistakenly
+launched a local targeted pytest when memory PSI full avg10 was 6.97; collection
+stopped because the devcontainer lacked `numpy`, and no test body ran. I will
+not launch further validation until the admission threshold is met.

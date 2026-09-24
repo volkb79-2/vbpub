@@ -60,7 +60,9 @@ are RG-55's always-on daemon mode, a separate thing entirely — it never
 spawns a collector, and run-gate talks to it instead of to `run`/`attach`.
 Every daemon session records sample zero at start. A no-token start is always a
 new session (subject to `--max-sessions`); only the same non-null token is
-idempotent. The daemon control contract is major version 1, and `ctl` refuses
+idempotent. A token scopes its roots to exact-token processes directly in the
+selected cgroup; their descendants remain attributed if they move elsewhere.
+The daemon control contract is major version 1, and `ctl` refuses
 to print a response whose object, major, `ok`, or verb-specific shape is not
 valid.
 
@@ -104,9 +106,8 @@ not the short-lived helper. A caller-visible `pid:N` is mapped through the
 caller's cgroup namespace into that container; if namespace identity cannot
 be established, the helper refuses rather than guessing. This avoids treating
 host PIDs as visible in the helper's private PID namespace, where
-`cgroup.procs` cannot identify them.
-Before the helper
-starts, a bounded probe asks host systemd to confirm that both the configured
+`cgroup.procs` cannot identify them. Before the helper starts, a bounded probe
+asks host systemd to confirm that both the configured
 placement slice and the cockpit's injected interactive slice are loaded, not
 transient, and have instantiated cgroups. The probe uses the local
 `tester-unified:local` image (override with

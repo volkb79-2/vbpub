@@ -518,7 +518,12 @@ class SessionServer:
         abs_target = os.path.join(self.cgroup_root, cgroup.lstrip("/"))
         initial_target_metrics = summary.sample_target_cgroup(abs_target)
         baseline = (initial_target_metrics.get("mem") or {}).get("current")
-        pids_now = targets_mod.pids_in_cgroup(cgroup, self.cgroup_root, self.proc_root)
+        # The token resolver below will resolve direct target-cgroup PIDs;
+        # avoid doing the broader proc-to-cgroup map a second time here.
+        pids_now = (
+            targets_mod.pids_in_cgroup(cgroup, self.cgroup_root, self.proc_root)
+            if token is None else []
+        )
         # RW-14: sampled once, at session creation — the manifest's "host"
         # field mirrors `cmd_collect`'s own convention of a single snapshot
         # written into the manifest at start, not updated thereafter.
@@ -539,7 +544,8 @@ class SessionServer:
         subtree_resolver: Optional[subtree.SubtreeResolver] = None
         if token:
             subtree_resolver = subtree.SubtreeResolver(
-                cgroup_abs_path=abs_target, token=token, proc_root=self.proc_root
+                cgroup=cgroup, cgroup_root=self.cgroup_root,
+                token=token, proc_root=self.proc_root,
             )
             subtree_resolver.refresh()
 

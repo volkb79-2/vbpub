@@ -26,8 +26,10 @@ container IDs; the observer locates those IDs in the read-only cgroup tree.
 Token-scoped sessions find the exact token in host `/proc` and walk its
 process descendants there, rather than treating a namespace-local PID as a
 host PID. This keeps observations explicit and fail-closed without namespace
-sharing or a Docker socket in the daemon. The DAMON sysfs and session directory
-remain the only intended writes.
+sharing or a Docker socket in the daemon. Token roots remain constrained to
+the selected target cgroup; only their descendants may be attributed after
+moving elsewhere. The DAMON sysfs and session directory remain the only
+intended writes.
 
 ### Private namespaces and host views
 
