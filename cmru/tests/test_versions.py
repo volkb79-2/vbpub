@@ -685,7 +685,7 @@ def test_go_proxy_uses_latest_and_constraint_pseudo_version(monkeypatch):
     assert "https://proxy.golang.org/example.com/mod/@latest" in requests
     assert registry.candidate_for("go", source, seed).version == seed
     assert registry._go_pseudo_versions_in_constraint(f">={seed},<{latest},!={latest},=={seed}") == {seed}
-    assert registry._go_pseudo_versions_in_constraint(f">={seed},not-a-comparison") == {seed}
+    assert registry._go_pseudo_versions_in_constraint(f">={seed},") == {seed}
 
     def missing_seed(url, _headers=None):
         if url.endswith("/@latest"):
@@ -2855,7 +2855,7 @@ def test_go_writer_prerequisites_and_npm_dependency_reader_failures(monkeypatch,
     with pytest.raises(versions.VersionsPrerequisiteError, match="go on PATH"):
         versions._run_go(
             tmp_path, {"example.com/lib": ("v1.2.3", "go.lib")},
-            {"example.com/lib": source}, versions._FileTransaction(),
+            {"example.com/lib": source},
         )
     monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(
         subprocess.TimeoutExpired("go", 900),
@@ -2863,7 +2863,7 @@ def test_go_writer_prerequisites_and_npm_dependency_reader_failures(monkeypatch,
     with pytest.raises(versions.VersionsOperationError, match="did not finish"):
         versions._run_go(
             tmp_path, {"example.com/lib": ("v1.2.3", "go.lib")},
-            {"example.com/lib": source}, versions._FileTransaction(),
+            {"example.com/lib": source},
         )
 
     package_json = tmp_path / "package.json"
