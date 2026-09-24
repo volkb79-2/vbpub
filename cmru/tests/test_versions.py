@@ -2853,6 +2853,8 @@ def test_go_writer_prerequisites_and_npm_dependency_reader_failures(monkeypatch,
     source = {"module": "example.com/lib", "proxy": "https://proxy.example"}
     monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("go")))
     with pytest.raises(versions.VersionsPrerequisiteError, match="go on PATH"):
+        versions._go_workspace_files(tmp_path, {})
+    with pytest.raises(versions.VersionsPrerequisiteError, match="go on PATH"):
         versions._run_go(
             tmp_path, {"example.com/lib": ("v1.2.3", "go.lib")},
             {"example.com/lib": source},
@@ -2860,6 +2862,8 @@ def test_go_writer_prerequisites_and_npm_dependency_reader_failures(monkeypatch,
     monkeypatch.setattr(versions.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(
         subprocess.TimeoutExpired("go", 900),
     ))
+    with pytest.raises(versions.VersionsOperationError, match="did not finish within 20 seconds"):
+        versions._go_workspace_files(tmp_path, {})
     with pytest.raises(versions.VersionsOperationError, match="did not finish"):
         versions._run_go(
             tmp_path, {"example.com/lib": ("v1.2.3", "go.lib")},
