@@ -2716,8 +2716,8 @@ attestation-timeout call's infrastructure kwargs are removed.
 **Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), with the
 separate attestation-timeout forward-test gap closed in Wave C P2 on
 2026-09-24.** The different, wider "lane-wide `LANE_TIMEOUT` also writes no
-verdict" gap found by round 2 review remains filed separately as B028 (same
-family, bigger blast radius, needs its own design pass). See A-308.
+verdict" gap found by round 2 review remains filed separately as B028; it was
+resolved in Wave D/v5.0.0 under A-415. See A-308.
 
 ---
 
