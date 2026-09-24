@@ -131,7 +131,7 @@ def _write_text_atomic(path: Path, content: str) -> None:
 def _toml_key(value: str) -> str:
     if _BARE_KEY.fullmatch(value):
         return value
-    return json.dumps(value, ensure_ascii=False)
+    return json.dumps(value)
 
 
 def _toml_value(value: object) -> str:
@@ -336,18 +336,20 @@ def _resolve_target(
         pools: dict[str, dict[str, Candidate]] = {}
         for source_type, source in source_tables.items():
             records = candidates(source_type, source, constraint)
-            eligible = {
+            compatible = {
                 key: candidate for key, candidate in records.items()
-                if version_satisfies(candidate.version, constraint) and candidate.released_at <= cutoff
+                if version_satisfies(candidate.version, constraint)
+            }
+            eligible = {
+                key: candidate for key, candidate in compatible.items()
+                if candidate.released_at <= cutoff
             }
             if not eligible:
-                newest_date = max((item.released_at for item in records.values()), default=None)
-                if newest_date is None:
+                if not compatible:
                     detail = "registry returned no compatible candidates"
-                elif newest_date > cutoff:
-                    detail = f"newest compatible release is {_timestamp(newest_date)}, newer than the cutoff"
                 else:
-                    detail = "registry returned no version supported by the declared constraint syntax"
+                    newest_date = max(item.released_at for item in compatible.values())
+                    detail = f"newest compatible release is {_timestamp(newest_date)}, newer than the cutoff"
                 raise VersionsError(
                     f"target {target_id!r} source {source_type} has no age-eligible version: {detail} "
                     f"(age_window_days={age_window_days}, cutoff={_timestamp(cutoff)})"
@@ -1350,15 +1352,23 @@ def _run_npm(
         overrides[name] = version
         for field in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
             values = document.get(field, {})
-            if isinstance(values, dict) and name in values:
+            if not isinstance(values, dict):
+                continue
+            if name in values:
                 values[name] = version
     package_json.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     npm_results = [results[target_id] for _name, (_version, target_id) in package_versions.items()]
     cutoff = min(result.age_cutoff for result in npm_results)
     command = ["npm", "install", "--package-lock-only", "--ignore-scripts", "--before", _timestamp(cutoff)]
     command.extend(("--registry", registry))
-    scopes = sorted({name.split("/", 1)[0] for name in package_versions if name.startswith("@") and "/" in name})
-    command.extend(f"--{scope}:registry={registry}" for scope in scopes)
+    scopes: set[str] = set()
+    for name in package_versions:
+        if not name.startswith("@"):
+            continue
+        if "/" not in name:
+            continue
+        scopes.add(name.split("/", 1)[0])
+    command.extend(f"--{scope}:registry={registry}" for scope in sorted(scopes))
     age_exclusions = []
     for name, (_version, target_id) in package_versions.items():
         result = results[target_id]

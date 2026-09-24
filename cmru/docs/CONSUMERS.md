@@ -212,6 +212,12 @@ publisher-supplied `org.opencontainers.image.created` manifest annotation or ima
 `age_source` with each result so the source of age evidence is reviewable. An image-created time
 is not registry publication time. Missing or malformed timestamps fail closed.
 
+Registry clients follow HTTPS redirects, including redirects to signed blob storage. They retain
+`Authorization` only when the redirect stays on the same HTTPS origin (same scheme, host, and
+port). CMRU strips it when the origin changes and refuses HTTP downgrades or redirect URLs with
+embedded credentials. If a redirected host requires credentials, configure that host's canonical
+HTTPS endpoint in the source table.
+
 `resolve` writes a dated `constraints/constraints-YYYYMMDD.txt` plus the stable
 `constraints/constraints.txt` for PyPI targets in Python projects; set `PIP_CONSTRAINT` or pass
 `-c` to consume it. npm targets update direct package versions, overrides, and the lockfile with

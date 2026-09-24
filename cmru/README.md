@@ -108,7 +108,8 @@ update `go.work` and `go.work.sum` along with module files; inconsistent Go time
 These commands do not run as part of
 build, release, gate, or a schedule. Read [the design guide](docs/DESIGN-GUIDE.md#supply-chain-age-windowed-version-determination)
 for the policy and timestamp choices, and use the [consumer examples](docs/CONSUMERS.md#using-a-supply-chain-age-window)
-to configure targets and consume the generated artifacts.
+to configure targets and consume the generated artifacts. Registry HTTPS redirects are followed
+without forwarding credentials to a different origin; see the guides for the credential behavior.
 
 Both version spellings print exactly one `cmru <version>` identity line to
 stdout and exit 0 without diagnostics on stderr. At every parser depth,

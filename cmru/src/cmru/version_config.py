@@ -46,16 +46,32 @@ def _nonempty(value: object, where: str) -> str:
 
 def _https_url(value: object, where: str) -> str:
     url = _nonempty(value, where)
-    parts = urlsplit(url)
-    if (
-        parts.scheme != "https" or not parts.netloc or parts.username is not None
-        or parts.password is not None or parts.query or parts.fragment
-    ):
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        _fail(f"{where} must be a valid HTTPS URL")
+    if parts.scheme != "https":
+        _fail(f"{where} must be an HTTPS URL")
+    if not parts.hostname:
+        _fail(f"{where} must include a host")
+    if parts.username is not None:
         _fail(f"{where} must be an HTTPS URL without embedded credentials, query, or fragment")
+    if "?" in url.split("#", 1)[0]:
+        _fail(f"{where} must not contain a query or fragment")
+    if "#" in url:
+        _fail(f"{where} must not contain a query or fragment")
+    if parts.netloc.endswith(":"):
+        _fail(f"{where} must contain a valid port")
+    try:
+        port = parts.port
+    except ValueError:
+        _fail(f"{where} must contain a valid port")
+    if port is not None and not 1 <= port <= 65535:
+        _fail(f"{where} must contain a valid port")
     return url.rstrip("/")
 
 
-def _source(raw: object, source_type: str, where: str, *, allow_partial: bool = False) -> dict:
+def _source(raw: object, source_type: str, where: str, *, allow_partial: bool) -> dict:
     if not isinstance(raw, dict):
         _fail(f"{where} must be a table")
     _keys(raw, SOURCE_FIELDS[source_type], where)
@@ -96,16 +112,16 @@ def _source(raw: object, source_type: str, where: str, *, allow_partial: bool = 
     return result
 
 
-def _validate_auth_fields(raw: dict, where: str, *, allow_partial: bool = False) -> None:
+def _validate_auth_fields(raw: dict, where: str, *, allow_partial: bool) -> None:
     names = ("token_env", "username_env", "password_env")
     for name in names:
         value = raw.get(name)
         if value is not None and not _ENV_NAME.fullmatch(_nonempty(value, f"{where}.{name}")):
             _fail(f"{where}.{name} must name an environment variable")
     username, password, token = (raw.get(name) for name in names)
-    if bool(username) != bool(password) and not allow_partial:
+    if not allow_partial and bool(username) != bool(password):
         _fail(f"{where}.username_env and .password_env must be set together")
-    if token and username:
+    if token is not None and (username is not None or password is not None):
         _fail(f"{where}: use token_env or username_env/password_env, not both")
 
 
