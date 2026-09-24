@@ -80,7 +80,7 @@ items:
   - {id: B076, title: "an unbounded R2 lane's own BASELINE run is the one command B067 leaves with no bound at all", type: bugfix}
   - {id: B077, title: "a `--state-dir`/`--progress` destination reached through a symlink INSIDE the judged tree fails closed with a raw, opaque `GIT_FAILED` passthrough", type: bugfix, component: isolation}
   - {id: B078, title: "R0 trusts only the wrapped target's exit code, which a test framework's own internal machinery can flip independent of test correctness (run-gate RG-45)", type: feature, component: gate}
-  - {id: B079, title: "`judgment.r2.discarded` folds `CompileError` and `RuntimeError` into one undifferentiated list, while the sentence that justifies the field says \"could not COMPILE\"", type: feature}
+  - {id: B079, title: "`judgment.r2.discarded` now records the closed v12 `discard_reason` split; the five-place rationale update and RuntimeError fixture/deferral remain open", type: feature}
   - {id: B080, title: "an istanbul `default-arg` branch sits on the function-SIGNATURE line, which the `javascript` adapter's own documented guarantee leaves unattributed -- so `FileCoverage`'s \"no branch line outside `executed | missing`\" invariant refuses a fully-executed file whose arc count is genuinely non-zero", type: bugfix, component: adapters}
   - {id: B081, title: "a \"dubious ownership\" `GIT_FAILED` passes through git's own remedy, which `_REPLACEMENT_ENV` has made unreachable by construction: the message sends the consumer to a fix assay guarantees cannot work", type: bugfix}
   - {id: B082, title: "a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so", type: bugfix, component: adapters}
@@ -106,6 +106,7 @@ items:
   - {id: B102, title: "Repo-wide DIRTY_TREE refusal for snapshot lanes; declared dirty_ignore globs plus --allow-dirty override marked in the verdict", type: feature, component: isolation, context_estimate: medium}
   - {id: B103, title: "Execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL (stub -- design carved on unmerged branch assay-b099-p35-repair, ID collision with main B099/A-448 only -- A-449/A-450 exist only on the branch, not yet on main, see report)", type: feature, component: execution, context_estimate: large}
   - {id: B104, title: "test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness FAILS on unmodified main: the normalized verdict differs from the frozen v6 witness, and the verdict schema has moved on to v11 since (B070) -- cause unexamined (witness staleness vs. dstdns pin drift vs. a real regression); also names the hazard that a Docker-reaching test runs by default in the local suite when a socket is present", type: bugfix, component: gate}
+  - {id: B105, title: "Assay's own source has no registered full-source R2 lane; the v7.0.0 release therefore carries no mutation evidence for assay itself (finding filed during Wave C P0)", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -120,14 +121,24 @@ entry below has a full evidenced `**Status:**` line under its own `## Bnnn`
 heading. See `nyxloom-trove/reports/assay-BACKLOG-AUDIT-2026-09-23.md` for
 the per-entry evidence table, WIP-branch findings, and ID collisions.
 
-**Wave "B101 isolation" (next; packages in B101's "Wave plan" section)**
-- B101 — snapshot seed carries/budgets the full history closure — DONE (P2 implemented in `5bf832a4`, pyflakes gate correction in `4ed15f31`; P3/P4 implemented in the B101 wave worktree; provisional merge follows review)
-- B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — DONE in the B101 wave worktree (v12 dirty provenance, `dirty_ignore`, and snapshot-only `--allow-dirty`; provisional merge follows review)
-- B093 — P7 S1: liveness write guard / side-file cleanup — DONE in the B101 wave worktree (higher-rigor liveness files use an external temporary directory and cleanup; provisional merge follows review)
+**Wave "B101 isolation" (shipped in assay-v7.0.0)**
+- B101 — snapshot seed carries/budgets the full history closure — DONE (`assay-v7.0.0`, release commit `47435679`; tester-unified gate PASS)
+- B102 — higher-rigor lanes refuse `DIRTY_TREE` for any uncommitted path repo-wide — DONE (`assay-v7.0.0`, release commit `47435679`; tester-unified gate PASS)
+- B093 — P7 S1: liveness write guard / side-file cleanup — DONE (`assay-v7.0.0`, release commit `47435679`; tester-unified gate PASS)
 - B104 — `test_gate_qualify_dstdns_sql.py`'s frozen-witness test fails on unmodified main — DONE (`c6a97f1e`; tester-unified PASS on `4ed15f31`)
 - B082 — a lane's own `assay.toml` cannot be untracked for a disposable Go module root — DONE (CONSUMERS.md guidance in `5bf832a4`; tester-unified PASS on `4ed15f31`)
 - B083 — shallow-clone refusal undocumented for Go — DONE (consumer docs in `5bf832a4`; tester-unified PASS on `4ed15f31`)
 - B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — DONE (consumer docs in `5bf832a4`; tester-unified PASS on `4ed15f31`)
+- B079 — closed v12 `discard_reason` split — SHIPPED (`assay-v7.0.0`, A-454, release commit `47435679`; tester-unified gate PASS); two original acceptance items remain open: correct the rationale in all five locations, and produce a genuine `RuntimeError` fixture or record an explicit deferral.
+
+**Wave C (current; B080, B081, B094, B025, B095, B076; B100 conditional)**
+- B080 — istanbul default-arg branch on the signature line — OPEN (P1; B089 is its withdrawn duplicate)
+- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (P2)
+- B094 — unknown `--rejudge` reason mapping — OPEN (P2)
+- B025 — unresolvable infrastructure refusals lack their own verdict — PARTIAL (P2 closes the final attestation-timeout oracle)
+- B095 — monitor hot-loop cost / unbounded CPU history — OPEN (P3)
+- B076 — unbounded R2 baseline has no bound — OPEN (P3 ruling and docs)
+- B100 — bounded operator report for live gate progress/verdicts — OPEN (conditional P4; start only after P0-P3 merge and gate)
 
 **Wave C P1 implemented (2026-09-24; review/gate pending)**
 - B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation complete, independent review and authoritative gate pending)
@@ -135,14 +146,9 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
-- B094 — P7 S3/N5: unknown `--rejudge` reason mapping — OPEN (liveness wave)
-- B095 — P7 S5: monitor hot-loop cost / unbounded CPU history — OPEN (liveness wave)
-- B076 — unbounded R2 lane's baseline run has no bound — OPEN (liveness wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
-- B100 — bounded operator report for live gate progress/verdicts — OPEN (design only)
-- B025 — a refusal writes no verdict artifact for its own unresolvable cause — PARTIAL (one acceptance box; quick win)
-- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (quick win)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
+- B105 — assay itself has no full-source R2 lane and no release mutation evidence — OPEN (finding filed in P0; not a Wave C implementation package)
 
 **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
 - B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
@@ -150,7 +156,6 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B026 — a bad `--shard` refusal names no cause; dead shard config — DEFERRED (with B023)
 - B064 — progress/resume beyond R2 — DEFERRED (R3 half, coupled to B007)
 - B073 — per-language live test-progress adapter — DEFERRED (file-only by design)
-- B079 — `judgment.r2.discarded` folds CompileError/RuntimeError together — DEFERRED (until a verdict schema bump)
 - B086 — Go mutation testing (R2) generator unconditionally UNSUPPORTED — DEFERRED (design first)
 
 **Closed by the 2026-09-23 triage or earlier (kept here for one cycle)**
@@ -8496,9 +8501,9 @@ rejected in favor of the report-completeness approach.
 
 ---
 
-## B079 — `judgment.r2.discarded` folds `CompileError` and `RuntimeError` into one undifferentiated list, while the sentence that justifies the field says "could not COMPILE"
+## B079 — `judgment.r2.discarded` originally folded `CompileError` and `RuntimeError` together; the v12 split shipped with two acceptance residuals
 
-**Status: DEFERRED (operator triage 2026-09-23: until a verdict schema bump; v12 candidate, filed 2026-09-08, "FILE, DO NOT BUILD") — no A-row or fix commit exists; `CompileError`/`RuntimeError` remain undifferentiated in `mutation.py`.**
+**Status: PARTIAL — verdict schema v12's closed `compile_error`/`runtime_error` split shipped in assay-v7.0.0 (A-454, release commit `47435679`; tester-unified gate PASS); two original acceptance items remain: correcting the stated rationale in all five locations, and a genuine `RuntimeError` fixture or an explicit A-row deferring that evidence.**
 
 **Renumbered from B078 at merge time (2026-09-08)** — a real ID collision:
 `feat/assay-b070-discarded-mutants-2026-09-08` filed this as B078
@@ -8512,9 +8517,16 @@ be read as this entry.
 
 **Filed 2026-09-08** by the B070 fix round, on the round-1 reviewer's **OBS 3**
 and the implementer's own REPORT §9.3, as the explicit residual of
-[B070](#b070). **v12 CANDIDATE — FILE, DO NOT BUILD.** It is a wire change
-(a new field inside `judgment.r2.discarded[]`, and with it a new closed
-vocabulary), and B070's binding constraint was exactly ONE wire decision.
+[B070](#b070). At filing time this was a v12 candidate, explicitly recorded
+as "FILE, DO NOT BUILD" because it needed a verdict-schema decision. A-454
+later authorized the distinction, which shipped in assay-v7.0.0.
+
+**Residual boundary:** A-454 decides this is an additive closed field and not a
+bucket or denominator change; the release gate verifies the shipped v12 field
+in the schema, model and raw verifier. Neither that decision nor the release
+evidence closes the two unchecked acceptance items below: updating all five
+copies of the rationale sentence, or recording a real `RuntimeError` fixture
+(or an explicit failed production attempt and its cost).
 
 **Leaving it out of B070 was the right call and the review confirmed it**:
 none of B070's four re-derivations needs the distinction, `mutant_outcome`'s
@@ -8523,12 +8535,12 @@ inside a cut whose whole discipline was to make one. This entry exists so the
 reasoning is captured while it is fresh rather than rediscovered later —
 exactly the disposition B070 itself received as a residual of B051.
 
-### The problem
+### Historical problem at filing (before v12)
 
-`_INGESTED_DISCARDED_STATUSES` (`mutation.py`) is
+At filing time, `_INGESTED_DISCARDED_STATUSES` (`mutation.py`) was
 `frozenset({"CompileError", "RuntimeError"})`, and `ingest_mutation_report`
-records both onto one list with nothing distinguishing them. But the sentence
-that justifies the field's existence — repeated near-verbatim in
+recorded both onto one list with nothing distinguishing them. The sentence
+that justified the field's existence — repeated near-verbatim in
 `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md` §11, `verdict.py`'s field
 docstring, the shipped schema's own description and `mutation.py`'s
 `_INGESTED_DISCARDED_STATUSES` comment — is:
@@ -8536,8 +8548,8 @@ docstring, the shipped schema's own description and `mutation.py`'s
 > a report that could not **compile** most of its own mutants measured far
 > less than its score implies
 
-That sentence leans on a distinction the record does not carry. The two
-statuses are materially different facts about the run:
+At filing time that sentence leaned on a distinction the record did not
+carry. The two statuses were materially different facts about the run:
 
 * **`CompileError`** — the mutant never built. Nothing ran; the tool's own
   toolchain rejected the mutated source. This is what the justifying sentence
@@ -8548,18 +8560,20 @@ statuses are materially different facts about the run:
   HARNESS, not about the mutant's validity, and it is much closer to assay's
   own `crashed` bucket in meaning than to "invalid mutant".
 
-Folding them means a consumer reading `len(discarded)` cannot tell "this
+Folding them meant a consumer reading `len(discarded)` could not tell "this
 project's operators do not fit its language" from "this project's test runner
-is unstable", and the second is arguably a `crashed`-shaped fact that should
+was unstable", and the second was arguably a `crashed`-shaped fact that should
 never have been outside the denominator at all. The B070 fixture makes the
 asymmetry concrete: all 40 of its discards are `CompileError` (StrykerJS's
-`statusReason` carries the real `tsc` diagnostics), so the project currently
-has **no real artifact carrying a `RuntimeError` mutant at all** — the very
-gap A-334 exists to name.
+`statusReason` carries the real `tsc` diagnostics), and no real artifact
+carrying a `RuntimeError` mutant had been produced — the gap A-334 exists to
+name.
 
-### What a fix would have to decide
+### Historical open questions (as filed before the v12 decision)
 
-Not a design, just the questions a v12 A-row would have to answer:
+These were the questions the v12 A-row needed to answer. A-454 has since
+settled question 2 and the shipped wire shape; the two remaining acceptance
+items are listed below.
 
 1. a `status` (or `reason`) field on the discarded record, with a CLOSED
    vocabulary — and whether that vocabulary is assay's own two-value one or
@@ -8574,23 +8588,29 @@ Not a design, just the questions a v12 A-row would have to answer:
    typescript-checker fixture, absent from the first one) should reach the
    wire beside it, under `claim.detail`'s declared-not-verified discipline;
 4. a real fixture carrying a genuine `RuntimeError` mutant — which this
-   project does not currently have, and which (like the `CompileError` one)
+   project had not produced, and which (like the `CompileError` one)
    needs a real tool run rather than a hand-authored status.
 
 ### Acceptance
 
-- [ ] a v12 A-row answers question 2 first, because it decides whether this
+- [x] a v12 A-row answers question 2 first, because it decides whether this
       is an additive field or a bucket-mapping change;
-- [ ] the justifying sentence is corrected in all five places it lives, so it
-      no longer claims a distinction the record does not carry (B070's fix
-      round already softened `mutation.py`'s copy to "could not build" and
-      pointed it here; the other four still say "compile");
-- [ ] if a `status` field lands, it is closed in the schema, the model and
+- [ ] update the five cited rationale locations to explain that the v12
+      record distinguishes compile and runtime discards; the existing
+      compile-only rationale and obsolete "undifferentiated list" comment do
+      not describe the shipped record.
+- [x] if a `status` field lands, it is closed in the schema, the model and
       the raw verifier — the 2.4.0 three-place lesson — and forked on
       `producer` like every other ingested-only fact;
 - [ ] a real report carrying a genuine `RuntimeError` mutant, committed with
       its recipe in `tests/fixtures/mutation/PROVENANCE.md`, or an explicit
       A-row recording that no such run could be produced and what that costs.
+
+The two remaining unchecked items are named historical/documentation and
+evidence residuals, not part of the v12 field's shipped status. Do not
+describe B079 as fully complete until the rationale is corrected in all five
+places and a real RuntimeError report is committed or a later A-row records
+the failed production attempt and its measurement cost.
 
 ## B080 — an istanbul `default-arg` branch sits on the function-SIGNATURE line, which the `javascript` adapter's own documented guarantee leaves unattributed — so `FileCoverage`'s "no branch line outside `executed | missing`" invariant refuses a fully-executed file whose arc count is genuinely non-zero
 
@@ -10559,7 +10579,7 @@ QualificationError: the normalized verdict differs from the frozen witness at
 1 failed in 28.55s
 ```
 
-**Three unexamined candidate causes, not yet distinguished:**
+**Candidate causes considered at first observation:**
 1. **Witness staleness** — the frozen witness file is named `...-v6-witness.json`
    while the verdict schema has moved on to v11 since (B070); the witness may
    simply predate a schema change this test was never updated to expect.
@@ -10577,9 +10597,20 @@ It also emits `judgment.r2.budget_per_candidate_derived_s`, which is derived
 from the run's measured baseline wall time and therefore cannot be an exact
 cross-run witness value. The comparator now removes only that volatile field
 after validating the real verdict; the witness carries the two stable v11
-fields. The targeted test passes after this refresh. The Docker-reaching test
-remains explicitly opt-in by its existing `dstdns_checkout`/Docker fixtures;
-the ordinary gate has no Docker socket.
+fields. The targeted test passes after this refresh. To capture a replacement,
+run `python gate/python/qualify_dstdns_sql.py --source-repo /workspaces/dstdns
+--scratch <new-absent-directory> --witness <raw-witness-path>` from `assay/`
+with Docker and the exact pinned dstdns commit available; the capture verifies
+the pins before creating scratch data. Derive `head_oid` and `base_oid`
+independently with `git -C <scratch>/repo rev-parse HEAD` and
+`git -C <scratch>/repo rev-parse HEAD^`, and obtain the installed version from
+`assay --version`. Pass those independent values to `normalize_verdict` and
+write its normalized result to the frozen witness path. Then run the
+end-to-end test below against that file; this keeps the normalizer's identity
+checks meaningful. The docker and `dstdns_checkout` fixtures skip only when their
+prerequisites are absent; this test is not marked opt-in. The registered gate
+has no Docker socket, while a local `pytest tests/` run executes the test by
+default when both prerequisites are present.
 
 **Hazard worth recording independent of root cause:** this is a
 Docker-reaching test that runs BY DEFAULT in the local `pytest tests/` suite
@@ -10590,11 +10621,29 @@ cross-repo-dependent, container-backed test to be in scope.
 
 ### Acceptance
 
-- [ ] root cause identified (witness staleness / dstdns pin drift / real
-      regression), distinguished from the other two candidates above;
-- [ ] if witness staleness: the witness regenerated against the current
-      schema and dstdns pin, with the regeneration procedure documented;
-- [ ] if a real regression: a fix, plus confirmation the fixed lane still
-      matches a freshly-captured witness;
-- [ ] the "Docker-reaching test runs by default in the local suite" hazard
-      is at minimum documented, if not also gated behind an explicit marker.
+- [x] witness staleness identified as the cause; exact pinned inputs were
+      checked and the stable R0/R2 outcomes and buckets matched;
+- [x] the witness was refreshed against the current schema and pinned dstdns
+      input; the regeneration procedure is recorded above;
+- [x] no real regression was found, so the conditional regression-fix
+      acceptance does not apply;
+- [x] the "Docker-reaching test runs by default in the local suite" hazard
+      is documented; this closeout did not add an opt-in marker.
+
+## B105 — assay's own source has no full-source R2 lane, so its release carries no mutation evidence for assay itself
+
+**Status: OPEN (finding filed during Wave C P0, 2026-09-23) — assay's registered release gate is R0-only and the release mutation attempts found no candidates; no full-source mutation pass is claimed.**
+
+**Evidence:** `assay/run-gate.toml` registers only `tester-unified`, and
+`assay.toml` declares that lane R0-only. The assay-v7.0.0 release controller
+record distinguishes the CIU lane's `INCONCLUSIVE/NO_MUTANTS`
+(`CIU_GATE_EXIT=5`) from the CMRU campaign's no-candidate `RuntimeError`
+(`CMRU_MUTATION_EXIT=1`); neither result is a mutation pass. See
+[`assay-WAVE-B101-CONTROLLER-LOG.md`](reports/assay-WAVE-B101-CONTROLLER-LOG.md)
+"Release and final closeout".
+
+This finding is not an implementation package in Wave C. A later decision may
+either declare and qualify a full-source R2 lane or explicitly accept and
+document the absence of self-mutation evidence. The release gate's PASS remains
+valid for its configured acceptance suite; it does not imply R2 evidence for
+assay's own source.

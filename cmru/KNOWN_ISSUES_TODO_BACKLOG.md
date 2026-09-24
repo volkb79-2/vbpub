@@ -102,105 +102,26 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 ---
 
-## Known Issues
 
-### FEAT-03 — `cmru versions`: central multi-language version determination with a supply-chain age window — *decided, ready to carve*
-**Status:** contract DECIDED (operator interview 2026-08-20, dstdns session, final round;
-supersedes the same-day *proposed* draft). Not yet implemented.
-**Why:** centrally-determined dependency versions across the estate that (a) defend against
-freshly-published malware releases via a configurable AGE WINDOW ("latest release at least
-N days old", default 14 — defends the fast-detected npm/PyPI/AUR species, NOT long-dwell
-compromises; the reviewed refresh diff is the layer for those); (b) track upstream via
-deliberate refreshes; (c) cover ALL projects including non-ciu ones; (d) allow exact-version
-overrides (both directions: hold back, or adopt an urgent fix newer than the window);
-(e) keep ciu and cmru independent — consumption is via each language's NATIVE artifact, no
-tool-to-tool dependency.
+### FEAT-03 — `cmru versions`: multi-source dependency resolution with an age window — *implemented*
+**Status:** implemented on `feat/cmru-feat03-age-window-20260923` with code, tests, user docs, and SPEC in sync; the tester-unified coverage lane passed at 100% statement and branch coverage.
+**SPEC:** `S-CLI.6`, `S2.7`, `V29`.
 
-**Config schema — `cmru.orchestration.toml` is the single home** for policy, dev decisions
-(pins/holds with mandatory reason strings), and the LAST RESOLVED STATE (written back by
-refresh, so the central file is self-documenting):
-```toml
-[versions]
-age_window_days = 14              # global default; per-language override allowed
+`cmru versions init` derives supported targets from Python, npm, and Go manifests;
+`resolve` queries registries and writes resolved records plus Python constraints, npm package
+and lock state, Go module state, OCI JSON, and optional strict Jinja2 outputs; `check` is a
+read-only fresh comparison. Sources are `.pypi`, `.npm`, `.go`, and `.oci`, with a 14-day default
+window, single-source or aligned selection, and exact overrides requiring a reason and (when
+newer than cutoff) a future expiry. Shared target state is stored centrally; project declarations
+and their effective policy/state are stored in each project's `cmru.toml`. Refresh stays explicit
+and is never coupled to build, release, gates, or schedules.
 
-[versions.python]
-# floors and dev decisions; every pin/hold carries a reason
-floors = { fastapi = ">=0.141.0" }          # reason strings alongside, schema TBD at carve
-pins   = { somelib = { version = "==1.2.3", reason = "1.3 breaks X; revisit" } }
-
-[versions.python.resolved]        # WRITTEN BY `cmru versions refresh` — do not hand-edit
-_date = "2026-08-20"
-fastapi = "0.141.1"
-# ...
-
-[versions.npm]    # same shape
-[versions.go]     # same shape
-```
-**Per-project overrides live in the project's own `cmru.toml`** (`[versions.<lang>.pins]`),
-winning over the central decision for that project only.
-
-**Resolution engines (all three languages in the first cut):** python = `uv pip compile
---exclude-newer <now - window>` (the window is a native uv flag); npm = registry metadata
-with the same window logic; go = module-proxy metadata ditto.
-
-**Replication:** refresh renders the resolved state into each project in that language's
-native form (python: committed `constraints.txt` consumed via `PIP_CONSTRAINT`/`-c` — ciu
-build environments need only that env var, zero cmru knowledge; npm/go: the native
-mechanism, exact form decided at carve). Builds are reproducible between refreshes — the
-DECISION has a commit hash; only the APPLICATION happens at build time.
-
-**Commands:**
-- `cmru versions refresh [--language L] [--project P]` — resolve per policy, honor
-  pins/holds, write resolved state back to `cmru.orchestration.toml`, replicate into
-  projects; the diff is the review surface.
-- `cmru versions check` — read-only report, three columns per dependency: currently USED
-  (from the projects' committed artifacts), PLANNED/available (a fresh resolution preview,
-  nothing written), HELD/pinned (with reasons).
-- Build/release integration: an EXPLICIT flag only (e.g. `cmru release --refresh-versions`)
-  runs a refresh as part of that invocation; the default never resolves implicitly.
-
-**Non-goals (operator-decided):** no release-gate coupling, no staleness bound, no
-scheduled/automatic refresh.
-**Provenance:** dstdns session 2026-08-20; trigger was assay B010 / stale cockpit FastAPI
-vs dstdns root `requirements.txt` floors (`fastapi>=0.141.0`, P105 F4).
-
+Timestamp evidence is recorded in resolved state. Go proxy `.info` time is VCS commit time and
+emits a warning. OCI prefers registry `Last-Modified`, with a warned image-created annotation/config
+fallback. Missing timestamp evidence and unavailable registry metadata fail closed. `init` reports
+manifest syntax/source forms outside its supported registry subset.
 
 ## Known Issues
-
-### FEAT-03 — Central Python version determination: dated constraints artifact with a supply-chain age window — *proposed*
-**Status:** proposed (operator design discussion 2026-08-20, dstdns session; detailed design
-below is a starting point, not a decided contract).
-**Why:** The estate wants centrally-determined Python dependency versions that (a) protect
-against freshly-published malware releases (several npm/AUR/PyPI incidents in recent months)
-via an AGE WINDOW — "use the latest release that is at least N days old (default 14)"; (b)
-still track upstream for features/fixes via deliberate refreshes; (c) trickle into ALL
-projects, including non-ciu ones (modern-debian-tools-python-debug); (d) allow a manual
-per-package override to an exact version (incl. overriding the window for an urgent security
-fix); (e) keep ciu and cmru independent of each other.
-**Design sketch (the decoupling insight):** version determination is neither orchestration
-(ciu) nor release (cmru) — it is a DATA ARTIFACT. A committed, dated `constraints.txt`
-(pip's native constraints mechanism) is the interface; no tool depends on another tool,
-everything consumes the file:
-1. **Input:** a curated `versions.in` per estate (floors with documented reasons — the
-   dstdns root `requirements.txt` pattern — plus `== ` overrides).
-2. **Resolution:** `uv pip compile` already implements the age window natively via
-   `--exclude-newer <date>` (e.g. now − 14 days); overrides pass through. Phase 2 candidate:
-   `--generate-hashes` for full supply-chain pinning.
-3. **Artifact:** committed `constraints-<date>.txt` + a `constraints.txt` pointer —
-   auditable, reproducible, reviewable diff per refresh.
-4. **Refresh is an explicit act** (`cmru versions refresh`?), gate-verified per consuming
-   repo — NOT re-resolved on every build. Builds must be reproducible between refreshes;
-   resolving at build time would make builds irreproducible and move the supply-chain
-   exposure to the worst possible moment.
-5. **Distribution:** cmru replicates the artifact into its projects (it already owns the
-   multi-project build/release workflow) — covering non-ciu projects; ciu-built images need
-   only `PIP_CONSTRAINT` set in build environments (generic env, no cmru knowledge).
-**Open questions for the decided contract:** artifact home (one estate-wide file in vbpub
-vs per-project copies with provenance headers); whether cmru's release gate should refuse a
-release whose constraints are older than some staleness bound; interplay with per-project
-floors that exceed the central resolution.
-**Provenance:** dstdns session 2026-08-20; the immediate trigger was assay B010 / stale
-cockpit FastAPI vs root `requirements.txt` floors (`fastapi>=0.141.0`, P105 F4).
 
 
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
@@ -1306,3 +1227,57 @@ refusal tests, remote-origin cleanup tests, and a dry-run mutation oracle.
 Update `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and
 `docs/SPEC.md` together so the user-facing operation and its safety boundary
 are discoverable and normative.
+
+### KI-30 — release leaves the hand-written `## [Unreleased]` section orphaned
+
+**Status:** OPEN 2026-09-23; filed from assay Wave C P0.
+
+The assay changelog's hand-written `## [Unreleased]` block was left in place
+through releases 6.4.0, 6.5.0 and 7.0.0. Its `assay analyze` entry had already
+shipped in 6.4.0, while the B101/B102/B093/B079 entries described features
+released in 7.0.0. CMRU's changelog generator inserts a generated section after
+`<!-- cmru: release history -->` but does not fold the plain `## [Unreleased]`
+heading. KI-23 guards the distinct `## [X.Y.Z] - UNRELEASED` form, so that
+guard does not detect this recurrence. This is filed as a question for a
+separate design decision: should CMRU fold the canonical plain heading, and if
+so under what rules? No CMRU implementation change is part of the assay wave.
+
+### KI-31 — transaction child nests a relative project config path twice
+
+**Status:** OPEN 2026-09-23; reproduced with CMRU
+`5.4.2.dev262+ge434b293` during assay Wave C P0.
+
+Exact commands, full stdout/stderr, exit markers and cleanup results for a
+fresh reproduction are in
+[`assay-WAVE-C-CMRU-probes-2026-09-23.md`](../assay/nyxloom-trove/reports/assay-WAVE-C-CMRU-probes-2026-09-23.md).
+The default relative-config route reproduced the doubled child path again.
+Passing the central absolute `--config` directly did not correct it. CMRU's
+`--abandon` also continues into a new release attempt unless it encounters a
+preflight failure; the evidence report records the additional attempts and
+the exact root-level path needed to clean the last one.
+
+From `/workspaces/vbpub/.worktrees/assay-wave-c-controller`, the exact command
+`cmru release assay --dry-run` created a transaction snapshot at
+`/workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9`
+and the child failed with:
+
+```
+ValueError: assay: transaction project config is missing from the isolated worktree: /workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9/.worktrees/cmru-release-20260923_213534-assay-0uror9/assay/cmru.toml
+```
+
+The project path is prefixed by the transaction worktree twice. A second
+attempt passing `--config /workspaces/vbpub/cmru.orchestration.toml` directly
+from that worktree also failed with the same doubled-path shape, because the
+parent rebuilds the child argv in `_child_release_args`. The prior B101
+controller log reports a temporary `CMRU_BIN` wrapper that rewrote the child
+`--config` argument to that absolute central path and allowed the v7.0.0 dry
+run/release to complete; the wrapper itself is no longer present. The retained
+`/tmp/assay-release-wrapper-args.log` records the argv rewrite, but the direct
+absolute `--config` retry here did not prove that workaround. Treat the wrapper
+as a reported workaround until its exact implementation is recovered and
+verified. The failed probe transactions were not promoted and were removed by
+targeted CMRU abandonment; no older retained release worktree was touched.
+
+Add a regression oracle that distinguishes one correct project-root remap
+from zero or two prefixes, and pin both the default relative-config path and
+the supported absolute-config route before changing the remapper.

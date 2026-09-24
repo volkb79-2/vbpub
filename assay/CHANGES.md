@@ -4,71 +4,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-### Added
-- `assay analyze`: record commands with before/after Git identities and actual
-  job exits; collect and check portable artifact archives; inspect verdicts
-  and appended mutation progress; produce receipts from these facts and
-  `tester-unified/run` evidence. JSON is the default output; verdict inspection
-  also offers a concise text summary. No runtime dependencies are added.
-- feat(assay): make P22 seeds shallow by default, add explicit full-history
-  lane opt-in, project-level snapshot limits, and a judged-tree blob ceiling
-  (B101)
-- feat(assay): record snapshot dirty-path provenance, support declared
-  `dirty_ignore` globs and the snapshot-only `--allow-dirty` override, and
-  refuse release receipts for overridden verdicts (B102)
-- feat(assay): keep higher-rigor liveness side files outside the checkout and
-  retain their bounded evidence in the verdict (B093)
-- feat(assay): distinguish ingested compile and runtime discards with the
-  `discard_reason` vocabulary (B079)
-
-### Documentation
-- docs(assay): document shallow source/seed distinctions, snapshot limits,
-  Go lane-file cleanliness, source unshallowing, measured Go image support,
-  and the current dstdns assay pin (B082-B084/B101)
-- docs(assay): document verdict schema v12, dirty-tree provenance, liveness
-  cleanup, and ingested discard reasons (B079/B093/B102)
-
 ### Fixed
 - fix(assay): classify istanbul `default-arg` signature lines from the
   enclosing function's call count (`fnMap`/`f`) when an arm of that same
-  branch is attributed to the node's physical line, preserving their branch arcs
+  branch is attributed to the node's physical line, preserving its branch arcs
   even when the default is unused (B080; resolves withdrawn duplicate B089).
   Judged files now produce coverage numbers instead of a contradictory-record
   refusal; bystanders keep their arcs without a contradiction diagnostic.
   Previously-PASS numbers are unchanged. Multiline defaults whose arms all
   start on other lines retain their unclassified node-line gap (A-459); the
   broader function-call alternative would change some prior 0/0 PASS counts
-  to 1/1. Previously-refused whole-target
-  lanes can now count those signatures: the measured consumer artifact gains
+  to 1/1. Previously-refused whole-target lanes can now count those signatures:
+  the measured consumer artifact gains
   six executable lines (ChartCard 54→55, DataTable 105→108, StatCard 1→2,
   StatTile 37→38). Required missing, malformed, or ambiguous function metadata
   refuses `UNREADABLE_ARTIFACT`. B054's braceless-`if` disposition and all
   `FileCoverage` invariants are unchanged.
-- fix(assay): refresh the W3 dstdns SQL witness for the shipped v11 liveness
-  fields and normalize its per-run derived candidate budget (B104)
-- fix(assay): base checks inside a P22 snapshot (R1, R2's own target diff,
-  both R3 canary halves) and `assay plan`'s diff now use the base commit
-  resolved before the snapshot. They no longer re-run
-  `merge-base`/`rev-list --parents` inside it (B101 P1, port of
-  `assay-b096` `84baffb4`). Verdicts on today's full-history seed are
-  unchanged. B101's upcoming shallow seed needs this change. `judgment.resolved.base`
-  stays the resolved commit, `BASE_IS_HEAD` still refuses, and a merge
-  HEAD's first-parent rule is still decided before the snapshot.
-- fix(assay): a P25 qualification scenario TERMINAL mismatch now carries the
-  scenario artifact, assay stdout/stderr tails and the pytest log tail in its
-  error (witness/comparator/cleanliness mismatches and a missing artifact
-  still raise without them).
-  Previously the gate container removed that evidence. Expected terminals are
-  unchanged.
-
-### Testing
-- test(assay): history-cut snapshot regressions (real git, `.git/shallow` at
-  {seed commit, carried base}) for R1, a merge HEAD's first parent, R2 without
-  R1, and the R3 canary control. The tests prove `merge-base` fails inside
-  the snapshot and that the run still passes. All four fail against the
-  pre-port code. The cut keeps the R3 transformed half's parent visible, so
-  that half is not exercised by it.
-
 <!-- cmru: release history -->
 
 ## [7.0.0] - 2026-09-23
@@ -120,6 +71,41 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Testing
 - test: close CMRU mutation survivors and Git spawn retries (67c45c8d)
 
+### Added (hand-written release detail)
+- feat(assay): make P22 seeds shallow by default, add an explicit full-history
+  lane opt-in, project-level snapshot limits, and a judged-tree blob ceiling
+  (B101)
+- feat(assay): record snapshot dirty-path provenance, support declared
+  `dirty_ignore` globs and the snapshot-only `--allow-dirty` override, and
+  refuse release receipts for overridden verdicts (B102)
+- feat(assay): keep higher-rigor liveness side files outside the checkout and
+  retain their bounded evidence in the verdict (B093)
+- feat(assay): distinguish ingested compile and runtime discards with the
+  `discard_reason` vocabulary (B079)
+
+### Documentation (hand-written release detail)
+- docs(assay): document shallow source/seed distinctions, snapshot limits,
+  Go lane-file cleanliness, source unshallowing, measured Go image support,
+  and the current dstdns assay pin (B082-B084/B101)
+- docs(assay): document verdict schema v12, dirty-tree provenance, liveness
+  cleanup, and ingested discard reasons (B079/B093/B102)
+
+### Fixed (hand-written release detail)
+- fix(assay): refresh the W3 dstdns SQL witness for the shipped v11 liveness
+  fields and normalize its per-run derived candidate budget (B104)
+- fix(assay): base checks inside P22 snapshots and `assay plan` diffs on the
+  base resolved before snapshot creation (B101 P1, port of `assay-b096`
+  `84baffb4`); `judgment.resolved.base`, `BASE_IS_HEAD`, and the merge-HEAD
+  first-parent rule retain their existing behavior
+- fix(assay): include the scenario artifact and bounded assay/pytest output
+  when a P25 qualification scenario's terminal mismatches; other mismatch and
+  missing-artifact errors keep their prior evidence behavior
+
+### Testing (hand-written release detail)
+- test(assay): cover history-cut snapshots with real Git for R1, a merge HEAD's
+  first-parent rule, R2 without R1, and the R3 canary control; the transformed
+  R3 half remains outside this fixture's scope
+
 ## [6.5.0] - 2026-09-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=55473fd56a77ba8f4a209f64bdd207ac82366641 -->
@@ -167,6 +153,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(assay): retire guarded resume decoder exemption (e6ac4730)
 - test(assay): invoke shipped CLI and use valid capture metadata (f55bfba8)
 - test(assay): qualify failure and refusal oracles across gate interpreters (25269e30)
+
+### Release detail (hand-written)
+- `assay analyze` records commands with before/after Git identities and actual
+  job exits; collects and checks portable artifact archives; inspects verdicts
+  and appended mutation progress; and produces receipts from these facts and
+  `tester-unified/run` evidence. JSON is the default output; verdict inspection
+  also offers a concise text summary. No runtime dependencies are added.
 
 ### Fixed
 - fix(assay): reject non-object JSON mutation resume records as structured

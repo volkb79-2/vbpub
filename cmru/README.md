@@ -46,21 +46,15 @@ registry publication, or a combined image+bundle release without hidden behavior
 
 Every project also declares its runtime owner explicitly:
 
-```toml
-schema_version = 1
-
-[runtime]
-kind = "none" # or "ciu"
-```
-
-`none` means the project command owns any one-shot tooling it starts. `ciu`
+In `[runtime]`, set `kind = "none"` or `kind = "ciu"`. `none`
+means the project command owns any one-shot tooling it starts. `ciu`
 means the project step may use the isolated workspace's CIU adapter and must
 declare the CIU roots it needs. CMRU never infers this from Docker or Compose
 commands and refuses a missing or unknown value. The workspace identity is
 passed to steps as `CMRU_WORKSPACE_ID`, together with the workspace path and
 source Git root, so runtime evidence can be tied to the exact candidate.
 The rationale is in [the design guide's Git-family and runtime sections](docs/DESIGN-GUIDE.md#git-family-is-separate-from-cmru-root),
-and the pasteable adoption contract is in [CONSUMERS.md](docs/CONSUMERS.md).
+and the complete config pair is in [CONSUMERS.md](docs/CONSUMERS.md#1-the-two-files).
 
 ## Verbs
 
@@ -79,6 +73,9 @@ cmru dependencies --write         # refresh its generated root-TOML comment bloc
 cmru tool-deps                    # verify declared tool dependencies: integrity/authenticity/freshness
 cmru tool-deps --allow-stale-tool-deps   # proceed despite a stale (behind-latest) pin
 cmru tool-deps --refresh <provider-project>  # deliberate external/copy artifact re-vendor + pin/hash update
+cmru versions init [all|P[,P...]] [--dry-run]    # derive registry targets from manifests
+cmru versions resolve [all|P[,P...]] [--dry-run] # resolve eligible versions and write native artifacts
+cmru versions check [all|P[,P...]] [--json]      # read-only comparison with fresh registry state
 cmru publish <name>               # low-level caller-worktree push step
 cmru resolve <name>               # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
@@ -97,6 +94,18 @@ registration marker, not filesystem visibility; the listing preserves the
 reported commit and withholds actions for marked entries. Every offered action
 still validates the exact checkout before changing Git state. See the
 [Git-family design note](docs/DESIGN-GUIDE.md#git-family-is-separate-from-cmru-root).
+
+## Supply-chain age-windowed versions
+
+`cmru versions` selects registry releases older than the configured age window (14 days by
+default) for `.pypi`, `.npm`, `.go`, and `.oci` targets. `init` derives package targets from
+project manifests; `resolve` is the explicit write step for resolved state and native lock or
+constraint outputs; `check` queries registries and reports the current recorded and eligible
+versions without writing. Go `.info` commit-time and OCI image-created fallback evidence are
+called out in warnings and the report. These commands do not run as part of build, release, gate,
+or a schedule. Read [the design guide](docs/DESIGN-GUIDE.md#supply-chain-age-windowed-version-determination)
+for the policy and timestamp choices, and use the [consumer examples](docs/CONSUMERS.md#using-a-supply-chain-age-window)
+to configure targets and consume the generated artifacts.
 
 Both version spellings print exactly one `cmru <version>` identity line to
 stdout and exit 0 without diagnostics on stderr. At every parser depth,
@@ -286,23 +295,9 @@ worktree's `assay/` source directly from their run-gate lane, so they need no
 being reviewed. A genuinely external or copied consumer may still vendor an
 immutable artifact and declare it below.
 
-`[[project.tool_dependencies]]` in `cmru.toml` makes that edge explicit:
-
-```toml
-schema_version = 1
-
-[runtime]
-kind = "none"
-
-[project]
-id = "example-wheel"
-
-[[project.tool_dependencies]]
-project = "assay"                          # a first-party project in this estate
-version = "1.0.0"                          # the pinned version
-path    = "tools/assay/assay-1.0.0.pyz"    # project-relative path to the vendored artifact
-sha256  = "6224f784f96f5ad9d10264a69dd69594639959c5eda847dcede822a7adc515bf"
-```
+`[[project.tool_dependencies]]` in `cmru.toml` makes that edge explicit; the
+[consumer config example](docs/CONSUMERS.md#1-the-two-files) shows a complete loadable
+project and orchestration pair.
 
 `cmru dependencies` reports it as a third edge kind (`tool`, alongside `declared` and
 `artifact`) but — deliberately, and permanently — never validates it against
