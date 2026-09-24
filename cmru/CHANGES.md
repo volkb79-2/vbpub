@@ -17,9 +17,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 - Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
+- Time-box CMRU mutation candidates, preserve progress, and resume completed mutation evidence.
 
 ### Testing
-- Add registry, age-policy, project/root ownership, output transaction, and adopter-doc contract tests.
+- Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
 
 <!-- cmru: release history -->
 
