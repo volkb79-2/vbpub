@@ -44,7 +44,7 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Optional, Set
 
-from . import util
+from . import access, util
 from .summary import read_cgroup_pids
 
 _ENVIRON_SEP = "\x00"
@@ -57,9 +57,8 @@ def _environ_has(pid: int, proc_root: str, needle: str) -> bool:
     holding invalid UTF-8 (a stray binary blob some tool exported) must not
     turn "does this pid carry our token" into a crash. A zombie, a pid that
     exited between being listed and being read, or one this process lacks
-    permission for (rare — the daemon runs ``pid: host`` precisely so this
-    does not happen for lane processes) all read the same way: "no", never
-    an exception.
+    permission for all read the same way: "no", never an exception. A
+    token-bearing process that cannot be read is not attributed.
     """
     path = os.path.join(proc_root, str(pid), "environ")
     try:
@@ -194,7 +193,19 @@ class SubtreeResolver:
 
     def _token_owners(self) -> Set[int]:
         needle = f"RUN_GATE_PROFILE_SESSION={self.token}"
-        pids = read_cgroup_pids(self.cgroup_abs_path)
+        if access.have_host_proc_view(self.proc_root):
+            # In a private PID namespace, host PIDs in cgroup.procs are
+            # translated to 0 and cannot identify lane processes. The token
+            # is the attribution key, so scan the explicitly mounted host
+            # proc tree instead; token uniqueness scopes this search without
+            # a Docker socket or a host PID namespace.
+            try:
+                entries = os.listdir(self.proc_root)
+            except OSError:
+                return set()
+            pids = [int(name) for name in entries if name.isdigit() and int(name) > 0]
+        else:
+            pids = read_cgroup_pids(self.cgroup_abs_path)
         return {pid for pid in pids if _environ_has(pid, self.proc_root, needle)}
 
     def _descendants(self, owners: Set[int]) -> Set[int]:

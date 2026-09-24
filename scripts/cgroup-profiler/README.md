@@ -98,7 +98,23 @@ regime shifts still get timestamped.
 privileged helper with private PID/cgroup namespaces and explicit read-only
 bind mounts of host `/proc` and cgroup v2. The helper uses the host proc mount
 for process details; it does not join either host namespace, and you do not
-need a host install.
+need a host install. Container targets are resolved to Docker IDs by the
+caller before re-exec; in helper mode `self` means the invoking container,
+not the short-lived helper. A caller-visible `pid:N` is mapped through the
+caller's cgroup namespace into that container; if namespace identity cannot
+be established, the helper refuses rather than guessing. This avoids treating
+host PIDs as visible in the helper's private PID namespace, where
+`cgroup.procs` cannot identify them.
+Before the helper
+starts, a bounded probe asks host systemd to confirm that both the configured
+placement slice and the cockpit's injected interactive slice are loaded, not
+transient, and have instantiated cgroups. The probe uses the local
+`tester-unified:local` image (override with
+`CGPROFILE_PLACEMENT_PROBE_IMAGE` if you provide a compatible local image with
+`systemctl`); missing verification evidence refuses helper launch.
+See [the design guide](docs/DESIGN-GUIDE.md#private-namespaces-and-host-views)
+for the namespace rationale and [the consumer guide](docs/CONSUMERS.md#resolve-a-target-from-a-cockpit)
+for a working helper-mode command.
 
 **Nothing at run time.** Dependencies are pinned in `requirements.txt` and
 built once by `./setup.sh`. No code path installs, downloads, or fetches while
@@ -168,11 +184,11 @@ The daemon's version response is contract major 1:
   CLI flags) — the newest N finished sessions are kept, older ones dropped
   on every `stop`, or on demand via `ctl gc --json`. A live session is
   never pruned.
-- **If `ciu up` ever refuses** `privileged`/`pid`/`cgroupns` (it does not,
-  as of this writing — verified with `ciu up --dir . --dry-run`, see the
-  P1 REPORT's C7 section for the exact governance overlay observed),
-  `tools/daemon-run.sh` would be the documented `docker run` fallback; it
-  is not shipped because the refusal has not (yet) happened.
+- The daemon keeps PID and cgroup namespaces private. Its host observation
+  comes from explicit read-only `/proc` and cgroup-v2 binds; DAMON retains
+  only its separately mounted sysfs write surface. `ciu up` is the managed
+  lifecycle and must preserve those settings—there is no host-namespace
+  fallback launcher.
 
 ## Relationship to the neighbours
 

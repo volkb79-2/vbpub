@@ -34,7 +34,22 @@ output directory bind-mounted, and explicit read-only host `/proc` and cgroup
 mounts. Host process data is read from `/hostproc` through
 `CGPROFILE_PROC_ROOT`; the host cgroup tree is mounted at
 `/sys/fs/cgroup`. Sampling code is then byte-identical in both modes, and
-`access.py` owns the proc-root selection.
+`access.py` owns the proc-root selection. A helper's private PID namespace
+cannot match host PIDs against `cgroup.procs` (the kernel translates
+invisible host tasks to PID `0`), so the Docker-aware caller resolves
+container names, labels, and `self` to immutable container IDs before
+re-exec. `self` therefore continues to mean the invoking container rather
+than the short-lived helper. The ID is located in the read-only host cgroup
+tree; it is never inferred from a namespace-relative `/proc/<pid>/cgroup`
+string.
+
+Before starting a helper, `access.py` launches a bounded placement probe under
+the injected interactive slice, after checking that it matches the cockpit's
+actual Docker parent. The probe uses the local `tester-unified:local` image by
+default (or `CGPROFILE_PLACEMENT_PROBE_IMAGE`), queries host systemd over a
+read-only DBus mount, and confirms both the probe and requested slices are
+loaded, non-transient units with instantiated cgroups. Only then is the
+privileged collector launched under the requested parent.
 
 **Bind sources are host paths.** A path handed to the Docker daemon is resolved
 on the host, not inside this container, so `/workspaces/vbpub` must be

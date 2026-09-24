@@ -20,8 +20,12 @@ The helper needs an image with python3 and the repo bind-mounted.  Both are
 resolved from the *host's* view of paths: a bind source given to the Docker
 daemon is a host path, never a path inside this container, so the workspace
 mount has to be translated (``/workspaces/vbpub`` → ``/home/vb/…/vbpub``)
-before it can be passed on.  That translation is derived from our own
-container's mount table, not configured.
+before it can be passed on. That translation is derived from our own
+container's mount table, not configured. Before starting the helper, a
+separate bounded probe uses the local ``tester-unified:local`` image (or
+``CGPROFILE_PLACEMENT_PROBE_IMAGE``) to verify both the requested and trusted
+interactive systemd slices through the host manager; absent evidence refuses
+launch rather than trusting Docker's transient-slice fallback.
 """
 
 from __future__ import annotations
@@ -31,6 +35,8 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -105,6 +111,23 @@ def have_host_proc_view(proc_root: str = PROC_ROOT) -> bool:
     if in_container():
         return selected_pid_ns != local_pid_ns
     return selected_pid_ns == local_pid_ns
+
+
+def same_cgroup_namespace(pid: int, proc_root: str = PROC_ROOT) -> bool:
+    """Whether ``pid`` and this process interpret cgroup paths from one root.
+
+    Helper-mode PID targets can be translated through the caller container's
+    Docker ID only when both paths share that container's cgroup namespace.
+    An inode mismatch is evidence that the target's relative path has a
+    different root; absent namespace metadata is indeterminate and refuses
+    that translation.
+    """
+    try:
+        target = os.stat(os.path.join(proc_root, str(pid), "ns", "cgroup")).st_ino
+        current = os.stat("/proc/self/ns/cgroup").st_ino
+    except OSError:
+        return False
+    return target == current
 
 
 def cgroup_root_is_writable(root: str = CGROUP_ROOT) -> bool:
@@ -223,6 +246,237 @@ def self_image() -> Optional[str]:
 
 def image_exists(image: str) -> bool:
     return _docker("image", "inspect", image).returncode == 0
+
+
+_PLACEMENT_PROBE = r"""
+import pathlib
+import shutil
+import subprocess
+import sys
+import time
+
+systemctl = shutil.which("systemctl")
+if systemctl is None:
+    print("placement verifier image must provide systemctl", file=sys.stderr)
+    raise SystemExit(2)
+
+def show(unit, prop):
+    result = subprocess.run(
+        [systemctl, "show", unit, "--property=" + prop, "--value"],
+        capture_output=True, text=True, check=False, timeout=5,
+    )
+    if result.returncode:
+        print(result.stderr.strip() or result.stdout.strip(), file=sys.stderr)
+        raise SystemExit(result.returncode)
+    return result.stdout.strip()
+
+for unit in dict.fromkeys(sys.argv[1:]):
+    state = show(unit, "LoadState")
+    fragment = show(unit, "FragmentPath")
+    control_group = show(unit, "ControlGroup")
+    if state != "loaded" or not fragment:
+        print(
+            f"unit={unit} LoadState={state} FragmentPath={fragment}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if fragment == "/run/systemd/transient" or fragment.startswith(
+        "/run/systemd/transient/"
+    ):
+        print(f"refusing transient unit fragment: {fragment}", file=sys.stderr)
+        raise SystemExit(1)
+    if not control_group.startswith("/") or any(
+        part in ("", ".", "..") for part in control_group.split("/")[1:]
+    ):
+        print(
+            f"unit={unit} has invalid ControlGroup={control_group}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    path = pathlib.Path("/hostcg") / control_group.lstrip("/")
+    if not path.is_dir():
+        print(f"cgroup path missing: {path}", file=sys.stderr)
+        raise SystemExit(1)
+    print(
+        f"VERIFIED_SLICE={unit} LoadState={state} "
+        f"FragmentPath={fragment} ControlGroup={control_group}"
+    )
+
+# Keep the detached container alive long enough for its create-time and
+# immediate post-launch CPU caps to both be inspected.
+time.sleep(1)
+"""
+
+
+def _placement_docker(*args: str, timeout: int) -> subprocess.CompletedProcess:
+    try:
+        return _docker(*args, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AccessError(
+            f"placement probe Docker command {args[0]!r} failed: {exc}"
+        ) from exc
+
+
+def _remove_placement_probe(name: str) -> None:
+    try:
+        _docker("rm", "--force", name, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _cap_and_remove_placement_probe(name: str) -> None:
+    try:
+        _docker("update", "--cpus=3", name, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    _remove_placement_probe(name)
+
+
+def verify_helper_cgroup_parent(parent: str) -> None:
+    """Refuse helper placement unless systemd confirms the slice is loaded.
+
+    The probe runs under the cockpit's injected interactive slice, after
+    proving that value matches this container's actual Docker placement. It
+    can therefore ask the host system manager over a read-only DBus mount
+    without joining any host namespace. The helper itself is not launched
+    until both the trusted probe tier and requested target tier are verified.
+    """
+    if (
+        not parent or parent != parent.strip() or "/" in parent
+        or not parent.endswith(".slice")
+    ):
+        raise AccessError(
+            f"helper cgroup parent must be a non-empty slice name, got {parent!r}"
+        )
+
+    probe_parent = os.environ.get("CGROUP_PARENT_DEV_INTERACTIVE")
+    if (
+        not probe_parent or probe_parent != probe_parent.strip()
+        or "/" in probe_parent or not probe_parent.endswith(".slice")
+    ):
+        raise AccessError(
+            "cannot verify helper placement: CGROUP_PARENT_DEV_INTERACTIVE is missing "
+            "or is not a simple slice name; refusing to start an unplaced probe"
+        )
+    info = self_inspect()
+    actual_parent = ((info or {}).get("HostConfig") or {}).get("CgroupParent")
+    if not actual_parent:
+        raise AccessError(
+            "cannot verify helper placement: Docker did not report this "
+            "container's cgroup parent"
+        )
+    if actual_parent != probe_parent:
+        raise AccessError(
+            f"trusted probe parent {probe_parent!r} differs from this container's "
+            f"actual Docker parent {actual_parent!r}"
+        )
+
+    probe_image = os.environ.get("CGPROFILE_PLACEMENT_PROBE_IMAGE")
+    if probe_image is None:
+        probe_image = "tester-unified:local"
+    if not probe_image or probe_image != probe_image.strip():
+        raise AccessError(
+            "CGPROFILE_PLACEMENT_PROBE_IMAGE must be a non-empty local image name"
+        )
+    if not image_exists(probe_image):
+        raise AccessError(
+            f"placement verifier image {probe_image!r} is not present locally; "
+            "build tester-unified:local or set CGPROFILE_PLACEMENT_PROBE_IMAGE"
+        )
+
+    name = f"cgprofile-placement-probe-{os.getpid()}-{time.time_ns()}"
+    print(
+        f"cgprofile: placement probe container={name} parent={probe_parent}",
+        file=sys.stderr, flush=True,
+    )
+    try:
+        started = _docker(
+            "run", "-d", "--name", name,
+            f"--cgroup-parent={probe_parent}", "--cgroupns=private",
+            "--network=none", "--cpus=3", "--memory=256m", "--memory-swap=256m",
+            "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+            "--user=1003:1003",
+            "--mount=type=bind,source=/sys/fs/cgroup,target=/hostcg,readonly",
+            "--mount=type=bind,source=/run/systemd/system,target=/run/systemd/system,readonly",
+            "--mount=type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly",
+            "-e", "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus",
+            "--entrypoint=python3", probe_image, "-c", _PLACEMENT_PROBE,
+            probe_parent, parent, timeout=20,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _cap_and_remove_placement_probe(name)
+        raise AccessError(
+            f"starting placement probe {name} timed out: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise AccessError(f"could not start placement probe {name}: {exc}") from exc
+    if started.returncode != 0:
+        # Docker may have created the named container even if the client
+        # returned an error (for example, a lost response after create).
+        # Names include a per-call nanosecond nonce, so cleanup is scoped to
+        # this exact attempted probe and cannot match an operator container.
+        _cap_and_remove_placement_probe(name)
+        detail = (started.stderr or started.stdout).strip()
+        raise AccessError(
+            f"could not start placement probe {name}: "
+            f"{detail or started.returncode}"
+        )
+
+    try:
+        # This is intentionally the first action after Docker confirms the
+        # detached container exists; the create-time cap is repeated live.
+        updated = _placement_docker("update", "--cpus=3", name, timeout=5)
+        if updated.returncode != 0:
+            raise AccessError(
+                f"could not apply the 3-CPU cap to placement probe {name}"
+            )
+        if not started.stdout.strip():
+            raise AccessError(
+                f"Docker started placement probe {name} without returning "
+                "its container ID"
+            )
+        inspected = _placement_docker(
+            "inspect", name, "--format",
+            "{{.HostConfig.NanoCpus}} {{.HostConfig.CgroupParent}}",
+            timeout=5,
+        )
+        if inspected.returncode != 0:
+            raise AccessError(f"could not inspect placement probe {name}")
+        cap = inspected.stdout.strip().split()
+        if cap != ["3000000000", probe_parent]:
+            raise AccessError(
+                f"placement probe {name} has unsafe placement/cap: "
+                f"{inspected.stdout.strip()!r}"
+            )
+
+        waited = _placement_docker("wait", name, timeout=15)
+        logs = _placement_docker("logs", name, timeout=5)
+        if waited.returncode != 0 or waited.stdout.strip() != "0":
+            detail = (logs.stderr or logs.stdout).strip()
+            raise AccessError(
+                "host systemd rejected helper slice placement: "
+                f"{detail or waited.stdout.strip()}"
+            )
+        if logs.returncode != 0:
+            raise AccessError(
+                f"could not read placement probe {name} logs"
+            )
+        verified = set()
+        for line in logs.stdout.splitlines():
+            if line.startswith("VERIFIED_SLICE="):
+                verified.add(line.split(" ", 1)[0].partition("=")[2])
+        if not {probe_parent, parent}.issubset(verified):
+            raise AccessError(
+                f"placement probe {name} returned no complete systemd evidence for "
+                f"{probe_parent!r} and {parent!r}"
+            )
+        print(
+            "cgprofile: verified host placement slices:\n"
+            f"{logs.stdout.strip()}",
+            file=sys.stderr,
+        )
+    finally:
+        _remove_placement_probe(name)
 
 
 def resolve_helper_image(explicit: Optional[str] = None) -> str:
@@ -365,13 +619,16 @@ def build_helper_spec(
             "Choose an --out-dir under a bind-mounted path (for example one "
             "inside the workspace), or run with --mode direct on the host."
         )
+    helper_image = resolve_helper_image(image)
+    helper_parent = resolve_helper_cgroup_parent(cgroup_parent)
+    verify_helper_cgroup_parent(helper_parent)
     return HelperSpec(
-        image=resolve_helper_image(image),
+        image=helper_image,
         repo_host_path=repo_host,
         repo_mount_path=repo_dir,
         out_host_path=out_host,
         out_mount_path=out_dir,
-        cgroup_parent=resolve_helper_cgroup_parent(cgroup_parent),
+        cgroup_parent=helper_parent,
     )
 
 

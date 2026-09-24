@@ -37,6 +37,7 @@ import socket
 import subprocess
 import sys
 import time
+from urllib.parse import quote
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import tomllib
 
@@ -130,13 +131,16 @@ def _load_store():
 
 # ── target specs: resolve names in the process that has the Docker socket ───
 
-def _predigest_specs(specs: Sequence[str]) -> List[str]:
-    """Turn ``container:``/``label:`` specs into ``containerid:`` ones.
+def _predigest_specs(specs: Sequence[str], *, resolve_self: bool = False) -> List[str]:
+    """Resolve caller-side identities before handing specs to the helper.
 
     Name lookup needs the Docker socket, which only this side has; cgroup
     lookup needs the host tree, which only the collector side has. Splitting
     the two here means the collector never talks to the daemon — so a daemon
-    restart mid-run cannot take the profiler down with it.
+    restart mid-run cannot take the profiler down with it. In helper mode,
+    ``self`` refers to the caller in this container; translate it to this
+    container's immutable id before re-exec, since the helper's private PID
+    and cgroup namespaces make its own ``self`` a different process/cgroup.
     """
     out: List[str] = []
     for spec in specs:
@@ -144,6 +148,29 @@ def _predigest_specs(specs: Sequence[str]) -> List[str]:
         value, options = targets_mod._parse_options(rest)
         suffix = ("@" + ",".join(f"{k}={v}" for k, v in options.items())) if options else ""
         try:
+            if resolve_self and (scheme == "self" or (not scheme and value == "self")):
+                cid = _caller_container_id()
+                extra = suffix or ""
+                if "as" not in options:
+                    extra = (extra + "," if extra else "@") + "as=self"
+                out.append(f"containerid:{cid}{extra}")
+                continue
+            if resolve_self and scheme == "pid":
+                try:
+                    pid = int(value)
+                except ValueError:
+                    _err(f"pid: needs a number, got {value!r}")
+                if "subpath" in options:
+                    _err("subpath is reserved for the helper's internal container target")
+                cgroup_path = _helper_pid_cgroup_path(pid)
+                cid = _caller_container_id()
+                resolved_options = [("subpath", quote(cgroup_path, safe="/"))]
+                resolved_options.extend(options.items())
+                if "as" not in options:
+                    resolved_options.append(("as", f"pid-{pid}"))
+                encoded = ",".join(f"{key}={option}" for key, option in resolved_options)
+                out.append(f"containerid:{cid}@{encoded}")
+                continue
             if scheme == "container":
                 cid, name = targets_mod.resolve_container(value)
                 extra = suffix or ""
@@ -173,6 +200,37 @@ def _predigest_specs(specs: Sequence[str]) -> List[str]:
             _err(f"{spec}: {exc}")
         out.append(spec)
     return out
+
+
+def _caller_container_id() -> str:
+    cid = access.self_container_id()
+    if not cid or not targets_mod._CONTAINER_ID_RE.fullmatch(cid):
+        _err(
+            "helper-mode self/pid target needs the caller container's full Docker id; "
+            "Docker inspect could not establish it"
+        )
+    return cid
+
+
+def _helper_pid_cgroup_path(pid: int) -> str:
+    """Resolve a caller-visible PID to a path relative to its container root."""
+    if pid <= 0:
+        _err("pid: needs a positive process id")
+    if access.have_host_cgroup_view():
+        _err("helper-mode pid targets require the caller's private cgroup view; use direct mode")
+    process_dir = os.path.join(access.PROC_ROOT, str(pid))
+    if not os.path.isdir(process_dir):
+        _err(f"pid {pid} is not visible in the caller's proc view")
+    if not access.same_cgroup_namespace(pid, access.PROC_ROOT):
+        _err(f"pid {pid} uses a different cgroup namespace; name its container or cgroup instead")
+    text = util.read_text(os.path.join(process_dir, "cgroup"))
+    path = targets_mod._unified_cgroup_path(text or "")
+    if path is None or not path.startswith("/"):
+        _err(f"pid {pid} has no absolute unified cgroup path in the caller's proc view")
+    components = [] if path == "/" else path[1:].split("/")
+    if any(part in ("", ".", "..") for part in components):
+        _err(f"pid {pid} has an unsafe cgroup path in the caller's proc view")
+    return path
 
 
 def _limits_snapshot(limits_mod, eff) -> Dict[str, object]:
@@ -400,32 +458,18 @@ class _nullcontext:
 
 # ── helper launch ───────────────────────────────────────────────────────────
 
-def _launch_helper(run_path: str, collect_args: List[str],
-                   image: Optional[str],
-                   cgroup_parent: Optional[str] = None) -> subprocess.Popen:
-    spec = access.build_helper_spec(HERE, os.path.dirname(run_path), image, cgroup_parent)
-    helper_name = f"cgprofile-helper-{os.getpid()}-{time.time_ns()}"
-    docker_args = spec.docker_args(name=helper_name)
-    # Plain python3, not the venv: the collector is standard-library only by
-    # contract, and running it on the bare interpreter is what keeps it that way.
-    command = [
-        access.docker_bin(),
-        *docker_args,
-        "python3",
-        os.path.join(HERE, "cgprofile.py"),
-        "_collect",
-        *collect_args,
-    ]
-    _note(f"starting helper container {helper_name} ({spec.image.split(':')[0][:48]})")
-    child = subprocess.Popen(command, stdout=sys.stderr, stderr=sys.stderr)
+def _start_named_helper(
+    command: List[str], helper_name: str, image: str,
+    *, stdout=None, stderr=None,
+) -> subprocess.Popen:
+    """Start a named helper and confirm its create-time CPU cap live."""
+    _note(f"starting helper container {helper_name} ({image.split(':')[0][:48]})")
+    child = subprocess.Popen(command, stdout=stdout, stderr=stderr)
     # --cpus=3 is present in the create request, so the helper is bounded from
-    # its first instruction. Confirm the estate's required post-launch update
-    # while the named Docker container is still running; a very short helper
-    # may finish before the update CLI can see it, which is safe because the
-    # create-time cap was already applied.
+    # its first instruction. Attempt the estate's required post-launch update
+    # immediately; a very short helper may finish before Docker can update it,
+    # but it was capped from creation and can then be returned safely.
     for _ in range(5):
-        if child.poll() is not None:
-            return child
         try:
             updated = access._docker("update", "--cpus=3", helper_name, timeout=2)
         except (OSError, subprocess.TimeoutExpired):
@@ -451,6 +495,27 @@ def _launch_helper(run_path: str, collect_args: List[str],
             child.wait()
         _err(f"could not confirm the 3-CPU cap on helper container {helper_name}")
     return child
+
+
+def _launch_helper(run_path: str, collect_args: List[str],
+                   image: Optional[str],
+                   cgroup_parent: Optional[str] = None) -> subprocess.Popen:
+    spec = access.build_helper_spec(HERE, os.path.dirname(run_path), image, cgroup_parent)
+    helper_name = f"cgprofile-helper-{os.getpid()}-{time.time_ns()}"
+    docker_args = spec.docker_args(name=helper_name)
+    # Plain python3, not the venv: the collector is standard-library only by
+    # contract, and running it on the bare interpreter is what keeps it that way.
+    command = [
+        access.docker_bin(),
+        *docker_args,
+        "python3",
+        os.path.join(HERE, "cgprofile.py"),
+        "_collect",
+        *collect_args,
+    ]
+    return _start_named_helper(
+        command, helper_name, spec.image, stdout=sys.stderr, stderr=sys.stderr,
+    )
 
 
 def _wait_for(path: str, timeout: float, what: str) -> None:
@@ -577,17 +642,21 @@ def _stop_log_tailers(tailers: Sequence[object]) -> None:
 # ── driver commands ─────────────────────────────────────────────────────────
 
 def _start_run(args: argparse.Namespace):
+    if not args.target:
+        _err("no --target given (try --target dev-background.slice, or `self`)")
+
+    mode = access.choose_mode(args.mode)
+    resolve_self = mode == "helper"
+    specs = _tag_role(_predigest_specs(args.target, resolve_self=resolve_self), "subject")
+    observers = _tag_role(_predigest_specs(args.observe or [], resolve_self=resolve_self), "observer")
+    if not specs:
+        _err("no --target given (try --target dev-background.slice, or `self`)")
+
     store = _load_store()
     base = os.path.realpath(args.out_dir)
     os.makedirs(base, exist_ok=True)
     run = store.RunDir(base, args.run_id or store.new_run_id(), create=True)
 
-    specs = _tag_role(_predigest_specs(args.target), "subject")
-    observers = _tag_role(_predigest_specs(args.observe or []), "observer")
-    if not specs:
-        _err("no --target given (try --target dev-background.slice, or `self`)")
-
-    mode = access.choose_mode(args.mode)
     collect_args = _collect_args_from(args, run.path, specs, observers)
 
     if mode == "direct":
@@ -755,14 +824,16 @@ def cmd_targets(args: argparse.Namespace) -> int:
     mode = access.choose_mode(args.mode)
     if mode == "helper":
         _note("resolving through a helper container (no host cgroup view here)")
-        specs = _tag_role(_predigest_specs(args.target), "subject")
+        specs = _tag_role(_predigest_specs(args.target, resolve_self=True), "subject")
         spec = access.build_helper_spec(HERE, DEFAULT_OUT, args.helper_image,
                                        getattr(args, "helper_cgroup_parent", None))
-        command = [access.docker_bin(), *spec.docker_args(), "python3",
+        helper_name = f"cgprofile-targets-{os.getpid()}-{time.time_ns()}"
+        command = [access.docker_bin(), *spec.docker_args(name=helper_name), "python3",
                    os.path.join(HERE, "cgprofile.py"), "targets", "--mode", "direct"]
         for item in specs:
             command += ["--target", item]
-        return subprocess.run(command, check=False).returncode
+        child = _start_named_helper(command, helper_name, spec.image)
+        return child.wait()
 
     resolved = targets_mod.resolve_all(args.target, access.CGROUP_ROOT,
                                        default_follow=args.follow_children)

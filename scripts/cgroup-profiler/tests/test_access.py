@@ -122,6 +122,38 @@ class TestHaveHostProcView:
         assert access.have_host_proc_view(str(tmp_path / "missing-proc")) is False
 
 
+class TestSameCgroupNamespace:
+    def test_same_namespace_inode_is_required(self, monkeypatch, tmp_path: Path):
+        proc = tmp_path / "proc"
+        target = proc / "4242" / "ns" / "cgroup"
+        inodes = {str(target): 77, "/proc/self/ns/cgroup": 77}
+        monkeypatch.setattr(
+            access.os, "stat",
+            lambda path: SimpleNamespace(st_ino=inodes[str(path)]),
+        )
+
+        assert access.same_cgroup_namespace(4242, str(proc)) is True
+
+    def test_different_namespace_inode_refuses_translation(self, monkeypatch, tmp_path: Path):
+        proc = tmp_path / "proc"
+        target = proc / "4242" / "ns" / "cgroup"
+        inodes = {str(target): 78, "/proc/self/ns/cgroup": 77}
+        monkeypatch.setattr(
+            access.os, "stat",
+            lambda path: SimpleNamespace(st_ino=inodes[str(path)]),
+        )
+
+        assert access.same_cgroup_namespace(4242, str(proc)) is False
+
+    def test_missing_namespace_metadata_refuses_translation(self, monkeypatch):
+        monkeypatch.setattr(
+            access.os, "stat",
+            lambda path: (_ for _ in ()).throw(FileNotFoundError(path)),
+        )
+
+        assert access.same_cgroup_namespace(4242, "/missing/proc") is False
+
+
 # ── cgroup_root_is_writable ──────────────────────────────────────────────────
 
 class TestCgroupRootIsWritable:
@@ -494,6 +526,8 @@ class TestBuildHelperSpec:
         )
         monkeypatch.setattr(access, "resolve_helper_image", lambda image: "resolved:local")
         monkeypatch.setattr(access, "resolve_helper_cgroup_parent", lambda explicit: "dev-interactive.slice")
+        verified = []
+        monkeypatch.setattr(access, "verify_helper_cgroup_parent", verified.append)
         spec = access.build_helper_spec(str(repo), str(out), image="whatever")
         assert spec.image == "resolved:local"
         assert spec.repo_host_path == "/host/repo"
@@ -501,6 +535,7 @@ class TestBuildHelperSpec:
         assert spec.out_host_path == "/host/out"
         assert spec.out_mount_path == str(out)
         assert spec.cgroup_parent == "dev-interactive.slice"
+        assert verified == ["dev-interactive.slice"]
 
     def test_cgroup_parent_argument_is_threaded_through(self, monkeypatch, tmp_path: Path):
         repo = tmp_path / "repo"
@@ -521,6 +556,7 @@ class TestBuildHelperSpec:
             return "resolved.slice"
 
         monkeypatch.setattr(access, "resolve_helper_cgroup_parent", fake_resolve_cgroup_parent)
+        monkeypatch.setattr(access, "verify_helper_cgroup_parent", lambda parent: None)
         spec = access.build_helper_spec(str(repo), str(out), cgroup_parent="my.slice")
         assert captured["explicit"] == "my.slice"
         assert spec.cgroup_parent == "resolved.slice"
@@ -570,6 +606,231 @@ class TestResolveHelperCgroupParent:
         monkeypatch.delenv("CGPROFILE_HELPER_CGROUP_PARENT", raising=False)
         monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "devcontainer-value.slice")
         assert access.resolve_helper_cgroup_parent("") == "devcontainer-value.slice"
+
+
+class TestVerifyHelperCgroupParent:
+    def _prepare(self, monkeypatch, docker_result=None):
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
+        monkeypatch.delenv("CGPROFILE_PLACEMENT_PROBE_IMAGE", raising=False)
+        monkeypatch.setattr(
+            access, "self_inspect",
+            lambda: {"HostConfig": {"CgroupParent": "dev-interactive.slice"}},
+        )
+        monkeypatch.setattr(
+            access, "image_exists", lambda image: image == "tester-unified:local",
+        )
+        monkeypatch.setattr(access.time, "time_ns", lambda: 123)
+        calls = []
+        responses = {
+            "run": fake_completed(stdout="probe-cid\n"),
+            "update": fake_completed(),
+            "inspect": fake_completed(stdout="3000000000 dev-interactive.slice\n"),
+            "wait": fake_completed(stdout="0\n"),
+            "logs": fake_completed(stdout=(
+                "VERIFIED_SLICE=dev-interactive.slice LoadState=loaded\n"
+                "VERIFIED_SLICE=dev-gates.slice LoadState=loaded\n"
+            )),
+            "rm": fake_completed(),
+        }
+        if docker_result:
+            responses.update(docker_result)
+
+        def fake_docker(*args, timeout=30):
+            calls.append((args, timeout))
+            response = responses[args[0]]
+            if isinstance(response, BaseException):
+                raise response
+            return response
+
+        monkeypatch.setattr(access, "_docker", fake_docker)
+        return calls
+
+    def test_verifies_probe_and_target_slice_then_cleans_exact_probe(self, monkeypatch):
+        calls = self._prepare(monkeypatch)
+        access.verify_helper_cgroup_parent("dev-gates.slice")
+
+        run_args = calls[0][0]
+        assert run_args[0] == "run"
+        assert "--name" in run_args
+        assert "--cgroup-parent=dev-interactive.slice" in run_args
+        assert "--cgroupns=private" in run_args
+        assert "--network=none" in run_args
+        assert "--cpus=3" in run_args
+        assert "--memory=256m" in run_args
+        assert "--read-only" in run_args
+        assert "--cap-drop=ALL" in run_args
+        assert "--pid=host" not in run_args
+        assert "--cgroupns=host" not in run_args
+        assert (
+            "--mount=type=bind,source=/run/systemd/system,target=/run/systemd/system,readonly"
+            in run_args
+        )
+        assert (
+            "--mount=type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly"
+            in run_args
+        )
+        assert run_args[-4:] == (
+            "-c", access._PLACEMENT_PROBE, "dev-interactive.slice", "dev-gates.slice",
+        )
+        assert [call[0][0] for call in calls] == [
+            "run", "update", "inspect", "wait", "logs", "rm",
+        ]
+        name = f"cgprofile-placement-probe-{access.os.getpid()}-123"
+        assert calls[1][0] == ("update", "--cpus=3", name)
+        assert calls[-1][0] == ("rm", "--force", name)
+
+    @pytest.mark.parametrize(
+        "parent", ["", "dev-gates.scope", "/dev-gates.slice", " dev-gates.slice"],
+    )
+    def test_rejects_non_slice_parent_before_docker(self, monkeypatch, parent):
+        calls = self._prepare(monkeypatch)
+        with pytest.raises(access.AccessError, match="slice name"):
+            access.verify_helper_cgroup_parent(parent)
+        assert calls == []
+
+    def test_missing_or_bad_trusted_probe_parent_refuses(self, monkeypatch):
+        for value in (
+            "", "dev-interactive", "/interactive.slice", " dev-interactive.slice",
+        ):
+            self._prepare(monkeypatch)
+            monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", value)
+            with pytest.raises(
+                access.AccessError, match="CGROUP_PARENT_DEV_INTERACTIVE",
+            ):
+                access.verify_helper_cgroup_parent("dev-gates.slice")
+
+    def test_mismatch_with_actual_cockpit_parent_refuses(self, monkeypatch):
+        self._prepare(monkeypatch)
+        monkeypatch.setattr(
+            access, "self_inspect",
+            lambda: {"HostConfig": {"CgroupParent": "dev-background.slice"}},
+        )
+        with pytest.raises(access.AccessError, match="differs from this container"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+
+    def test_missing_cockpit_parent_refuses(self, monkeypatch):
+        self._prepare(monkeypatch)
+        monkeypatch.setattr(access, "self_inspect", lambda: None)
+        with pytest.raises(access.AccessError, match="Docker did not report"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+
+    def test_missing_verifier_image_refuses(self, monkeypatch):
+        self._prepare(monkeypatch)
+        monkeypatch.setenv("CGPROFILE_PLACEMENT_PROBE_IMAGE", "missing:local")
+        with pytest.raises(access.AccessError, match="not present locally"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+
+    @pytest.mark.parametrize("image", ["", "  "])
+    def test_empty_verifier_image_refuses(self, monkeypatch, image):
+        self._prepare(monkeypatch)
+        monkeypatch.setenv("CGPROFILE_PLACEMENT_PROBE_IMAGE", image)
+        with pytest.raises(access.AccessError, match="non-empty local image"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+
+    def test_custom_verifier_image_is_used(self, monkeypatch):
+        calls = self._prepare(monkeypatch)
+        monkeypatch.setenv("CGPROFILE_PLACEMENT_PROBE_IMAGE", "custom-verifier:local")
+        monkeypatch.setattr(
+            access, "image_exists", lambda image: image == "custom-verifier:local",
+        )
+        access.verify_helper_cgroup_parent("dev-gates.slice")
+        assert "custom-verifier:local" in calls[0][0]
+
+    @pytest.mark.parametrize(
+        "stdout", ["", "probe-cid"],
+    )
+    def test_failed_probe_start_cleans_the_unique_attempted_name(
+        self, monkeypatch, stdout,
+    ):
+        calls = self._prepare(
+            monkeypatch,
+            {"run": fake_completed(returncode=125, stdout=stdout, stderr="start refused")},
+        )
+        with pytest.raises(access.AccessError, match="start refused"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+        assert [call[0][0] for call in calls] == ["run", "update", "rm"]
+
+    def test_docker_oserror_before_container_creation_refuses_cleanly(self, monkeypatch):
+        calls = self._prepare(monkeypatch, {"run": OSError("docker unavailable")})
+        with pytest.raises(access.AccessError, match="could not start placement probe"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+        assert [call[0][0] for call in calls] == ["run"]
+
+    def test_probe_timeout_is_reported_and_exact_name_is_cleaned(self, monkeypatch):
+        calls = self._prepare(
+            monkeypatch,
+            {"run": subprocess.TimeoutExpired(["docker", "run"], timeout=20)},
+        )
+        with pytest.raises(access.AccessError, match="timed out"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+        assert calls[-1][0][:2] == ("rm", "--force")
+
+    def test_timeout_cleanup_tolerates_update_timeout(self, monkeypatch):
+        calls = self._prepare(
+            monkeypatch,
+            {
+                "run": subprocess.TimeoutExpired(["docker", "run"], timeout=20),
+                "update": subprocess.TimeoutExpired(["docker", "update"], timeout=5),
+            },
+        )
+        with pytest.raises(access.AccessError, match="timed out"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+        assert [call[0][0] for call in calls] == ["run", "update", "rm"]
+
+    def test_docker_update_timeout_is_reported_and_cleaned(self, monkeypatch):
+        calls = self._prepare(
+            monkeypatch,
+            {"update": subprocess.TimeoutExpired(["docker", "update"], timeout=5)},
+        )
+        with pytest.raises(access.AccessError, match="Docker command 'update' failed"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+        assert calls[-1][0][:2] == ("rm", "--force")
+
+    def test_empty_container_id_still_cleans_its_unique_name(self, monkeypatch):
+        calls = self._prepare(monkeypatch, {"run": fake_completed(stdout="")})
+        with pytest.raises(access.AccessError, match="without returning"):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+        assert [call[0][0] for call in calls] == ["run", "update", "rm"]
+
+    @pytest.mark.parametrize(
+        "responses,match",
+        [
+            ({"update": fake_completed(returncode=1)}, "3-CPU cap"),
+            ({"inspect": fake_completed(returncode=1)}, "could not inspect"),
+            (
+                {"inspect": fake_completed(stdout="2000000000 dev-interactive.slice")},
+                "unsafe placement/cap",
+            ),
+            ({"wait": fake_completed(stdout="1")}, "systemd rejected"),
+            (
+                {
+                    "wait": fake_completed(returncode=1, stdout="0"),
+                    "logs": fake_completed(stderr="wait transport failed"),
+                },
+                "systemd rejected.*wait transport failed",
+            ),
+            ({"logs": fake_completed(returncode=1)}, "could not read placement probe"),
+            (
+                {"logs": fake_completed(stdout="incomplete")},
+                "no complete systemd evidence",
+            ),
+        ],
+    )
+    def test_failed_verification_cleans_the_exact_probe(
+        self, monkeypatch, responses, match,
+    ):
+        calls = self._prepare(monkeypatch, responses)
+        with pytest.raises(access.AccessError, match=match):
+            access.verify_helper_cgroup_parent("dev-gates.slice")
+        assert calls[-1][0][0:2] == ("rm", "--force")
+
+    def test_cleanup_timeout_does_not_override_verified_result(self, monkeypatch):
+        calls = self._prepare(
+            monkeypatch,
+            {"rm": subprocess.TimeoutExpired(["docker", "rm"], timeout=5)},
+        )
+        access.verify_helper_cgroup_parent("dev-gates.slice")
+        assert calls[-1][0][:2] == ("rm", "--force")
 
 
 class TestHelperSpecDockerArgs:

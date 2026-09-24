@@ -490,3 +490,7 @@ class TestSamplingHelpers:
     def test_read_cgroup_pids_skips_blank_and_unparsable_lines(self, tmp_path):
         (tmp_path / "cgroup.procs").write_text("111\n\nnot-a-pid\n222\n")
         assert summary.read_cgroup_pids(str(tmp_path)) == [111, 222]
+
+    def test_read_cgroup_pids_discards_private_namespace_zero_placeholders(self, tmp_path):
+        (tmp_path / "cgroup.procs").write_text("0\n111\n0\n")
+        assert summary.read_cgroup_pids(str(tmp_path)) == [111]

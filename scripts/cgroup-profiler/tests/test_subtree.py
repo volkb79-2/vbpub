@@ -74,6 +74,39 @@ def resolver(cgroup_abs: str, proc_root: Path, token: str = TOKEN) -> subtree.Su
 # ── token ownership ─────────────────────────────────────────────────────────
 
 class TestTokenOwnership:
+    def test_private_pid_namespace_finds_token_owner_in_host_proc_not_cgroup_procs(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        proc = tmp_path / "hostproc"
+        mkproc(proc, 3100, environ=[NEEDLE], task_children={3100: [3101]})
+        mkproc(proc, 3101, ppid=3100, task_children={3101: []})
+        mkproc(proc, 0, environ=[])
+        (proc / "self").symlink_to("3100")
+        cgroup = mkcgroup(tmp_path, "cgroup/lane", [0])
+        monkeypatch.setattr(subtree.access, "have_host_proc_view", lambda root: True)
+        monkeypatch.setattr(
+            subtree, "read_cgroup_pids",
+            lambda path: pytest.fail("private PID namespace must not trust cgroup.procs PIDs"),
+        )
+
+        r = resolver(cgroup, proc)
+
+        assert r.refresh() == {3100, 3101}
+        assert r.targets_seen == 2
+
+    def test_private_pid_namespace_without_host_proc_listing_has_no_owners(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        proc = tmp_path / "hostproc"
+        cgroup = mkcgroup(tmp_path, "cgroup/lane", [0])
+        monkeypatch.setattr(subtree.access, "have_host_proc_view", lambda root: True)
+        monkeypatch.setattr(
+            subtree.os, "listdir",
+            lambda path: (_ for _ in ()).throw(PermissionError(path)),
+        )
+
+        assert resolver(cgroup, proc).refresh() == set()
+
     def test_owner_found_among_several_cgroup_pids(self, tmp_path: Path):
         proc = tmp_path / "proc"
         mkproc(proc, 10, environ=[NEEDLE, "PATH=/usr/bin"])
