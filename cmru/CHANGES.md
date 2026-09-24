@@ -9,6 +9,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      below for the prior occurrence): the retain-by-default change +
      KI-19/20/21/23/25 write-up that was here is now [5.2.0] below. -->
 
+### Added
+- Add explicit multi-source `cmru versions init`, `resolve`, and read-only `check` with a configurable supply-chain age window, registry evidence, and native artifacts.
+
+### Changed
+- Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
+
+### Testing
+- Add registry, age-policy, project/root ownership, output transaction, and adopter-doc contract tests.
+
 <!-- cmru: release history -->
 
 ## [5.4.1] - 2026-09-19
