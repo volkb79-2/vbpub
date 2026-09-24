@@ -1306,3 +1306,57 @@ refusal tests, remote-origin cleanup tests, and a dry-run mutation oracle.
 Update `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and
 `docs/SPEC.md` together so the user-facing operation and its safety boundary
 are discoverable and normative.
+
+### KI-30 — release leaves the hand-written `## [Unreleased]` section orphaned
+
+**Status:** OPEN 2026-09-23; filed from assay Wave C P0.
+
+The assay changelog's hand-written `## [Unreleased]` block was left in place
+through releases 6.4.0, 6.5.0 and 7.0.0. Its `assay analyze` entry had already
+shipped in 6.4.0, while the B101/B102/B093/B079 entries described features
+released in 7.0.0. CMRU's changelog generator inserts a generated section after
+`<!-- cmru: release history -->` but does not fold the plain `## [Unreleased]`
+heading. KI-23 guards the distinct `## [X.Y.Z] - UNRELEASED` form, so that
+guard does not detect this recurrence. This is filed as a question for a
+separate design decision: should CMRU fold the canonical plain heading, and if
+so under what rules? No CMRU implementation change is part of the assay wave.
+
+### KI-31 — transaction child nests a relative project config path twice
+
+**Status:** OPEN 2026-09-23; reproduced with CMRU
+`5.4.2.dev262+ge434b293` during assay Wave C P0.
+
+Exact commands, full stdout/stderr, exit markers and cleanup results for a
+fresh reproduction are in
+[`assay-WAVE-C-CMRU-probes-2026-09-23.md`](../assay/nyxloom-trove/reports/assay-WAVE-C-CMRU-probes-2026-09-23.md).
+The default relative-config route reproduced the doubled child path again.
+Passing the central absolute `--config` directly did not correct it. CMRU's
+`--abandon` also continues into a new release attempt unless it encounters a
+preflight failure; the evidence report records the additional attempts and
+the exact root-level path needed to clean the last one.
+
+From `/workspaces/vbpub/.worktrees/assay-wave-c-controller`, the exact command
+`cmru release assay --dry-run` created a transaction snapshot at
+`/workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9`
+and the child failed with:
+
+```
+ValueError: assay: transaction project config is missing from the isolated worktree: /workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9/.worktrees/cmru-release-20260923_213534-assay-0uror9/assay/cmru.toml
+```
+
+The project path is prefixed by the transaction worktree twice. A second
+attempt passing `--config /workspaces/vbpub/cmru.orchestration.toml` directly
+from that worktree also failed with the same doubled-path shape, because the
+parent rebuilds the child argv in `_child_release_args`. The prior B101
+controller log reports a temporary `CMRU_BIN` wrapper that rewrote the child
+`--config` argument to that absolute central path and allowed the v7.0.0 dry
+run/release to complete; the wrapper itself is no longer present. The retained
+`/tmp/assay-release-wrapper-args.log` records the argv rewrite, but the direct
+absolute `--config` retry here did not prove that workaround. Treat the wrapper
+as a reported workaround until its exact implementation is recovered and
+verified. The failed probe transactions were not promoted and were removed by
+targeted CMRU abandonment; no older retained release worktree was touched.
+
+Add a regression oracle that distinguishes one correct project-root remap
+from zero or two prefixes, and pin both the default relative-config path and
+the supported absolute-config route before changing the remapper.
