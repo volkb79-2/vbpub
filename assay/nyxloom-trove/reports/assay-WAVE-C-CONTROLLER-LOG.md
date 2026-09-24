@@ -146,7 +146,9 @@ baseline/current artifact shapes; 2,832 prior-PASS evaluations were
 unchanged. Malformed later arms refused before function-map access, and
 overlapping nested headers refused as ambiguous. Controller re-ran the
 focused signature module (71 passed) and pyflakes on the changed Python
-source/tests (exit 0).
+source/tests (exit 0). The docs example/vocabulary/cross-link suite passed 45
+tests after widening its anchor oracle to all three public docs, including a
+must-fail control; this also guards the README's new B080 consumer link.
 
 ### Gate
 
