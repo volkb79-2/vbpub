@@ -842,6 +842,9 @@ def test_registry_redirect_policy_keeps_secure_redirects_and_scopes_authorizatio
             original, None, 302, "Found", headers,
             "https://cdn.example:0/blob",
         )
+    for url in ("https://cdn.example:not-a-port/blob", "https://cdn.example:/blob"):
+        with pytest.raises(registry.RegistryError, match="invalid port"):
+            handler.redirect_request(original, None, 302, "Found", headers, url)
     with pytest.raises(registry.RegistryError, match="invalid URL"):
         handler.redirect_request(
             original, None, 302, "Found", headers,
@@ -3317,6 +3320,15 @@ def test_npm_writer_validates_package_lock_and_registry_shapes(tmp_path, monkeyp
         tmp_path, {"pkg": ("1.2.0", "npm.pkg")}, {"npm.pkg": base_result},
         {"npm.pkg": None}, {"pkg": source},
     )
+
+    package.write_text(json.dumps({"dependencies": {"@malformed": "^1.0.0"}}), encoding="utf-8")
+    calls.clear()
+    versions._run_npm(
+        tmp_path, {"@malformed": ("1.2.0", "npm.malformed")},
+        {"npm.malformed": base_result}, {"npm.malformed": None},
+        {"@malformed": {**source, "name": "@malformed"}},
+    )
+    assert not any(arg.startswith("--@malformed:registry=") for arg in calls[-1])
 
     package.write_text(json.dumps({"dependencies": {}}), encoding="utf-8")
     with pytest.raises(versions.VersionsError, match="absent from package.json"):

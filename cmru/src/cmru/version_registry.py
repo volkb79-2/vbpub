@@ -514,8 +514,6 @@ class _OCIClient:
         except RegistryError as exc:
             raise RegistryError(f"OCI registry provided an unsafe bearer-token realm for {url}") from exc
         realm = urllib.parse.urlsplit(realm_url)
-        if "#" in realm_url:
-            raise RegistryError(f"OCI registry provided an unsafe bearer-token realm for {url}")
         if self.source.get("username_env"):
             registry_origin = _RegistryRedirectHandler._origin(self.registry)
             allowed_external_realms = (
