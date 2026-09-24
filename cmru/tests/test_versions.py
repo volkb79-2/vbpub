@@ -506,7 +506,9 @@ def test_versions_registry_urls_reject_unsafe_or_malformed_authorities(url):
         "mode": "single", "constraint": "*",
         "pypi": {"name": "demo", "registry": url},
     }
-    with pytest.raises(ValueError, match="HTTPS URL|credentials|query or fragment|valid port"):
+    with pytest.raises(
+        ValueError, match="HTTPS URL|credentials|query or fragment|valid port|include a host",
+    ):
         parse_versions_section({"targets": {"demo": target}}, "root")
 
 
