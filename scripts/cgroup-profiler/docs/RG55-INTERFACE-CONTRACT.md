@@ -85,7 +85,7 @@ Arguments (all long options; run-gate never relies on positionals):
 |---|---|---|
 | `--target containerid:<64 hex>` | yes | the no-daemon target form. run-gate resolves the id with `docker inspect --format '{{.Id}}' <name>` BEFORE calling. The daemon resolves the cgroup itself (`targets.find_container_cgroup`, both docker cgroup drivers). |
 | `--scope container\|container-shared` | yes | `container` = an ephemeral lane container (the cgroup IS the lane). `container-shared` = an exec-mode lane inside a long-lived container (cgroup numbers are container-wide, baseline-subtracted; pid attribution via `--token`). |
-| `--token <str>` | no | the value run-gate exported as `RUN_GATE_PROFILE_SESSION` into the lane process (`[A-Za-z0-9._-]{8,64}`). With a token, the daemon resolves the lane's pid subtree = every pid in the cgroup whose `/proc/<pid>/environ` carries `RUN_GATE_PROFILE_SESSION=<token>`, plus their descendants, re-discovered every discovery interval. Without a token, subtree = all pids in the cgroup. |
+| `--token <str>` | no | the value run-gate exported as `RUN_GATE_PROFILE_SESSION` into the lane process (`[A-Za-z0-9._-]{8,64}`). With a token, the daemon first resolves positive PIDs directly in the target cgroup (including through host `/proc/<pid>/cgroup` when private-PID namespace translation makes `cgroup.procs` report zero), then selects exact-token owners and includes their descendants. It repeats discovery every interval. Without a token, it samples those direct target-cgroup PIDs. |
 | `--damon on\|off` | no | default = the daemon's `damon_default`. |
 | `--interval <seconds>` | no | default 1.0; clamped to [0.25, 30]. |
 | `--meta <json object as one string>` | yes | keys: `lane` (str), `project` (str, effective project dir), `worktree` (str), `commit` (40-hex or null), `run_gate_revision` (int), `kind` (`"command"\|"assay"`), `expected` (null or `{"memory_peak_median_bytes": int\|null, "hot_set_p90_bytes": int\|null, "cpu_cores_avg": float\|null, "duration_median_s": float\|null}` taken from the footprint manifest when present). Unknown keys are stored verbatim, never rejected. |
@@ -325,13 +325,31 @@ and the `footprint` manifest.
 
 ## 5. Daemon safety (D-15, restated for both parties)
 
-The daemon never mutates the host: `serve` refuses `--cap` and never
-instantiates `TempCaps`; every host mount except the sessions volume is
-read-only from the container's point of view except the DAMON sysfs
-directory, which it writes only to create/commit/stop its own kdamonds;
-`--network none`; no docker socket inside the daemon (that is why targets
-are `containerid:` and the consumer resolves ids). run-gate never passes
-`--cgroupns=host` or `--pid=host` to anything.
+The daemon refuses `--cap` and never instantiates `TempCaps`. Its host
+mutation is limited to its own DAMON kdamonds and the opt-in placement writes
+enumerated in §8.3; each placement cgroup write is checked by the D-25
+whitelist and recorded. Host `/proc` is
+read-only. The host cgroup bind is writable because placement must create a
+leaf and migrate lane processes; the program-level whitelist, not a
+read-only mount, is the boundary for those writes. `--network none`; no
+docker socket inside the daemon (that is why targets are `containerid:` and
+the consumer resolves ids). run-gate never passes `--cgroupns=host` or
+`--pid=host` to anything.
+
+The daemon's PID and cgroup namespaces remain private. Host observation is
+provided by explicit binds: host `/proc` is read-only at `/hostproc`, selected
+by `CGPROFILE_PROC_ROOT`, and host cgroup v2 is mounted at `/sys/fs/cgroup`
+for observation and the guarded §8.3 placement operations. `serve` refuses
+unless PID 1 in the configured proc view belongs to a PID namespace distinct
+from the daemon's. `/proc/<pid>/cgroup`
+paths are relative to the reader's cgroup-namespace root. The daemon derives
+that root by locating its own namespace-local PID in the mounted host cgroup
+tree (host tasks outside its private PID namespace appear as PID 0 in
+`cgroup.procs`), then resolves and verifies each observed path. In helper
+mode, `self` is resolved by the caller to its full Docker ID; `pid:N` is
+carried as a validated cgroup-namespace-relative subpath under that ID only
+when the caller and target share a cgroup namespace. An unverifiable mapping
+is refused. No RG-55 container uses a host PID, cgroup, or network namespace.
 
 ## 6. Test fixtures shared by both packages
 
@@ -489,11 +507,14 @@ requested numbers); a refused placement is `placement.error =
 (placement never fails `start`). The gates slice is discovered from the
 daemon's `--gates-slice` (default `dev-gates.slice` under `dev.slice`);
 when it does not exist on the host the answer is `place-refused:no-gates-slice`.
-Daemon safety (D-25): the leaf is the ONLY cgroup the daemon writes; the
-whitelist is `cgroup.procs`, `memory.high`, `memory.max`, `cpu.weight`,
-`cgroup.kill` on `<gates slice>/rg-*` and `rmdir` of that leaf; `stop`
-moves survivors back to the container's scope and removes the leaf; the
-daemon never writes to any other cgroup file.
+Daemon safety (D-25, amended by RW-35(a)): the exact cgroup write whitelist
+is `+memory +cpu +pids` to the configured gates slice's
+`cgroup.subtree_control`; `cgroup.procs`, `memory.high`, `memory.max`,
+`cpu.weight`, and `cgroup.kill` on the session's `<gates slice>/rg-*` leaf;
+and that session's original scope `cgroup.procs` solely to restore moved
+survivors at `stop`. Leaf creation/removal is limited to that `rg-*` child.
+Any other cgroup write is refused before opening the path. Writes are
+recorded in `events.jsonl`; placement refusal does not fail `start`.
 
 ### 8.4 Liveness and policy (D-17, D-22, D-27)
 

@@ -41,8 +41,9 @@ def test_runtime_version_uses_embedded_release_identity(monkeypatch):
     assert version.runtime_version("1.1.0") == "1.2.0"
 
 
-def test_runtime_version_refuses_invalid_embedded_identity(monkeypatch):
-    monkeypatch.setenv(version.VERSION_ENV, "latest")
+@pytest.mark.parametrize("bad", ["latest", "1.1.0-01"])
+def test_runtime_version_refuses_invalid_embedded_identity(monkeypatch, bad):
+    monkeypatch.setenv(version.VERSION_ENV, bad)
     with pytest.raises(RuntimeError, match="CGPROFILE_VERSION must be a semantic version"):
         version.runtime_version("1.1.0")
 
@@ -124,7 +125,7 @@ def test_non_table_project_is_refused(tmp_path):
         version.resolve_build_version(tmp_path, require_release_tag=False, environ={})
 
 
-def test_build_version_reads_explicit_environment_mapping_default(monkeypatch, tmp_path):
+def test_build_version_reads_ambient_override_when_mapping_omitted(monkeypatch, tmp_path):
     root = _project_root(tmp_path)
     _git_tags(monkeypatch)
     monkeypatch.setenv(version.VERSION_ENV, "3.4.5")

@@ -1,7 +1,7 @@
 # cgprofile — the RG-55 profiling daemon. Rendered by ciu from
 # ciu.defaults.toml.j2 (+ optional ciu.toml.j2 overrides). See that file
 # for the field docs; RG55-INTERFACE-CONTRACT.md §1/§5 for the contract
-# this container's shape (privileged/pid/cgroupns/network) exists to keep.
+# this container's shape (private namespaces, explicit mounts, network) keeps.
 #
 # ONE service, ONE host singleton (ciu.global.defaults.toml.j2's own
 # comment on `deploy.environment_tag = "host"`) — container_name below
@@ -42,21 +42,16 @@ services:
       - "--gates-slice"
       - "{{ cgprofile.daemon.gates_slice }}"
 
-    # ── RG55-INTERFACE-CONTRACT.md §5: the daemon's whole safety envelope ──
-    # `serve` refuses `--cap` structurally and never instantiates TempCaps
-    # (lib/serve.py's own module docstring + C5's cmd_serve); these three
-    # flags are what give it the HOST cgroup v2 view and DAMON sysfs it
-    # needs to read (never write, except its own kdamonds and session dir —
-    # WRITABLE_ROOTS, C4) in order to profile containers it does not own:
+    # ── RG55-INTERFACE-CONTRACT.md §5: the daemon's safety envelope ──────
+    # Namespaces stay private. The host observations the sampler needs are
+    # explicit host mounts: proc is read-only; cgroup v2 is writable only
+    # because opt-in P6 placement creates guarded rg-* leaves and moves lane
+    # pids. lib.placement.CgroupWriteGuard enforces the D-25 whitelist before
+    # every cgroup write. Privilege is also retained for DAMON sysfs; serve
+    # refuses --cap and confines its other writes to session storage and its
+    # own kdamonds.
     privileged: true
-    pid: "host"
-    # Compose Specification key is `cgroup` (singular) with values
-    # "host"/"private" — NOT `cgroupns`, which docker compose's own schema
-    # validator refuses outright ("additional properties 'cgroupns' not
-    # allowed", verified live 2026-09-12 against docker compose v2.40.3).
-    # `docker run --cgroupns=host` is the CLI flag name; this is the
-    # differently-named compose-file equivalent of it.
-    cgroup: "host"
+    cgroup: "private"
     # No docker socket, no network at all (§5: "no docker socket inside the
     # daemon — that is why targets are `containerid:` and the consumer
     # resolves ids"; ctl talks to it via `docker exec`, never a published
@@ -64,6 +59,13 @@ services:
     # absent, unlike every other ciu stack in this estate.
     network_mode: "none"
     restart: unless-stopped
+    environment:
+      CGPROFILE_PROC_ROOT: /hostproc
+      {% if cgprofile.daemon.allow_uids %}
+      # §8.1's SO_PEERCRED allowlist applies to the socket carrier only;
+      # the exec carrier arrives as uid 0 and is always allowed.
+      CGPROFILE_ALLOW_UIDS: "{{ cgprofile.daemon.allow_uids }}"
+      {% endif %}
 
     # AUTHORED here, not left to governance, and — as of RG-55 C5 (D-29,
     # design amendment A1) — a hardcoded LITERAL, not an env-var template.
@@ -87,15 +89,6 @@ services:
     mem_limit: "{{ cgprofile.hardening.mem_limit }}"
     memswap_limit: "{{ cgprofile.hardening.memswap_limit }}"
 
-    {% if cgprofile.daemon.allow_uids %}
-    # §8.1's SO_PEERCRED allowlist for the SOCKET carrier only — the exec
-    # carrier arrives as uid 0 and is always allowed. Absent by default:
-    # authorisation is then the socket's group mode alone (the docker
-    # group, D-30's "the same principals who can exec").
-    environment:
-      CGPROFILE_ALLOW_UIDS: "{{ cgprofile.daemon.allow_uids }}"
-    {% endif %}
-
     volumes:
       - cgprofile-sessions:/var/lib/cgprofile
       # The socket carrier (§8.1, D-30): the listener directory is bound to
@@ -108,6 +101,23 @@ services:
       # is root:root and the socket ends up root-only — the daemon logs one
       # INFO line and keeps serving over exec (RW-35(b), RW-37).
       - {{ cgprofile.daemon.socket_dir }}:{{ cgprofile.daemon.socket_dir }}
+      - type: bind
+        source: /proc
+        target: /hostproc
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /sys/fs/cgroup
+        target: /sys/fs/cgroup
+        read_only: false
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /sys/kernel/mm/damon
+        target: /sys/kernel/mm/damon
+        bind:
+          create_host_path: false
 
 volumes:
   # `ciu down` PRESERVES this (S6.4) — a daemon restart must not lose every

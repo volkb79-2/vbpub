@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location("cgprofile_build_push", PROJECT / "build-push.py")
 assert _SPEC is not None and _SPEC.loader is not None

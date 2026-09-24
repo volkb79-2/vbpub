@@ -21,15 +21,17 @@ is unchanged. Use
 From the repository root, preview and release the registered project:
 
 ```bash
-cmru status cgroup-profiler --config cmru.orchestration.toml
-cmru release cgroup-profiler --config cmru.orchestration.toml
+cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
+cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
 ```
 
-CMRU creates the release tag before image build. `build-push.py` reads that
-exact tag to set the OCI tag/label and embedded runtime version; a CMRU release
-does not need a manual `CGPROFILE_VERSION` export. An untagged local `--build`
-uses `0.0.0-dev`; a manual `--push` needs an exact release tag or a validated
-`CGPROFILE_VERSION` override.
+Use the explicit `1.0.0` override for the first release; later releases can
+omit it and follow CMRU's normal tag-based bump. CMRU creates the release tag
+before image build. `build-push.py` reads that exact tag to set the OCI
+tag/label and embedded runtime version, so CMRU releases need no manual
+`CGPROFILE_VERSION` export. An untagged local `--build` uses `0.0.0-dev`; a
+manual `--push` needs an exact release tag or a validated `CGPROFILE_VERSION`
+override.
 ## Daemon adoption
 
 This is the adoption guide: commands here are intended to be copied by an
@@ -47,9 +49,46 @@ ciu up --dir .
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 ```
 
-The daemon must have the host cgroup and PID view supplied by the shipped
-stack. It has no Docker socket and does not accept `--cap`; it observes the
-target and writes session data under `/var/lib/cgprofile/sessions`.
+The shipped stack supplies host observation with private PID/cgroup
+namespaces: host `/proc` is bind-mounted read-only at `/hostproc`, host
+cgroup v2 is mounted at `/sys/fs/cgroup` for observation and guarded P6
+placement writes, and `CGPROFILE_PROC_ROOT=/hostproc` selects the host proc
+view. Placement's D-25 whitelist is the cgroup write boundary. Do not set host
+namespace modes. On startup `serve` verifies that PID 1 in that proc view
+belongs to a PID namespace distinct from the daemon's and refuses if either
+view is missing. Container targets arrive as full Docker IDs; token-scoped
+sessions resolve direct PIDs in that target cgroup, match the exact token in
+host `/proc`, then walk those owners' process trees.
+The daemon has no Docker socket and does not accept `--cap`; it writes session
+data under `/var/lib/cgprofile/sessions` and its own DAMON kdamonds under
+sysfs.
+
+When running the one-shot helper from a cockpit, placement is checked before
+the collector starts. The default verifier is the local `tester-unified:local`
+image; it must contain `systemctl`. If you use another local image with that
+client, set `CGPROFILE_PLACEMENT_PROBE_IMAGE` to its image name. The verifier
+also needs the injected `CGROUP_PARENT_DEV_INTERACTIVE` value to match the
+cockpit's actual Docker parent. Missing systemd or cgroup evidence is a hard
+refusal, not permission to rely on Docker's default parent.
+
+## Resolve a target from a cockpit
+
+In helper mode, `self` means the invoking container. The caller resolves its
+Docker ID before launching the private-namespace helper, which then finds the
+container in the read-only host cgroup tree:
+
+```bash
+./cgprofile targets --mode helper --target self
+./cgprofile targets --mode helper --target "pid:$$"
+```
+
+The helper never interprets its own namespace-local PID as a host PID. This is
+important because host processes appear as PID `0` in `cgroup.procs` when read
+from a private PID namespace; container identity must come from the ID lookup.
+For `pid:N`, the caller first verifies that the process shares its cgroup
+namespace, then carries that relative path under the caller's container ID.
+A process in another cgroup namespace is refused; pass an explicit container
+or cgroup target instead.
 
 The version response has the current wire shape:
 

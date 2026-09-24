@@ -3818,3 +3818,139 @@ hardcodes `CGPROFILE_VERSION = "1.0.0"` and the CLI reports the separate
 `pyproject.toml` version `0.1.0`. Before P6 release, resolve whether this
 separation is intentional under the frozen contract; if not, propagate the
 release coordinate to the running daemon's self-description and test it.
+
+### RW-308 — 2026-09-23 19:44:04Z — enforce the no-host-namespace constraint
+
+The operator's current repo-wide AGENTS.md instruction and the RG-55
+controller constraints prohibit `--cgroupns=host`, `--pid=host`, and
+`--net=host` for any spawned container. The P1 compose template currently
+sets host cgroup and PID namespaces, which conflicts with that binding rule.
+Do not deploy that template as-is. Preserve the daemon's required host
+observability through explicit, read-only host `/proc` and cgroup-v2 bind
+mounts while leaving both namespaces private; keep DAMON's narrowly scoped
+write surface separate. Prove the actual host paths and daemon probes live
+before deployment. This is an implementation reconciliation of the existing
+host-observation contract, not permission to use host namespaces or to weaken
+D-15. The gate launcher was independently amended at `3ce08349` to use the
+read-only host cgroup bind mount, immediately cap its named containers at 3
+CPUs, and assert both the cap and cgroup parent.
+
+### RW-309 — 2026-09-23 20:43:17Z — resolve proc cgroup paths relative to the private namespace
+
+A live P1-shaped probe used private PID/cgroup namespaces plus read-only host
+`/proc` and cgroup-v2 binds. It confirmed that `/hostproc/1` is the host init
+and that PID 1's PID-namespace inode differs from the container's; it also
+showed `/hostproc/1/cgroup` as `/../../../init.scope` while the helper's own
+local path is `/`. A bind-mounted host procfs does not make
+`/proc/<pid>/cgroup` globally rooted: those paths remain relative to the
+reader's cgroup namespace. Therefore P1 must derive that namespace root from
+the helper's own visible PID membership in the mounted cgroup tree and local
+`/proc/self/cgroup`, then normalize each observed process path against that
+derived root. Reject missing/ambiguous membership or an absent resolved
+cgroup; do not use a host cgroup namespace to avoid the translation.
+
+### RW-310 — 2026-09-24 06:04:07Z — record current cockpit source and BuildKit socket remediation
+
+The operator confirms the running devcontainer is based on
+`/workspaces/dstdns/.devcontainer/devcontainer.json`. This is context only:
+the controller must not inspect or modify `/workspaces/dstdns`; all durable
+host-setup changes belong upstream in
+`modern-debian-tools-python-debug/host-setup`.
+
+The rootless BuildKit socket was inaccessible because it was created as
+`1000:1000` mode `0660`, while the cockpit has the Docker group GID but not
+GID 1000. The live host was corrected to use a sticky shared runtime directory
+and a post-start socket `chgrp docker`/`chmod 0660`; no service restart was
+performed. Matching upstream source is committed on
+`rg55-buildkit-socket-gid` at `7f0f46f3`; its registered `smoke` lane passed
+(`85 passed, 6 skipped`, exit 0). This branch remains unmerged and requires
+independent review; the smoke result is not release evidence. No file under
+`/workspaces/dstdns` was read or changed.
+
+### RW-311 — 2026-09-24 06:14:06Z — bind daemon version identity to CMRU's release tag
+
+RW-307's version-identity question is resolved: CMRU is the authoritative
+source of the OCI release coordinate, so the built CLI and daemon self-report
+must both use that same coordinate. In the P6 worktree, commit `dfef6bad`
+reads the `cgprofile-v<version>` tag at `HEAD`, validates it, passes the exact
+value through the build to `CGPROFILE_VERSION`, and uses that embedded value
+for both CLI and daemon identity. Untagged local builds identify as
+`0.0.0-dev`; an explicitly present but empty/malformed version now refuses
+rather than silently falling back. The README, DESIGN-GUIDE, and CONSUMERS
+examples were updated with the behavior and release flow.
+
+The controller verified CMRU's order locally: project gates run before tag
+creation, then the release tag is created/pushed before build and publish. A
+read-only CMRU status against the P6 worktree reports no existing cgprofile
+tag, so P1's first release must keep the settled explicit `--set-version
+1.0.0` rather than accepting the SCM first-release default `0.1.0`. Focused
+version/build/CLI tests pass (`26 passed`); registered P6 `r0-r1` is running
+on the clean `dfef6bad` tree, and `r3`, P6 R2, independent review, and release
+remain outstanding.
+
+### RW-312 — 2026-09-24 00:49:07Z — scope token roots to the selected cgroup
+
+Imported from the P1 branch-local log, where this was originally numbered
+RW-310. The canonical main log had already assigned RW-310/RW-311 to different
+decisions; this renumbering preserves both policies without changing either.
+
+The private-PID fix must preserve §2.2's attribution boundary: resolve the
+positive PIDs directly in the selected target cgroup (using the explicit host
+proc view when `cgroup.procs` exposes only zero), then match the exact token
+among those PIDs. Do not search all host processes for token roots. Their
+descendants remain attributed if they later move to another cgroup. A target
+of `/` means processes directly in the hierarchy root, not every descendant.
+This also avoids resolving the no-token PID list a second time on token-backed
+session startup. P1 source and regression tests now encode this ruling; fresh
+registered gates are still required after the edits.
+
+### RW-313 — 2026-09-24 00:49:07Z — distinct gate worktrees may run concurrently
+
+Imported from the P1 branch-local log, where this was originally numbered
+RW-311; see the cross-branch numbering note under RW-312.
+
+The operator clarified that independent CIU worktrees may host concurrent gate
+containers; the other controller's local one-at-a-time scheduling choice is
+not a host-wide exclusion rule. Each container still needs its own unique
+exact name, read-only source bind, verified loaded `dev-gates.slice` parent,
+and immediate 3-CPU cap. Worktree isolation separates source/evidence, not host
+resources; keep the two-mutation-lane ceiling and the memory-PSI admission
+guard (`full avg10` must be at most 5 before launching work). The Wave C
+`run-gate-assay-selfhosted-1477047-21288-1790210014` and P1
+`cgprofile-gate-1478779-1790210092` containers did overlap; P1's exact-tree
+`r0-r1` completed cleanly with 1,324 tests and 100% statement/branch coverage
+in 72.891 seconds. The P1 tree changed afterward under RW-312, so this result
+is historical, not final evidence. Earlier this session I also mistakenly
+launched a local targeted pytest when memory PSI full avg10 was 6.97; collection
+stopped because the devcontainer lacked `numpy`, and no test body ran. I will
+not launch further validation until the admission threshold is met.
+
+### RW-314 — 2026-09-24 06:41:22Z — make P6 placement's host cgroup write view explicit
+
+RW-308's prohibition on host namespaces remains absolute. Its read-only host
+cgroup bind is superseded for the P6 daemon because D-25/RW-35(a) already
+requires opt-in placement to create a leaf, delegate controllers, move lane
+PIDs, and restore survivors to their origin cgroup. The daemon therefore gets
+an explicit writable host cgroup-v2 bind; `CgroupWriteGuard` is the
+program-level allowlist and every admitted write is recorded. Host `/proc`
+remains read-only, `--network none` remains set, and namespaces stay private.
+The one-shot helper keeps read-only host `/proc` and cgroup mounts. Compose,
+user docs, both byte-identical contract copies, review handoff, and a
+deployment-structure test now encode this distinction. This implements the
+settled placement contract without reopening the namespace ruling.
+
+### RW-315 — 2026-09-24 06:41:55Z — disposition of the first P6 reconciled-tree gate
+
+P6's registered `r0-r1` run on `dfef6bad8b0cb8cc97d87c27b399e4a101ed2d8b`
+started at 06:12:01Z, ended at 06:14:16Z, and failed with exit 1 after
+1,494 passed and one failed. The failure was
+`TestPeerCredentials.test_a_real_socket_peer_is_this_process_uid`, which
+raised `BrokenPipeError` on its second socket request. The gate also logged a
+best-effort socket `chown` permission warning; causality is not established.
+I did not rerun that old tree. Its `tools/gate.sh` placement probe used
+`docker run --rm --cgroupns=host`, violating RW-308; that exact container
+auto-removed, and the reconciled script no longer contains a host-namespace
+flag. After P1/P6 source reconciliation and test corrections, the socket test
+file passed (40 tests) and the targeted deployment/version/build/CLI/access
+set passed (178 tests) locally under the PSI gate. Those are diagnostic
+results only; registered `r0-r1` and `r3` must pass on a quiet committed tree.

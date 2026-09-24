@@ -659,6 +659,7 @@ class TestServeCliAllowUids:
         captured: Dict[str, Any] = {}
         monkeypatch.setenv(serve.ALLOW_UIDS_ENV, "0,1000")
         monkeypatch.setattr(cg.access, "have_host_cgroup_view", lambda _root: True)
+        monkeypatch.setattr(cg.access, "have_host_proc_view", lambda _root: True)
 
         class _FakeServer:
             def __init__(self, **kwargs):
@@ -675,6 +676,7 @@ class TestServeCliAllowUids:
         captured: Dict[str, Any] = {}
         monkeypatch.delenv(serve.ALLOW_UIDS_ENV, raising=False)
         monkeypatch.setattr(cg.access, "have_host_cgroup_view", lambda _root: True)
+        monkeypatch.setattr(cg.access, "have_host_proc_view", lambda _root: True)
 
         class _FakeServer:
             def __init__(self, **kwargs):
@@ -690,6 +692,7 @@ class TestServeCliAllowUids:
     def test_a_malformed_environment_refuses_to_start(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv(serve.ALLOW_UIDS_ENV, "1000,nobody")
         monkeypatch.setattr(cg.access, "have_host_cgroup_view", lambda _root: True)
+        monkeypatch.setattr(cg.access, "have_host_proc_view", lambda _root: True)
         monkeypatch.setattr(
             serve, "SessionServer",
             lambda **kw: pytest.fail("the daemon must not start with a bad allowlist"),

@@ -305,7 +305,7 @@ class SessionServer:
         gates_slice_name: str = DEFAULT_GATES_SLICE_NAME,
         allow_uids: Optional[Sequence[int]] = None,
         cgroup_root: str = access.CGROUP_ROOT,
-        proc_root: str = "/proc",
+        proc_root: str = access.PROC_ROOT,
         host_proc_root: Optional[str] = None,
         daemon_name: str = DEFAULT_DAEMON_NAME,
         clock: Callable[[], float] = time.time,
@@ -730,8 +730,12 @@ class SessionServer:
         abs_target = os.path.join(self.cgroup_root, cgroup.lstrip("/"))
         initial_target_metrics = summary.sample_target_cgroup(abs_target)
         baseline = (initial_target_metrics.get("mem") or {}).get("current")
-        pids_now = summary.read_cgroup_pids(abs_target)
-        pids_at_start = len(pids_now)
+        # The token resolver below will resolve direct target-cgroup PIDs;
+        # avoid doing the broader proc-to-cgroup map a second time here.
+        pids_now = (
+            targets_mod.pids_in_cgroup(cgroup, self.cgroup_root, self.proc_root)
+            if token is None else []
+        )
         # RW-14: sampled once, at session creation — the manifest's "host"
         # field mirrors `cmd_collect`'s own convention of a single snapshot
         # written into the manifest at start, not updated thereafter.
@@ -752,7 +756,8 @@ class SessionServer:
         subtree_resolver: Optional[subtree.SubtreeResolver] = None
         if token:
             subtree_resolver = subtree.SubtreeResolver(
-                cgroup_abs_path=abs_target, token=token, proc_root=self.proc_root
+                cgroup=cgroup, cgroup_root=self.cgroup_root,
+                token=token, proc_root=self.proc_root,
             )
             subtree_resolver.refresh()
 
@@ -760,6 +765,7 @@ class SessionServer:
             list(subtree_resolver.current_pids)
             if subtree_resolver is not None else list(pids_now)
         )
+        pids_at_start = len(initial_pids)
 
         rundir = store.RunDir(self.sessions_dir, run_id=session_id, create=True)
         with open(rundir.stream_path("events"), "a", encoding="utf-8"):
@@ -1060,7 +1066,9 @@ class SessionServer:
                 or (mono - sess.last_discovery_mono) >= DISCOVERY_INTERVAL_SECONDS
             )
             if due:
-                new_pids = summary.read_cgroup_pids(abs_target)
+                new_pids = targets_mod.pids_in_cgroup(
+                    sess.cgroup, self.cgroup_root, self.proc_root,
+                )
                 sess.last_discovery_mono = mono
                 if sess.damon_session is not None and set(new_pids) != set(sess.no_token_pids):
                     sess.damon_session.recommit_targets(new_pids)

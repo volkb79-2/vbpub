@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from . import util
-from .access import CGROUP_ROOT
+from .access import CGROUP_ROOT, PROC_ROOT
 
 
 @dataclass
@@ -145,7 +145,7 @@ def read_limits(abs_path: str) -> LimitSet:
     )
 
 
-def mount_flags(proc_root: str = "/proc") -> Set[str]:
+def mount_flags(proc_root: str = PROC_ROOT) -> Set[str]:
     """The cgroup2 mount's option set, e.g. ``{"rw", "memory_recursiveprot"}``.
 
     A missing or unparseable ``/proc/mounts`` yields an empty set rather than

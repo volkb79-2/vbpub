@@ -60,7 +60,9 @@ are RG-55's always-on daemon mode, a separate thing entirely — it never
 spawns a collector, and run-gate talks to it instead of to `run`/`attach`.
 Every daemon session records sample zero at start. A no-token start is always a
 new session (subject to `--max-sessions`); only the same non-null token is
-idempotent. The daemon control contract is major version 1, and `ctl` refuses
+idempotent. A token scopes its roots to exact-token processes directly in the
+selected cgroup; their descendants remain attributed if they move elsewhere.
+The daemon control contract is major version 1, and `ctl` refuses
 to print a response whose object, major, `ok`, or verb-specific shape is not
 valid.
 
@@ -94,11 +96,26 @@ from inside a gate container), wrapper-derived boundaries for gates that know
 nothing about the tool, and changepoint detection over the series so unlabelled
 regime shifts still get timestamped.
 
-**Runs from a devcontainer.** `/sys/fs/cgroup` inside one is a namespaced
-read-only view of its own subtree — the host's slices are simply not there. The
-profiler re-executes itself inside a privileged helper container with the host
-cgroup namespace, so the sampling code is identical either way and you do not
-need a host install.
+**Runs from a devcontainer.** The profiler re-executes itself inside a
+privileged helper with private PID/cgroup namespaces and explicit read-only
+bind mounts of host `/proc` and cgroup v2. The helper uses the host proc mount
+for process details; it does not join either host namespace, and you do not
+need a host install. Container targets are resolved to Docker IDs by the
+caller before re-exec; in helper mode `self` means the invoking container,
+not the short-lived helper. A caller-visible `pid:N` is mapped through the
+caller's cgroup namespace into that container; if namespace identity cannot
+be established, the helper refuses rather than guessing. This avoids treating
+host PIDs as visible in the helper's private PID namespace, where
+`cgroup.procs` cannot identify them. Before the helper starts, a bounded probe
+asks host systemd to confirm that both the configured
+placement slice and the cockpit's injected interactive slice are loaded, not
+transient, and have instantiated cgroups. The probe uses the local
+`tester-unified:local` image (override with
+`CGPROFILE_PLACEMENT_PROBE_IMAGE` if you provide a compatible local image with
+`systemctl`); missing verification evidence refuses helper launch.
+See [the design guide](docs/DESIGN-GUIDE.md#private-namespaces-and-host-views)
+for the namespace rationale and [the consumer guide](docs/CONSUMERS.md#resolve-a-target-from-a-cockpit)
+for a working helper-mode command.
 
 **Nothing at run time.** Dependencies are pinned in `requirements.txt` and
 built once by `./setup.sh`. No code path installs, downloads, or fetches while
@@ -106,10 +123,12 @@ profiling — that would add exactly the load the tool exists to measure.
 
 ## Running the daemon
 
-RG-55 added a second, always-on mode: a privileged host daemon that
-run-gate (or anyone else) talks to over a Unix socket instead of spawning a
-collector per lane. It is `scripts/cgroup-profiler/`'s own **standalone ciu
-root** — `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
+RG-55 added a second, always-on mode: a host daemon that run-gate (or anyone
+else) talks to over a Unix socket instead of spawning a collector per lane.
+It keeps PID/cgroup namespaces private and receives explicit read-only host
+`/proc` and cgroup-v2 mounts; only its DAMON interface and session storage are
+writable. It is `scripts/cgroup-profiler/`'s own **standalone ciu root** —
+`RG55-INTERFACE-CONTRACT.md` is the full wire contract.
 
 ```bash
 python3 build-push.py --build      # -> cgprofile:local (needs docker buildx)
@@ -141,9 +160,9 @@ The daemon's version response is contract major 1:
   (not `$INSTANCE_ID` like every other ciu stack in this estate) — the
   container name is the fixed literal `cgprofile-host-daemon`. A second
   worktree running `ciu up --dir .` collides on that name and refuses to
-  start a sibling, on purpose: the daemon owns the whole host's DAMON
-  facility and cgroup v2 view (`--privileged --pid=host --cgroupns=host`),
-  which cannot be meaningfully duplicated.
+  start a sibling, on purpose: the daemon owns the host's DAMON facility and
+  observes host proc/cgroup state through explicit mounts, which cannot be
+  meaningfully duplicated. PID and cgroup namespaces remain private.
 - **`--network none`, no docker socket inside the container.** The only
   surface is `/run/cgprofile/ctl.sock`, reached with `docker exec
   cgprofile-host-daemon cgprofile ctl <verb> --json` from anywhere with
@@ -201,11 +220,6 @@ The daemon's version response is contract major 1:
   CLI flags) — the newest N finished sessions are kept, older ones dropped
   on every `stop`, or on demand via `ctl gc --json`. A live session is
   never pruned.
-- **If `ciu up` ever refuses** `privileged`/`pid`/`cgroupns` (it does not,
-  as of this writing — verified with `ciu up --dir . --dry-run`, see the
-  P1 REPORT's C7 section for the exact governance overlay observed),
-  `tools/daemon-run.sh` would be the documented `docker run` fallback; it
-  is not shipped because the refusal has not (yet) happened.
 - **`cgprofile.slice` (D-29) — the daemon's own containment.** An OPERATOR
   step, once per host, **before** the first `ciu up` on that host: see
   `infra/README.md` (`sudo cp infra/cgprofile.slice
@@ -242,6 +256,13 @@ The daemon's version response is contract major 1:
   `--on-stall kill` then falls back to signalling the pid subtree
   directly. A malformed cap value is `bad-argument` (exit 2, no session)
   — the client typed it wrong, not the host.
+- **Private namespaces, explicit host views.** The daemon and its helper
+  keep PID and cgroup namespaces private. Host `/proc` is explicitly bound
+  read-only; the daemon's host cgroup-v2 bind is writable only because
+  opt-in placement creates `rg-*` leaves and moves lane pids. The daemon's
+  D-25 write guard limits those cgroup writes to the documented whitelist;
+  DAMON retains its separately mounted sysfs write surface. `ciu up` is the
+  managed lifecycle; there is no host-namespace fallback launcher.
 
 ## Relationship to the neighbours
 

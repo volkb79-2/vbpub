@@ -4373,3 +4373,7 @@ if we should allow pointing in our config to a official io.cost benchmark file.
 so far we relied on cgroups (and io limits) being set up on the host (see `modern-debian-tools-python-debug/host-setup`)
 but it could be worth to allow ciu to do things itself. ciu will also get a optional daemon which might be the right way to 
 proceed with this integration.
+
+## CIU-112
+
+`worktree lacks ciu instance identity so ciu won't clean them` - if people now start using `ciu worktree` to create a worktree: does it work when there is no riu root in the repo? and does the tear down/removal work? both should be possible. removal might give a warning, i do not see a reason to refuse? 
