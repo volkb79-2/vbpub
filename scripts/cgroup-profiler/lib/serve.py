@@ -52,9 +52,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from . import access, damon as damon_mod, events as events_mod, metrics, sampler as sampler_mod
 from . import store, subtree, summary, targets as targets_mod, util
 from . import limits as limits_mod, liveness as liveness_mod, placement as placement_mod
+from .version import runtime_version
 
 CONTRACT_VERSION = 1
-CGPROFILE_VERSION = "1.1.0"
+CGPROFILE_VERSION = runtime_version("1.1.0")
 
 DEFAULT_SOCKET_PATH = "/run/cgprofile/ctl.sock"
 DEFAULT_SESSIONS_DIR = "/var/lib/cgprofile/sessions"

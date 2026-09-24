@@ -42,10 +42,13 @@ import tomllib
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 with open(os.path.join(HERE, "pyproject.toml"), "rb") as _project_file:
-    __version__ = tomllib.load(_project_file)["project"]["version"]
+    _source_version = tomllib.load(_project_file)["project"]["version"]
 sys.path.insert(0, HERE)
 
 from lib import access, targets as targets_mod, util  # noqa: E402
+from lib.version import runtime_version  # noqa: E402
+
+__version__ = runtime_version(_source_version)
 
 READY_FILE = "collector.ready"
 STOP_FILE = "collector.stop"
