@@ -117,3 +117,39 @@ SHA-256 `db36280ce66ea5c36dfc8cbb61c87c41e747de643b043c805bb52c7027194b85`.
 
 P0 was merged after that branch-tip gate passed; the later report commit adds
 the durable log and result summary.
+
+## P1 — B080 JavaScript default-argument coverage
+
+### Implementation and review
+
+The P1 branch is `assay-b080-js-default-arg`, based on the P0-updated main
+tip. It contains the B080 carve/fixture (`b13707ad`), the narrowed
+signature-line implementation and user docs (`86c16f85`), the current-main
+merge (`40bd4906`), and the independent-review regression plus summary-row
+correction (`e29c1fb0`). The branch was clean at the review boundary.
+
+The operator ruling is A-459: shape C recovers a statement-less default-arg
+node only when an arm of that same branch maps to the signature line under
+the existing `_arm_line` rule. The broader enclosing-function rule remains
+documented as an alternative; it covers additional multiline layouts but
+changes prior-PASS counts when a function's execution count is used for an
+unmatched branch.
+
+Fresh independent review round 1 found no implementation or public-document
+defect. Its nonblocking P3 record finding (B080 was still OPEN in the Wave C
+glance row) was corrected in `e29c1fb0`. The reviewer added a combined-axis
+regression for same-line aggregation, fallback attribution, an uncalled
+qualifying function, unmatched default metadata, nested metadata, and reversed
+branch order: 4 parameter cases passed. The bounded 12-module suite passed
+343 tests in 5.08s. Additional differential probes checked 1,152
+baseline/current artifact shapes; 2,832 prior-PASS evaluations were
+unchanged. Malformed later arms refused before function-map access, and
+overlapping nested headers refused as ambiguous. Controller re-ran the
+focused signature module (71 passed) and pyflakes on the changed Python
+source/tests (exit 0).
+
+### Gate
+
+P1 reviewer result: READY. Authoritative tester-unified gate: pending. The
+gate will run against this branch tip before merge; its exact container,
+host-capacity checks, phases, exit status, and log hash will be recorded here.
