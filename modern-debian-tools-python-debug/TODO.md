@@ -95,3 +95,21 @@ investigation.
 _Captured 2026-09-08 from a live gstammtisch investigation (soulmask periodic
 stall incident); filed by Claude per operator request ("how about mdt ships a
 companion script to escape the devcontainer in a defined way")._
+
+## Bug: managed BuildKit socket group does not match consumer group
+
+Filed 2026-09-24 after a live devcontainer connection failed with
+`PermissionError: [Errno 13]`. The Docker API socket was `root:docker` mode
+`0660` (GID 994, available to the consumer), while rootless BuildKit created
+`/run/mdt-buildkitd/buildkitd.sock` as `1000:1000` mode `0660`. The parent
+directory's permissive mode did not grant permission to connect to the socket.
+
+Fix in branch `rg55-buildkit-socket-gid`: retain a sticky runtime directory;
+before systemd marks the service ready, verify the endpoint is a non-symlink
+socket owned by the running container user, then set only that socket to the
+host `docker` group and mode `0660`. Consumer instructions now require the
+existing host `DOCKER_GID` supplementary group and explicitly reject making
+the socket world-accessible. Live acceptance passed after applying the same
+socket ownership/mode correction: `docker buildx inspect mdt-managed` reported
+the remote builder running. Registered gate and independent review remain
+pending before this branch can merge and release.

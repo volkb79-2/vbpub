@@ -137,6 +137,13 @@ does not create a per-container or container-driver builder. A partial or
 different `BUILDX_BUILDER`/`BUILDKIT_HOST` pair fails finalization. With the
 explicit environment above, both commands use the managed remote:
 
+Host setup keeps the socket at mode `0660` and assigns it to the host
+`docker` group after verifying the live service socket. The consumer must
+receive that same supplementary group (the MDT template wires it from the
+host's `DOCKER_GID`). Do not make the socket world-accessible to work around a
+group mismatch; check `id` in the consumer and `stat` on the host socket. See
+the [socket-access design](DESIGN-GUIDE.md#managed-buildkit-socket-access).
+
 ```bash
 docker build -t example:dev .
 docker buildx build --load -t example:dev .

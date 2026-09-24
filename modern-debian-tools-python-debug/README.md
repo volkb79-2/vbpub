@@ -383,7 +383,9 @@ Buildx remote backed by `mdt-buildkitd.service`; the template supplies
 `BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. Host installation, the
 accidental-worker guard, and the fail-closed memory policy are documented in
 [the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend)
-and [consumer instructions](docs/CONSUMERS.md).
+and [consumer instructions](docs/CONSUMERS.md). The service exposes its socket
+only to the host `docker` group; see the
+[socket-access design](docs/DESIGN-GUIDE.md#managed-buildkit-socket-access).
 The host wizard also writes `DEV_BUILDKITD_MAX_PARALLELISM` into the managed
 daemon configuration; it limits one BuildKit daemon's internal solver work and
 is independent of release repack concurrency.

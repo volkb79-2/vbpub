@@ -37,6 +37,19 @@ MDT has no owned HTTP/OpenAPI contract. Hypothesis is used for pure
 configuration invariants where generated values are meaningful; Schemathesis
 would add no evidence to this product.
 
+## Managed BuildKit socket access
+
+The rootless BuildKit process creates its Unix socket with its host-mapped
+uid/gid, which need not match the host `docker` group. A setgid parent alone
+does not repair that: a live rootless BuildKit probe still created the socket
+as `1000:1000`. Host setup therefore waits for the actual socket, verifies it
+is a non-symlink socket owned by the running service container's effective
+uid, and changes only that inode to group `docker`, mode `0660`, before the
+service becomes ready. The sticky runtime directory prevents unrelated local
+users from replacing or deleting the socket after it appears. This shares the
+BuildKit API only with principals already trusted for Docker access; it does
+not make the socket world-accessible.
+
 ## Release relationship
 
 The `release` run-gate lane contains the image release-flow tests and is the

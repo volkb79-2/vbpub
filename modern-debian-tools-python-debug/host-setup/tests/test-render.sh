@@ -149,6 +149,30 @@ grep -qF 'buildkitd.toml.in' "$INSTALL_SH" \
   || fail "install.sh never renders buildkitd.toml.in"
 pass "managed BuildKit TOML renders its configured solver parallelism"
 
+# Rootless BuildKit creates its socket with the mapped user's gid, so the
+# directory's group alone is not authoritative. The unit must keep the
+# runtime directory sticky and validate/grant access to only the socket.
+BUILDKIT_UNIT_OUT="$TMP/mdt-buildkitd.service"
+render "$HERE/units/mdt-buildkitd.service.in" "$BUILDKIT_UNIT_OUT"
+grep -qxF 'RuntimeDirectoryMode=01777' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit runtime directory is not sticky"
+grep -qF 'ExecStartPost=/bin/sh -ec' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit service has no socket-readiness permission step"
+grep -qF '[ ! -L "$socket" ]' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit permission step does not reject symlink substitution"
+grep -qF 'socket_uid" = "$daemon_uid' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit permission step does not verify socket ownership"
+grep -qF '/bin/chgrp docker "$socket"' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit socket is not assigned to the existing docker group"
+grep -qF '/bin/chmod 0660 "$socket"' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit socket is not restricted to owner and docker group"
+POSTSTART_SCRIPT="$(sed -n "s/^ExecStartPost=\/bin\/sh -ec '\(.*\)'$/\1/p" "$BUILDKIT_UNIT_OUT")"
+[ -n "$POSTSTART_SCRIPT" ] \
+  || fail "could not extract the managed BuildKit post-start command"
+printf '%s\n' "$POSTSTART_SCRIPT" | /bin/sh -n \
+  || fail "managed BuildKit post-start shell command does not parse"
+pass "managed BuildKit socket is validated and restricted to docker-group clients"
+
 # --- (2) dev-gates.slice.in renders the shipped example's own values --------
 # ${VAR:?msg} rather than a bare ${VAR}: under `set -u` a mistyped/missing key
 # in host-setup.env.example (the example is what was just sourced, not this

@@ -150,6 +150,14 @@ normal backend for MDT builds, including release builds. The service is a
 plain `docker run --cgroup-parent=dev-buildkitd.slice`; it does not rely on a
 Buildx container-driver cgroup option.
 
+The runtime directory is sticky so other local users cannot replace the
+socket after it is created. Before systemd reports the service ready, its
+post-start check confirms the socket is a real socket owned by the running
+container user, then assigns only that socket to the host `docker` group with
+mode `0660`. Devcontainer clients must receive the same host group; the
+directory itself is never made broadly readable as a substitute for socket
+permissions.
+
 The installer verifies Docker and Buildx before changing host state, waits for
 the service socket, verifies the service container's image/cgroup/labels, then
 creates or verifies the remote builder. It installs `/etc/profile.d/mdt-buildkit.sh`
