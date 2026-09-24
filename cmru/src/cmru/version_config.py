@@ -118,7 +118,7 @@ def _validate_auth_fields(raw: dict, where: str, *, allow_partial: bool) -> None
         value = raw.get(name)
         if value is not None and not _ENV_NAME.fullmatch(_nonempty(value, f"{where}.{name}")):
             _fail(f"{where}.{name} must name an environment variable")
-    username, password, token = (raw.get(name) for name in names)
+    token, username, password = (raw.get(name) for name in names)
     if not allow_partial and bool(username) != bool(password):
         _fail(f"{where}.username_env and .password_env must be set together")
     if token is not None and (username is not None or password is not None):
