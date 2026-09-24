@@ -3312,6 +3312,7 @@ def test_npm_writer_validates_package_lock_and_registry_shapes(tmp_path, monkeyp
     assert json.loads(package.read_text(encoding="utf-8"))["dependencies"] == ["pkg"]
 
     lock.write_text('{"packages": ["not a table"]}', encoding="utf-8")
+    package.write_text(json.dumps({"dependencies": {"pkg": "^1.0.0"}}), encoding="utf-8")
     versions._run_npm(
         tmp_path, {"pkg": ("1.2.0", "npm.pkg")}, {"npm.pkg": base_result},
         {"npm.pkg": None}, {"pkg": source},
