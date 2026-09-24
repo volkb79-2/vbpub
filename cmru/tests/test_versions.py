@@ -20,6 +20,7 @@ import pytest
 
 from cmru import version_registry as registry
 from cmru import versions
+from cmru import config as config_module
 from cmru.version_config import deep_merge_versions, parse_versions_section
 
 
@@ -212,6 +213,45 @@ def test_versions_config_is_strict_and_deep_merges_project_tables():
         parse_versions_section({"targets": {"pin": _pypi_target(reason="hold")}}, "root")
     with pytest.raises(ValueError, match="must be an ISO date"):
         parse_versions_section({"targets": {"pin": _pypi_target(version="2.32.0", reason="hold", expires="tomorrow")}}, "root")
+
+
+def test_versions_config_loader_maps_bad_policy_and_overlay_to_config_errors(tmp_path):
+    project_path = tmp_path / "cmru.toml"
+    project_path.write_text(_project_config("demo", "[versions]\nage_window_days = 0"), encoding="utf-8")
+    with pytest.raises(SystemExit) as caught:
+        config_module.load_forge_config(project_path)
+    assert caught.value.code == 2
+
+    root_config, _project_root = _estate(
+        tmp_path / "overlay",
+        root_versions=_versions_table(14),
+        project_versions='''[versions.targets."pypi.requests"]
+mode = "aligned"''',
+    )
+    with pytest.raises(SystemExit) as caught:
+        config_module.load_forge_config(root_config)
+    assert caught.value.code == 2
+
+
+def test_effective_versions_selection_rejects_unknown_or_invalid_project():
+    forge = types.SimpleNamespace(versions={}, projects={})
+    with pytest.raises(SystemExit) as caught:
+        config_module.effective_versions_for_project(forge, "missing")
+    assert caught.value.code == 2
+
+    forge.projects["demo"] = types.SimpleNamespace(versions={"age_window_days": 0})
+    with pytest.raises(SystemExit) as caught:
+        config_module.effective_versions_for_project(forge, "demo")
+    assert caught.value.code == 2
+
+
+def test_top_level_cli_dispatches_versions_verb(monkeypatch):
+    from cmru import cli as cli_module
+
+    calls = []
+    monkeypatch.setattr(versions, "main", lambda argv: calls.append(argv) or 7)
+    assert cli_module.main(["versions", "check", "--json"]) == 7
+    assert calls == [["check", "--json"]]
 
 
 def test_auth_schema_requires_safe_urls_and_one_credential_shape():
