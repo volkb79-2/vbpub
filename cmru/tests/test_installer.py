@@ -1221,16 +1221,13 @@ class TestPrerequisites:
 class TestGetPyCLI:
     def test_getpy_main_no_config_exits_2(self, capsys):
         from cmru.getpy import getpy_main
-        with pytest.raises(SystemExit) as exc:
-            getpy_main(["demo"])
-        assert exc.value.code == 2
+        assert getpy_main(["demo"]) == 2
 
     def test_getpy_main_missing_project_exits(self, tmp_path):
         toml = _minimal_toml()
         cfg_path = _write(tmp_path, toml)
         from cmru.getpy import getpy_main
-        with pytest.raises((ValueError, SystemExit)):
-            getpy_main(["nonexistent", "--config", str(cfg_path)])
+        assert getpy_main(["nonexistent", "--config", str(cfg_path)]) == 2
 
     def test_getpy_main_to_stdout(self, tmp_path):
         toml = _minimal_toml("""
@@ -1279,9 +1276,7 @@ install_dir = "/opt/demo"
 """)
         cfg_path = _write(tmp_path, toml)
         from cmru.getpy import getpy_main
-        with pytest.raises(SystemExit) as exc:
-            getpy_main(["demo", "--config", str(cfg_path)])
-        assert exc.value.code == 2
+        assert getpy_main(["demo", "--config", str(cfg_path)]) == 2
 
 
 class TestNormalizeTag:

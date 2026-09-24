@@ -19,7 +19,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from cmru.cli_support import CMRUArgumentParser
+from cli_extended import (
+    ArgumentSpec,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
 def _unescape_mountinfo(value: str) -> str:
@@ -565,79 +572,59 @@ def _missing_orchestration_env(args: argparse.Namespace) -> list[str]:
     return missing
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    parser = CMRUArgumentParser(description="Run a command in tester-unified for this worktree")
-    parser.add_argument("--cwd", required=True, help="relative directory in the current worktree")
-    parser.add_argument(
-        "--image",
-        default=None,
-        help="Required container image; otherwise read explicitly from $CMRU_TESTER_UNIFIED_IMAGE",
+def tester_gate_cli():
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru tester-gate",
+        description="Run one command in tester-unified for this worktree.",
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    parser.add_argument(
-        "--cgroup-parent", default=None,
-        help="Overrides $CMRU_TESTER_CGROUP_PARENT (normally declared once in "
-             "cmru.orchestration.toml [env] as the host-provided gates tier). "
-             "Required: an empty/unset value refuses the launch. Whatever "
-             "resolves is verified against the host systemd before launch.",
+    option_data = (
+        (("--cwd",), "relative directory in the current worktree", "DIR", {"required": True}),
+        (("--image",), "container image; otherwise read $CMRU_TESTER_UNIFIED_IMAGE", "IMG", {"default": None}),
+        (("--cgroup-parent",), "explicit host gates slice; verified before launch", "SLICE", {"default": None}),
+        (("--forward-cgroup-parent-var",), "value forwarded as $CGROUP_PARENT_DEV_BACKGROUND", "SLICE", {"default": None}),
+        (("--forward-cgroup-parent-gates-var",), "value forwarded as $CGROUP_PARENT_DEV_GATES", "SLICE", {"default": None}),
+        (("--memory",), "Docker memory cap; defaults to $CMRU_TESTER_MEMORY", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY")}),
+        (("--memory-swap",), "Docker combined memory-plus-swap total", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY_SWAP")}),
+        (("--cpus",), "CPU ceiling; otherwise read $CMRU_TESTER_CPUS", "N", {"default": None}),
+        (("--cgroup-probe-image",), "host-systemd probe image; otherwise read $CMRU_TESTER_CGROUP_PROBE_IMAGE", "IMG", {"default": None}),
+        (("--dind-image",), "nested Docker daemon image; required with --enable-docker", "IMG", {"default": None}),
+        (("--device-read-iops",), "per-container read IOPS cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", "")}),
+        (("--device-write-iops",), "per-container write IOPS cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_WRITE_IOPS", "")}),
+        (("--device-read-bps",), "per-container read bandwidth cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_READ_BPS", "")}),
+        (("--device-write-bps",), "per-container write bandwidth cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_WRITE_BPS", "")}),
+        (("--enable-docker",), "give this step an isolated nested Docker daemon", None, {"action": "store_true", "default": False}),
     )
-    parser.add_argument(
-        "--forward-cgroup-parent-var", default=None,
-        help="Value forwarded INTO the container as $CGROUP_PARENT_DEV_BACKGROUND "
-             "(ciu's own governance resolver reads it there); normally declared as "
-             "$CMRU_TESTER_CGROUP_FORWARD_VAR in cmru.orchestration.toml [env] via "
-             'a "${NAME:-default}" reference. Empty means nothing is forwarded.',
-    )
-    parser.add_argument(
-        "--forward-cgroup-parent-gates-var", default=None,
-        help="Value forwarded INTO the container as $CGROUP_PARENT_DEV_GATES; "
-             "normally declared as $CMRU_TESTER_CGROUP_FORWARD_GATES_VAR in "
-             "cmru.orchestration.toml [env]. Empty means nothing is forwarded.",
-    )
-    parser.add_argument(
-        "--memory", default=os.environ.get("CMRU_TESTER_MEMORY"),
-        help="Defaults to $CMRU_TESTER_MEMORY (normally from cmru.orchestration.toml [env], "
-             "inherited through `cmru release`). No implicit fallback: unresolvable is a hard "
-             "error, never an unbounded launch.",
-    )
-    parser.add_argument(
-        "--memory-swap", default=os.environ.get("CMRU_TESTER_MEMORY_SWAP"),
-        help="Defaults to $CMRU_TESTER_MEMORY_SWAP (normally from cmru.orchestration.toml "
-             "[env], inherited through `cmru release`); Docker's combined mem+swap total, "
-             "not swap alone. No implicit fallback.",
-    )
-    parser.add_argument(
-        "--cpus", default=None,
-        help="Required CPU ceiling; otherwise read explicitly from $CMRU_TESTER_CPUS",
-    )
-    parser.add_argument(
-        "--cgroup-probe-image", default=None,
-        help=(
-            "Required host-systemd probe image; otherwise read explicitly from "
-            "$CMRU_TESTER_CGROUP_PROBE_IMAGE"
+    registry.register(VerbSpec(
+        "tester-gate",
+        description="Run the supplied command inside tester-unified with declared host limits.",
+        group=VerbGroup.MODIFICATION.value,
+        mutating=True,
+        include_confirmation=False,
+        arguments=(ArgumentSpec(
+            "command", "command to execute in the gate container", metavar="COMMAND",
+            parser_kwargs={"nargs": argparse.REMAINDER, "default": []},
+        ),),
+        options=tuple(
+            OptionSpec(flags, description, metavar=metavar, parser_kwargs=kwargs)
+            for flags, description, metavar, kwargs in option_data
         ),
-    )
-    parser.add_argument(
-        "--dind-image", default=None,
-        help=(
-            "Required only with --enable-docker; otherwise read explicitly from "
-            "$CMRU_TESTER_DIND_IMAGE"
-        ),
-    )
-    parser.add_argument("--device-read-iops", default=os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", ""),
-                    help="per-container blkio cap, Docker path:rate syntax (e.g. /dev/vda:1000); empty = tier aggregate only; requires the host io controller (preflight-checked)")
-    parser.add_argument("--device-write-iops", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_IOPS", ""),
-                    help="per-container blkio cap, Docker path:rate syntax (e.g. /dev/vda:1000); empty = tier aggregate only; requires the host io controller (preflight-checked)")
-    parser.add_argument("--device-read-bps", default=os.environ.get("CMRU_TESTER_DEVICE_READ_BPS", ""),
-                    help="per-container blkio cap, Docker path:rate syntax (e.g. /dev/vda:1000); empty = tier aggregate only; requires the host io controller (preflight-checked)")
-    parser.add_argument("--device-write-bps", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_BPS", ""),
-                    help="per-container blkio cap, Docker path:rate syntax (e.g. /dev/vda:1000); empty = tier aggregate only; requires the host io controller (preflight-checked)")
-    parser.add_argument(
-        "--enable-docker", action="store_true",
-        help="Give this gate step an isolated, nested Docker daemon (docker:dind "
-            "sidecar) — only pass this for a step that actually needs it.",
-    )
-    parser.add_argument("command", nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
+        include_json=False,
+        include_progress=False,
+        handler=_run_tester_gate,
+    ))
+    return registry.build()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    return tester_gate_cli().run(argv=argv)
+
+
+def _run_tester_gate(args, _runtime) -> int:
     command = list(args.command)
     if command[:1] == ["--"]:
         command = command[1:]

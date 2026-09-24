@@ -38,9 +38,8 @@ def test_dependencies_error_report_exits_config_error_and_renders_cause(monkeypa
     )
     monkeypatch.setattr(cli, "_resolve_config", lambda _: config)
     monkeypatch.setattr(cli, "load_forge_config", lambda _: forge)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["dependencies", "--config", str(config)])
-    assert exc.value.code == exit_codes.CONFIG_ERROR
+    exc = cli.main(["dependencies", "--config", str(config)])
+    assert exc == exit_codes.CONFIG_ERROR
     output = capsys.readouterr().out
     assert "'demo' declares unknown dependency 'missing'" in output
 

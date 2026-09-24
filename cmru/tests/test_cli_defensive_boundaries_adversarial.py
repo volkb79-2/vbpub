@@ -46,5 +46,7 @@ def test_source_tree_version_returns_none_for_non_checkout_path(monkeypatch, tmp
 
 def test_cli_module_guard_runs_main_for_help(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cmru", "--help"])
-    runpy.run_path(str(cli.__file__), run_name="__main__")
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_path(str(cli.__file__), run_name="__main__")
+    assert raised.value.code == 0
     assert "Configurable Multi Release Utility" in capsys.readouterr().out

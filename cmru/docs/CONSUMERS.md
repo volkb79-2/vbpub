@@ -18,9 +18,13 @@ with this pasteable probe:
     cmru --version
 
 It prints one `cmru <version>` line on stdout and exits 0. The equivalent native
-verb is `cmru version`. Help, usage, and configuration diagnostics from
-`cmru`, `cmru-agent`, and `cmru-controller`, including nested verbs, begin with
-their CMRU headline as line 1; normal command output is unchanged.
+verb is `cmru version`. Help from `cmru`, `cmru-agent`, and `cmru-controller`,
+including nested verbs, begins with the generated CMRU identity. CMRU
+configuration diagnostics put that identity on line 1; shared
+`cli-extended` usage/refusal diagnostics put the actionable error first and
+then show relevant generated help, which begins with the same identity. Use
+`--help` or `cmru help <verb>`; CMRU's shared grammar deliberately does not add
+a separate short `-h` spelling.
 The documented `python3 -m cmru.handlers` calls are explicit project-step
 library adapters rather than a separately versioned operator entrypoint, so
 they are outside this top-level identity surface.
@@ -150,6 +154,17 @@ The two snippets above are a complete loadable pair: save the project snippet as
 `cmru standards`. For a standalone project that has no central file, use the annotated
 [`cmru.project.sample.toml`](../../cmru.project.sample.toml), which keeps its own
 `[github]` and `[targets]` facts.
+
+The `cmru get-py` command uses the template bundled inside the installed wheel, so an
+adopter can render an installer from any working directory after installing CMRU:
+
+```sh
+cmru get-py example-wheel --config /path/to/cmru.orchestration.toml --output ./get.py
+```
+
+The wheel also installs `cmru-agent` and `cmru-controller`; those are independent companion
+CLIs with their own registered verbs. `cmru --help` lists top-level CMRU commands, while
+`cmru help get-py` or `cmru get-py --help` prints the exact delegated grammar.
 
 `cmru.toml` is one grammar for every verb (`S-CLI`/`S2`, KI-03/KI-05). Unknown fields, a
 committed `[github].token`, retired central `[projects]`/`[registry]` tables, or an omitted
@@ -296,8 +311,10 @@ R3 (import-break canary). R2 enables liveness monitoring, and a mutant stops
 after its first failed test (`--maxfail=1`); passing full-suite runs still
 execute every test. Every assay invocation resumes and writes
 `.assay/progress-cmru.jsonl`; the verdict is `.assay/verdict-cmru.json`.
-`gate` additionally runs CMRU's release-specific coverage, mutation, canary,
-and real-enrollment evidence lanes.
+`gate` first runs the KI-26 installed-wheel acceptance lane, which builds the
+wheel, installs it into a fresh isolated venv, and invokes `cmru get-py` outside
+the source checkout. It then runs CMRU's release-specific coverage, mutation,
+canary, and real-enrollment evidence lanes.
 
 ---
 
@@ -331,6 +348,9 @@ before abandoning it. List and clean retained ones:
 ```
 cmru worktrees                                   # every retained failed build/release worktree
 cmru cleanup --discard-build-worktree <PATH> --yes
+cmru abandon --dry-run                           # show all retained release candidates, no writes
+cmru abandon cmru-release-20260924_120000-example-a1b2c3 --dry-run
+cmru abandon cmru-release-20260924_120000-example-a1b2c3 --yes
 ```
 
 For a script, use `cmru worktrees --json`. `prunable: true` reports Git's
@@ -339,6 +359,21 @@ absent or visible in the current filesystem namespace. The `source_commit`
 field preserves Git's reported HEAD even for prunable entries. CMRU withholds
 resume/discard commands for those entries; consumers should likewise validate
 the exact checkout before acting on it.
+
+`cmru abandon` addresses retained **release** transactions. With no branch it displays the
+complete retained release set; an optional branch selects one exact managed branch name.
+It reports each transaction's scope, worktree, and known origin candidate/tag references,
+then asks once before changing anything. `--yes` confirms that complete displayed set.
+`--dry-run` does not remove a local or remote ref, worktree, or sidecar. CMRU refuses to
+abandon if release results, a released tag, origin promotion, an untagged publisher, or
+missing/stale metadata makes publication state uncertain. A refusal lists known refs and
+release coordinates when present. Abandonment removes the candidate checkout (including its
+in-worktree logs and artifacts), candidate branch, and transaction sidecars. The main source
+history and `origin/main` are not rewritten.
+
+`cmru cleanup` is separate. It applies remote cleanup policy to GitHub Release records and
+their assets, matching Git tags, and GHCR package versions. It does not abandon a local
+release transaction or delete the `cmru-release-*` candidate branch.
 
 When the central CMRU root registers projects from independent Git repositories, the same
 selection is dispatched as one transaction per Git family. Each repository therefore gets its

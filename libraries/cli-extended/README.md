@@ -113,7 +113,11 @@ handler map, exposes `--yes` only for the mutating command, scopes standard
 logging to the selected logger, and validates that command/help registration
 cannot drift. `OptionSpec` carries argparse's own `action`, `choices`, `type`,
 `nargs`, and related options in `parser_kwargs`; `ArgumentSpec` does the same
-for positionals. `VerbSpec.synopsis` is optional: by default the library derives
+for positionals. Set `OptionSpec.hidden=True` for accepted internal plumbing
+that must stay out of operator help and generated reference tables. A verb may
+set `include_confirmation=False` when it mutates state without taking a generic
+`--yes` acknowledgement; it still appears as mutating in the catalog.
+`VerbSpec.synopsis` is optional: by default the library derives
 the command synopsis from required positionals, required options, and required
 or optional mutually-exclusive option groups. Set it only when a public syntax
 shape cannot be represented by those declarations. For example, options that
@@ -124,9 +128,12 @@ and displays `(--config FILE | --config-json JSON)` without a second, drifting
 usage string. Use `VerbSpec.configure` only for genuinely custom parser
 structures such as nested sub-actions.
 
-Put options that apply before command selection (for example, a config-file
-path) in `CliRegistry.global_options`. Put options that belong to one command
-in that verb's `options`; put standard output/debug controls at the appropriate
+Put options that apply to the whole CLI (for example, a config-file path) in
+`CliRegistry.global_options`; the registry accepts them both before and after
+command selection and lists them in root and command help. A command-local
+option with the same complete flag set handles the after-command spelling.
+Put options that
+belong to one command in that verb's `options`; put standard output/debug controls at the appropriate
 level only when they genuinely apply there. Supported common output/debug
 controls work both before and after the selected verb; selectors such as
 `--json` and `--progress` may be unavailable on particular verbs. Root help

@@ -28,7 +28,9 @@ def test_bundle_module_entrypoint_builds_minimal_archive(tmp_path, monkeypatch):
     monkeypatch.setenv("VERSION", "1.2.3")
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
     monkeypatch.setattr("sys.argv", ["cmru.bundle", "--config", str(config)])
-    runpy.run_path(bundle.__file__, run_name="__main__")
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_path(bundle.__file__, run_name="__main__")
+    assert raised.value.code == 0
     assert (tmp_path / "dist" / "bundle-1.2.3.tar.xz").is_file()
 
 
@@ -37,8 +39,9 @@ def test_runner_module_entrypoint_reports_missing_project_config(tmp_path, monke
         "sys.argv",
         ["cmru.runner", "--config", str(tmp_path / "missing.toml"), "--step", "run"],
     )
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as raised:
         runpy.run_path(runner.__file__, run_name="__main__")
+    assert raised.value.code == 2
 
 
 def test_handlers_module_entrypoint_refuses_unconfigured_wheel_builder(tmp_path, monkeypatch):

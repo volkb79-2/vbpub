@@ -39,8 +39,9 @@ each interface element once:
 - `ArgumentSpec`: positional name, metavar, description, and argparse
   attributes such as `nargs`, `choices`, or `type`;
 - `OptionSpec`: flags, display metavar, help group, description, argparse
-  attributes such as `action`, `choices`, or `default`, and structured
-  required/exclusive-group metadata.
+  attributes such as `action`, `choices`, or `default`, structured
+  required/exclusive-group metadata, and `hidden=True` for supported internal
+  options that must not appear in public help.
 
 `CliRegistry` turns those declarations into argparse parsers, grouped terminal
 help, full Markdown reference help, a dispatch map, and common shell options.
@@ -61,9 +62,10 @@ parser. Use `VerbSpec.configure(parser)` only for genuinely custom structures
 such as nested positional actions. Keep common arguments/options in the
 structured fields so they appear in generated Markdown too.
 
-Place options according to when they can be used: invocation-wide options
-that must precede a verb belong in `CliRegistry.global_options`; command-local
-options belong in that verb's `options`. Give every option an intentional
+Place options according to where they apply: invocation-wide options belong in
+`CliRegistry.global_options` and work before or after command selection;
+command-local options belong in that verb's `options` and take precedence for
+the same complete flag set. Give every option an intentional
 display group (`OUTPUT`, `FILTERS`, `STOP CONDITIONS`, etc.) instead of grouping
 by implementation detail. Use `VerbSpec.group` for the semantic top-level
 verb group. Use `summary_description` only to shorten the one-line top-level
@@ -183,7 +185,7 @@ invocation is help, so do not use it unchanged for that deliberate exception.
 | identity formatting, `help`/`version`, bare invocation, width-aware grouped help | authoritative version source, product identity, verbs, groups, examples, and valid workflows |
 | parser registration and generated parser/dispatch/help consistency | API/config/file/domain validation and all closed vocabulary values |
 | common diagnostics, severity levels, colour controls, stdout/stderr policy, JSON-mode progress handling | result schemas, tables, pagination/truncation semantics, and provider-specific progress events |
-| common `--yes` option only for registrations marked `mutating`; default-no confirmation helper | decide exactly what changes, validate before prompting, and prompt immediately before the mutation |
+| common `--yes` option by default for registrations marked `mutating`; `include_confirmation=False` disables the generic flag without removing the mutation label; default-no confirmation helper | decide exactly what changes, validate before prompting, and prompt immediately before the mutation |
 | clean Ctrl-C and concise failures for declared expected exceptions | classify expected domain exceptions; unexpected bugs must remain visible as tracebacks |
 | redaction of explicitly registered secrets in output, logging, JSON results, prompts, and progress | identify/provide secret values and avoid leaking them through external subprocesses, files, or messages emitted outside the helper |
 | scoped standard-library logging for the configured logger namespace | put application loggers under that namespace or configure `logging_logger`; retain useful log calls and classify secret-bearing data |

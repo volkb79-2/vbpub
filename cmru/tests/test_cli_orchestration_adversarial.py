@@ -87,10 +87,10 @@ def test_release_gate_refuses_missing_run_tests_before_runner(monkeypatch, tmp_p
     assert calls == ["run-tests"]
 
 
-def test_child_release_args_removes_caller_paths_and_adds_snapshot_relative_config(tmp_path):
+def test_child_release_args_removes_resume_but_rejects_no_obsolete_destructive_option(tmp_path):
     config = tmp_path / "cmru.toml"; config.write_text("x")
     args = cli._child_release_args(
-        ["--config", "/caller/cmru.toml", "--resume", "/tmp/w", "--abandon=all-previous", "demo"],
+        ["--config", "/caller/cmru.toml", "--resume", "/tmp/w", "demo"],
         config, tmp_path,
     )
     assert args == ["demo", "--config", "cmru.toml"]

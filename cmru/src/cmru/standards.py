@@ -15,6 +15,15 @@ from typing import Iterable, Mapping
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.tester_gate import REQUIRED_TESTER_ENV
+from cli_extended import (
+    ArgumentSpec,
+    CliFailure,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
 PROJECT_TEMPLATE_REVISION = 4
@@ -146,23 +155,54 @@ def _update_project_revision(config_path: Path) -> bool:
     return changed
 
 
-def standards_main(argv: list[str] | None = None) -> None:
-    from cmru.cli_support import CMRUArgumentParser, TargetSelectionError, select_target_names
-    parser = CMRUArgumentParser(
+def standards_cli():
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru standards",
         description=(
-            "Check CMRU project-framework conformance.  --update changes only CMRU "
+            "Check CMRU project-framework conformance. `--update` changes only CMRU "
             "template revision markers; it never rewrites project-owned commands."
-        )
+        ),
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    parser.add_argument(
-        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
-        help="Project target; omitted uses the current project or estate default",
-    )
-    parser.add_argument(
-        "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
-    )
-    parser.add_argument("--update", action="store_true", help="Update stale CMRU-owned revision markers")
-    args = parser.parse_args(argv)
+    registry.register(VerbSpec(
+        "standards",
+        description="Check or update CMRU-owned framework markers for projects.",
+        group=VerbGroup.MIXED.value,
+        mutating=True,
+        include_confirmation=False,
+        arguments=(ArgumentSpec(
+            "target", "project target; omitted uses the current project or estate default",
+            metavar="[all|PROJECT[,PROJECT...]]",
+            parser_kwargs={"nargs": "?", "default": None},
+        ),),
+        options=(
+            OptionSpec(
+                ("--config",),
+                f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
+                metavar="FILE", parser_kwargs={"default": None},
+            ),
+            OptionSpec(
+                ("--update",), "update stale CMRU-owned revision markers",
+                parser_kwargs={"action": "store_true", "default": False},
+            ),
+        ),
+        include_json=False,
+        include_progress=False,
+        handler=_run_standards,
+    ))
+    return registry.build()
+
+
+def standards_main(argv: list[str] | None = None) -> int:
+    return standards_cli().run(argv=argv)
+
+
+def _run_standards(args, _runtime) -> int:
+    from cmru.cli_support import TargetSelectionError, select_target_names
 
     # Import lazily: cli dispatches this verb, and is itself the configuration
     # model used by the report.
@@ -188,7 +228,7 @@ def standards_main(argv: list[str] | None = None) -> None:
             estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
-        parser.error(str(exc))
+        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
 
     if args.update:
         changed = False
@@ -222,3 +262,4 @@ def standards_main(argv: list[str] | None = None) -> None:
         )
         raise SystemExit(2)
     print(f"[INFO] CMRU standards: {len(results)} project(s) conform.", flush=True)
+    return 0

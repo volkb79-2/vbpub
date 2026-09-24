@@ -756,8 +756,8 @@ failed at the build/publish step (missing `wheel-builder:local` image, unrelated
 environment gap, not a cmru defect) and retained its worktree/branch for inspection per
 S-CLI.1; `cmru worktrees` on that same checkout crashed instead of listing it.
 
-**Why it matters.** `worktrees` is the documented way to discover what a `--resume`/`--abandon`
-should target after exactly this kind of failure — the one command an operator reaches for
+**Why it matters.** `worktrees` is the documented way to discover what a `--resume` or
+`cmru abandon` should target after exactly this kind of failure — the one command an operator reaches for
 immediately after a failed release is the one that crashes, forcing a manual
 `ls .worktrees/` + branch-name guess instead (which is how the resume in this incident
 actually proceeded).
@@ -1032,11 +1032,18 @@ docker access.
 
 ### KI-26 — `cmru get-py` cannot render ANY project's `get.py` from an installed `cmru` — only from a source checkout
 
-**Status:** open (found 2026-09-08 by ciu-P52's adversarial reviewer while
+**Status:** SHIPPED 2026-09-24 (code, installed-wheel acceptance, SPEC, and adopter docs).
+The template now lives under `src/cmru/templates/`, renders through
+`importlib.resources`, and is included as `cmru/templates/*.tmpl` in the wheel.
+`./run-gate.py gate` includes `installed-wheel`, which builds CMRU, installs it
+into an isolated venv without system packages, runs the installed `cmru get-py`
+from outside the source tree, and compiles the emitted installer.
+
+**Historical status:** open (found 2026-09-08 by ciu-P52's adversarial reviewer while
 verifying a related claim; independently confirmed by the controller with
 a live check against the actual installed `cmru-5.1.0`).
 
-**Mechanism.** `src/cmru/getpy.py:23`:
+**Historical mechanism.** `src/cmru/getpy.py:23`:
 ```python
 _TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "get.py.tmpl"
 ```
@@ -1071,13 +1078,13 @@ invisible in every context anyone has actually exercised the command
 from, and only surfaces the first time someone runs it against a real
 installed release.
 
-**Proposed fix** (per the finding's own suggestion, mirroring
+**Fix implemented** (per the finding's own suggestion, mirroring
 `src/cmru/scaffold.py:18-26`'s existing pattern for a similar problem):
 resolve the template via `importlib.resources` (package-relative, works
 identically whether running from source or an installed wheel) instead of
 a `parents[N]`-from-`__file__` filesystem walk, AND move/duplicate
 `get.py.tmpl` into `src/cmru/templates/` (inside the actual package
-directory `importlib.resources` can address) rather than the current
+directory `importlib.resources` can address) rather than the former
 repo-root-relative `cmru/templates/`, AND widen `package-data` to include
 `templates/*.tmpl` (widening the glob alone, without also fixing
 `_TEMPLATE_PATH`'s resolution logic and the file's location relative to
@@ -1189,12 +1196,23 @@ Caller-main cleanup.
 
 ### KI-29 — Release abandonment needs a first-class, dry-run-safe operation
 
-**Status:** OPEN 2026-09-22.
+**Status:** SHIPPED 2026-09-24 (code, safety tests, SPEC, and adopter docs).
 
-The current release surface hides a whole cleanup operation behind
-`--abandon`. That makes a destructive lifecycle action easy to miss and
-leaves its relationship with `--dry-run` ambiguous. Replace it with a
-top-level `cmru abandon` verb:
+`cmru abandon [BRANCH] [--dry-run] [--yes]` now handles retained release transactions
+as a separate top-level operation. It selects an exact branch or the complete retained
+release set, displays scope/worktree/known remote refs, requires confirmation, and fails
+closed on publication, promotion, untagged publication, or unclear metadata/origin state.
+Dry-run is read-only. Remote candidate deletion is verified before the local worktree and
+transaction sidecars are removed; if deletion fails, local evidence remains. The old
+`release --abandon` parser option and its "abandon and then proceed with a new release"
+behavior have been removed. `cleanup` docs now name the GitHub Release/assets, matching Git
+tags, and GHCR version classes covered by configured remote cleanup policy.
+
+**Historical status:** OPEN 2026-09-22.
+
+The former release surface hid a whole cleanup operation behind
+`release --abandon`; that switch is removed. The shipped top-level
+`cmru abandon` verb has this contract:
 
 * With no branch argument, discover the retained release candidates, show the
   exact branch, worktree, transaction/scope, and any remote refs or release
@@ -1204,16 +1222,15 @@ top-level `cmru abandon` verb:
   verify its worktree and transaction metadata, and abandon/clean only that
   candidate. Do not infer a different branch from a prefix or silently widen
   the selection.
-* The operation must fail closed for a promoted/published transaction or for
-  ambiguous/stale metadata. Its help and confirmation must state what is
-  removed and what evidence is retained. Any compatibility path for the old
-  option must not retain a hidden multi-step destructive operation.
+* The operation fails closed for a promoted/published transaction or for
+  ambiguous/stale metadata. Its help and confirmation state what is removed.
+  In-worktree logs and artifacts are removed with the candidate checkout;
+  `origin/main` is not changed.
 * `--dry-run` is a strict no-mutation mode. Candidate discovery, confirmation
   rendering, branch/worktree inspection, and remote-state inspection may run,
   but no abandon, worktree removal, branch deletion, sidecar deletion, or
-  remote cleanup may execute. Add a regression test for the currently
-  suspected ordering bug where `--abandon` can run before ordinary dry-run
-  handling.
+  remote cleanup may execute. The regression oracle fails if abandonment,
+  worktree/ref removal, sidecar deletion, or remote cleanup runs.
 * Clarify `cleanup` in help and consumer documentation: it cleans the remote
   release assets on the configured `origin` (for example the origin release,
   tag, and GHCR assets covered by the selected cleanup policy); it is not a
@@ -1221,12 +1238,11 @@ top-level `cmru abandon` verb:
   The docs must say which remote asset classes are actually in scope rather
   than implying that every origin ref is removed.
 
-The implementation must add parser/help tests, candidate-discovery and exact
-selection tests, interactive/`--yes` confirmation tests, promoted-transaction
-refusal tests, remote-origin cleanup tests, and a dry-run mutation oracle.
-Update `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and
-`docs/SPEC.md` together so the user-facing operation and its safety boundary
-are discoverable and normative.
+Evidence is in `tests/test_cli_abandon.py` and the existing shared-worktree
+transaction tests. The former covers exact selection, full-set `--yes`
+confirmation, publication refusal, and the dry-run mutation oracle. User-facing
+surface and normative details are synced in `README.md`, `docs/DESIGN-GUIDE.md`,
+`docs/CONSUMERS.md`, `docs/RELEASE-TRANSACTIONS.md`, and `docs/SPEC.md`.
 
 ### KI-30 — release leaves the hand-written `## [Unreleased]` section orphaned
 
@@ -1251,10 +1267,11 @@ Exact commands, full stdout/stderr, exit markers and cleanup results for a
 fresh reproduction are in
 [`assay-WAVE-C-CMRU-probes-2026-09-23.md`](../assay/nyxloom-trove/reports/assay-WAVE-C-CMRU-probes-2026-09-23.md).
 The default relative-config route reproduced the doubled child path again.
-Passing the central absolute `--config` directly did not correct it. CMRU's
-`--abandon` also continues into a new release attempt unless it encounters a
-preflight failure; the evidence report records the additional attempts and
-the exact root-level path needed to clean the last one.
+Passing the central absolute `--config` directly did not correct it. At the time,
+the now-removed `release --abandon` flag also continued into a new release attempt
+unless it encountered a preflight failure (KI-29 replaced that behavior with the
+standalone `cmru abandon` command); the evidence report records the additional
+attempts and the exact root-level path needed to clean the last one.
 
 From `/workspaces/vbpub/.worktrees/assay-wave-c-controller`, the exact command
 `cmru release assay --dry-run` created a transaction snapshot at

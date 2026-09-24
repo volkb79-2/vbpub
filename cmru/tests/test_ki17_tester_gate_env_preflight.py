@@ -123,17 +123,16 @@ def test_blank_or_whitespace_values_count_as_missing(monkeypatch):
 # (b) messages name the real source
 # ---------------------------------------------------------------------------
 
-def test_aggregate_message_names_the_orchestration_document(monkeypatch, tmp_path):
+def test_aggregate_message_names_the_orchestration_document(monkeypatch, tmp_path, capsys):
     """KI-17 (b): the up-front failure sends the reader to
     cmru.orchestration.toml [env] and `cmru release`, and explicitly says it is
     NOT usually the project's own cmru.toml."""
     _clear_env(monkeypatch)
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
-    with pytest.raises(SystemExit) as excinfo:
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
-
-    message = str(excinfo.value)
+    status = tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert status != 0
+    message = capsys.readouterr().err
     assert "cmru.orchestration.toml [env]" in message
     assert "cmru release" in message
     assert "NOT usually" in message

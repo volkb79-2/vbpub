@@ -14,13 +14,24 @@ from __future__ import annotations
 
 import re
 import sys
+from importlib import resources
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cli_extended import (
+    ArgumentSpec,
+    CliFailure,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
+
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
-_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "get.py.tmpl"
+_TEMPLATE_RESOURCE = "templates/get.py.tmpl"
 
 
 def _py_str_list(items: List[str]) -> str:
@@ -74,7 +85,7 @@ def render_get_py(
     manifest_name: str = "manifest.json",
     signature_name: str = "manifest.json.minisig",
     variants: Optional[List[Dict[str, Optional[str]]]] = None,
-    template_path: Path = _TEMPLATE_PATH,
+    template_path: Optional[Path] = None,
 ) -> str:
     """Render the get.py template for a project.
 
@@ -82,7 +93,12 @@ def render_get_py(
     Returns the rendered script as a string. Emits a warning for any
     unreplaced [[...]] placeholders.
     """
-    template = template_path.read_text(encoding="utf-8")
+    if template_path is None:
+        template = resources.files("cmru").joinpath(_TEMPLATE_RESOURCE).read_text(
+            encoding="utf-8"
+        )
+    else:
+        template = template_path.read_text(encoding="utf-8")
 
     cmds = required_commands or []
     preserve = preserve_paths or []
@@ -164,20 +180,53 @@ def render_from_config(project_name: str, config_path: Path) -> str:
     )
 
 
-def getpy_main(argv: Optional[list] = None) -> None:
-    """Entry point for ``cmru get-py``."""
-    from cmru.cli_support import CMRUArgumentParser, TargetSelectionError, select_target_names
-    parser = CMRUArgumentParser(description="Emit get.py for registered projects")
-    parser.add_argument(
-        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
-        help="Project target; omitted uses the current project or estate default",
+def getpy_cli():
+    """Build the registered grammar used by ``cmru get`` and ``get-py``."""
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru get-py",
+        description="Emit standalone get.py installers for registered projects.",
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    parser.add_argument(
-        "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
-    )
-    parser.add_argument("--output", help="Write to file instead of stdout")
-    parser.add_argument("--output-dir", help="Write one named installer per selected project")
-    args = parser.parse_args(argv)
+    registry.register(VerbSpec(
+        "get-py",
+        description="Render the configured standalone installer for one or more projects.",
+        group=VerbGroup.EXPLORATION.value,
+        arguments=(ArgumentSpec(
+            "target",
+            "project target; omitted uses the current project or estate default",
+            metavar="[all|PROJECT[,PROJECT...]]",
+            parser_kwargs={"nargs": "?", "default": None},
+        ),),
+        options=(
+            OptionSpec(
+                ("--config",),
+                f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
+                metavar="FILE", parser_kwargs={"default": None},
+            ),
+            OptionSpec(
+                ("--output",), "write one selected installer to this file",
+                metavar="FILE", parser_kwargs={"default": None},
+                mutually_exclusive_group="destination",
+            ),
+            OptionSpec(
+                ("--output-dir",), "write one named installer per selected project",
+                metavar="DIR", parser_kwargs={"default": None},
+                mutually_exclusive_group="destination",
+            ),
+        ),
+        include_json=False,
+        include_progress=False,
+        handler=_run_getpy,
+    ))
+    return registry.build()
+
+
+def _run_getpy(args, _runtime) -> int:
+    from cmru.cli_support import TargetSelectionError, select_target_names
     from cmru.cli import _resolve_config, load_config
     from cmru.config import resolve_invocation_context
 
@@ -201,11 +250,13 @@ def getpy_main(argv: Optional[list] = None) -> None:
             estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
-        parser.error(str(exc))
+        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
     if args.output and len(names) != 1:
-        parser.error("--output FILE is only valid for one project; use --output-dir for multiple projects")
-    if args.output and args.output_dir:
-        parser.error("--output and --output-dir are mutually exclusive")
+        raise CliFailure(
+            "--output FILE is only valid for one project; use --output-dir for multiple projects",
+            exit_code=2,
+            show_help=True,
+        )
     if args.output_dir:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -229,3 +280,9 @@ def getpy_main(argv: Optional[list] = None) -> None:
             sys.stdout.write(script)
             if not script.endswith("\n"):
                 sys.stdout.write("\n")
+    return 0
+
+
+def getpy_main(argv: Optional[list] = None) -> int:
+    """Entry point for ``cmru get-py`` when called directly."""
+    return getpy_cli().run(argv=argv)

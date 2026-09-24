@@ -50,6 +50,15 @@ from urllib.request import Request, urlopen
 
 from cmru import exit_codes
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cli_extended import (
+    ArgumentSpec,
+    CliFailure,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 if TYPE_CHECKING:
     from cmru.config import ToolDependency
@@ -553,45 +562,60 @@ def _rewrite_tool_dependency_toml(
 
 # --- CLI verb ------------------------------------------------------------------
 
-def tool_deps_main(argv: Optional[list[str]] = None) -> None:
-    from cmru.cli_support import CMRUArgumentParser, TargetSelectionError, select_target_names
-    parser = CMRUArgumentParser(
+def tool_deps_cli():
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru tool-deps",
         description=(
             "Verify declared first-party tool dependencies (S15): integrity (bytes match "
             "the recorded hash), authenticity (that hash matches the PUBLISHED release "
             "asset's bytes -- never the filename or version string), and freshness (the "
-            "pin is the highest published version). Performs network I/O; never run this "
-            "from the test suite."
-        )
-    )
-    parser.add_argument(
-        "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
-    )
-    parser.add_argument(
-        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
-        help="Project target; omitted uses the current project or estate default",
-    )
-    parser.add_argument("--json", action="store_true", help="Emit machine-readable per-dependency records")
-    parser.add_argument(
-        "--allow-stale-tool-deps", action="store_true",
-        help=(
-            "Do not fail merely because a pin is behind the highest published release. "
-            "Integrity and authenticity failures still fail -- there is no override for those."
+            "pin is the highest published version). Performs network I/O."
         ),
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    parser.add_argument(
-        "--refresh", metavar="PROVIDER_PROJECT",
-        help=(
-            "Re-vendor PROVIDER_PROJECT's declared artifact from its latest published release "
-            "and rewrite the pin + hash in the declaring project's cmru.toml. Never runs "
-            "automatically -- an explicit, separate invocation."
+    registry.register(VerbSpec(
+        "tool-deps",
+        description="Verify declared dependencies or explicitly refresh one provider pin.",
+        group=VerbGroup.MIXED.value,
+        mutating=True,
+        include_confirmation=False,
+        arguments=(ArgumentSpec(
+            "target", "project target; omitted uses the current project or estate default",
+            metavar="[all|PROJECT[,PROJECT...]]",
+            parser_kwargs={"nargs": "?", "default": None},
+        ),),
+        options=(
+            OptionSpec(
+                ("--config",),
+                f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
+                metavar="FILE", parser_kwargs={"default": None},
+            ),
+            OptionSpec(("--allow-stale-tool-deps",),
+                "allow staleness only; integrity and authenticity failures remain errors",
+                parser_kwargs={"action": "store_true", "default": False}),
+            OptionSpec(("--refresh",),
+                "re-vendor this provider's latest artifact and rewrite the selected pin",
+                metavar="PROVIDER_PROJECT", parser_kwargs={"default": None}),
+            OptionSpec(("--timeout",), "network timeout for each GitHub request",
+                metavar="SECONDS", parser_kwargs={"type": int, "default": DEFAULT_TIMEOUT}),
         ),
-    )
-    parser.add_argument(
-        "--timeout", type=int, default=DEFAULT_TIMEOUT,
-        help=f"Network timeout in seconds for each GitHub request (default: {DEFAULT_TIMEOUT})",
-    )
-    args = parser.parse_args(argv)
+        include_json=True,
+        include_progress=False,
+        handler=_run_tool_deps,
+    ))
+    return registry.build()
+
+
+def tool_deps_main(argv: Optional[list[str]] = None) -> int:
+    return tool_deps_cli().run(argv=argv)
+
+
+def _run_tool_deps(args, _runtime) -> int:
+    from cmru.cli_support import TargetSelectionError, select_target_names
 
     # Import lazily: cli dispatches this verb, and is itself the configuration
     # model used by the report (same pattern as cmru.standards.standards_main).
@@ -619,7 +643,7 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> None:
             estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
-        parser.error(str(exc))
+        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
 
     # S15.6/B2: a single-project load (`cmru.toml`, e.g. run from a project
     # directory, or `--config <project>/cmru.toml`) only EVER sees its own
@@ -632,12 +656,14 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> None:
     if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
         declaring = [name for name in selected if getattr(projects[name], "tool_dependencies", ())]
         if declaring:
-            parser.error(
+            raise CliFailure(
                 f"cmru tool-deps needs {ORCHESTRATION_CONFIG_FILENAME} to resolve a tool "
                 "dependency's PROVIDER project (its release tag prefix) -- a single-project "
                 f"load ({config_path.name}) only ever sees its own project, never a sibling: "
                 f"{', '.join(declaring)} declare one. Re-run with --config pointing at the "
-                f"estate's {ORCHESTRATION_CONFIG_FILENAME}, or from the estate root."
+                f"estate's {ORCHESTRATION_CONFIG_FILENAME}, or from the estate root.",
+                exit_code=2,
+                show_help=False,
             )
 
     if args.refresh:
@@ -645,7 +671,7 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> None:
             projects=projects, selected=selected, provider_id=args.refresh,
             owner=github_config.owner, repo=github_config.repo, timeout=args.timeout,
         )
-        return
+        return 0
 
     statuses: list[ToolDependencyStatus] = []
     for name in selected:
@@ -661,7 +687,7 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> None:
             print(json.dumps([]))
         else:
             print("[INFO] cmru tool-deps: no project declares a tool dependency.", flush=True)
-        return
+        return 0
 
     if args.json:
         print(json.dumps([status_as_dict(s) for s in statuses], indent=2, sort_keys=True))
@@ -682,6 +708,7 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> None:
     if not args.json:
         plural = "y is" if len(statuses) == 1 else "ies are"
         print(f"[INFO] cmru tool-deps: {len(statuses)} declared dependenc{plural} OK.", flush=True)
+    return 0
 
 
 def _run_refresh(

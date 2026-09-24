@@ -16,9 +16,8 @@ from pathlib import Path
 import pytest
 
 from cmru import cli
-from cmru.agent.cli import _build_parser as build_agent_parser
-from cmru.controller.cli import _build_parser as build_controller_parser
-from cmru.cli_support import cmru_headline
+from cmru.agent import cli as agent_cli
+from cmru.controller import cli as controller_cli
 
 
 def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeypatch):
@@ -26,19 +25,16 @@ def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeyp
     assert cli._cmru_version() == "2.0.0"
 
 def test_helper_nested_help_and_errors_start_with_the_headline(capsys):
-    with pytest.raises(SystemExit) as agent_help:
-        build_agent_parser().parse_args(["enroll", "--help"])
+    assert agent_cli.main(["enroll", "--help"]) == 0
     captured = capsys.readouterr()
-    assert agent_help.value.code == 0
     assert captured.err == ""
-    assert captured.out.splitlines()[0] == cmru_headline()
+    assert captured.out.splitlines()[0].startswith("CMRU ")
+    assert " — " in captured.out.splitlines()[0]
 
-    with pytest.raises(SystemExit) as controller_error:
-        build_controller_parser().parse_args(["publish"])
+    assert controller_cli.main(["publish"]) == 2
     captured = capsys.readouterr()
-    assert controller_error.value.code == 2
     assert captured.out == ""
-    assert captured.err.splitlines()[0] == cmru_headline()
+    assert any(line.startswith("CMRU ") and " — " in line for line in captured.err.splitlines())
 
 
 def test_source_dev_version_is_derived_from_the_nearest_cmru_tag():
@@ -368,14 +364,21 @@ def test_help_lists_verbs_and_ordering():
     text = out.getvalue()
     for verb in ("status", "release", "changelog", "build", "worktrees", "publish", "resolve", "get", "cleanup", "version", "run-step", "tool-deps"):
         assert verb in text, f"{verb} missing from help"
-    assert "TYPICAL WORKFLOW" in text
+    assert "Usage: cmru <verb> [options]" in text
+    assert "abandon" in text
 
 
 def test_help_lists_every_public_option():
-    text = cli.usage()
+    registered = cli._build_cli()
+    help_texts = [cli.usage()]
+    help_texts.extend(parser.format_help() for parser in registered.command_parsers.values())
+    for delegated in registered.delegates.values():
+        help_texts.append(delegated.parser.format_help())
+        help_texts.extend(parser.format_help() for parser in delegated.command_parsers.values())
+    text = "\n".join(help_texts)
     for option in (
         "--config", "--minor", "--major", "--set-version", "--dry-run",
-        "--no-build", "--resume", "--abandon", "--allow-uncommitted",
+        "--no-build", "--resume", "--allow-uncommitted",
         "--show-run-details", "--log-append", "--discard-logs-on-release",
         "--discard-artifacts-on-release", "--discard-evidence-on-release",
         "--backfill-tag", "--update", "--json",
@@ -387,7 +390,13 @@ def test_help_lists_every_public_option():
     ):
         assert option in text, f"{option} missing from usage()"
     assert "--project" not in text
-    assert "--prefix" not in text
+    assert "--abandon" not in text
+    assert "--_transaction-child" not in text
+
+
+def test_status_rejects_release_only_options():
+    assert cli.main(["status", "--no-build"]) == 2
+    assert cli.main(["status", "--resume", "/tmp/retained-release"]) == 2
 
 
 def test_default_config_discovers_the_nearest_central_root(tmp_path, monkeypatch):
@@ -430,17 +439,16 @@ def test_status_uses_current_directory_orchestration_without_a_shim(tmp_path, mo
 
 
 def test_unknown_verb_exits_2():
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["frobnicate"])
-    assert exc.value.code == 2
+    assert cli.main(["frobnicate"]) == 2
 
 
 def test_unknown_verb_diagnostic_is_version_headed(capsys):
     from cmru.cli_support import cmru_headline
 
-    with pytest.raises(SystemExit):
-        cli.main(["frobnicate"])
-    assert capsys.readouterr().err.splitlines()[0] == cmru_headline()
+    assert cli.main(["frobnicate"]) == 2
+    error = capsys.readouterr().err
+    assert error.splitlines()[0].startswith("[ERROR]")
+    assert cmru_headline() in error
 
 
 def test_version_verb_and_top_level_flag_are_compatible(monkeypatch, capsys):
@@ -465,10 +473,8 @@ def test_agent_and_controller_version_flags(monkeypatch, capsys):
         ("cmru-agent", agent_cli.main),
         ("cmru-controller", controller_cli.main),
     ):
-        with pytest.raises(SystemExit) as exc:
-            main(["--version"])
+        assert main(["--version"]) == 0
         captured = capsys.readouterr()
-        assert exc.value.code == 0
         assert captured.out == f"{entrypoint} 2.0.2\n"
         assert captured.err == ""
 
@@ -599,12 +605,16 @@ def test_cleanup_uses_current_directory_orchestration_without_a_shim(tmp_path, m
 
 def test_source_module_invocation_works_from_the_cmru_project_directory():
     project_dir = Path(__file__).resolve().parents[1]
+    cli_extended_src = project_dir.parent / "libraries" / "cli-extended" / "src"
     result = subprocess.run(
         [
             os.environ.get("PYTHON", "python3"), "-m", "cmru.handlers", "--help",
         ],
         cwd=project_dir,
-        env={**os.environ, "PYTHONPATH": str(project_dir / "src")},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join((str(project_dir / "src"), str(cli_extended_src))),
+        },
         capture_output=True,
         text=True,
         check=False,
@@ -630,12 +640,10 @@ def test_fresh_checkout_bootstrap_is_the_only_source_build_launcher():
 
 def test_cleanup_delete_unmanaged_release_requires_confirmation(tmp_path):
     cfg_path = _valid_config(tmp_path)
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
-            "cleanup", "alpha", "--config", str(cfg_path),
-            "--delete-unmanaged-release-tag", "alpha-wheel-latest",
-        ])
-    assert exc.value.code == 2
+    assert cli.main([
+        "cleanup", "alpha", "--config", str(cfg_path),
+        "--delete-unmanaged-release-tag", "alpha-wheel-latest",
+    ]) == 2
 
 
 def test_cleanup_delete_unmanaged_release_is_project_scoped_and_dry_runnable(tmp_path, monkeypatch):
@@ -662,12 +670,10 @@ def test_cleanup_delete_unmanaged_release_is_project_scoped_and_dry_runnable(tmp
 
 def test_cleanup_delete_unmanaged_release_rejects_a_managed_tag(tmp_path):
     cfg_path = _valid_config(tmp_path)
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
-            "cleanup", "alpha", "--config", str(cfg_path),
-            "--delete-unmanaged-release-tag", "alpha-v1.0.0", "--dry-run",
-        ])
-    assert exc.value.code == 2
+    assert cli.main([
+        "cleanup", "alpha", "--config", str(cfg_path),
+        "--delete-unmanaged-release-tag", "alpha-v1.0.0", "--dry-run",
+    ]) == 2
 
 
 def test_cleanup_delete_build_output_is_project_scoped_and_dry_runnable(tmp_path, monkeypatch):

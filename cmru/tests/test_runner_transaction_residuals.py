@@ -552,13 +552,11 @@ def test_handlers_and_tester_gate_reject_or_report_boundary_conditions(tmp_path,
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (None, "probe unavailable"))
     monkeypatch.setattr(tester_gate, "build_docker_command", lambda *args, **kwargs: ["true"])
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
-    with pytest.raises(SystemExit) as exit_info:
-        tester_gate.main([
-            "--cwd", ".", "--image", "img", "--cgroup-parent", "slice",
-            "--cgroup-probe-image", "probe", "--memory", "1G", "--memory-swap", "2G",
-            "--cpus", "1", "--", "true",
-        ])
-    assert exit_info.value.code == 0
+    assert tester_gate.main([
+        "--cwd", ".", "--image", "img", "--cgroup-parent", "slice",
+        "--cgroup-probe-image", "probe", "--memory", "1G", "--memory-swap", "2G",
+        "--cpus", "1", "--", "true",
+    ]) == 0
     assert "probe unavailable" in capsys.readouterr().err
 
     mountinfo = "malformed\n10 1 0:1 /host/repo /cockpit rw - bind ext4 /dev\n"

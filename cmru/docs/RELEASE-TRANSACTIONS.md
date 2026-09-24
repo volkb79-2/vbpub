@@ -202,11 +202,22 @@ for operator resolution; the release engine does not claim that source history
 can undo an external publication.
 
 In every case the worktree/branch is retained for inspection and `--resume`.
-Starting a fresh release after an explicit `--abandon all-previous` is also safe:
-`detect_changed_projects` is tag-based, so any project that already fully
-released in the failed attempt shows as unchanged on the next run and is
-skipped — the retained candidate must be handled explicitly before a new
-publication attempt.
+Use the separate local transaction command after reviewing its exact plan:
+
+```sh
+cmru abandon --dry-run
+cmru abandon cmru-release-20260924_120000-example-a1b2c3 --dry-run
+cmru abandon cmru-release-20260924_120000-example-a1b2c3 --yes
+```
+
+The branch argument is an exact managed branch name. Without it, CMRU displays
+the complete retained release set and `--yes` confirms exactly that set. The
+command refuses any transaction with publication/promotion evidence or
+uncertain metadata and never removes a public Release, tag, or GHCR version.
+It removes the candidate worktree and its in-worktree logs/artifacts as well as
+the private candidate ref and sidecars. Run `cmru cleanup --dry-run` separately
+to inspect configured remote asset pruning; `cleanup` does not remove retained
+release worktrees.
 
 ### Worked example: releasing ciu, nyxloom, and modern-debian-tools-python-debug together
 

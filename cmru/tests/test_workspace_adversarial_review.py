@@ -522,7 +522,7 @@ def test_dispatch_independent_families_covers_refusal_launcher_and_child_failure
     groups = {tmp_path / "left": [left], tmp_path / "right": [right]}
     monkeypatch.setattr(transaction, "project_git_family_groups", lambda *_args: groups)
     config_path = tmp_path / "cmru.toml"
-    with pytest.raises(RuntimeError, match="resume/abandon"):
+    with pytest.raises(RuntimeError, match="resume must target"):
         cli._dispatch_independent_git_families(
             "release", ["--resume", "x"], config_path, tmp_path, configs,
             ["left", "right"], original_target=None,
@@ -608,13 +608,11 @@ def test_main_exits_with_independent_build_and_release_dispatch_status(monkeypat
     monkeypatch.setattr(cli, "load_config", lambda _path: _main_config_tuple(tmp_path))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_dispatch_independent_git_families", lambda *args, **kwargs: 17)
-    with pytest.raises(SystemExit) as build:
-        cli.main(["build", "demo", "--config", str(cfg)])
-    assert build.value.code == 17
+    build = cli.main(["build", "demo", "--config", str(cfg)])
+    assert build == 17
 
-    with pytest.raises(SystemExit) as release:
-        cli.main(["release", "demo", "--dry-run", "--config", str(cfg)])
-    assert release.value.code == 17
+    release = cli.main(["release", "demo", "--dry-run", "--config", str(cfg)])
+    assert release == 17
 
 
 def test_family_rebase_and_dirty_path_guards(monkeypatch, tmp_path):

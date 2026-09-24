@@ -16,9 +16,8 @@ def test_cleanup_build_output_unknown_project_refuses_before_deletion(monkeypatc
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
     monkeypatch.setattr(transaction, "delete_retained_build_output", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("delete")))
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["cleanup", "--delete-build-output", "id", "missing", "--dry-run"])
-    assert exc.value.code == 2
+    exc = cli.main(["cleanup", "--delete-build-output", "id", "missing", "--dry-run"])
+    assert exc == 2
     assert "unknown project(s): missing" in capsys.readouterr().err
 
 

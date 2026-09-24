@@ -49,9 +49,8 @@ def _dispatch_fixture(monkeypatch, tmp_path, retained, *, evidence_paths=()):
 def test_resumed_release_retains_by_default_with_no_flags(monkeypatch, tmp_path, capsys):
     retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1", tmp_path / "demo" / "artifacts" / "demo-v1"]
     workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, retained)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml")])
-    assert exc.value.code == 0
+    exc = cli.main(["release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml")])
+    assert exc == 0
     assert seen[0][0][3] == {"demo": "demo-v1"}
     assert seen[0][1] == {
         "retain_logs": True, "retain_artifacts": True, "retain_evidence": True,
@@ -64,9 +63,8 @@ def test_resumed_release_retains_by_default_with_no_flags(monkeypatch, tmp_path,
 def test_resumed_release_discard_artifacts_flag_keeps_logs_only(monkeypatch, tmp_path, capsys):
     retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1"]
     workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, retained)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--resume", str(workspace.path), "--discard-artifacts-on-release", "--config", str(tmp_path / "cmru.toml")])
-    assert exc.value.code == 0
+    exc = cli.main(["release", "--resume", str(workspace.path), "--discard-artifacts-on-release", "--config", str(tmp_path / "cmru.toml")])
+    assert exc == 0
     assert seen[0][0][3] == {"demo": "demo-v1"}
     assert seen[0][1] == {
         "retain_logs": True, "retain_artifacts": False, "retain_evidence": True,
@@ -76,13 +74,12 @@ def test_resumed_release_discard_artifacts_flag_keeps_logs_only(monkeypatch, tmp
 
 def test_resumed_release_existing_discard_flags_skip_undeclared_evidence_retention(monkeypatch, tmp_path, capsys):
     workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, [])
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
+    exc = cli.main([
             "release", "--resume", str(workspace.path),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
             "--config", str(tmp_path / "cmru.toml"),
         ])
-    assert exc.value.code == 0
+    assert exc == 0
     assert seen == []
     assert "Retained release output:" not in capsys.readouterr().out
 
@@ -94,13 +91,12 @@ def test_resumed_release_discarding_logs_and_artifacts_still_retains_declared_ev
     workspace, seen = _dispatch_fixture(
         monkeypatch, tmp_path, retained, evidence_paths=("coverage.json",),
     )
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
+    exc = cli.main([
             "release", "--resume", str(workspace.path),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
             "--config", str(tmp_path / "cmru.toml"),
         ])
-    assert exc.value.code == 0
+    assert exc == 0
     assert seen[0][1] == {
         "retain_logs": False, "retain_artifacts": False, "retain_evidence": True,
     }
@@ -110,12 +106,11 @@ def test_resumed_release_discarding_logs_and_artifacts_still_retains_declared_ev
 def test_resumed_release_discard_evidence_flag_is_independent(monkeypatch, tmp_path, capsys):
     retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1"]
     workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, retained)
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
+    exc = cli.main([
             "release", "--resume", str(workspace.path), "--discard-evidence-on-release",
             "--config", str(tmp_path / "cmru.toml"),
         ])
-    assert exc.value.code == 0
+    assert exc == 0
     assert seen[0][1] == {
         "retain_logs": True, "retain_artifacts": True, "retain_evidence": False,
     }

@@ -20,10 +20,9 @@ from cmru import cli, config, runner, transaction
 
 
 def test_cli_main_rejects_unknown_verb_with_machine_exit_code(capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["not-a-cmru-verb"])
-    assert exc.value.code == 2
-    assert "Unknown verb" in capsys.readouterr().err
+    exc = cli.main(["not-a-cmru-verb"])
+    assert exc == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

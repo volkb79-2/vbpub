@@ -42,9 +42,10 @@ def test_bundle_parse_config_requires_archive_and_copy_tables(tmp_path):
 def test_agent_cli_parser_requires_known_agent_verb_and_preserves_options():
     args = agent_cli._build_parser().parse_args(["--scope", "system", "once", "--release-root", "/srv/cmru"])
     assert args.verb == "once" and args.scope == "system" and args.release_root == "/srv/cmru"
-    with pytest.raises(SystemExit):
+    from cli_extended import UsageError
+    with pytest.raises(UsageError):
         agent_cli._build_parser().parse_args(["unknown"])
-    with pytest.raises(SystemExit):
+    with pytest.raises(UsageError):
         agent_cli._build_parser().parse_args([])
 
 

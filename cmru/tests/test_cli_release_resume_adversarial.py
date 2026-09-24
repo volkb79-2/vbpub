@@ -42,12 +42,11 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
             "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
         ),
     )
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
+    exc = cli.main([
             "release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml"),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
-    assert exc.value.code == 0
+    assert exc == 0
     assert calls[:2] == [
         "copy",
         ("child", ["demo", "--discard-logs-on-release", "--discard-artifacts-on-release", "--config", "cmru.toml"], {"project_names": ["demo"]}),

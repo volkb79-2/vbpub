@@ -543,7 +543,7 @@ def _scope_dir(repo_root: Path) -> Path:
 def write_release_scope(repo_root: Path, workspace: ReleaseWorkspace, project_names: Sequence[str]) -> None:
     """Record which projects a release attempt targets, in the shared common git
     dir (never inside the worktree — S-REL.4a's undeclared-write guard must never
-    see it). A later ``--abandon all-previous`` scopes cleanup by this record."""
+    see it). The first-class ``cmru abandon`` command reports this exact scope."""
     scope_dir = _scope_dir(repo_root)
     scope_dir.mkdir(parents=True, exist_ok=True)
     (scope_dir / f"{_release_token(workspace)}.json").write_text(
@@ -602,8 +602,21 @@ def backup_was_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
     return (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-pushed").exists()
 
 
+def mark_backup_removed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Record that explicit abandonment verified deletion of the origin candidate ref."""
+    scope_dir = _scope_dir(repo_root)
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / f"{_release_token(workspace)}.backup-removed").write_text("1", encoding="utf-8")
+
+
+def backup_was_removed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
+    """True after abandonment has verified its remote candidate-ref deletion."""
+    return (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-removed").exists()
+
+
 def _forget_backup_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-pushed").unlink(missing_ok=True)
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-removed").unlink(missing_ok=True)
 
 
 def mark_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
@@ -1343,26 +1356,42 @@ def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     ``origin/main``. The current release order leaves a failed candidate out of
     main, so deleting the candidate is the only source cleanup required here.
     """
-    remove_backup_branch(workspace)
+    ref = "refs/heads/" + workspace.branch
+    remote = subprocess.run(
+        ["git", "ls-remote", "--heads", "origin", ref],
+        cwd=repo_root, capture_output=True, text=True, check=False,
+    )
+    if remote.returncode != 0:
+        raise RuntimeError("cannot determine origin candidate state; retained transaction was not removed")
+    present = any(line.split("\t", 1)[-1] == ref for line in remote.stdout.splitlines() if "\t" in line)
+    pushed = backup_was_pushed(repo_root, workspace)
+    removed = backup_was_removed(repo_root, workspace)
+    if pushed and not removed and not present:
+        raise RuntimeError("origin candidate ref is missing but its removal was not recorded; refusing stale transaction metadata")
+    if (not pushed or removed) and present:
+        raise RuntimeError("origin candidate ref exists without matching active transaction state")
+    if pushed and not removed:
+        result = subprocess.run(
+            ["git", "push", "origin", "--delete", workspace.branch],
+            cwd=repo_root, capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"could not delete origin candidate ref {ref}; local worktree and transaction metadata were retained\n"
+                f"{result.stderr.strip()}"
+            )
+        verify = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", ref],
+            cwd=repo_root, capture_output=True, text=True, check=False,
+        )
+        if verify.returncode != 0 or any(
+            line.split("\t", 1)[-1] == ref
+            for line in verify.stdout.splitlines() if "\t" in line
+        ):
+            raise RuntimeError(f"origin candidate ref {ref} still exists or could not be verified; local transaction was retained")
+        mark_backup_removed(repo_root, workspace)
     remove_workspace(workspace)
     forget_release_scope(repo_root, workspace)
-
-
-def abandon_previous(repo_root: Path, current_projects: Sequence[str]) -> list[str]:
-    """Abandon every retained release worktree whose recorded scope overlaps
-    ``current_projects`` (S-CLI.1: releases always start fresh, never resume by
-    default). Worktrees with no recorded scope are left alone — the caller can
-    still target them explicitly via ``--abandon <path>``. Returns the branch
-    names abandoned."""
-    current = set(current_projects)
-    abandoned: list[str] = []
-    for workspace in list_retained_workspaces(repo_root):
-        scope = read_release_scope(repo_root, workspace)
-        if scope is None or not (current & set(scope)):
-            continue
-        abandon_workspace(repo_root, workspace)
-        abandoned.append(workspace.branch)
-    return abandoned
 
 
 def promote_workspace(workspace: ReleaseWorkspace) -> None:

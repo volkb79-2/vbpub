@@ -106,6 +106,7 @@ class OptionSpec:
     parser_kwargs: Mapping[str, Any] = field(default_factory=dict)
     mutually_exclusive_group: str | None = None
     mutually_exclusive_required: bool = False
+    hidden: bool = False
 
     def __post_init__(self) -> None:
         if not self.flags or any(not flag for flag in self.flags):
@@ -164,7 +165,7 @@ class OptionSpec:
             "version",
             "BooleanOptionalAction",
         }
-        if not takes_value:
+        if not takes_value or self.parser_kwargs.get("nargs") == 0:
             return label
         if metavar is None:
             destination = self.parser_kwargs.get("dest")
@@ -200,14 +201,22 @@ class OptionSpec:
                 details.append(f"default: `{default}`")
         return self.description + (f" ({'; '.join(details)})" if details else "")
 
-    def add_to(self, parser: Any, *, suppress_default: bool = False) -> Any:
+    def add_to(
+        self,
+        parser: Any,
+        *,
+        suppress_default: bool = False,
+        force_suppress_default: bool = False,
+    ) -> Any:
         """Register this option with argparse and return its action."""
 
         kwargs = dict(self.parser_kwargs)
-        kwargs["help"] = self.description
+        kwargs["help"] = argparse.SUPPRESS if self.hidden else self.description
         if self.metavar is not None:
             kwargs.setdefault("metavar", self.metavar)
-        if suppress_default:
+        if force_suppress_default:
+            kwargs["default"] = argparse.SUPPRESS
+        elif suppress_default:
             kwargs.setdefault("default", argparse.SUPPRESS)
         return parser.add_argument(*self.flags, **kwargs)
 
@@ -293,6 +302,8 @@ class VerbSpec:
     configure: Callable[[ExtendedArgumentParser], None] | None = None
     handler: Callable[..., int | None] | None = None
     summary_description: str | None = None
+    delegate: RegisteredCli | None = None
+    include_confirmation: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.name or self.name.startswith("-"):
@@ -303,6 +314,10 @@ class VerbSpec:
             raise ValueError(f"verb {self.name!r} must define a semantic group")
         if self.summary_description is not None and not self.summary_description:
             raise ValueError(f"verb {self.name!r} has an empty summary description")
+        if self.delegate is not None and self.handler is not None:
+            raise ValueError(
+                f"verb {self.name!r} cannot define both a handler and a delegated CLI"
+            )
 
     @property
     def behavior_labels(self) -> tuple[str, ...]:
@@ -314,6 +329,13 @@ class VerbSpec:
         if self.expensive:
             labels.append("potentially expensive")
         return tuple(labels)
+
+    @property
+    def confirmation_enabled(self) -> bool:
+        """Whether this verb accepts the shared ``--yes`` confirmation option."""
+        if self.include_confirmation is None:
+            return self.mutating
+        return self.include_confirmation
 
     @property
     def summary(self) -> str:
@@ -340,6 +362,8 @@ class VerbSpec:
         exclusive_seen: set[str] = set()
         has_optional_options = self.configure is not None
         for option in self.options:
+            if option.hidden:
+                continue
             group_name = option.mutually_exclusive_group
             if group_name:
                 if group_name in exclusive_seen:
@@ -348,7 +372,7 @@ class VerbSpec:
                 members = [
                     member
                     for member in self.options
-                    if member.mutually_exclusive_group == group_name
+                    if not member.hidden and member.mutually_exclusive_group == group_name
                 ]
                 choices = " | ".join(member.display for member in members)
                 required = members[0].mutually_exclusive_required
@@ -369,7 +393,7 @@ class VerbSpec:
         labels = self.behavior_labels
         if labels:
             sections.append("Behavior: " + "; ".join(labels) + ".")
-        if self.mutating:
+        if self.confirmation_enabled:
             sections.append(
                 "Mutating actions require confirmation unless --yes is supplied."
             )
@@ -692,9 +716,9 @@ class HelpCatalog:
                     *_common_option_specs(
                         include_json=verb.include_json,
                         include_progress=verb.include_progress,
-                        include_confirmation=verb.mutating,
+                        include_confirmation=verb.confirmation_enabled,
                     ),
-                    *verb.options,
+                    *(option for option in verb.options if not option.hidden),
                 )
                 option_groups: list[str] = []
                 for option in options:
@@ -719,6 +743,8 @@ class HelpCatalog:
 
         option_groups = []
         for option in self.global_options:
+            if option.hidden:
+                continue
             if option.group not in option_groups:
                 option_groups.append(option.group)
         for group in option_groups:
@@ -726,7 +752,7 @@ class HelpCatalog:
                 (f"## {group.title()}", "", "| Option | Description |", "| --- | --- |")
             )
             for option in self.global_options:
-                if option.group == group:
+                if not option.hidden and option.group == group:
                     lines.append(
                         f"| `{_markdown_cell(option.display)}` | {_markdown_cell(option.description)} |"
                     )
@@ -1070,6 +1096,8 @@ class CliRuntime:
     debug_raw: bool = False
     json_mode: bool = False
     progress_mode: ProgressMode = ProgressMode.AUTO
+    raw_argv: tuple[str, ...] = ()
+    command_argv: tuple[str, ...] = ()
 
     def confirm(self, prompt: str) -> bool:
         """Ask for a safe default-no confirmation after caller preflight.
@@ -1137,6 +1165,7 @@ class RegisteredCli:
     default_handler: Handler | None = None
     logging_logger: str | None = None
     no_args_action: bool = False
+    delegates: Mapping[str, RegisteredCli] = field(default_factory=dict)
 
     @property
     def catalog(self) -> HelpCatalog | None:
@@ -1155,6 +1184,7 @@ class RegisteredCli:
             default_handler=self.default_handler,
             logging_logger=self.logging_logger,
             no_args_action=self.no_args_action,
+            delegates=self.delegates,
             **kwargs,
         )
 
@@ -1208,8 +1238,11 @@ class CliRegistry:
         options: Sequence[OptionSpec],
         *,
         suppress_defaults: bool = False,
+        force_suppress_defaults: bool = False,
     ) -> None:
-        groups: dict[str, Any] = {}
+        groups: dict[str, Any] = {
+            group.title: group for group in parser._action_groups
+        }
         exclusive_members: dict[str, list[OptionSpec]] = {}
         for option in options:
             name = option.mutually_exclusive_group
@@ -1241,7 +1274,11 @@ class CliRegistry:
                         required=option.mutually_exclusive_required
                     )
                 target = exclusive_groups[name]
-            option.add_to(target, suppress_default=suppress_defaults)
+            option.add_to(
+                target,
+                suppress_default=suppress_defaults,
+                force_suppress_default=force_suppress_defaults,
+            )
 
     @staticmethod
     def _add_argument_specs(
@@ -1261,7 +1298,10 @@ class CliRegistry:
             )
         if self.no_args_action and not self.single_command:
             raise ValueError("no_args_action is only valid for a single-command CLI")
-        missing_handlers = [verb.name for verb in self._verbs if verb.handler is None]
+        missing_handlers = [
+            verb.name for verb in self._verbs
+            if verb.handler is None and verb.delegate is None
+        ]
         if missing_handlers:
             raise ValueError("verbs missing handlers: " + ", ".join(missing_handlers))
 
@@ -1295,7 +1335,9 @@ class CliRegistry:
                 if self.single_command
                 else any(verb.include_progress for verb in self._verbs)
             ),
-            include_confirmation=self.single_command and self._verbs[0].mutating,
+            include_confirmation=(
+                self.single_command and self._verbs[0].confirmation_enabled
+            ),
         )
         self._add_option_specs(parser, self.global_options)
         if catalog is not None:
@@ -1303,6 +1345,7 @@ class CliRegistry:
 
         command_parsers: dict[str, ExtendedArgumentParser] = {}
         handlers: dict[str, Handler] = {}
+        delegates: dict[str, RegisteredCli] = {}
         default_handler: Handler | None = None
         if self.single_command:
             verb = self._verbs[0]
@@ -1327,8 +1370,28 @@ class CliRegistry:
                     self.identity,
                     include_json=verb.include_json,
                     include_progress=verb.include_progress,
-                    include_confirmation=verb.mutating,
+                    include_confirmation=verb.confirmation_enabled,
                     suppress_defaults=True,
+                )
+                verb_flags = {
+                    flag for option in verb.options for flag in option.flags
+                }
+                subcommand_globals = []
+                for option in self.global_options:
+                    overlap = verb_flags.intersection(option.flags)
+                    if overlap:
+                        if not set(option.flags).issubset(verb_flags):
+                            raise ValueError(
+                                f"global option {option.display!r} partially overlaps "
+                                f"options for verb {verb.name!r}"
+                            )
+                        continue
+                    subcommand_globals.append(option)
+                self._add_option_specs(
+                    command_parser,
+                    subcommand_globals,
+                    suppress_defaults=True,
+                    force_suppress_defaults=True,
                 )
                 self._add_argument_specs(command_parser, verb.arguments)
                 self._add_option_specs(
@@ -1337,7 +1400,10 @@ class CliRegistry:
                 if verb.configure is not None:
                     verb.configure(command_parser)
                 command_parsers[verb.name] = command_parser
-                handlers[verb.name] = verb.handler  # type: ignore[assignment]
+                if verb.delegate is not None:
+                    delegates[verb.name] = verb.delegate
+                else:
+                    handlers[verb.name] = verb.handler  # type: ignore[assignment]
 
         if catalog is not None:
             catalog.attach_command_parsers(command_parsers)
@@ -1349,6 +1415,7 @@ class CliRegistry:
             default_handler,
             self.logging_logger,
             self.no_args_action,
+            delegates,
         )
 
 
@@ -1360,6 +1427,8 @@ def _runtime_from_args(
     stderr: TextIO | None,
     stdin: TextIO | None,
     secrets: Sequence[str],
+    raw_argv: Sequence[str] = (),
+    command_argv: Sequence[str] = (),
 ) -> CliRuntime:
     debug_raw = bool(getattr(args, "debug_raw", False))
     quiet = bool(getattr(args, "quiet", False))
@@ -1413,6 +1482,8 @@ def _runtime_from_args(
         debug_raw=debug_raw,
         json_mode=output.json_mode,
         progress_mode=progress,
+        raw_argv=tuple(raw_argv),
+        command_argv=tuple(command_argv),
     )
 
 
@@ -1490,6 +1561,7 @@ def run_cli(
     default_handler: Handler | None = None,
     logging_logger: str | None = None,
     no_args_action: bool = False,
+    delegates: Mapping[str, RegisteredCli] | None = None,
     expected_exceptions: tuple[type[BaseException], ...] = (),
     secrets: Sequence[str] = (),
     stdout: TextIO | None = None,
@@ -1520,6 +1592,27 @@ def run_cli(
         command_parser._cli_help_output = help_output
 
     command_form = _leading_option_remainder(raw, parser)
+    delegates = delegates or {}
+    if command_form:
+        prefix = raw[: len(raw) - len(command_form)]
+        if command_form[0] in delegates:
+            return delegates[command_form[0]].run(
+                argv=[*prefix, *command_form[1:]],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=stdin,
+            )
+        if (
+            len(command_form) == 2
+            and command_form[0] == "help"
+            and command_form[1] in delegates
+        ):
+            return delegates[command_form[1]].run(
+                argv=[*prefix, "--help"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=stdin,
+            )
     option_conflict = _common_option_conflict(raw)
     if option_conflict:
         error_parser = parser
@@ -1648,6 +1741,12 @@ def run_cli(
             stderr=stderr,
             stdin=stdin,
             secrets=secrets,
+            raw_argv=raw,
+            command_argv=(
+                command_form[1:]
+                if command_form and command_form[0] == verb
+                else raw
+            ),
         )
         if logging_logger is None:
             result = handler(args, runtime)
@@ -1663,6 +1762,16 @@ def run_cli(
         except UnboundLocalError:
             help_output.cancelled()
         return 130
+    except SystemExit as exc:
+        # Domain helpers in adopted projects may still expose their established
+        # process boundary. Preserve that status while keeping the shared CLI
+        # runner usable as an embeddable ``main(argv) -> int`` function.
+        if isinstance(exc.code, int):
+            return exc.code
+        if exc.code is None:
+            return 0
+        runtime.output.error(str(exc.code))
+        return 1
     except CliFailure as exc:
         if exc.show_help:
             command_parser = command_parsers.get(verb)

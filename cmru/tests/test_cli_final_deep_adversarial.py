@@ -114,33 +114,29 @@ def test_main_changelog_dispatch_distinguishes_unknown_disabled_and_unchanged(mo
     loaded = (tmp_path, {"demo": project}, ["demo"], ["demo"], [], "project-first", {}, SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: loaded)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["changelog", "missing", "--backfill-tag", "demo-v1"])
-    assert exc.value.code == 2 and "unknown project(s): missing" in capsys.readouterr().err
+    exc = cli.main(["changelog", "missing", "--backfill-tag", "demo-v1"])
+    assert exc == 2 and "unknown project(s): missing" in capsys.readouterr().err
     project.changelog = None
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["changelog", "demo", "--backfill-tag", "demo-v1"])
-    assert exc.value.code == 2 and "disabled" in capsys.readouterr().err
+    exc = cli.main(["changelog", "demo", "--backfill-tag", "demo-v1"])
+    assert exc == 2 and "disabled" in capsys.readouterr().err
     project.changelog = "CHANGES.md"
     monkeypatch.setattr("cmru.changelog.backfill_release_changelog", lambda *_: False)
     cli.main(["changelog", "demo", "--backfill-tag", "demo-v1"])
     assert "already records" in capsys.readouterr().out
 
 
-def test_main_release_rejects_mutually_exclusive_resume_and_abandon(monkeypatch, tmp_path, capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--resume", "/tmp/x", "--abandon", "/tmp/y", "--config", str(tmp_path / "cmru.toml")])
-    assert exc.value.code == 2
-    assert "mutually exclusive" in capsys.readouterr().err
+def test_main_release_rejects_the_removed_abandon_option(monkeypatch, tmp_path, capsys):
+    result = cli.main(["release", "--resume", "/tmp/x", "--abandon", "/tmp/y", "--config", str(tmp_path / "cmru.toml")])
+    assert result == 2
+    assert "unrecognized arguments: --abandon" in capsys.readouterr().err
 
 
 def test_main_build_unknown_project_exits_before_external_transaction(monkeypatch, tmp_path, capsys):
     loaded = (tmp_path, {"demo": _project()}, ["demo"], ["demo"], [], "project-first", {}, SimpleNamespace(), cli.GitHubConfig("o", "r", "", "user"), cli.ReleaseEnvConfig({}, None))
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: loaded)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["build", "missing", "--config", str(tmp_path / "cmru.toml")])
-    assert exc.value.code == 2 and "unknown project(s): missing" in capsys.readouterr().err
+    exc = cli.main(["build", "missing", "--config", str(tmp_path / "cmru.toml")])
+    assert exc == 2 and "unknown project(s): missing" in capsys.readouterr().err
 
 
 def test_main_publish_requires_project_credentials_before_running_push(monkeypatch, tmp_path):

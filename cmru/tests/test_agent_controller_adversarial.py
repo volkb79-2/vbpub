@@ -291,7 +291,8 @@ class TestCliRefusalAndDispatch:
         parser = _build_parser()
         args = parser.parse_args(["--scope", "system", "once", "--release-root", "/r"])
         assert args.scope == "system" and args.verb == "once"
-        with pytest.raises(SystemExit):
+        from cli_extended import UsageError
+        with pytest.raises(UsageError):
             parser.parse_args(["not-a-verb"])
 
     def test_agent_once_refuses_identity_without_landscape(self, tmp_path, monkeypatch, capsys):

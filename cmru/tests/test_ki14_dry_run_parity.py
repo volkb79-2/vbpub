@@ -31,13 +31,7 @@ from cmru import cli, output, version
 
 @pytest.fixture(autouse=True)
 def _no_ambient_time_short_prefix(monkeypatch):
-    """``consume_cli_flags`` intentionally leaks ``CMRU_LOG_PREFIX_TIME_SHORT``
-    into ``os.environ`` once any earlier call passes ``--log-prefix-time-short``
-    -- deliberate, so a release child process inherits the caller's explicit
-    presentation choice (see ``output.consume_cli_flags``'s docstring), but it
-    means this module's exact-text assertions must not depend on suite
-    ordering. Other test modules already guard the same way (e.g.
-    ``tests/test_core_residuals.py``)."""
+    """The registered presentation option persists its choice for child CMRU processes."""
     monkeypatch.delenv(output._TIME_ENV, raising=False)
 
 

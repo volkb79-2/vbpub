@@ -17,15 +17,13 @@ def test_cleanup_unmanaged_release_rejects_unknown_project_and_missing_credentia
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", github_token="token")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["cleanup", "--delete-unmanaged-release-tag", "demo-old", "missing", "--yes"])
-    assert exc.value.code == 2
+    exc = cli.main(["cleanup", "--delete-unmanaged-release-tag", "demo-old", "missing", "--yes"])
+    assert exc == 2
 
     no_token = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", github_token="")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, no_token, token=""))
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["cleanup", "--delete-unmanaged-release-tag", "demo-old", "demo", "--yes"])
-    assert exc.value.code == 2
+    exc = cli.main(["cleanup", "--delete-unmanaged-release-tag", "demo-old", "demo", "--yes"])
+    assert exc == 2
 
 
 def test_cleanup_delete_build_output_and_discard_worktree_dispatch_exact_targets(monkeypatch, tmp_path, capsys):

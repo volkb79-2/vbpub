@@ -16,6 +16,15 @@ from time import monotonic
 from typing import Iterable, Mapping, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cli_extended import (
+    ArgumentSpec,
+    CliFailure,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
 
@@ -554,30 +563,48 @@ def run_step(project_config_path: Path, step_name: str) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    from cmru.cli_support import CMRUArgumentParser
-    parser = CMRUArgumentParser(
-        description=f"Run one named step from a project {PROJECT_CONFIG_FILENAME}"
-    )
-    parser.add_argument(
-        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
-        help="registered project target; omitted uses the current project",
-    )
-    parser.add_argument("--config", help=f"Path to project or orchestration config")
-    parser.add_argument("--step", required=True, help="Step name to execute")
-    parser.add_argument(
-        "--show-run-details", action="store_true",
-        help="Stream full subprocess output to this console",
-    )
-    parser.add_argument(
-        "--log-append", action="store_true",
-        help="Append a divider and retain the stable step log",
-    )
-    return parser
+    return runner_cli().parser
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
+def runner_cli():
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru run-step",
+        description=f"Run one named step from a project {PROJECT_CONFIG_FILENAME}.",
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
+    )
+    registry.register(VerbSpec(
+        "run-step",
+        description="Execute exactly one declared step for one selected project.",
+        group=VerbGroup.MODIFICATION.value,
+        mutating=True,
+        include_confirmation=False,
+        arguments=(ArgumentSpec(
+            "target", "registered project target; omitted uses the current project",
+            metavar="[all|PROJECT[,PROJECT...]]",
+            parser_kwargs={"nargs": "?", "default": None},
+        ),),
+        options=(
+            OptionSpec(("--config",), "path to project or orchestration config", metavar="FILE", parser_kwargs={"default": None}),
+            OptionSpec(("--step",), "step name to execute", metavar="NAME", parser_kwargs={"required": True}),
+            OptionSpec(("--show-run-details",), "stream full subprocess output to this console", parser_kwargs={"action": "store_true", "default": False}),
+            OptionSpec(("--log-append",), "append a divider and retain the stable step log", parser_kwargs={"action": "store_true", "default": False}),
+        ),
+        include_json=False,
+        include_progress=False,
+        handler=_run_step_cli,
+    ))
+    return registry.build()
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    return runner_cli().run(argv=argv)
+
+
+def _run_step_cli(args, _runtime) -> int:
     if args.show_run_details:
         os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
     if args.log_append:
@@ -606,9 +633,9 @@ def main(argv: Optional[list[str]] = None) -> None:
             estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
-        parser.error(str(exc))
+        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
     if len(names) != 1:
-        parser.error("run-step requires exactly one project target")
+        raise CliFailure("run-step requires exactly one project target", exit_code=2, show_help=True)
     forge = load_forge_config(config_path)
     project_path = (
         forge.orchestration.project_configs[names[0]]
@@ -616,7 +643,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         else config_path
     )
     run_step(project_path, args.step)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

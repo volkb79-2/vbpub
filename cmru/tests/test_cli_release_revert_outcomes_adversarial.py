@@ -45,9 +45,8 @@ def test_release_failure_retains_candidate_without_automatic_revert(monkeypatch,
         lambda *args: transaction._SyncLocalMainResult(True),
     )
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: (_ for _ in ()).throw(AssertionError("failed releases retain worktree")))
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
-    assert exc.value.code == 1
+    exc = cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
+    assert exc == 1
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "Release candidate was not promoted" in output

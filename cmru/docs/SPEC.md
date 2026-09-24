@@ -36,6 +36,8 @@ cmru versions resolve [all|P[,P...]] [--dry-run] # explicitly resolve and write 
 cmru versions check [all|P[,P...]] [--json]      # read-only fresh registry comparison
 cmru changelog P --backfill-tag TAG  # migration: catalog an already-published tagged release
 cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
+cmru abandon [BRANCH] [--dry-run] [--yes]
+                                  # inspect and discard retained local release transactions
 cmru cleanup P --delete-unmanaged-release-tag TAG --yes
                                   # delete one old GitHub Release only, never its Git tag
 cmru cleanup P --delete-build-output ID --yes
@@ -67,6 +69,45 @@ KI-06.
 are the only CMRU commands that create or refresh version targets and their native outputs.
 `cmru build`, `cmru release`, tester gates, and schedules MUST NOT invoke them implicitly.
 `cmru versions check` performs fresh registry reads and MUST NOT write files.
+
+**S-CLI.7 — The installed CLI grammar has one source.** The `cmru`, `cmru-agent`, and
+`cmru-controller` entrypoints MUST declare their public verbs, arguments, aliases, option
+constraints, help text, and handlers through `cli-extended` registries. CMRU MUST NOT
+maintain a second hand-written parser or a hand-written `usage()` synopsis for those
+entrypoints. Root help is the registered verb catalog; `cmru help VERB` and `cmru VERB
+--help` render each command's declared grammar. Nested commands MUST delegate their
+remaining argv to the registered child CLI rather than parse it a second time. An accepted
+option MUST affect the behavior named by its help, and unsupported options MUST fail with
+status 2. The long `--help` spelling is the shared interface; there is no `-h` alias.
+`cmru main(argv)` MUST return the dispatched status for embedding, with console scripts
+propagating it as the process exit status.
+
+**S-CLI.8 — Release abandonment is exact and dry-run safe (KI-29).**
+`cmru abandon [BRANCH]` MUST inspect retained release transactions only. With no branch,
+it MUST display the complete retained release-candidate set; with a branch, it MUST match
+one exact managed release branch and MUST NOT widen or prefix-match the selection. Before
+confirmation it MUST show the branch, worktree, recorded project scope, and every known
+origin candidate or release coordinate. An interactive confirmation is required unless
+`--yes` is supplied; `--yes` applies to the complete displayed set. Declining MUST make no
+changes.
+
+Abandonment MUST refuse a candidate whose results or remote refs show publication or
+promotion, or whose worktree, scope, progress, backup-ref, or project publication policy is
+missing, stale, malformed, or ambiguous. Remote inspection failures MUST fail closed.
+Abandonment MUST remove only the selected CMRU origin candidate ref, local worktree and
+branch, and transaction sidecars. It MUST NOT rewrite `origin/main`, delete public release
+assets, or remove unrelated refs. If deleting the remote candidate fails or cannot be
+verified, the local worktree and sidecars MUST remain for inspection.
+
+`--dry-run` MUST be strictly read-only: it may inspect Git/sidecar state and render the
+complete candidate plan, but MUST NOT call a mutation helper, remove local or remote refs,
+remove a worktree, delete a sidecar, or alter public assets. Candidate output MUST state
+that the worktree and its in-worktree logs/artifacts will be removed and that `origin/main`
+will remain unchanged.
+
+`cmru cleanup` is separate from abandonment. Its configured remote policy may delete GitHub
+Release records and their assets, matching Git tags, and GHCR package versions; it MUST NOT
+be described as deleting a retained local release transaction or its candidate branch.
 
 **S-CLI.4 — Retained-worktree discovery.** `cmru worktrees` is read-only and derives the
 current Git repository without loading a CMRU config. It MUST list every CMRU-managed
@@ -206,15 +247,8 @@ false result is reported and does not claim that local main was synchronized. On
 release, tag-based plan detection skips projects already released; `--resume` remains an
 explicit continuation of the retained candidate.
 
-**`--abandon <path>|all-previous`** discards a retained attempt instead of resuming it, then
-proceeds with a normal fresh release in the same invocation: its origin candidate branch, local
-worktree/branch, and scope marker are removed (never touching `origin/main`). `all-previous`
-abandons every retained worktree whose recorded project scope overlaps this run's — `X`
-narrows that to just `X`; otherwise it's the full `orchestration.default_projects`. Worktrees
-retained before this feature existed (no recorded scope) are left for an explicit `--abandon
-<path>`. `--resume` and `--abandon` are mutually exclusive. `cmru release` never abandons
-a failed worktree implicitly: inspect it, resume it explicitly when appropriate, or explicitly
-request `--abandon <path>|all-previous` after its logs and artifacts are no longer needed.
+Explicit local abandonment is the separate top-level `cmru abandon [BRANCH]` lifecycle
+operation (S-CLI.8). `cmru release` never abandons a failed worktree implicitly.
 
 The repository-root secret document is copied mode `0600`, never committed.
 
@@ -904,10 +938,14 @@ release artifact, so `<project> update` works out of the box. Configuration live
 `[project.installer]` (see S2).
 
 **S6.1** `cmru get-py <name> --config cmru.toml` emits a standalone Python 3
-installer to stdout. The output is a rendering of `templates/get.py.tmpl` with
+installer to stdout. The output is a rendering of the packaged
+`cmru/templates/get.py.tmpl` resource (resolved with `importlib.resources`) with
 `[[VARNAME]]` placeholders replaced from the `[installer]` config. The rendering is
-deterministic (byte-identical for identical config). Any unreplaced `[[...]]` placeholder
-triggers a warning.
+deterministic (byte-identical for identical config) from both a source checkout and an
+installed wheel. The CMRU wheel MUST include the template resource and `cli-extended` runtime
+package. The gate MUST build/install that wheel into an isolated environment, invoke its
+`cmru get-py` console script from outside the source checkout, and compile the emitted
+installer. Any unreplaced `[[...]]` placeholder triggers a warning.
 
 **S6.2** Commands emitted:
 

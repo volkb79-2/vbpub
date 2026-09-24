@@ -141,12 +141,16 @@ class TestOutputContract:
         stream.flush()
         assert raw.getvalue() == "[ERROR] bad\nordinary"
 
-    def test_consume_flags_stops_at_separator_and_propagates_env(self, monkeypatch):
-        import cmru.output as output
-        monkeypatch.delenv("CMRU_LOG_PREFIX_TIME_SHORT", raising=False)
+    def test_registered_timestamp_option_reaches_delegated_grammar(self, monkeypatch):
+        from cmru import cli, output
+
+        monkeypatch.delenv(output._TIME_ENV, raising=False)
         monkeypatch.setattr(output, "configure", lambda value: setattr(output, "_seen", value))
-        assert output.consume_cli_flags(["--log-prefix-time-short", "run", "--", "--log-prefix-time-short"]) == ["run", "--", "--log-prefix-time-short"]
-        assert os.environ["CMRU_LOG_PREFIX_TIME_SHORT"] == "1" and output._seen
+        delegated = cli._build_cli().delegates["versions"]
+        args = delegated.parser.parse_args(["check", "--log-prefix-time-short"])
+
+        assert args.log_prefix_time_short is True
+        assert os.environ[output._TIME_ENV] == "1" and output._seen
 
     def test_colour_is_disabled_for_dumb_or_no_color(self, monkeypatch):
         from cmru.output import _colour_enabled

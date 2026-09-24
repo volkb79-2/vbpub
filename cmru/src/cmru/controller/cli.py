@@ -9,24 +9,18 @@ Verbs:
 """
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
 import sys
 from pathlib import Path
 
-from cmru.cli_support import CMRUArgumentParser, cmru_version
+from cli_extended import CliRegistry, OptionSpec, VerbGroup, VerbSpec
+
+from cmru.cli_support import cmru_identity
 
 
 log = logging.getLogger("cmru.controller")
-
-
-def _setup_logging(level: str = "INFO") -> None:
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        level=getattr(logging, level.upper(), logging.INFO),
-    )
 
 
 def _build_backend(args):
@@ -191,88 +185,71 @@ def cmd_rollback(args) -> int:
 # Argument parser
 # ---------------------------------------------------------------------------
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = CMRUArgumentParser(
+def _build_cli():
+    identity = cmru_identity(
+        command="cmru-controller",
+        long_name="CMRU controller — assign desired state and orchestrate rollout waves",
+    )
+    global_options = (
+        OptionSpec(("--landscape",), "landscape name (can also be set in plan file)", metavar="NAME"),
+        OptionSpec(
+            ("--consul-addr",),
+            "Consul HTTP address (default: $CONSUL_HTTP_ADDR or http://127.0.0.1:8500)",
+            metavar="URL",
+        ),
+        OptionSpec(
+            ("--token",), "Consul ACL token (prefer $CONSUL_HTTP_TOKEN in production)",
+            metavar="TOKEN",
+        ),
+        OptionSpec(("--dry-run",), "show actions without writing to Consul", parser_kwargs={"action": "store_true"}),
+    )
+    registry = CliRegistry(
+        identity,
         prog="cmru-controller",
-        description="CMRU controller — assign desired state and orchestrate rollout waves",
+        description="CMRU controller command line.",
+        global_options=global_options,
+        logging_logger="cmru.controller",
     )
-    parser.add_argument(
-        "--version", action="version", version=f"cmru-controller {cmru_version()}"
+    common = {"include_json": False, "include_progress": False}
+    specs = (
+        ("publish", "Publish desired state from a plan file.", cmd_publish, (
+            OptionSpec(("--plan",), "path to plan TOML file", metavar="PLAN_TOML", parser_kwargs={"required": True}),
+            OptionSpec(("--generation-base",), "base generation number", metavar="N", parser_kwargs={"type": int, "default": 1}),
+        )),
+        ("approve", "Approve production waves for a plan.", cmd_approve, (
+            OptionSpec(("--plan",), "plan ID to approve", metavar="PLAN_ID", parser_kwargs={"required": True}),
+        )),
+        ("hold", "Pause a plan.", cmd_hold, (
+            OptionSpec(("--plan",), "plan ID to pause", metavar="PLAN_ID", parser_kwargs={"required": True}),
+        )),
+        ("status", "Show observed state for plan nodes.", cmd_status, (
+            OptionSpec(("--plan",), "plan TOML path or plan ID", metavar="PLAN_TOML_OR_ID", parser_kwargs={"default": None}),
+        )),
+        ("rollback", "Write a new rollback desired generation.", cmd_rollback, (
+            OptionSpec(("--plan",), "path to plan TOML file", metavar="PLAN_TOML", parser_kwargs={"required": True}),
+            OptionSpec(("--to",), "release tag to roll back to", metavar="TAG", parser_kwargs={"dest": "to_tag", "default": None}),
+            OptionSpec(("--generation",), "override rollback generation number", metavar="N", parser_kwargs={"type": int, "default": None}),
+        )),
     )
-    parser.add_argument(
-        "--landscape", default=None,
-        help="Landscape name (can also be set in plan file)",
-    )
-    parser.add_argument(
-        "--log-level", default="INFO",
-        help="Logging level (default: INFO)",
-    )
-    parser.add_argument(
-        "--consul-addr", default=None,
-        help="Consul HTTP address (default: $CONSUL_HTTP_ADDR or http://127.0.0.1:8500)",
-    )
-    parser.add_argument(
-        "--token", default=None,
-        help="Consul ACL token (prefer $CONSUL_HTTP_TOKEN in production)",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Show actions without writing to Consul",
-    )
-
-    sub = parser.add_subparsers(
-        dest="verb", required=True, parser_class=CMRUArgumentParser,
-    )
-
-    # publish
-    p_pub = sub.add_parser("publish", help="Publish desired state from a plan file")
-    p_pub.add_argument("--plan", required=True, metavar="PLAN_TOML",
-                       help="Path to plan TOML file")
-    p_pub.add_argument("--generation-base", dest="generation_base", type=int, default=1,
-                       help="Base generation number (default: 1)")
-
-    # approve
-    p_approve = sub.add_parser("approve", help="Approve production waves for a plan")
-    p_approve.add_argument("--plan", required=True, metavar="PLAN_ID",
-                           help="Plan ID to approve")
-
-    # hold
-    p_hold = sub.add_parser("hold", help="Pause a plan")
-    p_hold.add_argument("--plan", required=True, metavar="PLAN_ID")
-
-    # status
-    p_status = sub.add_parser("status", help="Show observed state for plan nodes")
-    p_status.add_argument("--plan", default=None, metavar="PLAN_TOML_OR_ID")
-
-    # rollback
-    p_rollback = sub.add_parser("rollback", help="Write a new rollback desired generation")
-    p_rollback.add_argument("--plan", required=True, metavar="PLAN_TOML")
-    p_rollback.add_argument("--to", dest="to_tag", default=None,
-                            help="Roll back to this release tag")
-    p_rollback.add_argument("--generation", type=int, default=None,
-                            help="Override rollback generation number")
-
-    return parser
+    for name, description, handler, options in specs:
+        registry.register(VerbSpec(
+            name, description=description,
+            group=VerbGroup.EXPLORATION.value if name == "status" else VerbGroup.MODIFICATION.value,
+            mutating=name != "status", include_confirmation=False,
+            options=options,
+            handler=lambda args, _runtime, fn=handler: fn(args), **common,
+        ))
+    return registry.build()
 
 
-def main(argv=None) -> None:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    _setup_logging(args.log_level)
+def _build_parser():
+    """Expose the generated parser for contract tests and embedders."""
+    return _build_cli().parser
 
-    dispatch = {
-        "publish": cmd_publish,
-        "approve": cmd_approve,
-        "hold": cmd_hold,
-        "status": cmd_status,
-        "rollback": cmd_rollback,
-    }
-    fn = dispatch.get(args.verb)
-    if fn is None:
-        parser.print_help()
-        sys.exit(1)
-    sys.exit(fn(args))
+
+def main(argv=None) -> int:
+    return _build_cli().run(argv=argv)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

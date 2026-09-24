@@ -53,9 +53,53 @@ surface for scripts that probe every first-party estate CLI in the same way; it
 does not create a second version source or change verb dispatch.
 
 The same identity is the first line of every help, usage, and configuration
-diagnostic emitted by the main parser and the installed `cmru-agent` and
-`cmru-controller` dispatchers, including nested verbs. Normal command output is
-unchanged.
+document emitted by the installed `cmru`, `cmru-agent`, and `cmru-controller`
+dispatchers, including nested verbs. CMRU configuration diagnostics put the
+identity first; `cli-extended` usage/refusal diagnostics put the actionable
+message first and then render the matching generated help. Normal command output
+is unchanged.
+
+## One declared CLI grammar
+
+The CMRU wheel installs three operator CLIs: `cmru`, `cmru-agent`, and
+`cmru-controller`. Each uses `cli-extended` registrations as the source for
+argument parsing, option constraints, help, and dispatch. Root `cmru --help`
+stays a short command catalog, while `cmru help VERB` and `cmru VERB --help`
+show that verb's complete grammar. Nested commands delegate their remaining
+argv to their own registered CLI, so root help and child parsing cannot drift
+through a second parser. The shared library provides `--help`; CMRU intentionally
+does not keep a separate `-h` alias.
+
+Invocation-wide options are registered in each CLI grammar and work before or
+after command selection, including across delegated commands. The timestamp
+prefix option is applied by its registered parser action, so CMRU does not
+rewrite argv before dispatch.
+
+`get` and `get-py` share the same registered installer grammar. `dependencies`,
+`dependency-graph`, and `graph` are registered aliases for one implementation.
+The `handler` verb is the supported route to the project's explicit step
+handlers; `cmru-agent` and `cmru-controller` are separate installed commands,
+not hidden subcommands of `cmru`.
+
+The get.py template is a package resource, not a path inferred from `__file__`.
+Source-checkout execution and installed-wheel execution therefore read the
+same shipped file. KI-26's installed-wheel lane builds the distribution,
+installs it into a fresh venv without system packages, and renders/compiles a
+project installer from outside the checkout. That catches both omitted package
+data and a missing bundled `cli-extended` import.
+
+## Remote cleanup and local transaction abandonment
+
+`cmru cleanup` follows the configured remote policy for GitHub Release records
+and assets, matching tags, and GHCR package versions. A retained candidate is a
+different object: its private branch, worktree, and transaction sidecars exist
+to support inspection or resume. Removing one uses `cmru abandon`, with exact
+branch selection, a dry-run plan, and an explicit confirmation. It refuses
+published, promoted, untagged-publisher, or otherwise ambiguous transactions.
+`--dry-run` only inspects state and renders candidates; no mutation helper is
+called. The separate verbs keep local recovery from silently deleting public
+assets and keep remote asset pruning from appearing to clean a retained source
+transaction.
 
 ## Context comes from the nearest CMRU root
 

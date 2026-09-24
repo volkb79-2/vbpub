@@ -18,7 +18,6 @@ It is REQUIRED for deterministic builds; the function raises clearly if unset.
 """
 from __future__ import annotations
 
-import argparse
 import io
 import os
 import shutil
@@ -29,7 +28,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from cmru.cli_support import CMRUArgumentParser
+from cli_extended import CliRegistry, OptionSpec, VerbGroup, VerbSpec
+
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 import tomllib
 
@@ -413,18 +414,46 @@ def run_bundle(config_path: Path) -> Path:
     return create_archive(config)
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = CMRUArgumentParser(description="Build a stack bundle from TOML config")
-    parser.add_argument("--config", required=True, help="Path to bundle TOML config")
-    return parser
+def bundle_cli():
+    registry = CliRegistry(
+        cmru_identity(command="cmru bundle", long_name="CMRU stack bundle builder"),
+        prog="cmru.bundle",
+        description="Build a deterministic stack bundle from its TOML configuration.",
+        single_command=True,
+        global_options=cmru_presentation_options(),
+        logging_logger="cmru",
+    )
+    registry.register(VerbSpec(
+        "bundle",
+        description="Build a stack bundle from TOML config.",
+        group=VerbGroup.MODIFICATION.value,
+        options=(OptionSpec(
+            ("--config",), "path to the bundle TOML config", metavar="FILE",
+            parser_kwargs={"required": True},
+        ),),
+        mutating=True,
+        include_confirmation=False,
+        include_json=False,
+        include_progress=False,
+        handler=_run_bundle_cli,
+    ))
+    return registry.build()
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
+def build_arg_parser():
+    """Compatibility accessor for the parser generated from the bundle grammar."""
+    return bundle_cli().parser
+
+
+def _run_bundle_cli(args, _runtime) -> int:
     archive = run_bundle(Path(args.config).expanduser().resolve())
     log_info(f"Done: {archive}")
+    return 0
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    return bundle_cli().run(argv=argv)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -48,9 +48,16 @@ def test_output_stream_configure_flush_and_empty_write_contract(monkeypatch):
     assert wrapped.encoding == stream.encoding
     monkeypatch.setattr(output.sys, "stdout", wrapped)
     try:
-        output.configure(time_short=False)
-        assert output.consume_cli_flags(["--log-prefix-time-short", "build", "--", "--log-prefix-time-short"]) == ["build", "--", "--log-prefix-time-short"]
+        from cmru import cli as cmru_cli
+
+        configured = []
+        monkeypatch.setattr(output, "configure", configured.append)
+        args = cmru_cli._build_cli().parser.parse_args(
+            ["build", "--log-prefix-time-short"]
+        )
+        assert args.log_prefix_time_short is True
         assert output.os.environ[output._TIME_ENV] == "1"
+        assert configured == [True]
     finally:
         output.sys.stderr = original_stderr
         monkeypatch.delenv(output._TIME_ENV, raising=False)

@@ -72,8 +72,10 @@ a docs page invites drift. `CliRegistry` accepts one `VerbSpec` per public
 command and generates parser registration, grouped help, help lookup, and
 dispatch from those definitions. `ArgumentSpec` and `OptionSpec` carry
 positional/option help, groups, and argparse attributes. A command marked
-`mutating` receives the common `--yes` option and confirmation contract;
-read-only commands do not.
+`mutating` receives the common `--yes` option by default; `include_confirmation`
+can disable that generic acknowledgement while preserving the mutation label.
+`OptionSpec.hidden` keeps internal options parseable without advertising them
+in user help or generated Markdown.
 
 The top-level catalog may need a shorter line than command-specific help.
 `VerbSpec.summary_description` supplies that concise discovery label without

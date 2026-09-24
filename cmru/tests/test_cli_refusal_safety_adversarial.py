@@ -22,9 +22,8 @@ def test_cleanup_destructive_modes_require_scope_and_confirmation(monkeypatch, t
         (["cleanup", "--discard-build-worktree", str(tmp_path / "failed")], "requires --yes"),
         (["cleanup", "--discard-build-worktree", str(tmp_path / "failed"), "demo", "--dry-run"], "already exactly scoped"),
     ):
-        with pytest.raises(SystemExit) as exc:
-            cli.main(args)
-        assert exc.value.code == 2
+        exc = cli.main(args)
+        assert exc == 2
         assert message in capsys.readouterr().err
 
 
@@ -33,9 +32,8 @@ def test_release_child_rejects_non_orchestrated_project_before_release_work(monk
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--_transaction-child", "missing", "--config", str(tmp_path / "cmru.toml")])
-    assert exc.value.code == 2
+    exc = cli.main(["release", "--_transaction-child", "missing", "--config", str(tmp_path / "cmru.toml")])
+    assert exc == 2
     assert "unknown project(s): missing" in capsys.readouterr().err
 
 

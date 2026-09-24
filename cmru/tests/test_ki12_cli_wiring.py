@@ -133,10 +133,9 @@ def test_child_side_marks_plan_refused_and_exits_nonzero(monkeypatch, tmp_path, 
     marks = []
     monkeypatch.setattr(transaction, "mark_plan_refused", lambda *args: marks.append(args))
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
+    exc = cli.main(["release", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
 
-    assert exc.value.code != 0
+    assert exc != 0
     assert marks  # mark_plan_refused was called for this transaction
     err = capsys.readouterr().err
     assert "AHEAD of the snapshot commit" in err
@@ -187,10 +186,9 @@ def test_parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure(
         lambda *args: (_ for _ in ()).throw(AssertionError("nothing was ever pushed to delete")),
     )
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
+    exc = cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
 
-    assert exc.value.code == 1
+    assert exc == 1
     assert removed == ["removed"]
     assert forgotten == ["forgotten"]
     output = capsys.readouterr().out

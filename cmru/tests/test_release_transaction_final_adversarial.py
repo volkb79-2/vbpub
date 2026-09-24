@@ -163,21 +163,6 @@ def test_discard_build_workspace_requires_managed_build_branch(tmp_path):
     git(root, "branch", "-D", "cmru/release/not-build")
 
 
-def test_list_and_abandon_previous_uses_scope_overlap(tmp_path):
-    root = repo(tmp_path)
-    child = tmp_path / "child"
-    branch = "cmru/release/overlap"
-    git(root, "worktree", "add", "-q", "-b", branch, str(child), "main")
-    workspace = transaction.ReleaseWorkspace(root, child, branch, git(child, "rev-parse", "HEAD"))
-    transaction.write_release_scope(root, workspace, ["demo"])
-    with patch.object(transaction, "remove_backup_branch"), patch.object(transaction, "remove_workspace") as removed:
-        abandoned = transaction.abandon_previous(root, ["demo"])
-    assert abandoned == [branch]
-    removed.assert_called_once()
-    git(root, "worktree", "remove", "--force", str(child))
-    git(root, "branch", "-D", branch)
-
-
 def test_revert_promotion_noop_and_conflict_are_distinct(tmp_path):
     root = repo(tmp_path)
     git(root, "branch", "cmru/release/noop")

@@ -253,7 +253,7 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
         files = [item for item in matched if item.is_file()]
         if not files:
             raise SystemExit(
-                f"[ERROR] --extra-asset {pattern!r} matched no existing file"
+                f"--extra-asset {pattern!r} matched no existing file"
             )
         extras.extend(files)
 
@@ -424,79 +424,83 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
     print("[INFO] OCI image push complete")
 
 
-def main(argv: list | None = None) -> None:
-    from cmru.cli_support import CMRUArgumentParser
-    parser = CMRUArgumentParser(
-        prog="cmru.handlers",
-        description="cmru explicit project-step command library",
+def handlers_cli():
+    from cli_extended import CliRegistry, OptionSpec, VerbGroup, VerbSpec
+    from cmru.cli_support import cmru_identity, cmru_presentation_options
+
+    identity = cmru_identity(command="cmru", long_name="Configurable Multi Release Utility")
+    registry = CliRegistry(
+        identity,
+        prog="cmru handler",
+        description="Explicit project-step command library.",
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    sub = parser.add_subparsers(
-        dest="cmd", required=True, parser_class=CMRUArgumentParser,
+    required_path = lambda flag, desc: OptionSpec(
+        (flag,), desc, metavar="PATH", parser_kwargs={"required": True},
     )
+    required_name = lambda flag, desc, metavar="NAME": OptionSpec(
+        (flag,), desc, metavar=metavar, parser_kwargs={"required": True},
+    )
+    commands = (
+        ("wheel-build", "Build the project's wheel into dist/.", cmd_wheel_build, (
+            required_path("--cwd", "project directory (holds pyproject.toml)"),
+        )),
+        ("wheel-publish", "Publish the built wheel to GitHub Releases.", cmd_wheel_publish, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+            required_path("--cwd", "project directory (dist/ holds the wheel)"),
+            OptionSpec(("--glob",), "wheel glob (default: <prefix>-*.whl)", metavar="GLOB", parser_kwargs={"default": None}),
+            OptionSpec(("--notes-env",), "environment variable holding release notes", metavar="NAME", parser_kwargs={"dest": "notes_env", "default": None}),
+            OptionSpec(("--extra-asset",), "additional file to attach; repeatable", metavar="PATH", parser_kwargs={"action": "append", "default": []}),
+        )),
+        ("wheel-validate", "Validate the resolved latest wheel release.", cmd_wheel_validate, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+        )),
+        ("tarball-publish", "Publish the built tarball to GitHub Releases.", cmd_tarball_publish, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+            required_path("--cwd", "project directory (dist/ holds the tarball)"),
+            required_name("--glob", "tarball glob", "GLOB"),
+            OptionSpec(("--version-file",), "version file relative to --cwd", metavar="PATH", parser_kwargs={"dest": "version_file", "default": None}, mutually_exclusive_group="version-source", mutually_exclusive_required=True),
+            OptionSpec(("--version-env",), "environment variable containing the version", metavar="NAME", parser_kwargs={"dest": "version_env", "default": None}, mutually_exclusive_group="version-source", mutually_exclusive_required=True),
+            OptionSpec(("--notes-env",), "environment variable holding optional release notes", metavar="NAME", parser_kwargs={"dest": "notes_env", "default": None}),
+        )),
+        ("tarball-validate", "Validate the resolved latest tarball release.", cmd_tarball_validate, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+            OptionSpec(("--artifact-suffix",), "expected artifact file extension", metavar="SUFFIX", parser_kwargs={"dest": "artifact_suffix", "default": ".tar.xz"}),
+        )),
+        ("oci-image-build", "Build an OCI image with docker buildx bake.", cmd_oci_image_build, (
+            required_path("--cwd", "project directory (holds bake file)"),
+            required_path("--bake-file", "path to bake HCL file"),
+            required_name("--target", "bake target name", "NAME"),
+            OptionSpec(("--repack",), "enable OCI repack", parser_kwargs={"action": "store_true", "default": False}),
+            OptionSpec(("--repack-target-size",), "target size per layer", metavar="SIZE", parser_kwargs={"default": "2GB"}),
+            OptionSpec(("--repack-compression",), "repack compression level (1-22)", metavar="N", parser_kwargs={"type": int, "default": 9}),
+        )),
+        ("oci-image-push", "Push an OCI image to its registry.", cmd_oci_image_push, (
+            required_path("--cwd", "project directory (holds bake file)"),
+            required_path("--bake-file", "path to bake HCL file"),
+            required_name("--target", "bake target name", "NAME"),
+            OptionSpec(("--repack",), "repack mode (push already happened during build)", parser_kwargs={"action": "store_true", "default": False}),
+        )),
+    )
+    for name, description, handler, options in commands:
+        registry.register(VerbSpec(
+            name,
+            description=description,
+            group=VerbGroup.MODIFICATION.value,
+            mutating=True,
+            include_confirmation=False,
+            options=options,
+            include_json=False,
+            include_progress=False,
+            handler=lambda args, _runtime, fn=handler: fn(args),
+        ))
+    return registry.build()
 
-    p_build = sub.add_parser("wheel-build", help="build the project's wheel into dist/")
-    p_build.add_argument("--cwd", required=True, help="project directory (holds pyproject.toml)")
-    p_build.set_defaults(func=cmd_wheel_build)
 
-    p_pub = sub.add_parser("wheel-publish", help="publish the built wheel to GitHub Releases")
-    p_pub.add_argument("--prefix", required=True, help="release prefix, e.g. 'ciu' (no -v)")
-    p_pub.add_argument("--cwd", required=True, help="project directory (dist/ holds the wheel)")
-    p_pub.add_argument("--glob", help="wheel glob (default: <prefix>-*.whl)")
-    p_pub.add_argument("--notes-env", dest="notes_env",
-                       help="env var holding release notes (default notes: '<prefix> <version>')")
-    p_pub.add_argument("--extra-asset", dest="extra_asset", action="append", default=[],
-                       metavar="PATH",
-                       help="additional file to attach to the same release; repeatable")
-    p_pub.set_defaults(func=cmd_wheel_publish)
-
-    p_val = sub.add_parser("wheel-validate", help="validate the resolved latest wheel release")
-    p_val.add_argument("--prefix", required=True, help="release prefix, e.g. 'ciu' (no -v)")
-    p_val.set_defaults(func=cmd_wheel_validate)
-
-    p_tpub = sub.add_parser("tarball-publish", help="publish the built tarball to GitHub Releases")
-    p_tpub.add_argument("--prefix", required=True, help="release prefix, e.g. 'tls-edge' (no -v)")
-    p_tpub.add_argument("--cwd", required=True, help="project directory (dist/ holds the tarball)")
-    p_tpub.add_argument("--glob", required=True, help="tarball glob, e.g. 'tls-edge-v*.tar.xz'")
-    _tver = p_tpub.add_mutually_exclusive_group(required=True)
-    _tver.add_argument("--version-file", dest="version_file",
-                       help="path relative to --cwd holding the version string (e.g. VERSION)")
-    _tver.add_argument("--version-env", dest="version_env",
-                       help="env var holding the version string")
-    p_tpub.add_argument("--notes-env", dest="notes_env",
-                        help="env var holding release notes (optional)")
-    p_tpub.set_defaults(func=cmd_tarball_publish)
-
-    p_tval = sub.add_parser("tarball-validate", help="validate the resolved latest tarball release")
-    p_tval.add_argument("--prefix", required=True, help="release prefix, e.g. 'tls-edge' (no -v)")
-    p_tval.add_argument("--artifact-suffix", dest="artifact_suffix", default=".tar.xz",
-                        help="expected artifact file extension (default: .tar.xz)")
-    p_tval.set_defaults(func=cmd_tarball_validate)
-
-    # ── oci-image subcommands ──────────────────────────────────────────────
-    p_ocib = sub.add_parser("oci-image-build",
-                            help="build OCI image with docker buildx bake (optional repack)")
-    p_ocib.add_argument("--cwd", required=True, help="project directory (holds bake file)")
-    p_ocib.add_argument("--bake-file", required=True, help="path to bake HCL file")
-    p_ocib.add_argument("--target", required=True, help="bake target name")
-    p_ocib.add_argument("--repack", action="store_true", help="enable OCI repack")
-    p_ocib.add_argument("--repack-target-size", default="2GB",
-                        help="target size per layer for repack (default: 2GB)")
-    p_ocib.add_argument("--repack-compression", type=int, default=9,
-                        help="compression level 1-22 for repack (default: 9)")
-    p_ocib.set_defaults(func=cmd_oci_image_build)
-
-    p_ocip = sub.add_parser("oci-image-push",
-                            help="push OCI image to registry")
-    p_ocip.add_argument("--cwd", required=True, help="project directory (holds bake file)")
-    p_ocip.add_argument("--bake-file", required=True, help="path to bake HCL file")
-    p_ocip.add_argument("--target", required=True, help="bake target name")
-    p_ocip.add_argument("--repack", action="store_true",
-                        help="repack mode (push already done in build step)")
-    p_ocip.set_defaults(func=cmd_oci_image_push)
-
-    args = parser.parse_args(argv)
-    args.func(args)
+def main(argv: list | None = None) -> int:
+    return handlers_cli().run(argv=argv)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

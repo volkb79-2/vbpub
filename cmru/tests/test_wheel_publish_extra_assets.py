@@ -62,16 +62,17 @@ def published(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_USERNAME", "owner")
     monkeypatch.setenv("GITHUB_REPO", "repo")
 
-    def run(extra: list[str]) -> dict:
+    def run(extra: list[str]) -> dict | None:
         project = tmp_path / "assay"
         _wheel(project / "dist")
         argv = ["wheel-publish", "--prefix", "assay", "--cwd", str(project)]
         for item in extra:
             argv += ["--extra-asset", item]
-        handlers.main(argv)
+        run.last_status = handlers.main(argv)
         recorded["gh"] = gh
-        return gh.published[0]
+        return gh.published[0] if gh.published else None
 
+    run.last_status = None
     return run
 
 
@@ -101,12 +102,13 @@ def test_extra_assets_are_attached_to_the_same_release(published, tmp_path):
     ]
 
 
-def test_an_extra_asset_that_matches_nothing_is_refused_before_publishing(published, tmp_path):
+def test_an_extra_asset_that_matches_nothing_is_refused_before_publishing(published, tmp_path, capsys):
     """Fail closed rather than publishing a partial release: a typo'd companion
     path must not produce a release whose notes advertise an artifact that was
     never uploaded."""
-    with pytest.raises(SystemExit, match="matched no existing file"):
-        published([str(tmp_path / "absent.pyz")])
+    assert published([str(tmp_path / "absent.pyz")]) is None
+    assert published.last_status == 1
+    assert "matched no existing file" in capsys.readouterr().err
 
 
 def test_an_extra_asset_may_be_a_GLOB_because_the_filename_carries_the_version(

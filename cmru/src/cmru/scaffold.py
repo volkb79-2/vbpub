@@ -17,6 +17,8 @@ from pathlib import Path
 
 from cmru import exit_codes
 from cmru.cli_support import write_config_diagnostic
+from cli_extended import CliRegistry, OptionSpec, VerbGroup, VerbSpec
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 _ID_RE = re.compile(r"[a-z][a-z0-9-]*")
 _GIT_OWNER_REPO_RE = re.compile(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?$")
@@ -233,23 +235,13 @@ def render_orchestration_toml(
     return text
 
 
-def collect_plan(argv: list[str], root: Path) -> dict:
-    """Parse `cmru init` options and collect the complete adoption plan."""
-    if any(a == "--project" or a.startswith("--project=") for a in argv):
-        _init_error("init: --project was removed; run `cmru init` and use the adoption wizard")
+def collect_plan(options: dict, root: Path) -> dict:
+    """Collect the adoption plan from already parsed CLI options."""
     interactive = True
 
-    def flag(name: str) -> str | None:
-        for i, a in enumerate(argv):
-            if a == name and i + 1 < len(argv):
-                return argv[i + 1]
-            if a.startswith(name + "="):
-                return a.split("=", 1)[1]
-        return None
-
-    layout = flag("--layout")
-    path_flag = flag("--root") or flag("--path")
-    owner_flag, repo_flag = flag("--owner"), flag("--repo")
+    layout = options.get("layout")
+    path_flag = options.get("root")
+    owner_flag, repo_flag = options.get("owner"), options.get("repo")
 
     root = Path(path_flag or root).expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -267,7 +259,7 @@ def collect_plan(argv: list[str], root: Path) -> dict:
         repo = repo_flag.strip()
         if not repo:
             _init_error("init: GitHub repository is required")
-    owner_type_flag = flag("--owner-type")
+    owner_type_flag = options.get("owner_type")
     owner_type = owner_type_flag or _required_prompt("GitHub owner type (user|org)")
     if owner_type not in {"user", "org"}:
         _init_error("init: GitHub owner type must be user or org")
@@ -405,8 +397,46 @@ def validate(files: list[tuple[Path, str]], root: Path) -> None:
                 )
 
 
-def init_main(argv: list[str]) -> int:
-    plan = collect_plan(list(argv), Path.cwd())
+def init_cli():
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru init",
+        description=(
+            "Guided scaffolding. Prompts when flags are absent; generated contracts are "
+            "validated with the real loaders before anything is written; existing files are never overwritten."
+        ),
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
+    )
+    registry.register(VerbSpec(
+        "init",
+        description="Adopt a folder by creating a validated project or monorepo contract.",
+        group=VerbGroup.AUTHENTICATION.value,
+        mutating=True,
+        interactive=True,
+        include_confirmation=False,
+        options=(
+            OptionSpec(("--root",), "adoption directory (default: current directory)", metavar="PATH", parser_kwargs={"default": None}),
+            OptionSpec(("--layout",), "contract layout", metavar="LAYOUT", parser_kwargs={"choices": ("single", "monorepo", "1", "2"), "default": None}),
+            OptionSpec(("--owner",), "GitHub owner (default: detected from origin)", metavar="OWNER", parser_kwargs={"default": None}),
+            OptionSpec(("--repo",), "GitHub repository (default: detected from origin)", metavar="REPO", parser_kwargs={"default": None}),
+            OptionSpec(("--owner-type",), "GitHub owner type", metavar="TYPE", parser_kwargs={"choices": ("user", "org"), "default": None}),
+        ),
+        include_json=False,
+        include_progress=False,
+        handler=_run_init,
+    ))
+    return registry.build()
+
+
+def init_main(argv: list[str] | None = None) -> int:
+    return init_cli().run(argv=argv)
+
+
+def _run_init(args, _runtime) -> int:
+    plan = collect_plan(vars(args), Path.cwd())
     root = Path(plan["root"])
     files = build_files(plan, root)
     print("\nCMRU init preview:")

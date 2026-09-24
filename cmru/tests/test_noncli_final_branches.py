@@ -63,9 +63,8 @@ def test_tester_gate_cli_keeps_command_without_separator(monkeypatch, tmp_path):
         enable_docker=False, dind_image=None, command=["true"],
     )
     with patch.object(tester_gate.argparse.ArgumentParser, "parse_args", return_value=parsed):
-        with pytest.raises(SystemExit) as raised:
-            tester_gate.main([])
-    assert raised.value.code == 0
+        raised = tester_gate.main([])
+    assert raised == 0
     assert commands == [["true"]]
 
 

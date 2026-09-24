@@ -250,9 +250,12 @@ def test_top_level_cli_dispatches_versions_verb(monkeypatch):
     from cmru import cli as cli_module
 
     calls = []
-    monkeypatch.setattr(versions, "main", lambda argv: calls.append(argv) or 7)
+    monkeypatch.setattr(
+        versions, "_run_versions",
+        lambda args, _runtime: calls.append((args.verb, args.json)) or 7,
+    )
     assert cli_module.main(["versions", "check", "--json"]) == 7
-    assert calls == [["check", "--json"]]
+    assert calls == [("check", True)]
 
 
 def test_auth_schema_requires_safe_urls_and_one_credential_shape():
@@ -2124,8 +2127,9 @@ def test_root_and_project_resolved_records_have_their_selected_policy(tmp_path, 
     assert versions.main(["resolve", "all", "--config", str(root_config)]) == 0
     output = capsys.readouterr().out
     assert "root" in output and "demo" in output
-    assert len(calls) == 1
-    command = calls[0][0]
+    operation_calls = [item for item in calls if item[0][0] != "git"]
+    assert len(operation_calls) == 1
+    command = operation_calls[0][0]
     assert "--index-strategy" in command and "first-index" in command
     assert command[command.index("--exclude-newer") + 1] == versions._timestamp(now - timedelta(days=21))
     assert "--output-file" not in command

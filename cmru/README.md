@@ -11,6 +11,12 @@ cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags,
 pip install -e .             # provides the `cmru` console script
 ```
 
+The wheel also installs the companion `cmru-agent` and `cmru-controller`
+entrypoints. All three use CMRU's registered CLI grammar; `cmru --help` lists
+root verbs, and `cmru help <verb>` (or `<verb> --help`) shows that verb's exact
+options. The old release-scoped `--abandon` switch is removed; use
+`cmru abandon [BRANCH]` for a retained release transaction.
+
 The installed `cmru` executable is portable: run it from a project directory,
 repository, or CMRU root, or pass `--config /path/to/cmru.toml`. Without an
 explicit path it searches ancestors to the filesystem root for the nearest
@@ -68,6 +74,8 @@ cmru standards                    # strict config + project-framework conformanc
 cmru standards pwmcp --update     # safely update CMRU-owned revision markers
 cmru build   <name>               # isolated local build; retains logs/artifacts, then removes worktree
 cmru worktrees                    # list retained failed build/release worktrees
+cmru abandon --dry-run            # inspect exact retained release candidates, no writes
+cmru abandon <branch> --yes       # abandon exactly the named verified candidate
 cmru dependencies                 # show + preflight the project dependency graph
 cmru dependencies --write         # refresh its generated root-TOML comment block
 cmru tool-deps                    # verify declared tool dependencies: integrity/authenticity/freshness
@@ -78,15 +86,24 @@ cmru versions resolve [all|P[,P...]] [--dry-run] # resolve eligible versions and
 cmru versions check [all|P[,P...]] [--json]      # read-only comparison with fresh registry state
 cmru publish <name>               # low-level caller-worktree push step
 cmru resolve <name>               # resolve the current "latest" (version/tag/url/sha256)
-cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
+cmru cleanup --remove-assets 30d  # prune configured GitHub Releases/tags and GHCR versions
 cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run
 cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --yes
 cmru cleanup ciu --delete-build-output <commit-date>_<commit> --dry-run
 cmru cleanup --discard-build-worktree /path/reported/by/cmru --yes
 cmru version                      # print the CMRU version
 cmru --version                    # estate-wide top-level compatibility spelling
-cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
+cmru get-py ciu --config cmru.orchestration.toml --output ciu-get.py  # render from installed wheel
+cmru --help                       # generated verb catalog; use `cmru help <verb>` for options
 ```
+
+`cleanup` applies the configured remote asset policy: GitHub Release records and their
+assets, release tags covered by that policy, and GHCR package versions. It does not remove a
+retained local release transaction or its `cmru-release-*` candidate branch. `abandon` is
+that separate lifecycle operation: it shows the exact scope, worktree, and remote candidate
+ref before confirmation, rejects evidence of publication or promotion, and keeps its refusal
+closed when the transaction metadata or origin state is unclear. `--dry-run` performs no
+branch, worktree, sidecar, or remote mutation.
 
 `cmru worktrees` includes retained paths recorded by Git even when they are not
 reachable through the current bind mount. Its `prunable` field reports Git's

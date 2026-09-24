@@ -29,6 +29,20 @@ budget = "8h"
 memory = "2g"
 memory_swap = "16g"
 
+# KI-26: an installed-wheel probe builds the actual distribution, installs it
+# into a fresh venv with no system packages, and runs its cmru console script
+# from outside the source checkout. This proves both packaged cli-extended
+# imports and the importlib.resources get.py template.
+[lanes.installed-wheel]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py"]
+budget = "10m"
+
+[lanes.installed-wheel.resources]
+memory = "2g"
+memory_swap = "16g"
+
 [lanes.coverage]
 kind = "command"
 environment = "tester-unified"
@@ -110,9 +124,9 @@ budget = "20m"
 [lanes.gate]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "cd {worktree}/cmru && ./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary && ./run-gate.py --worktree {worktree} enroll"]
+argv = ["bash", "-c", "cd {worktree}/cmru && ./run-gate.py --worktree {worktree} installed-wheel && ./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary && ./run-gate.py --worktree {worktree} enroll"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # The conjunction includes the 8h native R0-R3 lane plus the retained
 # coverage/mutation/canary/enroll evidence lanes; this is advisory but must not
 # understate the declared work.
-budget = "14h"
+budget = "850m"

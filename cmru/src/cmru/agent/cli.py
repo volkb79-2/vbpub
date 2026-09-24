@@ -8,7 +8,6 @@ Verbs:
 """
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
@@ -16,17 +15,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from cmru.cli_support import CMRUArgumentParser, cmru_version
+from cli_extended import CliRegistry, OptionSpec, VerbGroup, VerbSpec
+
+from cmru.cli_support import cmru_identity
 
 
 log = logging.getLogger("cmru.agent")
-
-
-def _setup_logging(level: str = "INFO") -> None:
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        level=getattr(logging, level.upper(), logging.INFO),
-    )
 
 
 def _build_backend(args):
@@ -206,72 +200,70 @@ def cmd_status(args) -> int:
 # Argument parser
 # ---------------------------------------------------------------------------
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = CMRUArgumentParser(
+def _build_cli():
+    identity = cmru_identity(
+        command="cmru-agent",
+        long_name="CMRU reconciler agent — converges host to declared desired state",
+    )
+    global_options = (
+        OptionSpec(
+            ("--scope",), "state directory scope", group="AGENT", metavar="SCOPE",
+            parser_kwargs={"choices": ("system", "user"), "default": "user"},
+        ),
+        OptionSpec(
+            ("--consul-addr",),
+            "Consul HTTP address (default: $CONSUL_HTTP_ADDR or http://127.0.0.1:8500)",
+            group="BACKEND", metavar="URL",
+        ),
+        OptionSpec(
+            ("--token",), "Consul ACL token (prefer $CONSUL_HTTP_TOKEN in production)",
+            group="BACKEND", metavar="TOKEN",
+        ),
+    )
+    registry = CliRegistry(
+        identity,
         prog="cmru-agent",
-        description="CMRU reconciler agent — converges host to declared desired state",
+        description="CMRU agent command line.",
+        global_options=global_options,
+        logging_logger="cmru.agent",
     )
-    parser.add_argument(
-        "--version", action="version", version=f"cmru-agent {cmru_version()}"
-    )
-    parser.add_argument(
-        "--scope", choices=["system", "user"], default="user",
-        help="State directory scope (default: user)",
-    )
-    parser.add_argument(
-        "--log-level", default="INFO",
-        help="Logging level (default: INFO)",
-    )
-    parser.add_argument(
-        "--consul-addr", default=None,
-        help="Consul HTTP address (default: $CONSUL_HTTP_ADDR or http://127.0.0.1:8500)",
-    )
-    parser.add_argument(
-        "--token", default=None,
-        help="Consul ACL token (prefer $CONSUL_HTTP_TOKEN in production)",
-    )
-
-    sub = parser.add_subparsers(
-        dest="verb", required=True, parser_class=CMRUArgumentParser,
-    )
-
-    # enroll
-    p_enroll = sub.add_parser("enroll", help="Register this node with the backend")
-    p_enroll.add_argument("--node-id", dest="node_id", default=None)
-    p_enroll.add_argument("--landscape", default=None)
-    p_enroll.add_argument("--minisign-pubkey", dest="minisign_pubkey", default=None)
-
-    # run
-    p_run = sub.add_parser("run", help="Long-running reconcile loop (daemon)")
-    p_run.add_argument("--release-root", dest="release_root", default=None)
-
-    # once
-    p_once = sub.add_parser("once", help="Single reconcile pass then exit")
-    p_once.add_argument("--release-root", dest="release_root", default=None)
-
-    # status
-    sub.add_parser("status", help="Print current observed state + last applied generation")
-
-    return parser
+    common = {"include_json": False, "include_progress": False}
+    registry.register(VerbSpec(
+        "enroll", description="Register this node with the backend.",
+        group=VerbGroup.AUTHENTICATION.value,
+        mutating=True, include_confirmation=False,
+        options=(
+            OptionSpec(("--node-id",), "node identity (or CMRU_NODE_ID)", metavar="ID", parser_kwargs={"default": None}),
+            OptionSpec(("--landscape",), "landscape name (or CMRU_LANDSCAPE)", metavar="NAME", parser_kwargs={"default": None}),
+            OptionSpec(("--minisign-pubkey",), "installer verification public key", metavar="KEY", parser_kwargs={"default": None}),
+        ), handler=lambda args, _runtime: cmd_enroll(args), **common,
+    ))
+    for name, description, handler in (
+        ("run", "Run the long-lived reconcile loop.", cmd_run),
+        ("once", "Run one reconciliation pass and exit.", cmd_once),
+    ):
+        registry.register(VerbSpec(
+            name, description=description, group=VerbGroup.MODIFICATION.value,
+            mutating=True, include_confirmation=False,
+            options=(OptionSpec(("--release-root",), "override the release root", metavar="DIR", parser_kwargs={"default": None}),),
+            handler=lambda args, _runtime, fn=handler: fn(args), **common,
+        ))
+    registry.register(VerbSpec(
+        "status", description="Print current observed state and last applied generation.",
+        group=VerbGroup.EXPLORATION.value,
+        handler=lambda args, _runtime: cmd_status(args), **common,
+    ))
+    return registry.build()
 
 
-def main(argv=None) -> None:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    _setup_logging(args.log_level)
+def _build_parser():
+    """Expose the generated parser for contract tests and embedders."""
+    return _build_cli().parser
 
-    dispatch = {
-        "enroll": cmd_enroll,
-        "run": cmd_run,
-        "once": cmd_once,
-        "status": cmd_status,
-    }
-    fn = dispatch.get(args.verb)
-    if fn is None:
-        parser.print_help()
-        sys.exit(1)
-    sys.exit(fn(args))
+
+def main(argv=None) -> int:
+    return _build_cli().run(argv=argv)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
