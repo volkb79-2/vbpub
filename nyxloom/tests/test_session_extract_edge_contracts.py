@@ -13,7 +13,7 @@ from nyxloom.session_extract import ExtractConfig
 from nyxloom.session_extract.adapters import claude_code, codex
 from nyxloom.session_extract.debug_diff import _drop_reason, _expected_kinds, render_debug
 from nyxloom.session_extract.events import EventKind, NormalizedEvent
-from nyxloom.session_extract.lossless import LosslessBlock, codex_blocks
+from nyxloom.session_extract.lossless import LosslessBlock, claude_code_blocks, codex_blocks
 from nyxloom.session_extract.render import _format_timestamp, render_text
 from nyxloom.session_extract.select import select
 from nyxloom.session_extract.stats import _simulate_profile
@@ -70,6 +70,7 @@ def test_codex_question_shapes_and_prose_copies_preserve_each_prompt():
     assert state.question_for_reply({"questionItemId": ["request_user_input_async", "q1", 0]}) == prompt
     assert state.question_for_reply({"questionItemId": "not json", "question": "Where should it run?"}) == prompt
     assert state.consume_question_prose_copy(" \n ") is None
+    assert state.consume_question_prose_copy("not the pending prompt") is None
     assert state.consume_question_prose_copy("Where should it run?\n- Local\n- Remote: shared host") == [prompt]
     assert state.consume_question_prose_copy("ordinary assistant prose") is None
 
@@ -78,6 +79,24 @@ def test_codex_question_shapes_and_prose_copies_preserve_each_prompt():
         "Deployment\nWhere should it run?\n- Local\n- Remote: shared host"
     ) == []
     assert state.pending_prose_copies == []
+
+    batch_payload = {
+        "call_id": "batch",
+        "arguments": {"questions": [
+            {"title": "First", "question": "First question?"},
+            {"title": "Second", "question": "Second question?"},
+        ]},
+    }
+    batch = codex.StreamState()
+    batch.remember_question_call(batch_payload, prompt_emitted=False)
+    assert batch.question_for_reply({"question": 7}) is None
+    assert batch.consume_question_prose_copy("First question?") == [batch.questions[("batch", 0)]]
+    assert len(batch.pending_prose_copies) == 1
+    assert batch.consume_question_prose_copy("Second question?") == [batch.questions[("batch", 1)]]
+    assert batch.pending_prose_copies == []
+    no_call_id = codex.StreamState()
+    no_call_id.remember_question_call({"call_id": 7, "arguments": {"questions": []}})
+    assert no_call_id.questions == {} and no_call_id.pending_prose_copies == []
 
 
 def test_codex_reply_envelopes_fail_closed_and_keep_free_text():
@@ -126,6 +145,10 @@ def test_codex_stream_priming_replays_complete_records_and_tolerates_missing_sou
     codex.prime_stream_state(path, state, len(raw))
     assert state.questions[("q1", 0)]["title"] == "Deployment"
     assert state.pending_prose_copies == []
+    first_record_bytes = len((json.dumps(question) + "\n").encode())
+    truncated_state = codex.StreamState()
+    codex.prime_stream_state(path, truncated_state, first_record_bytes + 1)
+    assert truncated_state.questions[("q1", 0)]["title"] == "Deployment"
     codex.prime_stream_state(tmp_path / "missing.jsonl", codex.StreamState(), 10)
 
     before = tmp_path / "since.jsonl"
@@ -134,6 +157,23 @@ def test_codex_stream_priming_replays_complete_records_and_tolerates_missing_sou
     since_state = codex.StreamState()
     codex.prime_stream_state(before, since_state, before.stat().st_size, since_marker="0")
     assert since_state.pending_prose_copies[0][1] is True
+
+    untouched = codex.StreamState()
+    untouched.remember_question_call({**question["payload"]})
+    codex._advance_stream_state(
+        {"payload": {"type": "user_message", "message": ""}}, untouched, prompt_emitted=True,
+    )
+    assert untouched.pending_prose_copies
+    codex._advance_stream_state(
+        {"payload": {"type": "agent_message", "message": ""}}, untouched, prompt_emitted=True,
+    )
+    codex._advance_stream_state({"payload": {"type": "item_completed", "item": {
+        "type": "UserMessage", "content": [],
+    }}}, untouched, prompt_emitted=True)
+    codex._advance_stream_state({"payload": {"type": "item_completed", "item": {
+        "type": "AgentMessage", "content": [],
+    }}}, untouched, prompt_emitted=True)
+    assert untouched.pending_prose_copies
 
 
 def test_codex_old_and_new_records_clear_pending_copies_and_keep_tool_intent():
@@ -154,9 +194,34 @@ def test_codex_old_and_new_records_clear_pending_copies_and_keep_tool_intent():
     visible = codex.parse_record(
         tool, 3, "3", ExtractConfig(show_tool_calls=True, show_tool_call_intent=True), codex.StreamState(),
     )
+    hidden_intent = codex.parse_record(
+        {**tool, "payload": {**tool["payload"], "input": {"description": 7}}},
+        3, "3", ExtractConfig(show_tool_calls=True, show_tool_call_intent=True), codex.StreamState(),
+    )
     assert hidden == []
     assert visible[0].kind is EventKind.TOOL_CALL
     assert visible[0].text == "[tool call: Shell] inspect tree"
+    assert hidden_intent[0].text == "[tool call: Shell]"
+
+    new_copy_state = codex.StreamState()
+    new_copy_state.remember_question_call({**_question_call()["payload"]}, prompt_emitted=False)
+    new_copy_record = {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+        "type": "AgentMessage", "content": [{"type": "Text", "text": (
+            "Where should it run?\n- Local\n- Remote: shared host"
+        )}],
+    }}}
+    new_copy = codex.parse_record(new_copy_record, 4, "4", ExtractConfig(), new_copy_state)
+    assert new_copy[0].kind is EventKind.QA_PAIR
+    assert "INTERVIEW: Deployment" in new_copy[0].text
+
+    ordinary_state = codex.StreamState()
+    ordinary_state.remember_question_call({**_question_call()["payload"]})
+    ordinary_record = {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+        "type": "AgentMessage", "content": [{"type": "Text", "text": "I will proceed."}],
+    }}}
+    ordinary = codex.parse_record(ordinary_record, 5, "5", ExtractConfig(), ordinary_state)
+    assert ordinary[0].kind is EventKind.ASSISTANT_TEXT
+    assert ordinary[0].text == "I will proceed."
 
     old_copy = {"type": "event_msg", "payload": {
         "type": "agent_message", "message": "plain response",
@@ -177,11 +242,59 @@ def test_codex_lossless_blocks_render_questions_replies_and_safe_tool_calls():
     assert codex_blocks(tool, "2") == []
     visible = codex_blocks(tool, "2", show_tool_calls=True, show_tool_call_intent=True)
     assert visible == [LosslessBlock("===[2 | t | TOOL_CALL]===", "[tool call: Shell] inspect files")]
+    without_intent = codex_blocks(tool, "2", show_tool_calls=True)
+    assert without_intent[0].text == "[tool call: Shell]"
+
+    reply = {
+        "type": "event_msg", "timestamp": "t", "payload": {"type": "user_message", "message": (
+            "<send_user_message_question_reply>" + json.dumps([{
+                "question": "Where should it run?", "questionItemId": ["request_user_input_async", "q1", 0],
+                "answer": "Local",
+            }]) + "</send_user_message_question_reply>"
+        )},
+    }
+    answer = codex_blocks(reply, "5", state=state)
+    assert answer[0].header.endswith("QA_PAIR]===" )
+    assert "OPERATOR: Local" in answer[0].text
+
+    agent_copy_state = codex.StreamState()
+    agent_copy_state.remember_question_call({**call["payload"]}, prompt_emitted=False)
+    copy = {"type": "event_msg", "payload": {"type": "agent_message", "message": (
+        "Where should it run?\n- Local\n- Remote: shared host"
+    )}}
+    assert "INTERVIEW" in codex_blocks(copy, "6", state=agent_copy_state)[0].header
+    plain_user = {"type": "event_msg", "payload": {"type": "user_message", "message": "ordinary chat"}}
+    assert codex_blocks(plain_user, "7")[0].text == "ordinary chat"
+    empty_agent = {"type": "event_msg", "payload": {"type": "agent_message", "message": ""}}
+    assert codex_blocks(empty_agent, "8") == []
+    new_empty_agent = {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+        "type": "AgentMessage", "content": [],
+    }}}
+    assert codex_blocks(new_empty_agent, "9") == []
 
     compacted = {"type": "compacted", "payload": {"message": ""}}
     assert "[compacted]" == codex_blocks(compacted, "3")[0].text
     unknown = {"type": "event_msg", "payload": {"type": "task_started"}}
     assert codex_blocks(unknown, "4") == []
+
+
+def test_claude_lossless_tool_calls_require_visible_calls_and_safe_intent():
+    record = {
+        "type": "assistant", "uuid": "a1", "timestamp": "t",
+        "message": {"role": "assistant", "content": [
+            None,
+            {"type": "tool_use", "name": "NoInput", "input": "private"},
+            {"type": "tool_use", "name": "BadIntent", "input": {"description": 7}},
+            {"type": "tool_use", "name": "Inspect", "input": {"intent": "inspect tree"}},
+            {"type": "text", "text": "visible prose"},
+        ]},
+    }
+    hidden = claude_code_blocks(record, "a1")
+    assert [block.text for block in hidden] == ["visible prose"]
+    visible = claude_code_blocks(record, "a1", show_tool_calls=True, show_tool_call_intent=True)
+    assert [block.text for block in visible] == [
+        "[tool call: NoInput]", "[tool call: BadIntent]", "[tool call: Inspect] inspect tree", "visible prose",
+    ]
 
 
 def test_timestamp_edges_are_deterministic_for_selection_rendering_and_debug():
@@ -207,6 +320,35 @@ def test_timestamp_edges_are_deterministic_for_selection_rendering_and_debug():
     )
     assert "[gap:" not in diff
 
+    both = render_debug(
+        "===[m0 | 2026-01-01T00:00:00 | USER]===\nhello\n",
+        "OPERATOR: 00:00 hello 00:00\n", False,
+        config=ExtractConfig(show_timestamps="both", timestamp_format="%H:%M"),
+        fmt="codex", all_events=[naive],
+    )
+    assert "[gap:" not in both
+
+    post_only = render_text(
+        [naive], "codex", "m0", show_timestamps="post", timestamp_format="%H:%M",
+        metadata_position="post",
+    )
+    assert post_only.endswith("placement=post -->\n")
+    assert post_only.index("OPERATOR: hello 00:00") < post_only.index("nyxloom-extract:")
+
+    repeated = [
+        NormalizedEvent(0, "old", "t", EventKind.ASSISTANT_TEXT,
+                        "This is the stale fallback wakeup I armed earlier.", checkpoint_score=5.0),
+        NormalizedEvent(1, "new", "t", EventKind.ASSISTANT_TEXT,
+                        "This is the stale fallback wakeup I armed earlier.", checkpoint_score=5.0),
+    ]
+    render_debug(
+        "===[old | t | ASSISTANT]===\nThis is the stale fallback wakeup I armed earlier.\n\n"
+        "===[new | t | ASSISTANT]===\nThis is the stale fallback wakeup I armed earlier.\n",
+        "This is the stale fallback wakeup I armed earlier.\n",
+        False, config=ExtractConfig(max_checkpoints=-1, strip_stale_wakeups=True),
+        fmt="codex", all_events=repeated,
+    )
+
 
 def test_claude_tool_call_intent_is_opt_in_and_requires_string_text():
     record = {
@@ -220,10 +362,15 @@ def test_claude_tool_call_intent_is_opt_in_and_requires_string_text():
     }
     state = claude_code.StreamState()
     hidden = claude_code.parse_record(record, 0, "0", ExtractConfig(show_tool_calls=False), state)
+    visible_without_intent = claude_code.parse_record(
+        record, 0, "0", ExtractConfig(show_tool_calls=True), state,
+    )
     visible = claude_code.parse_record(
         record, 0, "0", ExtractConfig(show_tool_calls=True, show_tool_call_intent=True), state,
     )
     assert hidden == []
+    assert all(event.text.startswith("[tool call:") and "list files" not in event.text
+               for event in visible_without_intent)
     assert [event.text for event in visible] == [
         "[tool call: NoInput]", "[tool call: BadDescription]", "[tool call: Inspect] list files",
     ]
@@ -256,6 +403,11 @@ def test_source_metadata_points_at_the_opencode_database_inside_a_directory(tmp_
     assert metadata["name"] == "opencode.db"
     assert metadata["path"] == str(database)
     assert metadata["bytes"] == str(database.stat().st_size)
+    empty_directory = tmp_path / "no-database"
+    empty_directory.mkdir()
+    fallback = cli._source_metadata(empty_directory, "opencode")
+    assert fallback["name"] == "no-database"
+    assert fallback["path"] == str(empty_directory)
 
 
 def test_debug_question_epoch_and_post_selection_reasons_are_precise():
@@ -335,6 +487,13 @@ def test_cli_argument_aliases_and_shared_follow_validation_are_preserved():
     assert (config.max_checkpoints, config.long_comment_chars, config.max_compactions) == (3, 80, 2)
     assert config.insert_blank_lines == 0
 
+    primary = cli._extract_config_from_args(SimpleNamespace(
+        profile=None, max_checkpoints=8, checkpoints=3, answer_length=40, long_threshold=80,
+        max_compactions=4, max_lifecycle_markers=2, blank_lines=5, insert_blank_lines=0,
+    ))
+    assert (primary.max_checkpoints, primary.long_comment_chars) == (8, 40)
+    assert (primary.max_compactions, primary.insert_blank_lines) == (4, 5)
+
     shared = SimpleNamespace(
         render_markdown=False, highlight=False, show_tool_call_intent=False, show_tool_calls=False,
         follow=True, interval=None, json=False, until=None, epochs=None, max_time_minutes=-1,
@@ -370,8 +529,83 @@ def test_cli_debug_rejects_missing_cursor_and_unsupported_tool_visibility(tmp_pa
     ]) == 1
     assert "no embedded" in capsys.readouterr().err
 
+    assert cli.main([
+        "extract-debug", str(source), "--format", "claude-code", "--show-tool-call-intent",
+    ]) == 1
+    assert "requires --show-tool-calls" in capsys.readouterr().err
+
     from nyxloom.session_extract import adapters
 
     monkeypatch.setattr(adapters, "detect", lambda _path: SimpleNamespace(name="reasonix"))
     assert cli.main(["extract-debug", str(source), "--show-tool-calls"]) == 1
     assert "not supported for 'reasonix'" in capsys.readouterr().err
+
+
+def test_cli_extract_rejects_tool_visibility_for_opencode(tmp_path, capsys, monkeypatch):
+    source = tmp_path / "source.db"
+    source.write_bytes(b"placeholder")
+    import nyxloom.session_extract as extraction
+
+    monkeypatch.setattr(extraction, "extract", lambda *args, **kwargs: SimpleNamespace(format="opencode"))
+    assert cli.main(["extract", str(source), "--format", "opencode", "--show-tool-calls"]) == 1
+    assert "not supported for 'opencode'" in capsys.readouterr().err
+
+
+def test_extract_debug_ledger_accepts_claude_and_rejects_codex(tmp_path, capsys):
+    claude = tmp_path / "claude.jsonl"
+    records = [
+        {"type": "user", "uuid": "u1", "sessionId": "s1", "parentUuid": None,
+         "timestamp": "2026-01-01T00:00:00Z", "isSidechain": False,
+         "message": {"role": "user", "content": "check this"}},
+        {"type": "assistant", "uuid": "a1", "sessionId": "s1", "parentUuid": "u1",
+         "timestamp": "2026-01-01T00:00:01Z", "isSidechain": False,
+         "message": {"role": "assistant", "content": [{"type": "text", "text": "I checked it."}]}},
+    ]
+    claude.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+    assert cli.main(["extract-debug", str(claude), "--ledger", "--no-color"]) == 0
+    assert "I checked it." in capsys.readouterr().out
+
+    codex_path = tmp_path / "rollout.jsonl"
+    codex_path.write_text(json.dumps({
+        "ordinal": 0, "type": "session_meta", "payload": {"session_id": "s1", "cli_version": "0.154.0"},
+    }) + "\n" + json.dumps({
+        "ordinal": 1, "type": "event_msg", "payload": {"type": "user_message", "message": "check this"},
+    }) + "\n", encoding="utf-8")
+    assert cli.main(["extract-debug", str(codex_path), "--ledger"]) == 1
+    assert "--ledger does not support 'codex'" in capsys.readouterr().err
+
+
+def test_extract_sessions_hints_use_configured_paths_and_reject_conflicting_format(
+    tmp_path, capsys, monkeypatch,
+):
+    from nyxloom.session_extract import sessions
+
+    calls = []
+
+    def list_one(path, fmt=None, recurse=True):
+        path = Path(path)
+        calls.append((path, fmt, recurse))
+        return [SessionNode("sid", None, 0, str(path), str(path))]
+
+    monkeypatch.setattr(sessions, "list_agents", list_one)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setenv("OPENCODE_DB", str(tmp_path / "configured.db"))
+
+    for hint, expected, fmt in (
+        ("claude", tmp_path / "claude-home" / "projects", "claude-code"),
+        ("codex", tmp_path / "codex-home" / "sessions", "codex"),
+        ("opencode", tmp_path / "configured.db", "opencode"),
+    ):
+        assert cli.main(["extract-sessions", hint]) == 0
+        output = capsys.readouterr().out
+        assert str(expected) in output
+        assert calls[-1] == (expected, fmt, True)
+
+    assert cli.main(["extract-sessions", "claude", "--format", "codex"]) == 1
+    assert "conflicting with --format" in capsys.readouterr().err
+
+    monkeypatch.delenv("OPENCODE_DB")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    assert cli.main(["extract-sessions", "opencode"]) == 0
+    assert calls[-1][0] == tmp_path / "xdg" / "opencode" / "opencode.db"
