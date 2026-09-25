@@ -237,11 +237,10 @@ def clamp_watch_interval(raw: Any) -> float:
 class StreamSample:
     """One bounded read of the lane's progress NDJSON.
 
-    ``identity`` is what "a NEW line appeared" is decided on: the file's
-    size plus a digest of its last complete line. Size alone misses a
-    rewritten same-length line; the digest alone misses a duplicate event
-    appended twice. Together they change whenever the producer wrote
-    anything at all, which is exactly the activity signal §8.4 asks for.
+    ``identity`` is what "a NEW line appeared" is decided on: the ending
+    byte offset and digest of the last complete JSON line. The offset
+    distinguishes duplicate events; the digest catches a rewritten line
+    of the same length. An unfinished append is not progress.
     """
 
     path: str
@@ -253,9 +252,9 @@ class StreamSample:
 
 def resolve_stream_path(proc_root: str, pid: int, lane_path: str) -> str:
     """``/proc/<pid>/root/<path as the lane sees it>`` (§8.4: "no extra
-    mount"). The daemon runs ``--pid=host``, so the lane's mount namespace
-    is reachable through its own ``/proc`` entry whether the lane is a
-    container, an exec into one, or a bare-host process."""
+    mount"). The daemon reads the host proc tree mounted at ``proc_root``;
+    each lane's mount namespace is reachable through its process's ``root``
+    link whether the lane is a container, an exec, or a bare-host process."""
     return os.path.join(proc_root, str(pid), "root", lane_path.lstrip("/"))
 
 
