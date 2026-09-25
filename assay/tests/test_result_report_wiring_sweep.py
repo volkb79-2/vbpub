@@ -40,10 +40,11 @@ EXCLUDED_SITES: dict[tuple[str, str], str] = {
         "the `environment_command` probe (B010): it probes the INVOKING "
         "environment, is not the lane command, and has no report of its own"
     ),
-    ("mutation.py", "_run_one"): (
+    ("mutation.py", "_run_attempt"): (
         "an R2 candidate re-execution: a mutant's signal is whether the suite "
-        "fails, run `jobs`-way concurrently against one declared path, so a "
-        "shared report would be both a race and a re-definition of `killed`"
+        "fails, run `jobs`-way concurrently against one declared path. This "
+        "also owns B106's bounded witness-prefix attempt; a shared R0 report "
+        "would race and redefine `killed`"
     ),
 }
 

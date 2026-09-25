@@ -569,12 +569,18 @@ run_inner() {
   # lives on in W7's v11 successors. `carve-assets/W6/` is untouched by that
   # cut -- `git diff` over it is empty, and the hard-cut probe below is what
   # proves its nine documents are now refused rather than migrated.
+  # B101 (the v12 isolation/dirty provenance cut): W7's v11 contract was the
+  # live successor at that generation. W7 and W8 now stay frozen as historical
+  # suites; this v13 verifier must hard-cut their documents instead of trying
+  # to run W8's v12-positive assertions against a v13 wheel.
   for locked in \
     "nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
     "nyxloom-trove/carve-assets/W2/test_acceptance_v7.py" \
     "nyxloom-trove/carve-assets/W4/test_acceptance_v8.py" \
     "nyxloom-trove/carve-assets/W5/test_acceptance_v9.py" \
-    "nyxloom-trove/carve-assets/W6/test_acceptance_v10.py"
+    "nyxloom-trove/carve-assets/W6/test_acceptance_v10.py" \
+    "nyxloom-trove/carve-assets/W7/test_acceptance_v11.py" \
+    "nyxloom-trove/carve-assets/W8/test_acceptance_v12.py"
   do
     # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
     PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
@@ -587,11 +593,21 @@ import json
 import sys
 from pathlib import Path
 
+from assay.verdict import VERDICT_SCHEMA_VERSION
 from assay.verify import verify_document
 
+assert VERDICT_SCHEMA_VERSION == 13
 root = Path(sys.argv[1]) / "nyxloom-trove" / "carve-assets"
 checked = 0
-for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9), ("W6", 10)):
+for wave, version in (
+    ("W1", 6),
+    ("W2", 7),
+    ("W4", 8),
+    ("W5", 9),
+    ("W6", 10),
+    ("W7", 11),
+    ("W8", 12),
+):
     expected = root / wave / "expected"
     paths = sorted(expected.glob("*.json"))
     assert paths, f"{wave}/expected holds no frozen templates to check"
@@ -599,31 +615,44 @@ for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9), ("W6", 10)):
         document = json.loads(path.read_text())
         failures = verify_document(document)
         assert failures == [
-            f"schema_version {version} is not this verifier's version 12: a "
+            f"schema_version {version} is not this verifier's version "
+            f"{VERDICT_SCHEMA_VERSION}: a "
             f"verdict artifact is rejected, never upgraded in place -- "
-            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 12"
+            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is "
+            f"{VERDICT_SCHEMA_VERSION}"
         ], (wave, path.name, failures)
         checked += 1
-print(f"v6/v7/v8/v9/v10 hard-cut guard passed for {checked} frozen templates")
+print(f"v6-v12 hard-cut guard passed for {checked} frozen templates")
 PYEOF
-  echo 'ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-v10-hard-cut-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v6-v12-hard-cut-verified'
 
-  # B101 (the v12 isolation/dirty provenance cut): the locked v12 acceptance suite, run
-  # for real against the same installed wheel. It carries forward the positive
-  # coverage W1's, W2's, W4's, W5's and now W6's suites gave up above -- v10's
-  # whole contract included -- and adds v12's own: `judgment.r2.discarded` as
-  # an ARRAY of mutant identities, its three re-derivations (bucket
-  # disjointness, the `lines_without_candidates` line rule, and the
-  # fifth-disposition arithmetic `candidate_count - total == len(discarded)`),
-  # the A-437 reproduction as a NAMED refusal, and -- the one that makes the
-  # rest mean anything -- a REAL 40-discard verdict that is ACCEPTED, so the
-  # new bound is provably a re-derivation and not the upper-bound clamp DA-R26
-  # rejected. Every negative in it is differential.
+  # W9 records the v13 P25 qualification successors. It checks the frozen
+  # schema copy and confirms both current templates verify clean while the
+  # historical W8 P25 controls hit the v13 hard cut.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/nyxloom-trove/carve-assets/W8/test_acceptance_v12.py" \
+    "$worktree/assay/nyxloom-trove/carve-assets/W9/test_acceptance_v13.py" \
     -q -p no:randomly --override-ini=pythonpath=
-  echo 'ASSAY_GATE_PHASE=verdict-v12-successors-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v13-p25-successors-verified'
+
+  # W8's v12-positive R3/R4 controls have no native mutation outcomes and
+  # remain valid under the v13 contract. Keep v13 successors for those shapes
+  # before the historical W8 suite is reduced to collection and hard-cut
+  # checks. Run against the installed wheel, with source-tree imports disabled.
+  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
+  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
+    "$worktree/assay/tests/test_verdict_v13_successors.py" \
+    -q -p no:randomly --override-ini=pythonpath=
+
+  # B106/v13's candidate identity, exhaustive inventory and execution
+  # provenance contract. The marker is reachable only after both these
+  # v13 R3/R4 successors and all B106 witness/reuse/verifier checks pass against
+  # the installed artifact.
+  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
+  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
+    "$worktree/assay/tests/test_b106_reuse_and_witness.py" \
+    -q -p no:randomly --override-ini=pythonpath=
+  echo 'ASSAY_GATE_PHASE=verdict-v13-successors-verified'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version" "$wheel"
 

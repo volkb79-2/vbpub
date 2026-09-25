@@ -12,10 +12,10 @@ linking against assay itself.
 - **Status:** Python is fully supported (R0–R3). SQL/DDL mutation testing is
   supported at **R2 only** (no SQL R1, no SQL R3 — see
   [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below).
-  JavaScript/TypeScript is supported at **R1 and R2** — changed-line coverage
-  plus mutation testing over externally-ingested evidence (no native JS mutant
-  generator yet), see
-  [JavaScript/TypeScript changed-line coverage](#javascripttypescript-changed-line-coverage-r1-only)
+  JavaScript/TypeScript is supported at **R1 and R2 by ingestion** — changed-
+  line coverage plus mutation testing over externally-generated evidence (no
+  native JS mutant generator yet), see
+  [JavaScript/TypeScript coverage and mutation ingestion](#javascripttypescript-coverage-and-mutation-ingestion)
   below. Go is supported at **R1 only** — changed-line coverage for `.go`,
   statement-granular, requiring a real Go toolchain on the judging machine;
   see the Go section below. **Full matrix, and what R0–R3 each actually mean:
@@ -68,7 +68,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v12 verdict schema; a receipt
+Receipt verdicts are checked against the current v13 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -130,7 +130,7 @@ assay exists to close that gap mechanically, not by policy:
   `[isolation].dirty_ignore` may cover known ledger/output paths using the
   same repo-top-relative POSIX glob grammar as `identity_exclude`. Other dirty
   paths still refuse; `assay run --allow-dirty` admits them only for R1+
-  snapshot lanes and records them in the v12 `worktree_integrity` marker.
+  snapshot lanes and records them in the `worktree_integrity` marker.
   `assay verify` accepts but warns about that marker, while release receipts
   refuse it. See the [design rationale](docs/DESIGN-GUIDE.md#snapshot-dirty-tree-policy-b102).
 - **An escalating rigor ladder (R0–R3)**, so "tested" means something
@@ -158,6 +158,14 @@ assay exists to close that gap mechanically, not by policy:
   ambient environment names, cwd, links, project prefix, and assay version
   remain identity inputs. See the
   [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
+- **Native R2 can selectively replay verified kill witnesses after a fresh
+  baseline.** `assay plan --reuse-from` previews candidate classifications;
+  `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
+  kill witnesses against the current sequential pytest suite. Any uncertainty
+  runs the candidate's full suite. A v12 verdict is a cold start, and `assay
+  verify` still rejects it. See the
+  [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
+  and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
   Git dubious-ownership refusal explains why `safe.directory` cannot be set in
   assay's replacement environment and points to the ownership fix. Unknown or
@@ -177,9 +185,9 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 12` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-Both are hard cuts: `assay verify` refuses a v11 verdict exactly as it refuses
-v10 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
+`VERDICT_SCHEMA_VERSION = 13` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+Both are hard cuts: `assay verify` refuses a v12 verdict exactly as it refuses
+v11 (no dual-version verifier, no upgrade-in-place), and a v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
@@ -477,7 +485,7 @@ Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
 **`sql:*` is different — see below.**
 
-### JavaScript/TypeScript changed-line coverage (R1 only)
+### JavaScript/TypeScript coverage and mutation ingestion
 
 `judge.language = "javascript"` resolves at **R1 only** — changed-line
 coverage over `.js`, `.jsx`, `.ts` and `.tsx`. One language name covers all
@@ -583,14 +591,14 @@ and gitignored. See
 for the offline-install pattern, the `npx` fetch hazard, and a worked
 monorepo lane (B041).
 
-**There is deliberately no JavaScript R2 yet.** Whether JS/TS mutation should
-be a native engine (as Python's and SQL's are) or should ingest an external
-producer's evidence (Stryker Mutator's per-mutant report) is a real
-architectural ruling that has not been made — it is tracked as **B037**, and
-until it is, `judge.language = "javascript"` declaring R2 is refused
-`ERROR`/`BAD_LANE_CONFIG`, exactly like an unregistered language. R3 (the
-cause-sensitive canary) is unwired for the same "a method existing is not a
-producer path" reason, though both canary injection mechanisms are real.
+**JavaScript/TypeScript R2 is registered for ingestion.** The lane's command
+must run its external mutation producer and write the declared report inside
+the Assay snapshot; Assay then verifies and judges that report. Assay does not
+generate JavaScript mutants itself. The supported report path and its exact
+producer contract are in the
+[JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-and-r2-by-ingestion).
+R3 (the cause-sensitive canary) remains unregistered because its producer path
+is not wired into the CLI.
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the

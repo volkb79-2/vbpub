@@ -106,7 +106,7 @@ items:
   - {id: B102, title: "Repo-wide DIRTY_TREE refusal for snapshot lanes; declared dirty_ignore globs plus --allow-dirty override marked in the verdict", type: feature, component: isolation, context_estimate: medium}
   - {id: B103, title: "Execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL (stub -- design carved on unmerged branch assay-b099-p35-repair, ID collision with main B099/A-448 only -- A-449/A-450 exist only on the branch, not yet on main, see report)", type: feature, component: execution, context_estimate: large}
   - {id: B104, title: "test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness FAILS on unmodified main: the normalized verdict differs from the frozen v6 witness, and the verdict schema has moved on to v11 since (B070) -- cause unexamined (witness staleness vs. dstdns pin drift vs. a real regression); also names the hazard that a Docker-reaching test runs by default in the local suite when a socket is present", type: bugfix, component: gate}
-  - {id: B105, title: "Assay's own source has no registered full-source R2 lane; the v7.0.0 release therefore carries no mutation evidence for assay itself (finding filed during Wave C P0)", type: bugfix, component: gate, context_estimate: small}
+  - {id: B105, title: "Add retained full-source R0-R3 self-qualification evidence for Assay itself before M7; the Wave C release gate remains R0-only", type: bugfix, component: gate, context_estimate: large}
   - {id: B106, title: "Incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence", type: feature, component: mutation, context_estimate: large}
 ---
 
@@ -154,7 +154,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
-- B105 — assay itself has no full-source R2 lane and no release mutation evidence — OPEN (finding filed in P0; not a Wave C implementation package)
+- B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only)
 
 **Filed after the 2026-09-23 triage**
 - B106 — provenance-safe selective mutation reruns across source/test changes — OPEN (filed 2026-09-25 from CMRU's 494-candidate mutation campaign)
@@ -10652,7 +10652,7 @@ cross-repo-dependent, container-backed test to be in scope.
 
 ## B105 — assay's own source has no full-source R2 lane, so its release carries no mutation evidence for assay itself
 
-**Status: OPEN (finding filed during Wave C P0, 2026-09-23) — assay's registered release gate is R0-only and the release mutation attempts found no candidates; no full-source mutation pass is claimed.**
+**Status: OPEN — next package after the single Wave C release and required before M7 (operator agreement, 2026-09-25). The Wave C pre-release gate remains R0-only.**
 
 **Evidence:** `assay/run-gate.toml` registers only `tester-unified`, and
 `assay.toml` declares that lane R0-only. The assay-v7.0.0 release controller
@@ -10662,11 +10662,43 @@ record distinguishes the CIU lane's `INCONCLUSIVE/NO_MUTANTS`
 [`assay-WAVE-B101-CONTROLLER-LOG.md`](reports/assay-WAVE-B101-CONTROLLER-LOG.md)
 "Release and final closeout".
 
-This finding is not an implementation package in Wave C. A later decision may
-either declare and qualify a full-source R2 lane or explicitly accept and
-document the absence of self-mutation evidence. The release gate's PASS remains
-valid for its configured acceptance suite; it does not imply R2 evidence for
-assay's own source.
+The Wave C release gate's PASS remains valid for its configured R0 acceptance
+suite; it does not imply R2 evidence for Assay's own source. B105 closes this
+gap after that release by adding a deliberately invoked self-qualification run
+through `tester-unified`, separate from the ordinary R0-only release lane. It
+must measure the exact final B105 source tree and retain the verifier-accepted
+report; code review alone is not evidence of qualification.
+
+### B105 acceptance
+
+- [ ] The self-qualification scope declares all production Python source under
+      `src/assay`; any exclusion is named, justified, and reviewable.
+- [ ] R0 runs Assay's declared test command in the registered gate
+      environment. R1 uses `whole_target` over the declared source and measures
+      branch arcs across that whole target (`require_branch = true`) with a
+      100% branch floor; no source path disappears from the denominator by
+      being absent from the diff. Any exception to the 100% floor requires an
+      explicit decision and evidence before it can ship.
+- [ ] R2 runs native mutation over the full declared source target and
+      produces a complete, unsharded, verifier-accepted candidate inventory
+      and outcomes. No budget-limited, sentinel, partial, or no-candidate
+      result is described as an R2 pass. Surviving or equivalent mutants stay
+      visible and receive the disposition the configured contract requires.
+- [ ] R3 executes the declared canary contract against the self-qualification
+      source, with positive and negative controls proving the canary detects
+      the intended change and the restoration.
+- [ ] A separately invocable self-qualification gate/lane records R0, R1,
+      R2, and R3 evidence from the same exact source revision. Its final report
+      passes `assay verify`, is retained with its source revision and gate log,
+      and is produced inside `tester-unified`; this is required before M7
+      starts.
+- [ ] The long R2 campaign uses the estate's `--resume --progress` contract
+      and remains independent of host load or scheduling. B106 selective reuse
+      may reduce later reruns only when current evidence proves each reused
+      result; an uncertain candidate runs fully.
+- [ ] README explains the self-qualification capability, DESIGN-GUIDE records
+      why it is separate from the fast release lane, and CONSUMERS.md includes
+      a pasteable invocation and report-verification example.
 
 ## B106 -- incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence
 

@@ -18,6 +18,7 @@ House style, set here for the nine packages that follow P01a:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -56,6 +57,64 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
 #: The monorepo checkout `assay/` sits in — a real repository only when the
 #: tree is IN that checkout (B063).
 REPO_ROOT = PROJECT_ROOT.parent
+
+
+def native_outcome(**fields):
+    """Build a valid synthetic native mutation outcome for verdict tests.
+
+    These test records need stable B106 provenance to exercise verdict
+    construction and serialization. The dedicated B106 tests remain the
+    independent checks of candidate identity derivation and reuse semantics.
+    """
+    from assay.candidate_identity import candidate_id_from_fields
+    from assay.verdict import MutantOutcome, MutationExecution
+
+    path = fields["path"]
+    start_byte = fields["start_byte"]
+    end_byte = fields["end_byte"]
+    operator = fields["operator"]
+    source_sha256 = hashlib.sha256(
+        ("assay-test-source\0" + path).encode("utf-8")
+    ).hexdigest()
+    mutated_file_sha256 = hashlib.sha256(
+        (
+            "assay-test-mutated\0"
+            + path
+            + f"\0{start_byte}\0{end_byte}\0{operator}"
+        ).encode("utf-8")
+    ).hexdigest()
+    candidate_id = candidate_id_from_fields(
+        path=path,
+        source_sha256=source_sha256,
+        start_byte=start_byte,
+        end_byte=end_byte,
+        mutated_file_sha256=mutated_file_sha256,
+        operator=operator,
+    )
+    return MutantOutcome(
+        **fields,
+        candidate_id=candidate_id,
+        source_sha256=source_sha256,
+        mutated_file_sha256=mutated_file_sha256,
+        execution=MutationExecution(mode="full"),
+    )
+
+
+def native_mutation(**fields):
+    """Build a completed synthetic native scope with an exact ID inventory."""
+    from assay.verdict import MUTATION_BUCKETS, Mutation
+
+    outcomes = [
+        outcome
+        for bucket in MUTATION_BUCKETS
+        for outcome in fields.get(bucket, ())
+    ]
+    candidate_ids = tuple(
+        outcome.candidate_id
+        for outcome in sorted(outcomes, key=lambda item: item.identity)
+    )
+    fields.setdefault("candidate_ids", candidate_ids)
+    return Mutation(**fields)
 
 
 def _parent_repository_toplevel() -> Path | None:

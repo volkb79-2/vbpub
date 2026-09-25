@@ -391,7 +391,16 @@ operators = ["python:compare-swap"]
         "replacement_sha256",
         "operator",
         "description",
+        "candidate_id",
+        "source_sha256",
+        "mutated_file_sha256",
+        "execution",
     }
+    assert len(killed["candidate_id"]) == 64
+    assert len(killed["source_sha256"]) == 64
+    assert len(killed["mutated_file_sha256"]) == 64
+    assert killed["execution"] == {"mode": "full"}
+    assert mutation["candidate_ids"] == [killed["candidate_id"]]
     assert killed["operator"] == "python:compare-swap"
     assert killed["start_byte"] < killed["end_byte"]
     assert len(killed["replacement_sha256"]) == 64
@@ -551,7 +560,16 @@ budget_per_candidate = "50s"
         "replacement_sha256",
         "operator",
         "description",
+        "candidate_id",
+        "source_sha256",
+        "mutated_file_sha256",
+        "execution",
     }
+    assert len(hung["candidate_id"]) == 64
+    assert len(hung["source_sha256"]) == 64
+    assert len(hung["mutated_file_sha256"]) == 64
+    assert hung["execution"] == {"mode": "full"}
+    assert mutation["candidate_ids"] == [hung["candidate_id"]]
     assert hung["operator"] == "python:compare-swap"
     r2_judgment = document["judgment"]["r2"]
     assert r2_judgment["liveness"] == {
