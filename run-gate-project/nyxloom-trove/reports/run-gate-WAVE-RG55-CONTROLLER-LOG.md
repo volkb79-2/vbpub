@@ -4187,3 +4187,32 @@ The host `host-escape systemctl show dev-gates.slice` check confirmed
 `LoadState=loaded` and `/dev.slice/dev-gates.slice`. `host-escape` also
 reported restoring the expected cgroup2 mount options; no tracked host-setup
 source was changed.
+
+### RW-331 — 2026-09-25 17:08:09Z — isolated P1 R2 family prepared; preserve shared jobs and network state
+
+To bypass RW-326 without touching its contradictory detached P6 checkout, an
+isolated local clone was created at
+`.worktrees/rg55-p1-r2-isolated`; its managed CIU worktree
+`.worktrees/rg55-p1-r2-isolated/.worktrees/rg55-p1-r2-isolated` is attached,
+clean, and at `f0fccaf6368c18d32c401574b2819075986249b6`. In the isolated
+clone only, `refs/remotes/origin/main` is pinned to the exact pre-wave base
+`e5e9b95c5ac8be3452c93f1066f9436347f862fd`; do not fetch/advance that ref.
+The candidate branch must remain quiet after its final tip is selected.
+
+CIU's `worktree create` also created the unique network
+`rg55-p1-r2-isolated-2be782-network` and attached the existing shared
+`dstdns-devcontainer-vb` cockpit container to it. This side effect was not
+visible in the command help; leave that attachment and network untouched.
+No file under `/workspaces/dstdns` was read or changed, and no prior network
+or container was detached, removed, or rewritten.
+
+At 17:06Z, read-only inspection found two unrelated campaign containers in
+the loaded `dev-gates.slice`: CMRU mutation
+`run-gate-vbpub-mutation-439942-1790345741` and assay
+`run-gate-vbpub-assay-224793-1790338344`. Both reported `NanoCpus=0`; the
+slice quota is 5 CPUs and host memory PSI `full avg10` was 0.33. The
+controller did not mutate either container. The two available agents were
+asked to identify ownership and apply the exact-name 3-CPU cap. One mutation
+lane is active; starting P1 R2 would be the second mutation lane and remain
+within the current three-lane estate limit. Recheck slice/PSI immediately
+before launch and verify P1's exact container cap after launch.
