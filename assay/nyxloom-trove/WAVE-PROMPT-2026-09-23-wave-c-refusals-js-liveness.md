@@ -9,9 +9,23 @@ open is named as open, with who decides and a default.
 **Scope, in order:** P0 (close-out reconciliation of assay-v7.0.0) → P1
 (B080, JS default-arg branch coverage) → P2 (B081 + B094 + B025's last test:
 refusals that tell the truth) → P3 (B095 + B076: liveness bounds) → P4 (B100,
-`assay analyze report`; conditional, see 8) → one release. Do not fold in any
-other backlog entry without asking the operator (section 0 lists what is
-deliberately left out and why).
+`assay analyze report`; conditional, see 8) → P5 (B106, provenance-safe
+selective mutation reuse; added by operator ruling 2026-09-25) → one release.
+Do not fold in any other backlog entry without asking the operator (section 0
+lists what is deliberately left out and why).
+
+**Operator rulings added 2026-09-25:** B106 is approved as P5 after P0–P4;
+verdict schema v13 is permitted if required for its evidence contract. A
+reason-code or lane-schema change is also permitted after a GPT-6-Luna xhigh
+recommendation and review, before the change is made. The 2026-09-25 GPT-6-Luna
+xhigh B106 design review recommends v13 verdict fields only; it finds no need
+for a lane-schema field or new reason code. Gate containers may run
+in parallel when host resources allow. Use a unique CIU worktree and the
+unique gate container name created by `run-gate.py`; no pre-gate RG-55 message
+is required. Keep every gate in
+`$CGROUP_PARENT_DEV_GATES` through the normal `run-gate.py` path. Host load may
+inform capacity admission for starting parallel containers, but test outcomes
+must not depend on host load or scheduling luck.
 
 **Glossary** (assay-internal terms used below):
 - **R0–R3** — rigor levels of a lane: R0 = the command's exit code; R1 =
@@ -50,6 +64,7 @@ deliberately left out and why).
 | P2 | B081, B094, B025 (last box) | one theme — **a refusal must say what is true**: a wrong remedy in a `GIT_FAILED` message, a wrong reason code for a bad `--rejudge` id, an unguarded call site. All small, all local |
 | P3 | B095, B076 | the two liveness leftovers deliberately deferred by RG-55's P7 (RW-53/RW-57): an unbounded per-second history list, and a recorded-but-unruled baseline gap |
 | P4 | B100 | a designed, oracle-complete operator/agent tool (`assay analyze report`) that removes the terminal-scraping and polling that every long gate hand-off currently needs |
+| P5 | **B106** | CMRU's 494-candidate, 4h09m50s campaign had to be repeated in full after judged inputs changed. Reuse must carry candidate identity and prove a current kill witness; uncertain candidates run again, and the final verdict must prove exhaustive coverage. |
 
 Deliberately NOT in this wave (do not pick these up):
 - **B103** (execution-interruption receipt, "P35") — design carved on unmerged
@@ -60,6 +75,8 @@ Deliberately NOT in this wave (do not pick these up):
 - **Deferred by operator triage 2026-09-23:** B020, B023, B026, B064 (R3 half),
   B073, B086. (B079 was on that list but shipped in v12 — see P0.)
 - **B105** (filed in P0) is a finding, not a package.
+- **B106 is no longer deferred from this wave**; the operator added it as P5
+  after P4 on 2026-09-25. No other backlog entry is added.
 
 ## 1. Where main stands (2026-09-23, `main` at `2f59fdd3`)
 
@@ -92,9 +109,12 @@ Deliberately NOT in this wave (do not pick these up):
      the controller rebuilt it from source (now `cmru 5.4.2.dev262+ge434b293`).
      It also reported cmru's child remapper nesting a relative orchestration
      config under the candidate worktree (P0 verifies and files it).
-- **Verdict schema is v12. This wave plans NO schema bump.** A new reason code,
-  a new verdict field, or a lane-schema (v2) change is a hard stop (section 12).
-- **The 12 gate phase markers are now:** `wheel-installed`,
+- **Verdict schema starts at v12. P0–P4 do not bump it. P5 may bump to v13
+  under the operator's 2026-09-25 ruling, but only for the B106 provenance
+  contract.** A reason-code or lane-schema change requires the operator's
+  further condition in the 2026-09-25 ruling (GPT-6-Luna xhigh recommendation
+  and review; section 12).
+- **The gate phase markers at this prompt's original HEAD were:** `wheel-installed`,
   `attestation-hardened`, `verdict-v5-accepted`,
   `lane-schema-v2-successors-verified`,
   `verdict-v6-v7-v8-v9-v10-hard-cut-verified`,
@@ -155,7 +175,8 @@ Deliberately NOT in this wave (do not pick these up):
 
 ## 3. Decision defaults (the operator may override before the package starts)
 
-- **D1 scope/order** as in the header. P0–P3 are the wave; P4 is conditional.
+- **D1 scope/order** as in the header. P0–P3 and P5 are required; P4 is
+  conditional, and P5 follows P4 or its explicit skip.
 - **D2 B076 → option (a): leave the baseline unbounded, record the ruling,
   make the docs say so.** Reason: assay's settled rule is "assay does not
   watch itself"; the caller's stall detection (run-gate RG-36) covers the
@@ -200,7 +221,10 @@ Deliberately NOT in this wave (do not pick these up):
   think it is warranted.
 - **D5 B080 shape is the carver's call** (constraints in P1) — but it is
   recorded as a decision row, with the rejected shapes named.
-- **D6 no verdict-schema, lane-schema, or reason-code change anywhere.**
+- **D6:** P0–P4 make no verdict-schema, lane-schema, or reason-code change.
+  P5 may bump the verdict schema to v13 for B106 under the 2026-09-25 ruling.
+  Before any P5 reason-code or lane-schema change, obtain the requested
+  GPT-6-Luna xhigh recommendation and review and record it in the P5 report.
 
 ## 4. P0 — close-out reconciliation (do first; docs/records only, no product code)
 
@@ -484,8 +508,8 @@ the ruling.
 
 ## 8. P4 — B100: `assay analyze report` (conditional)
 
-Start only when P0–P3 are merged and gated. If it is not merged at the
-release time-box, release without it and leave B100 OPEN.
+Start only when P0–P3 are merged and gated. If it is not merged by the P5
+start boundary, skip it and leave B100 OPEN; P5 still proceeds before release.
 
 **Requirements are `## B100` in the backlog** (a read-only, commit-bound,
 bounded, non-polling snapshot command over explicit verdict / progress / log
@@ -514,18 +538,109 @@ CONSUMERS, `docs/INTERNAL-CONSUMERS.md`. **Do not edit `AGENTS.md`** (estate-
 shared); put the suggested "controllers call `assay analyze report` after a
 long gate" wording in the controller log for the operator.
 
+## 8.1. P5 — B106: provenance-safe selective mutation reuse
+
+Start after P4 is merged and gated, or after P4 is explicitly skipped. P5 is
+in scope under the operator's 2026-09-25 ruling; do not release before it is
+complete. A verdict schema v13 is permitted for this package. A reason-code or
+lane-schema change is permitted only after the GPT-6-Luna xhigh recommendation
+and review required by the operator, recorded before implementation. That
+review recommends no such additional change.
+
+**Contract:** reuse must be based on current evidence, not candidate bytes
+alone. Add `assay plan <lane> --reuse-from <verdict>` as a read-only preview
+and `assay run <lane> --reuse-from <verdict>` as the execution option. Read one
+complete native R2 verdict, validate it with the current verifier, and classify
+current candidates as (a) eligible for a current witness replay, (b) prior
+outcomes that require a full current run, including survivors, crashes, hangs,
+budget exhaustion, equivalence and missing witnesses, (c) current candidates
+absent from the prior plan, or (d) prior candidate IDs no longer in the current
+plan. A complete source verdict may have an overall R2 FAIL because candidates
+survived; its individually verified killed outcomes can still supply witnesses.
+The run must always execute the current R0 baseline first and require PASS
+before any candidate replay.
+
+**Chosen safe granularity:** a v13 full pytest mutation run records the first
+call-phase failing pytest node ID for each killed candidate when that test is
+observable.
+On a later run, for an identical candidate ID, assay may replay the current
+pytest suite up to that prior witness. Preserve the full collected item list
+and its final order; do not deselect later items or alter collection, so
+session fixtures and plugins see the same collection and all setup before the
+witness executes. The witness node must occur exactly once. Stop the ordinary
+sequential runner only after the witness item completes; a report for that exact
+node must show a call-phase failure to certify a current kill. An earlier node
+failure or a setup/teardown error alone is insufficient. A PASS, skip, missing
+witness, malformed/oversized receipt, absent or duplicate node ID, unsupported
+pytest command, xdist or custom test-loop execution, or any other uncertain
+result triggers a separate full-suite execution in a fresh process against a
+freshly materialized copy of the same current candidate snapshot, with fresh
+output paths. Never carry forward a `survived`, `crashed`, `hung`,
+`budget_exceeded`, or `equivalent` outcome. New candidates and prior survivors
+always get a full run. The current run records per candidate whether it ran
+fully or was killed by a current witness-prefix replay, including the prior
+verdict digest, prior node ID, current node ID, and receipt of the current
+failed report. The previous artifact is an input to choose a replay point,
+never evidence for the current kill.
+
+**Compatibility and limits:** an existing v12 artifact has no complete
+candidate-ID inventory or test-level kill witness, so it proves no reusable
+candidate. When supplied for preview, classify the evidence as unproven and
+show that every current candidate will run fully; when supplied for execution,
+report this fallback before continuing. A missing or malformed path is a
+preflight refusal. Only direct sequential pytest command forms supported by
+the adapter can capture/replay witnesses; wrapped, parallel, or otherwise
+unsupported test commands safely run every current candidate in full. A
+replay that reaches the witness only after most of the suite may save little
+time; the feature promises correctness and records the measured work, not a
+particular speedup.
+
+**Completeness:** v13 native mutation verdicts carry an exhaustive current
+candidate-ID inventory and one candidate ID on every outcome. Each ID is bound
+to recorded identity inputs sufficient to recalculate it: relative path,
+operator, source-file SHA-256, mutation span, and mutated-file SHA-256. Closed
+per-item execution provenance records `full` or `witness-prefix`. A full run
+may include a call-phase failure witness for later reuse. A witness-prefix run
+must include the prior verdict digest, prior witness node ID, matching current
+node ID, and receipt of the current failed call-phase report. `assay verify`
+requires inventory/outcome sets to be equal, duplicate-free, disjoint across
+outcome buckets, structurally valid for the recorded execution mode, and each
+candidate ID to match its recorded identity inputs. The producer refuses to
+claim a complete run when any candidate has neither a fresh full outcome nor
+a valid current replay.
+An ordinary `--resume` continues to require its exact judge identity;
+`--rejudge` overrides selective replay and forces a full run for the named
+candidate. A survivor-only or sharded run is never a complete campaign.
+
+**Required oracles:** a v12 prior artifact yields no reusable outcomes; a v13
+complete pytest campaign with killed, surviving, and timed-out candidates
+classifies each safely; changed candidate bytes become new work; changed tests
+are exercised under the current command; replay failure is accepted only when
+the designated current node's call-phase report fails after current baseline
+PASS; witness pass, deleted test, fake/oversized receipt, duplicate/missing
+IDs, mutated prior outcome, changed source or mutated-file digest, and
+unsupported/xdist command all cause full execution or refusal; resume/rejudge
+retain their current contracts; a complete verdict passes `assay verify` and
+the registered gate while missing, duplicate, stale, or unproven coverage does
+not. Docs in the same package: README feature and
+DESIGN-GUIDE rationale, plus a pasteable CONSUMERS example showing full-run
+witness capture and a later `--reuse-from` run. The docs must state the v12
+cold-start and unsupported-command full-run behavior.
+
 ## 9. Process — how to run it
 
 Sections 7.1 (worktrees/branches), 7.2 (roles) and 7.3 (host rules) of
 `WAVE-PROMPT-2026-09-23-b101-isolation.md` apply unchanged — read them. The
 essentials, and what changed:
 
-- **Worktrees:** one per package under `/workspaces/vbpub/.worktrees/<branch>`
-  from current `main`, merged serially `--no-ff` (`git merge --no-ff -F
-  <msgfile> <branch>` after checking `git status`); suggested branches
+- **Worktrees:** create one unique `ciu worktree` per package under
+  `/workspaces/vbpub/.worktrees/<branch>` from current `main`, merged serially
+  `--no-ff` (`git merge --no-ff -F <msgfile> <branch>` after checking
+  `git status`); suggested branches
   `assay-wave-c-p0-closeout`, `assay-b080-js-default-arg`,
   `assay-refusals-b081-b094-b025`, `assay-liveness-b095-b076`,
-  `assay-b100-analyze-report`. Direct commits in the shared checkout only with
+  `assay-b100-analyze-report`, `assay-wave-c-p5-b106-selective-reuse`.
+  Direct commits in the shared checkout only with
   `git commit --only -- <paths>`. Never bare `git stash`. Edit files with the
   Edit tool / apply_patch, never sed. Remove each worktree and branch once
   merged. After every agent returns, check `git status` of its worktree before
@@ -543,24 +658,23 @@ essentials, and what changed:
   `PYTHONPATH=src`, from `assay/`; no `-n auto`; keep
   `--deselect tests/test_gate_qualify_dstdns_sql.py` in plain local runs (it
   is Docker-reaching; the previous wave's full local run was 4799 passed,
-  19 skipped, 95 deselected). One gate container at a time; cap it with
-  `docker update --cpus=3 <exact container name>`; remove containers by exact
-  name only. **Operator ruling 2026-09-23:** a short assay `tester-unified`
-  gate may run beside the RG-55 continuation's long mutation campaigns. The
-  measured gate is ~19–21 min, longer than the "~10 min" the ruling was worded
-  for: before each launch read `/proc/loadavg` (8 cores; do not start above
-  the core count), cap the container immediately, and tell the RG-55
-  controller — if either check fails, wait rather than start.
-- **Gate (per package, before merge)** — 60-min budget, run detached:
-  ```
-  cd /workspaces/vbpub/.worktrees/<branch>/assay
-  setsid nohup bash -c '{ nice -n10 python3 run-gate.py tester-unified --worktree /workspaces/vbpub/.worktrees/<branch>; echo GATE_EXIT=$?; } > <log> 2>&1' &
-  # then cap the container named on the log's ASSAY_GATE_CONTAINER= line:
-  docker update --cpus=3 <that exact name>
-  ```
-  PASS, read from the log in a separate step: `GATE_EXIT=0`,
-  `ASSAY_REGISTERED_GATE_COMPLETE=1`, all 12 `ASSAY_GATE_PHASE=` markers of
-  section 1. A bare `pytest tests/` pass is NOT gate-verified.
+  19 skipped, 95 deselected). Parallel gates are allowed when host CPU and
+  memory capacity permit. Every gate runs from its unique CIU worktree through
+  `./run-gate.py tester-unified`; run-gate places it under
+  `$CGROUP_PARENT_DEV_GATES` and emits a unique container name. Cap each exact
+  container with `docker update --cpus=3 <exact container name>` and remove
+  containers by exact name only. Do not wait on, contact, or serialize against
+  RG-55 for an assay gate. CIU's stale RG-55 worktree metadata is not permission
+  to edit any `rg55-*` worktree. Keep test assertions independent of host load
+  and thread scheduling; use protocol synchronization instead of sleeps or
+  incidental timing.
+- **Gate (per package, before merge)** — 60-min budget, run from its worktree:
+  `./run-gate.py tester-unified`. Read `GATE_EXIT`,
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, and every expected
+  `ASSAY_GATE_PHASE=` marker from the completed run log. P0–P4 require the 12
+  markers recorded at their merged tree; P5 also requires
+  `verdict-v13-successors-verified`. A bare `pytest tests/` pass is NOT
+  gate-verified.
 
 ### 9.1 Release, deploy, notify ("shipped" = all of these)
 - Standing authorization: merge, push and `cmru release` in vbpub without
@@ -568,9 +682,10 @@ essentials, and what changed:
 - One release for the whole wave. `cmru release assay` from
   `/workspaces/vbpub` (the project is positional; no `--project` flag). Push
   `main` to origin FIRST (the release snapshots `origin/main`). Run
-  `--dry-run` first and read the planned version: expect **7.1.0** (a `feat`
-  commit) or 7.0.1; **never `--major`** — no schema bump is planned, and a
-  planned major means some commit carries `!`: find it, do not force it. Never
+  `--dry-run` first and read the planned version from the final commits. Do not
+  force a major/minor/patch override: a v13 compatibility change may affect
+  semver, so inspect cmru's decision and ensure the commit classification
+  matches the shipped contract. Never
   `--resume` without re-checking the version (the nyxloom v1.0.0 incident).
   Run it detached (`setsid nohup bash -c '{ cmru release …; echo
   CMRU_RELEASE_EXIT=$?; } > log 2>&1' &`) and read the exit marker. The gate
@@ -598,7 +713,7 @@ essentials, and what changed:
   (read-only) to see what it did about the defect and say what it can undo.
 - **`CHANGES.md` after the release:** during the wave, hand-written entries
   live in `## [Unreleased]` (docs-sync); cmru will insert its generated
-  `## [7.1.0]` section BELOW the history marker and will NOT fold them. After
+  version section BELOW the history marker and will NOT fold them. After
   the release, MOVE (do not delete) the hand-written entries into the new
   generated section and leave `## [Unreleased]` empty — a small docs commit,
   reviewed like any other. Never put the entries under
@@ -624,12 +739,13 @@ essentials, and what changed:
 
 - P0: `CHANGES.md` folded; backlog list and status lines correct (including
   B079); B105 filed; the cmru findings filed or recorded as not reproduced.
-- P1–P3 (and P4 if started): carved, implemented, adversarially reviewed
+- P1–P3, P4 (if started), and P5: carved, implemented, adversarially reviewed
   (findings fixed or explicitly ruled), the package branch gated PASS on a
   tree that already contains current `main` (merge `main` into the branch
   first if it moved), merged `--no-ff`, pushed — the release's own
-  `tester-unified` run is the gate for the final tip; docs in the same package; decisions A-456+ and
-  backlog B080/B081/B094/B025/B095/B076 (+B100) carry DONE/RULED with
+  `tester-unified` run is the gate for the final tip; docs in the same package;
+  decisions A-456+ and backlog B080/B081/B094/B025/B095/B076 (+B100, B106)
+  carry DONE/RULED with
   commit/version evidence; B089 cross-referenced.
 - Released, deployed into the devcontainer, dstdns notified, RG-55 told.
 - Real-consumer confirmation for B080: the minimized real-shaped fixture passes
@@ -641,8 +757,10 @@ essentials, and what changed:
 
 ## 12. Stop and ask the operator when
 
-- any package would need a verdict-schema bump, a new reason code, or a
-  lane-schema change (v12 stays; D6);
+- any package other than P5 would need a verdict-schema bump; P5 may use v13
+  for B106. Do not make a P5 lane-schema or reason-code change until the
+  requested GPT-6-Luna xhigh recommendation and review is complete and
+  recorded;
 - the B080 fix would change B054's ruling, or would change a previously-PASS
   verdict's numbers;
 - B094 can only be delivered by extending `verify.py`'s accepted reasons
