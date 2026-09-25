@@ -10,6 +10,7 @@ effect of some larger scenario.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -837,6 +838,132 @@ def test_read_events_progress_skips_blank_and_torn_lines(tmp_path: Path) -> None
     count, saw_finish = liveness._read_events_progress(events, 0)
     assert count == 1
     assert saw_finish is False
+
+
+def test_incremental_event_reader_matches_full_scan_as_lines_arrive(
+    tmp_path: Path,
+) -> None:
+    """B095: append parsing preserves torn-tail and finish-pid semantics."""
+    events = tmp_path / "incremental.ndjson"
+    reader = liveness._EventProgressReader(candidate_pid=100)
+    assert reader.read(events) == liveness._read_events_progress(events, 0, 100)
+
+    chunks = (
+        (
+            b'\n{"event":"session_start","pid":100,"t":0}\n'
+            b'{"event":"session_finish","pid":101,"t":1,'
+        ),
+        (
+            b'"exitstatus":0}\n'
+            b'{"event":"session_finish","pid":100,"t":2}'
+        ),
+        (
+            b'x\n'
+            b'{"event":"session_finish","pid":true,"t":3}\n'
+            b'{"event":"test","pid":100,"t":4,"nodeid":"torn"'
+        ),
+        b'}\n',
+    )
+    for chunk in chunks:
+        with events.open("ab") as stream:
+            stream.write(chunk)
+        assert reader.read(events) == liveness._read_events_progress(events, 0, 100)
+
+
+@pytest.mark.parametrize(
+    "separator",
+    (
+        "\n",
+        "\r",
+        "\r\n",
+        "\v",
+        "\f",
+        "\x1c",
+        "\x1d",
+        "\x1e",
+        "\x85",
+        "\u2028",
+        "\u2029",
+    ),
+    ids=(
+        "lf",
+        "cr",
+        "crlf",
+        "vt",
+        "ff",
+        "file-separator",
+        "group-separator",
+        "record-separator",
+        "nel",
+        "line-separator",
+        "paragraph-separator",
+    ),
+)
+def test_incremental_event_reader_matches_full_scan_line_boundaries(
+    tmp_path: Path, separator: str
+) -> None:
+    """Match the full reader's ``str.splitlines`` boundary behavior."""
+    events = tmp_path / "line-boundaries.ndjson"
+    events.write_text(
+        separator.join(
+            (
+                '{"event":"test","pid":100}',
+                '{"event":"session_finish","pid":100}',
+            )
+        ),
+        encoding="utf-8",
+    )
+    reader = liveness._EventProgressReader(candidate_pid=100)
+    assert reader.read(events) == liveness._read_events_progress(events, 0, 100)
+    assert reader.read(events) == (2, True)
+
+
+def test_incremental_event_reader_matches_full_scan_for_separator_inside_json_string(
+    tmp_path: Path,
+) -> None:
+    """A Unicode ``splitlines`` separator in a JSON string is split by the
+    reference parser too, so incremental parsing must preserve that behavior.
+    """
+    events = tmp_path / "separator-in-string.ndjson"
+    events.write_text(
+        '{"event":"test","pid":100,"nodeid":"before\u0085after"}\n'
+        '{"event":"session_finish","pid":100}\n',
+        encoding="utf-8",
+    )
+    reader = liveness._EventProgressReader(candidate_pid=100)
+    assert reader.read(events) == liveness._read_events_progress(events, 0, 100)
+
+
+def test_incremental_event_reader_resets_when_candidate_file_is_replaced_or_truncated(
+    tmp_path: Path,
+) -> None:
+    events = tmp_path / "replace.ndjson"
+    reader = liveness._EventProgressReader(candidate_pid=100)
+    events.write_text('{"event":"session_finish","pid":100}\n', encoding="utf-8")
+    assert reader.read(events) == (1, True)
+    original_identity = (events.stat().st_dev, events.stat().st_ino)
+
+    # Replace while the old destination still exists. The new file is longer
+    # than the old one, so the reader must notice the inode change rather than
+    # accidentally passing because the size shrank below its byte offset.
+    replacement = tmp_path / "replacement.ndjson"
+    replacement.write_text(
+        "".join(
+            f'{{"event":"test","pid":100,"nodeid":"item-{i}"}}\n'
+            for i in range(3)
+        ),
+        encoding="utf-8",
+    )
+    os.replace(replacement, events)
+    replacement_identity = (events.stat().st_dev, events.stat().st_ino)
+    assert replacement_identity != original_identity
+    assert events.stat().st_size > len('{"event":"session_finish","pid":100}\n')
+    assert reader.read(events) == (3, False)
+
+    # In-place truncation is a separate reset path; a shorter valid stream
+    # replaces the accumulated three-record summary.
+    events.write_text('{"event":"test"}\n', encoding="utf-8")
+    assert reader.read(events) == (1, False)
 
 
 # --------------------------------------------------------------------------

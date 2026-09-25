@@ -532,6 +532,34 @@ def _linked_worktree_gap(repo_top: Path) -> str | None:
     )
 
 
+def _dubious_ownership_gap(repo_top: Path, stderr: str) -> str | None:
+    """Name Git's dubious-ownership refusal and replace its unusable remedy.
+
+    Git recommends granting ``safe.directory`` through global configuration
+    for this refusal. Assay deliberately replaces the child environment and
+    points Git's global/system configuration at ``os.devnull`` (A-173), so
+    that recommendation cannot work here. This is a diagnostic-only probe:
+    it is called only after the bootstrap command failed, and it recognizes
+    Git's measured fatal line rather than treating every bootstrap failure as
+    an ownership problem.
+    """
+    fatal_prefix = "fatal: detected dubious ownership in repository at "
+    fatal_line = next(
+        (line for line in stderr.splitlines() if line.startswith(fatal_prefix)),
+        None,
+    )
+    if fatal_line is None:
+        return None
+    return (
+        f"Git reported a dubious ownership mismatch for {repo_top}. Assay "
+        f"replaces Git's environment with `GIT_CONFIG_NOSYSTEM=1` and "
+        f"`GIT_CONFIG_GLOBAL={os.devnull}`, so `safe.directory` cannot be "
+        f"granted through configuration Git can consult here. Run assay as "
+        f"the repository owner or fix the tree's ownership/uid mapping. "
+        f"{fatal_line}"
+    )
+
+
 def _resolve_repo(
     repo: Path, git_executable: Path, *, remaining: Remaining | None = None
 ) -> _ResolvedRepo:
@@ -559,7 +587,8 @@ def _resolve_repo(
     ]
     returncode, stdout, stderr = _run_bounded(argv, remaining=remaining)
     if returncode != 0:
-        detail = stderr.decode("utf-8", errors="replace").strip()[:200]
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        detail = stderr_text[:200]
         # (B068) The bare git `fatal:` is kept -- it is the primary evidence
         # and must not be renamed -- but when the cause is the one this
         # project has actually measured in the field, it is NAMED first,
@@ -571,6 +600,12 @@ def _resolve_repo(
                 f"{gap}. git rev-parse --absolute-git-dir failed resolving "
                 f"{repo_top} ({returncode}): {detail}"
             )
+        # Keep the historical cap on generic stderr passthrough, but inspect
+        # the already-bounded raw stderr for Git's ownership fatal line: a
+        # legitimate long checkout path can make that line exceed 200 chars.
+        ownership_gap = _dubious_ownership_gap(repo_top, stderr_text)
+        if ownership_gap is not None:
+            raise _git_failed(ownership_gap)
         raise _git_failed(
             f"git rev-parse --absolute-git-dir failed resolving {repo_top} "
             f"({returncode}): {detail}"

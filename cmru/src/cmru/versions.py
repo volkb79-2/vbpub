@@ -131,7 +131,7 @@ def _write_text_atomic(path: Path, content: str) -> None:
 def _toml_key(value: str) -> str:
     if _BARE_KEY.fullmatch(value):
         return value
-    return json.dumps(value, ensure_ascii=False)
+    return json.dumps(value)
 
 
 def _toml_value(value: object) -> str:
@@ -336,18 +336,20 @@ def _resolve_target(
         pools: dict[str, dict[str, Candidate]] = {}
         for source_type, source in source_tables.items():
             records = candidates(source_type, source, constraint)
-            eligible = {
+            compatible = {
                 key: candidate for key, candidate in records.items()
-                if version_satisfies(candidate.version, constraint) and candidate.released_at <= cutoff
+                if version_satisfies(candidate.version, constraint)
+            }
+            eligible = {
+                key: candidate for key, candidate in compatible.items()
+                if candidate.released_at <= cutoff
             }
             if not eligible:
-                newest_date = max((item.released_at for item in records.values()), default=None)
-                if newest_date is None:
+                if not compatible:
                     detail = "registry returned no compatible candidates"
-                elif newest_date > cutoff:
-                    detail = f"newest compatible release is {_timestamp(newest_date)}, newer than the cutoff"
                 else:
-                    detail = "registry returned no version supported by the declared constraint syntax"
+                    newest_date = max(item.released_at for item in compatible.values())
+                    detail = f"newest compatible release is {_timestamp(newest_date)}, newer than the cutoff"
                 raise VersionsError(
                     f"target {target_id!r} source {source_type} has no age-eligible version: {detail} "
                     f"(age_window_days={age_window_days}, cutoff={_timestamp(cutoff)})"
@@ -969,7 +971,7 @@ def _versions_init(forge: ForgeConfig, projects: list[str], *, dry_run: bool) ->
             try:
                 effective = (
                     deep_merge_versions(dict(forge.versions), versions)
-                    if forge.orchestration is not None else versions
+                    if forge.orchestration else versions
                 )
                 parse_versions_section(effective, f"{config_path}: effective [versions]")
             except ValueError as exc:
@@ -1350,15 +1352,23 @@ def _run_npm(
         overrides[name] = version
         for field in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
             values = document.get(field, {})
-            if isinstance(values, dict) and name in values:
+            if not isinstance(values, dict):
+                continue
+            if name in values:
                 values[name] = version
     package_json.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     npm_results = [results[target_id] for _name, (_version, target_id) in package_versions.items()]
     cutoff = min(result.age_cutoff for result in npm_results)
     command = ["npm", "install", "--package-lock-only", "--ignore-scripts", "--before", _timestamp(cutoff)]
     command.extend(("--registry", registry))
-    scopes = sorted({name.split("/", 1)[0] for name in package_versions if name.startswith("@") and "/" in name})
-    command.extend(f"--{scope}:registry={registry}" for scope in scopes)
+    scopes: set[str] = set()
+    for name in package_versions:
+        if not name.startswith("@"):
+            continue
+        if "/" not in name:
+            continue
+        scopes.add(name.split("/", 1)[0])
+    command.extend(f"--{scope}:registry={registry}" for scope in sorted(scopes))
     age_exclusions = []
     for name, (_version, target_id) in package_versions.items():
         result = results[target_id]
@@ -1444,10 +1454,36 @@ def _temporary_netrc(
             pass
 
 
+def _go_workspace_files(project_root: Path, environment: Mapping[str, str]) -> list[Path]:
+    """Ask Go which workspace it will use and return every mutable workspace file."""
+    try:
+        completed = subprocess.run(
+            ["go", "env", "GOWORK"], cwd=project_root, text=True,
+            capture_output=True, check=False, timeout=20, env=dict(environment),
+        )
+    except FileNotFoundError as exc:
+        raise VersionsPrerequisiteError("Go targets require go on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise VersionsOperationError("Go workspace detection did not finish within 20 seconds") from exc
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise VersionsOperationError(
+            f"could not determine the Go workspace (exit {completed.returncode}): {detail[-1200:]}"
+        )
+    value = completed.stdout.strip()
+    if not value or value == "off":
+        return []
+    workspace = Path(value)
+    if not workspace.is_absolute():
+        workspace = project_root / workspace
+    return [workspace, Path(str(workspace) + ".sum")]
+
+
 def _run_go(
     project_root: Path,
     module_versions: Mapping[str, tuple[str, str]],
     module_sources: Mapping[str, Mapping[str, str]],
+    transaction: _FileTransaction | None = None,
 ) -> None:
     if not module_versions:
         return
@@ -1477,6 +1513,9 @@ def _run_go(
     with _temporary_netrc(proxy, token_env, username_env, password_env) as netrc:
         if netrc is not None:
             environment["NETRC"] = str(netrc)
+        if transaction is not None:
+            for workspace_path in _go_workspace_files(project_root, environment):
+                transaction.track(workspace_path)
         try:
             completed = subprocess.run(
                 command, cwd=project_root, text=True, capture_output=True, check=False,
@@ -1718,8 +1757,9 @@ def _run_resolve(
         _assert_unique_output_paths(prepared_native[name])
 
     transaction = _FileTransaction()
-    if root_path is not None and root_results:
-        transaction.track(root_path)
+    if root_path is not None:
+        if root_results:
+            transaction.track(root_path)
     for name, path in project_paths.items():
         if project_results[name]:
             transaction.track(path)
@@ -1737,8 +1777,9 @@ def _run_resolve(
             transaction.track(project_root / "go.sum")
 
     try:
-        if root_path is not None and root_results:
-            _apply_resolved_state(root_path, root_results)
+        if root_path is not None:
+            if root_results:
+                _apply_resolved_state(root_path, root_results)
         for name, path in project_paths.items():
             if project_results[name]:
                 _apply_resolved_state(path, project_results[name])
@@ -1754,8 +1795,10 @@ def _run_resolve(
                 declaration = declarations[name].get(target_id, {})
                 source = declaration.get("npm", {})
                 candidate = result.sources.get("npm")
-                if not isinstance(source, dict) or candidate is None:
+                if not isinstance(source, dict):
                     raise VersionsError(f"npm source declaration missing for target {target_id!r}")
+                if candidate is None:
+                    raise VersionsError(f"npm candidate missing for target {target_id!r}")
                 package_name = str(source["name"])
                 previous_package = package_versions.get(package_name)
                 if previous_package and previous_package[0] != candidate.version:
@@ -1769,8 +1812,10 @@ def _run_resolve(
                 declaration = declarations[name].get(target_id, {})
                 source = declaration.get("go", {})
                 candidate = result.sources.get("go")
-                if not isinstance(source, dict) or candidate is None:
+                if not isinstance(source, dict):
                     raise VersionsError(f"Go source declaration missing for target {target_id!r}")
+                if candidate is None:
+                    raise VersionsError(f"Go candidate missing for target {target_id!r}")
                 module_name = str(source["module"])
                 previous_module = module_versions.get(module_name)
                 if previous_module and normalized_version(previous_module[0]) != normalized_version(candidate.version):
@@ -1782,7 +1827,7 @@ def _run_resolve(
             if package_versions:
                 _run_npm(project_root, package_versions, results, previous, package_sources)
             if module_versions:
-                _run_go(project_root, module_versions, module_sources)
+                _run_go(project_root, module_versions, module_sources, transaction)
             for path, content in prepared_native[name]:
                 _write_text_atomic(path, content)
     except BaseException:

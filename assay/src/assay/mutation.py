@@ -156,6 +156,7 @@ __all__ = [
     "ExecutorFactory",
     "MutantJob",
     "MutationDiscoveryError",
+    "InvalidRejudgeIdError",
     "MutationSite",
     "MutationTarget",
     "PROGRESS_EVENTS",
@@ -276,6 +277,33 @@ class MutationStateError(AssayError):
             message,
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+
+
+class InvalidRejudgeIdError(AssayError):
+    """A requested candidate id is absent from the current candidate set."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+
+def _reject_unknown_rejudge_ids(
+    rejudge_ids: frozenset[str], current_ids: set[str]
+) -> None:
+    unknown_rejudge_ids = rejudge_ids - current_ids
+    if unknown_rejudge_ids:
+        raise InvalidRejudgeIdError(
+            "--rejudge named a candidate id not present in "
+            "this run's selected candidate set (unknown, stale "
+            "because source bytes changed, or excluded by the selected "
+            "operators/shard -- B088's own 'an identity that "
+            "no longer matches current reality must not be "
+            "silently trusted' principle): "
+            f"{sorted(unknown_rejudge_ids)}"
         )
 
 
@@ -2201,6 +2229,10 @@ def run_mutation(
             return Mutation(candidate_count=candidate_count, total=0)
         total = candidate_count
         if total == 0:
+            # A source edit can remove the last mutation site. Its former id
+            # is still invalid input; do not turn the request into NO_MUTANTS.
+            if rejudge_ids:
+                _reject_unknown_rejudge_ids(rejudge_ids, set())
             _end(_no_buckets, reason="no_candidates", total=0)
             return Mutation(candidate_count=0, total=0)
 
@@ -2266,18 +2298,9 @@ def run_mutation(
             # item cross-references: an identity that no longer matches
             # current reality must not be silently trusted.
             if rejudge_ids:
-                current_ids = {candidate_id(job) for job in selected_jobs}
-                unknown_rejudge_ids = rejudge_ids - current_ids
-                if unknown_rejudge_ids:
-                    raise MutationStateError(
-                        "--rejudge named a candidate id not present in "
-                        "this lane's current candidate set (unknown, or "
-                        "the mutant's own source bytes changed since the "
-                        "id was recorded -- B088's own 'an identity that "
-                        "no longer matches current reality must not be "
-                        "silently trusted' principle): "
-                        f"{sorted(unknown_rejudge_ids)}"
-                    )
+                _reject_unknown_rejudge_ids(
+                    rejudge_ids, {candidate_id(job) for job in selected_jobs}
+                )
             for job in selected_jobs:
                 record = _load_validated_state_record(state_root, job, judge=judge)
                 if record is _RECORD_REJECTED:

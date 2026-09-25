@@ -226,8 +226,9 @@ its own fakes or state probes.
 
 See [`SPEC.md`](SPEC.md) for the complete behavioral contract;
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for install, migration, and
-responsibility guidance; and [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md)
-for the design rationale.
+responsibility guidance; [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md)
+for the design rationale; and [`BACKLOG.md`](BACKLOG.md) for open library
+follow-ups.
 
 ## Test and gate
 

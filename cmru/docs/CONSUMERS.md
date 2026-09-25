@@ -200,7 +200,8 @@ version shared by multiple sources. The constraint is a comma-separated SemVer-c
 
 For a private source, add either `token_env` or the pair `username_env` and `password_env` to that
 source table. These values name environment variables; the credentials themselves stay outside
-the config. CMRU exits 3 when a named variable is unset or empty. `cmru versions init` uses the
+the config. Registry and Go proxy URLs must use HTTPS and must not include credentials, a query, or a
+fragment. CMRU exits 3 when a named variable is unset or empty. `cmru versions init` uses the
 public default registries and does not infer private credentials.
 
 Release timestamp evidence depends on the source. PyPI uses release-file upload time; npm uses
@@ -212,11 +213,22 @@ publisher-supplied `org.opencontainers.image.created` manifest annotation or ima
 `age_source` with each result so the source of age evidence is reviewable. An image-created time
 is not registry publication time. Missing or malformed timestamps fail closed.
 
+Registry clients follow HTTPS redirects, including redirects to signed blob storage. They retain
+`Authorization` only when the redirect stays on the same HTTPS origin (same scheme, host, and
+port). CMRU strips it when the origin changes and refuses HTTP downgrades or redirect URLs with
+embedded credentials or fragments. If a redirected host requires credentials, configure that
+host's canonical HTTPS endpoint in the source table.
+
 `resolve` writes a dated `constraints/constraints-YYYYMMDD.txt` plus the stable
 `constraints/constraints.txt` for PyPI targets in Python projects; set `PIP_CONSTRAINT` or pass
 `-c` to consume it. npm targets update direct package versions, overrides, and the lockfile with
 scripts disabled. When an override or looser per-target cutoff needs a package-specific age
-exception, npm 11.5.0 or newer is required. Go targets update `go.mod`/`go.sum`. OCI targets
+exception, npm 11.5.0 or newer is required. Go targets update `go.mod`/`go.sum`; in active Go
+workspace mode, the Go tool may also update `go.work`/`go.work.sum`. CMRU snapshots those files
+before `go get` and restores them if a later writer fails. For pseudo-versions, CMRU checks a
+version named by the target constraint and uses the proxy's `@latest` fallback when no listed
+version matches. If the proxy reports different commit times for the same version through `.info`
+and `@latest`, CMRU refuses the result. OCI targets
 write a dated and stable JSON record at `versions/oci-images-YYYYMMDD.json` and
 `versions/oci-images.json`; each record has
 `schema_version`, `generated_by`, `resolved_at`, and a `targets` mapping containing image, chosen

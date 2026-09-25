@@ -73,6 +73,7 @@ import os
 import signal
 import subprocess
 import time
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
@@ -647,7 +648,11 @@ LIVENESS_FALLBACK_FLOOR_S = 60.0
 
 def _iter_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
     """Yield every valid record in *events_path*, of EVERY event kind, in
-    file order -- THE one parse loop over one of these NDJSON side files.
+    file order for full-file readers such as calibration and reporting.
+
+    The monitoring loop uses :class:`_EventProgressReader` to avoid parsing
+    the same appended-only file from its beginning on every poll; that reader
+    preserves this helper's record and line-boundary semantics.
 
     `None` (never wired with `ASSAY_LIVENESS_EVENTS`), an absent/unreadable
     path, and a torn last line (the file's own writer still appending when
@@ -1020,8 +1025,10 @@ def _read_events_progress(
     `phase` (`setup`/`teardown`), `test` (`call`) and `session_finish` alike
     -- because the monitoring loop's question is "did this candidate do
     anything since the last tick", and a `setup` report is as good an answer
-    as a `call` report. It shares :func:`_iter_events` with the calibration
-    so the writer's vocabulary is read back in exactly one place.
+    as a `call` report. Calibration and the full-file helpers use
+    :func:`_iter_events` so their complete event vocabulary is parsed in one
+    place. The monitor uses :class:`_EventProgressReader`, whose incremental
+    parser preserves this helper's valid-record count and finish-pid semantics.
 
     *candidate_pid* is the real candidate process's pid, when the monitor has
     one. If every ``session_finish`` record is stamped, only that pid's finish
@@ -1048,6 +1055,148 @@ def _read_events_progress(
             _record_pid(record) == candidate_pid for record in finishes
         )
     return len(records), saw_session_finish
+
+
+class _EventProgressReader:
+    """Track one append-only candidate event file without rescanning it.
+
+    The public-to-this-module ``_read_events_progress`` helper remains the
+    full-file reference used by readers outside the monitor. A running
+    candidate gets one of these instead: each tick parses only bytes appended
+    since its previous tick, while retaining an unterminated tail so a
+    partially written final record can be completed on a later tick.
+
+    Candidate files are unlinked before launch and the pytest plugin appends
+    newline-terminated records. Device/inode changes and truncation reset the
+    reader so a replaced file is treated as a new stream.
+    """
+
+    def __init__(self, candidate_pid: int | None) -> None:
+        self._candidate_pid = _valid_pid(candidate_pid)
+        self._path: Path | None = None
+        self._identity: tuple[int, int] | None = None
+        self._offset = 0
+        self._pending = b""
+        self._count = 0
+        self._has_finish = False
+        self._all_finish_pids_valid = True
+        self._candidate_finish_seen = False
+
+    def _reset(
+        self,
+        path: Path | None = None,
+        identity: tuple[int, int] | None = None,
+    ) -> None:
+        self._path = path
+        self._identity = identity
+        self._offset = 0
+        self._pending = b""
+        self._count = 0
+        self._has_finish = False
+        self._all_finish_pids_valid = True
+        self._candidate_finish_seen = False
+
+    @staticmethod
+    def _parse_line(line: str) -> dict[str, Any] | None:
+        stripped = line.strip()
+        if not stripped:
+            return None
+        try:
+            record = json.loads(stripped)
+        except (ValueError, RecursionError):
+            return None  # Tolerant of a torn or malformed line.
+        return record if isinstance(record, dict) else None
+
+    def _consume(self, line: str) -> None:
+        record = self._parse_line(line)
+        if record is None:
+            return
+        self._count += 1
+        if record.get("event") != SESSION_FINISH_EVENT:
+            return
+        self._has_finish = True
+        record_pid = _record_pid(record)
+        if record_pid is None:
+            self._all_finish_pids_valid = False
+        elif record_pid == self._candidate_pid:
+            self._candidate_finish_seen = True
+
+    def _summary(self) -> tuple[int, bool]:
+        tail = self._parse_line(self._pending.decode("utf-8"))
+        tail_finish = tail is not None and tail.get("event") == SESSION_FINISH_EVENT
+        count = self._count + (tail is not None)
+        has_finish = self._has_finish or tail_finish
+        all_finish_pids_valid = self._all_finish_pids_valid
+        candidate_finish_seen = self._candidate_finish_seen
+        if tail_finish:
+            assert tail is not None
+            tail_pid = _record_pid(tail)
+            if tail_pid is None:
+                all_finish_pids_valid = False
+            elif tail_pid == self._candidate_pid:
+                candidate_finish_seen = True
+        saw_finish = has_finish
+        if self._candidate_pid is not None and has_finish and all_finish_pids_valid:
+            saw_finish = candidate_finish_seen
+        return count, saw_finish
+
+    def read(self, events_path: Path) -> tuple[int, bool]:
+        """Return the current valid-record count and finish status."""
+        try:
+            stat = events_path.stat()
+        except OSError:
+            self._reset()
+            return 0, False
+        identity = (stat.st_dev, stat.st_ino)
+        if (
+            events_path != self._path
+            or identity != self._identity
+            or stat.st_size < self._offset
+        ):
+            self._reset(events_path, identity)
+        try:
+            with events_path.open("rb") as stream:
+                stream.seek(self._offset)
+                appended = stream.read()
+        except OSError:
+            self._reset()
+            return 0, False
+        self._offset += len(appended)
+        lines = (self._pending + appended).decode("utf-8").splitlines(keepends=True)
+        if lines and not self._has_line_ending(lines[-1]):
+            self._pending = lines.pop().encode("utf-8")
+        else:
+            self._pending = b""
+        for line in lines:
+            self._consume(line)
+        return self._summary()
+
+    @staticmethod
+    def _has_line_ending(line: str) -> bool:
+        """Match every boundary recognized by ``str.splitlines()``."""
+        return bool(line) and line[-1] in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
+
+class _CpuSampleHistory:
+    """Keep only samples that can still be the trailing CPU-window edge."""
+
+    def __init__(self, window_s: float) -> None:
+        self._window_s = window_s
+        self._samples: deque[tuple[float, float]] = deque()
+
+    def add(self, now: float, cpu_seconds: float) -> float | None:
+        """Append a successful CPU reading and return the window baseline."""
+        self._samples.append((now, cpu_seconds))
+        # Retain the newest sample that is at least one window old. The next
+        # sample is also old enough exactly when the oldest one has become
+        # obsolete, so one left-pop preserves the reverse-list search's
+        # boundary choice without keeping older samples.
+        while len(self._samples) > 1 and now - self._samples[1][0] >= self._window_s:
+            self._samples.popleft()
+        oldest_t, oldest_cpu = self._samples[0]
+        if now - oldest_t >= self._window_s:
+            return oldest_cpu
+        return None
 
 
 def _safe_size(path: Path) -> int:
@@ -1305,11 +1454,8 @@ class LivenessRunner:
         session_finish_at: float | None = None
         last_stdout_size = 0
         last_stderr_size = 0
-        # (t, cpu_seconds) samples, oldest first -- enough history to find a
-        # sample at least `_HUNG_CPU_WINDOW_S` old, never trimmed further
-        # back than that (a candidate's own budget bounds how large this
-        # ever gets: at most `budget_seconds / poll_interval_s` entries).
-        cpu_samples: list[tuple[float, float]] = []
+        event_reader = _EventProgressReader(proc.pid)
+        cpu_samples = _CpuSampleHistory(_HUNG_CPU_WINDOW_S)
         while True:
             now = self._monotonic()
             if proc.poll() is not None:
@@ -1322,9 +1468,7 @@ class LivenessRunner:
                     stderr=stderr_text,
                 )
 
-            event_count, saw_session_finish = _read_events_progress(
-                events_path, last_event_count, proc.pid
-            )
+            event_count, saw_session_finish = event_reader.read(events_path)
             if event_count > last_event_count:
                 last_progress_at = now
             last_event_count = event_count
@@ -1349,22 +1493,7 @@ class LivenessRunner:
                 cpu_now = None
             cpu_growing = True
             if cpu_now is not None:
-                cpu_samples.append((now, cpu_now))
-                # Newest-to-oldest: the FIRST sample at least
-                # `_HUNG_CPU_WINDOW_S` old is the one closest to the trailing
-                # window's edge (samples are chronological oldest-first, and
-                # `now - sample_t` only ever grows as `sample_t` gets
-                # older, so this is the newest sample that still qualifies).
-                # Exhausting the loop with no `break` -- not enough history
-                # yet, e.g. the first `_HUNG_CPU_WINDOW_S` of any candidate's
-                # life -- leaves `baseline_cpu` `None`, which is the same
-                # "cannot prove no-growth" default a `/proc` read failure
-                # gets.
-                baseline_cpu: float | None = None
-                for sample_t, sample_cpu in reversed(cpu_samples):
-                    if now - sample_t >= _HUNG_CPU_WINDOW_S:
-                        baseline_cpu = sample_cpu
-                        break
+                baseline_cpu = cpu_samples.add(now, cpu_now)
                 if baseline_cpu is not None:
                     cpu_growing = (cpu_now - baseline_cpu) >= _HUNG_CPU_GROWTH_FLOOR_S
 

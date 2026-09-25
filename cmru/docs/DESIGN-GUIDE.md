@@ -37,6 +37,23 @@ provide an HTTP `Last-Modified` value; when they do not, CMRU accepts the publis
 fallback, with a warning. A source that provides no usable timestamp fails closed. These limits
 are visible in the report so an age cutoff does not claim stronger evidence than it has.
 
+Registry clients follow HTTPS redirects because registries can move blob bodies to signed storage
+URLs. The [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec/blob/main/spec.md)
+permits redirects and says clients must not forward `Authorization` across hosts unless configured
+to do so. CMRU retains it on redirects to the same HTTPS origin (scheme, host, and port), but
+removes it when the origin changes. HTTPS-to-HTTP redirects and redirect URLs with embedded
+credentials or fragments are refused. Registry and Go proxy endpoint URLs also reject embedded
+credentials, queries, and fragments so secrets and endpoint selection stay in the declared
+environment-backed auth fields. A redirected host that requires its own credentials must be
+configured as the source's canonical registry endpoint.
+
+The Go proxy's `@v/list` omits pseudo-versions. CMRU checks a pseudo-version named by a Go
+constraint through its `.info` endpoint and consults the proxy's `@latest` endpoint when no listed
+version satisfies the constraint. In workspace mode, `go get` may also update `go.work` and
+`go.work.sum`; resolve snapshots those files so a later writer failure rolls them back with
+`go.mod` and `go.sum`. If `.info` and `@latest` report different commit times for the same version,
+CMRU refuses the result because the age evidence is inconsistent.
+
 The registry clients determine direct target versions and the Python writer asks uv to compile
 their transitive dependency closure under the same cutoff. npm and Go use their native commands
 to update lock/module state. OCI selection writes a small JSON record; projects that need another

@@ -198,7 +198,8 @@ def test_scenario_mismatch_keeps_artifact_and_command_diagnostics(
     def materialize(**_kwargs):
         return repo, tmp_path / "witness.json", pytest_log, "b" * 40, "c" * 40
 
-    def invoke(_executable, _repo, artifact_path):
+    def invoke(_executable, _repo, artifact_path, *, record_progress=True):
+        assert record_progress is True
         artifact = {
             "commit": "c" * 40,
             "assay_version": "6.2.1.dev-test",
