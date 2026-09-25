@@ -28,9 +28,9 @@ Read, in this order: contract `run-gate-project/nyxloom-trove/
 RG55-INTERFACE-CONTRACT.md` §1–§7 (v1) and **§8 (v1.1 — the spec)** on
 `main`; design of record `DESIGN-2026-09-12-liveness-placement-admission.md`
 §2 (D-17..D-26), A1 (D-27..D-29), A2 (D-30); controller rulings RW-30,
-RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44, RW-45; the implementer
-handoff `cgprofile-P6-FOLLOWUPS-HANDOFF.md` (C1–C9); backlog rows CP-2,
-CP-4..CP-11; then the diff itself — `lib/serve.py`, `lib/liveness.py`,
+RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44, RW-45, RW-319..RW-328;
+the implementer handoff `cgprofile-P6-FOLLOWUPS-HANDOFF.md` (C1–C9);
+backlog rows CP-2, CP-4..CP-11; then the diff itself — `lib/serve.py`,
 `lib/placement.py`, `lib/events.py` use, `lib/analyze.py`, `lib/store.py`,
 `cgprofile.py`, `docs/PROTOCOL.md`, the ciu templates, `infra/`. Form your
 own view of correctness, safety and contract conformance BEFORE the
@@ -39,8 +39,8 @@ narratives. Run your OWN sweeps.
 ## Phase 2 — RECONCILE against the implementers' claims
 
 Read `cgprofile-P6-FOLLOWUPS-LOG.md` (incl. every "Decision asks" block),
-`-REPORT.md`, `-BRIEF-1..8.md`; check each claim; list what you could not
-verify. Eight sessions built this — hunt the seams between sessions.
+`-REPORT.md`, every `-BRIEF-1..10.md`; check each claim; list what you could
+not verify. Ten sessions built this — hunt the seams between sessions.
 
 ## Attack surface (minimum; add your own)
 
@@ -165,13 +165,31 @@ Write the round file, then return the verdict line first in your message.
 8 cores shared with a production game server; PSI is the signal
 (`cat /proc/pressure/memory`; launch nothing while `full avg10` > 5). pytest
 SERIAL only, `nice -n 19 ionice -c 3`; targeted files while iterating, the
-whole suite at most once. At most 2 mutation containers estate-wide; each
-container must have an exact unique name, a verified loaded `dev-gates.slice`
-parent and immediate `docker update --cpus=3` (`docker ps` for
-`run-gate-`/`tester-unified`/`cgprofile-` first; other packages' mutation
-runs may be live); one image build, under PSI; remove only your exact named
-container in a `finally`. No container may use host PID/cgroup/network
-namespace modes. Never touch `run-gate-project/run-gate.py`, `ciu/src/`,
+whole suite at most once. At most 3 mutation containers estate-wide per
+RW-319; each has an exact unique name, a verified loaded `dev-gates.slice`
+parent, `--cpus=3` at creation, and immediate verified
+`docker update --cpus=3` (`docker ps` for `run-gate-`/`tester-unified`/
+`cgprofile-` first; other packages' mutation runs may be live). The review's
+own daemon probe belongs only under its explicitly verified daemon slice;
+workload/test containers belong under loaded `dev-gates.slice`. Apply and
+verify the 3-CPU cap on every reviewer-owned container. Build one image under
+PSI. Remove only your exact named containers and dedicated scratch you
+created in a `finally`.
+
+### Shared-host isolation (binding)
+
+- Do not run `ciu up` or `ciu down` for review probes. Do not issue Docker
+  network `create`, `connect`, `disconnect`, or `rm` commands. A probe may
+  not attach to or otherwise alter an existing container's network membership.
+- Use only uniquely named reviewer-owned probe containers with
+  `--network=none`. Never inspect internals, update, stop, remove, or alter an
+  existing agent-owned gate/container (including a cockpit); the controller
+  may report its exact name as an exclusion.
+- Never use host PID/cgroup/network namespace modes. If required live evidence
+  cannot be obtained within these constraints, state exactly what is
+  unavailable; do not weaken the constraints or improvise cleanup.
+
+Never touch `run-gate-project/run-gate.py`, `ciu/src/`,
 `/workspaces/dstdns`, or other worktrees. Read-only access to the interface
 contract and controller-owned review packet is allowed; do not edit them as a
 reviewer.
