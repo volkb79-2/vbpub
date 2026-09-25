@@ -48,7 +48,7 @@ the exact-tip gate receipts are in `.run-gate/history.json`.
 
 | Surface | Evidence and judgment |
 | --- | --- |
-| Daemon write boundary | Inspected `lib/serve.py` session-path guard, `lib/damon.py` admin-root guard, shell/subprocess sites, and `cgprofile.py` parsing. `serve --cap 1` exited 2 with `unrecognized arguments`; no TempCaps path is exposed through `serve` or `ctl`. The daemon's configured writes are session storage and DAMON admin. |
+| Daemon write boundary | Inspected `lib/serve.py` session-path guard, `lib/damon.py` admin-root guard, shell/subprocess sites, and `cgprofile.py` parsing. `serve --cap 1` exited 2 with `unrecognized arguments`; no TempCaps path is exposed through `serve` or `ctl`. Persistent data and sysfs writes are confined to session storage and DAMON admin; the Unix control socket has its separately configured bind/unlink path. |
 | Compose/image | Rendered the candidate Jinja template/defaults and checked `docker compose config --format json`: singleton, restart policy, authored interactive cgroup parent, private cgroup and default private PID namespace, `network_mode: none`, no Docker socket, read-only explicit host `/proc` and cgroup v2 mounts, separate DAMON mount and configured memory limits. The image contains the CLI wrapper and revision label. `ciu render/check` selected zero stacks from this isolated root, so the manual render is the Compose evidence; it does not certify a CIU-managed daemon launch. |
 | CLI/contract | Inspected verb dispatch, one-document JSON socket/CLI handling, exit 0/2/3 response validation, required `contract: 1`, start reuse only with a non-null token, idempotent stop, `too-many-sessions` and target errors. Real `ctl version --json` returned one valid document. Golden socket and malformed-response tests passed in R0/R1; other verbs were not all exercised live. |
 | Summary | Inspected `lib/summary.py`: scope-specific last-successful absolute counters versus start deltas, nearest-rank percentiles, memory source/baseline, null propagation, per-pair monotonic CPU rates, PSI microsecond conversion and limit drift. The shipped byte-identity test compares the frozen contract fixtures. Eight independent temporary arithmetic mutants below were killed. No mutation was committed. |
@@ -133,6 +133,26 @@ does not establish a live DAMON PID handoff. These are evidence limits, not
 claims of passed DAMON observations. The fake-sysfs/fixture oracles provide
 the available behavioral proof. The `report.html` existence/size was checked;
 the full interactive behavior was not independently exercised in a browser.
+
+### Nonblocking observations and claims not independently verified
+
+- **S1:** A token-bearing shared session started before its owner appears
+  retains `unavailable:no pids to monitor yet` for DAMON. The session still
+  collects the target's cgroup/proc metrics; this is the earlier review's
+  disclosed S3 limitation, reproduced live here. A follow-up could retry
+  DAMON acquisition when discovery first finds the owner.
+- **S2:** This kernel returned `EINVAL` at DAMON commit. Fake-sysfs tests
+  exercise slot ownership, release and reuse, but live hot-byte output and
+  two independent live kdamonds could not be verified here.
+- **S3:** The helper's live `--damon` path reported unavailable. The fixture
+  proves PID handoff; live DAMON PID handoff is unverified. The live HTML
+  artifact was checked for existence and size, while its interactive
+  behavior was not independently exercised in a browser.
+- **S4:** `ciu render/check` selected no stack in this isolated root, and
+  the installed `cmru` 5.4.2 CLI refused `status --project`. The manual
+  candidate Compose render and tests support the integration claims, but a
+  CIU-managed launch and current read-only CMRU status are not certified by
+  this review. No shared-state change was made to force either probe.
 
 ## Exact-tree short gates and release boundary
 
