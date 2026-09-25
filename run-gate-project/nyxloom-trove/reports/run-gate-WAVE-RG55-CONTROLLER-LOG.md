@@ -3983,3 +3983,26 @@ the source-backed gate picks up main's current assay tree. All short-gate and
 mutation evidence must now match the post-reconciliation commit; rerun both
 short gates before starting the new R2. This reconciles an already-settled
 candidate with main and does not reopen the P1 design decisions.
+
+### RW-322 — 2026-09-25 10:30:44Z — P1 R2 terminal is incomplete; reconcile before new evidence
+
+The detached registered P1 R2 on quiet tree
+`1908316b227df8a2b8fd259969725b4c7a9f1b27` ran in
+`run-gate-vbpub-r2-3690082-1790305991` from
+`2026-09-25T03:13:17.949231Z` to `2026-09-25T04:27:11.853270Z`. All 81
+candidates are accounted for: 80 killed, one `hung`, and zero survivors,
+equivalents, per-candidate budget excesses, or crashes. The separate verdict
+is `BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4; do not call it a PASS or a
+mutant survival. Candidate 40 (`7692929c11d002ae02db963540fb42e06618318c814e1e99e71fed42894eea9c`,
+`lib/targets.py:191`, `Eq->NotEq`) reported 1,321 completed tests but has no
+kill proof in the retained candidate-state/progress artifacts. RW-319 binds:
+do not explain this as scheduler contention or let elapsed time decide
+product behavior. Diagnose it from a fresh, exact-tree run.
+
+The campaign's judged tree predates current-main Assay Wave C P2/P3. P1 has
+now reconciled current `main` as `007b208859b99d380b87a9d4ea3479bdbfc8d5b6`;
+the old mutation record is inapplicable. Fresh P1 `r0-r1`/`r3` and the
+required fresh Sol xhigh review are next. Under the operator's provisional
+merge workflow, after those short gates and review pass, merge P1 to unblock
+P6, then launch the new R2 and full gate in an isolated CIU worktree. Any
+repair is backported and its affected evidence rerun.

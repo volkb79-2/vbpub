@@ -1689,3 +1689,31 @@ worktree and passed the focused 235-test suite. They are not yet confirmed by
 a new mutation run. The 51198 result is diagnostic evidence only and does not
 satisfy final P1 mutation acceptance. A new quiet-tree R2 plus final short
 gates and the required fresh Sol xhigh review remain required.
+
+## Controller addendum — terminal R2 on `1908316b` (2026-09-25)
+
+The registered R2 on the detached, quiet tree
+`1908316b227df8a2b8fd259969725b4c7a9f1b27` ran in container
+`run-gate-vbpub-r2-3690082-1790305991` from
+`2026-09-25T03:13:17.949231Z` through
+`2026-09-25T04:27:11.853270Z`. Its terminal event accounts for all 81
+candidates: 80 killed and one classified `hung`; zero survived, equivalent,
+budget-exceeded, or crashed candidates. The separate verdict is
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4. This is not an R2 PASS.
+
+The hung candidate is index 40, ID
+`7692929c11d002ae02db963540fb42e06618318c814e1e99e71fed42894eea9c`,
+`lib/targets.py:191`, `Eq->NotEq`. Its progress record reports 1,321 tests
+completed, but that does not establish a kill or explain why the candidate
+was classified hung. The retained mutation-state and progress artifacts
+contain no kill proof for it. Per RW-319, do not attribute this terminal to
+scheduler load or treat a time/liveness classification as a product verdict;
+the candidate needs a fresh, exact-tree judgment and any real hang must be
+diagnosed on its behavior.
+
+This campaign predates the latest-main reconciliation. P1 has since merged
+current `main` at `007b208859b99d380b87a9d4ea3479bdbfc8d5b6`, so the old R2
+records do not apply to the reconciled tree. The next sequence is fresh
+registered `r0-r1` and `r3`, a fresh Sol xhigh review, provisional P1 merge,
+then a new R2 and full gate in an isolated CIU worktree. Backport and
+revalidate any required repair; do not report the old R2 as green.
