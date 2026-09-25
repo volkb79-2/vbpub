@@ -477,6 +477,13 @@ as `judgment.r1.coverage_producer`; declaring `istanbul` is also what makes
 producers assay refuses **by name**, and the one-line migration are in
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md#declaring-the-coverage-producer-b045).
 
+Defaulted parameters with an arc on their signature line are included: a
+statement-less node line is classified from its function's call count, and
+its default branch is counted even when the default was never used. If all
+arms start on other lines, the node line stays unclassified. See the
+[classification rationale](docs/DESIGN-GUIDE.md#default-argument-signature-lines-b080-a-456)
+and the [JavaScript consumer examples](docs/CONSUMERS.md#javascripttypescript-lanes-r1-and-r2-by-ingestion).
+
 The `coverage-final.json` document is emitted natively by nyc/istanbul and by
 Jest (`--coverageReporters=json`), and by Vitest through either coverage
 provider:
