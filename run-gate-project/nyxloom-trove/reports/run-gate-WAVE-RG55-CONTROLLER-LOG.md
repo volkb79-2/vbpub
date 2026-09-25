@@ -4098,3 +4098,18 @@ were covered. No implementation changed. The focused local run is not an
 authoritative package gate; after this ruling is committed, rerun P1 `r0-r1`
 and `r3` on the final exact tip with loaded-slice and 3-CPU evidence. The old
 R2 remains `BUDGET_EXCEEDED/CANDIDATE_HUNG` per RW-322.
+
+### RW-328 — 2026-09-25 12:35:52Z — P1 short gates pass; record before final rerun
+
+Fresh short gates passed on clean exact code tree
+`43daf53e09f15227cacdcd80156dcdecc7cc19a6`: R0/R1 exit 0 in 75.396 s
+with 5,021/5,021 statements and 1,732/1,732 branches covered; R3 exit 0 in
+11.132 s with all seven canaries rejected and none surviving. The R0/R1
+test container `cgprofile-gate-279657-1790339528` and R3 container
+`run-gate-vbpub-r3-284762-1790339665` both reported the loaded
+`dev-gates.slice` parent and `NanoCpus=3000000000`. The tree was clean and
+unchanged throughout; the daemon itself was down, so run-gate reported coarse
+rusage profiling for these gates. This log/report/handoff update changes HEAD;
+repeat both short gates on the resulting final P1 tip before Sol review. These
+receipts do not change the old R2 terminal or substitute for fresh live
+review probes.

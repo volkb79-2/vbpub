@@ -1762,3 +1762,18 @@ venv lacks optional `pandas` (`ModuleNotFoundError` while importing
 `lib.analyze`); NumPy is present. The helper regression and target/access tests
 above ran and passed. No Docker, daemon, registered gate, or host-namespace
 probe was run for this follow-up.
+
+## Controller addendum — first fresh short-gate pair (2026-09-25)
+
+On clean exact tree `43daf53e09f15227cacdcd80156dcdecc7cc19a6`, R0/R1
+passed in 75.396 s with 5,021/5,021 statements and 1,732/1,732 branches
+covered. R3 passed in 11.132 s: all seven canaries were rejected and none
+survived. Exact containers
+`cgprofile-gate-279657-1790339528` (R0/R1 test container) and
+`run-gate-vbpub-r3-284762-1790339665` both used loaded `dev-gates.slice`
+with `NanoCpus=3000000000`. The daemon was not running during these gates;
+their profiler summaries therefore used coarse rusage. RW-328 records these
+results. Because this report/log update changes the candidate tree, the
+controller will rerun R0/R1 and R3 on the final post-documentation tip before
+the Sol round-3 review. These short gates do not replace the pending live
+daemon review probes or a fresh R2.
