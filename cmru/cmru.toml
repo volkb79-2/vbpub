@@ -57,3 +57,18 @@ quiet = true
 commands = [
   { label = "cmru: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "cmru", "--cwd", ".", "--notes-env", "CMRU_RELEASE_NOTES"], cwd = "." },
 ]
+
+[versions]
+
+[versions.discovery]
+pypi_extras = ["versions-templates"]
+
+[versions.targets]
+
+[versions.targets."pypi.jinja2"]
+mode = "single"
+constraint = ">=3.1,<4"
+
+[versions.targets."pypi.jinja2".pypi]
+name = "jinja2"
+registry = "https://pypi.org"

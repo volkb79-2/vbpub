@@ -11,6 +11,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Added
 - Add explicit multi-source `cmru versions init`, `resolve`, and read-only `check` with a configurable supply-chain age window, registry evidence, and native artifacts.
+- Add configurable shipped/all dependency discovery, explicitly selected Python extras, and project-local requirements manifests.
+- Add opt-in rolling OCI tag checks that record manifest digests and detect moved tags.
 
 ### Changed
 - Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
@@ -18,10 +20,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
 - Scope registry authorization to its HTTPS origin while preserving safe redirects to signed registry storage URLs.
+- Query rolling OCI tags by exact manifest reference, and exclude explicitly marked Docker attestations from runnable-platform timestamp checks.
 - Time-box CMRU mutation candidates, preserve progress, and resume completed mutation evidence.
 
 ### Testing
 - Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
+- Cover discovery-scope choices, rolling-tag digest changes, Docker attestation indexes, and loadable `.go` consumer examples.
 
 <!-- cmru: release history -->
 

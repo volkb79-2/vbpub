@@ -49,8 +49,18 @@ def test_version_policy_vocabulary_is_documented():
         assert f".{source_type}" in corpus
     for value in ('mode = "single"', 'mode = "aligned"'):
         assert value in corpus
-    for field in ("age_window_days", "constraint", "version", "reason", "expires", "resolved"):
+    for value in ('selection = "semver"', 'selection = "rolling"', 'Docker-Content-Digest'):
+        assert value in corpus
+    assert 'vnd.docker.reference.type = "attestation-manifest"' in corpus
+    assert "commit time rather than the proxy publication time" in corpus
+    assert "age-window refusal" in corpus
+    for field in (
+        "age_window_days", "constraint", "version", "reason", "expires", "resolved",
+        "pypi_extras", "requirements_files", "digest",
+    ):
         assert field in corpus
+    for value in ('scope = "shipped"', 'scope = "all"'):
+        assert value in corpus
 
 
 def test_assay_lane_declares_the_complete_rigor_ladder():
@@ -124,7 +134,21 @@ def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Pat
     assert config.cleanup is not None
     assert config.projects["example-wheel"].name == "example-wheel"
     assert config.versions["age_window_days"] == 14
+    assert config.versions["discovery"]["scope"] == "shipped"
     assert config.versions["targets"]["pypi.requests"]["pypi"]["name"] == "requests"
     project_versions = config.projects["example-wheel"].versions
     assert project_versions["age_window_days"] == 21
+    assert project_versions["discovery"]["scope"] == "shipped"
     assert project_versions["targets"]["pypi.requests"]["mode"] == "single"
+    assert project_versions["targets"]["oci.node"]["oci"]["selection"] == "rolling"
+    assert project_versions["targets"]["go.golang.org.x.text"]["go"]["module"] == "golang.org/x/text"
+
+
+def test_registered_projects_track_their_shared_pwmcp_runtime_image():
+    workspace = ROOT.parent
+    for project in ("topos", "nyxloom"):
+        config = tomllib.loads((workspace / project / "cmru.toml").read_text(encoding="utf-8"))
+        target = config["versions"]["targets"]["oci.pwmcp"]
+        assert target["mode"] == "single"
+        assert target["oci"]["image"] == "ghcr.io/volkb79-2/pwmcp"
+        assert target["oci"]["tag"] == "{version}"

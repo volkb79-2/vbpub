@@ -40,6 +40,7 @@ class Candidate:
     released_at: datetime
     age_source: str
     tag: str | None = None
+    digest: str | None = None
 
 
 def _iso_datetime(value: object, where: str) -> datetime:
@@ -501,7 +502,8 @@ class _OCIClient:
                 body = exc.read(MAX_METADATA_BYTES + 1) if exc.fp else b""
                 excerpt = body[:500].decode("utf-8", errors="replace").replace("\n", " ")
                 detail = f": {excerpt}" if excerpt else ""
-                raise RegistryError(f"OCI registry returned HTTP {exc.code} for {url}{detail}") from exc
+                error_type = RegistryNotFoundError if exc.code == 404 else RegistryError
+                raise error_type(f"OCI registry returned HTTP {exc.code} for {url}{detail}") from exc
         except urllib.error.URLError as exc:
             raise RegistryError(f"could not reach OCI registry {url}: {exc.reason}") from exc
         except TimeoutError as exc:
@@ -590,7 +592,7 @@ class _OCIClient:
             raise RegistryError(f"OCI registry returned no tags for {self.repository}")
         return tags
 
-    def tag_timestamp(self, tag: str) -> tuple[datetime, str]:
+    def tag_evidence(self, tag: str) -> tuple[datetime, str, str]:
         accept = ", ".join((
             "application/vnd.oci.image.index.v1+json",
             "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -599,20 +601,28 @@ class _OCIClient:
         ))
         url = f"{self.registry}/v2/{self.repository}/manifests/{urllib.parse.quote(tag, safe='._+-') }"
         manifest, headers = self._json(url, {"Accept": accept})
+        digest = headers.get("docker-content-digest", "")
         last_modified = headers.get("last-modified")
         if last_modified:
-            return _iso_datetime(last_modified, f"OCI registry tag {tag}"), "oci-registry-last-modified"
+            return _iso_datetime(last_modified, f"OCI registry tag {tag}"), "oci-registry-last-modified", digest
         manifests = manifest.get("manifests")
         if manifests is not None and not isinstance(manifests, list):
             raise RegistryError(f"OCI image index for {tag} has an invalid platform manifest list")
         if manifests:
             if len(manifests) > 128:
                 raise RegistryError(f"OCI image index for {tag} has more than 128 platform manifests")
-            dates: list[datetime] = []
-            age_sources: list[str] = []
             for descriptor in manifests:
                 if not isinstance(descriptor, dict) or not isinstance(descriptor.get("digest"), str):
                     raise RegistryError(f"OCI image index for {tag} has an invalid platform descriptor")
+            image_manifests = [
+                descriptor for descriptor in manifests
+                if not _is_docker_attestation_descriptor(descriptor)
+            ]
+            if not image_manifests:
+                raise RegistryError(f"OCI image index for {tag} has no runnable image manifests")
+            dates: list[datetime] = []
+            age_sources: list[str] = []
+            for descriptor in image_manifests:
                 child_url = f"{self.registry}/v2/{self.repository}/manifests/{urllib.parse.quote(descriptor['digest'], safe=':._+-')}"
                 child, child_headers = self._json(child_url, {"Accept": accept})
                 child_last_modified = child_headers.get("last-modified")
@@ -639,10 +649,10 @@ class _OCIClient:
                             dates.append(_iso_datetime(child_date, f"OCI image {tag}"))
                             age_sources.append("oci-image-created-fallback")
             if dates:
-                if len(dates) != len(manifests):
+                if len(dates) != len(image_manifests):
                     index_created = self._created_time(manifest)
                     if index_created:
-                        return max([index_created, *dates]), "oci-image-created-fallback"
+                        return max([index_created, *dates]), "oci-image-created-fallback", digest
                     raise RegistryError(
                         f"OCI image index for {tag} has platform manifests without a usable timestamp"
                     )
@@ -653,10 +663,10 @@ class _OCIClient:
                     "oci-image-created-fallback"
                     if "oci-image-created-fallback" in age_sources
                     else "oci-registry-last-modified"
-                )
+                ), digest
         created = self._created_time(manifest)
         if created:
-            return created, "oci-image-created-fallback"
+            return created, "oci-image-created-fallback", digest
         config = manifest.get("config")
         if isinstance(config, dict) and isinstance(config.get("digest"), str):
             blob_url = f"{self.registry}/v2/{self.repository}/blobs/{urllib.parse.quote(config['digest'], safe=':._+-')}"
@@ -668,11 +678,16 @@ class _OCIClient:
             if isinstance(config_doc, dict):
                 value = config_doc.get("created")
                 if isinstance(value, str) and value.strip():
-                    return _iso_datetime(value, f"OCI image {tag}"), "oci-image-created-fallback"
+                    return _iso_datetime(value, f"OCI image {tag}"), "oci-image-created-fallback", digest
         raise RegistryError(
             f"OCI tag {tag!r} has neither a registry Last-Modified timestamp nor an "
             "org.opencontainers.image.created/config created timestamp"
         )
+
+    def tag_timestamp(self, tag: str) -> tuple[datetime, str]:
+        """Read age metadata for a SemVer tag without requiring digest state."""
+        stamp, age_source, _digest = self.tag_evidence(tag)
+        return stamp, age_source
 
     @staticmethod
     def _created_time(manifest: Mapping[str, object]) -> datetime | None:
@@ -683,6 +698,15 @@ class _OCIClient:
         if isinstance(value, str) and value.strip():
             return _iso_datetime(value, "OCI image annotation")
         return None
+
+
+def _is_docker_attestation_descriptor(descriptor: Mapping[str, object]) -> bool:
+    """Attestations share OCI indexes with runnable images but are not runtime variants."""
+    annotations = descriptor.get("annotations")
+    return (
+        isinstance(annotations, dict)
+        and annotations.get("vnd.docker.reference.type") == "attestation-manifest"
+    )
 
 
 def _oci_identity(image: str) -> tuple[str, str]:
@@ -737,6 +761,19 @@ def oci_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Cand
                     ),
                 )
     return result
+
+
+def oci_rolling_candidate(source: Mapping[str, str]) -> Candidate:
+    """Resolve one literal OCI tag with timestamp and immutable digest evidence."""
+    registry, repository = _oci_identity(source["image"])
+    client = _OCIClient(registry, repository, source)
+    tag = source["tag"]
+    stamp, age_source, digest = client.tag_evidence(tag)
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise RegistryError(
+            f"OCI registry tag {tag!r} has no valid Docker-Content-Digest sha256 evidence"
+        )
+    return Candidate(version=tag, released_at=stamp, age_source=age_source, tag=tag, digest=digest)
 
 
 def candidates(source_type: str, source: Mapping[str, str], constraint: str) -> dict[str, Candidate]:

@@ -40,3 +40,42 @@ quiet = true
 commands = [
   { label = "topos: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "topos", "--cwd", ".", "--notes-env", "TOPOS_RELEASE_NOTES"], cwd = "." },
 ]
+
+[versions]
+
+[versions.discovery]
+pypi_extras = ["zstandard", "mcp"]
+
+[versions.targets]
+
+[versions.targets."pypi.textual"]
+mode = "single"
+constraint = ">=8.2.8"
+
+[versions.targets."pypi.textual".pypi]
+name = "textual"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.zstandard"]
+mode = "single"
+constraint = ">=0.22"
+
+[versions.targets."pypi.zstandard".pypi]
+name = "zstandard"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.mcp"]
+mode = "single"
+constraint = ">=1.28.0,<2.0.0"
+
+[versions.targets."pypi.mcp".pypi]
+name = "mcp"
+registry = "https://pypi.org"
+
+[versions.targets."oci.pwmcp"]
+mode = "single"
+constraint = ">=1.61.0-r6,<2.0.0"
+
+[versions.targets."oci.pwmcp".oci]
+image = "ghcr.io/volkb79-2/pwmcp"
+tag = "{version}"

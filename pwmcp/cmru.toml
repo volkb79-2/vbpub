@@ -50,3 +50,11 @@ commands = [
   { label = "pwmcp: push Playwright server image", argv = ["python3", "build-push.py", "--push"], cwd = "." },
   { label = "pwmcp: publish stack bundle", argv = ["python3", "scripts/publish-bundle.py"], cwd = "." },
 ]
+
+[versions.targets."oci.playwright"]
+mode = "single"
+constraint = ">=1.62.0,<2.0.0"
+
+[versions.targets."oci.playwright".oci]
+image = "mcr.microsoft.com/playwright"
+tag = "v{version}-noble"
