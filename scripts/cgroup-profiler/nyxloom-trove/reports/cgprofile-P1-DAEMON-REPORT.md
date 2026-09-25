@@ -1717,3 +1717,15 @@ records do not apply to the reconciled tree. The next sequence is fresh
 registered `r0-r1` and `r3`, a fresh Sol xhigh review, provisional P1 merge,
 then a new R2 and full gate in an isolated CIU worktree. Backport and
 revalidate any required repair; do not report the old R2 as green.
+
+## Controller addendum — cap acceptance on the short canary lane (2026-09-25)
+
+The R3 functional run on `d94c58b9` rejected all seven canaries, but live
+inspection of `run-gate-vbpub-r3-4169091-1790332576` found
+`NanoCpus=0`; by the time an exact-name `docker update --cpus=3` was
+attempted, that short-lived container had exited. The result is therefore
+not accepted as final R3 evidence. The P1 R2/R3 lane definitions now declare
+`resources.cpus = "3"`, so Docker applies the cap before running candidate
+code. The refreshed exact-tree gate must separately confirm
+`NanoCpus=3000000000`. This closes the post-launch update race without
+changing test verdict semantics; see RW-323 in the controller log.

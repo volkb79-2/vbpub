@@ -4006,3 +4006,19 @@ required fresh Sol xhigh review are next. Under the operator's provisional
 merge workflow, after those short gates and review pass, merge P1 to unblock
 P6, then launch the new R2 and full gate in an isolated CIU worktree. Any
 repair is backported and its affected evidence rerun.
+
+### RW-323 — 2026-09-25 10:43:38Z — require P1 container caps before execution
+
+P1's fresh R3 on `d94c58b9` rejected all seven canaries, but live inspection
+of its exact container `run-gate-vbpub-r3-4169091-1790332576` showed
+`NanoCpus=0`. The attempted exact-name `docker update --cpus=3` found that
+the short-lived container had already exited. Treat that green functional
+result as non-qualifying gate evidence: it does not prove the required cap.
+The P1 `r2` and `r3` lane configs now declare `resources.cpus = "3"`, making
+Docker apply `--cpus 3` before the command starts; the refreshed live gate
+must verify `NanoCpus=3000000000`. This avoids a post-launch race for the
+11-second canary lane while preserving the same 3-CPU ceiling required by
+RW-319. Because this config/report/log commit changes the tree, refresh both
+P1 short-gate receipts on its exact commit before review. The prior R2
+candidate-hung result remains incomplete under RW-322 and is not changed by
+this ruling.
