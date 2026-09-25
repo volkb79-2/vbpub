@@ -333,10 +333,19 @@ required final adversarial review.
 ### `P6`: cgprofile 1.1.0 follow-ups
 
 Worktree: `.worktrees/rg55-followups-cgprofile-final`, branch
-`rg55-followups-cgprofile-final`. The controller will set the exact base
-(`main`) and committed candidate tip in the fresh review dispatch after all
-required gates are green. Do not review the current failed-gate tree as a
-final candidate. Read:
+`rg55-followups-cgprofile-final`. The controller will provide the exact
+current `main` base and committed candidate tip. This is the final adversarial
+review for **provisional integration only**: the exact candidate must have
+green registered `r0-r1` and `r3` gates, full changed-line/branch coverage,
+and the P6 handoff's live probes. Exact-tree R2 and the full gate may continue
+asynchronously after provisional merge per RW-296. The older P6 R2 at
+`aae66356bf3a65ef8b3ba7fa04a8042f2feee55c` ended
+`BUDGET_EXCEEDED/LANE_TIMEOUT`; it is not evidence for the current tree.
+Do not reject solely because the replacement R2/full gate is pending. A fresh
+Sol `ACCEPT` permits the controller to `--no-ff` merge provisionally; it does
+not permit release, tag, install, or `ciu up`. Those remain blocked until the
+exact-tree R2 and full gate pass and all RG-55 close-out conditions are met.
+Read:
 
 ```
 scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-HANDOFF.md
@@ -345,14 +354,14 @@ scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REPORT.md
 run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md
 ```
 
-The reconciled candidate currently descends from `main` plus the P1 daemon and
-P6 follow-ups; review that complete diff, including private PID/cgroup/network
+The reconciled candidate descends from `main` plus the P1 daemon and P6
+follow-ups; review that complete diff, including private PID/cgroup/network
 namespaces, read-only host `/proc`, writable daemon cgroup view guarded by the
 D-25 allowlist, and the one-shot helper's read-only cgroup view. Review only in
-a genuine fresh Sol xhigh session. The P6-specific handoff supplies the attack
-surface, live probes, safety constraints, and round artifact path. Do not
-review, merge, or release until the controller confirms the exact candidate
-tree has passing final gates and complete mutation disposition.
+a genuine fresh GPT-6-Sol xhigh session. The P6-specific handoff supplies the
+attack surface, live probes, safety constraints, and round artifact path. Do
+not merge or release as reviewer; the controller owns provisional integration
+and later release approval.
 
 ### `CMRU`: release-recovery repair encountered during this wave
 

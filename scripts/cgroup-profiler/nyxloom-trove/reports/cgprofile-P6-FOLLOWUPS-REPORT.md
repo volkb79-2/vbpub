@@ -1500,3 +1500,24 @@ on the resulting P6 candidate:
 Both runs are local iteration evidence only. Full registered gates and a
 fresh exact-tree R2 remain required. The previous 362-candidate campaign
 remains `BUDGET_EXCEEDED` and cannot satisfy that gate.
+
+## Session 15 — 2026-09-25 17:40:14Z — final-review readiness status
+
+The controller resumed P6 from `1c2ca22b`, already reconciled with shared
+main `4d32bcfe`. Existing R0/R1 and R3 receipts on `41c6fba6` are preliminary
+and predate later records/packet commits; they are not the final candidate's
+gate evidence. The old R2 at `aae66356bf3a65ef8b3ba7fa04a8042f2feee55c`
+remains `BUDGET_EXCEEDED/LANE_TIMEOUT` (362 candidates: 312 killed, 12
+survived, 38 budget-exceeded, 0 crashed), and cannot qualify the reconciled
+tree.
+
+The review instructions now encode RW-296: after exact-tip R0/R1 and R3,
+full changed-line and branch coverage, live probes, and fresh Sol ACCEPT, the
+controller may provisionally merge P6 to unblock RG-55. Exact-tree R2 and the
+registered full gate may continue asynchronously after that integration, but
+cgprofile 1.1.0 release/install and `ciu up` remain blocked until those results
+and survivor disposition are acceptable. P3's real DAMON series/overhead
+measurement also remains a wave close-out requirement. BRIEF-11 carries the
+sequenced controller continuation; no claim is made here that final gates,
+review, replacement R2, full gate, daemon release, or DAMON measurement have
+completed.

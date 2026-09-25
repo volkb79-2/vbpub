@@ -1,8 +1,9 @@
 # cgprofile-P6-FOLLOWUPS — adversarial review handoff (RG-55 wave, package P6)
 
-**Reviewer:** a genuinely fresh Sol xhigh session, never a fork of any
+**Reviewer:** a genuinely fresh GPT-6-Sol xhigh session, never a fork of any
 implementer or the controller. Confirm the actual route from session metadata;
-do not infer it from this file. **Your job is to BREAK this before merge.**
+do not infer it from this file. **Your job is to BREAK this before provisional
+integration.**
 Three rounds maximum. Fix-verification rounds resume this same live reviewer;
 the controller supplies the repair commit and preserves earlier rounds.
 Record each verdict at
@@ -22,13 +23,34 @@ controller log, P6 LOG/REPORT/briefs. The root and mirrored interface
 contracts must remain byte-identical. Use absolute paths; ignore any different
 primary working directory in the environment reminder.
 
+### Controller integration boundary (RW-296; binding)
+
+This is the final adversarial code review for a **provisional `--no-ff`
+integration only**. The controller will dispatch this round only after the
+exact candidate has green registered `r0-r1` and `r3` gates, full changed-line
+and branch coverage, and the live probes required below. The current-tree R2
+and full gate are intentionally allowed to finish asynchronously after
+provisional integration so other RG-55 packages can proceed. The old P6 R2
+receipt at `aae66356bf3a65ef8b3ba7fa04a8042f2feee55c` is
+`BUDGET_EXCEEDED/LANE_TIMEOUT` and is not evidence for this candidate.
+
+Do not reject solely because the exact-tree R2 or full gate is still pending.
+Do reject any code, safety, contract, documentation, or oracle defect you find.
+On `ACCEPT`, only the controller may provisionally merge this reviewed tree;
+that verdict does **not** authorize a release, tag, install, or `ciu up`.
+Those remain blocked until a fresh exact-tree R2 has a complete acceptable
+verdict and survivor disposition, the registered full gate is green, and the
+remaining RG-55 release/close-out conditions are satisfied. Any repair commit
+must be reviewed in this same live Sol session and the controller will rerun
+the affected short gates before integration.
+
 ## Phase 1 — BLIND (before any LOG/REPORT/BRIEF)
 
 Read, in this order: contract `run-gate-project/nyxloom-trove/
 RG55-INTERFACE-CONTRACT.md` §1–§7 (v1) and **§8 (v1.1 — the spec)** on
 `main`; design of record `DESIGN-2026-09-12-liveness-placement-admission.md`
 §2 (D-17..D-26), A1 (D-27..D-29), A2 (D-30); controller rulings RW-30,
-RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44, RW-45, RW-319..RW-328;
+RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44, RW-45, RW-319..RW-333;
 the implementer handoff `cgprofile-P6-FOLLOWUPS-HANDOFF.md` (C1–C9);
 backlog rows CP-2, CP-4..CP-11; then the diff itself — `lib/serve.py`,
 `lib/placement.py`, `lib/events.py` use, `lib/analyze.py`, `lib/store.py`,
@@ -39,8 +61,8 @@ narratives. Run your OWN sweeps.
 ## Phase 2 — RECONCILE against the implementers' claims
 
 Read `cgprofile-P6-FOLLOWUPS-LOG.md` (incl. every "Decision asks" block),
-`-REPORT.md`, every `-BRIEF-1..10.md`; check each claim; list what you could
-not verify. Ten sessions built this — hunt the seams between sessions.
+`-REPORT.md`, every `-BRIEF-1..11.md`; check each claim; list what you could
+not verify. Multiple sessions built this — hunt the seams between sessions.
 
 ## Attack surface (minimum; add your own)
 

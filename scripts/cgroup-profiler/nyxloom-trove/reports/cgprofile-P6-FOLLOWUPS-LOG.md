@@ -1312,3 +1312,36 @@ merge, before commit: **279 passed, 6 skipped in 11.17s**. Both bounded local
 runs are iteration evidence only. The registered gates and a fresh exact-tree
 P6 R2 remain outstanding. No new gate container or assay campaign was
 launched in this session.
+
+## Session 15 — 2026-09-25 17:40:14Z — P6 provisional-review contract and current checkpoint
+
+The controller resumed from clean branch `rg55-followups-cgprofile-final`
+at `1c2ca22b`, reconciled through shared main `4d32bcfe`. The only earlier
+short-gate receipts available on this reconciled tree are R0/R1 and R3 at
+`41c6fba6`; they predate the latest main/log and packet-only commits and do
+not qualify the final candidate. The R3 command included `--cpus 3`, but its
+container was not live-inspected for `NanoCpus`; this must be captured on the
+final R3.
+
+The retained R2 receipt is bound to the older `aae66356` tree and remains
+`BUDGET_EXCEEDED/LANE_TIMEOUT` (362 candidates: 312 killed, 12 survived, 38
+budget-exceeded, 0 crashed). It is not current-tree mutation evidence. No P6
+R2 campaign is active in this final worktree. Per RW-296, P6 may proceed to a
+provisional merge after exact-tip R0/R1 + R3, complete changed-line/branch
+coverage, the required live probes, and fresh independent Sol ACCEPT. This
+does not permit cgprofile 1.1.0 release, install, or `ciu up`; replacement P6
+R2 and the registered full gate remain release blockers.
+
+To make that boundary explicit, this checkpoint adds BRIEF-11, updates the P6
+review handoff's round/ruling list and provisional-integration instructions,
+and updates the P55 Sol review packet. These are review/process corrections,
+not code changes. The exact short gates must be run after all checkpoint files
+are committed, with the candidate HEAD quiet. Fresh Sol round 3 follows those
+gates; if Sol commits any repair, resume that same live reviewer and rerun
+affected gates on the repair tip.
+
+P1's separate R2 campaign is outside this tree. At the last observation
+(17:18:19Z), candidate 0/121 had been killed and its exact container was
+running with a 3-CPU cap in loaded `dev-gates.slice`; the next observation is
+not due before 17:43:19Z. No early check is warranted absent an error or
+expected completion.
