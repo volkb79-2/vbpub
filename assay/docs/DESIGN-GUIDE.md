@@ -3232,6 +3232,53 @@ did.
 
 ## Review evidence analysis
 
+### Bounded live gate snapshot (B100)
+
+`assay analyze report` takes one read-only snapshot of the explicit
+`--verdict`, `--progress`, and `--log` inputs for each named lane. The caller
+supplies the full expected commit. A verifier-valid verdict with that commit
+sets the lane status: `PASS` with exit 0 is `pass`; any other valid terminal
+verdict is `fail`. A verdict's referenced evidence paths are listed as labels
+and are never opened implicitly.
+
+With no verdict, a progress file can say `running` only when its latest event
+has a parseable timestamp no more than 120 seconds old and is not terminal.
+That boundary is twice the shipped 60-second heartbeat period. A stale stream,
+an absent timestamp, a terminal event without a verdict, or malformed complete
+record is `evidence_error`. One malformed final JSONL fragment without a
+newline is ignored as an interrupted append. A stale but otherwise valid
+optional progress file remains visible and does not overturn a valid verdict.
+
+The command does not poll or sleep. JSON output follows
+`schemas/analysis-report.schema.json`; text starts with one status line per
+sorted lane. Every supplied regular file is fully hashed and its byte count
+and resolved path are retained. Logs contribute only matching diagnostic
+lines from their last 64 KiB; even a `PASS`, `FAIL`, or `ERROR` line cannot
+create or repair a verdict. Error records are limited by `--max-errors` (0–10,
+default 5) and each displayed record is capped at 512 characters. Truncation
+and the full log fingerprint let a controller decide whether to inspect the
+artifact separately.
+
+The exit code is 0 when all lanes pass, 1 when at least one lane fails and
+none has an evidence error, 2 when any lane has an evidence error, and 3 when
+running is the highest-priority status present (including a mix of passing and
+running lanes). Mixed results use `evidence_error > fail > running > pass`.
+A missing path is not evidence of a
+running job, and a child log is never promoted to a status source. These rules
+keep one controller call useful without introducing a watcher, a log parser
+that guesses tool semantics, or another durable report artifact.
+
+Use this after the gate has returned or while it is running; the command
+returns immediately either way:
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze report --expected-commit "$REVIEW_HEAD" \
+  --verdict r2 "$WORKTREE/.assay/verdict-r2.json" \
+  --progress r2 "$WORKTREE/.assay/progress-r2.jsonl" \
+  --log r2 "$GATE_LOG" --format json
+```
+
 P4 and P5 run-gate reviews repeatedly needed the same operations: archive logs,
 check exact Git identities, read the job's exit separately from the launching
 process, validate verdicts, and distinguish resumed work from newly judged

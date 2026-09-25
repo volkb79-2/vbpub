@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Assay analysis report v1",
+  "description": "One bounded, commit-bound snapshot of explicitly supplied lane evidence. Logs are diagnostic only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "expected_commit", "exit_code", "lanes"],
+  "properties": {
+    "schema_version": {"const": 1, "type": "integer"},
+    "expected_commit": {"$ref": "#/$defs/commit"},
+    "exit_code": {"type": "integer", "enum": [0, 1, 2, 3]},
+    "lanes": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Lane entries are sorted lexically by name.",
+      "items": {"$ref": "#/$defs/lane"}
+    }
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "nullableCommit": {
+      "oneOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]
+    },
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "bytes": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}
+      }
+    },
+    "progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actual_commit", "run_line", "latest_event", "latest_phase", "emitted_at", "freshness", "event_counts", "candidate_counts", "terminal", "torn_final_record", "details_truncated"],
+      "properties": {
+        "actual_commit": {"$ref": "#/$defs/nullableCommit"},
+        "run_line": {"oneOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+        "latest_event": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "latest_phase": {"oneOf": [{"type": "string", "maxLength": 512}, {"type": "null"}]},
+        "emitted_at": {"oneOf": [{"type": "string", "maxLength": 512}, {"type": "null"}]},
+        "freshness": {"enum": ["fresh", "future", "stale", "unknown"]},
+        "event_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
+        "candidate_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "terminal": {"type": "boolean"},
+        "torn_final_record": {"type": "boolean"},
+        "details_truncated": {"type": "boolean"}
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "message"],
+      "properties": {
+        "source": {"enum": ["verdict", "progress", "log", "evidence"]},
+        "message": {"type": "string", "maxLength": 512}
+      }
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "expected_commit", "actual_commit", "outcome", "exit_code", "reason_code", "progress", "latest_phase", "phase_source", "overridden_dirty_paths", "evidence_artifacts", "inputs", "errors"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "status": {"enum": ["running", "pass", "fail", "evidence_error"]},
+        "expected_commit": {"$ref": "#/$defs/commit"},
+        "actual_commit": {"$ref": "#/$defs/nullableCommit"},
+        "outcome": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "exit_code": {"oneOf": [{"type": "integer"}, {"type": "null"}]},
+        "reason_code": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "progress": {"oneOf": [{"$ref": "#/$defs/progress"}, {"type": "null"}]},
+        "latest_phase": {"oneOf": [{"type": "string", "maxLength": 512}, {"type": "null"}]},
+        "phase_source": {"oneOf": [{"enum": ["progress", "log"]}, {"type": "null"}]},
+        "overridden_dirty_paths": {"type": "array", "items": {"type": "string"}},
+        "evidence_artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "path"],
+            "properties": {"field": {"type": "string"}, "path": {"type": "string"}}
+          }
+        },
+        "inputs": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "verdict": {"$ref": "#/$defs/fingerprint"},
+            "progress": {"$ref": "#/$defs/fingerprint"},
+            "log": {"$ref": "#/$defs/fingerprint"}
+          }
+        },
+        "errors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["records", "count", "truncated"],
+          "properties": {
+            "records": {"type": "array", "maxItems": 10, "items": {"$ref": "#/$defs/diagnostic"}},
+            "count": {"type": "integer", "minimum": 0},
+            "truncated": {"type": "boolean"}
+          }
+        }
+      }
+    }
+  }
+}
