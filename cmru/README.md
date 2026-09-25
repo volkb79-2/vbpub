@@ -37,6 +37,16 @@ The image is defined by [`wheel-builder/Dockerfile`](../wheel-builder/Dockerfile
 The script prints the manual virtual-environment install commands after it produces
 the wheel; once installed, all subsequent builds use the `cmru` console script.
 
+The wheel installs the operator commands `cmru`, `cmru-agent`, and
+`cmru-controller`. It also carries CMRU's registered command modules and the
+`cli-extended` and `worktree` libraries they use. Module invocations are
+component, bootstrap, or interpreter-pinned diagnostic interfaces. Where a
+matching installed verb exists, both paths use its registered grammar; a
+component-only module exposes its own component grammar without adding a root
+verb. See the
+[design rationale](docs/DESIGN-GUIDE.md#one-declared-cli-grammar) and the
+[consumer adoption guide](docs/CONSUMERS.md#using-the-wheel-and-component-interfaces).
+
 ## The model: declared outputs and explicit behavior
 
 Each project declares its released output vocabulary in `artifacts = [...]` (`wheel`,
@@ -387,11 +397,30 @@ is rejected. Never commit a token.
 
 ## Reusable project-step commands
 
-`python3 -m cmru.handlers` is a small command library, not an implicit profile system.
-The templates show explicit `wheel-build` and `wheel-publish` calls, while projects such as
-MDT and pwmcp retain their own image/bundle commands. This is useful for third-party
-consumers: install a pinned CMRU wheel, copy the project template, and either compose the
-library commands or use a project-owned tool. CMRU never guesses which choice is correct.
+CMRU exposes reusable components so a project can use its artifact and step
+implementations without copying their logic. Install the approved CMRU wheel
+into the interpreter that runs the project step, then choose the interface that
+fits the work:
+
+| Need | Interface | Role |
+|---|---|---|
+| Release, inspect, or maintain a product | `cmru` and its registered verbs | Canonical operator workflow |
+| Register/build/publish an artifact handler from a project step | `python -m cmru.handlers …` | Explicit project-step adapter; also used by the fresh-checkout wheel bootstrap |
+| Preview or reproduce one declared step | `python -m cmru.runner …` or `cmru run-step …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
+| Build a configured stack archive directly | `python -m cmru.bundle --config bundle.toml` | Standalone bundle component; its config is specified in [S9 of the CMRU spec](docs/SPEC.md), and the library entrypoint is `cmru.bundle.run_bundle` |
+| Compose step or bundle behavior in Python | `cmru.runner.run_step` or `cmru.bundle.run_bundle` | Supported library entrypoints used by estate consumers |
+| Debug a chosen installed/source interpreter | `python -m cmru.cli`, `python -m cmru.agent.cli`, or `python -m cmru.controller.cli` | Alternate launchers for the same operator grammars, not extra commands |
+
+`cmru.bundle` builds an archive from its dedicated bundle TOML configuration;
+the deterministic format is `xztar` as specified in S9. It is not a top-level
+`cmru bundle` verb. A project that needs
+the reusable operation can invoke the module or import `run_bundle`; a root
+verb should be added only when a concrete operator workflow needs one. The
+`python -m cmru.runner` and installed `cmru run-step` share their registered grammar.
+The standalone generated `get.py` remains intentionally independent and uses
+`argparse` because adopters run it without a CMRU installation. The
+[consumer guide](docs/CONSUMERS.md#using-the-wheel-and-component-interfaces)
+shows installation and invocation examples.
 
 The OCI helper has an explicit normal Buildx bake load/push command. Its `--repack` argument
 is intentionally fail-closed while production-equivalence evidence is absent; use a

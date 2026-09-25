@@ -166,6 +166,81 @@ The wheel also installs `cmru-agent` and `cmru-controller`; those are independen
 CLIs with their own registered verbs. `cmru --help` lists top-level CMRU commands, while
 `cmru help get-py` or `cmru get-py --help` prints the exact delegated grammar.
 
+## Using the wheel and component interfaces
+
+Install the approved CMRU wheel into the Python environment that will execute
+your project steps. The wheel installs the three console scripts and includes
+the CMRU modules, registered `cli-extended` grammar, and shared `worktree`
+library. This lets a consumer use CMRU functionality without copying its
+implementation into the project:
+
+```sh
+python3 -m venv .venv-cmru
+.venv-cmru/bin/python -m pip install /path/to/approved-cmru-wheel.whl
+.venv-cmru/bin/cmru --version
+.venv-cmru/bin/cmru --help
+```
+
+Use the installed console scripts for operator workflows. Use a module command
+when a project contract needs a component or a developer wants to bind a
+diagnostic invocation to a specific interpreter. Each module uses a registered
+`cli-extended` grammar; where a matching installed verb exists, the module and
+verb share its implementation:
+
+```sh
+# Preview one configured build step without running it.
+.venv-cmru/bin/python -m cmru.runner --config ./cmru.toml --step build --dry-run
+
+# Preview the bundle build described by bundle.toml (S9.4a).
+# See S9 in docs/SPEC.md for the complete bundle configuration contract.
+.venv-cmru/bin/python -m cmru.bundle --config ./bundle.toml --dry-run
+
+# Show the inputs to a declared wheel handler without launching its build.
+.venv-cmru/bin/python -m cmru.handlers wheel-build --cwd . --dry-run
+```
+
+`cmru.runner` reads the same project configuration and step declaration used
+by CMRU orchestration; it does not define a second step format. `cmru.bundle`
+reads its dedicated bundle TOML. For Python code that composes these
+capabilities, the supported library entrypoints are shown below. The bundle
+parser currently does not reject every typoed key or value type; use the exact
+S9 fields and see KI-33 in the
+[known-issues backlog](../KNOWN_ISSUES_TODO_BACKLOG.md):
+
+```python
+from pathlib import Path
+
+from cmru.bundle import run_bundle
+from cmru.runner import run_step
+
+# These calls execute configured work. run_step may remove declared clean
+# directories and runs the step commands; run_bundle removes dist_dir first.
+# Use the CLI --dry-run forms above when you need to inspect effects first.
+run_step(Path("cmru.toml"), "build")
+archive = run_bundle(Path("bundle.toml"))
+```
+
+Prefer the declared project-step commands or these documented entrypoints over
+copying CMRU implementation code. Do not import private helpers as an API. The
+module launchers `python -m cmru.cli`, `python -m cmru.agent.cli`, and
+`python -m cmru.controller.cli` run the same operator grammars as their
+installed scripts and are useful for interpreter-pinned debugging; they do not
+add command verbs. Use the console scripts for normal operation.
+
+A real `wheel-build` handler invocation requires a Git worktree and a configured
+`CMRU_WHEEL_BUILDER_IMAGE`; the dry-run example only displays accepted inputs.
+See the wheel-build contract in [the CMRU spec](SPEC.md).
+The `cmru.bundle` help description currently calls every configured archive
+deterministic, though S9 guarantees the normalized writer for `xztar`; KI-34
+tracks correcting that description.
+
+Until KI-11 is resolved, a project step that invokes CMRU must use an
+environment where the intended wheel is installed and verify that the selected
+interpreter resolves the expected CMRU version. An unqualified `cmru` found
+through ambient `PATH` can be a different installation from the one running
+the surrounding transaction; see KI-11 in the
+[known-issues backlog](../KNOWN_ISSUES_TODO_BACKLOG.md).
+
 ## Running configured steps and previewing cleanup
 
 `cmru run` uses the selected project's configured `default_steps` when no step

@@ -1322,3 +1322,37 @@ and validates the full tag, manifest URL, and digest tuple. Decide whether the
 rollback verb should remain available while that contract is unresolved.
 Record the chosen behavior in `docs/SPEC.md` and add a behavioral oracle that
 rejects mismatched release identity before any Consul write.
+
+### KI-33 — bundle config silently accepts unknown keys and coerces values
+
+**Status:** OPEN 2026-09-25; found while documenting the `cmru.bundle` module
+contract during the canonical CLI and component-interface review.
+
+`cmru.bundle.parse_config()` reads known fields with `dict.get()` but does not
+reject unknown keys at the root or inside `[wheel]`, `[archive]`, or `[copy]`.
+It also converts some values with `bool()` and `str()` instead of validating
+their TOML types. For example, a quoted `enabled = "false"` is truthy, while a
+misspelled optional path key can be ignored and leave its default in effect.
+That turns a typo into a plausible but unintended bundle plan.
+
+**Recommendation:** make the config schema closed at every table boundary and
+validate TOML value types before resolving paths or planning effects. Keep only
+the documented defaults in S9.4a. Add loader oracles for unknown root/nested
+keys, wrong scalar and array types, and valid omitted-default cases; the
+`--dry-run` path must refuse invalid configuration before reporting a plan.
+
+### KI-34 — bundle help overstates determinism for non-xztar formats
+
+**Status:** OPEN 2026-09-25; found while checking `cmru.bundle --help` against
+the documented output contract.
+
+`bundle_cli()` describes the command as building a deterministic bundle, but
+`[archive].format` accepts `tar`, `gztar`, `bztar`, and `zip` as well as `xztar`.
+S9.4 specifies the normalized deterministic writer only for `xztar`; the other
+formats use `shutil.make_archive()`.
+
+**Recommendation:** describe the command as building a configured stack bundle
+and state that deterministic normalized output is guaranteed for `xztar`, or
+change validation/implementation so every advertised format has an explicit
+determinism guarantee. Keep the semantic result table synchronized with the
+chosen behavior.

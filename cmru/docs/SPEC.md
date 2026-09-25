@@ -420,14 +420,31 @@ compares these rows with the registered parser objects, not a second parser.
 | python -m cmru.handlers oci-image-push | MODIFICATION | — | --bake-file; --cwd; --dry-run; --repack; --target |
 <!-- cmru-cli-grammar:end -->
 
-`python -m cmru.cli`, `python -m cmru.agent.cli`, and
-`python -m cmru.controller.cli` are module spellings of their matching
-installed console entrypoints. `python -m cmru.runner` is the module spelling
-of `cmru run-step`; `python -m cmru.handlers` is the documented project-step
-adapter for `cmru handler`; and `python -m cmru.bundle` is an executable
-module-only adapter. The last three are included because they are shipped and
-executable even though they are not console-script entrypoints. The standalone
-get.py template is not a CMRU command surface.
+#### Invocation roles and support policy
+
+The console scripts are the canonical operator entrypoints. Module invocation
+is also supported where it serves a named component, bootstrap, or
+interpreter-pinned diagnostic use case. Every module CLI uses `cli-extended`;
+where an installed verb counterpart exists, both paths use its registered
+grammar and implementation. A component-only module such as `cmru.bundle` has
+its own registered component grammar, not a hidden root verb. These are
+deliberate product interfaces, not retained legacy spellings:
+
+| Invocation or API | Support role | Intended use and boundary |
+|---|---|---|
+| `cmru`, `cmru-agent`, `cmru-controller` | Operator CLI | Canonical installed commands for product operations; registered verbs are the operator grammar. |
+| `python -m cmru.cli`, `python -m cmru.agent.cli`, `python -m cmru.controller.cli` | Developer/debug launchers | Run the same registered operator CLIs under an explicitly selected interpreter; they add no verbs or option spellings. Use installed scripts for normal operator workflows. |
+| `python -m cmru.handlers` | Project-step and bootstrap CLI | Run explicit artifact handlers from project contracts. `build-initial-standalone.sh` uses it to build the first CMRU wheel before the installed `cmru` script exists. |
+| `python -m cmru.runner` / `cmru run-step` | Single-step diagnostic CLI | Preview or reproduce one declared project step with the same project config and registered grammar. The `cmru.runner.run_step` API is also consumed by MDT. |
+| `python -m cmru.bundle` | Component CLI | Build a stack bundle from its dedicated TOML; S9 guarantees deterministic output for `xztar`. `cmru.bundle.run_bundle` is used by PWMCP; no root `cmru bundle` verb is added without an operator workflow that needs it. |
+| `cmru.runner.run_step`, `cmru.bundle.run_bundle` | Supported Python APIs | Compose the documented component behavior from Python. Other module internals are not promised as public API. |
+| Generated `get.py` | Standalone generated CLI | Runs without the CMRU wheel and intentionally keeps its own `argparse` parser. |
+
+Low usage alone is not a reason to remove an interface. A review must identify
+its caller contract and capability, check whether a useful alternative exists,
+and account for tests and consumer documentation. Remove a compatibility alias
+when it only preserves a spelling and creates no distinct value; preserve a
+reusable Python API independently of whether its module CLI remains useful.
 
 #### Audit prompt and semantic result table
 
@@ -445,6 +462,13 @@ Before accepting a CLI or workflow change, reviewers MUST apply this prompt:
 > legacy surface that could be retired. Use source, generated help, behavior
 > probes, the backlog, and behavioral tests as evidence. Record product choices
 > as explicit decisions; do not silently preserve or change ambiguous behavior.
+> Also inventory installed scripts, registered verbs, module CLIs, bootstrap
+> and project-step adapters, public Python APIs, and generated standalone tools
+> separately. For each, record its intended caller, wheel availability,
+> corresponding shared registry or library implementation, support tier, and a
+> pasteable consumer use case. Do not classify a component as bloat solely
+> because no current repository invokes it; do remove no-op or redundant
+> spellings that provide no distinct caller value.
 
 This table records the reviewed semantics, accepted product choices, and open
 decisions that still block a stronger guarantee. Module-adapter rows share the
@@ -469,8 +493,8 @@ registered implementation named beside them.
 | cmru versions init | Optional target and `--config` select manifests from which version targets are derived. `--dry-run` reports the prospective target changes without writing. | ACCEPTED; init remains the explicit target-creation operation. |
 | cmru versions resolve | Optional target and `--config` select version resolution; normal execution writes the declared version record/native artifacts. `--dry-run` performs the read/derivation path and suppresses every declared file write. | ACCEPTED; no implicit resolution was added to build or release. |
 | cmru versions check | Optional target and `--config` select the recorded target set; `--json` changes output format. Registry reads are fresh and read-only; no `--dry-run` is offered. | ACCEPTED; JSON is a real read mode, not a dry-run substitute. |
-| cmru run-step; python -m cmru.runner | Optional `target` must select exactly one project; required `--step NAME` names a declared step; `--config` selects its contract. `--dry-run` uses the shared step-plan renderer to show clean dirs, environment requirements, helper commands, argv, and resolved cwd without invoking them. `--show-run-details` streams output and `--log-append` retains logs. | ACCEPTED; module adapter and installed verb share the same registered grammar and implementation. |
-| cmru handler wheel-build; python -m cmru.handlers wheel-build | Required `--cwd` identifies the project tree. `--dry-run` validates and displays inputs without running the build. | ACCEPTED; the adapter is an explicit project-step surface, not a second parser. |
+| cmru run-step; python -m cmru.runner | Optional `target` must select exactly one project; required `--step NAME` names a declared step; `--config` selects its contract. `--dry-run` uses the shared step-plan renderer to show clean dirs, environment requirements, helper commands, argv, and resolved cwd without invoking them. `--show-run-details` streams output and `--log-append` retains logs. | ACCEPTED; module invocation is the direct single-step diagnostic form of the installed verb and shares its registry. The separate `run_step` library API is used by MDT. |
+| cmru handler wheel-build; python -m cmru.handlers wheel-build | Required `--cwd` identifies the project tree. `--dry-run` validates and displays inputs without running the build. | ACCEPTED; project contracts use this explicit adapter, and the fresh-checkout bootstrap needs it before the CMRU console script exists. It is not a second parser. |
 | cmru handler wheel-publish; python -m cmru.handlers wheel-publish | Required `--prefix` and `--cwd` select the release namespace and source tree; `--glob` overrides the prefix-derived asset selector; `--notes-env` names the release-notes environment variable; repeatable `--extra-asset PATH` adds uploads. `--dry-run` shows the full accepted inputs and performs no publication. | ACCEPTED; it remains a low-level declared handler; future glob/asset overlap must retain a fail-closed oracle. |
 | cmru handler wheel-validate; python -m cmru.handlers wheel-validate | Required `--prefix` selects the latest release to validate. It is read-only, so no `--dry-run` is offered. | ACCEPTED; validation does not accept a meaningless mutation flag. |
 | cmru handler tarball-publish; python -m cmru.handlers tarball-publish | Required `--prefix`, `--cwd`, and `--glob` select the one source; exactly one of `--version-file PATH` or `--version-env NAME` supplies its version; optional `--notes-env` supplies notes. `--dry-run` displays inputs and skips publication. | ACCEPTED; the mutually exclusive version source is semantically necessary. |
@@ -490,7 +514,8 @@ registered implementation named beside them.
 | cmru-controller hold | Required `--plan PLAN_ID` selects hold key; common landscape/backend controls select destination. `--dry-run` identifies the hold write and performs no Consul access. | ACCEPTED; holding is separate from plan publication. |
 | cmru-controller status | Optional `--plan` accepts a plan file or plan ID; common landscape/backend controls choose the read view. It queries Consul or observed state and emits JSON/human status; no `--dry-run` is offered. | ACCEPTED; read-only status no longer accepts a no-op dry-run flag. |
 | cmru-controller rollback | Required `--plan PLAN_TOML` selects nodes and release metadata; `--to TAG` overrides the first wave's tag while the current implementation retains that wave's manifest URL and digest; `--generation N` overrides the generated number and must be positive. These two selectors are orthogonal syntactically. Common landscape/backend controls choose destination; `--dry-run` prints proposed generation, tag, digest, URL, nodes, and suppresses Consul writes. | OPEN DECISION: tag-only override can pair a different tag with the plan's existing URL/digest, so the target is not a verified artifact coordinate. Recommendation: remove `--to` until it resolves an immutable tag/URL/digest tuple, or redesign the grammar to require that full tuple; decide whether rollback should remain exposed meanwhile. |
-| python -m cmru.bundle | Required `--config FILE` selects bundle inputs. `--dry-run` validates sources and required version naming, reports commands/copies/removals/archive path, and changes no files. | ACCEPTED; module-only but executable public adapter is listed in the canonical catalog. |
+| python -m cmru.bundle | Required `--config FILE` selects bundle inputs. `--dry-run` validates sources and required version naming, reports commands/copies/removals/archive path, and changes no files. | OPEN KI-34: `--help` calls all formats deterministic, while S9 guarantees normalized deterministic output only for `xztar`. The component/API role is accepted; correct the help description. |
+| python -m cmru.cli; python -m cmru.agent.cli; python -m cmru.controller.cli | These launch the same registered grammar as the `cmru`, `cmru-agent`, and `cmru-controller` console scripts. Use them to run/debug a selected interpreter; they introduce no alternate option behavior. | ACCEPTED as developer/debug launchers, not additional operator commands. |
 <!-- cmru-cli-semantic-audit:end -->
 
 The verb/group review keeps distinct paths for atomic source-first release,
@@ -1323,6 +1348,48 @@ invokes the builder; it never accepts a static fallback version. `_wheel_builder
 supplies this mount and is a no-op
 (nothing extra to mount) for an ordinary non-worktree checkout, where the common dir is already
 covered by the existing subtree mount.
+
+**S9.4a — Bundle configuration** `python -m cmru.bundle --config FILE` MUST read this component configuration. Paths may be absolute; relative paths use the bases below.
+
+| Key | Type | Requirement and meaning |
+|---|---|---|
+| `project_root` | path | Required. Relative to the directory containing the config. It is the base for copied source paths and for the default wheel project root. |
+| `dist_dir` | path | Optional; defaults to `dist`. Relative to `project_root`. The builder removes this whole tree before a real build. |
+| `bundle_dir` | path | Optional; defaults to `bundle`. Relative to `dist_dir`; this is the assembled archive root. |
+| `client_dir` | path | Optional; defaults to `client`. Relative to `dist_dir`; enabled wheel builds place client wheels here. |
+| `[wheel].enabled` | boolean | Optional; defaults to `false`. Enables `python -m pip wheel`. |
+| `[wheel].python_bin` | string | Optional; defaults to `python3`. Executable used for the wheel build. |
+| `[wheel].project_root` | path | Optional; defaults to `project_root`. A relative value is based on the config directory. |
+| `[wheel].find_links` | path | Optional. Adds a local package source to the wheel build; a relative value is based on the config directory. |
+| `[archive].name_template` | string | Required. Archive filename template; `{version}` is replaced with the value of the named environment variable. |
+| `[archive].version_env` | string | Required. Name of the environment variable that must be set for preview and build. |
+| `[archive].format` | string | Optional; defaults to `gztar`. Allowed values: `tar`, `gztar`, `bztar`, `xztar`, `zip`. The deterministic normalized writer is guaranteed for `xztar`. |
+| `[copy].files` | array of strings | Within the required `[copy]` table; defaults to an empty list when omitted. File paths are resolved from `project_root`. |
+| `[copy].dirs` | array of strings | Within the required `[copy]` table; defaults to an empty list when omitted. Directory paths are resolved from `project_root`. |
+
+For example, a project with no client wheel can start with:
+
+```toml
+project_root = "."
+
+[archive]
+name_template = "example-{version}.tar.xz"
+version_env = "EXAMPLE_VERSION"
+format = "xztar"
+
+[copy]
+files = ["README.md"]
+dirs = ["src"]
+```
+
+Set `EXAMPLE_VERSION` before previewing or building. Use
+`python -m cmru.bundle --config bundle.toml --dry-run` to validate configured
+sources and inspect the planned removal, copies, and archive path. A real build
+removes `dist_dir` recursively before assembling output. The Python
+`cmru.bundle.run_bundle()` API performs that same build directly and has no
+dry-run parameter; callers should preview first when they need an operator
+review step. The current parser does not reject every unknown key or invalid
+value type; KI-33 tracks making the config boundary fail closed on typos.
 
 **S9.4** Given the same source commit and toolchain pin, two independent builds MUST produce byte-identical artifacts (deterministic build contract). For the `bundle` profile specifically:
 

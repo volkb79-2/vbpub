@@ -102,6 +102,44 @@ installs it into a fresh venv without system packages, and renders/compiles a
 project installer from outside the checkout. That catches both omitted package
 data and a missing bundled `cli-extended` import.
 
+### Module commands are component interfaces, not spare grammars
+
+The installed console scripts are the canonical operator launchers. The wheel
+also contains module entrypoints for use cases that benefit from an explicit
+Python interpreter or a component-level command. They all build their grammar
+from `cli-extended`; a module adapter must not maintain a parallel parser.
+
+Each supported module has a specific job:
+
+- `python -m cmru.handlers` is used by project step contracts and by
+  `build-initial-standalone.sh`. The bootstrap must build the wheel before an
+  installed `cmru` script exists, so this module route is part of the build
+  contract rather than an accidental alias.
+- `python -m cmru.bundle` exposes the bundle builder directly; its deterministic
+  format is `xztar` as specified in S9.
+  The `cmru.bundle.run_bundle` library function is consumed by PWMCP. The module
+  command remains useful for projects that want the builder without writing a
+  wrapper; CMRU does not add a root `cmru bundle` verb until that is a real
+  operator workflow.
+- `python -m cmru.runner` executes one declared project step for diagnosis and
+  shares its registry and implementation with `cmru run-step`. MDT also uses
+  the `cmru.runner.run_step` Python API. It is not a second step configuration
+  language.
+- `python -m cmru.cli`, `python -m cmru.agent.cli`, and
+  `python -m cmru.controller.cli` invoke the same registered CLIs as the
+  console scripts. They are for source or wheel debugging under a deliberately
+  selected interpreter; operators should use the installed console commands.
+
+Low usage by itself is not a reason to delete a module interface. Reviewers
+should ask what caller contract it serves, whether it exposes a capability
+without a useful alternative, and whether the wheel, spec, examples, and
+behavioral tests keep it supportable. Retire old aliases when they only preserve
+a spelling and add no caller value. Keep reusable Python APIs separate from
+their CLI adapters: removing a launcher must not silently break a documented
+library import. The standalone generated `get.py` is a separate product: it
+must remain usable without CMRU installed and therefore keeps its own
+`argparse` parser.
+
 ## Remote cleanup and local transaction abandonment
 
 `cmru cleanup` follows the configured remote policy for GitHub Release records
