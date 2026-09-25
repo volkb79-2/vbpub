@@ -302,3 +302,36 @@ It is 6,348 bytes; no compression was needed.
 
 The gate log and this result entry are report-only additions after the passing
 code-tip gate. The tested source tip remains `09d1f38d`.
+
+
+## P4 — B100 `assay analyze report` (review and gate pending)
+
+P4 is in CIU worktree `/workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report`,
+branch `assay-wave-c-p4-b100-report`, CIU id `9fcfcc`, created from the
+P3-merged base `8911e636ad09071868c813347bf7a4d0a00049bb`.
+
+The implementation adds the read-only `assay analyze report` snapshot under
+A-460, a packaged JSON schema v1, and CLI examples in README, DESIGN-GUIDE,
+CONSUMERS, and INTERNAL-CONSUMERS. Status is derived only from a verifier-valid
+commit-bound verdict or fresh nonterminal progress. The progress reader uses
+the latest run and tolerates one malformed unterminated final record; the log
+reader hashes the complete file and scans only its final 64 KiB for bounded
+diagnostics. The command writes no report or progress artifact.
+
+Focused verification after the first adversarial review found boundary cases:
+
+- `tests/test_analysis.py` and `tests/test_docs_examples_and_vocabulary.py`:
+  **165 passed**. Added regressions for malformed oversized torn progress,
+  oversized complete progress records both newline-terminated and valid but
+  unterminated, freshness observed after an earlier lane's log snapshot, a
+  complete diagnostic exactly at the retained-window boundary, ignored-file
+  writes, and parser coverage for each B100 example.
+- Focused Ruff selections (`E4,E7,E9,F` and `I001`), pyflakes on the changed
+  Python files, and `git diff --check`: **PASS** (estate venv).
+- Fresh independent adversarial review against the P4 base: **READY** after
+  round 3. The reviewer confirmed the earlier findings were fixed and
+  differential-checked the oversized-record framer against 5,000 generated
+  or mutated JSON documents and 18 explicit syntax cases; no remaining
+  blockers.
+- Registered detached `./run-gate.py tester-unified` on the committed code
+  tip: pending.

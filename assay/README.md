@@ -40,6 +40,10 @@ and `assay verify`, and adds no runtime dependencies:
   Assay's own gate uses this diagnosis when its self-hosted suite fails.
 - `progress` separates appended JSONL runs at the expected commit, showing
   resume/candidate facts and terminal events without folding retries together.
+- `report` takes one bounded snapshot of explicitly named verdict, progress,
+  and log files for live gate triage. It binds verdicts to the agreed commit,
+  marks fresh nonterminal progress as `running`, and keeps child logs diagnostic
+  only; see the [design and status rules](docs/DESIGN-GUIDE.md#bounded-live-gate-snapshot-b100).
 - `receipt` binds selected recorded jobs, `tester-unified/run` evidence,
   verdicts and progress to the current clean worktree's exact HEAD and tree.
 - `launcher` inspects an existing `tester-unified/run` evidence directory,
@@ -49,16 +53,21 @@ and `assay verify`, and adds no runtime dependencies:
 ```bash
 assay analyze verdict .assay/verdict-r2.json --expected-commit "$REVIEW_HEAD" --format text
 assay analyze progress .assay/progress-r2.jsonl --expected-commit "$REVIEW_HEAD"
+assay analyze report --expected-commit "$REVIEW_HEAD" \
+  --verdict r2 .assay/verdict-r2.json \
+  --progress r2 .assay/progress-r2.jsonl --log r2 "$GATE_LOG" --format text
 ```
 
-Set `REVIEW_HEAD` to the full Git commit agreed with the controller. Analysis
+Set `REVIEW_HEAD` to the full Git commit agreed with the controller and
+`GATE_LOG` to the retained gate output file. Analysis
 success means its stated checks succeeded; a valid FAIL or ERROR verdict
 remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 [worked review workflow](docs/CONSUMERS.md#review-evidence-analysis) and
 [design and limits](docs/DESIGN-GUIDE.md#review-evidence-analysis).
 
 Machine consumers can validate manifests and receipts against the packaged
-`schemas/analysis-archive.schema.json` and `schemas/analysis-receipt.schema.json`.
+`schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
+and `schemas/analysis-report.schema.json`.
 Receipt verdicts are checked against the current v12 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 

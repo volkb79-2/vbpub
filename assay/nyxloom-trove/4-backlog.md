@@ -132,14 +132,14 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — DONE (consumer docs in `5bf832a4`; tester-unified PASS on `4ed15f31`)
 - B079 — closed v12 `discard_reason` split — SHIPPED (`assay-v7.0.0`, A-454, release commit `47435679`; tester-unified gate PASS); two original acceptance items remain open: correct the rationale in all five locations, and produce a genuine `RuntimeError` fixture or record an explicit deferral.
 
-**Wave C (current; B080, B081, B094, B025, B095, B076; B100 conditional)**
+**Wave C (current; B080, B081, B094, B025, B095, B076; B100 P4)**
 - B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; P1 review READY and tester-unified PASS at `8823bfea`; B089 is its withdrawn duplicate)
 - B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — DONE (P2; merged at `130ba5ba`)
 - B094 — unknown `--rejudge` reason mapping — DONE (A-458; P2; merged at `130ba5ba`)
 - B025 — unresolvable infrastructure refusals lack their own verdict — DONE (P2 closes the final attestation-timeout oracle; merged at `130ba5ba`)
 - B095 — monitor hot-loop cost / unbounded CPU history — DONE (P3 independent review READY and tester-unified PASS on `09d1f38d`)
 - B076 — unbounded R2 baseline has no bound — RULED (A-457; caller-watched, with documentation)
-- B100 — bounded operator report for live gate progress/verdicts — OPEN (conditional P4; start only after P0-P3 merge and gate)
+- B100 — bounded operator report for live gate progress/verdicts — IMPLEMENTED in P4; independent review and tester-unified gate pending
 
 **Wave C P1 implemented (2026-09-24; independent review READY and authoritative gate PASS at `8823bfea`)**
 - B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation, independent review and tester-unified gate complete)
@@ -153,7 +153,6 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
-- B100 — bounded operator report for live gate progress/verdicts — OPEN (design only)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B105 — assay itself has no full-source R2 lane and no release mutation evidence — OPEN (finding filed in P0; not a Wave C implementation package)
 
@@ -10209,64 +10208,58 @@ refusal and protection against silent guard removal.
 
 ## B100 — bounded operator report for live gate progress, verdicts, errors, and retained evidence
 
-**Status: OPEN (2026-09-19) — design proposal only; no `assay analyze report` subcommand exists in `cli.py` on main.**
+**Status: IN PROGRESS (Wave C P4) — `assay analyze report` is implemented on the isolated P4 branch; independent review and the registered tester-unified gate are pending.**
 
-**Proposed by:** estate release review, 2026-09-19. **Status: OPEN; backlog
-only.** Assay already has separate `analyze progress` and `analyze verdict`
+**Proposed by:** estate release review, 2026-09-19. The implementation adds
+the bounded snapshot alongside Assay's existing `analyze progress` and `analyze verdict`
 commands, but a long gate's wrapper output can exceed the controller's retained
 terminal buffer. Operators and AI/tool-call consumers need one deterministic
 snapshot command that selects the useful facts without scraping a terminal.
 
-### Proposed interface
-
-Add a read-only command such as:
+### Shipped interface
 
 ```text
-assay analyze report \
-  --expected-commit <SHA> \
-  --verdict <lane>=<path>... \
-  --progress <lane>=<path>... \
-  --log <lane>=<path>... \
+assay analyze report --expected-commit SHA \
+  [--verdict LANE FILE]... [--progress LANE FILE]... [--log LANE FILE]... \
   [--format text|json] [--max-errors N]
 ```
 
-The exact spelling can follow the shipped CLI's established option style, but
-the contract should remain explicit and tool-call friendly:
+The command's contract is:
 
-- `--expected-commit` is required and every supplied verdict/receipt is
-  checked against it; an absent, unreadable, malformed, or mismatched artifact
-  returns an evidence error rather than a guessed status;
+- `--expected-commit` is a full lowercase 40- or 64-hex commit. Verdicts and
+  progress are checked against it and against the explicitly supplied lane
+  name. An unreadable, malformed, wrong-lane, or wrong-commit input is an
+  evidence error;
 - input paths are explicit and repeatable, with no parent search, network
   access, or implicit current-directory selection;
 - JSON is stable machine output with one object per lane and fields for
   `status` (`running`, `pass`, `fail`, or `evidence_error`), expected/actual
   commit, exit code, reason code, latest phase/event, bounded error records,
-  progress counts when present, and paths to the full log, verdict, progress,
-  and evidence artifacts;
+  progress event/candidate counts when present, and explicit input paths,
+  complete byte counts, SHA-256 fingerprints, and evidence paths referenced by
+  the verified verdict;
 - text starts with one compact status line per lane, then a short bounded
-  detail block. It never dumps a complete log by default. `--max-errors` (with
-  a small validated upper bound) selects error records; a separate explicit
-  path or full-detail operation can retrieve complete detail;
+  detail block. It never dumps a complete log. `--max-errors` defaults to 5
+  and accepts 0–10 records per lane; each displayed diagnostic is capped at
+  512 characters, with total and truncation fields;
 - a live progress file may produce `running` when no terminal verdict exists,
-  but the command takes one snapshot and exits. It does not poll, sleep, or
-  convert a stale heartbeat into a pass;
-- process exit status remains machine meaningful: zero only when every
-  selected lane has a valid passing verdict, a distinct nonzero result for a
-  valid failing lane, and an evidence/refusal result when the report cannot
-  establish the requested facts;
-- reports expose the next evidence lookup as a path and lane identity, never
-  fabricate a repair command or interpret arbitrary child output as a verdict.
+  the latest event timestamp is parseable and at most 120 seconds old, and the
+  progress stream has no terminal event. The command takes one snapshot and
+  exits; it does not poll or sleep;
+- a valid `PASS` verdict with exit 0 is `pass`; every other verifier-valid
+  terminal verdict is `fail`. Logs are diagnostic only and never create or
+  repair a status, outcome, reason code, or commit;
+- exit code 0 means all lanes pass, 1 means a valid failure, 2 means an
+  evidence error, and 3 means running is the highest-priority present status.
+  Mixed states prioritize `evidence_error > fail > running > pass`.
 
 ### AI and tool-call design constraints
 
-The output should be safe to request after any gate invocation and cheap to
-parse from a tool result. Keep the summary bounded, deterministic, and
-commit-bound; include the full-artifact paths and hashes needed for a follow-up
-call; and preserve the distinction between a running job, a failed job, and
-missing evidence. A controller can then call `assay analyze report` once after
-a long command returns, select a single lane's full log only when needed, and
-avoid repeating a one-minute polling loop. The report is an evidence index,
-not a replacement for the structured verdict or for the gate's own exit code.
+The output is bounded, deterministic, and commit-bound. A controller can call
+`assay analyze report` once after a long command returns, inspect the full log
+by the reported path only when needed, and avoid a one-minute polling loop.
+The report is an evidence index, not a replacement for the structured verdict
+or for the gate's own exit code.
 
 ### Oracles before implementation
 
