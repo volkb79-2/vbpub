@@ -37,9 +37,15 @@ intended writes.
 short-lived helper. The driver resolves its own full Docker ID before
 re-exec; the helper can then locate that container by its cgroup leaf without
 guessing from `/proc/self/cgroup`. A caller-visible `pid:N` is accepted only
-when its cgroup namespace matches the caller's; its namespace-relative cgroup
-path is carried under the caller container ID. A mismatched namespace, an
-unavailable ID, or an unsafe path is a refusal, not a guess. See the worked command in
+when its cgroup namespace matches the caller's. The caller carries the PID-
+and cgroup-namespace inodes, namespace-local PID, process start time, and
+namespace-relative cgroup path under the caller container ID. In the
+helper's host `/proc` view, the resolver matches those facts and exact cgroup
+membership, rechecks the process start time, and requires exactly one match
+before returning the helper-visible PID for proc sampling and DAMON. A
+mismatched namespace, changed or unavailable identity, unsafe path, or
+ambiguous match is a refusal, not a guess from a numeric PID. See the worked
+command in
 [`CONSUMERS.md`](CONSUMERS.md#resolve-a-target-from-a-cockpit).
 
 The short-lived helper-placement probe runs under the injected interactive

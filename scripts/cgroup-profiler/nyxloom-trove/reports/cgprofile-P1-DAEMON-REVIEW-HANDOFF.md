@@ -26,7 +26,7 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-RW-47, RW-48, and RW-318..RW-323 bind this package), the
+  RW-47, RW-48, and RW-318..RW-324 bind this package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,
 `lib/serve.py`, `lib/store.py` changes, `cgprofile.py`, the shim, the
@@ -93,7 +93,7 @@ each claim against what you found; list claims you could not verify.
    contract-fixture identity test really compares bytes against
    `run-gate-project/nyxloom-trove/fixtures/rg55/`.
 9. **Rulings honored.** RW-3 one-liner present; RW-13/RW-15/RW-16 as ruled;
-   RW-19/RW-21/RW-23/RW-47/RW-48/RW-318..RW-323 recorded and reflected in
+   RW-19/RW-21/RW-23/RW-47/RW-48/RW-318..RW-324 recorded and reflected in
    code/tests and the exact gate-launch evidence; the prior P1 R2 terminal
    is `BUDGET_EXCEEDED/CANDIDATE_HUNG`, not a passing mutation result;
    the R2/R3 `resources.cpus = "3"` declarations must produce
@@ -128,9 +128,33 @@ each claim against what you found; list claims you could not verify.
   `source: sampled-max`.
 - Two sessions concurrently (both probes at once) → two kdamond indices,
   independent summaries.
+- **Helper `pid:N` identity through private namespaces.** From a reviewer-owned
+  workload with private PID/cgroup namespaces and a process kept alive for the
+  probe, run helper-mode target resolution and a short helper-mode collection
+  for that process. Confirm the resolved target is kind `pid` (not merely its
+  container), the sample contains that one helper-visible PID, and DAMON is
+  given the same PID when available. If DAMON is unavailable, verify and record
+  its explicit reason; do not claim the DAMON assertion passed. Also exercise
+  the fixture-backed refusal for a process outside the selected subpath. This
+  probe must use only reviewer-owned containers and scratch output.
 - `finally`: remove only the exact reviewer-owned workload and daemon
   containers (and their dedicated scratch data); leave any pre-existing
   singleton untouched.
+
+### Shared-host isolation (binding)
+
+- Do not run `ciu up`/`ciu down` for review probes. Do not issue Docker
+  `network create`, `connect`, `disconnect`, or `rm` commands. A CIU probe may
+  attach the running cockpit container to its generated network; that
+  attachment is shared state, not reviewer-owned cleanup.
+- Run only uniquely named reviewer-owned probe containers, with
+  `--network=none`, the exact verified loaded cgroup parent, and a 3-CPU cap.
+  Reach the reviewer-owned daemon with `docker exec`; do not add network
+  connectivity to make a probe convenient.
+- Never alter or clean up any pre-existing container, network, or attachment,
+  including the running cockpit `dstdns-devcontainer-vb`. If a live probe
+  cannot be completed without touching shared state, record the exact missing
+  evidence and stop that probe; do not improvise a recovery or cleanup.
 
 ## Verdict
 

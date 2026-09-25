@@ -84,10 +84,13 @@ container in the read-only host cgroup tree:
 The helper never interprets its own namespace-local PID as a host PID. This is
 important because host processes appear as PID `0` in `cgroup.procs` when read
 from a private PID namespace; container identity must come from the ID lookup.
-For `pid:N`, the caller first verifies that the process shares its cgroup
-namespace, then carries that relative path under the caller's container ID.
-A process in another cgroup namespace is refused; pass an explicit container
-or cgroup target instead.
+For `pid:N`, the caller verifies that the process shares its cgroup namespace
+and carries the PID/cgroup namespace identities, namespace-local PID, process
+start time, and relative cgroup path under the caller's container ID. The
+helper resolves exactly one matching process in that container subpath and
+uses its helper-visible PID for proc sampling and DAMON. Missing, changed, or
+ambiguous identity is refused; pass an explicit container or cgroup target
+instead.
 
 The version response has the current wire shape:
 
