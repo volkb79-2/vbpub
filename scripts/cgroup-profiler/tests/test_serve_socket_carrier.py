@@ -401,6 +401,20 @@ class _Scenario:
         self._over_socket("status")
         self._over_exec("status")
 
+        # The single-session form uses the same contract timestamp as the
+        # listing. Exercise the shipped CLI against the live socket: a raw
+        # response without top-level `at` used to be accepted by the server
+        # but rejected by its own reference translator with exit 3.
+        specific_req = _request_for("status", self.socket_path, session=SESSION_ID)
+        specific_socket = _raw_socket_request(self.socket_path, specific_req)
+        self.capsys.readouterr()
+        specific_rc = cg.main(_ctl_argv("status", self.socket_path, session=SESSION_ID))
+        specific_exec = json.loads(self.capsys.readouterr().out)
+        assert specific_rc == 0
+        assert specific_exec == specific_socket
+        assert specific_exec["at"] == "2026-09-12T10:15:00Z"
+        assert specific_exec["session"]["session"] == SESSION_ID
+
         started_b = self._over_exec("start", token=TOKEN_B)
         assert started_b["session"] == SESSION_ID_2, started_b
         assert self.barrier.event_for(SESSION_ID_2).wait(timeout=10.0)

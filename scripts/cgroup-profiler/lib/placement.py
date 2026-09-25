@@ -509,9 +509,14 @@ class LanePlacement:
         """§8.4's `--on-stall kill` for a PLACED session: one write of ``1``
         to the leaf's ``cgroup.kill``, which the kernel applies to every pid
         in the leaf atomically — it cannot miss a pid that forked between the
-        resolver's walk and the signal, which a pid loop can."""
+        resolver's walk and the signal, which a pid loop can. An empty or
+        unreadable leaf cannot certify that the lane was killed."""
         leaf_abs = self.leaf_abs
         if leaf_abs is None:  # pragma: no cover - callers check `placed`
+            return False
+        if not _read_pids(os.path.join(leaf_abs, PROCS)):
+            if self._log is not None:
+                self._log(f"placement: cgroup.kill on {self.leaf_cgroup} refused: no visible pids")
             return False
         try:
             self._write(os.path.join(leaf_abs, "cgroup.kill"), "1")

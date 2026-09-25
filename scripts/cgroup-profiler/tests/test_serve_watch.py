@@ -278,6 +278,56 @@ class TestRealSubtreeEnforcement:
         # or a bare `reported` verdict) does that.
         assert out["finished_before_stop"] is False
 
+    def test_unreachable_pid_is_reported_and_the_lane_remains_live(
+        self, tmp_path, monkeypatch
+    ):
+        """Host-proc discovery can return a PID invisible to the daemon's
+        private PID namespace. A failed signal must not certify a kill."""
+        lane = subprocess.Popen(
+            ["sleep", "30"], env=dict(os.environ, RUN_GATE_PROFILE_SESSION=TOKEN)
+        )
+        parked = threading.Event()
+        server = None
+        try:
+            server = _server(
+                tmp_path, cgroup_root=_fake_cgroup_root(tmp_path, procs=str(lane.pid)),
+                proc_root="/proc", host_proc_root=str(_fake_proc(tmp_path)),
+                sampler_sleep=lambda _seconds: parked.wait(timeout=60),
+            )
+            start = server._dispatch({
+                "verb": "start", "args": _start_args(
+                    token=TOKEN, idle_bound=1000, on_stall="kill"
+                ), "contract": 1,
+            })
+            assert start["ok"] is True
+            sess = server._sessions[SESSION_ID]
+            assert lane.pid in sess.subtree_resolver.current_pids
+            sess.stop_event.set()
+            parked.set()
+            sess.thread.join(timeout=10)
+            assert not sess.thread.is_alive()
+            _force_stalled(sess)
+
+            def unreachable(_pid, _sig):
+                raise ProcessLookupError(3, "No such process")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(serve.os, "kill", unreachable)
+                server._enforce_stall_kill(sess, [lane.pid])
+
+            assert lane.poll() is None
+            assert sess.watch.state == "stalled"
+            assert sess.watch.verdict == "reported"
+            assert "kill-refused:signalled-0-of-1-pids" in sess.watch.reason
+            assert sess.finished is False
+        finally:
+            parked.set()
+            if server is not None and SESSION_ID in server._sessions:
+                server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
+            if lane.poll() is None:
+                lane.kill()
+            lane.wait(timeout=10)
+
     def test_a_progress_stream_is_read_through_proc_root(self, tmp_path):
         # The lane's stream path is read as `/proc/<pid>/root/<path>`; in
         # this test the lane shares the daemon's mount namespace, so that
@@ -413,6 +463,16 @@ class TestKillTargets:
         pids, refusal = serve.SessionServer._kill_targets(self._session(), [7, 9])
         assert pids == [] and refusal == "no-token-in-shared-scope"
 
+    def test_numeric_pid_collision_is_not_a_signal_target(self, tmp_path):
+        proc = _fake_proc(tmp_path)
+        (proc / str(os.getpid())).mkdir()
+        server = _server(
+            tmp_path, cgroup_root=_fake_cgroup_root(tmp_path), proc_root=str(proc),
+        )
+        assert server._pid_addressable(os.getpid()) is False
+        server.proc_root = "/proc"
+        assert server._pid_addressable(os.getpid()) is True
+
     def test_the_refusal_is_recorded_on_the_verdict(self, tmp_path):
         server = _server(
             tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
@@ -437,13 +497,15 @@ class TestKillTargets:
         )
         sent: List[int] = []
         monkeypatch.setattr(serve.os, "kill", lambda pid, sig: sent.append(pid))
+        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
         sess = self._session(tmp_path, token=TOKEN)
         sess.watch = liveness.LivenessTracker(
             liveness.parse_policy({"on_stall": "kill"}), started_at="2026-09-12T10:15:00Z",
         )
         server._enforce_stall_kill(sess, [0, 1, os.getpid(), 4242])
         assert sent == [4242]
-        assert "SIGKILL sent to 1 pid(s)" in sess.watch.reason
+        assert sess.watch.verdict == "reported"
+        assert "kill-refused:signalled-1-of-4-pids" in sess.watch.reason
 
     def test_a_pid_that_exits_between_the_walk_and_the_signal_is_not_an_error(
         self, tmp_path, monkeypatch
@@ -456,6 +518,7 @@ class TestKillTargets:
             if pid == 4242:
                 raise ProcessLookupError(3, "No such process")
         monkeypatch.setattr(serve.os, "kill", _kill)
+        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
         sess = self._session(tmp_path, token=TOKEN)
         sess.watch = liveness.LivenessTracker(
             liveness.parse_policy({"on_stall": "kill"}), started_at="2026-09-12T10:15:00Z",

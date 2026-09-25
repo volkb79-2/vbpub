@@ -884,6 +884,9 @@ class TestPlacedKill:
         the fact that no signal was sent to the (real, unrelated) pid in the
         list."""
         root, server, sess = self._stalled_session(tmp_path)
+        # The fake resolver has no /proc/101 process to migrate, so model a
+        # genuinely occupied cgroup explicitly for this cgroup.kill oracle.
+        (_leaf(root) / "cgroup.procs").write_text("101\n")
         sent: List[Any] = []
         written: List[tuple] = []
         real_write = sess.placement._write
@@ -891,7 +894,9 @@ class TestPlacedKill:
             written.append((path, value)), real_write(path, value)
         )[-1]
         server._enforce_stall_kill(sess, [os.getpid() + 1])
-        assert written == [(str(_leaf(root) / "cgroup.kill"), "1")]
+        assert [item for item in written if item[0].endswith("cgroup.kill")] == [
+            (str(_leaf(root) / "cgroup.kill"), "1")
+        ]
         assert sess.watch.verdict == liveness.VERDICT_KILLED
         assert "cgroup.kill applied to" in sess.watch.reason
         assert sent == []
@@ -908,9 +913,28 @@ class TestPlacedKill:
         root, server, sess = self._stalled_session(tmp_path, place=False)
         killed: List[int] = []
         monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
+        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
         server._enforce_stall_kill(sess, [4242])
         assert killed == [4242]
         assert "SIGKILL sent to 1 pid(s)" in sess.watch.reason
+
+    def test_empty_placed_leaf_does_not_certify_a_cgroup_kill(self, tmp_path, monkeypatch):
+        """A private-PID-namespace migration can leave a capped but empty
+        leaf; writing cgroup.kill there must not certify the lane's death."""
+        root, server, sess = self._stalled_session(tmp_path)
+        (_leaf(root) / "cgroup.procs").write_text("")
+        written: List[tuple] = []
+        real_write = sess.placement._write
+        sess.placement._write = lambda path, value: (
+            written.append((path, value)), real_write(path, value)
+        )[-1]
+        monkeypatch.setattr(os, "kill", lambda _pid, _sig: (_ for _ in ()).throw(
+            ProcessLookupError(3, "No such process")
+        ))
+        server._enforce_stall_kill(sess, [4242])
+        assert not any(path.endswith("cgroup.kill") for path, _ in written)
+        assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert sess.finished is False
 
     def test_a_leaf_that_will_not_take_the_write_falls_back_to_pids(self, tmp_path, monkeypatch):
         """A kernel without `cgroup.kill` must not be reported as a kill that
@@ -919,6 +943,7 @@ class TestPlacedKill:
         _fake_rmdir(str(_leaf(root)))
         killed: List[int] = []
         monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
+        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
         server._enforce_stall_kill(sess, [4242])
         assert killed == [4242]
         assert "SIGKILL sent to" in sess.watch.reason

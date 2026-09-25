@@ -1285,6 +1285,16 @@ class SessionServer:
             return list(pids), None
         return [], "no-token-in-shared-scope"
 
+    def _pid_addressable(self, pid: int) -> bool:
+        """A host-proc PID is safe to signal only if local /proc names that
+        same process, not merely an unrelated task with the same number."""
+        try:
+            return os.path.samefile(
+                os.path.join(self.proc_root, str(pid)), f"/proc/{pid}"
+            )
+        except OSError:
+            return False
+
     def _enforce_stall_kill(self, sess: _Session, pids: List[int]) -> None:
         # CP-9 (§8.3/§8.4): a PLACED session is killed with ONE write of "1"
         # to `<gates slice>/rg-<token>/cgroup.kill`. The kernel applies that
@@ -1323,17 +1333,53 @@ class SessionServer:
             )
             return
         killed: List[int] = []
+        unreached = 0
         own = os.getpid()
         for pid in targets:
             # Never pid 1 (the container's own init, whose death takes the
             # daemon's container with it) and never this daemon.
             if pid <= 1 or pid == own:
+                unreached += 1
+                continue
+            # The resolver reads HOST pids through proc_root. In a private
+            # PID namespace the same number may name an unrelated local
+            # process. Signal only when both proc views identify the exact
+            # same process (the bind-mount case), never on numeric equality.
+            if not self._pid_addressable(pid):
+                unreached += 1
                 continue
             try:
                 os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                # ESRCH also means "outside this daemon's private PID
+                # namespace". The host proc view distinguishes that live
+                # case from a target that actually exited after discovery.
+                try:
+                    os.stat(os.path.join(self.proc_root, str(pid)))
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    pass  # indeterminate is not proof of exit
+                unreached += 1
+                continue
             except OSError:
-                continue  # already gone between the walk and the signal
+                unreached += 1
+                continue
             killed.append(pid)
+        if unreached or not killed:
+            # A host PID obtained through the read-only host proc mount is
+            # not necessarily addressable from this daemon's private PID
+            # namespace. A failed or partial signal must never become a
+            # terminal `killed` verdict while the lane may still be alive.
+            with sess.lock:
+                sess.watch.record_kill_refused(
+                    f"signalled-{len(killed)}-of-{len(targets)}-pids"
+                )
+            self._log(
+                f"watch {sess.session_id}: SIGKILL reached {len(killed)} of "
+                f"{len(targets)} pid(s); kill not certified"
+            )
+            return
         with sess.lock:
             sess.watch.record_kill(killed)
         self._log(
@@ -1389,7 +1435,8 @@ class SessionServer:
                 )
             entry = self._status_entry(sess)
         return {
-            "ok": True, "contract": CONTRACT_VERSION, "session": entry,
+            "ok": True, "contract": CONTRACT_VERSION, "at": self._iso(self.clock()),
+            "session": entry,
             "host": self._host_snapshot(),
         }
 
