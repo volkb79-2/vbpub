@@ -909,7 +909,7 @@ def test_unknown_rejudge_id_is_a_verified_whole_lane_refusal_including_r3(
     assert [claim["reason_code"] for claim in document["claims"]] == [
         "BAD_LANE_CONFIG"
     ] * 3
-    assert "current candidate set" in err
+    assert "selected candidate set" in err
     assert "UNREADABLE_ARTIFACT" not in err
     _cli_verify_document(document, tmp_path, "unknown-rejudge-verdict.json")
 
@@ -1027,7 +1027,7 @@ def test_stale_rejudge_id_refuses_when_source_edit_removes_all_candidates(
         "ERROR",
         "BAD_LANE_CONFIG",
     )
-    assert "current candidate set" in err
+    assert "selected candidate set" in err
     _cli_verify_document(document, tmp_path, "no-candidates-rejudge-verdict.json")
 
 

@@ -795,7 +795,7 @@ def test_rejudge_unknown_id_refuses_before_any_execution(tmp_path):
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
         with pytest.raises(
             mutation.InvalidRejudgeIdError,
-            match="not present in this lane's current candidate set",
+            match="not present in this run's selected candidate set",
         ) as excinfo:
             run_mutation(
                 baseline=baseline,
