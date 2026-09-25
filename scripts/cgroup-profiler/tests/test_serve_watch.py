@@ -888,6 +888,55 @@ class TestWatchOverExec:
         assert events.count("reading") >= 2
         assert lines[-1]["event"] == "end"
 
+    @pytest.mark.parametrize("ending", [b"", b'{"event":"end"'])
+    def test_a_watch_disconnected_before_a_complete_end_is_exit_3(
+        self, tmp_path, capsys, ending,
+    ):
+        socket_path = str(tmp_path / "truncated.sock")
+        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server_sock.bind(socket_path)
+        server_sock.listen(1)
+
+        def serve_once() -> None:
+            conn, _ = server_sock.accept()
+            with conn:
+                conn.recv(65536)
+                conn.sendall(
+                    b'{"contract":1,"event":"reading","session":"s-test"}\n' + ending
+                )
+
+        thread = threading.Thread(target=serve_once, daemon=True)
+        thread.start()
+        try:
+            rc = cg.main(["ctl", "--socket", socket_path, "watch", SESSION_ID])
+        finally:
+            thread.join(timeout=60.0)  # suite failsafe, not a verdict clock
+            server_sock.close()
+        assert rc == 3
+        assert json.loads(capsys.readouterr().out.splitlines()[0])["event"] == "reading"
+
+    def test_two_end_events_are_a_transport_fault(self, tmp_path):
+        socket_path = str(tmp_path / "duplicate-end.sock")
+        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server_sock.bind(socket_path)
+        server_sock.listen(1)
+
+        def serve_once() -> None:
+            conn, _ = server_sock.accept()
+            with conn:
+                conn.recv(65536)
+                end = json.dumps({"contract": 1, "event": "end", "session": SESSION_ID})
+                conn.sendall((end + "\n" + end + "\n").encode())
+
+        thread = threading.Thread(target=serve_once, daemon=True)
+        thread.start()
+        try:
+            rc = cg.main(["ctl", "--socket", socket_path, "watch", SESSION_ID])
+        finally:
+            thread.join(timeout=60.0)
+            server_sock.close()
+        assert rc == 3
+
     def test_an_unknown_session_over_exec_is_one_line_and_exit_2(self, streaming_server, capsys):
         rc = cg.main([
             "ctl", "--socket", streaming_server.socket_path, "watch", "s-20260912T000000Z-0000",

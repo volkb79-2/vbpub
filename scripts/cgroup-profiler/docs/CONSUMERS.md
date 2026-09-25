@@ -168,6 +168,9 @@ the daemon ignores a FIFO, device, or unfinished line. A placement request with 
 `rg-<token>` leaf starts unplaced with `placement.error` set. Use a fresh
 token for each new lane attempt; a retry of a live session is reused by the
 server's `(container_id, token)` lookup.
+When consuming `ctl watch`, require its terminal `end` line. The exec carrier
+exits 3 if the socket closes before that line; treat it as profiling
+unavailable and reconcile the session through `ctl status`/`stop`.
 
 ## Closed values and response evidence
 

@@ -249,7 +249,8 @@ The daemon's version response is contract major 1:
   carrier (the one verb where more than one response crosses the wire per
   connection — `docs/PROTOCOL.md` §1's documented exception) until the
   session ends; `--watch-interval` (default 30 s, clamped [5, 300])
-  controls the `reading` cadence. `ctl status`/`ctl stop` also carry the
+  controls the `reading` cadence. A disconnected watch without its terminal
+  `end` exits 3. `ctl status`/`ctl stop` also carry the
   current `liveness`/`watch` blocks for a session that was never watched
   with `ctl watch` directly.
 - **Placement (D-20/D-25, contract §8.3) — `start --place`.** Creates a

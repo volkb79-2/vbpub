@@ -1101,6 +1101,7 @@ def _ctl_stream(socket_path: str, req: Dict[str, Any]) -> int:
     `cmd_ctl` uses for the non-streaming verbs.
     """
     rc = 0
+    end_count = 0
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(None)
         client.connect(socket_path)
@@ -1124,6 +1125,13 @@ def _ctl_stream(socket_path: str, req: Dict[str, Any]) -> int:
                     continue
                 if isinstance(doc, dict) and doc.get("ok") is False:
                     rc = 2
+                if isinstance(doc, dict) and doc.get("event") == "end":
+                    end_count += 1
+    # EOF alone is not a session end. A daemon crash or broken connection
+    # before its one terminal `end` must be a transport fault, even if every
+    # preceding `reading` was valid and the socket closed cleanly.
+    if (rc == 0 and end_count != 1) or buffer.strip():
+        return 3
     return rc
 def _validate_ctl_response(verb: str, resp: Any) -> None:
     """Validate the complete response shape before the CLI accepts it.

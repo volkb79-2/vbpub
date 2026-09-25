@@ -9,7 +9,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ## [Unreleased]
 
 ### Fixed
-- fix(cgprofile): RG-55 P6 review round 3 -- bind D-25 writes to the session's exact leaf, refuse an existing token leaf, prevent FIFO progress-stream blocking and partial-line liveness resets; correct the gates-tier adopter example
+- fix(cgprofile): RG-55 P6 review round 3 -- bind D-25 writes to the session's exact leaf, refuse an existing token leaf, prevent FIFO progress-stream blocking and partial-line liveness resets, report truncated watch streams as daemon faults; correct the gates-tier adopter example
 - fix(cgprofile): CP-4 -- widen `new_run_id`'s random suffix 4->8 hex chars, killing the birthday-paradox collision flake (376bb9cb)
 - fix(cgprofile): CP-10 -- decouple the daemon's host-PSI liveness pause check (`host_proc_root`) from the real `/proc` used for subtree/pid resolution, ending a real-host-memory-pressure-driven test flake session 6 misattributed to test order (b50163e9)
 

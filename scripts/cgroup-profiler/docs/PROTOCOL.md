@@ -59,6 +59,8 @@ socket-carrier consumer should send. The frozen bytes are in
   silence for a whole `--watch-interval` is its normal state. Consumers
   apply the per-verb timeouts of §1.5 for the other verbs, and for `watch`
   an idle timeout of `3 x watch-interval` with a re-attach (§8.2).
+  The in-image `ctl watch` exits 3 if the socket closes without exactly one
+  complete terminal `end` line; EOF by itself is not a successful watch.
 * A `watch` request that reaches a caller which cannot stream is refused
   with §8.8's `not-streaming` — never answered with a single reading.
 
