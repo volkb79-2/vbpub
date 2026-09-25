@@ -1012,6 +1012,47 @@ Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
 
+### Selective reuse replays a current failure witness (B106)
+
+`--resume` and `--reuse-from` answer different questions. Resume may reuse a
+completed outcome only when its judge identity still matches, including the
+current command and judging tree. A test-only fix changes that identity, so
+ordinary resume correctly re-executes the campaign. `--reuse-from` handles the
+costly case where source and tests changed: it uses a prior result only to
+choose a test node worth replaying, never to carry an old kill into the new
+verdict.
+
+The prior artifact must be a current-verifier-accepted v13, complete,
+unsharded native campaign. Each candidate ID commits to the canonical path,
+operator, source-file digest, byte span, and full mutated-file digest. On the
+new run Assay passes the current R0 baseline first, rediscovers the complete
+candidate inventory from the current snapshot, and runs the current pytest
+command with full collection and ordering. For an unchanged candidate whose
+prior outcome was killed and recorded a call-phase failure witness, Assay may
+stop that current run after the same node fails in the call phase. The current
+receipt must show the node occurred exactly once, no earlier or auxiliary
+failure, pytest session status 1, and child status 1. That fresh result is the
+current kill evidence; the prior verdict digest and node ID explain why that
+point was tried.
+
+Any uncertainty gets a new full-suite process and a freshly materialized
+candidate snapshot: missing or repeated node, setup/teardown failure, changed
+candidate ID, malformed receipt, unsupported command, xdist, custom loop,
+untrusted lifecycle hook, or mismatched status. Survivors, crashes, hangs,
+timeouts, equivalents, and candidates absent from the prior plan always run
+fully. The v12 exception reads only a bounded JSON envelope and its version;
+it is a cold start, and v12 remains rejected by `assay verify`.
+
+The narrower alternatives fail in opposite ways. Reusing a kill because
+mutated bytes match ignores the new tests and command. Deselecting all tests
+after the prior witness changes collection seen by session fixtures and
+plugins. Instead, the current suite is fully collected and ordered, and only
+its ordinary sequential runner stops after a verified current failure. The
+feature initially supports a direct `pytest` executable or `python -m pytest`;
+other launchers keep the full-run path. Shards are refused with this option so
+one artifact cannot imply a complete campaign from a selected slice. See the
+[worked consumer example](CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
+
 ### Rejudge help follows the canonical vocabulary (B096)
 
 `assay.verdict.MUTATION_BUCKETS` is the one owner of mutation outcome bucket

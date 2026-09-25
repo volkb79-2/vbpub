@@ -227,9 +227,16 @@ def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
         "ASSAY_GATE_PHASE=wheel-installed",
         "ASSAY_GATE_PHASE=self-hosted-lane-passed",
         "ASSAY_GATE_PHASE=independent-self-hosting-passed",
+        "ASSAY_GATE_PHASE=verdict-v13-successors-verified",
     ):
         assert f"echo '{marker}'" in source, f"missing required phase marker: {marker}"
     assert "echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'" in source
+
+    v12 = source.index("ASSAY_GATE_PHASE=verdict-v12-successors-verified")
+    v13_suite = source.index("test_b106_reuse_and_witness.py")
+    v13 = source.index("ASSAY_GATE_PHASE=verdict-v13-successors-verified")
+    self_hosted = source.index('run_self_hosted_lane "$worktree"')
+    assert v12 < v13_suite < v13 < self_hosted
 
     for required in (
         "--network=none",

@@ -21,65 +21,109 @@
       "mutation": {
         "budget_exceeded": [],
         "candidate_count": 6,
+        "candidate_ids": [
+          "11341b4078999fba0507eabe074f2b1a5089f744a379b4dad8847e1f39dd4790",
+          "0c8a2ebf69c92d96e84ee3c4b74bb07902ae89362bddbd970fa5b5011a580380",
+          "f0d52c2e2acba20dc5b69ca55a71fe691c09bc07b8260d29c31ac4189c19d1be",
+          "ae3464dfcb366ccef1a000ddc772b66772eb637dd9d80cb200e5ee29c2464138",
+          "c3f0f7c5a32bfe9e869e9f0971e3d9f6749a0281893781440b48c043c08a65e2",
+          "155ce7e49df6c80ca60879a7a898dfd7471ed8379c3ee19e7964f5398ef2e3e8"
+        ],
         "crashed": [],
         "equivalent": [],
         "hung": [],
         "killed": [
           {
+            "candidate_id": "11341b4078999fba0507eabe074f2b1a5089f744a379b4dad8847e1f39dd4790",
             "description": "NOT NULL -> NULL",
             "end_byte": 495,
+            "execution": {
+              "mode": "full"
+            },
             "kill_signal": "schema test command failed (exit 3) against database witness: psql -v ON_ERROR_STOP=1 -U postgres -d \"$SCHEMA_GATE_DBNAME\" -f /witness-assert.sql",
             "lineno": 9,
+            "mutated_file_sha256": "dbe4084156e7921850b07b0f2220ccff7e19226cd2bbb974f300f064d72b660d",
             "operator": "sql:drop-not-null",
             "path": "infra/db-init/init-scripts/20-create-corpora.sql",
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "source_sha256": "0a3063878c24274c3a466a1700c5a968ead422579192c4c204652c1814e067a3",
             "start_byte": 487
           }
         ],
         "survived": [
           {
+            "candidate_id": "0c8a2ebf69c92d96e84ee3c4b74bb07902ae89362bddbd970fa5b5011a580380",
             "description": "NOT NULL -> NULL",
             "end_byte": 561,
+            "execution": {
+              "mode": "full"
+            },
             "lineno": 11,
+            "mutated_file_sha256": "c6266769d9fd6e55bb12480a17267f3ec517c89437ff772901edbb797fe67ec8",
             "operator": "sql:drop-not-null",
             "path": "infra/db-init/init-scripts/20-create-corpora.sql",
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "source_sha256": "0a3063878c24274c3a466a1700c5a968ead422579192c4c204652c1814e067a3",
             "start_byte": 553
           },
           {
+            "candidate_id": "f0d52c2e2acba20dc5b69ca55a71fe691c09bc07b8260d29c31ac4189c19d1be",
             "description": "NOT NULL -> NULL",
             "end_byte": 676,
+            "execution": {
+              "mode": "full"
+            },
             "lineno": 14,
+            "mutated_file_sha256": "544c59347aa207923e5ef44dfaaa469b7d54467bf9f33788d37ce0c2946c2e9d",
             "operator": "sql:drop-not-null",
             "path": "infra/db-init/init-scripts/20-create-corpora.sql",
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "source_sha256": "0a3063878c24274c3a466a1700c5a968ead422579192c4c204652c1814e067a3",
             "start_byte": 668
           },
           {
+            "candidate_id": "ae3464dfcb366ccef1a000ddc772b66772eb637dd9d80cb200e5ee29c2464138",
             "description": "NOT NULL -> NULL",
             "end_byte": 824,
+            "execution": {
+              "mode": "full"
+            },
             "lineno": 18,
+            "mutated_file_sha256": "d38cf28b79bcb068af46f6ce1bfc16d03a9ee12233cb3b9ee1e972abeab01df5",
             "operator": "sql:drop-not-null",
             "path": "infra/db-init/init-scripts/20-create-corpora.sql",
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "source_sha256": "0a3063878c24274c3a466a1700c5a968ead422579192c4c204652c1814e067a3",
             "start_byte": 816
           },
           {
+            "candidate_id": "c3f0f7c5a32bfe9e869e9f0971e3d9f6749a0281893781440b48c043c08a65e2",
             "description": "NOT NULL -> NULL",
             "end_byte": 1240,
+            "execution": {
+              "mode": "full"
+            },
             "lineno": 25,
+            "mutated_file_sha256": "187f68ededac85bcab0b908d322477d1fbef5390396879ee2763aa035206f615",
             "operator": "sql:drop-not-null",
             "path": "infra/db-init/init-scripts/20-create-corpora.sql",
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "source_sha256": "0a3063878c24274c3a466a1700c5a968ead422579192c4c204652c1814e067a3",
             "start_byte": 1232
           },
           {
+            "candidate_id": "155ce7e49df6c80ca60879a7a898dfd7471ed8379c3ee19e7964f5398ef2e3e8",
             "description": "NOT NULL -> NULL",
             "end_byte": 1296,
+            "execution": {
+              "mode": "full"
+            },
             "lineno": 26,
+            "mutated_file_sha256": "89b1b5b37cb66b5f04376ea1c4ce0276dbaa9146c6afb9a3e695af2af5b929a3",
             "operator": "sql:drop-not-null",
             "path": "infra/db-init/init-scripts/20-create-corpora.sql",
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "source_sha256": "0a3063878c24274c3a466a1700c5a968ead422579192c4c204652c1814e067a3",
             "start_byte": 1288
           }
         ],
@@ -138,7 +182,7 @@
   "lane": "dstdns_sql_qualification",
   "outcome": "FAIL",
   "reason_code": "MUTANTS_SURVIVED",
-  "schema_version": 12,
+  "schema_version": 13,
   "scope": "S1",
   "snapshot_policy": {
     "selection": "repository"

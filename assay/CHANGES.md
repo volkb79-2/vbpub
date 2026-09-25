@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- feat(assay): add provenance-safe selective native R2 reruns using current
+  pytest kill-witness replay, with bounded v13 candidate inventory and a
+  full-suite fallback for uncertain cases (B106)
+
 ### Fixed
 - fix(assay): classify istanbul `default-arg` signature lines from the
   enclosing function's call count (`fnMap`/`f`) when an arm of that same
@@ -27,11 +32,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Documentation
 - docs(assay): explain Git ownership refusals, rejudge input classification,
   and the consumer remedies (B081/B094)
+- docs(assay): document selective R2 reuse, v12 cold starts, and supported
+  JavaScript R2 ingestion (B106)
 
 ### Testing
 - test(assay): drive unknown, stale, valid, and corrupt `--rejudge` state
   through the CLI and `assay verify`; guard the attestation-timeout
   infrastructure forward (B094/B025)
+- test(assay): verify B106 identity inventories and current pytest witness
+  replay, including fallback to a full run (B106)
 <!-- cmru: release history -->
 
 ## [7.0.0] - 2026-09-23

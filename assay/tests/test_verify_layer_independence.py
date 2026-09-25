@@ -30,6 +30,7 @@ exactly how the omission survived a green suite and 28 green locked cases.
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -38,6 +39,7 @@ import pytest
 from conftest import GitRepo
 
 from assay import verify
+from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main
 from assay.errors import REASON_CODES, Outcome, ReasonCode
 
@@ -49,7 +51,7 @@ _BUCKETS = ("killed", "survived", "crashed", "budget_exceeded", "equivalent")
 
 
 def _mutant(operator: str = "python:compare-swap", start: int = 25) -> dict:
-    return {
+    item = {
         "path": "src/m.py",
         "lineno": 2,
         "start_byte": start,
@@ -60,6 +62,24 @@ def _mutant(operator: str = "python:compare-swap", start: int = 25) -> dict:
         "operator": operator,
         "description": "Lt->LtE",
     }
+    source_sha256 = hashlib.sha256(f"source:{start}".encode()).hexdigest()
+    mutated_file_sha256 = hashlib.sha256(f"mutated:{start}".encode()).hexdigest()
+    item.update(
+        {
+            "candidate_id": candidate_id_from_fields(
+                path=item["path"],
+                source_sha256=source_sha256,
+                start_byte=item["start_byte"],
+                end_byte=item["end_byte"],
+                mutated_file_sha256=mutated_file_sha256,
+                operator=operator,
+            ),
+            "source_sha256": source_sha256,
+            "mutated_file_sha256": mutated_file_sha256,
+            "execution": {"mode": "full"},
+        }
+    )
+    return item
 
 
 def _r2_document(*, bucket: str, operator: str) -> dict:
@@ -68,6 +88,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
     ``compare-swap``."""
     payload = {"candidate_count": 1, "total": 1, **{name: [] for name in _BUCKETS}}
     payload[bucket] = [_mutant(operator)]
+    payload["candidate_ids"] = [payload[bucket][0]["candidate_id"]]
     status, reason = {
         "killed": ("PASS", None),
         "survived": ("FAIL", "MUTANTS_SURVIVED"),
@@ -87,7 +108,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         claim["reason_code"] = reason
     outcome = Outcome(status)
     document = {
-        "schema_version": 12,
+        "schema_version": 13,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -473,8 +494,25 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         "operator": "sql:drop-check",
         "description": "drop the CHECK constraint",
     }
+    source_sha256 = hashlib.sha256(b"sql-source").hexdigest()
+    mutated_file_sha256 = hashlib.sha256(b"sql-mutated").hexdigest()
+    mutant.update(
+        {
+            "candidate_id": candidate_id_from_fields(
+                path=mutant["path"],
+                source_sha256=source_sha256,
+                start_byte=mutant["start_byte"],
+                end_byte=mutant["end_byte"],
+                mutated_file_sha256=mutated_file_sha256,
+                operator=mutant["operator"],
+            ),
+            "source_sha256": source_sha256,
+            "mutated_file_sha256": mutated_file_sha256,
+            "execution": {"mode": "full"},
+        }
+    )
     document = {
-        "schema_version": 12,
+        "schema_version": 13,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -518,6 +556,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
                 "verified_by_assay": True,
                 "mutation": {
                     "candidate_count": 1, "total": 1, "killed": [mutant],
+                    "candidate_ids": [mutant["candidate_id"]],
                     "survived": [], "crashed": [], "budget_exceeded": [],
                     "equivalent": [],
                 },
@@ -570,6 +609,20 @@ def _operator_document(*, language: str, declared: list[str], applied: str) -> d
                          "equivalent"):
                 for entry in claim["mutation"][name]:
                     entry["operator"] = applied
+                    entry["candidate_id"] = candidate_id_from_fields(
+                        path=entry["path"],
+                        source_sha256=entry["source_sha256"],
+                        start_byte=entry["start_byte"],
+                        end_byte=entry["end_byte"],
+                        mutated_file_sha256=entry["mutated_file_sha256"],
+                        operator=applied,
+                    )
+            claim["mutation"]["candidate_ids"] = [
+                claim["mutation"][name][0]["candidate_id"]
+                for name in ("killed", "survived", "crashed", "budget_exceeded",
+                             "equivalent")
+                if claim["mutation"][name]
+            ]
     return document
 
 

@@ -1,5 +1,5 @@
 {
- "schema_version": 12,
+ "schema_version": 13,
  "assay_version": "0.1.0",
  "lane": "package",
  "commit": "6666666666666666666666666666666666666666",
@@ -72,7 +72,8 @@
     "crashed": [],
     "budget_exceeded": [],
     "equivalent": [],
-    "hung": []
+    "hung": [],
+    "candidate_ids": []
    }
   }
  ],

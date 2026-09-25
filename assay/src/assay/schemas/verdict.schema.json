@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:12",
+  "$id": "urn:assay:schema:verdict:13",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
@@ -20,7 +20,7 @@
     "schema_version": {
       "description": "The verdict schema version, independent of assay.toml's lane schema version. Exactly one schema is active in a released build (A-170): no negotiation, no default upgrade, no compatibility writer.",
       "type": "integer",
-      "const": 12
+      "const": 13
     },
     "assay_version": {
       "type": "string",
@@ -1275,14 +1275,53 @@
       ]
     },
     "mutation_candidate_ids": {
-      "description": "B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
+      "description": "B106/schema v13 exhaustive native candidate inventory for this submitted scope: the full plan or selected shard slice. Empty means the submitted scope contained no candidates. Omitted only for the pre-submission mutant-limit sentinel and for ingested reports.",
       "type": "array",
-      "minItems": 1,
+      "maxItems": 10000,
       "uniqueItems": true,
       "items": {
         "type": "string",
         "pattern": "^[0-9a-f]{64}$"
       }
+    },
+    "mutation_witness_receipt": {
+      "description": "Bounded current-run pytest evidence. No output, traceback or arbitrary plugin data is recorded.",
+      "type": "object",
+      "required": ["node_id", "when", "outcome", "session_exit_status", "process_exit_status"],
+      "properties": {
+        "node_id": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "when": {"type": "string", "const": "call"},
+        "outcome": {"type": "string", "const": "failed"},
+        "session_exit_status": {"type": "integer", "const": 1},
+        "process_exit_status": {"type": "integer", "const": 1}
+      },
+      "additionalProperties": false
+    },
+    "mutation_execution": {
+      "description": "Per-candidate execution path. A witness-prefix entry must be a current killed outcome bound to its exact prior verdict and node ID.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["mode"],
+          "properties": {
+            "mode": {"type": "string", "const": "full"},
+            "witness": {"$ref": "#/$defs/mutation_witness_receipt"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["mode", "witness", "prior_verdict_sha256", "prior_node_id", "current_node_id"],
+          "properties": {
+            "mode": {"type": "string", "const": "witness-prefix"},
+            "witness": {"$ref": "#/$defs/mutation_witness_receipt"},
+            "prior_verdict_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "prior_node_id": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "current_node_id": {"type": "string", "minLength": 1, "maxLength": 4096}
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "mutant_outcome": {
       "description": "One attempted mutant's SITE identity (A-180): (path, start_byte, end_byte, replacement_sha256, operator). Byte offsets are zero-based half-open UTF-8 offsets into the source at the recorded commit; the hash covers the replacement bytes ONLY and is built from the validated site, never by diffing two full texts. lineno and description are diagnosis, never identity. Deliberately WITHOUT the full mutated text -- retaining one per candidate is exactly what made the cap untrue. NOTE: start_byte < end_byte relates two fields and therefore lives in the model and the raw verifier, not here.",
@@ -1334,7 +1373,11 @@
             "compile_error",
             "runtime_error"
           ]
-        }
+        },
+        "candidate_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "mutated_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "execution": {"$ref": "#/$defs/mutation_execution"}
       },
       "additionalProperties": false
     },
@@ -1433,7 +1476,7 @@
           }
         },
         "candidate_ids": {
-          "description": "Optional B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
+          "description": "B106/schema v13 exhaustive native candidate inventory for the submitted scope; the full plan when unsharded, or the selected slice when sharded. Empty is a submitted empty scope. Omitted for ingested reports and the pre-submission mutant-limit sentinel.",
           "$ref": "#/$defs/mutation_candidate_ids"
         }
       },

@@ -85,6 +85,7 @@ from conftest import (
     runner_verdict_fixture,
     why_invalid,
 )
+from assay.candidate_identity import candidate_id_from_fields
 
 GO_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "canary" / "go" / "greet" / "greet.go"
 assert GO_FIXTURE.is_file(), f"expected the committed Go canary fixture at {GO_FIXTURE}"
@@ -339,7 +340,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 12,
+        "schema_version": 13,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -586,14 +587,31 @@ def _gt_site(lineno: int) -> dict:
     for _ in range(lineno - 1):
         line_start = source.index(b"\n", line_start) + 1
     start = source.index(b">", line_start, source.index(b"\n", line_start))
+    end = start + 1
+    mutated = source[:start] + b">=" + source[end:]
+    source_sha256 = hashlib.sha256(source).hexdigest()
+    mutated_file_sha256 = hashlib.sha256(mutated).hexdigest()
+    path = "src/mod.py"
+    operator = "python:compare-swap"
     return {
-        "path": "src/mod.py",
+        "path": path,
         "lineno": lineno,
         "start_byte": start,
-        "end_byte": start + 1,
+        "end_byte": end,
         "replacement_sha256": hashlib.sha256(b">=").hexdigest(),
-        "operator": "python:compare-swap",
+        "operator": operator,
         "description": "Gt->GtE",
+        "candidate_id": candidate_id_from_fields(
+            path=path,
+            source_sha256=source_sha256,
+            start_byte=start,
+            end_byte=end,
+            mutated_file_sha256=mutated_file_sha256,
+            operator=operator,
+        ),
+        "source_sha256": source_sha256,
+        "mutated_file_sha256": mutated_file_sha256,
+        "execution": {"mode": "full"},
     }
 
 
@@ -649,8 +667,39 @@ def _expected_r2_artifact(
     *operators* is ``None``, which is what a run that never rendered a
     mutation payload must emit."""
     argv = ["/bin/sh", "-c", script]
+    mutation = r2_claim.get("mutation")
+    if operators is not None and isinstance(mutation, dict):
+        # The inventory is the deterministic discovery order over the full
+        # submitted scope, independent of outcome bucket order. The limit
+        # sentinel has not submitted any scope and deliberately omits it.
+        sentinel = (
+            mutation.get("total") == 0
+            and mutation.get("candidate_count") == MAX_MUTANTS + 1
+        )
+        if not sentinel:
+            outcomes = [
+                item
+                for name in (
+                    "killed",
+                    "survived",
+                    "crashed",
+                    "budget_exceeded",
+                    "equivalent",
+                    "hung",
+                )
+                for item in mutation.get(name, [])
+            ]
+            mutation["candidate_ids"] = [
+                item["candidate_id"]
+                for item in sorted(
+                    outcomes,
+                    key=lambda item: (
+                        item["path"], item["start_byte"], item["end_byte"]
+                    ),
+                )
+            ]
     document = {
-        "schema_version": 12,
+        "schema_version": 13,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1179,7 +1228,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 12,
+        "schema_version": 13,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1548,7 +1597,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 12,
+        "schema_version": 13,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,

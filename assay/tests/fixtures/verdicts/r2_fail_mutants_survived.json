@@ -1,5 +1,5 @@
 {
- "schema_version": 12,
+ "schema_version": 13,
  "assay_version": "0.1.0",
  "lane": "package",
  "commit": "222222222222222222222222222222222222222b",
@@ -75,7 +75,13 @@
       "end_byte": 121,
       "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
       "operator": "python:compare-swap",
-      "description": "Lt->LtE"
+      "description": "Lt->LtE",
+      "candidate_id": "d0a121df7517a58a0348b0bdac73c2a7ad8c128a1516067c62cd2eed08d4b2f6",
+      "source_sha256": "2cee5a4d1d9cc4f95faa09f608c2414b6067a63040d30b0a45a1d1216c9d24cb",
+      "mutated_file_sha256": "217dcfb9c9f3a650cf5ff90b7bfae1915e7fb6badfe2fd4fac9f837c792e370c",
+      "execution": {
+       "mode": "full"
+      }
      }
     ],
     "survived": [
@@ -86,13 +92,23 @@
       "end_byte": 302,
       "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
       "operator": "python:compare-swap",
-      "description": "Eq->NotEq"
+      "description": "Eq->NotEq",
+      "candidate_id": "ec44b619c20fabb8611e7d92b646edc08cdf0b75b1a074c8ef51e93f8fc1d1d6",
+      "source_sha256": "2cee5a4d1d9cc4f95faa09f608c2414b6067a63040d30b0a45a1d1216c9d24cb",
+      "mutated_file_sha256": "2625646a7bb74b170db8fccc5955e6c4c8076a08936257bad7324e7b22938ad8",
+      "execution": {
+       "mode": "full"
+      }
      }
     ],
     "crashed": [],
     "budget_exceeded": [],
     "equivalent": [],
-    "hung": []
+    "hung": [],
+    "candidate_ids": [
+     "d0a121df7517a58a0348b0bdac73c2a7ad8c128a1516067c62cd2eed08d4b2f6",
+     "ec44b619c20fabb8611e7d92b646edc08cdf0b75b1a074c8ef51e93f8fc1d1d6"
+    ]
    }
   }
  ],

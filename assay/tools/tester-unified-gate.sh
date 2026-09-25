@@ -625,6 +625,17 @@ PYEOF
     -q -p no:randomly --override-ini=pythonpath=
   echo 'ASSAY_GATE_PHASE=verdict-v12-successors-verified'
 
+  # B106/v13's candidate identity, exhaustive inventory and execution
+  # provenance contract. Run its focused behavioral suite against the wheel
+  # installed above, with source-tree imports disabled just like the locked
+  # schema successors. The marker is reachable only after all witness/reuse
+  # and verifier checks pass against the installed artifact.
+  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
+  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
+    "$worktree/assay/tests/test_b106_reuse_and_witness.py" \
+    -q -p no:randomly --override-ini=pythonpath=
+  echo 'ASSAY_GATE_PHASE=verdict-v13-successors-verified'
+
   run_self_hosted_lane "$worktree" "$scratch" "$version" "$wheel"
 
   # P25: qualifies the CURRENT run-venv Assay (plus a separately

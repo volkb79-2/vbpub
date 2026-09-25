@@ -118,10 +118,17 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
 from . import git, liveness, safeio
+from .candidate_identity import candidate_id_from_fields
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
+from .mutation_witness import inject_witness_plugin as _inject_witness_plugin
+from .mutation_witness import make_attempt_plan as _make_witness_attempt_plan
+from .mutation_witness import read_internal_receipt as _read_witness_receipt
+from .mutation_witness import replay_witness_from_receipt as _replay_witness_from_receipt
+from .mutation_witness import supports_sequential_pytest
+from .mutation_witness import witness_from_receipt as _witness_from_receipt
 from .verdict import (
     DISCARD_REASONS,
     MUTATION_BUCKETS,
@@ -129,6 +136,8 @@ from .verdict import (
     MAX_SHARD_COUNT,
     Claim,
     Mutation,
+    MutationExecution,
+    MutationWitnessReceipt,
     MutantOutcome,
     MutationProducerTool,
     SourcePosition,
@@ -1015,17 +1024,14 @@ def candidate_id(job: MutantJob) -> str:
     """Return the stable digest identity shared by plans, state and shards."""
     original_bytes = job.original_text.encode("utf-8")
     replacement_bytes = job.site.apply(original_bytes)
-    identity = "\0".join(
-        (
-            job.path,
-            hashlib.sha256(original_bytes).hexdigest(),
-            str(job.site.start_byte),
-            str(job.site.end_byte),
-            hashlib.sha256(replacement_bytes).hexdigest(),
-            job.site.operator,
-        )
+    return candidate_id_from_fields(
+        path=job.path,
+        source_sha256=hashlib.sha256(original_bytes).hexdigest(),
+        start_byte=job.site.start_byte,
+        end_byte=job.site.end_byte,
+        mutated_file_sha256=hashlib.sha256(replacement_bytes).hexdigest(),
+        operator=job.site.operator,
     )
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def _tool_version() -> str:
@@ -1349,6 +1355,12 @@ def _load_validated_state_record(
             f"mutation-state record {identity} has unknown outcome bucket "
             f"{payload['outcome_bucket']!r}"
         )
+    try:
+        _execution_from_state_record(payload)
+    except (TypeError, ValueError) as exc:
+        raise MutationStateError(
+            f"mutation-state record {identity} has invalid execution provenance: {exc}"
+        ) from exc
     # (B088) LAST, and deliberately so. Everything above asks "is this record
     # internally consistent with the identity it is filed under" -- a
     # tampered or corrupted record must still be surfaced as corruption
@@ -1408,11 +1420,7 @@ def merge_mutations(current: Mutation, records: Iterable[Mapping[str, Any]]) -> 
     payload = Mutation(
         candidate_count=len(identities),
         total=len(identities),
-        killed=normalized["killed"],
-        survived=normalized["survived"],
-        crashed=normalized["crashed"],
-        budget_exceeded=normalized["budget_exceeded"],
-        equivalent=normalized["equivalent"],
+        **{name: normalized[name] for name in MUTATION_BUCKETS},
     )
     if duplicate_count:
         raise MutationStateError(
@@ -1431,9 +1439,63 @@ def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
             replacement_sha256=record["replacement_sha256"],
             operator=record["operator"],
             description=record["description"],
+            candidate_id=record["candidate_id"],
+            source_sha256=record["source_sha256"],
+            mutated_file_sha256=record["mutated_file_sha256"],
+            execution=_execution_from_state_record(record),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise MutationStateError(f"invalid resumed mutation record field: {exc}") from exc
+
+
+def _execution_from_state_record(record: Mapping[str, Any]) -> MutationExecution:
+    """Restore P5 execution provenance from a resume record.
+
+    Records written before witness-prefix reuse existed could only come from a
+    full candidate execution, so their missing ``execution`` field has that
+    historical meaning. New records always serialize the closed execution
+    object; malformed present data is corruption, never a legacy fallback.
+    """
+    if "execution" not in record:
+        return MutationExecution(mode="full")
+    raw = record["execution"]
+    if not isinstance(raw, Mapping):
+        raise ValueError("execution must be an object")
+    mode = raw.get("mode")
+    if mode == "full":
+        allowed = {"mode", "witness"}
+    elif mode == "witness-prefix":
+        allowed = {
+            "mode",
+            "witness",
+            "prior_verdict_sha256",
+            "prior_node_id",
+            "current_node_id",
+        }
+    else:
+        raise ValueError("execution mode is unknown")
+    if set(raw) - allowed or "mode" not in raw:
+        raise ValueError("execution contains unknown fields")
+
+    witness = None
+    if "witness" in raw:
+        witness_data = raw["witness"]
+        if not isinstance(witness_data, Mapping) or set(witness_data) != {
+            "node_id",
+            "when",
+            "outcome",
+            "session_exit_status",
+            "process_exit_status",
+        }:
+            raise ValueError("execution witness has an invalid shape")
+        witness = MutationWitnessReceipt(**witness_data)
+    return MutationExecution(
+        mode=mode,
+        witness=witness,
+        prior_verdict_sha256=raw.get("prior_verdict_sha256"),
+        prior_node_id=raw.get("prior_node_id"),
+        current_node_id=raw.get("current_node_id"),
+    )
 
 
 def select_mutation_shard(candidates: Sequence[str], *, index: int, count: int) -> list[int]:
@@ -1601,6 +1663,7 @@ class _MutantRun:
     #: (a `0` would claim the plugin ran and genuinely saw no test, which is
     #: a different fact from "liveness never ran here at all").
     tests_completed: int | None = None
+    execution: MutationExecution = MutationExecution(mode="full")
 
 
 def _classify_mutant_result(result: CommandResult) -> str:
@@ -1735,7 +1798,12 @@ def _read_kill_signal(reservation: safeio.OutputReservation) -> str | None:
     return text or None
 
 
-def _outcome_of(job: MutantJob, *, kill_signal: str | None = None) -> MutantOutcome:
+def _outcome_of(
+    job: MutantJob,
+    *,
+    kill_signal: str | None = None,
+    execution: MutationExecution | None = None,
+) -> MutantOutcome:
     """The artifact projection of one attempted mutant (A-180).
 
     Built DIRECTLY from the validated site, so the wire identity and the
@@ -1746,6 +1814,10 @@ def _outcome_of(job: MutantJob, *, kill_signal: str | None = None) -> MutantOutc
     it for any other bucket would violate :class:`~assay.verdict.Mutation`'s
     own ``kill_signal``-is-``killed``-only invariant (A-223e).
     """
+    original_bytes = job.original_text.encode("utf-8")
+    mutated_bytes = job.site.apply(original_bytes)
+    source_sha256 = hashlib.sha256(original_bytes).hexdigest()
+    mutated_file_sha256 = hashlib.sha256(mutated_bytes).hexdigest()
     return MutantOutcome(
         path=job.path,
         lineno=job.site.lineno,
@@ -1755,6 +1827,17 @@ def _outcome_of(job: MutantJob, *, kill_signal: str | None = None) -> MutantOutc
         operator=job.site.operator,
         description=job.site.description,
         kill_signal=kill_signal,
+        candidate_id=candidate_id_from_fields(
+            path=job.path,
+            source_sha256=source_sha256,
+            start_byte=job.site.start_byte,
+            end_byte=job.site.end_byte,
+            mutated_file_sha256=mutated_file_sha256,
+            operator=job.site.operator,
+        ),
+        source_sha256=source_sha256,
+        mutated_file_sha256=mutated_file_sha256,
+        execution=execution or MutationExecution(mode="full"),
     )
 
 
@@ -1949,6 +2032,9 @@ def run_mutation(
     #: rather than by explicit id. The two selections are a UNION, never
     #: mutually exclusive -- a candidate matching either is dropped.
     rejudge_outcomes: frozenset[str] = frozenset(),
+    #: B106 witnesses from one verifier-accepted prior verdict. Each entry
+    #: maps the canonical candidate ID to (prior verdict digest, pytest node).
+    reuse_witnesses: Mapping[str, tuple[str, str]] | None = None,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -2234,7 +2320,7 @@ def run_mutation(
             if rejudge_ids:
                 _reject_unknown_rejudge_ids(rejudge_ids, set())
             _end(_no_buckets, reason="no_candidates", total=0)
-            return Mutation(candidate_count=0, total=0)
+            return Mutation(candidate_count=0, total=0, candidate_ids=())
 
         selected_indices = list(range(total))
         if shard_specified:
@@ -2280,6 +2366,7 @@ def run_mutation(
             else None
         )
         resumed_records: list[Mapping[str, Any]] = []
+        rejudged_candidate_ids: set[str] = set()
         rejected_total = 0
         rejudged_total = 0
         if resume:
@@ -2319,6 +2406,7 @@ def run_mutation(
                         or record.get("outcome_bucket") in rejudge_outcomes
                     ):
                         rejudged_total += 1
+                        rejudged_candidate_ids.add(candidate_id(job))
                         continue
                     resumed_records.append(record)
             resumed_ids = {record["candidate_id"] for record in resumed_records}
@@ -2398,18 +2486,22 @@ def run_mutation(
             state_root=state_root,
             judge=judge,
             liveness_events_dir=liveness_events_dir,
+            liveness_plugin_path=(
+                Path(liveness_plugin) if liveness_plugin is not None else None
+            ),
+            reuse_witnesses={
+                candidate: witness
+                for candidate, witness in (reuse_witnesses or {}).items()
+                if candidate not in rejudge_ids
+                and candidate not in rejudged_candidate_ids
+            },
         )
 
         if resumed_records:
             result_payload = merge_mutations(result_payload, resumed_records)
         if write_progress is not None and resumed_records:
             write_progress({"event": "resume_merged", "resumed_total": len(resumed_records)})
-        if shard_specified and selected_jobs:
-            # `and selected_jobs`: a shard index that legitimately draws no
-            # candidate (4 shards over 2 candidates) must leave the field
-            # ABSENT -- `Mutation.__post_init__` refuses an empty tuple
-            # outright ("must be omitted when empty"), so constructing one
-            # here would turn an honest empty shard into a crash.
+        if selected_jobs or not shard_specified:
             #
             # B031/A-320: `mutation.candidate_ids` has existed in the
             # dataclass and the schema since `7a4f6333` with NO producer --
@@ -2424,6 +2516,11 @@ def run_mutation(
                 result_payload,
                 candidate_ids=tuple(candidate_id(job) for job in selected_jobs),
             )
+        else:
+            # An empty shard is a submitted scope with no assignments. Its
+            # empty inventory is distinct from the pre-submission cap
+            # sentinel, which returns before reaching this point.
+            result_payload = _dataclass_replace(result_payload, candidate_ids=())
         if budget_per_candidate_derived:
             # (B091/D-23) Rides on the return value exactly like
             # `candidate_ids` above: the ONE computation, from measured
@@ -2502,14 +2599,83 @@ def _execute_mutation_jobs(
     #: -- `None` for every non-liveness lane, in which case `_run_one`
     #: never touches `assay.liveness` at all.
     liveness_events_dir: Path | None = None,
+    liveness_plugin_path: Path | None = None,
+    reuse_witnesses: Mapping[str, tuple[str, str]] | None = None,
 ) -> Mutation:
 
-    def _run_one(index: int) -> _MutantRun:
+    witness_supported = supports_sequential_pytest(
+        plan.argv_effective,
+        env=plan.env_effective,
+    )
+    witness_temp = (
+        tempfile.TemporaryDirectory(prefix="assay-mutation-witness-")
+        if witness_supported
+        else None
+    )
+    witness_injection = (
+        _inject_witness_plugin(
+            plan,
+            plugin_dir=Path(witness_temp.name),
+            liveness_plugin_path=liveness_plugin_path,
+        )
+        if witness_temp is not None
+        else None
+    )
+    witness_capture_active = bool(
+        witness_injection is not None and witness_injection.active
+    )
+    candidate_reuse = dict(reuse_witnesses or {}) if witness_capture_active else {}
+
+    def _classified_bucket(run: _MutantRun) -> str:
+        if equivalence_artifact is None:
+            bucket = _classify_mutant_result(run.result)
+        else:
+            assert baseline_equivalence is not None
+            bucket = _classify_mutant_result_with_equivalence(
+                run.result,
+                equivalence_bytes=run.equivalence_bytes,
+                baseline_equivalence=baseline_equivalence,
+            )
+        if (
+            bucket == "killed"
+            and kill_signal_artifact is not None
+            and run.kill_signal is None
+        ):
+            return "crashed"
+        return bucket
+
+    def _run_attempt(
+        index: int,
+        *,
+        target_node_id: str | None,
+        prior_verdict_sha256: str | None,
+        attempt_name: str,
+    ) -> _MutantRun | None:
         job = job_list[index]
         original_bytes = job.original_text.encode("utf-8")
         replacement_bytes = job.site.apply(original_bytes)
         materialize_timeout = deadline.remaining()
         started_monotonic = time.monotonic()
+        receipt_path = (
+            Path(witness_temp.name) / f"{index}-{attempt_name}.json"
+            if witness_capture_active and witness_temp is not None
+            else None
+        )
+        attempt_plan = plan
+        if (
+            witness_capture_active
+            and witness_injection is not None
+            and receipt_path is not None
+        ):
+            attempt_plan = _make_witness_attempt_plan(
+                witness_injection.plan,
+                receipt_path=receipt_path,
+                target_node_id=target_node_id,
+            )
+            try:
+                receipt_path.unlink()
+            except FileNotFoundError:
+                pass
         with prepared.materialize_replacement(
             path=PurePosixPath(job.path),
             expected=original_bytes,
@@ -2547,7 +2713,7 @@ def _execute_mutation_jobs(
             ):
                 command_deadline = budget_per_candidate_seconds
             result = execute_plan(
-                plan,
+                attempt_plan,
                 cwd=snapshot.project_root,
                 timeout=command_deadline,
                 process_runner=process_runner,
@@ -2641,12 +2807,86 @@ def _execute_mutation_jobs(
                 raise dirt
             if decode_error is not None:
                 raise decode_error
-        return _MutantRun(
+        run = _MutantRun(
             result=result,
             equivalence_bytes=equivalence_bytes,
             kill_signal=kill_signal_text,
             elapsed_seconds=elapsed_seconds,
             tests_completed=tests_completed,
+        )
+        receipt = (
+            _read_witness_receipt(receipt_path)
+            if receipt_path is not None
+            else None
+        )
+        if target_node_id is not None:
+            witness = _replay_witness_from_receipt(
+                receipt,
+                process_exit_status=result.returncode,
+                target_node_id=target_node_id,
+            )
+            if (
+                witness is None
+                or prior_verdict_sha256 is None
+                or _classified_bucket(run) != "killed"
+            ):
+                return None
+            execution = MutationExecution(
+                mode="witness-prefix",
+                witness=MutationWitnessReceipt(**witness),
+                prior_verdict_sha256=prior_verdict_sha256,
+                prior_node_id=target_node_id,
+                current_node_id=target_node_id,
+            )
+        else:
+            witness = (
+                _witness_from_receipt(
+                    receipt,
+                    process_exit_status=result.returncode,
+                )
+                if result.outcome is Outcome.FAIL
+                else None
+            )
+            full_witness = (
+                MutationWitnessReceipt(**witness)
+                if witness is not None and _classified_bucket(run) == "killed"
+                else None
+            )
+            execution = MutationExecution(mode="full", witness=full_witness)
+        return _dataclass_replace(run, execution=execution)
+
+    def _run_one(index: int) -> _MutantRun:
+        job = job_list[index]
+        started_total = time.monotonic()
+        prior = candidate_reuse.get(candidate_id(job))
+        if prior is not None:
+            prior_verdict_sha256, target_node_id = prior
+            replay = _run_attempt(
+                index,
+                target_node_id=target_node_id,
+                prior_verdict_sha256=prior_verdict_sha256,
+                attempt_name="replay",
+            )
+            if replay is not None and _classified_bucket(replay) == "killed":
+                return _dataclass_replace(
+                    replay,
+                    elapsed_seconds=max(0.0, time.monotonic() - started_total),
+                )
+        full = _run_attempt(
+            index,
+            target_node_id=None,
+            prior_verdict_sha256=None,
+            attempt_name="full",
+        )
+        assert full is not None
+        if _classified_bucket(full) != "killed" and full.execution.witness is not None:
+            full = _dataclass_replace(
+                full,
+                execution=MutationExecution(mode="full"),
+            )
+        return _dataclass_replace(
+            full,
+            elapsed_seconds=max(0.0, time.monotonic() - started_total),
         )
 
     results: list[_MutantRun | None] = [None] * total
@@ -2750,6 +2990,7 @@ def _execute_mutation_jobs(
                                 "lineno": job_list[position].site.lineno,
                                 "description": job_list[position].site.description,
                                 "outcome_bucket": outcome_bucket,
+                                "execution": run.execution.to_dict(),
                                 **_crash_diagnostic_tails(outcome_bucket, run.result),
                             },
                         )
@@ -2788,7 +3029,9 @@ def _execute_mutation_jobs(
         if equivalence_artifact is None:
             # O8's own inertness: the UNDECLARED lane takes the EXISTING
             # path, unchanged -- never a new path that happens to agree.
-            buckets[_classify_mutant_result(run.result)].append(_outcome_of(job))
+            buckets[_classify_mutant_result(run.result)].append(
+                _outcome_of(job, execution=run.execution)
+            )
             continue
         assert baseline_equivalence is not None  # refused above otherwise
         bucket = _classify_mutant_result_with_equivalence(
@@ -2804,7 +3047,9 @@ def _execute_mutation_jobs(
             # mutant that would land here with no signal file did not meet
             # the lane's own declared contract, and is `crashed` instead.
             bucket = "crashed"
-        buckets[bucket].append(_outcome_of(job, kill_signal=kill_signal))
+        buckets[bucket].append(
+            _outcome_of(job, kill_signal=kill_signal, execution=run.execution)
+        )
 
     return Mutation(
         candidate_count=candidate_count,

@@ -2655,21 +2655,61 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
   still re-executes only its selected candidate. A malformed, unreadable, or
   corrupt state record remains `ERROR`/`UNREADABLE_ARTIFACT`; it is not
   relabeled as bad input. See the [design rationale](DESIGN-GUIDE.md#mutation-resume-and-sharding-b012).
-- **The ids `--rejudge` takes are `mutation.candidate_id()` digests — the
-  same sha256 string a state record and a `candidate`/`plan` progress event
-  key by — NOT `MutantOutcome.identity`.** `MutantOutcome.identity` (on a
-  verdict's `judgment.r2` bucket lists) is a different, tuple-shaped identity
-  (path, span, source hash, operator); no verdict field today exposes the
-  digest string a `--rejudge <id>` invocation actually needs. A consumer who
-  wants to rejudge "the candidates that survived in verdict X" cannot build
-  that invocation from the verdict alone — it has to read the id back off the
-  `--state-dir`'s own persisted state records (JSON files, one per candidate,
-  each carrying its own `candidate_id`). Filed as a documentation caveat here
-  rather than a new backlog row (see A6 REPORT for why); a future consumer
-  hitting this is the sign the row should be opened.
+- **The ids `--rejudge` takes are `candidate_id` digests, not
+  `MutantOutcome.identity`.** Since verdict schema v13, every native outcome
+  carries its digest and `mutation.candidate_ids` lists the complete submitted
+  scope. To rejudge the survivors in a v13 verdict, select the `candidate_id`
+  values from its `survived` array. The older tuple-shaped
+  `MutantOutcome.identity` (path, span, replacement hash, operator) remains a
+  separate identity and cannot be passed as an ID. A v12 verdict has no
+  candidate inventory and remains a cold start for `--reuse-from`.
 - **`resume`'s own progress event gains `rejudged_total`** (above): the count
   of records dropped by either selection on this run, `0` when neither flag
   is given.
+
+### Reusing killed native mutants after the baseline (B106)
+
+`--reuse-from` is for a new source or test tree when ordinary `--resume` would
+correctly reject the old judge identity. A first full, native R2 run over a
+direct sequential pytest command records the first call-phase failing node for
+each killed candidate. Keep that v13 verdict. On a later commit, Assay always
+runs the current R0 baseline and rediscovers the current candidates before it
+uses the prior verdict. A prior kill only chooses a point to test: the current
+suite is collected in full and must fail at that same node with pytest and the
+child both returning 1. Assay records the new failure as current evidence.
+
+Use `assay plan` to preview the classifications, then pass the same prior file
+to `assay run`:
+
+```sh
+evidence_dir="$(mktemp -d)"
+
+# First full run. A direct pytest command captures current killed-node witnesses.
+assay run worker_lane \
+  --progress "$evidence_dir/initial.jsonl" \
+  --verdict-json "$evidence_dir/initial.json"
+
+# After changing the source and/or tests, inspect the current candidate plan.
+assay plan worker_lane --reuse-from "$evidence_dir/initial.json"
+
+# Run a complete unsharded campaign on the changed tree. Any uncertain replay
+# falls back to a separate full test-suite run for that candidate.
+assay run worker_lane \
+  --reuse-from "$evidence_dir/initial.json" \
+  --progress "$evidence_dir/current.jsonl" \
+  --verdict-json "$evidence_dir/current.json"
+```
+
+This option does not carry forward an old outcome. New candidates and prior
+survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
+witness run the full current suite. `--rejudge <id>` also forces a full run for
+that candidate. A v12 verdict is a cold start: `assay plan` marks its evidence
+unproven and `assay run` runs every candidate fully after the baseline;
+`assay verify` still refuses v12. Wrapped commands, xdist, custom test loops,
+or uncertain pytest hooks also use full runs. `--reuse-from` cannot be combined
+with `--shard`, because the feature returns a complete unsharded campaign.
+The [B106 design](DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
+explains the receipt fields and fallback rule.
 
 ### `--progress-heartbeat SECONDS`
 
@@ -2755,13 +2795,15 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-Verdict schema v12 and lane schema v2 are both hard cuts (no dual-version verifier, no
-compatibility shim, no upgrade-in-place — see
+Verdict schema v13 and lane schema v2 are both hard cuts (no dual-version
+verifier, no compatibility shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
-assay refuses a v1 lane file's now-required `[isolation]` table with `BAD_LANE_CONFIG`, and a
-v1-pinned assay cannot parse a v2 file's `[isolation]` table at all — it is simply an unknown key.
+assay refuses a v1 lane file's now-required `[isolation]` table with
+`BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
+table at all — it is simply an unknown key. `assay verify` also rejects v12
+verdicts on the schema version alone.
 
 So the two moves are **one atomic, consumer-owned commit, never two**:
 
