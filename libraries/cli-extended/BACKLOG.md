@@ -5,8 +5,8 @@ proposals; they are not scheduled work.
 
 ## CLI-EXT-01 — expose the shared colour policy to consumer renderers
 
-**Status:** Open
-**Type:** Feature
+**Status:** Open  
+**Type:** Feature  
 **Area:** Output and terminal policy
 
 `CliOutput.color_enabled(stream)` already resolves explicit `--color` /

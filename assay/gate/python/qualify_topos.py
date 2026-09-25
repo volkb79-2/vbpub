@@ -592,18 +592,25 @@ def _expected_comparator(spec: ScenarioSpec) -> dict[str, Any] | None:
     }
 
 
-def _invoke(assay_executable: Path, repo: Path, artifact_path: Path) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+def _invoke(
+    assay_executable: Path,
+    repo: Path,
+    artifact_path: Path,
+    *,
+    record_progress: bool = True,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    argv = [str(assay_executable), "run", "topos-qualification"]
+    if record_progress:
+        argv.extend(
+            [
+                "--resume",
+                "--progress",
+                ".assay/progress-topos-qualification.jsonl",
+            ]
+        )
+    argv.extend(["--verdict-json", str(artifact_path)])
     proc = _run(
-        [
-            str(assay_executable),
-            "run",
-            "topos-qualification",
-            "--resume",
-            "--progress",
-            ".assay/progress-topos-qualification.jsonl",
-            "--verdict-json",
-            str(artifact_path),
-        ],
+        argv,
         cwd=repo,
         check=False,
     )
@@ -775,7 +782,16 @@ def run_scenario(
         lane_schema_version=_lane_schema_version_for(assay_version),
     )
     artifact_path = scratch / spec.name / "verdict.json"
-    proc, artifact = _invoke(assay_executable, repo, artifact_path)
+    # The pinned 1.2.5 release is a historical compatibility probe whose CLI
+    # predates --resume/--progress. Current judge invocations keep the required
+    # append-only progress stream; the release smoke must exercise its original
+    # argument contract.
+    proc, artifact = _invoke(
+        assay_executable,
+        repo,
+        artifact_path,
+        record_progress=assay_version != RELEASE_VERSION,
+    )
 
     if artifact.get("commit") != head_oid:
         raise _scenario_failure(

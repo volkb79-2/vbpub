@@ -4,32 +4,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-### Added
-- `assay analyze`: record commands with before/after Git identities and actual
-  job exits; collect and check portable artifact archives; inspect verdicts
-  and appended mutation progress; produce receipts from these facts and
-  `tester-unified/run` evidence. JSON is the default output; verdict inspection
-  also offers a concise text summary. No runtime dependencies are added.
-- feat(assay): make P22 seeds shallow by default, add explicit full-history
-  lane opt-in, project-level snapshot limits, and a judged-tree blob ceiling
-  (B101)
-- feat(assay): record snapshot dirty-path provenance, support declared
-  `dirty_ignore` globs and the snapshot-only `--allow-dirty` override, and
-  refuse release receipts for overridden verdicts (B102)
-- feat(assay): keep higher-rigor liveness side files outside the checkout and
-  retain their bounded evidence in the verdict (B093)
-- feat(assay): distinguish ingested compile and runtime discards with the
-  `discard_reason` vocabulary (B079)
-
-### Documentation
-- docs(assay): document shallow source/seed distinctions, snapshot limits,
-  Go lane-file cleanliness, source unshallowing, measured Go image support,
-  and the current dstdns assay pin (B082-B084/B101)
-- docs(assay): document verdict schema v12, dirty-tree provenance, liveness
-  cleanup, and ingested discard reasons (B079/B093/B102)
-- docs(assay): explain Git ownership refusals, rejudge input classification,
-  and the consumer remedies (B081/B094)
-
 ### Fixed
 - fix(assay): classify istanbul `default-arg` signature lines from the
   enclosing function's call count (`fnMap`/`f`) when an arm of that same
@@ -41,38 +15,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   start on other lines retain their unclassified node-line gap (A-459); the
   broader function-call alternative would change some prior 0/0 PASS counts
   to 1/1. Previously-refused whole-target lanes can now count those signatures:
-  the measured consumer artifact gains six executable lines (ChartCard 54→55,
-  DataTable 105→108, StatCard 1→2, StatTile 37→38). Required missing,
-  malformed, or ambiguous function metadata refuses `UNREADABLE_ARTIFACT`.
-  B054's braceless-`if` disposition and all `FileCoverage` invariants are
-  unchanged.
-- fix(assay): refresh the W3 dstdns SQL witness for the shipped v11 liveness
-  fields and normalize its per-run derived candidate budget (B104)
-- fix(assay): base checks inside a P22 snapshot (R1, R2's own target diff,
-  both R3 canary halves) and `assay plan`'s diff now use the base commit
-  resolved before the snapshot. They no longer re-run
-  `merge-base`/`rev-list --parents` inside it (B101 P1, port of
-  `assay-b096` `84baffb4`). Verdicts on today's full-history seed are
-  unchanged. B101's upcoming shallow seed needs this change. `judgment.resolved.base`
-  stays the resolved commit, `BASE_IS_HEAD` still refuses, and a merge
-  HEAD's first-parent rule is still decided before the snapshot.
-- fix(assay): a P25 qualification scenario TERMINAL mismatch now carries the
-  scenario artifact, assay stdout/stderr tails and the pytest log tail in its
-  error (witness/comparator/cleanliness mismatches and a missing artifact
-  still raise without them).
-  Previously the gate container removed that evidence. Expected terminals are
-  unchanged.
+  the measured consumer artifact gains
+  six executable lines (ChartCard 54→55, DataTable 105→108, StatCard 1→2,
+  StatTile 37→38). Required missing, malformed, or ambiguous function metadata
+  refuses `UNREADABLE_ARTIFACT`. B054's braceless-`if` disposition and all
+  `FileCoverage` invariants are unchanged.
 - fix(assay): replace Git's unreachable `safe.directory` remedy on dubious-
   ownership failures, and classify unknown/stale `--rejudge` ids as
   `BAD_LANE_CONFIG` while preserving corrupt-store errors (B081/B094)
 
+### Documentation
+- docs(assay): explain Git ownership refusals, rejudge input classification,
+  and the consumer remedies (B081/B094)
+
 ### Testing
-- test(assay): history-cut snapshot regressions (real git, `.git/shallow` at
-  {seed commit, carried base}) for R1, a merge HEAD's first parent, R2 without
-  R1, and the R3 canary control. The tests prove `merge-base` fails inside
-  the snapshot and that the run still passes. All four fail against the
-  pre-port code. The cut keeps the R3 transformed half's parent visible, so
-  that half is not exercised by it.
 - test(assay): drive unknown, stale, valid, and corrupt `--rejudge` state
   through the CLI and `assay verify`; guard the attestation-timeout
   infrastructure forward (B094/B025)
