@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import hashlib
-from importlib.resources import files
 import io
 import json
 import os
-from pathlib import Path
 import re
 import shlex
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
+from importlib.resources import files
+from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator, ValidationError
@@ -59,6 +60,43 @@ def verdict(tmp_path, head, name="r0_pass"):
     path = tmp_path / (name + ".json")
     path.write_bytes((json.dumps(document, indent=2) + "\n").replace("\n", "\r\n").encode())
     return path
+
+
+def _report_pair(head, args, expected_exit, *, contains=()):
+    outputs = {}
+    for output_format in ("json", "text"):
+        code, out, err = cli("report", "--expected-commit", head, *args,
+                             "--format", output_format)
+        assert code == expected_exit
+        assert err == ""
+        for fragment in contains:
+            assert fragment in out
+        outputs[output_format] = out
+    result = json.loads(outputs["json"])
+    schema = json.loads(files("assay").joinpath("schemas/analysis-report.schema.json").read_text())
+    Draft202012Validator(schema).validate(result)
+    return result, outputs["text"]
+
+
+def _write_progress(path, head, *events, torn=b"", lane="package"):
+    records = [{"event": "run", "commit": head, "lane": lane}, *events]
+    path.write_bytes(b"".join(json.dumps(record).encode() + b"\n" for record in records) + torn)
+
+
+def _worktree_snapshot(root):
+    """Capture tracked, untracked, and ignored worktree content, excluding Git internals."""
+    snapshot = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if ".git" in relative.parts:
+            continue
+        if path.is_symlink():
+            snapshot[relative.as_posix()] = ("symlink", os.readlink(path))
+        elif path.is_dir():
+            snapshot[relative.as_posix()] = ("directory", None)
+        elif path.is_file():
+            snapshot[relative.as_posix()] = ("file", path.read_bytes())
+    return snapshot
 
 
 def _launcher(tmp_path, head, exit_code=0):
@@ -220,7 +258,7 @@ def test_verdict_error_is_valid_data_and_binary_hash_is_exact(repository, tmp_pa
 def test_release_receipt_refuses_a_verdict_with_an_allow_dirty_override(
     repository, tmp_path
 ):
-    root, head, _tree = repository
+    _root, head, _tree = repository
     path = verdict(tmp_path, head)
     document = json.loads(path.read_text())
     document["worktree_integrity"] = {
@@ -231,6 +269,406 @@ def test_release_receipt_refuses_a_verdict_with_an_allow_dirty_override(
 
     with pytest.raises(ValueError, match=r"--allow-dirty overrides"):
         analysis.inspect_verdict(path, head)
+
+
+def test_report_pass_is_commit_bound_schema_valid_and_read_only(repository, tmp_path):
+    root, head, _tree = repository
+    path = verdict(tmp_path, head)
+    before = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"])
+    worktree_before = _worktree_snapshot(root)
+
+    result, text = _report_pair(head, ["--verdict", "package", str(path)], 0,
+                                contains=("pass", "package"))
+
+    assert result["schema_version"] == 1
+    assert result["expected_commit"] == result["lanes"][0]["actual_commit"] == head
+    assert result["lanes"][0]["status"] == "pass"
+    assert result["lanes"][0]["outcome"] == "PASS"
+    assert result["lanes"][0]["exit_code"] == 0
+    fingerprint = result["lanes"][0]["inputs"]["verdict"]
+    assert fingerprint["path"] == str(path.resolve())
+    assert fingerprint["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert fingerprint["bytes"] == path.stat().st_size
+    schema = json.loads(files("assay").joinpath("schemas/analysis-report.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    validator.validate(result)
+    invalid = dict(result, exit_code=9)
+    with pytest.raises(ValidationError):
+        validator.validate(invalid)
+    assert "diagnostics:" in text
+
+    referenced = verdict(tmp_path, head, "r1_pass")
+    referenced_result, _ = _report_pair(head, ["--verdict", "package", str(referenced)], 0)
+    evidence = referenced_result["lanes"][0]["evidence_artifacts"]
+    assert {item["path"] for item in evidence} == {"cov.json"}
+    assert not (tmp_path / "cov.json").exists()  # References are labels, never implicit reads.
+    assert subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"]) == before
+    assert _worktree_snapshot(root) == worktree_before
+
+
+def test_report_checks_freshness_after_prior_lane_log_snapshot(repository, tmp_path, monkeypatch):
+    _root, head, _tree = repository
+    alpha_log = tmp_path / "alpha.log"
+    alpha_log.write_text("finished log\n")
+    alpha_verdict = verdict(tmp_path, head)
+    alpha_document = json.loads(alpha_verdict.read_text())
+    alpha_document["lane"] = "alpha"
+    alpha_verdict.write_text(json.dumps(alpha_document))
+    beta_progress = tmp_path / "beta.jsonl"
+    observed = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+    _write_progress(beta_progress, head, {"event": "command_running", "commit": head,
+                                           "emitted_at": observed.isoformat()}, lane="beta")
+    logs_read = []
+    report_log = analysis._report_log
+
+    def read_log(path, artifact, lane, limit):
+        report_log(path, artifact, lane, limit)
+        logs_read.append(lane["name"])
+
+    def report_now():
+        assert logs_read == ["alpha"]
+        return observed
+
+    monkeypatch.setattr(analysis, "_report_log", read_log)
+    monkeypatch.setattr(analysis, "_report_now", report_now)
+
+    result = analysis.report(head, [("alpha", alpha_verdict)], [("beta", beta_progress)],
+                             [("alpha", alpha_log)])
+
+    assert result["exit_code"] == 3
+    assert [lane["status"] for lane in result["lanes"]] == ["pass", "running"]
+    assert result["lanes"][1]["progress"]["freshness"] == "fresh"
+
+
+def test_report_accepts_dirty_override_verdict_while_receipt_policy_stays_separate(repository, tmp_path):
+    _root, head, _tree = repository
+    path = verdict(tmp_path, head)
+    document = json.loads(path.read_text())
+    document["worktree_integrity"] = {
+        "ignored_dirty_paths": ["ledger.md"],
+        "overridden_dirty_paths": ["src/uncommitted.py"],
+    }
+    path.write_text(json.dumps(document))
+
+    result, _text = _report_pair(head, ["--verdict", "package", str(path)], 0)
+
+    assert result["lanes"][0]["status"] == "pass"
+    assert result["lanes"][0]["overridden_dirty_paths"] == ["src/uncommitted.py"]
+
+
+def test_report_valid_nonpass_verdict_is_fail(repository, tmp_path):
+    _root, head, _tree = repository
+    path = verdict(tmp_path, head, "r0_fail_command_failed")
+
+    result, text = _report_pair(head, ["--verdict", "package", str(path)], 1,
+                                contains=("fail", "COMMAND_FAILED"))
+
+    assert result["lanes"][0]["status"] == "fail"
+    assert result["lanes"][0]["outcome"] == "FAIL"
+    assert result["lanes"][0]["exit_code"] == 1
+    assert "package" in text
+
+
+def test_report_current_progress_with_torn_append_is_running(repository, tmp_path):
+    _root, head, _tree = repository
+    path = tmp_path / "progress.jsonl"
+    stamp = datetime.now(UTC).isoformat()
+    _write_progress(path, head, {"event": "command_running", "commit": head, "lane": "package",
+                                 "phase": "pytest", "candidate_total": 12, "emitted_at": stamp},
+                    torn=b'{"event":"candidate","commit":"')
+
+    result, text = _report_pair(head, ["--progress", "package", str(path)], 3,
+                                contains=("running", "pytest"))
+
+    progress = result["lanes"][0]["progress"]
+    assert result["lanes"][0]["status"] == "running"
+    assert progress["freshness"] == "fresh"
+    assert progress["latest_event"] == "command_running"
+    assert progress["candidate_counts"]["candidate_total"] == 12
+    assert progress["torn_final_record"] is True
+    assert "running" in text
+
+
+def test_report_preserves_fresh_progress_before_oversized_torn_append(repository, tmp_path):
+    _root, head, _tree = repository
+    path = tmp_path / "oversized-torn.jsonl"
+    stamp = datetime.now(UTC).isoformat()
+    torn = b'{"event":"unfinished","padding":"' + b"x" * (1024 * 1024 + 1)
+    _write_progress(path, head, {"event": "command_running", "commit": head,
+                                 "emitted_at": stamp}, torn=torn)
+
+    result, _text = _report_pair(head, ["--progress", "package", str(path)], 3)
+
+    progress = result["lanes"][0]["progress"]
+    assert result["lanes"][0]["status"] == "running"
+    assert progress["freshness"] == "fresh"
+    assert progress["torn_final_record"] is True
+    assert progress["latest_event"] == "command_running"
+
+
+def test_report_refuses_oversized_complete_progress_record(repository, tmp_path):
+    _root, head, _tree = repository
+    path = tmp_path / "oversized-complete.jsonl"
+    stamp = datetime.now(UTC).isoformat()
+    complete = b'{"event":"command_running","padding":"' + b"x" * (1024 * 1024 + 1) + b'"}\n'
+    _write_progress(path, head, {"event": "command_running", "commit": head,
+                                 "emitted_at": stamp}, torn=complete)
+
+    result, _text = _report_pair(head, ["--progress", "package", str(path)], 2,
+                                 contains=("evidence_error",))
+
+    assert result["lanes"][0]["status"] == "evidence_error"
+    assert result["lanes"][0]["progress"]["torn_final_record"] is False
+
+
+@pytest.mark.parametrize("event", [
+    {"event": "end", "padding": "x" * (1024 * 1024 + 1)},
+    {"event": "run", "commit": "b" * 40, "lane": "package",
+     "padding": "x" * (1024 * 1024 + 1)},
+])
+def test_report_refuses_oversized_complete_unterminated_progress_record(repository, tmp_path, event):
+    _root, head, _tree = repository
+    path = tmp_path / "oversized-complete-no-newline.jsonl"
+    stamp = datetime.now(UTC).isoformat()
+    _write_progress(path, head, {"event": "command_running", "commit": head,
+                                 "emitted_at": stamp}, torn=json.dumps(event).encode())
+
+    result, _text = _report_pair(head, ["--progress", "package", str(path)], 2,
+                                 contains=("evidence_error",))
+
+    assert result["lanes"][0]["status"] == "evidence_error"
+    assert result["lanes"][0]["progress"]["torn_final_record"] is False
+
+
+def test_report_exit_precedence_for_mixed_lanes(repository, tmp_path):
+    _root, head, _tree = repository
+    pass_path = verdict(tmp_path, head)
+    pass_document = json.loads(pass_path.read_text())
+    pass_document["lane"] = "done"
+    pass_path.write_text(json.dumps(pass_document))
+    fail_path = verdict(tmp_path, head, "r0_fail_command_failed")
+    fail_document = json.loads(fail_path.read_text())
+    fail_document["lane"] = "failed"
+    fail_path.write_text(json.dumps(fail_document))
+    running_path = tmp_path / "running.jsonl"
+    _write_progress(running_path, head, {"event": "command_running", "commit": head,
+                                         "emitted_at": datetime.now(UTC).isoformat()}, lane="live")
+
+    result, _ = _report_pair(head, ["--verdict", "done", str(pass_path),
+                                    "--progress", "live", str(running_path)], 3)
+    assert result["exit_code"] == 3  # running outranks pass in a mixed result.
+    assert [lane["status"] for lane in result["lanes"]] == ["pass", "running"]
+
+    result, _ = _report_pair(head, ["--verdict", "failed", str(fail_path),
+                                    "--progress", "live", str(running_path)], 1)
+    assert result["exit_code"] == 1  # fail outranks running.
+    assert [lane["status"] for lane in result["lanes"]] == ["fail", "running"]
+
+    missing = tmp_path / "absent.json"
+    result, _ = _report_pair(head, ["--verdict", "failed", str(fail_path),
+                                    "--verdict", "missing", str(missing)], 2)
+    assert result["exit_code"] == 2  # evidence_error outranks fail.
+    assert [lane["status"] for lane in result["lanes"]] == ["fail", "evidence_error"]
+
+
+def test_report_stale_and_terminal_progress_without_verdict_are_evidence_errors(repository, tmp_path):
+    _root, head, _tree = repository
+    stale = tmp_path / "stale.jsonl"
+    old = (datetime.now(UTC) - timedelta(seconds=121)).isoformat()
+    _write_progress(stale, head, {"event": "command_running", "commit": head,
+                                  "phase": "pytest", "emitted_at": old})
+    stale_result, _ = _report_pair(head, ["--progress", "package", str(stale)], 2,
+                                   contains=("evidence_error", "stale"))
+    assert stale_result["lanes"][0]["status"] == "evidence_error"
+    assert stale_result["lanes"][0]["progress"]["terminal"] is False
+
+    terminal = tmp_path / "terminal.jsonl"
+    _write_progress(terminal, head, {"event": "end", "commit": head, "phase": "finished",
+                                     "emitted_at": datetime.now(UTC).isoformat()})
+    terminal_result, _ = _report_pair(head, ["--progress", "package", str(terminal)], 2,
+                                      contains=("evidence_error", "terminal progress"))
+    assert terminal_result["lanes"][0]["progress"]["terminal"] is True
+
+    with_verdict, _ = _report_pair(head, ["--verdict", "package", str(verdict(tmp_path, head)),
+                                         "--progress", "package", str(stale)], 0)
+    assert with_verdict["lanes"][0]["status"] == "pass"
+    assert with_verdict["lanes"][0]["progress"]["freshness"] == "stale"
+
+
+@pytest.mark.parametrize("problem", ["bad-complete-record", "wrong-lane", "wrong-commit",
+                                     "missing-lane", "wrong-run-lane", "wrong-verdict-lane", "directory-log"])
+def test_report_refuses_malformed_or_misbound_optional_inputs(repository, tmp_path, problem):
+    _root, head, _tree = repository
+    progress = tmp_path / "progress.jsonl"
+    log = tmp_path / "log"
+    log.write_text("ordinary log\n")
+    if problem == "bad-complete-record":
+        _write_progress(progress, head, {"event": "command_running", "commit": head,
+                                         "emitted_at": datetime.now(UTC).isoformat()},
+                        torn=b"not json\n")
+    elif problem == "wrong-lane":
+        _write_progress(progress, head, {"event": "command_running", "lane": "other",
+                                         "emitted_at": datetime.now(UTC).isoformat()})
+    elif problem == "wrong-commit":
+        _write_progress(progress, "b" * 40, {"event": "command_running", "commit": "b" * 40,
+                                             "emitted_at": datetime.now(UTC).isoformat()})
+    elif problem == "missing-lane":
+        progress.write_text(json.dumps({"event": "run", "commit": head}) + "\n"
+                            + json.dumps({"event": "command_running", "commit": head,
+                                          "emitted_at": datetime.now(UTC).isoformat()}) + "\n")
+    elif problem == "wrong-run-lane":
+        _write_progress(progress, head, {"event": "command_running", "commit": head,
+                                         "emitted_at": datetime.now(UTC).isoformat()}, lane="other")
+    elif problem == "wrong-verdict-lane":
+        log = verdict(tmp_path, head)
+        document = json.loads(log.read_text())
+        document["lane"] = "other"
+        log.write_text(json.dumps(document))
+    else:
+        log.unlink()
+        log.mkdir()
+
+    if problem == "directory-log":
+        option = ["--log", "package", str(log)]
+    elif problem == "wrong-verdict-lane":
+        option = ["--verdict", "package", str(log)]
+    else:
+        option = ["--progress", "package", str(progress)]
+    result, text = _report_pair(head, option, 2, contains=("evidence_error",))
+    assert result["lanes"][0]["status"] == "evidence_error"
+    assert result["lanes"][0]["errors"]["count"] >= 1
+    assert "diagnostic" in text
+
+
+@pytest.mark.parametrize("problem", ["missing", "malformed", "commit-mismatch", "invalid-commit"])
+def test_report_bad_verdict_evidence_is_evidence_error(repository, tmp_path, problem):
+    _root, head, _tree = repository
+    if problem == "missing":
+        path = tmp_path / "missing.json"
+    elif problem == "malformed":
+        path = tmp_path / "malformed.json"
+        path.write_text('{"outcome":')
+    elif problem == "invalid-commit":
+        path = verdict(tmp_path, head)
+        document = json.loads(path.read_text())
+        document["commit"] = "not-a-sha"
+        path.write_text(json.dumps(document))
+    else:
+        path = verdict(tmp_path, "b" * 40)
+
+    result, text = _report_pair(head, ["--verdict", "package", str(path)], 2,
+                                contains=("evidence_error",))
+
+    assert result["lanes"][0]["status"] == "evidence_error"
+    assert result["lanes"][0]["inputs"]["verdict"]["path"] == str(path.resolve())
+    assert result["lanes"][0]["errors"]["count"] >= 1
+    assert "diagnostic" in text
+    if problem == "commit-mismatch":
+        assert result["lanes"][0]["actual_commit"] == "b" * 40
+    if problem == "invalid-commit":
+        assert result["lanes"][0]["actual_commit"] is None
+
+
+def test_report_multiple_lanes_sort_and_ignore_child_log_status_words(repository, tmp_path):
+    _root, head, _tree = repository
+    alpha = verdict(tmp_path, head)
+    alpha_document = json.loads(alpha.read_text())
+    alpha_document["lane"] = "alpha"
+    alpha.write_text(json.dumps(alpha_document))
+    zeta = verdict(tmp_path, head, "r0_fail_command_failed")
+    zeta_document = json.loads(zeta.read_text())
+    zeta_document["lane"] = "zeta"
+    zeta.write_text(json.dumps(zeta_document))
+    log = tmp_path / "child.log"
+    log.write_text("PASS is just a child word\nERROR is also just a child word\n")
+
+    result, text = _report_pair(head, ["--verdict", "zeta", str(zeta), "--verdict", "alpha", str(alpha),
+                                       "--log", "alpha", str(log)], 1,
+                                contains=("alpha", "zeta"))
+
+    assert [lane["name"] for lane in result["lanes"]] == ["alpha", "zeta"]
+    assert [lane["status"] for lane in result["lanes"]] == ["pass", "fail"]
+    assert result["exit_code"] == 1
+    assert text.index('"alpha"') < text.index('"zeta"')
+    assert "PASS is just a child word" not in text
+    assert result["lanes"][0]["status"] == "pass"  # The ERROR log line is diagnostic only.
+
+
+def test_report_bounds_error_records_and_log_window(repository, tmp_path):
+    _root, head, _tree = repository
+    log = tmp_path / "many-errors.log"
+    log.write_text("".join(f"ERROR {number}: " + "x" * 700 + "\n" for number in range(10)))
+
+    result, text = _report_pair(head, ["--log", "package", str(log), "--max-errors", "2"], 2,
+                                contains=("evidence_error",))
+
+    errors = result["lanes"][0]["errors"]
+    assert result["lanes"][0]["status"] == "evidence_error"
+    assert errors["count"] >= 10
+    assert len(errors["records"]) == 2
+    assert all(len(record["message"]) <= 512 for record in errors["records"])
+    assert errors["truncated"] is True
+    assert len(text) < 3000
+    assert "diagnostics:" in text and "truncated=true" in text
+
+    passing = verdict(tmp_path, head)
+    oversized = tmp_path / "oversized.log"
+    oversized.write_bytes(b"preamble\n" + b"filler\n" * 20000
+                          + b"ASSAY_GATE_PHASE=pytest\nERROR retained tail\n")
+    expected_hash = hashlib.sha256(oversized.read_bytes()).hexdigest()
+    result, text = _report_pair(head, ["--verdict", "package", str(passing),
+                                       "--log", "package", str(oversized)], 0,
+                                contains=("pass", "ERROR retained tail"))
+    lane = result["lanes"][0]
+    assert lane["status"] == "pass"
+    assert lane["inputs"]["log"]["bytes"] == oversized.stat().st_size
+    assert lane["inputs"]["log"]["sha256"] == expected_hash
+    assert lane["errors"]["truncated"] is True
+    assert lane["latest_phase"] == "pytest" and lane["phase_source"] == "log"
+    assert len(text) < 10000
+
+
+def test_report_keeps_complete_diagnostic_at_exact_log_window_boundary(repository, tmp_path):
+    _root, head, _tree = repository
+    passing = verdict(tmp_path, head)
+    error_line = b"ERROR within retained window\n"
+    tail = error_line + b"x" * (analysis._REPORT_WINDOW - len(error_line) - 1) + b"\n"
+    assert len(tail) == analysis._REPORT_WINDOW
+    log = tmp_path / "boundary.log"
+    log.write_bytes(b"prefix\n" + tail)
+
+    result, text = _report_pair(head, ["--verdict", "package", str(passing),
+                                       "--log", "package", str(log)], 0,
+                                contains=("ERROR within retained window",))
+
+    lane = result["lanes"][0]
+    assert lane["status"] == "pass"
+    assert lane["errors"]["count"] == 1
+    assert lane["errors"]["records"][0]["message"] == "ERROR within retained window"
+    assert lane["errors"]["truncated"] is True
+    assert "ERROR within retained window" in text
+
+
+def test_report_keeps_existing_verdict_progress_and_receipt_commands(repository, tmp_path):
+    root, head, _tree = repository
+    path = verdict(tmp_path, head)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head)
+
+    verdict_code, verdict_text, verdict_err = cli("verdict", path, "--expected-commit", head)
+    progress_code, progress_text, progress_err = cli("progress", progress, "--expected-commit", head)
+    receipt_path = tmp_path / "receipt.json"
+    receipt_code, receipt_text, receipt_err = cli("receipt", "--worktree", root, "--expected-head", head,
+                                                 "--verdict", "package", path,
+                                                 "--progress", "package", progress,
+                                                 "--output", receipt_path)
+
+    assert (verdict_code, progress_code, receipt_code) == (0, 0, 0)
+    assert not verdict_err and not progress_err and not receipt_err
+    assert json.loads(verdict_text)["summary"]["outcome"] == "PASS"
+    assert json.loads(progress_text)["runs"][0]["run"]["commit"] == head
+    assert json.loads(receipt_text)["assay_verdicts"]["package"]["summary"]["commit"] == head
 
 
 @pytest.mark.parametrize("name", ["r1_pass", "r1_fail_uncovered_branches", "r2_pass_with_judgment"])
@@ -563,6 +1001,16 @@ def test_new_cross_document_analysis_anchors_resolve():
     assert count >= 3
 
 
+def test_report_design_anchor_is_linked_from_all_adopter_documents():
+    root = Path(__file__).resolve().parents[1]
+    design = root / "docs/DESIGN-GUIDE.md"
+    assert "### Bounded live gate snapshot (B100)" in design.read_text()
+    expected = "bounded-live-gate-snapshot-b100"
+    for path in (root / "README.md", root / "docs/CONSUMERS.md", root / "docs/INTERNAL-CONSUMERS.md"):
+        targets = re.findall(r"\]\((?:docs/)?DESIGN-GUIDE\.md#([^)]*)\)", path.read_text())
+        assert expected in targets, f"{path.name} must link to the B100 design section"
+
+
 def test_effective_ignore_source_handles_negation_and_colons(repository):
     root, _, _ = repository
     (root / ".gitignore").write_text("output/*\n!output/keep.json\noutput:colon/*\n")
@@ -611,19 +1059,24 @@ def test_packaged_analysis_schemas_validate_real_outputs_and_reject_false_shapes
 
 def test_documented_analysis_commands_parse_with_shipped_cli():
     root = Path(__file__).resolve().parents[1]
-    paths = [root / "README.md", root / "docs/DESIGN-GUIDE.md", root / "docs/CONSUMERS.md"]
+    paths = [root / "README.md", root / "docs/DESIGN-GUIDE.md", root / "docs/CONSUMERS.md",
+             root / "docs/INTERNAL-CONSUMERS.md"]
     parser = build_parser()
     seen = set()
     for path in paths:
         text = path.read_text()
-        blocks = re.findall(r"<!-- assay-analysis-example -->\n```bash\n(.*?)\n```", text, re.S)
+        blocks = re.findall(r"<!-- assay-analysis-example -->\n```bash\n(.*?)\n```", text, re.DOTALL)
         assert blocks, f"{path.name} needs an executable analysis example"
+        file_commands = set()
         for block in blocks:
             for line in block.replace("\\\n", " ").splitlines():
                 if not line.startswith("assay analyze "):
                     continue
+                line = line.replace("$REVIEW_HEAD", "a" * 40)
                 args = parser.parse_args(shlex.split(line)[1:])
                 seen.add(args.analysis_command)
+                file_commands.add(args.analysis_command)
+        assert "report" in file_commands, f"{path.name} needs a checked report example"
     subcommands = parser._subparsers._group_actions[0].choices["analyze"]._subparsers._group_actions[0].choices
     assert set(subcommands) == seen
     with pytest.raises(SystemExit):

@@ -3860,6 +3860,32 @@ in temporary container environments. `analyze` is part of that CLI, not a
 separately injected tool. These operations accept explicit files and paths,
 require no lane configuration, and add no runtime dependencies.
 
+### Take one gate snapshot with `assay analyze report` (B100)
+
+When a long gate's terminal buffer is too small, give `report` the exact
+verdict, progress stream, and retained log paths. It returns a single sorted
+JSON snapshot (or `--format text`) and exits immediately:
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze report --expected-commit "$REVIEW_HEAD" \
+  --verdict selftest "$WORKTREE/.assay/verdict-selftest.json" \
+  --progress selftest "$WORKTREE/.assay/progress-selftest.jsonl" \
+  --log selftest "$GATE_LOG" --format json
+```
+
+Set `WORKTREE` to the reviewed checkout, `REVIEW_HEAD` to the controller's
+agreed candidate, and `GATE_LOG` to the retained gate output file; do not infer
+the expected commit from the current checkout. A valid passing verdict exits 0; a valid adverse
+verdict exits 1; missing, malformed, stale-only, or mismatched evidence exits
+2; and fresh nonterminal progress with no verdict exits 3 when running is the
+highest-priority status present. For several lanes,
+repeat the named options; status and exit precedence are
+`evidence_error > fail > running > pass`. Log text is diagnostic only. The
+report hashes the complete supplied files but displays at most the selected
+bounded error lines, so a controller can retrieve the full log by the reported
+path when necessary. See the [B100 design and limits](DESIGN-GUIDE.md#bounded-live-gate-snapshot-b100).
+
 Set `WORKTREE` to the reviewed project's directory containing `run-gate.py`
 (for P5, the checkout's `run-gate-project/`) and `REVIEW_HEAD` to the full expected
 commit from the controller. Do not compute the expected value from the current

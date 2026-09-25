@@ -302,3 +302,53 @@ It is 6,348 bytes; no compression was needed.
 
 The gate log and this result entry are report-only additions after the passing
 code-tip gate. The tested source tip remains `09d1f38d`.
+
+
+## P4 — B100 `assay analyze report` (review READY; gate PASS)
+
+P4 is in CIU worktree `/workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report`,
+branch `assay-wave-c-p4-b100-report`, CIU id `9fcfcc`, created from the
+P3-merged base `8911e636ad09071868c813347bf7a4d0a00049bb`.
+
+The implementation adds the read-only `assay analyze report` snapshot under
+A-460, a packaged JSON schema v1, and CLI examples in README, DESIGN-GUIDE,
+CONSUMERS, and INTERNAL-CONSUMERS. Status is derived only from a verifier-valid
+commit-bound verdict or fresh nonterminal progress. The progress reader uses
+the latest run and tolerates one malformed unterminated final record; the log
+reader hashes the complete file and scans only its final 64 KiB for bounded
+diagnostics. The command writes no report or progress artifact.
+
+Focused verification after the first adversarial review found boundary cases:
+
+- `tests/test_analysis.py` and `tests/test_docs_examples_and_vocabulary.py`:
+  **165 passed**. Added regressions for malformed oversized torn progress,
+  oversized complete progress records both newline-terminated and valid but
+  unterminated, freshness observed after an earlier lane's log snapshot, a
+  complete diagnostic exactly at the retained-window boundary, ignored-file
+  writes, and parser coverage for each B100 example.
+- Focused Ruff selections (`E4,E7,E9,F` and `I001`), pyflakes on the changed
+  Python files, and `git diff --check`: **PASS** (estate venv).
+- Fresh independent adversarial review against the P4 base: **READY** after
+  round 3. The reviewer confirmed the earlier findings were fixed and
+  differential-checked the oversized-record framer against 5,000 generated
+  or mutated JSON documents and 18 explicit syntax cases; no remaining
+  blockers.
+- Registered detached `./run-gate.py tester-unified` passed on exact code tip
+  `7859057f802640e905497f0132cc802212e07c41`. It started at approximately
+  2026-09-25 10:37:54 UTC and completed at approximately 10:53 UTC. At the
+  required 90-second check, six of twelve phase markers had passed and the
+  gate was progressing; the estimate was 18–25 minutes. All twelve phase
+  markers later appeared, including the Topos and CMRU qualifications, and
+  the self-hosted lane passed. Exit evidence: `ASSAY_GATE_CONTAINER_EXIT=0`,
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, lane exit 0, and `GATE_EXIT=0`.
+- Container `run-gate-assay-selfhosted-4171085-30356-1790332674` ran under
+  `dev-gates.slice`. The nested gate container was capped at 3 CPUs with
+  `docker update --cpus=3`; the limit was verified in Docker's `NanoCpus`
+  field. The container was removed after completion. The optional
+  `cgprofile-host-daemon` was unavailable, so run-gate reported coarse rusage
+  sampling; this did not affect the gate result.
+- The raw output is preserved at
+  [`assay-WAVE-C-P4-gate-2026-09-25-7859057f.log`](assay-WAVE-C-P4-gate-2026-09-25-7859057f.log),
+  SHA-256 `a12909d52a86e5e17d334b1584daba4bb61bb1f744ca633b2dfab8754edf11fe`.
+  The log and this result entry are report-only additions after the passing
+  code-tip gate; the tested source tip remains `7859057f`.
