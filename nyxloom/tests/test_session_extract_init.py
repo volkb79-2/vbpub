@@ -13,6 +13,7 @@ import pytest
 from nyxloom.session_extract import DetectionError, ExtractConfig, extract, read_since_marker
 from nyxloom.session_extract.events import EventKind, NormalizedEvent
 from nyxloom.session_extract.render import render_json, render_text
+from nyxloom.session_extract import _select_epochs
 
 
 def _write_claude_fixture(tmp_path: Path, session_id: str = "s1") -> Path:
@@ -157,3 +158,26 @@ def test_read_since_marker_uses_leading_footer_for_pre_metadata(tmp_path):
     fp.write_text(text, encoding="utf-8")
 
     assert read_since_marker(fp) == ("claude-code", "REAL-CURRENT-MARKER")
+
+
+def test_epoch_selection_handles_empty_all_ranges_and_invalid_requests():
+    assert _select_epochs([], None) == []
+    first = NormalizedEvent(0, "e1", "", EventKind.OPERATOR_TEXT, "first")
+    first.meta["epoch"] = "1"
+    second = NormalizedEvent(1, "e2", "", EventKind.OPERATOR_TEXT, "second")
+    second.meta["epoch"] = "2"
+
+    assert _select_epochs([first, second], "all") == [first, second]
+    assert _select_epochs([first, second], "1:2") == [first, second]
+    assert _select_epochs([first, second], None) == [second]
+    assert _select_epochs([first, second], "1") == [first]
+
+    for selection, error in (
+        ("1:bad", "range must be A:B"),
+        ("2:1", "1 <= A <= B"),
+        ("bad", "must be N, A:B, or all"),
+        ("0", "positive 1-based"),
+        ("3", "are not present"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            _select_epochs([first, second], selection)
