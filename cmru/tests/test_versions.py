@@ -759,6 +759,18 @@ def test_rolling_oci_resolve_enforces_age_window_and_records_digest(monkeypatch)
     )
     assert result.version == "bookworm-slim"
     assert result.state()["sources"]["oci"]["digest"] == digest
+    assert result.override is False
+
+    cutoff = now - timedelta(days=14)
+    boundary = registry.Candidate(
+        "bookworm-slim", cutoff, "oci-registry-last-modified", "bookworm-slim", digest,
+    )
+    monkeypatch.setattr(versions, "oci_rolling_candidate", lambda _source: boundary)
+    exact_cutoff = versions._resolve_target(
+        "debian", target, age_window_days=14, resolved_at=now, owner="project",
+    )
+    assert exact_cutoff.sources["oci"].released_at == cutoff
+    assert exact_cutoff.override is False
 
     fresh = registry.Candidate(
         "bookworm-slim", now - timedelta(days=2), "oci-image-created-fallback",
@@ -3584,6 +3596,13 @@ def test_go_commit_time_and_oci_created_fallback_emit_warnings(capsys):
     assert "Go proxy .info Time (VCS commit time)" in diagnostic
     assert "not proxy publication time" in diagnostic
     assert "publisher-supplied OCI image-created time" in diagnostic
+
+
+def test_age_evidence_warning_returns_none_for_registry_timestamps():
+    candidate = _candidate(
+        "1.0.0", datetime(2026, 8, 1, tzinfo=timezone.utc), "registry-last-modified",
+    )
+    assert versions._age_evidence_warning("demo", "pypi.requests", candidate) is None
 
 
 def test_npm_native_lock_writer_pins_dependencies_and_uses_age_exceptions(tmp_path, monkeypatch):
