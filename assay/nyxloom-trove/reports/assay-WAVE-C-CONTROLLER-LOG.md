@@ -152,6 +152,103 @@ must-fail control; this also guards the README's new B080 consumer link.
 
 ### Gate
 
-P1 reviewer result: READY. Authoritative tester-unified gate: pending. The
-gate will run against this branch tip before merge; its exact container,
-host-capacity checks, phases, exit status, and log hash will be recorded here.
+P1 reviewer result: READY. The first registered gate attempt at
+`5ba8e0a5` failed in the Topos qualification because
+`test_stream_window_without_bounds_and_frame_response_without_sequence`
+started its producer thread and immediately read `stream_window()`. That API
+is nonblocking, so the test could observe empty history if the test thread ran
+before the producer published its frame. This is a scheduling race in the
+test; host load only changes how often the race is exposed and must not define
+the assertion. The fix synchronizes through bounded `broker.current()` before
+checking history, without changing `stream_window()`'s nonblocking behavior.
+The failed raw log is preserved byte-for-byte, gzip-compressed, at
+[`assay-WAVE-C-P1-gate-2026-09-24-5ba8e0a5.log.gz`](assay-WAVE-C-P1-gate-2026-09-24-5ba8e0a5.log.gz).
+Its decompressed SHA-256 is
+`7b7a28185fece0d394e072b6657637202ae7fc66c45fea693e50519b74369cd2`; the
+compressed artifact SHA-256 is
+`d768ba76026eeafcad2d03eebc5d7ec8817ec6646adcc7d8098b9dc3533c053d`.
+
+The authoritative rerun passed at `8823bfeabffc4c1e22560753c1679b27efc28e9a`
+with all 12 expected phase markers, `ASSAY_REGISTERED_GATE_COMPLETE=1`, and
+`GATE_EXIT=0`. Container: `run-gate-assay-selfhosted-3675926-27679-1790305476`.
+The raw log is preserved at
+[`assay-WAVE-C-P1-gate-2026-09-25-8823bfea.log`](assay-WAVE-C-P1-gate-2026-09-25-8823bfea.log),
+SHA-256 `36bcde21e86e2821aef8bc51d79d23df40d9b7c79978cb10e2f90da9daf3ccde`.
+The optional cgprofile daemon was absent; run-gate used coarse rusage sampling
+and the gate result was unaffected.
+
+## P2 — B081, B094, B025 refusals
+
+The independent review of the P2 implementation at `f7895bd2` returned READY
+with no blockers. It verified B081's ownership-remedy diagnostic, B094's
+whole-lane `BAD_LANE_CONFIG` refusal and `assay verify` acceptance across R2/R3,
+and B025's attestation-timeout forward test. Its one nonblocking note was that
+a valid rejudge ID assigned to another shard was described only as unknown or
+stale. Commit `045dac4c` names operator/shard filtering in that diagnostic and
+adds a verify-accepted CLI oracle for the shard case.
+
+The earlier registered gate passed at `f7895bd255255b332f1ec5a04e6607f029e3b12c`
+with exit 0 and all 12 markers; its raw log is preserved at
+[`assay-WAVE-C-P2-gate-2026-09-25-f7895bd2.log`](assay-WAVE-C-P2-gate-2026-09-25-f7895bd2.log),
+SHA-256 `0f98ba640f2f43b3b3008c226f511ed6e7893fa13021657d49a056ca89399b16`.
+That gate predates the shard-message oracle and the later `main` tip, so it is
+historical evidence only. The branch merged `main` at `8a4a9709`.
+
+### Final review and repairs
+
+A fresh independent review at `11ff984f` returned NEEDS-FIX for three findings:
+the shared Topos helper passed progress flags to the pinned Assay 1.2.5 release
+smoke (whose CLI rejects them); P0's already-released B101/B102/B093/B079 and
+`assay analyze` changelog records had reappeared under `[Unreleased]`; and the
+merge had introduced unrelated trailing-whitespace cleanup in
+`libraries/cli-extended/BACKLOG.md`. The gate confirmed the first finding:
+4,988 passed, 21 skipped, one release-smoke failure in 492.14s. Its raw log is
+preserved byte-for-byte, gzip-compressed, at
+[`assay-WAVE-C-P2-gate-2026-09-25-11ff984f.log.gz`](assay-WAVE-C-P2-gate-2026-09-25-11ff984f.log.gz).
+Raw SHA-256: `fcbac36218e6d50728120dda35aa8884f05fcb0549a3d39389c00101a007d45b`;
+compressed artifact SHA-256:
+`a785a979951dad239920cd5927fa9c9920094f846d4b98d62bdd11a80a58dd61`.
+
+Commit `7d45deaa` makes progress recording conditional for the historical
+release owner while current judge invocations retain `--resume --progress`,
+restores the main changelog and adds only P2 notes, and removes the unrelated
+backlog diff. Its full gate then found one test-stub signature mismatch after
+the helper gained a keyword-only progress option: 4,988 passed, 21 skipped,
+one failed in 536.84s. The stub now accepts the keyword and asserts that the
+current judge enables progress. The focused diagnostic test passed (`1 passed
+in 0.13s`). The failed raw log is preserved at
+[`assay-WAVE-C-P2-gate-2026-09-25-7d45deaa.log.gz`](assay-WAVE-C-P2-gate-2026-09-25-7d45deaa.log.gz),
+raw SHA-256 `e05a193193d56593babd04572ee0d196618da4b56f30b8a681e6c9f87fbde3a8`;
+compressed artifact SHA-256
+`789af01c8b605a427a8f9e4fc235713e81fd9ea6f3c2494eca4120400c4797be`.
+
+The final read-only review returned READY at `f21f96291e6bd36b3ceff836a9aa97cb52b530a9`
+against `8a4a9709`, with no actionable findings. It confirmed the P2 behavior,
+docs, corrected release-smoke argv, changelog, and test-stub update.
+
+### Authoritative gate
+
+The registered `./run-gate.py tester-unified` gate passed on exact code tip
+`f21f96291e6bd36b3ceff836a9aa97cb52b530a9`. Container
+`run-gate-assay-selfhosted-3892837-23513-1790314123` was inspected with a
+3-CPU limit under `dev-gates.slice`. At the 90-second check, all six setup and
+compatibility phases had passed; the `tester-unified` assay progress stream
+reported the direct pytest command running at 60s, with no error. That main
+lane then passed in 533.29s. The nested current Topos run used
+`--resume --progress`, wrote its progress stream, and passed its primary
+coverage phase in 125.46s; the pinned 1.2.5 smoke also passed with its original
+CLI arguments. The CMRU B006A qualification, 7 independent self-hosting tests
+(13.61s), and pyflakes passed. All 12 `ASSAY_GATE_PHASE=` markers were
+present, as were `ASSAY_GATE_CONTAINER_EXIT=0`,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, run-gate lane exit 0, and
+`GATE_OUTER_EXIT=0`. The optional `cgprofile-host-daemon` was absent; run-gate
+used coarse rusage sampling and reported no gate impact.
+
+The passing raw output is preserved at
+[`assay-WAVE-C-P2-gate-2026-09-25-f21f9629.log.gz`](assay-WAVE-C-P2-gate-2026-09-25-f21f9629.log.gz),
+raw SHA-256 `8561f720e6c8251ed8183de169254093582b6ad8603bc564cbd1d9478da466f9`;
+compressed artifact SHA-256
+`efe5a25ec15783e617d14ca127c66b06e3699f7d81718e8b2b634475e463395a`.
+
+The controller report and three preserved gate logs are report-only evidence
+after the passing code-tip gate; the tested source tip remains `f21f9629`.

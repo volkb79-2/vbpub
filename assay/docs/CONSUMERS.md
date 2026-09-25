@@ -2637,11 +2637,16 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
   accepted and resolved to `"crashed"` before `run_mutation` ever sees it —
   `"error"` is never added to `MUTATION_BUCKETS` itself, so a verdict or a
   state record never spells it that way.
-- **An unknown `--rejudge` id refuses the WHOLE lane**
-  (`MutationStateError`), before any candidate executes — this is the one
-  rejudge refusal that cannot be validated at CLI-parse time, because the
-  current candidate set does not exist until mutation-site collection has
-  run against the current tree.
+- **An unknown or stale-source `--rejudge` id refuses the WHOLE lane** as
+  `ERROR`/`BAD_LANE_CONFIG`, before any resume record is replayed or candidate
+  executes. The check cannot run at CLI-parse time because the current
+  candidate set does not exist until mutation-site collection has run against
+  the current tree. Since that discovery follows the baseline, the whole-lane
+  refusal intentionally discards any earlier R0/R1 measurement so every
+  declared tier carries the same pair accepted by `assay verify`. A valid id
+  still re-executes only its selected candidate. A malformed, unreadable, or
+  corrupt state record remains `ERROR`/`UNREADABLE_ARTIFACT`; it is not
+  relabeled as bad input. See the [design rationale](DESIGN-GUIDE.md#mutation-resume-and-sharding-b012).
 - **The ids `--rejudge` takes are `mutation.candidate_id()` digests — the
   same sha256 string a state record and a `candidate`/`plan` progress event
   key by — NOT `MutantOutcome.identity`.** `MutantOutcome.identity` (on a
@@ -3183,6 +3188,16 @@ assay: NO_MEASUREMENT/MISSING_EXTERNAL_TOOL: the 'go' adapter needs the external
 assay: ERROR/BAD_LANE_CONFIG: lane 'unit' declares env_required ['DATABASE_URL'] which is not set in the invoking environment -- assay refuses to run a lane whose declared inputs are absent rather than measure it with them missing. Set DATABASE_URL, or drop it from 'env_required'.
 assay: ERROR/BAD_LANE_CONFIG: --shard 'one-of-two' is not a shard spec: it must be INDEX/COUNT with zero-based integers and 0 <= INDEX < COUNT (for example --shard 0/4).
 ```
+
+<a id="b081-ownership-remedy"></a>
+**Git's dubious-ownership message needs an ownership fix (B081).** Assay
+retains Git's `fatal: detected dubious ownership` line but removes Git's
+following `safe.directory` command. Assay replaces Git's environment and
+sets `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so that
+configuration cannot be read by Git during the run. Run assay as the
+repository owner or fix the tree's ownership/uid mapping. Adding a local
+repository setting does not grant Git's protected `safe.directory` exception.
+See the [design reason](DESIGN-GUIDE.md#git-dubious-ownership-and-safe-directory-b081).
 
 The complement of that rule also holds, and matters more: **a refusal whose
 claim the verdict does not carry prints no line.** One R2 refusal — a

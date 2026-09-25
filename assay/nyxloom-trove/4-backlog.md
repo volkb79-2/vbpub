@@ -144,10 +144,18 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 **Wave C P1 implemented (2026-09-24; independent review READY and authoritative gate PASS at `8823bfea`)**
 - B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation, independent review and tester-unified gate complete)
 
+**Wave C P2 (implemented; registered gate and merge pending)**
+- B081 — dubious-ownership `GIT_FAILED` remedy — implementation and targeted regressions complete
+- B094 — unknown/stale `--rejudge` classification — implementation and CLI/verify oracles complete (A-458)
+- B025 — attestation-timeout infrastructure forward — dedicated regression and controlled-red proof complete
+
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
+- B095 — P7 S5: monitor hot-loop cost / unbounded CPU history — OPEN (liveness wave)
+- B076 — unbounded R2 lane's baseline run has no bound — OPEN (liveness wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
+- B100 — bounded operator report for live gate progress/verdicts — OPEN (design only)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B105 — assay itself has no full-source R2 lane and no release mutation evidence — OPEN (finding filed in P0; not a Wave C implementation package)
 
@@ -2612,7 +2620,7 @@ evidence — filed as **B062**.
 
 ## B025 — a refusal whose OWN cause is an unresolvable infrastructure declaration writes no verdict artifact
 
-**Status: PARTIAL (v2.4.0/2.4.1, 2026-08-25) — A-308; 4 crash sites fixed, one acceptance box (attestation-LANE_TIMEOUT forward test) explicitly unmet.**
+**Status: IMPLEMENTED (Wave C P2, 2026-09-24; targeted test and controlled-red proof complete, registered gate pending) — A-308 plus the attestation-timeout forward oracle.**
 
 **Filed 2026-08-25 (round 1 remediation), rescoped 2026-08-25 after round 2
 review + a round-3 partial fix narrowed it.** Not itself a crash — the
@@ -2681,12 +2689,11 @@ resolutions:
    fix, see A-299); resolves every case EXCEPT the one this entry is now
    scoped to (the source itself is the thing that's broken).
 
-**Known gap, not yet closed:** `cli.py`'s attestation `LANE_TIMEOUT` refusal
-(the OTHER of the two `cli.py` sites, alongside the adapter-refusal one the
-new test exercises) is forwarded by inspection/symmetry but has **no test**
-— reverting only that site leaves the full `test_cli_run.py` suite green.
-Triggering it needs a real attestation-deadline timeout, not attempted in
-any round. Close this alongside whichever acceptance item below lands next.
+**Acceptance gap closed in Wave C P2.** A dedicated CLI test reaches this
+attestation `LANE_TIMEOUT` call by monkeypatching `git.verify_exact_commit`,
+and declares a resolvable `derived:` infrastructure fact. It proves the
+refusal carries the resolved environment and goes red when only the
+attestation-timeout call's infrastructure kwargs are removed.
 
 ### Acceptance
 
@@ -2694,10 +2701,10 @@ any round. Close this alongside whichever acceptance item below lands next.
       in `_run_reserved` (`cli.py`, 2 sites) forwards
       `infrastructure_source`/`infrastructure_environment` (round 3, both
       passes — see A-298/A-299);
-- [ ] the `cli.py` attestation-`LANE_TIMEOUT` forward gets its own test
-      (currently unguarded — see "Known gap" above; still open, needs a real
-      attestation-deadline timeout to trigger, not attempted this wave
-      either — a known, accepted, narrow gap, not a regression);
+- [x] the `cli.py` attestation-`LANE_TIMEOUT` forward gets its own test at
+      the `git.verify_exact_commit` monkeypatch seam. Removing only that
+      call's infrastructure kwargs makes the new test fail on the degraded
+      `env_effective`/`env_effective_incomplete` result.
 - [x] a decision recorded on which of options 1-3 handles the remaining case
       (infrastructure itself unresolvable) — decided: a refined option 1
       (A-308) — `env_effective` becomes exactly `lane.env`, paired with a new
@@ -2723,12 +2730,11 @@ any round. Close this alongside whichever acceptance item below lands next.
       test per crash site (four total, two per round), all verified
       red-first.
 
-**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), except the
-one known, narrow, pre-existing gap noted above (attestation-timeout
-forward test) and the DIFFERENT, wider "lane-wide `LANE_TIMEOUT` also
-writes no verdict" gap round 2 review found and filed separately as
-B028 (same family, bigger blast radius, needs its own design pass).**
-See A-308.
+**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), with the
+separate attestation-timeout forward-test gap closed in Wave C P2 on
+2026-09-24.** The different, wider "lane-wide `LANE_TIMEOUT` also writes no
+verdict" gap found by round 2 review remains filed separately as B028; it was
+resolved in Wave D/v5.0.0 under A-415. See A-308.
 
 ---
 
@@ -8957,7 +8963,7 @@ this entry's priority.
 
 ## B081 — a "dubious ownership" `GIT_FAILED` passes through git's own remedy, which `_REPLACEMENT_ENV` has made unreachable by construction: the message sends the consumer to a fix assay guarantees cannot work
 
-**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — no ownership/`safe.directory` remedy message exists anywhere in `src/assay/git.py`.**
+**Status: IMPLEMENTED (Wave C P2, 2026-09-24; targeted tests pass, registered gate pending) — `_resolve_repo` names the ownership mismatch, assay's replacement Git configuration, and the ownership remedy before retaining Git's `fatal:` line.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, while wiring an assay 6.0.0 Go R1
 changed-line-coverage lane into the `pterodactyl/wings` patch stack
@@ -9054,18 +9060,21 @@ ownership is the only thing that works.
 
 ### Acceptance
 
-- [ ] a tree whose owner uid differs from the running user refuses with an
+- [x] a tree whose owner uid differs from the running user refuses with an
       assay-composed sentence naming the ownership mismatch and the fact that
       `safe.directory` is unreachable under assay's replacement environment,
       with git's own `fatal:` retained after it;
-- [ ] the message does NOT propose `git config --global --add safe.directory`
+- [x] the message does NOT propose `git config --global --add safe.directory`
       as a remedy anywhere;
-- [ ] a healthy resolution is unchanged and the probe is never consulted on
+- [x] a healthy resolution is unchanged and the probe is never consulted on
       it (B068's diagnostic-only contract);
-- [ ] the OTHER bootstrap failures stay exactly as they are — the linked-
+- [x] the OTHER bootstrap failures stay exactly as they are — the linked-
       worktree gap (B068) still wins where it applies, and an unrecognised
       cause still passes through unchanged;
-- [ ] a regression test pins the new sentence.
+- [x] regression tests pin Git's captured fatal line, including a path longer
+      than the generic 200-character diagnostic cap, strip its remedy, keep
+      healthy resolution probe-free, and preserve an unrecognised bootstrap
+      failure's existing message (`tests/test_git_boundary.py`).
 
 ## B082 — a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so
 
@@ -10056,20 +10065,21 @@ README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the policy.
 
 ## B094 — P7 S3 / N5: unknown `--rejudge` reason mapping
 
-**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — explicitly excluded from the B091 P7 round-1 fold-in commit (S2,S4,S7-S10 only); no later CHANGES.md entry addresses it.**
+**Status: IMPLEMENTED (Wave C P2, 2026-09-24; CLI and `assay verify` oracles complete, registered gate pending) — A-458 routes invalid input through the existing whole-lane `BAD_LANE_CONFIG` refusal.**
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** An unknown candidate
-id correctly refuses with the right message, but reports
-`ERROR/UNREADABLE_ARTIFACT` (exit 2). `MutationStateError` is shared across
-the mutation-state refusal path; use a distinct exception or an explicit
-per-raise reason to classify invalid user input without relabeling real
-unreadable/corrupt state. Round-2 N5 reproduced the current behavior on
-the real CLI; no mapping change is included in 6.2.0's B6 repair.
+An unknown id or an id made stale by source-byte changes refuses with
+`ERROR`/`BAD_LANE_CONFIG` (exit 2) before any record is replayed. A distinct
+input exception leaves `MutationStateError` and its
+`ERROR`/`UNREADABLE_ARTIFACT` classification intact for corrupt stores. The
+check occurs after the baseline, so A-458 uses the existing whole-lane
+refusal shape; this preserves `assay verify` acceptance on R0/R2/R3 lanes at
+the cost of discarding already-measured R0/R1 results.
 
-Oracle: unknown and stale-source ids refuse before record replay with the
-chosen input-refusal code; unreadable/corrupt stores retain artifact-error
-codes; valid ids still rejudge only their selected records. Sync all three
-user documents if the public reason vocabulary or compatibility changes.
+Oracle: real CLI tests cover unknown, stale-source, corrupt, and valid ids;
+unknown and stale refusals are passed through `assay verify`, corrupt state
+remains `UNREADABLE_ARTIFACT`, and valid ids rejudge only the selected
+record. README, DESIGN-GUIDE, and CONSUMERS document the user-visible
+classification and its ordering cost.
 
 ## B095 — P7 S5: monitor hot-loop cost and unbounded CPU history
 

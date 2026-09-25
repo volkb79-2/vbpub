@@ -149,6 +149,13 @@ assay exists to close that gap mechanically, not by policy:
   ambient environment names, cwd, links, project prefix, and assay version
   remain identity inputs. See the
   [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
+- **Refusals name the usable cause and keep unrelated failures distinct.** A
+  Git dubious-ownership refusal explains why `safe.directory` cannot be set in
+  assay's replacement environment and points to the ownership fix. Unknown or
+  stale `--rejudge` ids use `ERROR`/`BAD_LANE_CONFIG`; unreadable or corrupt
+  state remains `ERROR`/`UNREADABLE_ARTIFACT`. See the
+  [refusal design](docs/DESIGN-GUIDE.md#git-dubious-ownership-and-safe-directory-b081)
+  and [consumer pitfall](docs/CONSUMERS.md#b081-ownership-remedy).
 - **Zero runtime dependencies.** assay imports nothing but the Python
   standard library. It consumes the *output* of tools like `coverage.py`; it
   never imports them. Adoption risk is close to zero — there is no
