@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import fixed_clock, make_lane
+from conftest import fixed_clock, make_lane, native_mutation, native_outcome
 
 from assay import runner
 from assay.errors import Outcome, ReasonCode
@@ -26,7 +26,6 @@ from assay.verdict import (
     JudgmentR2,
     JudgmentResolved,
     MutantOutcome,
-    Mutation,
 )
 
 #: A PASSING R2 claim carries the buckets it passed on, and a
@@ -39,7 +38,7 @@ _SHA_GTE = "92a00d7d91da9f0f06c3f218c49c9b98323469962b291365b85d3c16b6b7f95f"
 
 
 def _outcome(lineno: int, start: int, sha: str, description: str) -> MutantOutcome:
-    return MutantOutcome(
+    return native_outcome(
         path="pkg/a.py",
         lineno=lineno,
         start_byte=start,
@@ -50,7 +49,7 @@ def _outcome(lineno: int, start: int, sha: str, description: str) -> MutantOutco
     )
 
 
-_KILLED_EVERYTHING = Mutation(
+_KILLED_EVERYTHING = native_mutation(
     candidate_count=2,
     total=2,
     killed=(
@@ -58,7 +57,7 @@ _KILLED_EVERYTHING = Mutation(
         _outcome(2, 20, _SHA_LTE, "Lt->LtE"),
     ),
 )
-_ONE_SURVIVOR = Mutation(
+_ONE_SURVIVOR = native_mutation(
     candidate_count=2,
     total=2,
     killed=(_outcome(1, 10, _SHA_LTE, "Lt->LtE"),),

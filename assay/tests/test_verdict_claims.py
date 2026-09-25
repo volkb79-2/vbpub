@@ -19,7 +19,7 @@ forbids.
 from __future__ import annotations
 
 import pytest
-from conftest import verdict_fixture, why_invalid
+from conftest import native_mutation, native_outcome, verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
@@ -35,8 +35,6 @@ from assay.verdict import (
     JudgmentR1,
     JudgmentR2,
     JudgmentResolved,
-    MutantOutcome,
-    Mutation,
     SnapshotPolicy,
     Verdict,
     rollup,
@@ -100,11 +98,11 @@ def passing(rigor: str, source: str = "computed") -> Claim:
             files_missing_coverage=(),
         )
     elif rigor == "R2":
-        payload["mutation"] = Mutation(
+        payload["mutation"] = native_mutation(
             candidate_count=1,
             total=1,
             killed=(
-                MutantOutcome(
+                native_outcome(
                     path="pkg/mod.py",
                     lineno=3,
                     start_byte=40,

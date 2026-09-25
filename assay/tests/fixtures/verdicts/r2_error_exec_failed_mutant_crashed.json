@@ -77,9 +77,9 @@
       "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
       "operator": "python:compare-swap",
       "description": "Lt->LtE",
-      "candidate_id": "f9ad19562d0bc29404d5d1b7d430e434137d1c438b95815e2459b4f72b68c9ae",
-      "source_sha256": "8081325991e0c17a92bcd11735774e7218f864f760821ef3add5cbbfae4f9cf8",
-      "mutated_file_sha256": "ddbe1f6c3fb217daa6ff65d456ee0301af3e3bde7890fb47984ebbbbcb00f4bf",
+      "candidate_id": "6e79cadaa6df73dd7396e4273d0521d1733ace20e4da39d7310182f3f1087000",
+      "source_sha256": "5205c72743db1f860bc6cebf6552284e61c6f44ec25aef01efc188ce059bdfca",
+      "mutated_file_sha256": "bf2e19a7f15b0b29d8dc69dcdfbc4a6a5dec3c8bd5348267408495b13f3d72c9",
       "execution": {
        "mode": "full"
       }
@@ -95,9 +95,9 @@
       "replacement_sha256": "60a33e6cf5151f2d52eddae9685cfa270426aa89d8dbc7dfb854606f1d1a40fe",
       "operator": "python:bool-const-flip",
       "description": "True->False",
-      "candidate_id": "29c4c4c68d23fa54cefeba29904a5924285242cbd2696d418517036b08e1b722",
-      "source_sha256": "8081325991e0c17a92bcd11735774e7218f864f760821ef3add5cbbfae4f9cf8",
-      "mutated_file_sha256": "6f35e104c3ff3e5eb9ad714eab9689b3508d2149a7dea6d5be064cb3d2822f74",
+      "candidate_id": "494d6491be4bf8322c9d6afc64a66058142d0887848d4febf8ee5ed7dfb09bc4",
+      "source_sha256": "5205c72743db1f860bc6cebf6552284e61c6f44ec25aef01efc188ce059bdfca",
+      "mutated_file_sha256": "373f4cdf09b0035f8f3af7f34f7a787b80e8e4f1cc1303ea4d6c9ebc979e9844",
       "execution": {
        "mode": "full"
       }
@@ -107,8 +107,8 @@
     "equivalent": [],
     "hung": [],
     "candidate_ids": [
-     "f9ad19562d0bc29404d5d1b7d430e434137d1c438b95815e2459b4f72b68c9ae",
-     "29c4c4c68d23fa54cefeba29904a5924285242cbd2696d418517036b08e1b722"
+     "6e79cadaa6df73dd7396e4273d0521d1733ace20e4da39d7310182f3f1087000",
+     "494d6491be4bf8322c9d6afc64a66058142d0887848d4febf8ee5ed7dfb09bc4"
     ]
    }
   }

@@ -626,6 +626,15 @@ print(f"v6-v12 hard-cut guard passed for {checked} frozen templates")
 PYEOF
   echo 'ASSAY_GATE_PHASE=verdict-v6-v12-hard-cut-verified'
 
+  # W9 records the v13 P25 qualification successors. It checks the frozen
+  # schema copy and confirms both current templates verify clean while the
+  # historical W8 P25 controls hit the v13 hard cut.
+  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
+  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
+    "$worktree/assay/nyxloom-trove/carve-assets/W9/test_acceptance_v13.py" \
+    -q -p no:randomly --override-ini=pythonpath=
+  echo 'ASSAY_GATE_PHASE=verdict-v13-p25-successors-verified'
+
   # W8's v12-positive R3/R4 controls have no native mutation outcomes and
   # remain valid under the v13 contract. Keep v13 successors for those shapes
   # before the historical W8 suite is reduced to collection and hard-cut

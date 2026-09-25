@@ -14,6 +14,7 @@ gap — the artifact-level half lives in ``assay.verify`` and is proven in
 from __future__ import annotations
 
 import pytest
+from conftest import native_mutation, native_outcome
 
 from assay.verdict import (
     CanaryAttempt,
@@ -99,7 +100,7 @@ def r2_pass_claim(*, survivor_operator: str | None = None) -> Claim:
     survived = ()
     if survivor_operator is not None:
         survived = (
-            MutantOutcome(
+            native_outcome(
                 path="a.py",
                 lineno=1,
                 start_byte=4,
@@ -116,7 +117,7 @@ def r2_pass_claim(*, survivor_operator: str | None = None) -> Claim:
         ()
         if survived
         else (
-            MutantOutcome(
+            native_outcome(
                 path="a.py",
                 lineno=1,
                 start_byte=4,
@@ -127,7 +128,7 @@ def r2_pass_claim(*, survivor_operator: str | None = None) -> Claim:
             ),
         )
     )
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=1, total=1, killed=killed, survived=survived
     )
     return Claim(
@@ -1154,7 +1155,7 @@ def test_verdict_accepts_the_matched_r3_canary_and_judgment_pair():
 
 
 def _sql_mutant(*, operator: str, kill_signal: str | None = None) -> MutantOutcome:
-    return MutantOutcome(
+    return native_outcome(
         path="schema/001.sql",
         lineno=3,
         start_byte=10,
@@ -1212,7 +1213,7 @@ def test_verdict_refuses_an_operator_whose_prefix_is_not_the_resolved_language()
     sql_policy = JudgmentR2(
         jobs=1, max_mutants=50, operators=("sql:drop-check",), **BASE_R2_POLICY
     )
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
     )
     # The control: a genuinely SQL lane builds.
@@ -1226,7 +1227,7 @@ def test_verdict_refuses_equivalent_mutants_with_no_declared_equivalence_artifac
     """(P33/V5-3, invariant 2) Equivalence is proven by comparing the declared
     artifact's bytes; with none declared the claim was inferred from something
     else, which is what A-209's both-present pattern forbids."""
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=1,
         total=1,
         equivalent=(_sql_mutant(operator="sql:drop-check"),),
@@ -1250,14 +1251,14 @@ def test_verdict_refuses_an_unattributed_run_carrying_a_kill_signal():
     """(P33/V5-4, invariant 4) The clause the schema deliberately leaves open:
     a `kill_signal` on a KILLED entry is locally legal, so only a layer that
     can see `kill_attribution` can refuse it."""
-    clean = Mutation(
+    clean = native_mutation(
         candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
     )
     policy = JudgmentR2(
         jobs=1, max_mutants=50, operators=("sql:drop-check",), **BASE_R2_POLICY
     )
     assert _r2_verdict(mutation=clean, policy=policy, language="sql")
-    signalled = Mutation(
+    signalled = native_mutation(
         candidate_count=1,
         total=1,
         killed=(_sql_mutant(operator="sql:drop-check", kill_signal="23514"),),
@@ -1276,13 +1277,13 @@ def test_verdict_refuses_a_declared_attribution_leaving_a_kill_unexplained():
         kill_attribution="declared",
         kill_signal_artifact=".assay/kill-signal.txt",
     )
-    explained = Mutation(
+    explained = native_mutation(
         candidate_count=1,
         total=1,
         killed=(_sql_mutant(operator="sql:drop-check", kill_signal="23514"),),
     )
     assert _r2_verdict(mutation=explained, policy=policy, language="sql")
-    unexplained = Mutation(
+    unexplained = native_mutation(
         candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
     )
     with pytest.raises(ValueError, match="carry no\n?.*kill_signal"):
@@ -1311,7 +1312,7 @@ def test_verdict_refuses_a_helper_entry_with_no_correspondingly_judged_claim():
     claim produced with a helper requires an entry -- has no readable
     antecedent in the artifact bytes, so P29 owns it (A-282: route (i) gives
     SQL ``external_tools = ()``, so P34 can never witness it)."""
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
     )
     policy = JudgmentR2(
@@ -1346,7 +1347,7 @@ def test_verdict_refuses_a_helper_entry_with_no_correspondingly_judged_claim():
 def test_verdict_refuses_an_empty_helpers_array():
     """(A-230a) Omission is the emission default; `helpers: []` would assert a
     known-empty fact nothing witnessed."""
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
     )
     policy = JudgmentR2(

@@ -75,9 +75,9 @@
       "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
       "operator": "python:compare-swap",
       "description": "Lt->LtE",
-      "candidate_id": "7145f4bd7683f618c65e130f5f2740c2c74b08ce6d07da6cd8ca83251e63b1d2",
-      "source_sha256": "2cee5a4d1d9cc4f95faa09f608c2414b6067a63040d30b0a45a1d1216c9d24cb",
-      "mutated_file_sha256": "23a72895586746d97cb95d6f63b8963840ec2252c7ffa25c84a53971867fd0ff",
+      "candidate_id": "e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87",
+      "source_sha256": "4d6ae68c084958848c0f45ca958aeca0ebd5089d71b0e4d8aa27e70f20001298",
+      "mutated_file_sha256": "c0bb2c7dd2c2910b442c0f957dbf27a69755b641dbdc63d1ce39c550b4194a22",
       "execution": {
        "mode": "full"
       }
@@ -90,9 +90,9 @@
       "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
       "operator": "python:boolop-swap",
       "description": "And->Or",
-      "candidate_id": "5a423ef90ebecf55e2556e222fdc6659822203a6ee27af416c1ebde5f6c09a17",
-      "source_sha256": "2cee5a4d1d9cc4f95faa09f608c2414b6067a63040d30b0a45a1d1216c9d24cb",
-      "mutated_file_sha256": "3e8ed32475efbbe01be553815cb1e5ede60b7a8027938d9cb718bbb67c67b43a",
+      "candidate_id": "ab2de209fe03afc21aa4228b33b9de4de4b97d64de02eca186b710dabde3f8d7",
+      "source_sha256": "4d6ae68c084958848c0f45ca958aeca0ebd5089d71b0e4d8aa27e70f20001298",
+      "mutated_file_sha256": "50113ee9ec18d5dd071f232afbe65b46469ccd7cd1faa72d0fb740b04fc21968",
       "execution": {
        "mode": "full"
       }
@@ -104,8 +104,8 @@
     "equivalent": [],
     "hung": [],
     "candidate_ids": [
-     "7145f4bd7683f618c65e130f5f2740c2c74b08ce6d07da6cd8ca83251e63b1d2",
-     "5a423ef90ebecf55e2556e222fdc6659822203a6ee27af416c1ebde5f6c09a17"
+     "e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87",
+     "ab2de209fe03afc21aa4228b33b9de4de4b97d64de02eca186b710dabde3f8d7"
     ]
    }
   }

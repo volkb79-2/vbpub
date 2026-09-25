@@ -227,17 +227,19 @@ def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
         "ASSAY_GATE_PHASE=wheel-installed",
         "ASSAY_GATE_PHASE=self-hosted-lane-passed",
         "ASSAY_GATE_PHASE=independent-self-hosting-passed",
+        "ASSAY_GATE_PHASE=verdict-v13-p25-successors-verified",
         "ASSAY_GATE_PHASE=verdict-v13-successors-verified",
     ):
         assert f"echo '{marker}'" in source, f"missing required phase marker: {marker}"
     assert "echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'" in source
 
     v12_cut = source.index("ASSAY_GATE_PHASE=verdict-v6-v12-hard-cut-verified")
+    v13_p25 = source.index("W9/test_acceptance_v13.py")
     v13_successors = source.index("test_verdict_v13_successors.py")
     v13_suite = source.index("test_b106_reuse_and_witness.py")
     v13 = source.index("ASSAY_GATE_PHASE=verdict-v13-successors-verified")
     self_hosted = source.index('run_self_hosted_lane "$worktree"')
-    assert v12_cut < v13_successors < v13_suite < v13 < self_hosted
+    assert v12_cut < v13_p25 < v13_successors < v13_suite < v13 < self_hosted
     historical_suites = source[source.index("for locked in \\", source.index("# Wave-1:")) : v12_cut]
     for suite in (
         "carve-assets/W7/test_acceptance_v11.py",
