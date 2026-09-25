@@ -159,12 +159,15 @@ def _predigest_specs(specs: Sequence[str], *, resolve_self: bool = False) -> Lis
                 try:
                     pid = int(value)
                 except ValueError:
-                    _err(f"pid: needs a number, got {value!r}")
+                    raise targets_mod.TargetError(f"pid: needs a number, got {value!r}")
                 if "subpath" in options:
-                    _err("subpath is reserved for the helper's internal container target")
-                cgroup_path = _helper_pid_cgroup_path(pid)
+                    raise targets_mod.TargetError(
+                        "subpath is reserved for the helper's internal container target"
+                    )
+                cgroup_path, identity = _helper_pid_identity(pid)
                 cid = _caller_container_id()
                 resolved_options = [("subpath", quote(cgroup_path, safe="/"))]
+                resolved_options.append((targets_mod._HELPER_PID_OPTION, identity))
                 resolved_options.extend(options.items())
                 if "as" not in options:
                     resolved_options.append(("as", f"pid-{pid}"))
@@ -215,22 +218,55 @@ def _caller_container_id() -> str:
 def _helper_pid_cgroup_path(pid: int) -> str:
     """Resolve a caller-visible PID to a path relative to its container root."""
     if pid <= 0:
-        _err("pid: needs a positive process id")
+        raise targets_mod.TargetError("pid: needs a positive process id")
     if access.have_host_cgroup_view():
-        _err("helper-mode pid targets require the caller's private cgroup view; use direct mode")
+        raise targets_mod.TargetError(
+            "helper-mode pid targets require the caller's private cgroup view; use direct mode"
+        )
     process_dir = os.path.join(access.PROC_ROOT, str(pid))
     if not os.path.isdir(process_dir):
-        _err(f"pid {pid} is not visible in the caller's proc view")
+        raise targets_mod.TargetError(f"pid {pid} is not visible in the caller's proc view")
     if not access.same_cgroup_namespace(pid, access.PROC_ROOT):
-        _err(f"pid {pid} uses a different cgroup namespace; name its container or cgroup instead")
+        raise targets_mod.TargetError(
+            f"pid {pid} uses a different cgroup namespace or its identity is unreadable; "
+            "name its container or cgroup instead"
+        )
     text = util.read_text(os.path.join(process_dir, "cgroup"))
     path = targets_mod._unified_cgroup_path(text or "")
     if path is None or not path.startswith("/"):
-        _err(f"pid {pid} has no absolute unified cgroup path in the caller's proc view")
+        raise targets_mod.TargetError(
+            f"pid {pid} has no absolute unified cgroup path in the caller's proc view"
+        )
     components = [] if path == "/" else path[1:].split("/")
     if any(part in ("", ".", "..") for part in components):
-        _err(f"pid {pid} has an unsafe cgroup path in the caller's proc view")
+        raise targets_mod.TargetError(f"pid {pid} has an unsafe cgroup path in the caller's proc view")
     return path
+
+
+def _helper_pid_identity(pid: int) -> tuple[str, str]:
+    """Capture caller-proc facts the helper can match without guessing a host PID."""
+    proc_root = access.PROC_ROOT
+    start_before = targets_mod.proc_start_time_ticks(pid, proc_root)
+    pid_namespace = access.namespace_inode(pid, "pid", proc_root)
+    cgroup_namespace = access.namespace_inode(pid, "cgroup", proc_root)
+    namespace_numbers = targets_mod.proc_namespace_numbers(pid, proc_root)
+    namespace_pid = (
+        namespace_numbers[-1]
+        if namespace_numbers and namespace_numbers[0] == pid else None
+    )
+    cgroup_path = _helper_pid_cgroup_path(pid)
+    start_after = targets_mod.proc_start_time_ticks(pid, proc_root)
+    if (
+        start_before is None or start_after != start_before
+        or pid_namespace is None or cgroup_namespace is None
+        or namespace_pid is None
+        or cgroup_namespace != access.local_namespace_inode("cgroup")
+    ):
+        raise targets_mod.TargetError(
+            f"pid {pid} process identity changed or is incomplete in the caller's proc view; "
+            "cannot transfer it to the helper safely"
+        )
+    return cgroup_path, f"{pid_namespace}:{namespace_pid}:{start_before}:{cgroup_namespace}"
 
 
 def _limits_snapshot(limits_mod, eff) -> Dict[str, object]:
@@ -296,9 +332,12 @@ def cmd_collect(args: argparse.Namespace) -> int:
                            create=True)
     root = access.CGROUP_ROOT
 
-    resolved = targets_mod.resolve_all(args.target, root, default_follow=args.follow_children)
+    resolved = targets_mod.resolve_all(
+        args.target, root, default_follow=args.follow_children,
+        proc_root=access.PROC_ROOT,
+    )
     observers = targets_mod.resolve_all(args.observe, root, default_follow=False,
-                                        role="observer") if args.observe else []
+                                        role="observer", proc_root=access.PROC_ROOT) if args.observe else []
     for target in observers:
         target.role = "observer"
     all_targets = resolved + observers
@@ -372,7 +411,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
             }
         }
         procs = {
-            str(t.pid): metrics_mod.sample_proc(t.pid)
+            str(t.pid): metrics_mod.sample_proc(t.pid, proc_root=access.PROC_ROOT)
             for t in all_targets
             if t.pid
         }

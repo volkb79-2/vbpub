@@ -1729,3 +1729,36 @@ not accepted as final R3 evidence. The P1 R2/R3 lane definitions now declare
 code. The refreshed exact-tree gate must separately confirm
 `NanoCpus=3000000000`. This closes the post-launch update race without
 changing test verdict semantics; see RW-323 in the controller log.
+
+## Focused follow-up — helper-mode PID identity (2026-09-25)
+
+The helper translation for public `pid:N` now carries the selected process's
+PID namespace inode, innermost `NSpid`, proc stat start time, and cgroup
+namespace inode alongside its validated cgroup-namespace-relative path. The
+helper resolves those facts only among positive PIDs whose proc cgroup path
+maps to that exact container/subpath. It creates a `kind="pid"` target only
+for one unique match; a missing or ambiguous match raises `TargetError` before
+the collector starts. `cmd_collect` passes the selected proc root explicitly
+to target resolution and per-process sampling, and DAMON vaddr targets use the
+resolved helper-view PID.
+
+The regression fixture uses separate private caller/helper PID and cgroup
+views: caller PID 4242 maps to helper proc PID 51001 while
+`cgroup.procs` exposes only PID 0 for host processes. The collector test
+asserts the exact selected cgroup, the helper proc sample for PID 51001, and
+DAMON's `vaddr` PID 51001. A companion case moves the matching process to a
+sibling cgroup and asserts the selected subpath refuses the mapping.
+
+Focused verification, serial and load-niced:
+
+```text
+nice -n 19 ionice -c 3 /home/vscode/.venv/bin/python -m pytest -q \
+  tests/test_access.py tests/test_targets.py tests/test_helper_pid_target.py
+220 passed in 2.18s
+```
+
+The broader `tests/test_cgprofile.py` run could not collect because the estate
+venv lacks optional `pandas` (`ModuleNotFoundError` while importing
+`lib.analyze`); NumPy is present. The helper regression and target/access tests
+above ran and passed. No Docker, daemon, registered gate, or host-namespace
+probe was run for this follow-up.

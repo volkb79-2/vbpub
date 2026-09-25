@@ -154,6 +154,40 @@ class TestSameCgroupNamespace:
         assert access.same_cgroup_namespace(4242, "/missing/proc") is False
 
 
+class TestNamespaceInodes:
+    def test_namespace_inode_reads_only_supported_namespaces(self, monkeypatch, tmp_path: Path):
+        namespace = tmp_path / "proc" / "4242" / "ns" / "pid"
+        monkeypatch.setattr(
+            access.os, "stat", lambda path: SimpleNamespace(st_ino=77 if path == str(namespace) else 0),
+        )
+
+        assert access.namespace_inode(4242, "pid", str(tmp_path / "proc")) == 77
+        assert access.namespace_inode(4242, "net", str(tmp_path / "proc")) is None
+        assert access.namespace_inode(0, "pid", str(tmp_path / "proc")) is None
+
+    def test_namespace_inode_refuses_missing_proc_metadata(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setattr(
+            access.os, "stat", lambda path: (_ for _ in ()).throw(FileNotFoundError(path)),
+        )
+
+        assert access.namespace_inode(4242, "cgroup", str(tmp_path / "proc")) is None
+
+    def test_local_namespace_inode_reads_current_namespace(self, monkeypatch):
+        monkeypatch.setattr(
+            access.os, "stat", lambda path: SimpleNamespace(st_ino=88 if path == "/proc/self/ns/pid" else 0),
+        )
+
+        assert access.local_namespace_inode("pid") == 88
+        assert access.local_namespace_inode("net") is None
+
+    def test_local_namespace_inode_refuses_missing_metadata(self, monkeypatch):
+        monkeypatch.setattr(
+            access.os, "stat", lambda path: (_ for _ in ()).throw(PermissionError(path)),
+        )
+
+        assert access.local_namespace_inode("cgroup") is None
+
+
 # ── cgroup_root_is_writable ──────────────────────────────────────────────────
 
 class TestCgroupRootIsWritable:
