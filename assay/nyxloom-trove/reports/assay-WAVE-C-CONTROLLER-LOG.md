@@ -304,7 +304,7 @@ The gate log and this result entry are report-only additions after the passing
 code-tip gate. The tested source tip remains `09d1f38d`.
 
 
-## P4 — B100 `assay analyze report` (review and gate pending)
+## P4 — B100 `assay analyze report` (review READY; gate PASS)
 
 P4 is in CIU worktree `/workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report`,
 branch `assay-wave-c-p4-b100-report`, CIU id `9fcfcc`, created from the
@@ -333,5 +333,22 @@ Focused verification after the first adversarial review found boundary cases:
   differential-checked the oversized-record framer against 5,000 generated
   or mutated JSON documents and 18 explicit syntax cases; no remaining
   blockers.
-- Registered detached `./run-gate.py tester-unified` on the committed code
-  tip: pending.
+- Registered detached `./run-gate.py tester-unified` passed on exact code tip
+  `7859057f802640e905497f0132cc802212e07c41`. It started at approximately
+  2026-09-25 10:37:54 UTC and completed at approximately 10:53 UTC. At the
+  required 90-second check, six of twelve phase markers had passed and the
+  gate was progressing; the estimate was 18–25 minutes. All twelve phase
+  markers later appeared, including the Topos and CMRU qualifications, and
+  the self-hosted lane passed. Exit evidence: `ASSAY_GATE_CONTAINER_EXIT=0`,
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, lane exit 0, and `GATE_EXIT=0`.
+- Container `run-gate-assay-selfhosted-4171085-30356-1790332674` ran under
+  `dev-gates.slice`. The nested gate container was capped at 3 CPUs with
+  `docker update --cpus=3`; the limit was verified in Docker's `NanoCpus`
+  field. The container was removed after completion. The optional
+  `cgprofile-host-daemon` was unavailable, so run-gate reported coarse rusage
+  sampling; this did not affect the gate result.
+- The raw output is preserved at
+  [`assay-WAVE-C-P4-gate-2026-09-25-7859057f.log`](assay-WAVE-C-P4-gate-2026-09-25-7859057f.log),
+  SHA-256 `a12909d52a86e5e17d334b1584daba4bb61bb1f744ca633b2dfab8754edf11fe`.
+  The log and this result entry are report-only additions after the passing
+  code-tip gate; the tested source tip remains `7859057f`.

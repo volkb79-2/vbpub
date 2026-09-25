@@ -139,7 +139,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B025 — unresolvable infrastructure refusals lack their own verdict — DONE (P2 closes the final attestation-timeout oracle; merged at `130ba5ba`)
 - B095 — monitor hot-loop cost / unbounded CPU history — DONE (P3 independent review READY and tester-unified PASS on `09d1f38d`)
 - B076 — unbounded R2 baseline has no bound — RULED (A-457; caller-watched, with documentation)
-- B100 — bounded operator report for live gate progress/verdicts — IMPLEMENTED in P4; independent review and tester-unified gate pending
+- B100 — bounded operator report for live gate progress/verdicts — DONE (P4 review READY; registered tester-unified PASS on `7859057f`; merged evidence recorded in the Wave C controller log)
 
 **Wave C P1 implemented (2026-09-24; independent review READY and authoritative gate PASS at `8823bfea`)**
 - B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation, independent review and tester-unified gate complete)
@@ -10208,7 +10208,7 @@ refusal and protection against silent guard removal.
 
 ## B100 — bounded operator report for live gate progress, verdicts, errors, and retained evidence
 
-**Status: IN PROGRESS (Wave C P4) — `assay analyze report` is implemented on the isolated P4 branch; independent review and the registered tester-unified gate are pending.**
+**Status: DONE (Wave C P4; implementation `0624ab95`; independent review READY; registered tester-unified PASS on `7859057f`) — `assay analyze report` provides a read-only, bounded snapshot of commit-bound verdicts, progress, logs and retained evidence.**
 
 **Proposed by:** estate release review, 2026-09-19. The implementation adds
 the bounded snapshot alongside Assay's existing `analyze progress` and `analyze verdict`
