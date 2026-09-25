@@ -26,7 +26,7 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-  RW-47, RW-48, and RW-318..RW-324 bind this package), the
+  RW-47, RW-48, and RW-318..RW-327 bind this package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,
 `lib/serve.py`, `lib/store.py` changes, `cgprofile.py`, the shim, the
@@ -93,7 +93,7 @@ each claim against what you found; list claims you could not verify.
    contract-fixture identity test really compares bytes against
    `run-gate-project/nyxloom-trove/fixtures/rg55/`.
 9. **Rulings honored.** RW-3 one-liner present; RW-13/RW-15/RW-16 as ruled;
-   RW-19/RW-21/RW-23/RW-47/RW-48/RW-318..RW-324 recorded and reflected in
+   RW-19/RW-21/RW-23/RW-47/RW-48/RW-318..RW-327 recorded and reflected in
    code/tests and the exact gate-launch evidence; the prior P1 R2 terminal
    is `BUDGET_EXCEEDED/CANDIDATE_HUNG`, not a passing mutation result;
    the R2/R3 `resources.cpus = "3"` declarations must produce

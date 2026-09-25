@@ -4072,3 +4072,29 @@ changed-line line-and-branch bar. The next commit must add behavioral oracles
 for every changed branch; rerun exact-tip `r0-r1` and `r3` after that commit.
 No merge or Sol review is authorized by the failed gate. The contract mirror
 remains byte-identical.
+
+### RW-326 — 2026-09-25 12:30:19Z — detached CIU campaign identity is intentionally refused
+
+The reported `ciu worktree` refusal is not a new CIU behavior or a controller
+mutation. `.worktrees/rg55-p6-r2-ciu` is Git-detached at
+`aae66356bf3a65ef8b3ba7fa04a8042f2feee55c`, while its generated
+`ciu.worktree-instance.json` still claims branch `rg55-p6-r2-ciu`. CIU's
+`list_instance_records` cross-checks the recorded branch against Git and
+refuses a contradictory family identity by design. The checkout was detached
+to honor assay's exact-tree resume identity. Leave both checkout and generated
+record untouched; create the next CIU gate worktree from an isolated local
+clone with its own Git family. No CIU implementation or Docker network action
+is authorized by this ruling.
+
+### RW-327 — 2026-09-25 12:30:19Z — P1 helper-PID coverage repair is test-only
+
+Test-only commit `d201537328ba8574968e8e1e9ff1ab8ad931f1f5` adds deterministic
+oracles for missing/malformed proc facts, each PID/cgroup identity filter,
+PID reuse, ambiguous/absent matches, reserved-option misuse, and the
+caller-to-helper target conversion. Its load-niced focused run passed 260
+tests; branch-aware coverage measured `lib/targets.py` at 441/441 lines and
+220/220 branches, and all changed helper-PID lines/branches in `cgprofile.py`
+were covered. No implementation changed. The focused local run is not an
+authoritative package gate; after this ruling is committed, rerun P1 `r0-r1`
+and `r3` on the final exact tip with loaded-slice and 3-CPU evidence. The old
+R2 remains `BUDGET_EXCEEDED/CANDIDATE_HUNG` per RW-322.
