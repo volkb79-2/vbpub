@@ -4022,3 +4022,39 @@ RW-319. Because this config/report/log commit changes the tree, refresh both
 P1 short-gate receipts on its exact commit before review. The prior R2
 candidate-hung result remains incomplete under RW-322 and is not changed by
 this ruling.
+
+### RW-324 — 2026-09-25 11:34:01Z — resume P1 after interrupted Sol review
+
+The controller resumed from clean P1 worktree `rg55-p1-private-ns` at
+`f76f1f0154615547d8828a15e28f93a597915009`; main is
+`031c37ddc615545aa819e722e160c877d84157ea`. This candidate includes the
+interrupted Sol review's two committed follow-ups (`e93a40fc` runtime project
+metadata in the image, `f76f1f01` corrected shared-cgroup attribution), but no
+round-3 report or verdict exists. These commits invalidate the earlier
+`ec288209` short-gate receipts, and main's Assay B100 merge requires current-
+main reconciliation before new registered evidence.
+
+The interrupted live review observed that helper-mode `pid:N` is translated
+to a container-id/subpath spec, which may lose the PID identity that enables
+per-process sampling and DAMON attribution. Treat this as an unresolved
+behavioral defect until an oracle proves the original `pid:N` identity is
+preserved across the private namespaces, or the target is rejected explicitly
+before sampling; silently broadening it to the whole container is forbidden.
+The next order is: reconcile P1 with current main; implement and test this
+bounded behavior; refresh exact-tip `r0-r1` and `r3` evidence with the live
+3-CPU/cgroup-parent checks; then continue the unfinished third Sol review
+round using rounds 1-2 and the interrupted findings. No P1 merge or release
+is implied by this ruling. The old P1 R2 at `1908316b` remains
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, not a pass; run the replacement in an
+isolated quiet CIU worktree after provisional integration, per RW-296.
+
+Safety note: the interrupted reviewer disconnected and removed
+`cgroup-profiler-1299a7-network` while `dstdns-devcontainer-vb` was attached
+to it. The devcontainer remains running with its other networks. The
+controller will not recreate the network or alter any pre-existing
+container/network attachment without an operator-directed, provenance-backed
+recovery; future live probes may mutate only uniquely named resources created
+by that probe, and must leave shared cockpit containers untouched. No file
+under `/workspaces/dstdns` was read or changed. No gate or mutation process is
+currently running; host memory `full avg10=0.00`, and host systemd confirms
+the `dev-gates.slice` unit is loaded with `CPUQuotaPerSecUSec=5s`.
