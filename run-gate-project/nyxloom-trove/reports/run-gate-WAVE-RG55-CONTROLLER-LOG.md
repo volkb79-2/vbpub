@@ -3971,3 +3971,15 @@ for the next candidate. Commit all repair and record changes before starting
 the next registered R2; then keep that exact tree quiet through R2 and final
 short gates. The mechanical outcome for `51198f2e` remains
 `FAIL/MUTANTS_SURVIVED`.
+
+### RW-321 — 2026-09-25 03:06:05Z — reconcile P1 to current main before long mutation
+
+Before launching its next long R2, the P1 worktree was found behind `main`
+(`b52dc9f8` versus `7f465669`). The intervening main diff was read and
+contained only the 61-line assay backlog entry in
+`assay/nyxloom-trove/4-backlog.md`; no P1 implementation code changed.
+Current main was merged cleanly into the P1 branch as `a3b4dc1c`, ensuring
+the source-backed gate picks up main's current assay tree. All short-gate and
+mutation evidence must now match the post-reconciliation commit; rerun both
+short gates before starting the new R2. This reconciles an already-settled
+candidate with main and does not reopen the P1 design decisions.

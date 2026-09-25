@@ -1328,3 +1328,16 @@ judged tree, no R2 evidence from `51198f2e` applies to the candidate: commit
 the repairs and records first, hold the new tip quiet, then run registered R2
 and the final short gates on that exact tip. Do not call this R2 a PASS or
 release evidence.
+
+### 28. Reconcile the current main tip before final P1 gates (2026-09-25)
+
+Before starting the next long R2, the controller found `main` had moved from
+`b52dc9f8` to `7f465669`. A read-only diff showed the intervening change was
+only the 61-line assay backlog entry in `assay/nyxloom-trove/4-backlog.md`;
+the P1 candidate did not yet contain that current main tip. Main was merged
+cleanly into `rg55-p1-private-ns`, producing `a3b4dc1c`. This also carries
+main's current assay source into the source-backed gate environment. The P1
+implementation and regression tests were unchanged by the merge, but the
+registered P1 R2 must judge the exact post-reconciliation tree. The earlier
+short-gate receipts on `3e6e657e` are not the final receipts: rerun r0-r1 and
+r3 on the final committed tip, then launch R2 on that same quiet tip.
