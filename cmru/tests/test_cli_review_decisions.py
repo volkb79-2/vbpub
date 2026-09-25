@@ -118,6 +118,135 @@ def test_transaction_child_environment_needs_registered_isolated_worktree(
         transaction.is_transaction_child(source)
 
 
+def _transaction_child_context(monkeypatch, tmp_path, *, branch="cmru-release-child", record=None,
+                               child_top=None, source_top=None, child_common=None,
+                               source_common=None, actual_branch=None, worktrees=None,
+                               discovery_error=None):
+    source = tmp_path / "source"
+    child = tmp_path / "child"
+    source.mkdir(exist_ok=True)
+    child.mkdir(exist_ok=True)
+    common = tmp_path / ".git"
+    child_common = child_common or common
+    source_common = source_common or common
+    child_top = child_top or child
+    source_top = source_top or source
+    actual_branch = actual_branch or branch
+    if record is False:
+        record = None
+    elif record is None:
+        record = SimpleNamespace(
+            purpose="cmru-release" if branch.startswith("cmru-release-") else "cmru-build",
+            branch=branch,
+            worktree_path=child,
+            source_git_root=source,
+            workspace_id="workspace-1",
+        )
+
+    class Shared:
+        def discover_git_context(self, path):
+            if discovery_error is not None:
+                raise discovery_error
+            if Path(path).resolve() == child.resolve():
+                return child_top, child_common, actual_branch, "a" * 40
+            return source_top, source_common, "main", "b" * 40
+
+        def list_git_worktrees(self, _path):
+            return worktrees if worktrees is not None else [
+                SimpleNamespace(path=child, is_primary=False, branch=branch),
+            ]
+
+        def find_workspace(self, *_args):
+            return record
+
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: Shared())
+    monkeypatch.setenv(transaction.CHILD_ENV, "1")
+    monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
+    monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
+    monkeypatch.setenv(transaction.BRANCH_ENV, branch)
+    monkeypatch.setenv("CMRU_WORKSPACE_ID", "workspace-1")
+    return source, child
+
+
+@pytest.mark.parametrize(
+    "branch,record",
+    [
+        ("cmru-release-child", "matching"),
+        ("cmru-build-child", False),  # registered legacy worktree without a shared record
+    ],
+)
+def test_transaction_child_accepts_registered_matching_release_and_build_worktrees(
+    monkeypatch, tmp_path, branch, record,
+):
+    if record == "matching":
+        record = SimpleNamespace(
+            purpose="cmru-release", branch=branch,
+            worktree_path=tmp_path / "child", source_git_root=tmp_path / "source",
+            workspace_id="workspace-1",
+        )
+    source, child = _transaction_child_context(
+        monkeypatch, tmp_path, branch=branch, record=record,
+    )
+    assert transaction.is_transaction_child(child) is True
+
+
+@pytest.mark.parametrize(
+    "changes, message",
+    [
+        ({"missing": "CMRU_WORKSPACE_PATH"}, "incomplete CMRU transaction child context"),
+        ({"expected_path": "wrong"}, "does not match the loaded repository root"),
+        ({"discovery_error": OSError("not a worktree")}, "invalid CMRU transaction child worktree"),
+        ({"child_top": "wrong"}, "do not resolve to Git worktree roots"),
+        ({"child_common": "other-git"}, "different Git family"),
+        ({"actual_branch": "cmru-release-other"}, "branch mismatch"),
+        ({"actual_branch": "main", "expected_branch": "main"}, "branch is not managed"),
+        ({"primary": True}, "not a registered secondary worktree"),
+        ({"purpose": "ciu-build"}, "not a CMRU release transaction"),
+        ({"record_branch": "cmru-release-other"}, "shared transaction record does not match"),
+        ({"record_path": "wrong"}, "shared transaction record does not match"),
+        ({"record_source": "wrong"}, "shared transaction record has a different source root"),
+        ({"record_id": "other"}, "workspace ID does not match its record"),
+    ],
+)
+def test_transaction_child_rejects_each_untrusted_routing_fact(
+    monkeypatch, tmp_path, changes, message,
+):
+    branch = changes.get("expected_branch", "cmru-release-child")
+    source = tmp_path / "source"
+    child = tmp_path / "child"
+    source.mkdir()
+    child.mkdir()
+    record = SimpleNamespace(
+        purpose=changes.get("purpose", "cmru-release"),
+        branch=changes.get("record_branch", branch),
+        worktree_path=(tmp_path / changes["record_path"] if "record_path" in changes else child),
+        source_git_root=(tmp_path / changes["record_source"] if "record_source" in changes else source),
+        workspace_id="workspace-1",
+    )
+    worktrees = (
+        [SimpleNamespace(path=child, is_primary=True, branch=branch)]
+        if changes.get("primary") else None
+    )
+    child_top = tmp_path / changes["child_top"] if "child_top" in changes else None
+    child_common = tmp_path / changes["child_common"] if "child_common" in changes else None
+    source_common = tmp_path / changes["source_common"] if "source_common" in changes else None
+    _transaction_child_context(
+        monkeypatch, tmp_path, branch=branch, record=record, child_top=child_top,
+        child_common=child_common, source_common=source_common,
+        actual_branch=changes.get("actual_branch"), worktrees=worktrees,
+        discovery_error=changes.get("discovery_error"),
+    )
+    if "missing" in changes:
+        monkeypatch.delenv(changes["missing"])
+    if changes.get("expected_path") == "wrong":
+        monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(tmp_path / "elsewhere"))
+    if changes.get("record_id") == "other":
+        monkeypatch.setenv("CMRU_WORKSPACE_ID", "other")
+
+    with pytest.raises(RuntimeError, match=message):
+        transaction.is_transaction_child(child)
+
+
 def test_repack_is_rejected_before_external_side_effects(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         "cmru.handlers.subprocess.run",

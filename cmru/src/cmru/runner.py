@@ -2,7 +2,6 @@
 """Generic execution engine for the strict project-local ``cmru.toml`` grammar."""
 from __future__ import annotations
 
-import argparse
 import os
 import re
 import shlex
@@ -601,10 +600,6 @@ def run_step(project_config_path: Path, step_name: str) -> None:
         extra_env=project.env,
         build_metadata=project.build_metadata,
     )
-
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    return runner_cli().parser
 
 
 def runner_cli():

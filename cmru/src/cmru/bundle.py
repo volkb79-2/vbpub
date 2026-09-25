@@ -444,11 +444,6 @@ def bundle_cli():
     return registry.build()
 
 
-def build_arg_parser():
-    """Compatibility accessor for the parser generated from the bundle grammar."""
-    return bundle_cli().parser
-
-
 def _run_bundle_cli(args, _runtime) -> int:
     if args.dry_run:
         config = parse_config(Path(args.config).expanduser().resolve())
