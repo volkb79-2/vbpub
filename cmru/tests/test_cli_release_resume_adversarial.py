@@ -29,6 +29,7 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     monkeypatch.setattr(cli.transaction, "resume_workspace", lambda *args: workspace)
+    monkeypatch.setattr(cli.transaction, "assert_resume_workspace_committed", lambda _path: None)
     calls = []
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: calls.append("copy"))
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: calls.append(("child", args[1], kwargs)) or 0)

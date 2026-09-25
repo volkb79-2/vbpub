@@ -55,7 +55,8 @@ def test_release_dry_run_reports_no_changed_projects_without_transaction_side_ef
     monkeypatch.setattr(version, "detect_changed_projects", lambda *_, **__: [])
     calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append((args, kwargs)))
-    cli.main(["release", "--dry-run", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["release", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
     assert calls[0][1]["dry_run"] is True
     assert "project_filter" not in calls[0][1]
     output = capsys.readouterr().out

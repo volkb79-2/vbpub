@@ -64,8 +64,9 @@ def test_dry_run_prepares_external_version_before_plan(monkeypatch, tmp_path, ca
     )
     monkeypatch.setattr(version, "release_cmd", lambda *_args, **_kwargs: events.append("preview"))
 
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
     cli.main([
-        "release", "--_transaction-child", "--dry-run", "--config", str(config_path)
+        "release", "--dry-run", "--config", str(config_path)
     ])
 
     assert events == ["prepare", "commit", "plan:PWMCP_VERSION=1.61.2-r3", "preview"]

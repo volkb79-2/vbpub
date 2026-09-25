@@ -70,10 +70,39 @@ def _registered_surfaces(registry, prefix: str):
             yield path, parser
 
 
-def _inventory() -> dict[str, tuple[str, set[str]]]:
+def _registered_surface_groups(registry, prefix: str):
+    """Return the cli-extended semantic group attached to each rendered leaf."""
+    catalog = registry.parser.catalog
+    if not registry.command_parsers:
+        group = catalog.verbs[0].group if catalog and catalog.verbs else "STANDALONE COMMAND"
+        yield prefix, group
+        return
+
+    groups = {
+        verb.name: verb.group
+        for verb in (catalog.verbs if catalog is not None else ())
+    }
+    for name in registry.command_parsers:
+        path = f"{prefix} {name}"
+        child = registry.delegates.get(name)
+        if child is not None and child.command_parsers:
+            yield from _registered_surface_groups(child, path)
+        elif child is not None:
+            # A single-command delegate is an implementation detail of this
+            # top-level verb; the parent verb owns its help-catalog group.
+            yield path, groups.get(name, "")
+        else:
+            yield path, groups.get(name, "")
+
+
+def _inventory() -> dict[str, tuple[str, str, set[str]]]:
     return {
-        surface: (arguments, set() if options == "—" else set(options.split("; ")))
-        for surface, arguments, options in _marked_table(
+        surface: (
+            group,
+            arguments,
+            set() if options == "—" else set(options.split("; ")),
+        )
+        for surface, group, arguments, options in _marked_table(
             "<!-- cmru-cli-grammar:start -->", "<!-- cmru-cli-grammar:end -->"
         )
     }
@@ -93,21 +122,25 @@ def test_spec_cli_inventory_matches_registered_surfaces_and_options():
     controller_flags = common["cmru-controller"]
 
     actual = {}
-    for surface, parser in _registered_surfaces(build_cmru_cli(), "cmru"):
-        actual[surface] = ("CMRU and CMRU module adapters", parser)
-    for surface, parser in _registered_surfaces(build_agent_cli(), "cmru-agent"):
-        actual[surface] = ("cmru-agent", parser)
-    for surface, parser in _registered_surfaces(build_controller_cli(), "cmru-controller"):
-        actual[surface] = ("cmru-controller", parser)
+    for registry, prefix, family in (
+        (build_cmru_cli(), "cmru", "CMRU and CMRU module adapters"),
+        (build_agent_cli(), "cmru-agent", "cmru-agent"),
+        (build_controller_cli(), "cmru-controller", "cmru-controller"),
+    ):
+        groups = dict(_registered_surface_groups(registry, prefix))
+        for surface, parser in _registered_surfaces(registry, prefix):
+            actual[surface] = (family, parser, groups[surface])
 
     # These are executable module-only adapters in addition to the installed
     # console scripts. Their actual registries are the source of their grammar.
-    for surface, parser in _registered_surfaces(bundle_cli(), "python -m cmru.bundle"):
-        actual[surface] = ("CMRU and CMRU module adapters", parser)
-    for surface, parser in _registered_surfaces(runner_cli(), "python -m cmru.runner"):
-        actual[surface] = ("CMRU and CMRU module adapters", parser)
-    for surface, parser in _registered_surfaces(handlers_cli(), "python -m cmru.handlers"):
-        actual[surface] = ("CMRU and CMRU module adapters", parser)
+    for registry, prefix in (
+        (bundle_cli(), "python -m cmru.bundle"),
+        (runner_cli(), "python -m cmru.runner"),
+        (handlers_cli(), "python -m cmru.handlers"),
+    ):
+        groups = dict(_registered_surface_groups(registry, prefix))
+        for surface, parser in _registered_surfaces(registry, prefix):
+            actual[surface] = ("CMRU and CMRU module adapters", parser, groups[surface])
 
     inventory = _inventory()
     assert set(inventory) == set(actual), (
@@ -116,8 +149,11 @@ def test_spec_cli_inventory_matches_registered_surfaces_and_options():
         f"stale={sorted(set(inventory) - set(actual))}"
     )
 
-    for surface, (family, parser) in actual.items():
-        arguments, local_options = inventory[surface]
+    for surface, (family, parser, group) in actual.items():
+        documented_group, arguments, local_options = inventory[surface]
+        assert documented_group == group, (
+            f"{surface}: SPEC help group {documented_group!r} differs from registered {group!r}"
+        )
         assert arguments == _argument_shape(parser), (
             f"{surface}: SPEC positional shape {arguments!r} does not match "
             f"registered {_argument_shape(parser)!r}"
@@ -166,7 +202,7 @@ def test_semantic_audit_covers_every_inventory_surface_and_option():
     assert set(inventory) <= set(by_surface), (
         "semantic audit lacks surfaces: " + ", ".join(sorted(set(inventory) - set(by_surface)))
     )
-    for surface, (_arguments, options) in inventory.items():
+    for surface, (_group, _arguments, options) in inventory.items():
         mentioned = set(re.findall(r"--[A-Za-z0-9_-]+", by_surface[surface]))
         assert options <= mentioned, (
             f"{surface}: semantic result omits options "
@@ -188,6 +224,6 @@ def test_semantic_audit_covers_every_inventory_surface_and_option():
 
 def test_user_facing_cli_docs_link_to_the_canonical_spec_anchor():
     spec = SPEC.read_text(encoding="utf-8")
-    assert '<a id="s-cli-grammar-audit"></a>' in spec
+    assert "### S-CLI.9: Canonical CLI grammar and semantic audit" in spec
     for path in (SPEC.parents[1] / "README.md", SPEC.parent / "DESIGN-GUIDE.md"):
-        assert "#s-cli-grammar-audit" in path.read_text(encoding="utf-8"), path
+        assert "#s-cli9-canonical-cli-grammar-and-semantic-audit" in path.read_text(encoding="utf-8"), path

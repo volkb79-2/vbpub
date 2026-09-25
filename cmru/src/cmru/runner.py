@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -64,6 +65,46 @@ def resolve_path(base: Path, raw: str) -> Path:
     if path.is_absolute():
         return path
     return (base / path).resolve()
+
+
+def render_step_plan(step: StepConfig, project_root: Path) -> list[str]:
+    """Describe a step's declared effects without running its helpers or commands.
+
+    Environment commands may compute values at runtime, so a dry-run names that
+    unresolved input instead of executing it and pretending to know its output.
+    The same formatter is used by run, run-step, build, and publish.
+    """
+    lines = [f"Would run declared step {step.name} from {project_root}"]
+    for relative in step.clean_dirs:
+        lines.append(f"Would remove {resolve_path(project_root, str(relative))}")
+    if step.env_command:
+        lines.append(
+            "Would resolve dynamic environment with: "
+            + shlex.join(step.env_command)
+            + " (not executed during dry-run)"
+        )
+    if step.required_env:
+        lines.append("Requires environment variables: " + ", ".join(step.required_env))
+    if step.login:
+        lines.append(f"Would log in to configured registry: {step.login.get('registry', '(configured)')}")
+    if step.bake_set_prefix and step.bake_set_vars:
+        lines.append(
+            "May append build arguments from environment variables: "
+            + ", ".join(step.bake_set_vars)
+        )
+    if step.no_cache_env:
+        lines.append(f"May append --no-cache when {step.no_cache_env}=1")
+    if step.step_env:
+        lines.append("Sets step environment keys: " + ", ".join(sorted(step.step_env)))
+    for command in step.commands:
+        if not isinstance(command, dict) or not command.get("argv") or not command.get("cwd"):
+            raise ValueError(f"Step '{step.name}' contains an invalid command")
+        cwd = resolve_path(project_root, str(command["cwd"]))
+        lines.append(
+            f"{command.get('label') or 'command'}: cwd={cwd}; "
+            f"argv={shlex.join([str(item) for item in command['argv']])}"
+        )
+    return lines
 
 
 def _git_out(start: Path, *args: str) -> Optional[str]:
@@ -592,6 +633,7 @@ def runner_cli():
             OptionSpec(("--step",), "step name to execute", metavar="NAME", parser_kwargs={"required": True}),
             OptionSpec(("--show-run-details",), "stream full subprocess output to this console", parser_kwargs={"action": "store_true", "default": False}),
             OptionSpec(("--log-append",), "append a divider and retain the stable step log", parser_kwargs={"action": "store_true", "default": False}),
+            OptionSpec(("--dry-run",), "show step commands and file cleanup without executing them", parser_kwargs={"action": "store_true", "default": False}),
         ),
         include_json=False,
         include_progress=False,
@@ -636,6 +678,18 @@ def _run_step_cli(args, _runtime) -> int:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
     if len(names) != 1:
         raise CliFailure("run-step requires exactly one project target", exit_code=2, show_help=True)
+    if args.dry_run:
+        project = projects[names[0]]
+        step = (project.runner_steps or {}).get(args.step)
+        if step is None:
+            raise CliFailure(
+                f"{names[0]}: step {args.step!r} is not declared",
+                exit_code=2, show_help=False,
+            )
+        project_root = project.project_root
+        for line in render_step_plan(step, project_root):
+            print(f"[DRY RUN] {names[0]}:{args.step}: {line}")
+        return 0
     forge = load_forge_config(config_path)
     project_path = (
         forge.orchestration.project_configs[names[0]]

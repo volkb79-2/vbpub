@@ -213,14 +213,16 @@ def test_changelog_backfill_dispatches_to_the_migration_helper(tmp_path, monkeyp
     monkeypatch.setattr(
         cmru.changelog,
         "backfill_release_changelog",
-        lambda root, configured_project, tag: calls.append((root, configured_project, tag)) or True,
+        lambda root, configured_project, tag, *, dry_run=False: calls.append(
+            (root, configured_project, tag, dry_run)
+        ) or True,
     )
 
     cli.main([
         "changelog", "alpha", "--config", str(config), "--backfill-tag", "alpha-v1.0.0",
     ])
 
-    assert calls == [(tmp_path, project, "alpha-v1.0.0")]
+    assert calls == [(tmp_path, project, "alpha-v1.0.0", False)]
 
 
 def test_load_config_rejects_retired_config_keys(tmp_path):
@@ -606,7 +608,7 @@ def test_cleanup_uses_current_directory_orchestration_without_a_shim(tmp_path, m
 
     cli.main(["cleanup", "--discard-build-worktree", str(target), "--yes"])
 
-    assert calls == [(tmp_path, target, False)]
+    assert calls == [(tmp_path, target, True), (tmp_path, target, False)]
 
 
 def test_source_module_invocation_works_from_the_cmru_project_directory():
@@ -648,12 +650,21 @@ def test_fresh_checkout_bootstrap_is_the_only_source_build_launcher():
     assert 'CMRU_WHEEL_BUILDER_IMAGE' in source
 
 
-def test_cleanup_delete_unmanaged_release_requires_confirmation(tmp_path):
+def test_cleanup_delete_unmanaged_release_previews_then_refuses_without_confirmation(
+    tmp_path, monkeypatch, capsys,
+):
     cfg_path = _valid_config(tmp_path)
+    monkeypatch.setattr(
+        cli, "load_json",
+        lambda _url, _token: ([{"id": 42, "tag_name": "alpha-wheel-latest"}], {}),
+    )
     assert cli.main([
         "cleanup", "alpha", "--config", str(cfg_path),
         "--delete-unmanaged-release-tag", "alpha-wheel-latest",
     ]) == 2
+    output = capsys.readouterr()
+    assert "Would delete unmanaged GitHub Release alpha-wheel-latest" in output.out
+    assert "confirmation is required" in output.err
 
 
 def test_cleanup_delete_unmanaged_release_is_project_scoped_and_dry_runnable(tmp_path, monkeypatch):

@@ -78,6 +78,7 @@ cmru abandon --dry-run            # inspect exact retained release candidates, n
 cmru abandon <branch> --yes       # abandon exactly the named verified candidate
 cmru dependencies                 # show + preflight the project dependency graph
 cmru dependencies --write         # refresh its generated root-TOML comment block
+cmru run ciu --dry-run            # preview selected/default steps and commands
 cmru tool-deps                    # verify declared tool dependencies: integrity/authenticity/freshness
 cmru tool-deps --allow-stale-tool-deps   # proceed despite a stale (behind-latest) pin
 cmru tool-deps --refresh <provider-project>  # deliberate external/copy artifact re-vendor + pin/hash update
@@ -86,7 +87,8 @@ cmru versions resolve [all|P[,P...]] [--dry-run] # resolve eligible versions and
 cmru versions check [all|P[,P...]] [--json]      # read-only comparison with fresh registry state
 cmru publish <name>               # low-level caller-worktree push step
 cmru resolve <name>               # resolve the current "latest" (version/tag/url/sha256)
-cmru cleanup --remove-assets 30d  # prune configured GitHub Releases/tags and GHCR versions
+cmru cleanup --remove-assets 30d --dry-run  # preview age-based remote cleanup
+cmru cleanup --remove-assets 30d --yes      # apply the reviewed cleanup actions
 cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run
 cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --yes
 cmru cleanup ciu --delete-build-output <commit-date>_<commit> --dry-run
@@ -100,11 +102,13 @@ cmru --help                       # generated verb catalog; use `cmru help <verb
 These are representative operator workflows. The complete registered grammar,
 including `cmru-agent`, `cmru-controller`, nested handler verbs, module
 adapters, every option, and the required semantic review table, is maintained
-in the [canonical CLI spec](docs/SPEC.md#s-cli-grammar-audit).
+in the [canonical CLI spec](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
 
 `cleanup` applies the configured remote asset policy: GitHub Release records and their
-assets, release tags covered by that policy, and GHCR package versions. It does not remove a
-retained local release transaction or its `cmru-release-*` candidate branch. `abandon` is
+assets, release tags covered by that policy, and GHCR package versions. Every mutating cleanup
+mode first displays pending actions and asks for confirmation; `--yes` accepts that displayed
+set, and `--dry-run` stops after the preview. Cleanup does not remove a retained local release
+transaction or its `cmru-release-*` candidate branch. `abandon` is
 that separate lifecycle operation: it shows the exact scope, worktree, and remote candidate
 ref before confirmation, rejects evidence of publication or promotion, and keeps its refusal
 closed when the transaction metadata or origin state is unclear. `--dry-run` performs no
@@ -151,8 +155,9 @@ including when `--allow-uncommitted` was used; see the [caller-main cleanup guid
 and normative [S-CLI.5a](docs/SPEC.md#s-cli5a--projects-release-one-after-another-not-in-a-shared-batch).
 
 `cleanup --delete-unmanaged-release-tag TAG` is deliberately narrow migration maintenance:
-it requires a project scope and `--yes` (or `--dry-run`), accepts only that project's
-namespace, deletes the exact GitHub Release, and leaves its Git tag untouched. It cannot
+it selects one project, accepts only that project's namespace, displays the exact GitHub
+Release, then asks for confirmation unless `--yes` was supplied. It leaves the Git tag
+untouched. It cannot
 be mistaken for policy cleanup of normal immutable `<project>-v<semver>` releases.
 
 ## Logging and live diagnostics
@@ -271,8 +276,7 @@ always aborts with a named remedy. If a verified tag's commit is exactly the sna
 that's the ordinary state right after a completed release: cmru reports it and moves on, never
 an error. Only a tag strictly *ahead* of the snapshot — pushed, but not yet in this snapshot's
 history, almost always a half-completed prior release — aborts with a named remedy
-(`--allow-tag-ahead-of-head` downgrades only that one deliberately; `--allow-tag-at-head` is a
-deprecated alias). Any such plan-time refusal is a clean, typed failure that discards the
+(`--allow-tag-ahead-of-head` downgrades only that one deliberately). Any such plan-time refusal is a clean, typed failure that discards the
 just-created worktree — never retains it, since no project's cycle ever started. In the
 transaction worktree, cmru runs each changed project's required `run-tests` gate, then
 fast-forwards `origin/main` from the validated branch before creating tags or publishing.

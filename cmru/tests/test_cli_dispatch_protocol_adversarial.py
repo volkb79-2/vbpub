@@ -75,10 +75,10 @@ def test_status_dispatch_selects_orchestrated_project_and_forwards_version_flags
     monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     calls = []
     monkeypatch.setattr("cmru.version.status_cmd", lambda root, projects, **kwargs: calls.append((root, projects, kwargs)))
-    cli.main(["status", "--config", str(cfg), "demo", "--major", "--set-version", "2.0.0"])
+    cli.main(["status", "--config", str(cfg), "demo", "--major"])
     assert calls[0][1]["demo"].name == project.name
     assert calls[0][1]["demo"].project_root == tmp_path
-    assert calls[0][2] == {"minor": False, "major": True, "set_version": "2.0.0", "ref": "HEAD"}
+    assert calls[0][2] == {"minor": False, "major": True, "set_version": None, "ref": "HEAD"}
 
 
 def test_status_dispatch_forwards_a_custom_ref(monkeypatch, tmp_path):
@@ -103,7 +103,8 @@ def test_build_transaction_child_dispatches_isolated_phases_without_transaction(
     monkeypatch.setattr(cli, "apply_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_run_isolated_build_projects", lambda root, configs, names: calls.append((root, names)))
     calls = []
-    cli.main(["build", "--config", str(cfg), "demo", "--_transaction-child"])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["build", "--config", str(cfg), "demo"])
     assert calls == [(tmp_path, ["demo"])]
 
 

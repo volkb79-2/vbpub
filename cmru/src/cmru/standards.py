@@ -138,7 +138,9 @@ def _atomic_write(path: Path, contents: str) -> None:
             temporary.unlink()
 
 
-def _update_project_revision(config_path: Path) -> bool:
+def _update_project_revision(config_path: Path, *, dry_run: bool = False) -> bool:
+    import difflib
+
     contents = config_path.read_text(encoding="utf-8")
     section = re.compile(r"(?ms)^(\[project\]\n)(.*?)(?=^\[|\Z)")
     match = section.search(contents)
@@ -151,7 +153,14 @@ def _update_project_revision(config_path: Path) -> bool:
     changed = updated_body != body
     if changed:
         contents = contents[:match.start(2)] + updated_body + contents[match.end(2):]
-        _atomic_write(config_path, contents)
+        if dry_run:
+            print("".join(difflib.unified_diff(
+                config_path.read_text(encoding="utf-8").splitlines(keepends=True),
+                contents.splitlines(keepends=True),
+                fromfile=str(config_path), tofile=f"{config_path} (planned)",
+            )), end="", flush=True)
+        else:
+            _atomic_write(config_path, contents)
     return changed
 
 
@@ -187,6 +196,10 @@ def standards_cli():
             ),
             OptionSpec(
                 ("--update",), "update stale CMRU-owned revision markers",
+                parser_kwargs={"action": "store_true", "default": False},
+            ),
+            OptionSpec(
+                ("--dry-run",), "preview marker updates without writing them; requires --update",
                 parser_kwargs={"action": "store_true", "default": False},
             ),
         ),
@@ -230,6 +243,9 @@ def _run_standards(args, _runtime) -> int:
     except TargetSelectionError as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
 
+    if args.dry_run and not args.update:
+        raise CliFailure("standards --dry-run requires --update", exit_code=2, show_help=True)
+
     if args.update:
         changed = False
         for name in selected:
@@ -239,12 +255,16 @@ def _run_standards(args, _runtime) -> int:
                     f"{name}: project-local {PROJECT_CONFIG_FILENAME} is required for standards update"
                 )
             changed = _update_project_revision(
-                Path(project_path) / PROJECT_CONFIG_FILENAME
+                Path(project_path) / PROJECT_CONFIG_FILENAME,
+                dry_run=args.dry_run,
             ) or changed
-        if changed:
+        if changed and args.dry_run:
+            print("[DRY RUN] Marker updates were previewed; no files were written.", flush=True)
+        elif changed:
             print("[INFO] Updated CMRU-owned template revision marker(s).", flush=True)
         # Re-read to ensure a malformed update can never be reported as conformant.
-        repo_root, projects, project_order, *_ = load_config(config_path)
+        if not args.dry_run:
+            repo_root, projects, project_order, *_ = load_config(config_path)
 
     results = assess_projects(repo_root, projects, project_order, selected)
     problem_count = 0

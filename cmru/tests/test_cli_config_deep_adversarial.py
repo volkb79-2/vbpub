@@ -192,7 +192,7 @@ def test_controller_status_catalog_malformed_and_http_error_are_nonfatal_warning
 
 def test_controller_parser_exposes_all_global_and_subcommand_contracts():
     parser = controller_cli._build_parser()
-    args = parser.parse_args(["--landscape", "prod", "--dry-run", "publish", "--plan", "p.toml", "--generation-base", "7"])
+    args = parser.parse_args(["--landscape", "prod", "publish", "--plan", "p.toml", "--generation-base", "7", "--dry-run"])
     assert args.verb == "publish" and args.generation_base == 7 and args.dry_run is True
     args = parser.parse_args(["rollback", "--plan", "p.toml", "--to", "v1", "--generation", "4"])
     assert args.to_tag == "v1" and args.generation == 4

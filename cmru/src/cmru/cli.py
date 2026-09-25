@@ -261,9 +261,13 @@ def run_project_step(
         "CMRU_RELEASE_BRANCH", "CMRU_RELEASE_BASE",
     )
     has_transaction_context = bool(
-        os.environ.get(transaction.CHILD_ENV)
+        os.environ.get(transaction.CHILD_ENV) == "1"
         and os.environ.get("CMRU_WORKSPACE_PATH")
+        and os.environ.get("CMRU_SOURCE_GIT_ROOT")
+        and os.environ.get(transaction.BRANCH_ENV)
     )
+    if has_transaction_context:
+        has_transaction_context = transaction.is_transaction_child(repo_root)
     ambient_context = {key: os.environ.get(key) for key in context_keys}
     if not has_transaction_context:
         # A direct caller may have sourced a sibling's shell exports. Those
@@ -443,7 +447,15 @@ def load_config(
     # worktree before constructing executable commands.
     child_workspace = os.environ.get("CMRU_WORKSPACE_PATH")
     child_source_root = os.environ.get("CMRU_SOURCE_GIT_ROOT")
-    if os.environ.get(transaction.CHILD_ENV) and child_workspace and child_source_root:
+    child_context_valid = False
+    child_branch = os.environ.get(transaction.BRANCH_ENV)
+    if (
+        os.environ.get(transaction.CHILD_ENV) == "1"
+        and child_workspace and child_source_root and child_branch
+    ):
+        candidate_root = Path(child_workspace).expanduser().resolve()
+        child_context_valid = transaction.is_transaction_child(candidate_root)
+    if child_context_valid:
         execution_root = Path(child_workspace).expanduser().resolve()
         source_git_root = Path(child_source_root).expanduser().resolve()
     else:
@@ -451,7 +463,7 @@ def load_config(
         source_git_root = orchestration_root
     repo_root = execution_root
     transaction_scope = os.environ.get("CMRU_TRANSACTION_PROJECTS")
-    if transaction_scope and os.environ.get(transaction.CHILD_ENV):
+    if transaction_scope and child_context_valid:
         requested_names = [item for item in transaction_scope.split(",") if item]
         if not requested_names or len(set(requested_names)) != len(requested_names):
             raise ValueError("CMRU_TRANSACTION_PROJECTS must contain unique project names")
@@ -1279,8 +1291,38 @@ def _orchestrate(args=None) -> None:
     if args.validate:
         steps.append("validate")
 
-    if not steps and not args.remove_assets:
+    if not steps:
         steps = default_steps
+
+    if args.dry_run:
+        log_info(
+            "[DRY RUN] Run plan: "
+            + (", ".join(steps) if steps else "no project steps")
+            + f"; projects: {', '.join(selected_names) if selected_names else '(none)'}"
+        )
+        plan = []
+        if execution_mode == "project-first":
+            plan = [(project, step_name) for project in selected for step_name in steps]
+        else:
+            for step_name in steps:
+                ordered_names = step_project_order.get(step_name) or selected_names
+                for project_name in ordered_names:
+                    if project_name not in configs:
+                        raise ValueError(f"Unknown project in step_project_order: {project_name}")
+                    if project_name in selected_names:
+                        plan.append((configs[project_name], step_name))
+        from cmru.runner import render_step_plan
+        for project, step_name in plan:
+            step = (project.runner_steps or {}).get(step_name)
+            if step is None:
+                raise RuntimeError(
+                    f"{project.name}: required declared step {step_name!r} is absent"
+                )
+            project_root = resolve_cwd(repo_root, project.cwd or ".")
+            for line in render_step_plan(step, project_root):
+                log_info(f"[DRY RUN] {project.name}:{step_name}: {line}")
+        log_info("[DRY RUN] No project command was started.")
+        return
 
     if "push" in steps:
         require_project_publish_credentials(configs, selected_names)
@@ -1306,9 +1348,6 @@ def _orchestrate(args=None) -> None:
                 project = configs[project_name]
                 apply_project_release_env(github_config, env_config, project)
                 run_project_step(project, step, repo_root, log_dir)
-
-    if args.remove_assets:
-        remove_assets(args.remove_assets, args.dry_run, cleanup, github_config, env_config)
 
     log_info("Release manager complete")
 
@@ -2188,7 +2227,7 @@ def _dispatch(args, runtime):
                     )
 
 
-    elif verb in ("dependencies", "dependency-graph", "graph"):
+    elif verb == "dependencies":
         vargs = args
         cfg_path = _resolve_config(vargs.config)
         forge = load_forge_config(cfg_path)
@@ -2202,8 +2241,14 @@ def _dispatch(args, runtime):
         )
         if vargs.write:
             from cmru.dependencies import write_comment_block
-            write_comment_block(cfg_path, report)
-            print(f"[INFO] Wrote generated dependency graph to {cfg_path}")
+            if vargs.dry_run:
+                if not write_comment_block(cfg_path, report, dry_run=True):
+                    print(f"[INFO] Dependency graph already matches {cfg_path}")
+            else:
+                write_comment_block(cfg_path, report)
+                print(f"[INFO] Wrote generated dependency graph to {cfg_path}")
+        elif vargs.dry_run:
+            _usage_error("dependencies --dry-run requires --write")
         if vargs.json:
             print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
         else:
@@ -2222,11 +2267,25 @@ def _dispatch(args, runtime):
         apply_release_env(github_config, env_config)
         ordered = _ordered_configs(configs, project_order)
         names = _select_projects(cfg_path, vargs.target, configs, project_order)
-        if verb == "publish":
+        if verb == "publish" and not vargs.dry_run:
             require_project_publish_credentials(configs, names)
         step = "build" if verb == "build" else "push"
+        transaction_child = transaction.is_transaction_child(repo_root)
 
-        if verb == "build" and not vargs._transaction_child:
+        if vargs.dry_run:
+            log_info(f"[DRY RUN] Would run {step} for: {', '.join(names)}")
+            from cmru.runner import render_step_plan
+            for name in names:
+                project = configs[name]
+                step_config = (project.runner_steps or {}).get(step)
+                if step_config is None:
+                    raise RuntimeError(f"{name}: required declared step {step!r} is absent")
+                project_root = resolve_cwd(repo_root, project.cwd or ".")
+                for line in render_step_plan(step_config, project_root):
+                    log_info(f"[DRY RUN] {name}:{step}: {line}")
+            return
+
+        if verb == "build" and not transaction_child:
             dispatched = _dispatch_independent_git_families(
                 verb,
                 rest,
@@ -2373,12 +2432,17 @@ def _dispatch(args, runtime):
                 )
             tag = assignments[name]
             print(f"===== Changelog Project: {name.upper()} " + "=" * 25)
-            changed = backfill_release_changelog(repo_root, project, tag)
+            changed = backfill_release_changelog(
+                repo_root, project, tag, dry_run=vargs.dry_run,
+            )
             if changed:
-                log_info(
-                    f"{name}: backfilled {project.changelog} for {tag}; "
-                    "review and commit this post-release migration explicitly"
-                )
+                if vargs.dry_run:
+                    log_info(f"[DRY RUN] Would backfill {project.changelog} for {tag}")
+                else:
+                    log_info(
+                        f"{name}: backfilled {project.changelog} for {tag}; "
+                        "review and commit this post-release migration explicitly"
+                    )
             else:
                 log_info(f"{name}: {project.changelog} already records {tag}")
 
@@ -2387,13 +2451,11 @@ def _dispatch(args, runtime):
     elif verb in ("release", "status"):
         vargs = args
         _apply_output_options(vargs)
-        if "--allow-tag-at-head" in rest:
-            log_warn("--allow-tag-at-head is a deprecated alias; use --allow-tag-ahead-of-head.")
-
         cfg_path = _resolve_config(vargs.config)
         (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
         github_config, env_config = _rest[-2], _rest[-1]
-        if not vargs._transaction_child:
+        transaction_child = transaction.is_transaction_child(repo_root)
+        if not transaction_child:
             _configure_native_release_logging(repo_root, append=vargs.log_append)
         apply_release_env(github_config, env_config)
         # Restrict versioning verbs to the orchestrated set so un-migrated projects
@@ -2401,6 +2463,19 @@ def _dispatch(args, runtime):
         ordered = _ordered_configs(configs, project_order)
         selected_names = _select_projects(cfg_path, vargs.target, ordered, project_order)
         selected_ordered = {name: ordered[name] for name in selected_names}
+
+        if vargs.minor or vargs.major or vargs.set_version:
+            ignored_overrides = [
+                name for name in selected_names
+                if not getattr(configs[name], "git_tag", True)
+                or _version_strategy(configs[name]).startswith("external:")
+            ]
+            if ignored_overrides:
+                _usage_error(
+                    "version overrides (--minor, --major, --set-version) do not apply "
+                    "to external-version or no-tag project(s): "
+                    + ", ".join(ignored_overrides)
+                )
 
         from cmru.version import status_cmd, release_cmd
         if verb == "status":
@@ -2422,7 +2497,7 @@ def _dispatch(args, runtime):
         if not vargs.dry_run:
             require_project_publish_credentials(configs, release_scope)
 
-        if not vargs._transaction_child:
+        if not transaction_child:
             dispatched = _dispatch_independent_git_families(
                 verb,
                 rest,
@@ -2442,7 +2517,7 @@ def _dispatch(args, runtime):
         # Uncommitted work is fail-closed too, but only when it touches a released
         # project's own path (--allow-uncommitted overrides): otherwise it would be
         # silently left out with no warning, since the build never looks at it.
-        if not vargs._transaction_child:
+        if not transaction_child:
             try:
                 transaction_root = transaction.source_git_root_for_projects(
                     repo_root, [configs[name] for name in release_scope]
@@ -2474,6 +2549,7 @@ def _dispatch(args, runtime):
 
                     if getattr(vargs, "resume", None):
                         workspace = transaction.resume_workspace(transaction_root, Path(vargs.resume))
+                        transaction.assert_resume_workspace_committed(workspace.path)
                     else:
                         base = transaction.fetch_origin_main(transaction_root)
                         behind = transaction.assert_local_main_not_ahead(transaction_root, ref=vargs.ref or "main")
@@ -2698,14 +2774,13 @@ def _dispatch(args, runtime):
             ("--discard-build-worktree", vargs.discard_build_worktree),
         ]
         selected_modes = [name for name, value in exclusive_modes if value]
-        if len(selected_modes) > 1:
-            _usage_error(f"{' and '.join(selected_modes)} are mutually exclusive")
+        if vargs.dry_run and not selected_modes:
+            # No mode means the configured project cleanup policy, so dry-run is valid.
+            pass
 
         if vargs.delete_unmanaged_release_tag:
             if len(selected_names) != 1:
                 _usage_error("--delete-unmanaged-release-tag requires exactly one project target")
-            if not (getattr(vargs, "yes", False) or vargs.dry_run):
-                _usage_error("--delete-unmanaged-release-tag requires --yes (or --dry-run)")
             selected_name = selected_names[0]
             project = configs.get(selected_name)
             if project is None:
@@ -2725,47 +2800,57 @@ def _dispatch(args, runtime):
             project_github = github_for_project(github_config, project)
             if not project_github.token:
                 _usage_error("an explicit CMRU publish credential is required to delete a GitHub Release")
-            delete_unmanaged_release_tag(
+            action = lambda dry_run: delete_unmanaged_release_tag(
                 project_github.owner, project_github.repo, project_github.token, tag,
-                dry_run=vargs.dry_run,
+                dry_run=dry_run,
             )
         elif vargs.delete_build_output:
             if len(selected_names) != 1:
                 _usage_error("--delete-build-output requires exactly one project target")
-            if not (getattr(vargs, "yes", False) or vargs.dry_run):
-                _usage_error("--delete-build-output requires --yes (or --dry-run)")
             selected_name = selected_names[0]
             project = configs.get(selected_name)
             if project is None:
                 _usage_error(f"unknown project: {selected_name}")
-            targets = transaction.delete_retained_build_output(
-                repo_root, project, selected_name, vargs.delete_build_output,
-                dry_run=vargs.dry_run,
-            )
-            action = "Would delete" if vargs.dry_run else "Deleted"
-            for target in targets:
-                log_info(f"{action} retained local build output: {target}")
+            def action(dry_run):
+                targets = transaction.delete_retained_build_output(
+                    repo_root, project, selected_name, vargs.delete_build_output,
+                    dry_run=dry_run,
+                )
+                label = "Would delete" if dry_run else "Deleted"
+                for target in targets:
+                    log_info(f"{label} retained local build output: {target}")
         elif vargs.discard_build_worktree:
             if vargs.target:
                 _usage_error("--discard-build-worktree is already exactly scoped; do not pass a project target")
-            if not (getattr(vargs, "yes", False) or vargs.dry_run):
-                _usage_error("--discard-build-worktree requires --yes (or --dry-run)")
-            workspace = transaction.discard_build_workspace(
-                repo_root, Path(vargs.discard_build_worktree), dry_run=vargs.dry_run,
-            )
-            action = "Would discard" if vargs.dry_run else "Discarded"
-            log_info(f"{action} retained build worktree: {workspace.path} ({workspace.branch})")
+            def action(dry_run):
+                workspace = transaction.discard_build_workspace(
+                    repo_root, Path(vargs.discard_build_worktree), dry_run=dry_run,
+                )
+                label = "Would discard" if dry_run else "Discarded"
+                log_info(f"{label} retained build worktree: {workspace.path} ({workspace.branch})")
         elif vargs.remove_assets:
             # Explicit age-based cleanup mode.
-            remove_assets(vargs.remove_assets, vargs.dry_run, cleanup, github_config, env_config)
+            action = lambda dry_run: remove_assets(
+                vargs.remove_assets, dry_run, cleanup, github_config, env_config,
+            )
         else:
-            # New project-aware cleanup: keep -latest + keep_release_tags, delete the rest.
-            run_cleanup_verb(
+            action = lambda dry_run: run_cleanup_verb(
                 repo_root, configs, project_order, cleanup,
                 github_config, env_config,
                 project_filter=selected_names,
-                dry_run=vargs.dry_run,
+                dry_run=dry_run,
             )
+
+        # Every cleanup mode uses the same two-phase contract: enumerate and
+        # display exact targets first, then confirm, then revalidate and act.
+        action(True)
+        if vargs.dry_run:
+            return
+        if not (getattr(vargs, "yes", False) or runtime.confirm(
+            "Apply the cleanup actions listed above?"
+        )):
+            return
+        action(False)
 
     else:
         write_config_diagnostic(f"Unknown verb '{verb}'. Run 'cmru --help' for usage.")
@@ -3020,16 +3105,15 @@ def _build_cli():
     from cmru.standards import standards_cli
     from cmru.tool_deps import tool_deps_cli
     delegated.extend((
-        VerbSpec("init", description="Adopt a project with the guided scaffolding wizard.", group=VerbGroup.AUTHENTICATION.value, delegate=init_cli(), include_json=False, include_progress=False),
-        VerbSpec("versions", description="Derive, resolve, and check declared dependency versions.", group=VerbGroup.MODIFICATION.value, delegate=versions_cli(), include_json=False, include_progress=False),
-        VerbSpec("run-step", description="Execute one declared project step.", group=VerbGroup.MODIFICATION.value, delegate=runner_cli(), include_json=False, include_progress=False),
-        VerbSpec("handler", description="Run a concrete project-step handler.", group=VerbGroup.MODIFICATION.value, delegate=handlers_cli(), include_json=False, include_progress=False),
-        VerbSpec("tester-gate", description="Run one command inside tester-unified.", group=VerbGroup.MODIFICATION.value, delegate=tester_gate_cli(), include_json=False, include_progress=False),
+        VerbSpec("init", description="Adopt a project with the guided scaffolding wizard.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=init_cli(), include_json=False, include_progress=False),
+        VerbSpec("versions", description="Derive, resolve, and check declared dependency versions.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=versions_cli(), include_json=False, include_progress=False),
+        VerbSpec("run-step", description="Execute one declared project step.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=runner_cli(), include_json=False, include_progress=False),
+        VerbSpec("handler", description="Run a concrete project-step handler.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=handlers_cli(), include_json=False, include_progress=False),
+        VerbSpec("tester-gate", description="Run one command inside tester-unified.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=tester_gate_cli(), include_json=False, include_progress=False),
         VerbSpec("resolve", description="Resolve a project's latest published artifact.", group=VerbGroup.EXPLORATION.value, delegate=resolve_cli(), include_json=False, include_progress=False),
-        VerbSpec("get", description="Alias for get-py; emit the standalone Python installer.", group=VerbGroup.EXPLORATION.value, delegate=getpy_cli(), include_json=False, include_progress=False),
-        VerbSpec("get-py", description="Emit the standalone Python installer.", group=VerbGroup.EXPLORATION.value, delegate=getpy_cli(), include_json=False, include_progress=False),
-        VerbSpec("standards", description="Check or update CMRU framework markers.", group=VerbGroup.EXPLORATION.value, delegate=standards_cli(), include_json=False, include_progress=False),
-        VerbSpec("tool-deps", description="Verify declared tool dependency integrity, authenticity, and freshness.", group=VerbGroup.EXPLORATION.value, delegate=tool_deps_cli(), include_json=False, include_progress=False),
+        VerbSpec("get-py", description="Emit the standalone Python installer.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=getpy_cli(), include_json=False, include_progress=False),
+        VerbSpec("standards", description="Check or update CMRU framework markers.", group=VerbGroup.MIXED.value, mutating=True, delegate=standards_cli(), include_json=False, include_progress=False),
+        VerbSpec("tool-deps", description="Verify declared tool dependency integrity, authenticity, and freshness.", group=VerbGroup.MIXED.value, mutating=True, delegate=tool_deps_cli(), include_json=False, include_progress=False),
     ))
     run_options = (
         config_opt,
@@ -3037,32 +3121,34 @@ def _build_cli():
         OptionSpec(("--build",), "build artifacts", parser_kwargs={"action": "store_true", "default": False}),
         OptionSpec(("--push",), "publish artifacts", parser_kwargs={"action": "store_true", "default": False}),
         OptionSpec(("--validate",), "validate releases", parser_kwargs={"action": "store_true", "default": False}),
-        OptionSpec(("--remove-assets",), "remove remote assets older than AGE", metavar="AGE", parser_kwargs={"default": None}),
-        OptionSpec(("--dry-run",), "show cleanup actions without deleting", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--dry-run",), "show selected project steps and commands without executing them", parser_kwargs={"action": "store_true", "default": False}),
         *detail_opts,
     )
-    registry.register(VerbSpec("run", description="Run explicit project steps across selected projects.", group=VerbGroup.MODIFICATION.value, arguments=(target,), options=run_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
+    registry.register(VerbSpec("run", description="Run selected project steps, or configured default_steps when no step is selected.", group=VerbGroup.MODIFICATION.value, arguments=(target,), options=run_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     registry.register(VerbSpec("worktrees", description="Discover retained CMRU build and release worktrees (read-only).", group=VerbGroup.EXPLORATION.value, options=(OptionSpec(("--json",), "emit machine-readable records", parser_kwargs={"action": "store_true", "default": False}),), include_json=False, include_progress=False, handler=direct()))
-    dependency_options = (config_opt, OptionSpec(("--json",), "emit machine-readable dependency data", parser_kwargs={"action": "store_true", "default": False}), OptionSpec(("--write",), "write the generated graph into the orchestration document", parser_kwargs={"action": "store_true", "default": False}))
-    for name in ("dependencies", "dependency-graph", "graph"):
-        registry.register(VerbSpec(name, description="Show and preflight the project dependency graph; --write updates its generated block.", group=VerbGroup.MIXED.value, options=dependency_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
+    dependency_options = (
+        config_opt,
+        OptionSpec(("--json",), "emit machine-readable dependency data", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--write",), "write the generated graph into the orchestration document", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--dry-run",), "preview the generated block without writing it; requires --write", parser_kwargs={"action": "store_true", "default": False}),
+    )
+    registry.register(VerbSpec("dependencies", description="Show and preflight the project dependency graph; --write updates its generated block.", group=VerbGroup.MIXED.value, options=dependency_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     common_target = (target,)
-    build_options = (config_opt, OptionSpec(("--_transaction-child",), "internal transaction child invocation", hidden=True, parser_kwargs={"action": "store_true", "default": False}), *detail_opts)
+    build_options = (config_opt, OptionSpec(("--dry-run",), "show the selected step commands without executing them", parser_kwargs={"action": "store_true", "default": False}), *detail_opts)
     for name in ("build", "publish"):
         registry.register(VerbSpec(name, description="Run the isolated build step." if name == "build" else "Run the project publish step.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=build_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
-    registry.register(VerbSpec("changelog", description="Backfill history for an already-published tagged release.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=(OptionSpec(("--backfill-tag",), "tag to backfill; repeat once per selected project", metavar="TAG", parser_kwargs={"action": "append", "required": True}), config_opt), mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
+    registry.register(VerbSpec("changelog", description="Backfill history for an already-published tagged release.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=(OptionSpec(("--backfill-tag",), "tag to backfill; repeat once per selected project", metavar="TAG", parser_kwargs={"action": "append", "required": True}), config_opt, OptionSpec(("--dry-run",), "show the generated changelog entries without writing them", parser_kwargs={"action": "store_true", "default": False})), mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     release_options = (
-        OptionSpec(("--minor",), "bump minor versions", parser_kwargs={"action": "store_true", "default": False}),
-        OptionSpec(("--major",), "bump major versions", parser_kwargs={"action": "store_true", "default": False}),
-        OptionSpec(("--set-version",), "set an explicit version", metavar="VER", parser_kwargs={"default": None}),
+        OptionSpec(("--minor",), "bump minor versions", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="version-override"),
+        OptionSpec(("--major",), "bump major versions", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="version-override"),
+        OptionSpec(("--set-version",), "set an explicit version", metavar="VER", parser_kwargs={"default": None}, mutually_exclusive_group="version-override"),
         OptionSpec(("--dry-run",), "show the plan without publishing", parser_kwargs={"action": "store_true", "default": False}),
         OptionSpec(("--no-build",), "tag and push only; skip build and publish", parser_kwargs={"action": "store_true", "default": False}),
         config_opt,
         OptionSpec(("--resume",), "resume a retained failed release worktree", metavar="WORKTREE", parser_kwargs={"default": None}),
         OptionSpec(("--allow-uncommitted",), "allow local edits to be omitted from the origin/main snapshot", parser_kwargs={"action": "store_true", "default": False}),
-        OptionSpec(("--allow-tag-ahead-of-head", "--allow-tag-at-head"), "allow a tag strictly ahead of the snapshot", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--allow-tag-ahead-of-head",), "allow a tag strictly ahead of the snapshot", parser_kwargs={"action": "store_true", "default": False}),
         OptionSpec(("--allow-stale-tool-deps",), "allow declared tool dependencies behind their latest release", parser_kwargs={"action": "store_true", "default": False}),
-        OptionSpec(("--_transaction-child",), "internal transaction child invocation", hidden=True, parser_kwargs={"action": "store_true", "default": False}),
         *detail_opts,
         OptionSpec(("--discard-logs-on-release",), "do not retain project logs after a successful release", parser_kwargs={"action": "store_true", "default": False}),
         OptionSpec(("--discard-artifacts-on-release",), "do not retain declared artifacts after a successful release", parser_kwargs={"action": "store_true", "default": False}),
@@ -3070,11 +3156,10 @@ def _build_cli():
         OptionSpec(("--ref",), "git ref used for release/status comparison", metavar="REF", parser_kwargs={"default": None}),
     )
     status_options = (
-        OptionSpec(("--minor",), "bump minor versions", parser_kwargs={"action": "store_true", "default": False}),
-        OptionSpec(("--major",), "bump major versions", parser_kwargs={"action": "store_true", "default": False}),
-        OptionSpec(("--set-version",), "set an explicit version", metavar="VER", parser_kwargs={"default": None}),
+        OptionSpec(("--minor",), "bump minor versions", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="version-override"),
+        OptionSpec(("--major",), "bump major versions", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="version-override"),
+        OptionSpec(("--set-version",), "set an explicit version", metavar="VER", parser_kwargs={"default": None}, mutually_exclusive_group="version-override"),
         config_opt,
-        OptionSpec(("--_transaction-child",), "internal transaction child invocation", hidden=True, parser_kwargs={"action": "store_true", "default": False}),
         *detail_opts,
         OptionSpec(("--ref",), "git ref used for status comparison", metavar="REF", parser_kwargs={"default": None}),
     )
@@ -3086,7 +3171,7 @@ def _build_cli():
         OptionSpec(("--delete-build-output",), "delete one exact local build record", metavar="ID", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode"),
         OptionSpec(("--discard-build-worktree",), "discard one exact failed build worktree", metavar="PATH", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode"),
         OptionSpec(("--dry-run",), "show cleanup actions without deleting", parser_kwargs={"action": "store_true", "default": False}),
-        OptionSpec(("--yes",), "confirm the exact target when this cleanup mode requires it", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--yes",), "confirm all listed cleanup actions without prompting", parser_kwargs={"action": "store_true", "default": False}),
         config_opt,
     )
     registry.register(VerbSpec("cleanup", description="Remove configured remote release assets or explicit retained local build records. It does not abandon release transactions.", group=VerbGroup.MAINTENANCE.value, arguments=common_target, options=cleanup_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))

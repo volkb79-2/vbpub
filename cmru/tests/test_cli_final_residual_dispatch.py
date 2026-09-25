@@ -29,7 +29,8 @@ def test_release_child_dry_run_with_no_changes_is_a_noop(monkeypatch, tmp_path, 
     monkeypatch.setattr(version, "detect_changed_projects", lambda *_, **__: [])
     release_calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: release_calls.append(kwargs))
-    cli.main(["release", "--dry-run", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["release", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
     assert release_calls == [{
         "minor": False, "major": False,
         "set_version": None, "dry_run": True,

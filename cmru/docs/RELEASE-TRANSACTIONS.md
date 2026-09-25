@@ -62,7 +62,8 @@ and pushed but failed before promoting `origin/main` — aborts, because folding
 an ordinary "unchanged" skip would make an empty release look successful.
 `--allow-tag-ahead-of-head` downgrades only that "ahead" abort — for the deliberate case
 (e.g. re-running before `origin/main` has caught up) — back to a normal skip
-(`--allow-tag-at-head` is a deprecated alias). Any plan-time refusal here is a clean,
+The old `--allow-tag-at-head` spelling was removed; there is no alias or compatibility window.
+Any plan-time refusal here is a clean,
 typed failure: no project's cycle has started yet, so cmru discards the just-created
 worktree exactly like a success would, instead of retaining it the way a genuine
 mid-release failure is retained for inspection.
@@ -95,7 +96,10 @@ The re-execed child inherits the parent transaction lock; it does not try to
 acquire a second lock against its own release.
 
 Failure retains the worktree and prints its path and branch. A **pre-tag** failure
-can be inspected, deliberately corrected, re-gated, and resumed there:
+can be inspected and corrected on that branch. Commit the fixes there before
+resuming; CMRU refuses a dirty candidate so the final tag and artifacts cannot
+silently omit the correction. Resume reruns prepare and the required gate against
+the corrected branch tip, then ships that candidate commit:
 
 ```bash
 cmru release <project> --resume /path/reported/by/cmru

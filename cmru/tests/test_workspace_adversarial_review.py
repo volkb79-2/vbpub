@@ -373,7 +373,9 @@ def test_load_config_remaps_child_scope_and_refuses_bad_scope(monkeypatch, tmp_p
     monkeypatch.setenv(transaction.CHILD_ENV, "1")
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-demo")
     monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "demo")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda path: Path(path) == child.resolve())
     loaded = cli.load_config(orchestration_path, validate_dependencies=False)
     assert loaded[0] == child and loaded[1]["demo"].project_root == child / "demo"
 
@@ -470,7 +472,9 @@ def test_load_config_refuses_missing_or_escaping_child_project(monkeypatch, tmp_
     monkeypatch.setenv(transaction.CHILD_ENV, "1")
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-demo")
     monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "demo")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda path: Path(path) == child.resolve())
     with pytest.raises(ValueError, match="missing from the isolated"):
         cli.load_config(orchestration_path, validate_dependencies=False)
 
@@ -677,6 +681,9 @@ def test_run_project_step_preserves_owned_child_context(monkeypatch, tmp_path):
     (tmp_path / "demo").mkdir()
     monkeypatch.setenv(transaction.CHILD_ENV, "1")
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(tmp_path))
+    monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(tmp_path.parent))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda _path: True)
     seen = []
     monkeypatch.setattr(cli, "execute_step", lambda *args, **kwargs: seen.append(kwargs["extra_env"]))
     cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")

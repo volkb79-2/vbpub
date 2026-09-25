@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -612,7 +613,7 @@ def tester_gate_cli():
         options=tuple(
             OptionSpec(flags, description, metavar=metavar, parser_kwargs=kwargs)
             for flags, description, metavar, kwargs in option_data
-        ),
+        ) + (OptionSpec(("--dry-run",), "show the tester-unified Docker command without starting it", parser_kwargs={"action": "store_true", "default": False}),),
         include_json=False,
         include_progress=False,
         handler=_run_tester_gate,
@@ -625,6 +626,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_tester_gate(args, _runtime) -> int:
+    dry_run = bool(getattr(args, "dry_run", False))
     command = list(args.command)
     if command[:1] == ["--"]:
         command = command[1:]
@@ -660,7 +662,7 @@ def _run_tester_gate(args, _runtime) -> int:
     )]
     args.device_read_iops, args.device_write_iops = device_caps[0], device_caps[1]
     args.device_read_bps, args.device_write_bps = device_caps[2], device_caps[3]
-    if any(device_caps):
+    if any(device_caps) and not dry_run:
         io_ok, io_note = _probe_io_support(probe_image)
         if io_ok is False:
             raise SystemExit(
@@ -669,6 +671,11 @@ def _run_tester_gate(args, _runtime) -> int:
             )
         if io_ok is None:
             print(f"[WARN] tester-gate: {io_note}", file=sys.stderr)
+    elif any(device_caps):
+        print(
+            "[DRY RUN] Host IO capability probe skipped; it starts a temporary "
+            "privileged container and will run during an actual launch."
+        )
 
     memory = resolve_memory(args.memory)
     memory_swap = resolve_memory_swap(args.memory_swap)
@@ -698,15 +705,29 @@ def _run_tester_gate(args, _runtime) -> int:
         device_write_bps=args.device_write_bps,
     )
 
+    repo_root, container_cwd = _resolve_worktree_context(Path.cwd(), args.cwd)
+    if dry_run:
+        if args.enable_docker:
+            dind_image = resolve_dind_image(args.dind_image)
+            docker_argv = build_docker_command(
+                repo_root, container_cwd, command,
+                sidecar_name="cmru-dry-run-dind-sidecar", **build_kwargs,
+            )
+            print(f"[DRY RUN] Would start nested Docker daemon image {dind_image}")
+        else:
+            docker_argv = build_docker_command(
+                repo_root, container_cwd, command, **build_kwargs,
+            )
+        print("[DRY RUN] " + shlex.join(docker_argv))
+        return 0
+
     if args.enable_docker:
         dind_image = resolve_dind_image(args.dind_image)
-        repo_root, container_cwd = _resolve_worktree_context(Path.cwd(), args.cwd)
         with dind_sidecar(dind_image) as sidecar:
             docker_argv = build_docker_command(
                 repo_root, container_cwd, command, sidecar_name=sidecar, **build_kwargs,
             )
             raise SystemExit(subprocess.run(docker_argv, check=False).returncode)
 
-    repo_root, container_cwd = _resolve_worktree_context(Path.cwd(), args.cwd)
     docker_argv = build_docker_command(repo_root, container_cwd, command, **build_kwargs)
     raise SystemExit(subprocess.run(docker_argv, check=False).returncode)

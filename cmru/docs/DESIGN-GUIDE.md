@@ -75,13 +75,25 @@ after command selection, including across delegated commands. The timestamp
 prefix option is applied by its registered parser action, so CMRU does not
 rewrite argv before dispatch.
 
-`get` and `get-py` share the same registered installer grammar. `dependencies`,
-`dependency-graph`, and `graph` are registered aliases for one implementation.
+`get-py` and `dependencies` are each one canonical verb; the old `get`,
+`dependency-graph`, and `graph` aliases were removed because they added help,
+testing, and compatibility surface without adding a use case. The same review
+removed numeric `init --layout` spellings and the deprecated tag option alias.
 The `handler` verb is the supported route to the project's explicit step
 handlers; `cmru-agent` and `cmru-controller` are separate installed commands,
 not hidden subcommands of `cmru`. The [canonical CLI grammar and semantic
-audit](SPEC.md#s-cli-grammar-audit) inventories their complete option surfaces
+audit](SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit) inventories their complete option surfaces
 and is updated with every product grammar change.
+
+`cmru run` keeps orchestration's configured `default_steps` when no explicit
+step flag is supplied; help names that policy because a default may include
+publishing. Its dry-run resolves the same target, steps, and configured order,
+prints the declared commands and file cleanup, and starts no project command.
+Remote cleanup lives only under `cmru cleanup`: it prints the pending action
+set and asks before changing anything unless `--yes` was supplied. A cleanup
+dry-run stops after that preview. The canonical semantic table records each
+verb's scope, combinations, defaults, writes, network effects, and dry-run
+boundary.
 
 The get.py template is a package resource, not a path inferred from `__file__`.
 Source-checkout execution and installed-wheel execution therefore read the

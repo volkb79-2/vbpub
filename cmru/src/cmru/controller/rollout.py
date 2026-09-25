@@ -96,6 +96,8 @@ class RolloutEngine:
         wave_timeout: int = _WAVE_TIMEOUT,
         dry_run: bool = False,
     ) -> None:
+        if generation_base < 1:
+            raise ValueError("generation_base must be a positive integer")
         self._backend = backend
         self._landscape = landscape
         self._generation_base = generation_base
@@ -110,6 +112,26 @@ class RolloutEngine:
     def publish(self, plan: LandscapePlan) -> None:
         """Execute the plan: write desired state wave by wave, gate on wave barriers."""
         log.info("Publishing plan %s to landscape %s", plan.plan_id, self._landscape)
+
+        if self._dry_run:
+            for step in plan.steps:
+                generation = self._generation_base + step.phase * 100
+                if step.requires_approval:
+                    log.info(
+                        "[DRY RUN] Wave %s requires approval before publishing.",
+                        step.wave_name,
+                    )
+                for node in step.nodes:
+                    log.info(
+                        "[DRY RUN] Would write desired state gen=%s action=update "
+                        "to node=%s tag=%s digest=%s step=%s",
+                        generation, node, step.release_tag,
+                        step.manifest_sha256, step.step_id,
+                    )
+                if step.required:
+                    log.info("[DRY RUN] Would wait for wave %s health.", step.wave_name)
+            log.info("[DRY RUN] No Consul reads or writes were performed.")
+            return
 
         for step in plan.steps:
             self._wait_for_approval_if_needed(plan.plan_id, step)
@@ -169,7 +191,11 @@ class RolloutEngine:
         generation with action='rollback'.  The to_* args specify the target release;
         if absent the first wave's release values are used (placeholder).
         """
-        rollback_gen = generation or (self._generation_base + 10000)
+        if generation is not None and generation < 1:
+            raise ValueError("rollback generation must be a positive integer")
+        rollback_gen = (
+            generation if generation is not None else self._generation_base + 10000
+        )
         all_nodes: Set[str] = set()
         for step in plan.steps:
             all_nodes.update(step.nodes)
@@ -196,8 +222,11 @@ class RolloutEngine:
             requires_approval=False,
         )
 
-        log.info("Rollback: writing gen=%s action=rollback to %s nodes",
-                 rollback_gen, len(all_nodes))
+        log.info(
+            "Rollback: %s gen=%s action=rollback to %s nodes tag=%s digest=%s url=%s",
+            "would write" if self._dry_run else "writing",
+            rollback_gen, len(all_nodes), rollback_tag, rollback_sha256, rollback_url,
+        )
         self._write_wave(rollback_step, action="rollback", generation=rollback_gen)
 
     def status(self, plan: LandscapePlan) -> dict:
@@ -350,6 +379,12 @@ class RolloutEngine:
         status: str,
         failed_wave: Optional[str],
     ) -> None:
+        if self._dry_run:
+            log.info(
+                "[DRY RUN] Would write plan %s status=%s failed_wave=%s",
+                plan_id, status, failed_wave,
+            )
+            return
         payload = json.dumps({"status": status, "failed_wave": failed_wave}).encode()
         key = _plan_status_key(plan_id)
         self._backend._put(f"/v1/kv/{key}", payload)

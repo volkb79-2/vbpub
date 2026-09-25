@@ -51,8 +51,9 @@ def _run_release(monkeypatch, tmp_path, extra_args, *, changed, alpha_tool_deps=
         calls.append((dict(scoped), set(configs), github_config, allow_stale))
 
     monkeypatch.setattr(cli, "_check_release_tool_dependencies", fake_check)
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
     cli.main(
-        ["release", "--_transaction-child", "--dry-run", "--config", str(config_path)] + extra_args
+        ["release", "--dry-run", "--config", str(config_path)] + extra_args
     )
     return calls
 
@@ -106,7 +107,8 @@ def test_a_blocking_tool_dependency_finding_refuses_the_release_cleanly(monkeypa
     marks = []
     monkeypatch.setattr(transaction, "mark_plan_refused", lambda *args: marks.append(args))
 
-    exc = cli.main(["release", "--_transaction-child", "--config", str(config_path)])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    exc = cli.main(["release", "--config", str(config_path)])
 
     assert exc != 0
     assert marks

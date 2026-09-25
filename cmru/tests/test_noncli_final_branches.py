@@ -60,7 +60,7 @@ def test_tester_gate_cli_keeps_command_without_separator(monkeypatch, tmp_path):
         cwd=".", image="img", cgroup_parent="slice", cgroup_probe_image="probe",
         memory="1G", memory_swap="2G", cpus="1", device_read_iops="",
         device_write_iops="", device_read_bps="", device_write_bps="",
-        enable_docker=False, dind_image=None, command=["true"],
+        enable_docker=False, dind_image=None, command=["true"], dry_run=False,
     )
     with patch.object(tester_gate.argparse.ArgumentParser, "parse_args", return_value=parsed):
         raised = tester_gate.main([])

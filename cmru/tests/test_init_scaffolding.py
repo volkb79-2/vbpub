@@ -37,7 +37,7 @@ def test_monorepo_wizard_renders_central_facts_and_custom_commands(monkeypatch, 
     _feed_input(
         monkeypatch,
         [
-            "acme", "vbpub", "org", "2", "alpha,beta",
+            "acme", "vbpub", "org", "monorepo", "alpha,beta",
             "alpha", "Alpha", "python", "wheel", "yes",
             "beta", "Beta", "generic", "bundle", "no", "make bundle", "make publish",
         ],
@@ -58,7 +58,7 @@ def test_monorepo_wizard_renders_central_facts_and_custom_commands(monkeypatch, 
 
 
 def test_single_project_wizard_allows_same_folder_and_keeps_standalone_facts(monkeypatch, git_repo):
-    _feed_input(monkeypatch, ["acme", "repo", "user", "1", "", "repo", "Repo", "python", "tarball", "yes", "make", "make publish"])
+    _feed_input(monkeypatch, ["acme", "repo", "user", "single", "", "repo", "Repo", "python", "tarball", "yes", "make", "make publish"])
     plan = scaffold.collect_plan({}, git_repo)
     assert plan["root"] == git_repo
     files = scaffold.build_files(plan, git_repo)
@@ -73,7 +73,7 @@ def test_wizard_refuses_existing_targets_before_writing(monkeypatch, git_repo, c
     project.mkdir()
     existing = project / "cmru.toml"
     existing.write_text("# operator content\n", encoding="utf-8")
-    _feed_input(monkeypatch, ["acme", "repo", "user", "2", "alpha", "alpha", "Alpha", "python", "wheel", "yes"])
+    _feed_input(monkeypatch, ["acme", "repo", "user", "monorepo", "alpha", "alpha", "Alpha", "python", "wheel", "yes"])
     plan = scaffold.collect_plan({}, git_repo)
     with pytest.raises(SystemExit):
         scaffold.build_files(plan, git_repo)
@@ -84,19 +84,19 @@ def test_wizard_refuses_existing_targets_before_writing(monkeypatch, git_repo, c
 def test_wizard_refuses_project_path_escape(monkeypatch, git_repo, tmp_path, capsys):
     outside = tmp_path / "outside"
     outside.mkdir()
-    _feed_input(monkeypatch, ["acme", "repo", "user", "1", str(outside)])
+    _feed_input(monkeypatch, ["acme", "repo", "user", "single", str(outside)])
     with pytest.raises(SystemExit):
         scaffold.collect_plan({}, git_repo)
     assert "escapes CMRU root" in capsys.readouterr().err
 
 
 def test_wizard_refuses_invalid_artifact_and_missing_generic_commands(monkeypatch, git_repo, capsys):
-    _feed_input(monkeypatch, ["acme", "repo", "user", "1", "", "repo", "Repo", "python", "unknown"])
+    _feed_input(monkeypatch, ["acme", "repo", "user", "single", "", "repo", "Repo", "python", "unknown"])
     with pytest.raises(SystemExit):
         scaffold.collect_plan({}, git_repo)
     assert "artifact types" in capsys.readouterr().err
 
-    _feed_input(monkeypatch, ["acme", "repo", "user", "1", "", "repo", "Repo", "python", "oci-image", "yes", "", ""])
+    _feed_input(monkeypatch, ["acme", "repo", "user", "single", "", "repo", "Repo", "python", "oci-image", "yes", "", ""])
     with pytest.raises(SystemExit):
         scaffold.collect_plan({}, git_repo)
     assert "Build command" in capsys.readouterr().err
@@ -113,7 +113,7 @@ def test_wizard_accepts_all_artifact_types_and_requires_generic_commands(monkeyp
     (git_repo / "alpha").mkdir()
     _feed_input(
         monkeypatch,
-        ["acme", "repo", "org", "2", "alpha", "alpha", "Alpha", "generic", "all", "yes", "build all", "publish all"],
+        ["acme", "repo", "org", "monorepo", "alpha", "alpha", "Alpha", "generic", "all", "yes", "build all", "publish all"],
     )
     plan = scaffold.collect_plan({}, git_repo)
     assert plan["projects"][0]["artifacts"] == ["wheel", "tarball", "bundle", "oci-image"]

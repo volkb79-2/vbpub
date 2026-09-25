@@ -191,12 +191,17 @@ from `cmru.build.toml` to `cmru.toml`; there is no alternate parser, sourceable 
 environment config override, or compatibility alias in the release path.
 
 ### KI-06 — Durable post-tag publication resume — *open; scoped deliberately*
-**Status:** the documented promise was narrowed to current behavior: `--resume` is useful for
-investigating/correcting a retained **pre-tag** transaction worktree; it is not an automatic
-post-tag publish retry. It remains useful when a prepare step or the tester gate fails: inspect
-the isolated source tree, make a deliberate correction there, re-run the required gate, then
-resume. The worktree is also the right forensic location for logs and generated provenance;
-do not copy unreviewed files into the caller checkout.
+**Status:** the CLI adoption review closes the pre-tag correction gap. If a prepare step or
+required gate fails and CMRU retains the release worktree, an operator may fix the candidate,
+commit those fixes on its release branch, and rerun `cmru release --resume <worktree>`. Resume
+refuses a dirty candidate; after the fixes are committed, prepare and the required gate run
+again against that branch tip. The resulting candidate commit is the one CMRU tags, builds,
+publishes, and promotes. The worktree remains the forensic location for logs and generated
+provenance; fixes should not be copied into the caller checkout and silently left out.
+
+**Still open:** this does not resume after a tag or publication phase has begun. There is no
+durable phase record or remote reconciliation protocol for post-tag retry; do not infer that
+`--resume` will republish an existing tag or artifact.
 
 **Why this matters for MDT:** its `prepare` phase can spend substantial time downloading/staging
 tools and producing exact OCI layouts before it extracts and commits manifest provenance. A
@@ -218,7 +223,7 @@ private image layouts consumes disk and crosses retention/cleanup policy; reusin
 after debugging invalidates previous gate evidence. A simplistic `--resume` would therefore
 be more dangerous than a fresh release.
 
-**Recommendation:** retain the current pre-tag debug use case and add a separately designed
+**Recommendation:** retain the current pre-tag correction flow and add a separately designed
 `resume-publish` state machine only when MDT’s elapsed prepare time justifies it. Start with
 MDT’s OCI layout/digest contract; do not promise a universal resume mechanism first.
 
@@ -295,13 +300,14 @@ orchestrate with one CMRU contract but run its tester boundary with another.
 behaviour depend on ambient devcontainer state. Referencing a repository-local source launcher
 would make standalone consumers depend on this monorepo, so it is not a valid fix.
 
-**Required design:** CMRU's transaction runtime must expose one explicit, portable self-command
-binding for project steps, and the project grammar/template must name that binding rather than
-re-resolve `cmru` through PATH. The child must prove the invoked command library's version and
-source/installed identity agree with the transaction engine before it runs a gate. A missing or
-mismatched binding must fail before container launch; it must never fall back to PATH. The design
-must work both for an installed third-party CMRU wheel and for the vbpub source wrapper without
-adding a sourceable config alias or a hidden environment default.
+**Recommended design:** the transaction runtime creates or selects a portable CMRU launcher
+bound to the exact interpreter/module executing the transaction, prepends that launcher's
+directory to each project command's `PATH`, and verifies the resolved command identity before
+launching a gate. A missing or mismatched identity must fail before container launch; there is
+no ambient-PATH fallback. The binding must work both for an installed third-party CMRU wheel
+and for the vbpub source wrapper without adding a sourceable config alias or a hidden default.
+The CLI semantic review records this as an open KI-11 implementation decision, not as a shipped
+guarantee.
 
 **Immediate operational rule:** until KI-11 is resolved, install the last verified released CMRU
 wheel into the gate environment before an estate release and treat a source-versus-installed
@@ -385,7 +391,7 @@ last_tag, *paths)`, gets an empty list because the tag *is* HEAD, and `continue`
            This usually means a tag was created by hand (cmru owns tag creation) or a
            previous release half-completed. Inspect:  git tag --list 'assay-v*'
            If hand-made and unpushed:                git tag -d assay-v2.1.0
-           Re-run, or pass --allow-tag-at-head to skip this project deliberately.
+           Re-run, or pass --allow-tag-ahead-of-head to skip this project deliberately.
    ```
 
    > **CORRECTION, 2026-08-18, measured against the first implementation — the
@@ -406,7 +412,7 @@ last_tag, *paths)`, gets an empty list because the tag *is* HEAD, and `continue`
    > 3. **tag pushed AND strictly ahead of the snapshot commit** → genuine
    >    anomaly: a tag exists on a commit absent from the snapshot's history,
    >    i.e. a previous release tagged and pushed but failed before promoting
-   >    `main`. Abort here, worded for *that* cause, with `--allow-tag-at-head`
+   >    `main`. Abort here, worded for *that* cause, with `--allow-tag-ahead-of-head`
    >    as the override.
    >
    > `git merge-base --is-ancestor` cannot separate 2 from 3; compare the
@@ -1298,3 +1304,21 @@ targeted CMRU abandonment; no older retained release worktree was touched.
 Add a regression oracle that distinguishes one correct project-root remap
 from zero or two prefixes, and pin both the default relative-config path and
 the supported absolute-config route before changing the remapper.
+
+### KI-32 — controller rollback tag can disagree with its manifest identity
+
+**Status:** OPEN 2026-09-25; found during the canonical CLI semantic audit.
+
+`cmru-controller rollback --plan PLAN --to TAG` overrides the first wave's
+release tag but retains that wave's manifest URL and SHA-256 digest. The command
+can therefore publish a desired release whose visible tag does not identify
+the artifact selected by the URL and digest. The current dry-run prints all
+three values, which makes the mismatch inspectable but does not establish that
+they identify one artifact.
+
+**Recommendation:** remove `--to` until CMRU can resolve the tag to a verified
+immutable artifact coordinate, or replace it with an option set that requires
+and validates the full tag, manifest URL, and digest tuple. Decide whether the
+rollback verb should remain available while that contract is unresolved.
+Record the chosen behavior in `docs/SPEC.md` and add a behavioral oracle that
+rejects mismatched release identity before any Consul write.

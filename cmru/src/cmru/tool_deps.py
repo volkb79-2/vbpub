@@ -482,6 +482,7 @@ def verify_project(
 def refresh_tool_dependency(
     *, owner: str, repo: str, provider_prefix: str, dependency: "ToolDependency",
     project_root: Path, config_path: Path, timeout: int = DEFAULT_TIMEOUT,
+    dry_run: bool = False,
 ) -> "ToolDependency":
     """Re-vendor ``dependency`` from its provider's latest published release, and
     rewrite the pin + hash in ``config_path``. Deliberately requires an explicit,
@@ -513,21 +514,27 @@ def refresh_tool_dependency(
 
     old_absolute = project_root / dependency.path
     new_absolute = project_root / new_relative_path
-    new_absolute.parent.mkdir(parents=True, exist_ok=True)
-    new_absolute.write_bytes(published_bytes)
-    new_absolute.with_name(new_absolute.name + ".sha256").write_text(
-        f"{new_digest}  {new_name}\n", encoding="utf-8",
-    )
-    if old_absolute != new_absolute and old_absolute.exists():
-        old_absolute.unlink()
-        old_sidecar = old_absolute.with_name(old_absolute.name + ".sha256")
-        if old_sidecar.exists():
-            old_sidecar.unlink()
-
     new_dependency = replace(
         dependency, version=new_version, path=new_relative_path, sha256=new_digest,
     )
-    _rewrite_tool_dependency_toml(config_path, dependency, new_dependency)
+    if dry_run:
+        print(
+            f"[DRY RUN] Would write {new_absolute}, its sha256 sidecar, and update "
+            f"{config_path}; would remove old pin files if present.",
+            flush=True,
+        )
+    else:
+        new_absolute.parent.mkdir(parents=True, exist_ok=True)
+        new_absolute.write_bytes(published_bytes)
+        new_absolute.with_name(new_absolute.name + ".sha256").write_text(
+            f"{new_digest}  {new_name}\n", encoding="utf-8",
+        )
+        if old_absolute != new_absolute and old_absolute.exists():
+            old_absolute.unlink()
+            old_sidecar = old_absolute.with_name(old_absolute.name + ".sha256")
+            if old_sidecar.exists():
+                old_sidecar.unlink()
+        _rewrite_tool_dependency_toml(config_path, dependency, new_dependency)
     return new_dependency
 
 
@@ -600,6 +607,7 @@ def tool_deps_cli():
             OptionSpec(("--refresh",),
                 "re-vendor this provider's latest artifact and rewrite the selected pin",
                 metavar="PROVIDER_PROJECT", parser_kwargs={"default": None}),
+            OptionSpec(("--dry-run",), "fetch and verify the planned refresh without writing files; requires --refresh", parser_kwargs={"action": "store_true", "default": False}),
             OptionSpec(("--timeout",), "network timeout for each GitHub request",
                 metavar="SECONDS", parser_kwargs={"type": int, "default": DEFAULT_TIMEOUT}),
         ),
@@ -620,6 +628,14 @@ def _run_tool_deps(args, _runtime) -> int:
     # Import lazily: cli dispatches this verb, and is itself the configuration
     # model used by the report (same pattern as cmru.standards.standards_main).
     from cmru.cli import _resolve_config, load_config
+
+    if args.refresh and (args.json or args.allow_stale_tool_deps):
+        raise CliFailure(
+            "--refresh cannot be combined with --json or --allow-stale-tool-deps",
+            exit_code=2, show_help=True,
+        )
+    if args.dry_run and not args.refresh:
+        raise CliFailure("tool-deps --dry-run requires --refresh", exit_code=2, show_help=True)
 
     config_path = _resolve_config(args.config)
     repo_root, projects, project_order, *_rest = load_config(config_path)
@@ -670,6 +686,7 @@ def _run_tool_deps(args, _runtime) -> int:
         _run_refresh(
             projects=projects, selected=selected, provider_id=args.refresh,
             owner=github_config.owner, repo=github_config.repo, timeout=args.timeout,
+            dry_run=args.dry_run,
         )
         return 0
 
@@ -713,7 +730,7 @@ def _run_tool_deps(args, _runtime) -> int:
 
 def _run_refresh(
     *, projects: Mapping[str, object], selected: Iterable[str], provider_id: str,
-    owner: str, repo: str, timeout: int,
+    owner: str, repo: str, timeout: int, dry_run: bool = False,
 ) -> None:
     if provider_id not in projects:
         print(f"[ERROR] cmru tool-deps --refresh: unknown project {provider_id!r}", file=sys.stderr, flush=True)
@@ -729,6 +746,7 @@ def _run_refresh(
             new_dependency = refresh_tool_dependency(
                 owner=owner, repo=repo, provider_prefix=provider.prefix, dependency=dependency,
                 project_root=Path(project.project_root), config_path=config_path, timeout=timeout,
+                dry_run=dry_run,
             )
             print(
                 f"[INFO] cmru tool-deps --refresh: {name}: {provider_id} {dependency.version} -> "

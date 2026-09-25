@@ -188,6 +188,31 @@ def test_io_probe_nonzero_rc_is_fail_closed_with_real_cause(monkeypatch):
     assert "rc=42" in note and "nsenter: boom" in note
 
 
+def test_tester_gate_dry_run_skips_privileged_io_probe(monkeypatch, tmp_path, capsys):
+    for name in _ALL_REQUIRED:
+        monkeypatch.setenv(name, "value")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_args: (True, "ok"))
+    monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_args: (tmp_path, "."))
+    monkeypatch.setattr(
+        tester_gate, "_probe_io_support",
+        lambda *_args: pytest.fail("dry-run started the privileged IO probe container"),
+    )
+    monkeypatch.setattr(
+        tester_gate, "build_docker_command",
+        lambda *_args, **_kwargs: ["docker", "run", "--device-read-iops", "/dev/vda:10"],
+    )
+    args = _args(
+        cwd=".", image="tester", cgroup_parent="dev-gates.slice",
+        memory="1g", memory_swap="2g", cpus="1", command=["true"],
+        device_read_iops="/dev/vda:10", device_write_iops="",
+        device_read_bps="", device_write_bps="", dry_run=True,
+    )
+    assert tester_gate._run_tester_gate(args, None) == 0
+    output = capsys.readouterr().out
+    assert "Host IO capability probe skipped" in output
+    assert "[DRY RUN] docker run" in output
+
+
 def test_resolve_memory_from_env(monkeypatch):
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "4g")
     assert tester_gate.resolve_memory(None) == "4g"

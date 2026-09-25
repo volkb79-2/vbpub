@@ -427,5 +427,5 @@ class TestRemainingPublicPaths:
         assert cli.cmd_status(_args(landscape="l")) == 0
         assert "Registered" in capsys.readouterr().out
         from cmru.controller.cli import _build_parser
-        parsed = _build_parser().parse_args(["--dry-run", "rollback", "--plan", "p", "--to", "old", "--generation", "8"])
+        parsed = _build_parser().parse_args(["rollback", "--plan", "p", "--to", "old", "--generation", "8", "--dry-run"])
         assert parsed.to_tag == "old" and parsed.generation == 8

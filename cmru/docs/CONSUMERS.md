@@ -166,6 +166,34 @@ The wheel also installs `cmru-agent` and `cmru-controller`; those are independen
 CLIs with their own registered verbs. `cmru --help` lists top-level CMRU commands, while
 `cmru help get-py` or `cmru get-py --help` prints the exact delegated grammar.
 
+## Running configured steps and previewing cleanup
+
+`cmru run` uses the selected project's configured `default_steps` when no step
+flags are supplied. In the example above that includes `push`, so preview the
+resolved plan before running the default set:
+
+```sh
+cmru run example-wheel --dry-run
+cmru run example-wheel --build --dry-run
+```
+
+The first command previews configured defaults; the second previews only the
+explicit `build` step. `--dry-run` prints selected projects, command argv and
+working directories, declared cleanup, and unresolved dynamic-environment
+helpers without starting project commands. To apply the configured defaults,
+run `cmru run example-wheel` after reviewing the preview.
+
+Every `cmru cleanup` mode also displays its pending actions and asks before it
+changes local or remote state. `--yes` accepts the plan shown by that same
+invocation. Use `--dry-run` to inspect actions without applying them:
+
+```sh
+cmru cleanup --remove-assets 30d --dry-run
+cmru cleanup --remove-assets 30d --yes
+cmru cleanup example-wheel --delete-build-output <commit-date>_<commit> --dry-run
+cmru cleanup example-wheel --delete-build-output <commit-date>_<commit> --yes
+```
+
 `cmru.toml` is one grammar for every verb (`S-CLI`/`S2`, KI-03/KI-05). Unknown fields, a
 committed `[github].token`, retired central `[projects]`/`[registry]` tables, or an omitted
 required field are **rejected with exit 2**, not ignored. Validate before you rely on anything:
@@ -444,7 +472,9 @@ only its declared outputs; CMRU refuses any other write.
   begins `cmru …` resolves through the worker's `PATH`, which can be an *older installed wheel*
   than the source engine driving the transaction. Until KI-11 is resolved, install the last
   verified cmru wheel into the gate environment before an estate release and treat a
-  source-vs-installed version mismatch as a preflight failure — do not paper over it per project.
+  source-vs-installed version mismatch as a preflight failure. The recommended fix is a
+  transaction-owned CMRU launcher prepended to project `PATH`, with identity verification and
+  no ambient-PATH fallback; this remains an open implementation decision.
 
 - **GHCR package visibility is a one-time UI step** (KI-01). For an OCI product, the first push
   cannot set the package public via any API (a platform limitation); cmru logs a one-time `WARN`
@@ -463,8 +493,9 @@ Adopt with these boundaries in mind — each is a deliberate, fail-closed gap, t
 
 - **OCI repack** is guarded off for production (`--repack` exits 2 before any side effect) until
   it proves single-build + registry-digest equivalence (KI-02, `S14`).
-- **Durable post-tag publish resume** does not exist: `--resume` is for investigating a retained
-  *pre-tag* worktree, not an automatic post-tag retry (KI-06).
+- **Durable post-tag publish resume** does not exist: `--resume` can continue a retained
+  *pre-tag* worktree only after corrections are committed there; prepare and the required gate
+  rerun, and the corrected candidate commit is what ships. It is not a post-tag retry (KI-06).
 - **`release --from-candidate`** (promote a separately-built, remotely-evidenced artifact) is
   deliberately postponed; a local `build.json` explicitly forbids publication (KI-10).
 

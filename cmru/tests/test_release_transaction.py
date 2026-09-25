@@ -1017,10 +1017,23 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
 
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
     assert transaction.run_child(workspace, ["alpha"]) == 17
-    assert observed["command"][-3:] == ["release", "--_transaction-child", "alpha"]
+    assert observed["command"][-2:] == ["release", "alpha"]
+    assert observed["command"][0].endswith("cmru")
     assert observed["cwd"] == workspace.path
     assert observed["env"][transaction.CHILD_ENV] == "1"
     assert observed["env"][transaction.BRANCH_ENV] == workspace.branch
+
+
+def test_resume_requires_operator_fixes_to_be_committed_on_retained_branch():
+    with _OriginAndClone() as h:
+        workspace = h.clone_workspace("cmru/release/resume")
+        (workspace / "README.md").write_text("corrected candidate\n")
+        with pytest.raises(RuntimeError, match="Commit the fixes on that release branch"):
+            transaction.assert_resume_workspace_committed(workspace)
+
+        _git("add", "README.md", cwd=workspace)
+        _git("commit", "-q", "-m", "fix: correct release candidate", cwd=workspace)
+        transaction.assert_resume_workspace_committed(workspace)
 
 
 def test_promote_workspace_fast_forwards_remote_main():

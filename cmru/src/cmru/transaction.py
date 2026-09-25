@@ -34,6 +34,83 @@ BRANCH_ENV = "CMRU_RELEASE_BRANCH"
 BASE_ENV = "CMRU_RELEASE_BASE"
 
 
+def is_transaction_child(repo_root: Path) -> bool:
+    """Return whether this process is running in its exact managed child worktree.
+
+    The environment carries routing facts from :func:`run_child`, but it is not
+    ownership evidence by itself: callers can set environment variables. Verify
+    the Git worktree, same-family source root, transaction branch, and shared
+    CMRU ownership record (or a registered legacy transaction worktree) before
+    allowing the in-place path. A parser switch is not part of the public grammar.
+    """
+    if os.environ.get(CHILD_ENV) != "1":
+        return False
+    expected_path = os.environ.get("CMRU_WORKSPACE_PATH", "").strip()
+    expected_source_root = os.environ.get("CMRU_SOURCE_GIT_ROOT", "").strip()
+    expected_branch = os.environ.get(BRANCH_ENV, "").strip()
+    if not expected_path or not expected_source_root or not expected_branch:
+        raise RuntimeError("incomplete CMRU transaction child context")
+    expected_path_obj = Path(expected_path).expanduser().resolve()
+    source_root_obj = Path(expected_source_root).expanduser().resolve()
+    if expected_path_obj != Path(repo_root).resolve():
+        raise RuntimeError(
+            "CMRU transaction child context does not match the loaded repository root"
+        )
+
+    shared = _shared_worktree()
+    try:
+        child_top, child_common, actual_branch, _head = shared.discover_git_context(
+            expected_path_obj
+        )
+        source_top, source_common, _source_branch, _source_head = shared.discover_git_context(
+            source_root_obj
+        )
+        worktrees = shared.list_git_worktrees(source_top)
+        record = shared.find_workspace(child_common, child_top)
+    except Exception as exc:
+        raise RuntimeError(f"invalid CMRU transaction child worktree: {exc}") from exc
+
+    child_top = Path(child_top).resolve()
+    source_top = Path(source_top).resolve()
+    if child_top != expected_path_obj or source_top != source_root_obj:
+        raise RuntimeError("CMRU transaction child paths do not resolve to Git worktree roots")
+    if Path(child_common).resolve() != Path(source_common).resolve():
+        raise RuntimeError("CMRU transaction child belongs to a different Git family")
+    if actual_branch != expected_branch:
+        raise RuntimeError(
+            f"CMRU transaction child branch mismatch: expected {expected_branch!r}, "
+            f"found {actual_branch!r}"
+        )
+
+    if _is_release_branch(actual_branch):
+        purpose = "release"
+    elif _is_build_branch(actual_branch):
+        purpose = "build"
+    else:
+        raise RuntimeError(
+            f"CMRU transaction child branch is not managed: {actual_branch!r}"
+        )
+
+    matches = [
+        entry for entry in worktrees
+        if Path(entry.path).resolve() == child_top
+    ]
+    if len(matches) != 1 or matches[0].is_primary or matches[0].branch != actual_branch:
+        raise RuntimeError("CMRU transaction child is not a registered secondary worktree")
+
+    if record is not None:
+        _require_cmru_record_purpose(record, purpose, child_top)
+        if record.branch != actual_branch or Path(record.worktree_path).resolve() != child_top:
+            raise RuntimeError("CMRU shared transaction record does not match its worktree")
+        if Path(record.source_git_root).resolve() != source_root_obj:
+            raise RuntimeError("CMRU shared transaction record has a different source root")
+        recorded_id = os.environ.get("CMRU_WORKSPACE_ID", "").strip()
+        if recorded_id and record.workspace_id != recorded_id:
+            raise RuntimeError("CMRU transaction child workspace ID does not match its record")
+
+    return True
+
+
 def _git(repo_root: Path, *args: str, check: bool = True) -> str:
     result = subprocess.run(
         ["git", *args], cwd=repo_root, text=True, capture_output=True, check=False,
@@ -466,6 +543,22 @@ def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
         raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
     subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=path_top, check=True)
     return ReleaseWorkspace(repo_root=repo_root.resolve(), path=path, branch=branch, base=_git(path, "rev-parse", "HEAD"))
+
+
+def assert_resume_workspace_committed(path: Path) -> None:
+    """Refuse to resume while operator fixes are still outside the candidate commit.
+
+    The resumed prepare and gate run against this exact branch tip. Requiring a
+    clean worktree prevents a successful tag/promotion from silently omitting
+    an uncommitted correction that the operator expected to ship.
+    """
+    changes = _git(path, "status", "--porcelain=v1", "--untracked-files=normal")
+    if changes:
+        raise RuntimeError(
+            "retained release worktree has uncommitted changes. Commit the fixes on "
+            "that release branch, then rerun `cmru release --resume`; the resumed "
+            "prepare and required gate will run against and ship that commit."
+        )
 
 
 def copy_secret_overlays(
@@ -1721,5 +1814,5 @@ def run_child(
     if project_names is not None:
         env["CMRU_TRANSACTION_PROJECTS"] = ",".join(project_names)
     launcher = [os.environ.get("CMRU_BIN") or shutil.which("cmru") or "cmru"]
-    command = [*launcher, verb, "--_transaction-child", *child_args]
+    command = [*launcher, verb, *child_args]
     return subprocess.run(command, cwd=workspace.path, env=env).returncode

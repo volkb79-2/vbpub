@@ -23,6 +23,14 @@ from cmru.cli_support import cmru_identity
 log = logging.getLogger("cmru.controller")
 
 
+def _positive_generation(value: str) -> int:
+    """Argparse type for a generation coordinate that cannot be zero or negative."""
+    parsed = int(value)
+    if parsed < 1:
+        raise ValueError("generation must be a positive integer")
+    return parsed
+
+
 def _build_backend(args):
     from cmru.agent.consul_backend import ConsulBackend
     consul_addr = (
@@ -201,7 +209,6 @@ def _build_cli():
             ("--token",), "Consul ACL token (prefer $CONSUL_HTTP_TOKEN in production)",
             metavar="TOKEN",
         ),
-        OptionSpec(("--dry-run",), "show actions without writing to Consul", parser_kwargs={"action": "store_true"}),
     )
     registry = CliRegistry(
         identity,
@@ -214,7 +221,7 @@ def _build_cli():
     specs = (
         ("publish", "Publish desired state from a plan file.", cmd_publish, (
             OptionSpec(("--plan",), "path to plan TOML file", metavar="PLAN_TOML", parser_kwargs={"required": True}),
-            OptionSpec(("--generation-base",), "base generation number", metavar="N", parser_kwargs={"type": int, "default": 1}),
+            OptionSpec(("--generation-base",), "positive base generation number (default: 1)", metavar="N", parser_kwargs={"type": _positive_generation, "default": 1}),
         )),
         ("approve", "Approve production waves for a plan.", cmd_approve, (
             OptionSpec(("--plan",), "plan ID to approve", metavar="PLAN_ID", parser_kwargs={"required": True}),
@@ -228,10 +235,15 @@ def _build_cli():
         ("rollback", "Write a new rollback desired generation.", cmd_rollback, (
             OptionSpec(("--plan",), "path to plan TOML file", metavar="PLAN_TOML", parser_kwargs={"required": True}),
             OptionSpec(("--to",), "release tag to roll back to", metavar="TAG", parser_kwargs={"dest": "to_tag", "default": None}),
-            OptionSpec(("--generation",), "override rollback generation number", metavar="N", parser_kwargs={"type": int, "default": None}),
+            OptionSpec(("--generation",), "positive rollback generation number", metavar="N", parser_kwargs={"type": _positive_generation, "default": None}),
         )),
     )
     for name, description, handler, options in specs:
+        if name != "status":
+            options = options + (OptionSpec(
+                ("--dry-run",), "show planned Consul changes without writing them",
+                parser_kwargs={"action": "store_true", "default": False},
+            ),)
         registry.register(VerbSpec(
             name, description=description,
             group=VerbGroup.EXPLORATION.value if name == "status" else VerbGroup.MODIFICATION.value,

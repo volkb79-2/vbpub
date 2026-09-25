@@ -8,7 +8,7 @@ breaking a test, the way KI-14 originally happened (KI-13 fixed on the
 unchanged path was, by construction, unconditional -- but nothing previously
 proved that in a way that would fail if it stopped being true).
 
-Uses ``cli.main([..., "--_transaction-child", ...])`` directly against a
+Uses ``cli.main([..., ...])`` directly against a
 real git repo (with a real ``origin``) -- the CLI's release-plan section
 (``detect_changed_projects`` -> ``changed_names``/``release_names`` ->
 the dry-run/real branch) runs unmocked, exactly as it does in production;
@@ -97,8 +97,9 @@ def _run(monkeypatch, repo_root: Path, extra_args: list[str]) -> str:
     monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: type("Context", (), {"project_name": None, "scope": "estate"})())
     monkeypatch.setattr(cli, "load_config", lambda _: _config(repo_root))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
     cli.main(
-        ["release", "--_transaction-child", "--config", str(config_path)] + extra_args
+        ["release", "--config", str(config_path)] + extra_args
     )
 
 
@@ -179,11 +180,12 @@ def test_detect_changed_projects_is_called_once_with_identical_strict_kwargs_on_
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
 
-    cli.main(["release", "--_transaction-child", "--dry-run", "--config", str(config_path)])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["release", "--dry-run", "--config", str(config_path)])
     dry_calls = list(calls)
     calls.clear()
 
-    cli.main(["release", "--_transaction-child", "--config", str(config_path)])
+    cli.main(["release", "--config", str(config_path)])
     real_calls = list(calls)
 
     assert len(dry_calls) == 1

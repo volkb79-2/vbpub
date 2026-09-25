@@ -247,6 +247,6 @@ def test_transaction_run_child_propagates_child_exit_and_transaction_identity(mo
         return SimpleNamespace(returncode=17)
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
     assert transaction.run_child(workspace, ["alpha"], verb="build") == 17
-    assert seen["argv"] == ["/opt/cmru", "build", "--_transaction-child", "alpha"]
+    assert seen["argv"] == ["/opt/cmru", "build", "alpha"]
     assert seen["env"][transaction.CHILD_ENV] == "1"
     assert seen["env"][transaction.BRANCH_ENV] == workspace.branch

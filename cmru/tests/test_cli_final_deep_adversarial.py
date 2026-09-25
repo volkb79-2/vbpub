@@ -120,7 +120,7 @@ def test_main_changelog_dispatch_distinguishes_unknown_disabled_and_unchanged(mo
     exc = cli.main(["changelog", "demo", "--backfill-tag", "demo-v1"])
     assert exc == 2 and "disabled" in capsys.readouterr().err
     project.changelog = "CHANGES.md"
-    monkeypatch.setattr("cmru.changelog.backfill_release_changelog", lambda *_: False)
+    monkeypatch.setattr("cmru.changelog.backfill_release_changelog", lambda *_, **__: False)
     cli.main(["changelog", "demo", "--backfill-tag", "demo-v1"])
     assert "already records" in capsys.readouterr().out
 

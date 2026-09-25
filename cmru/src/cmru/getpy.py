@@ -181,7 +181,7 @@ def render_from_config(project_name: str, config_path: Path) -> str:
 
 
 def getpy_cli():
-    """Build the registered grammar used by ``cmru get`` and ``get-py``."""
+    """Build the registered grammar for ``cmru get-py``."""
     registry = CliRegistry(
         cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
         prog="cmru get-py",
@@ -194,7 +194,9 @@ def getpy_cli():
     registry.register(VerbSpec(
         "get-py",
         description="Render the configured standalone installer for one or more projects.",
-        group=VerbGroup.EXPLORATION.value,
+        group=VerbGroup.MODIFICATION.value,
+        mutating=True,
+        include_confirmation=False,
         arguments=(ArgumentSpec(
             "target",
             "project target; omitted uses the current project or estate default",
@@ -217,6 +219,7 @@ def getpy_cli():
                 metavar="DIR", parser_kwargs={"default": None},
                 mutually_exclusive_group="destination",
             ),
+            OptionSpec(("--dry-run",), "render and validate output destinations without writing files", parser_kwargs={"action": "store_true", "default": False}),
         ),
         include_json=False,
         include_progress=False,
@@ -257,6 +260,16 @@ def _run_getpy(args, _runtime) -> int:
             exit_code=2,
             show_help=True,
         )
+    scripts = {name: render_from_config(name, cfg_path) for name in names}
+    if args.dry_run:
+        if args.output_dir:
+            for name in names:
+                print(f"[DRY RUN] Would write {Path(args.output_dir) / (name + '-get.py')}")
+        elif args.output:
+            print(f"[DRY RUN] Would write {args.output}")
+        else:
+            print(f"[DRY RUN] Would render {len(scripts)} installer(s) to stdout; no files written.")
+        return 0
     if args.output_dir:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -266,7 +279,6 @@ def _run_getpy(args, _runtime) -> int:
             out.chmod(0o755)
             print(f"[INFO] Written to {out}")
         return
-    scripts = {name: render_from_config(name, cfg_path) for name in names}
     if args.output:
         out = Path(args.output)
         out.write_text(next(iter(scripts.values())), encoding="utf-8")

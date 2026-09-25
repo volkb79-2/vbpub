@@ -534,7 +534,7 @@ def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path):
     answers = iter(["child", "child", "Child", "python", "wheel", "yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     plan = scaffold.collect_plan(
-        {"owner": "o", "repo": "r", "owner_type": "user", "layout": "2"}, tmp_path,
+        {"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path,
     )
     files = scaffold.build_files(plan, tmp_path)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="bad", stderr="standards"))
@@ -546,19 +546,19 @@ def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path):
     answers = iter([str(outside), "x", "X", "python", "wheel", "yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     with pytest.raises(SystemExit):
-        scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "2"}, tmp_path)
+        scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path)
 
     answers = iter(["child", "child", "Child", "python", "wheel", "yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "2"}, tmp_path)
+    scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path)
     answers = iter(["missing"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     with pytest.raises(SystemExit):
-        scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "2"}, tmp_path)
+        scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path)
     answers = iter([str(tmp_path), "demo", "Demo", "python", "wheel", "yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     plan = scaffold.collect_plan(
-        {"owner": "o", "repo": "r", "owner_type": "user", "layout": "2"}, tmp_path,
+        {"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path,
     )
     assert plan["projects"][0]["config"] == "cmru.toml"
 

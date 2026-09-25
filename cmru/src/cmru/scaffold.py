@@ -266,10 +266,10 @@ def collect_plan(options: dict, root: Path) -> dict:
         _init_error("init: GitHub owner type must be user or org")
 
     if layout is None and interactive:
-        print("Layout:\n  1) single project (one cmru.toml, no orchestration file)\n"
-              "  2) monorepo (cmru.orchestration.toml coordinating several projects)")
-        layout = _prompt("Choose", "1")
-    layout = {"1": "single", "2": "monorepo"}.get(str(layout), str(layout))
+        print("Layout:\n  single   one cmru.toml, no orchestration file\n"
+              "  monorepo cmru.orchestration.toml coordinating several projects")
+        layout = _prompt("Layout", "single")
+    layout = str(layout)
     if layout not in ("single", "monorepo"):
         _init_error(f"init: unknown layout {layout!r} (single|monorepo)")
 
@@ -430,16 +430,17 @@ def init_cli():
     registry.register(VerbSpec(
         "init",
         description="Adopt a folder by creating a validated project or monorepo contract.",
-        group=VerbGroup.AUTHENTICATION.value,
+        group=VerbGroup.MODIFICATION.value,
         mutating=True,
         interactive=True,
         include_confirmation=False,
         options=(
             OptionSpec(("--root",), "adoption directory (default: current directory)", metavar="PATH", parser_kwargs={"default": None}),
-            OptionSpec(("--layout",), "contract layout", metavar="LAYOUT", parser_kwargs={"choices": ("single", "monorepo", "1", "2"), "default": None}),
+            OptionSpec(("--layout",), "contract layout", metavar="LAYOUT", parser_kwargs={"choices": ("single", "monorepo"), "default": None}),
             OptionSpec(("--owner",), "GitHub owner (default: detected from origin)", metavar="OWNER", parser_kwargs={"default": None}),
             OptionSpec(("--repo",), "GitHub repository (default: detected from origin)", metavar="REPO", parser_kwargs={"default": None}),
             OptionSpec(("--owner-type",), "GitHub owner type", metavar="TYPE", parser_kwargs={"choices": ("user", "org"), "default": None}),
+            OptionSpec(("--dry-run",), "validate and show generated files without writing them", parser_kwargs={"action": "store_true", "default": False}),
         ),
         include_json=False,
         include_progress=False,
@@ -461,6 +462,9 @@ def _run_init(args, _runtime) -> int:
         print(f"--- {path.relative_to(root)} ---")
         print(content, end="" if content.endswith("\n") else "\n")
     validate(files, root)
+    if args.dry_run:
+        print("[DRY RUN] Validated plan only; no files were written.")
+        return 0
     if not _yes_no(
         _required_prompt("Write these validated files? (yes/no)"),
         "write confirmation",

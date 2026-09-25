@@ -29,13 +29,20 @@ def test_main_cleanup_rejects_multiple_destructive_modes(monkeypatch, tmp_path, 
     assert "not allowed with argument" in capsys.readouterr().err
 
 
-def test_main_cleanup_unmanaged_release_namespace_and_confirmation_guards(monkeypatch, tmp_path, capsys):
+def test_main_cleanup_unmanaged_release_scope_and_confirmation(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _loaded(tmp_path))
-    exc = cli.main(["cleanup", "--delete-unmanaged-release-tag", "demo-v1", "--config", "x"])
-    assert exc == 2 and "requires --yes" in capsys.readouterr().err
-    exc = cli.main(["cleanup", "demo", "--delete-unmanaged-release-tag", "demo-v1", "--config", "x"])
-    assert exc == 2 and "requires --yes" in capsys.readouterr().err
+    calls = []
+    monkeypatch.setattr(
+        cli, "delete_unmanaged_release_tag",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or True,
+    )
+    exc = cli.main(["cleanup", "--delete-unmanaged-release-tag", "demo-legacy", "--config", "x"])
+    assert exc == 2 and "confirmation is required" in capsys.readouterr().err
+    assert calls[-1][1]["dry_run"] is True
+    exc = cli.main(["cleanup", "demo", "--delete-unmanaged-release-tag", "demo-legacy", "--config", "x"])
+    assert exc == 2 and "confirmation is required" in capsys.readouterr().err
+    assert calls[-1][1]["dry_run"] is True
     exc = cli.main(["cleanup", "demo", "--yes", "--delete-unmanaged-release-tag", "other-v1", "--config", "x"])
     assert exc == 2 and "outside project" in capsys.readouterr().err
 
@@ -78,7 +85,8 @@ def test_main_release_child_dry_run_has_no_promotion_or_workspace_mutation(monke
     monkeypatch.setattr(cli, "_transaction_workspace_from_env", lambda _root: transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40))
     monkeypatch.setattr(transaction, "write_release_scope", lambda *args: calls.append("scope"))
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *args: calls.append("backup"))
-    cli.main(["release", "--_transaction-child", "--dry-run", "--config", "x"])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["release", "--dry-run", "--config", "x"])
     assert calls[0][1]["dry_run"] is True
     assert "DRY RUN" in capsys.readouterr().out
 

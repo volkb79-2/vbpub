@@ -87,6 +87,19 @@ def cmd_enroll(args) -> int:
         minisign_pubkey=minisign_pubkey,
     )
 
+    scope = args.scope
+    if getattr(args, "dry_run", False):
+        consul_addr = (
+            getattr(args, "consul_addr", None)
+            or os.environ.get("CONSUL_HTTP_ADDR", "http://127.0.0.1:8500")
+        )
+        print(
+            f"[DRY RUN] Would enroll node_id={node_id} landscape={landscape} "
+            f"at {consul_addr} and write identity in {scope} scope. "
+            "No backend or local state changed."
+        )
+        return 0
+
     backend = _build_backend(args)
     # Use provisioning token for enrollment
     backend._token = consul_token or backend._token  # type: ignore[attr-defined]
@@ -97,7 +110,6 @@ def cmd_enroll(args) -> int:
         print(f"[ERROR] Enrollment failed: {exc}", file=sys.stderr)
         return 1
 
-    scope = args.scope
     ensure_state_dir(scope)
     write_node_id(identity.node_id, scope)
     write_identity({
@@ -123,6 +135,13 @@ def cmd_run(args) -> int:
         print("[ERROR] landscape not found in identity — re-enroll or set CMRU_LANDSCAPE",
               file=sys.stderr)
         return 2
+
+    if getattr(args, "dry_run", False):
+        print(
+            f"[DRY RUN] Would start the long-running reconciler for node_id={node_id} "
+            f"landscape={landscape} scope={args.scope}; no reconciliation was started."
+        )
+        return 0
 
     backend = _build_backend(args)
     release_root = Path(args.release_root) if getattr(args, "release_root", None) else None
@@ -163,9 +182,13 @@ def cmd_once(args) -> int:
         release_root=release_root,
         minisign_pubkey=pubkey,
         max_iterations=1,
+        dry_run=getattr(args, "dry_run", False),
     )
     applied = reconciler.once()
-    print(f"[INFO] once: {'change applied' if applied else 'no change'}")
+    if getattr(args, "dry_run", False):
+        print(f"[DRY RUN] once: {'change would be applied' if applied else 'no change'}")
+    else:
+        print(f"[INFO] once: {'change applied' if applied else 'no change'}")
     return 0
 
 
@@ -236,6 +259,7 @@ def _build_cli():
             OptionSpec(("--node-id",), "node identity (or CMRU_NODE_ID)", metavar="ID", parser_kwargs={"default": None}),
             OptionSpec(("--landscape",), "landscape name (or CMRU_LANDSCAPE)", metavar="NAME", parser_kwargs={"default": None}),
             OptionSpec(("--minisign-pubkey",), "installer verification public key", metavar="KEY", parser_kwargs={"default": None}),
+            OptionSpec(("--dry-run",), "show enrollment targets without contacting the backend or writing state", parser_kwargs={"action": "store_true", "default": False}),
         ), handler=lambda args, _runtime: cmd_enroll(args), **common,
     ))
     for name, description, handler in (
@@ -245,7 +269,7 @@ def _build_cli():
         registry.register(VerbSpec(
             name, description=description, group=VerbGroup.MODIFICATION.value,
             mutating=True, include_confirmation=False,
-            options=(OptionSpec(("--release-root",), "override the release root", metavar="DIR", parser_kwargs={"default": None}),),
+            options=(OptionSpec(("--release-root",), "override the release root", metavar="DIR", parser_kwargs={"default": None}), OptionSpec(("--dry-run",), "show or inspect reconciliation work without applying it", parser_kwargs={"action": "store_true", "default": False})),
             handler=lambda args, _runtime, fn=handler: fn(args), **common,
         ))
     registry.register(VerbSpec(

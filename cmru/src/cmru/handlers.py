@@ -383,7 +383,7 @@ def _docker_login() -> None:
 
 
 def cmd_oci_image_build(args: argparse.Namespace) -> None:
-    """Build an OCI image using docker buildx bake, with optional repack."""
+    """Build an OCI image using docker buildx bake; repack fails closed."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
     target = args.target
@@ -406,8 +406,7 @@ def cmd_oci_image_build(args: argparse.Namespace) -> None:
 
 
 def cmd_oci_image_push(args: argparse.Namespace) -> None:
-    """Push an OCI image. Uses the OCI layout from the build step (repack mode)
-    or runs ``docker buildx bake --push`` (non-repack mode)."""
+    """Push an OCI image with ``docker buildx bake --push``."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
     target = args.target
@@ -473,8 +472,6 @@ def handlers_cli():
             required_path("--bake-file", "path to bake HCL file"),
             required_name("--target", "bake target name", "NAME"),
             OptionSpec(("--repack",), "enable OCI repack", parser_kwargs={"action": "store_true", "default": False}),
-            OptionSpec(("--repack-target-size",), "target size per layer", metavar="SIZE", parser_kwargs={"default": "2GB"}),
-            OptionSpec(("--repack-compression",), "repack compression level (1-22)", metavar="N", parser_kwargs={"type": int, "default": 9}),
         )),
         ("oci-image-push", "Push an OCI image to its registry.", cmd_oci_image_push, (
             required_path("--cwd", "project directory (holds bake file)"),
@@ -484,16 +481,38 @@ def handlers_cli():
         )),
     )
     for name, description, handler, options in commands:
+        mutating = name not in {"wheel-validate", "tarball-validate"}
+        if mutating:
+            options = options + (OptionSpec(
+                ("--dry-run",), "show this handler's inputs without running it",
+                parser_kwargs={"action": "store_true", "default": False},
+            ),)
+
+        def dispatch(args, _runtime, fn=handler, command=name):
+            if getattr(args, "dry_run", False):
+                if getattr(args, "repack", False):
+                    _reject_experimental_repack(True)
+                details = {
+                    key: value for key, value in vars(args).items()
+                    if key != "dry_run" and "token" not in key.lower()
+                }
+                print(f"[DRY RUN] Would run cmru handler {command} with {details}")
+                return 0
+            return fn(args)
+
         registry.register(VerbSpec(
             name,
             description=description,
-            group=VerbGroup.MODIFICATION.value,
-            mutating=True,
+            group=(
+                VerbGroup.MODIFICATION.value
+                if mutating else VerbGroup.EXPLORATION.value
+            ),
+            mutating=mutating,
             include_confirmation=False,
             options=options,
             include_json=False,
             include_progress=False,
-            handler=lambda args, _runtime, fn=handler: fn(args),
+            handler=dispatch,
         ))
     return registry.build()
 

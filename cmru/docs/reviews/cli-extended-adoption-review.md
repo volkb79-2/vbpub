@@ -1,5 +1,11 @@
 # CMRU `cli-extended` adoption and CLI semantics review
 
+> **Historical review snapshot.** This document preserves the findings and gate
+> result from its original review baseline. Product decisions and current
+> implementation outcomes are recorded in the canonical [CLI spec, S-CLI.9](../SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit);
+> use that table for current semantics and acceptance state. This snapshot is
+> not a report of the current worktree.
+
 **Review state: NOT READY for final acceptance.** Registered grammar adoption is
 complete and the canonical inventory is now in the CMRU spec, but the review
 found safety defects and unresolved behavior choices. The pinned project gate
@@ -28,7 +34,7 @@ also failed its Assay lane.
   color switches. `cmru get --help` currently prints `usage: cmru get-py ...`.
 
 The canonical inventory and the required review prompt/results are in
-[`SPEC.md` S-CLI.9](../SPEC.md#s-cli-grammar-audit). That clause includes every
+[`SPEC.md` S-CLI.9](../SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit). That clause includes every
 registered leaf, common flags, hidden options, aliases, module adapters, and a
 check that future grammar edits update the spec in the same product change.
 

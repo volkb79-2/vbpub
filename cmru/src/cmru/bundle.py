@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -430,7 +431,10 @@ def bundle_cli():
         options=(OptionSpec(
             ("--config",), "path to the bundle TOML config", metavar="FILE",
             parser_kwargs={"required": True},
-        ),),
+        ), OptionSpec(
+            ("--dry-run",), "show bundle outputs and commands without changing files",
+            parser_kwargs={"action": "store_true", "default": False},
+        )),
         mutating=True,
         include_confirmation=False,
         include_json=False,
@@ -446,6 +450,31 @@ def build_arg_parser():
 
 
 def _run_bundle_cli(args, _runtime) -> int:
+    if args.dry_run:
+        config = parse_config(Path(args.config).expanduser().resolve())
+        version = os.getenv(config.archive_version_env) if config.archive_version_env else None
+        if not version:
+            raise RuntimeError(
+                f"{config.archive_version_env} must be set for archive naming"
+            )
+        archive = config.dist_dir / config.archive_template.format(version=version)
+        for source in [*config.copy_files, *config.copy_dirs]:
+            path = resolve_path(config.project_root, source)
+            if not path.exists():
+                raise FileNotFoundError(f"Bundle source not found: {path}")
+        if config.dist_dir.exists():
+            print(f"[DRY RUN] Would remove existing dist tree {config.dist_dir}")
+        if config.wheel_enabled:
+            argv = [config.wheel_python_bin, "-m", "pip", "wheel", ".", "-w", str(config.client_dir)]
+            if config.wheel_find_links is not None:
+                argv.extend(["--find-links", str(config.wheel_find_links)])
+            print(f"[DRY RUN] Would run {shlex.join(argv)} in {config.wheel_project_root}")
+        for source in config.copy_files:
+            print(f"[DRY RUN] Would copy {resolve_path(config.project_root, source)}")
+        for source in config.copy_dirs:
+            print(f"[DRY RUN] Would copy tree {resolve_path(config.project_root, source)}")
+        print(f"[DRY RUN] Would create archive {archive}")
+        return 0
     archive = run_bundle(Path(args.config).expanduser().resolve())
     log_info(f"Done: {archive}")
     return 0
