@@ -1431,19 +1431,67 @@ launder it past the floor — it just makes the line non-code, the same as a
 comment.
 
 **Some real lines are not judged at all, and which ones depends on your
-provider.** A line the artifact records no statement for falls out of both the
-numerator and the denominator — the same treatment a comment gets. Under
-`@vitest/coverage-istanbul` that includes **every function signature line,
-every function-level closing brace, and a `const x =` line whose recorded
+provider.** A line with neither a statement nor a supported default-argument
+node falls out of both the numerator and the denominator. Under
+`@vitest/coverage-istanbul` that includes **plain function signature lines,
+function-level closing braces, and a `const x =` line whose recorded
 statement starts on its initialiser**: measured on assay's own committed
 fixture, 23 non-comment lines across six files. Under `@vitest/coverage-v8`
 only 13, all of them type declarations TypeScript erases anyway. The practical
-consequence: a diff that touches *only* a function signature can report
+consequence: a diff that touches *only* a signature without a default can report
 `executable = 0` and PASS. This is not a coverage claim about those lines, it
 is the absence of one — assay reports what the artifact measured and never
 invents a status for a line the instrumenter did not record. If that matters
 for your gate, `judge.mode = "whole_target"` judges whole files instead of a
 diff.
+
+**Defaulted parameters with signature-line arcs are judged, including when the
+default is unused
+(B080).** Keep `producer = "istanbul"` in the lane above and set
+`require_branch = true` to require branch evidence. For example:
+
+```typescript
+export function label({ text = 'untitled' }: { text?: string }) {
+  return text;
+}
+
+label({ text: 'given' }); // function ran; its default branch is still uncovered
+label({});               // exercises the default branch
+```
+
+When the signature has no statement entry and an arm of that same default
+branch is attributed to its node's physical line, assay uses the enclosing
+function's call count to classify that line. The first call covers the signature
+line
+while leaving its default branch at 0/1; adding the second covers that branch
+at 1/1. With no call, both the line and branch are uncovered. Existing
+statement classifications take priority. Required missing or ambiguous
+function metadata produces `ERROR/UNREADABLE_ARTIFACT`; regenerate the complete
+coverage JSON with the declared producer so its `fnMap` and `f` are retained.
+
+**Known multiline gap:** if the default node starts on one line and all of its
+arms are attributed to other lines, the node line stays unclassified. Its
+arms keep their existing treatment. For example, a default on the next line
+can already have a measured statement inside an immediately invoked function:
+
+```typescript
+export function label({ text =
+  (() => { return 'untitled'; })()
+}: { text?: string }) { return text; }
+```
+
+A diff touching only the first line can still PASS at 0/0. A broader rule
+could classify that line from function calls and change its number to 1/1;
+the operator chose to preserve the existing count in this release (A-459).
+
+Files with the supported signature-line arcs previously triggered a named
+refusal when judged, or a
+contradictory-record diagnostic outside the diff. Both symptoms are fixed.
+Previously-PASS changed-line numbers stay the same; previously-refused
+whole-target lanes now include the newly classified signatures. The measured
+four-file consumer example gains six executable lines (54→55, 105→108, 1→2,
+37→38). B054's separate braceless-`if` contradiction handling is unchanged.
+See the [classification rationale](DESIGN-GUIDE.md#default-argument-signature-lines-b080-a-456).
 
 **`require_branch = true` is legal on this format when — and only when — you
 declare `producer = "istanbul"`.** Istanbul's `branchMap` means one thing

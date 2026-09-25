@@ -107,6 +107,7 @@ items:
   - {id: B103, title: "Execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL (stub -- design carved on unmerged branch assay-b099-p35-repair, ID collision with main B099/A-448 only -- A-449/A-450 exist only on the branch, not yet on main, see report)", type: feature, component: execution, context_estimate: large}
   - {id: B104, title: "test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness FAILS on unmodified main: the normalized verdict differs from the frozen v6 witness, and the verdict schema has moved on to v11 since (B070) -- cause unexamined (witness staleness vs. dstdns pin drift vs. a real regression); also names the hazard that a Docker-reaching test runs by default in the local suite when a socket is present", type: bugfix, component: gate}
   - {id: B105, title: "Assay's own source has no registered full-source R2 lane; the v7.0.0 release therefore carries no mutation evidence for assay itself (finding filed during Wave C P0)", type: bugfix, component: gate, context_estimate: small}
+  - {id: B106, title: "Incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence", type: feature, component: mutation, context_estimate: large}
 ---
 
 # assay — backlog
@@ -132,7 +133,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B079 — closed v12 `discard_reason` split — SHIPPED (`assay-v7.0.0`, A-454, release commit `47435679`; tester-unified gate PASS); two original acceptance items remain open: correct the rationale in all five locations, and produce a genuine `RuntimeError` fixture or record an explicit deferral.
 
 **Wave C (current; B080, B081, B094, B025, B095, B076; B100 conditional)**
-- B080 — istanbul default-arg branch on the signature line — OPEN (P1; B089 is its withdrawn duplicate)
+- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; P1 review READY and tester-unified PASS at `8823bfea`; B089 is its withdrawn duplicate)
 - B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (P2)
 - B094 — unknown `--rejudge` reason mapping — OPEN (P2)
 - B025 — unresolvable infrastructure refusals lack their own verdict — PARTIAL (P2 closes the final attestation-timeout oracle)
@@ -140,12 +141,18 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B076 — unbounded R2 baseline has no bound — OPEN (P3 ruling and docs)
 - B100 — bounded operator report for live gate progress/verdicts — OPEN (conditional P4; start only after P0-P3 merge and gate)
 
+**Wave C P1 implemented (2026-09-24; independent review READY and authoritative gate PASS at `8823bfea`)**
+- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation, independent review and tester-unified gate complete)
+
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B105 — assay itself has no full-source R2 lane and no release mutation evidence — OPEN (finding filed in P0; not a Wave C implementation package)
+
+**Filed after the 2026-09-23 triage**
+- B106 — provenance-safe selective mutation reruns across source/test changes — OPEN (filed 2026-09-25 from CMRU's 494-candidate mutation campaign)
 
 **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
 - B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
@@ -8611,7 +8618,60 @@ the failed production attempt and its measurement cost.
 
 ## B080 — an istanbul `default-arg` branch sits on the function-SIGNATURE line, which the `javascript` adapter's own documented guarantee leaves unattributed — so `FileCoverage`'s "no branch line outside `executed | missing`" invariant refuses a fully-executed file whose arc count is genuinely non-zero
 
-**Status: OPEN (filed 2026-09-08, addendum 2026-09-09) — no fix commit in CHANGES.md; the predicted "latent tripwire" has now fired live six times through 2026-09-22 (D-423, D-429, D-433, plus B089's three sightings), still unfixed — see the 2026-09-23 audit addendum below for the full count.**
+**Status: DONE (Wave C P1 implementation, 2026-09-24, A-456/A-459; independent review READY and authoritative tester-unified gate PASS at `8823bfea`) — parser-level shape C classifies statement-less default-argument node lines with a matching arm of the same branch from their enclosing function's call count and preserves their arcs. The multiline compatibility escalation is resolved by the operator's A-459 narrowing. B089 remains a withdrawn duplicate and is resolved by this same change.**
+
+**Implementation ruling and evidence (supersedes the proposed A/B contract and
+zero-count oracle below).** The fixed
+`handoffs/assay-P80-js-default-arg.md` contract selects A-456's shape C,
+narrowed by A-459 to nodes with at least one arm of the same branch attributed
+to the node's physical line using the existing per-arm location/fallback rule:
+`decl.start <= node < loc.start`, comparing full `(line, column)` positions,
+with exactly one function match. `f>0,b=[0]` is an executed line with an
+uncovered branch; `f=0,b=[0]` is missing with an uncovered branch. Required
+missing/malformed/ambiguous function metadata refuses `UNREADABLE_ARTIFACT`.
+Statement-derived line classifications retain priority. `FileCoverage`,
+the evaluator and B054's non-default branch disposition are unchanged.
+
+Shape A's model relaxation leaves the arc uncounted if the line is unclassified;
+B′ (drop only zero-count defaults) and D (drop every statement-less default)
+discard measurable branch evidence. The original `[0] → refuse` proposal
+confused unused defaults with uncalled functions and is withdrawn. The corrected
+A-342 adapter guarantee now includes parser classification of default-argument
+signature lines; other untracked signatures still take rule 4. The historical
+decision rows remain intact; A-459 appends the operator's governing narrowing.
+
+The broader function-call rule remains a documented alternative. A multiline
+default node on line 34 can have its arm and an executed nested-return statement
+on 35, with the outer function body starting on 36. The old parser already
+passes a diff touching only 34 at 0/0. The broad rule classifies that signature
+line from function calls and changes its count to 1/1; it can catch multiline
+defaults whose arms begin later, but changes previously-PASS numbers. The
+operator ruled on 2026-09-24 to preserve the old count: with no matching arm,
+keep the node unclassified, leave arc aggregation/disposition unchanged, and
+leave `fnMap`/`f` unread for that node. The compatibility escalation is resolved;
+the unmatched signature gap is explicit in the user-facing docs.
+
+The controller re-measured the 35-file consumer artifact read-only against this
+implementation: ChartCard 54→55, DataTable 105→108, StatCard 1→2, StatTile 37→38
+executable lines, exactly six added and no others. Each new signature line is
+executed with its original 1/1 branch and no contradiction. StatCard's
+`f=18,b=[15]` and StatTile's `f=26,b=[7]` independently show why branch counts
+cannot substitute for function counts. The controller confirmed all six nodes
+have their sole arm on the node's physical line, so all remain eligible under
+A-459. The preferences.ts:138 default already has a statement and is unchanged.
+No test reads the consumer checkout.
+Previously-PASS changed-lines numbers remain stable: a judged affected file
+previously refused because a recovered line necessarily carried an arc on
+that same unclassified line; an out-of-diff file contributes nothing to the judged
+numbers. Previously-refused whole-target lanes can now count those six lines.
+
+Focused tests cover the committed ChartCard specimen, zero-count variants,
+function boundaries/columns, malformed metadata, unchanged statement priority,
+multiple functions on one physical line, direct `tampered_missing`, and CLI
+judged/bystander/whole-target cases with `require_branch = true`. Controlled M1
+(global tolerance replacing shape C) gives 11 failures with the independent
+tamper oracle still green; M2 (type-blind classification) gives 8 B054 failures.
+Commands and complete local results are in the handoff's implementation evidence.
 
 **Proposed by:** dstdns, 2026-09-08, out of the P176 (`ui-design-system-primitives`)
 phase-2 code review and the P177 code review that inherited its consequence.
@@ -9633,7 +9693,7 @@ source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
 
 ## B089 — istanbul branch-arc self-contradiction on some `.tsx` files
 
-**Status: WITHDRAWN (duplicate of B080, 2026-09-23) — the same six default-arg-on-signature-line branch sites (ChartCard.tsx:34, StatCard.tsx:17, StatTile.tsx:28, DataTable.tsx:33-35) B080 diagnoses as "Live specimens" and root-causes; this entry is B054's drop-and-continue path firing on those same files when they sit outside the judged/diff set (B080 is the hard-refuse path when they ARE in scope). No separate fix is owed here: whichever shape (A/B) B080 ships resolves this entry's symptom too. See B080's own status line and its 2026-09-23 audit addendum for the full sighting count.**
+**Status: WITHDRAWN (duplicate of B080, 2026-09-23; resolved by its Wave C P1 implementation, A-456/A-459; independent review READY and authoritative tester-unified gate PASS at `8823bfea`) — the same six default-arg-on-signature-line branch sites (ChartCard.tsx:34, StatCard.tsx:17, StatTile.tsx:28, DataTable.tsx:33-35) B080 diagnoses as "Live specimens" and root-causes; this entry is B054's drop-and-continue path firing on those same files when they sit outside the judged/diff set (B080 is the hard-refuse path when they ARE in scope). B080's parser-level shape C, narrowed by A-459 to matching signature-line arms, preserves their arcs without a contradictory-record diagnostic; unmatched multiline node lines retain their documented gap. No separate fix is owed. See B080's status and implementation evidence.**
 
 Observed live during dstdns's `ui_unit` lane (P186 post-merge gate, 2026-09-12,
 run-gate rev 40, assay-6.1.0.pyz), against unrelated pre-existing files (P186
@@ -10591,3 +10651,60 @@ either declare and qualify a full-source R2 lane or explicitly accept and
 document the absence of self-mutation evidence. The release gate's PASS remains
 valid for its configured acceptance suite; it does not imply R2 evidence for
 assay's own source.
+
+## B106 -- incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence
+
+**Status: OPEN (filed 2026-09-25 from CMRU's FEAT-03 review campaign).**
+
+**Observed use case:** CMRU's completed campaign at `e4f34c0c` ran 494
+candidates in 14,989.596 seconds (4h09m50s), killing 492 and leaving 2
+survivors. Fixing the survivors changed judged source and tests. The campaign's
+resume validation rejected the old evidence because it predated a source or
+test change, and the declared gate has no survivor-only selection mode that
+produces complete evidence for the changed tree. The controller therefore
+started the full 494-candidate campaign again. On comparable hardware, this
+costs about another four hours.
+
+This is a safe-reuse problem, not just a candidate filter. A selective path
+must not turn an outcome from an old judging context into a current PASS. It
+needs to establish which prior candidate results still apply after source,
+test, command, environment, or tool changes, and which candidates need fresh
+execution. If that proof is unavailable, the candidate must be rerun or the
+campaign must remain explicitly incomplete.
+
+### Desired behavior
+
+- Given prior complete mutation evidence and a changed tree, planning identifies
+  results that can be safely reused, candidates invalidated by changed inputs,
+  newly discovered candidates, and prior survivors that need another judgment.
+- Reuse is tied to enough candidate and judging-input identity to prove that a
+  cached outcome still applies. The design determines the safe granularity; it
+  must not assume unchanged mutant bytes alone make a result valid when tests
+  or execution context changed.
+- Selective execution runs every candidate without a valid reusable result
+  and records which outcomes were executed now versus carried forward, with
+  provenance to the prior evidence.
+- A resulting artifact is complete only when every candidate in the current
+  plan has exactly one fresh or justified reused outcome. Missing, duplicate,
+  stale, or unproven records cannot be reported as a complete passing campaign
+  or accepted by the gate.
+- Ordinary `--resume` and `--rejudge` remain safe and predictable; selecting
+  only prior survivors does not by itself certify campaign completeness.
+
+### Acceptance
+
+- [ ] A fixture starts with a complete campaign containing killed and
+      surviving candidates, then changes selected source and judging inputs.
+      The plan classifies reusable, invalidated, new, and surviving candidates
+      from evidence rather than operator assumptions.
+- [ ] The selective run executes the candidates the plan marks for execution
+      and emits auditable provenance for every reused result.
+- [ ] `assay verify` and the registered gate accept the resulting complete
+      campaign only when current-plan coverage is exhaustive, disjoint, and
+      every reused outcome satisfies the decided identity rules; stale,
+      missing, duplicate, or unproven evidence is refused or explicitly
+      incomplete.
+- [ ] Existing resume behavior remains safe for unchanged inputs, and a
+      survivor-only request cannot silently stand in for a complete campaign.
+- [ ] README, DESIGN-GUIDE, and CONSUMERS.md explain when selective reuse is
+      safe, what evidence is retained, and when a full campaign is still needed.
