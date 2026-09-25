@@ -1,5 +1,5 @@
 {
- "schema_version": 12,
+ "schema_version": 13,
  "assay_version": "0.1.0",
  "lane": "package",
  "commit": "111111111111111111111111111111111111111b",
@@ -74,7 +74,13 @@
       "end_byte": 65,
       "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
       "operator": "python:compare-swap",
-      "description": "Lt->LtE"
+      "description": "Lt->LtE",
+      "candidate_id": "e8514d66d361a7f9f84331b52e47822f6baab3408ffc1118ea2f7130091c043b",
+      "source_sha256": "2cee5a4d1d9cc4f95faa09f608c2414b6067a63040d30b0a45a1d1216c9d24cb",
+      "mutated_file_sha256": "cae155df32749e1b0a7a0732c7a67cf66d74e1fb4724b921dcb0b8eff6cd99d3",
+      "execution": {
+       "mode": "full"
+      }
      },
      {
       "path": "pkg/checks.py",
@@ -83,14 +89,24 @@
       "end_byte": 154,
       "replacement_sha256": "60a33e6cf5151f2d52eddae9685cfa270426aa89d8dbc7dfb854606f1d1a40fe",
       "operator": "python:bool-const-flip",
-      "description": "True->False"
+      "description": "True->False",
+      "candidate_id": "827925dbcd758671bc6d8102d6a492005310288bf4d7717f75de821e8cdd28c1",
+      "source_sha256": "2cee5a4d1d9cc4f95faa09f608c2414b6067a63040d30b0a45a1d1216c9d24cb",
+      "mutated_file_sha256": "4c4df786a98cf5c88541abd96bfdf7bbad61a6b67142b3f64b830467e162e24f",
+      "execution": {
+       "mode": "full"
+      }
      }
     ],
     "survived": [],
     "crashed": [],
     "budget_exceeded": [],
     "equivalent": [],
-    "hung": []
+    "hung": [],
+    "candidate_ids": [
+     "e8514d66d361a7f9f84331b52e47822f6baab3408ffc1118ea2f7130091c043b",
+     "827925dbcd758671bc6d8102d6a492005310288bf4d7717f75de821e8cdd28c1"
+    ]
    }
   }
  ],

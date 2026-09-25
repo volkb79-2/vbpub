@@ -20,7 +20,11 @@ The 14-day default is a policy window, not a claim that age alone proves safety.
 target chooses the newest eligible release from one source. An `aligned` target chooses the
 newest version available and age-eligible in every declared source. The shared constraint
 grammar is a SemVer-compatible subset so one target means the same version across PyPI, npm,
-Go, and OCI tags. An exact override requires a reason; when its source timestamp is newer
+Go, and SemVer OCI tags. OCI `selection = "semver"` is the default; `selection = "rolling"`
+accepts a literal non-SemVer tag. Rolling selection is limited to one OCI source with
+`constraint = "*"`, cannot be aligned with package versions, and requires a registry manifest
+digest. The recorded digest makes a moved tag visible to `check` even when its name remains the
+same. An exact override requires a reason; when its source timestamp is newer
 than the cutoff, it also requires a future expiry date. The reviewable config and artifact diff
 remains the control for deliberate holds and urgent fixes.
 
@@ -36,6 +40,21 @@ provide an HTTP `Last-Modified` value; when they do not, CMRU accepts the publis
 `org.opencontainers.image.created` annotation or image-config `created` field as the documented
 fallback, with a warning. A source that provides no usable timestamp fails closed. These limits
 are visible in the report so an age cutoff does not claim stronger evidence than it has.
+Rolling tags use the registry's `Docker-Content-Digest` as immutable identity evidence; the
+timestamp policy remains registry `Last-Modified` with the documented publisher-created-time
+fallback. Multi-platform indexes may also contain build attestations; CMRU skips descriptors
+marked `vnd.docker.reference.type = "attestation-manifest"` and checks age evidence on every
+remaining runtime platform. Rolling selection queries the declared tag's manifest directly, so a
+large registry does not need to enumerate its full tag collection.
+
+Discovery defaults to the shipped dependency surface: Python project dependencies, explicitly
+selected Python extras, runtime npm dependency tables, and declared Go requirements. Test and
+build dependencies can change more frequently and do not necessarily ship with the product, so
+they are excluded by default. A project may opt into `scope = "all"` to derive targets from all
+supported optional/dependency groups and build requirements. This is a declared policy choice;
+CMRU does not infer which extras a product ships from source imports or build scripts. Project-only
+manifest facts such as selected Python extras and additional requirements files stay in that
+project's `cmru.toml`.
 
 Registry clients follow HTTPS redirects because registries can move blob bodies to signed storage
 URLs. The [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec/blob/main/spec.md)
@@ -103,6 +122,13 @@ This distinction also makes containment explicit: the CMRU root may equal the
 project root, contain it, or sit above it. `..` and symlink escapes remain
 configuration errors because a project registry must not reach an unrelated
 checkout by path trickery.
+
+Release children load the authoritative orchestration config from the isolated
+source snapshot. Their project config paths may therefore already be rooted
+inside that snapshot; CMRU uses those paths directly relative to the child root.
+When orchestration policy is stored outside the checkout, project paths are
+mapped from the source Git root into the child. Both paths must resolve inside
+the selected source snapshot before a command can run.
 
 CMRU names a transaction with the shared six-character workspace identity. The
 final basename contains that token, so the adapter gives the neutral allocator
@@ -175,25 +201,33 @@ project-relative files/directories and the transaction refuses missing or symlin
 rather than guessing what the gate meant. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
 
-## Why CMRU's release gate declares R0-R3
+## Why CMRU splits R2 from its Assay lane
 
-CMRU's internal `assay.toml` is the authoritative rigor contract for the
-selected worktree. R0 runs the existing full test command, R1 judges the
-100% line-and-branch coverage artifact against `base..HEAD`, R2 runs Assay's
-native serial Python mutation campaign with liveness monitoring, and R3 runs
-an import-break canary against CMRU source. `--maxfail=1` stops a failing
-mutant at its first failed test; on the known-good baseline it is inert, so
-R0/R1 still execute the full suite. Together liveness and fail-fast keep a
-mutant's failure from cascading into later tests or leaving a stalled
-candidate consuming the lane. The lane uses the estate-approved
-`repository-minus-unsafe-symlinks` snapshot and names the three tracked Topos
-fixture omissions explicitly; a new unsafe symlink therefore fails closed.
+The release candidate is a snapshot of `origin/main`. CMRU's native Assay
+lane uses `main` as the changed-line base, which is useful for a branch review
+but produces no mutation candidates after the same source has merged. Assay
+correctly reports `NO_MUTANTS` for that release state. CMRU therefore assigns
+R0/R1/R3 to the source-backed Assay lane and R2 to the dedicated release
+mutation lane, which uses the nearest ancestor `cmru-v*` tag. This measures
+the changed CMRU source since its previous release. If that source diff is
+empty, the mutation lane writes its explicit skipped-evidence record. The
+serial campaign caps each candidate at 120 seconds, stops each failed
+candidate at its first failing test (`--maxfail=1`), and resumes from its
+progress stream.
 
-`run-gate.py gate` also retains CMRU's release-specific coverage, mutation,
-canary, and real-enrollment lanes. Those lanes provide release evidence and
-host-facing checks; they do not replace or silently downgrade the Assay R0-R3
-judgment. The selected worktree's Assay source is installed at run time, so
-the gate has one reviewed tool source and records its version in the verdict.
+The mutation and coverage-canary controls use the same disposable CMRU test
+closure. It includes the Topos and nyxloom CMRU manifests read by the estate
+adoption contract test; otherwise the control could fail before exercising a
+mutant and provide no valid R2 or canary evidence.
+
+The full `run-gate.py gate` still covers R0 through R3: R0 runs the full test
+suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based
+changed-source campaign, and R3 runs an import-break canary. The gate also
+retains total-coverage, cause-sensitive canary, and real-enrollment lanes.
+The Assay lane uses the estate-approved `repository-minus-unsafe-symlinks`
+snapshot and names the three tracked Topos fixture omissions explicitly; a
+new unsafe symlink therefore fails closed. The selected worktree's Assay
+source is installed at run time, so its verdict records the tool version.
 
 ## Candidate-first promotion protects the source history
 

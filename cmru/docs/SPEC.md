@@ -102,6 +102,12 @@ no override for local-only commits. It then fetches `origin/main`, creates an ep
 remote commit, and re-execs there. All caller
 working-tree edits that survive the preflight (i.e. that don't touch a released project's path)
 are still ignored: they cannot enter the immutable remote snapshot regardless.
+The child MUST resolve each selected project's `cmru.toml` from the isolated
+snapshot. If the loaded orchestration paths already point inside that snapshot,
+it MUST use them relative to the snapshot root directly; if the central
+orchestration file is external, it MUST map project paths relative to the
+source Git root. It MUST reject project paths outside both roots and any
+resolved project config that escapes the isolated snapshot.
 
 #### S-CLI.5a — Projects release one after another, not in a shared batch
 
@@ -692,13 +698,23 @@ constraint) — that cross-project check is performed by `cmru.dependencies`'
 
 **S2.7 — Version policy and generated state** (`[versions]`). Both
 `cmru.orchestration.toml` and `cmru.toml` MAY declare `[versions]` with a positive
-`age_window_days` (default 14), `targets`, and optional `outputs`. Unknown keys and source
+`age_window_days` (default 14), `targets`, optional `outputs`, and optional `discovery`. Unknown keys and source
 families are rejected (exit 2). Target source tables use the closed values `.pypi`, `.npm`,
 `.go`, and `.oci`; `mode` is exactly `single` or `aligned`. Constraints use the documented
 common SemVer-compatible subset. A single target has exactly one source; an aligned target has
 at least two and CMRU MUST find the same version in every source whose timestamp is at or before
-the target's cutoff. OCI source tables name a fully-qualified image and a tag template with
-exactly one `{version}` placeholder; every other tag character is literal.
+the target's cutoff. OCI source tables name a fully-qualified image. Their `selection` field is
+`selection = "semver"` by default or `selection = "rolling"`. SemVer selection uses a tag template with exactly one
+`{version}` placeholder; every other tag character is literal. Rolling selection uses one
+literal OCI tag, requires `mode = "single"` and `constraint = "*"`, and MUST NOT be aligned with
+other sources or use an exact version override. CMRU MUST record a valid `Docker-Content-Digest`
+sha256 digest for a rolling tag, and `check` MUST treat a digest change as a refresh even when
+the tag string is unchanged.
+When an OCI index contains Docker attestation descriptors marked
+`vnd.docker.reference.type = "attestation-manifest"`, CMRU MUST exclude those descriptors from
+runtime-platform age calculation. Every remaining runtime platform MUST have a usable registry or
+publisher-created timestamp; missing evidence MUST fail closed. This keeps build provenance and
+SBOM metadata manifests from being treated as deployable image variants.
 
 Each registry source table MUST name only environment-variable references (`token_env` or the
 complete `username_env`/`password_env` pair) for credentials; it MUST NOT contain credential
@@ -710,7 +726,8 @@ A target's exact `version` override MUST carry a non-empty `reason`. If its vers
 than the age cutoff in any configured source, it MUST carry a future ISO-date `expires`; CMRU
 refuses an expired override. Otherwise CMRU selects the highest SemVer-compatible, age-eligible
 version. The cutoff is `resolve time - age_window_days`, and releases exactly at the cutoff are
-eligible.
+eligible. When an age-window refusal is determined by Go `.info` commit time or publisher-created
+OCI time, the refusal diagnostic MUST include the corresponding weaker-evidence warning.
 
 Root targets and their `resolved` state belong to `cmru.orchestration.toml` and use the root age
 window. A project target declaration or overlay is project-local: it uses that project's
@@ -718,10 +735,20 @@ effective age window and stores `resolved` in that project's `cmru.toml`. A proj
 setting alone MUST NOT alter a root target. Deep table values merge recursively; scalars and
 arrays replace.
 
-`cmru versions init` derives supported dependency facts from `requirements.in`,
-`pyproject.toml` project dependencies, npm manifest dependency tables, and Go `go.mod` require
-entries (including `// indirect` entries); skipped
-non-registry or unsupported entries MUST be reported. `cmru versions resolve` writes the
+`[versions.discovery]` MAY set `scope` to `shipped` or `all`. Omitted `scope` means `shipped`.
+The orchestration root MAY set the shared scope default; `pypi_extras` and `requirements_files`
+are project-local fields and MUST be declared in a project's `cmru.toml`. `pypi_extras` is an
+array of names from `pyproject.toml [project.optional-dependencies]`; it is valid only with
+`scope = "shipped"`. `requirements_files` is an array of project-relative `.in` or `.txt` files.
+
+With `scope = "shipped"`, `cmru versions init` derives supported dependency facts from
+`requirements.in` and configured `requirements_files`, `pyproject.toml` project dependencies
+and selected extras, npm `dependencies`/`optionalDependencies`/`peerDependencies`, and Go
+`go.mod` require entries (including `// indirect` entries). With `scope = "all"`, it also reads
+all Python optional extras, PEP 735 dependency groups, `build-system.requires`, conventional
+root `requirements*.in`/`requirements*.txt` files and files under `requirements/`, and npm
+`devDependencies`. Skipped non-registry, unsupported-syntax, and unsupported-source entries
+MUST be reported. `cmru versions resolve` writes the
 generated result plus native outputs: Python constraints, npm direct versions/overrides and
 lockfile, Go `go.mod`/`go.sum`, OCI JSON, and any configured strict Jinja2 output. `cmru versions
 check` performs a fresh read-only comparison. None of these actions is coupled to build, release,
@@ -744,7 +771,8 @@ writer fails.
 
 The built-in OCI output is JSON schema 1 at `versions/oci-images-YYYYMMDD.json` and the stable
 `versions/oci-images.json`; existing files may be replaced only when their `generated_by` marker
-is `cmru versions resolve`. A configured `[versions.outputs.<id>]` requires `template`, `path`,
+is `cmru versions resolve`. Rolling OCI entries include the recorded `digest`. A configured
+`[versions.outputs.<id>]` requires `template`, `path`,
 and `dated_path` (with `{date}`), all project-relative. It renders with Jinja2 `StrictUndefined`
 and is an optional feature requiring the `versions-templates` extra. The context contains
 `resolved_at` and `targets`, whose entries contain `version`, `override`, `reason`, `expires`,
@@ -1503,18 +1531,25 @@ action, reviewed like any other source change before it is committed.
 
 ## S16 — Release-gate rigor (Assay-backed)
 
-CMRU's internal `assay.toml` declares the `cmru` lane with the complete
-`R0`, `R1`, `R2`, and `R3` ladder. The lane command is the full CMRU test
-suite and emits `coverage.json`; its judge requires 100% line and branch
-coverage, forbids excluded source, and compares changed source against
-`base = "main"`. The pytest command sets `--maxfail=1`: a green run still
-executes the complete suite, while a failing mutation candidate stops at its
-first failed test instead of cascading into unrelated teardown/lock tests.
-R2 is native serial Python mutation with the declared operator set and
-per-candidate budget, with Assay liveness enabled for stalled pytest
-candidates. R3 is an import-break canary against `src/cmru/config.py`.
+CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
+the full CMRU test suite. R1 judges the `coverage.json` artifact against
+`base = "main"`, requires 100% line and branch coverage, and forbids excluded
+source. R3 runs an import-break canary against `src/cmru/config.py`.
+`--maxfail=1` is inert on the passing baseline, so it does not shorten a green
+full-suite run.
 
-**S16.1 — Snapshot boundary.** R1-R3 run in
+The release `gate` supplies R2 separately through `run-gate.toml`'s
+`mutation` lane. A release candidate is already at `origin/main`; using
+`main` as Assay's mutation base would leave no changed-source candidates and
+correctly produce `NO_MUTANTS`. The dedicated lane resolves the nearest
+ancestor `cmru-v*` tag and mutates CMRU source changed since that release tag,
+with a serial campaign, a 120-second per-candidate timeout, `--maxfail=1`,
+`--resume`, and a progress stream. An empty source diff writes explicit
+skipped evidence.
+`run-gate.py gate` runs the Assay R0/R1/R3 lane plus the tag-based R2 campaign,
+total coverage, cause-sensitive canary, and real-system enrollment checks.
+
+**S16.1 — Snapshot boundary.** Assay R1/R3 run in
 `repository-minus-unsafe-symlinks`, with exactly the three tracked Topos
 fixture paths listed in `cmru/assay.toml` omitted because their absolute link
 targets cannot be materialised safely. A new unsafe symlink is a gate error;
@@ -1524,13 +1559,16 @@ the omission list is not a general exclusion mechanism.
 `run-gate.toml` installs Assay from the selected vbpub worktree and invokes
 the `cmru` lane with the mandatory resume/progress arguments. Its verdict is
 `.assay/verdict-cmru.json` and its progress stream is
-`.assay/progress-cmru.jsonl`, both outside the judged tree. The R2 liveness
-plugin bounds stalled pytest candidates and performs process-group cleanup;
-the first-failure limit prevents a bad mutant from running the rest of the
-suite. The `gate` lane also runs CMRU's release-specific coverage, mutation,
-canary, and real-system enrollment checks; those are supplemental evidence,
-not a second definition of the shared workspace lifecycle or a substitute
-for the Assay ladder.
+`.assay/progress-cmru.jsonl`, both outside the judged tree. The separate R2
+mutation lane records `.assay/mutation-cmru.json` and appends
+`.assay/progress-mutation-cmru.jsonl`; its first-failure limit stops a bad
+mutant from running the rest of the suite. Both campaigns preserve their own
+resume state. The mutation and canary controls copy the CMRU test closure,
+including `topos/cmru.toml` and `nyxloom/cmru.toml`, which the estate adoption
+contract test reads. Missing closure files fail the control before mutation or
+canary evidence is written. The `gate` lane runs these with the total-coverage,
+cause-sensitive canary, and real-system enrollment checks as one release
+contract.
 
 **S16.3 — Admission boundary.** The canonical entrypoint is
 `./run-gate.py`; the tester-unified lane requires the estate-provided

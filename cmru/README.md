@@ -98,16 +98,23 @@ still validates the exact checkout before changing Git state. See the
 ## Supply-chain age-windowed versions
 
 `cmru versions` selects registry releases older than the configured age window (14 days by
-default) for `.pypi`, `.npm`, `.go`, and `.oci` targets. `init` derives package targets from
-project manifests; `resolve` is the explicit write step for resolved state and native lock or
+default) for `.pypi`, `.npm`, `.go`, and `.oci` targets. OCI targets use `selection = "semver"`
+by default; set `.oci.selection = "rolling"` to age-check a literal rolling tag such as
+`26-slim` or `bookworm-slim`. Rolling-tag records include the registry manifest digest, and
+`check` detects a digest change even when the tag is unchanged. `init` derives package targets from
+project manifests using the configurable discovery scope: shipped dependencies by default,
+including explicitly selected Python extras, or all supported manifest groups when opted in.
+`resolve` is the explicit write step for resolved state and native lock or
 constraint outputs; `check` queries registries and reports the current recorded and eligible
-versions without writing. Go `.info` commit-time and OCI image-created fallback evidence are
-called out in warnings and the report. Go targets also check a constrained pseudo-version and use
+versions without writing. Go `.info` times are VCS commit times, and OCI image-created timestamps
+are publisher supplied; CMRU calls both out in warnings and the report. For multi-platform OCI
+indexes, known Docker attestation manifests are excluded from runtime age calculation. Go targets
+also check a constrained pseudo-version and use
 the proxy's `@latest` fallback when no listed version matches. A resolve inside a Go workspace can
 update `go.work` and `go.work.sum` along with module files; inconsistent Go timestamps fail closed.
 These commands do not run as part of
 build, release, gate, or a schedule. Read [the design guide](docs/DESIGN-GUIDE.md#supply-chain-age-windowed-version-determination)
-for the policy and timestamp choices, and use the [consumer examples](docs/CONSUMERS.md#using-a-supply-chain-age-window)
+for the scope policy and timestamp choices, and use the [consumer examples](docs/CONSUMERS.md#using-a-supply-chain-age-window)
 to configure targets and consume the generated artifacts. Registry HTTPS redirects are followed
 without forwarding credentials to a different origin; see the guides for the credential behavior.
 
@@ -241,6 +248,9 @@ while naming both paths. Worktrees retained under the
 older nested `cmru/release/…` naming are still recognised. A local `main` behind the remote is warned about but safe because the
 remote is authoritative. This matters because setuptools-scm sees the
 whole Git worktree: a harmless edit in another project can otherwise make a wheel dirty.
+The release child reads registered project configs from this isolated snapshot; when the central
+orchestration file is external, CMRU maps its project paths from the source Git root into the
+snapshot.
 
 cmru ignores every uncommitted caller path, including a selected project's files: none can
 enter the remote snapshot. It instead rejects only committed local `main` changes not yet on
@@ -405,11 +415,14 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`. The
-`assay` lane declares the complete R0-R3 ladder: the full suite and 100%
-line+branch coverage, native mutation, and an import-break canary. The
-selected worktree's Assay source is installed at lane time. Mutation runs
-stop each failing candidate at its first failed test (`--maxfail=1`) and
-enable Assay liveness for stalled pytest candidates; a successful full-suite
-run still executes all tests. `.assay/` verdict/progress artifacts are
-retained as gate evidence.
+`assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage,
+and an import-break canary. The release `gate` adds R2 through a separate
+changed-source mutation campaign based on the nearest ancestor `cmru-v*` tag.
+This keeps the release candidate set nonempty after the code is already merged
+to `main`; a main-based R2 lane would find no source changes. The selected
+worktree's Assay source is installed at lane time. Mutation runs stop each
+failing candidate at its first failed test (`--maxfail=1`), cap each candidate
+at 120 seconds, and resume from the mutation progress file. A successful
+full-suite run still executes all tests. `.assay/` verdict/progress artifacts
+are retained as gate evidence.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

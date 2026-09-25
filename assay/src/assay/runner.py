@@ -3582,6 +3582,7 @@ def _run_prepared_lane(
     #: see its own docstring. Empty for every call site that never asked.
     rejudge_ids: frozenset[str] = frozenset(),
     rejudge_outcomes: frozenset[str] = frozenset(),
+    reuse_source: Any = None,
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
@@ -4411,6 +4412,27 @@ def _run_prepared_lane(
                 )
             else:
                 candidate_process_runner = process_runner
+            reuse_witnesses: dict[str, tuple[str, str]] = {}
+            if reuse_source is not None:
+                from .mutation_witness import supports_sequential_pytest
+                from .reuse import eligible_witnesses
+
+                sequential_supported = supports_sequential_pytest(
+                    plan.argv_effective,
+                    env=plan.env_effective,
+                )
+                if sequential_supported:
+                    reuse_witnesses = eligible_witnesses(
+                        reuse_source,
+                        sequential_pytest_supported=True,
+                    )
+                elif diagnostics is not None:
+                    print(
+                        "assay: --reuse-from witness replay is unsupported for "
+                        "this lane command; every current candidate will run "
+                        "fully after baseline PASS",
+                        file=diagnostics,
+                    )
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,
@@ -4493,6 +4515,7 @@ def _run_prepared_lane(
                     shard_count=shard_count,
                     rejudge_ids=rejudge_ids,
                     rejudge_outcomes=rejudge_outcomes,
+                    reuse_witnesses=reuse_witnesses,
                 )
             except mutation.InvalidRejudgeIdError:
                 # (B094/A-458) The current candidate set exists only here,
@@ -5139,6 +5162,7 @@ def _run_higher_rigor_lane(
     shard_count: int | None = None,
     rejudge_ids: frozenset[str] = frozenset(),
     rejudge_outcomes: frozenset[str] = frozenset(),
+    reuse_source: Any = None,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     infrastructure_source: Path | None = None,
@@ -5346,6 +5370,7 @@ def _run_higher_rigor_lane(
                         shard_count=shard_count,
                         rejudge_ids=rejudge_ids,
                         rejudge_outcomes=rejudge_outcomes,
+                        reuse_source=reuse_source,
                         progress_stream=progress_stream,
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
                         state_dir=state_dir,
@@ -5538,6 +5563,7 @@ def run_lane(
     #: instance -- points this at a durable directory so `--resume` stops
     #: being inert exactly where budget-capped retries happen most.
     state_dir: Path | None = None,
+    reuse_from: str | Path | None = None,
     #: (B019/A-328) the comparison ref the invoking GATE REQUEST supplies,
     #: for a lane that declared `judge.base_source = "request"`. It is a ref
     #: or an already-resolved commit and goes through the identical merge-base
@@ -5651,6 +5677,7 @@ def run_lane(
                 progress_stream=stream,
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
                 state_dir=state_dir,
+                reuse_from=reuse_from,
                 request_base=request_base,
                 snapshot_limits=snapshot_limits,
                 allow_dirty=allow_dirty,
@@ -5954,6 +5981,71 @@ def run_lane(
                 clock=clock,
             )
 
+    reuse_source = None
+    if reuse_from is not None:
+        def _refuse_reuse(exc: AssayError) -> Verdict:
+            detail = announce_refusal(exc, diagnostics=diagnostics)
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                detail=detail,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                assay_version=assay_version,
+                judge_provenance=judge_provenance,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                clock=clock,
+            )
+
+        if shard is not None:
+            return _refuse_reuse(
+                AssayError(
+                    "--reuse-from cannot be combined with --shard; selective "
+                    "reuse produces only a complete unsharded campaign",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                )
+            )
+        if (
+            not r2_declared
+            or lane.judge is None
+            or lane.judge.mutation is None
+            or lane.judge.mutation.format is not None
+        ):
+            return _refuse_reuse(
+                AssayError(
+                    "--reuse-from requires a native R2 mutation lane",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                )
+            )
+        from .reuse import load_reuse_source
+
+        try:
+            reuse_source = load_reuse_source(reuse_from)
+        except AssayError as exc:
+            return _refuse_reuse(exc)
+        if diagnostics is not None:
+            if reuse_source.cold_start:
+                print(
+                    f"assay: --reuse-from {str(reuse_from)!r} is a v12 cold "
+                    "start; no prior candidates are reusable, so every "
+                    "current candidate will run fully after baseline PASS",
+                    file=diagnostics,
+                )
+            elif not reuse_source.complete_unsharded_native:
+                print(
+                    f"assay: --reuse-from {str(reuse_from)!r} is not a "
+                    "complete unsharded native campaign; every current "
+                    "candidate will run fully after baseline PASS",
+                    file=diagnostics,
+                )
+
     # (B091/D-23, P7 A5) `--rejudge`/`--rejudge-outcome`, parsed and refused
     # HERE -- the same point *shard* is, and the same clean `BAD_LANE_CONFIG`
     # shape (a complete refused verdict, never an uncaught exception) rather
@@ -6066,6 +6158,7 @@ def run_lane(
             shard_count=shard_count,
             rejudge_ids=rejudge_ids,
             rejudge_outcomes=rejudge_outcomes,
+            reuse_source=reuse_source,
             evidence=evidence,
             declared_evidence=declared_evidence,
             progress_stream=progress_stream,

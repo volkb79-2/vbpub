@@ -90,6 +90,7 @@ from datetime import datetime
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, TextIO
 
+from .candidate_identity import candidate_id_from_fields
 from .mutation import judge_mutation
 from .verdict import (
     CLAIM_DETAIL_BYTES,
@@ -114,6 +115,8 @@ from .verdict import (
     JudgmentResolved,
     MutantOutcome,
     Mutation,
+    MutationExecution,
+    MutationWitnessReceipt,
     MutationProducerTool,
     Outcome,
     ReasonCode,
@@ -549,7 +552,7 @@ def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
 
 
 def _check_worktree_integrity(document: dict, failures: list[str]) -> None:
-    """Check the raw v12 dirty-tree provenance shape.
+    """Check the raw B102 (v12-introduced) dirty-tree provenance shape.
 
     An overridden path is a valid fact in a structurally valid artifact, not
     a verifier failure. ``cmd_verify`` reports that fact explicitly so
@@ -1613,6 +1616,221 @@ def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
             )
 
 
+def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None:
+    """Independently check v13 native candidate identity and scope coverage."""
+    claims = document.get("claims")
+    if not isinstance(claims, list):
+        return
+    claim = next(
+        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
+        None,
+    )
+    mutation = _mutation_of(claim)
+    if not isinstance(mutation, dict):
+        return
+    judgment = document.get("judgment")
+    policy = judgment.get("r2") if isinstance(judgment, dict) else None
+    producer = policy.get("producer") if isinstance(policy, dict) else None
+    if producer not in ("native", "ingested"):
+        return
+    b106_fields = {
+        "candidate_id",
+        "source_sha256",
+        "mutated_file_sha256",
+        "execution",
+    }
+    entries = list(_mutant_entries(mutation))
+    if producer == "ingested":
+        if "candidate_ids" in mutation:
+            failures.append(
+                "an ingested mutation payload carries the native candidate inventory"
+            )
+        for bucket, entry in entries:
+            present = sorted(b106_fields & set(entry))
+            if present:
+                failures.append(
+                    f"ingested mutation.{bucket} entry carries native B106 "
+                    f"field(s) {present}"
+                )
+        return
+
+    total = mutation.get("total")
+    candidate_count = mutation.get("candidate_count")
+    max_mutants = policy.get("max_mutants")
+    reason = claim.get("reason_code") if isinstance(claim, dict) else None
+    sentinel = (
+        total == 0
+        and isinstance(candidate_count, int)
+        and not isinstance(candidate_count, bool)
+        and isinstance(max_mutants, int)
+        and not isinstance(max_mutants, bool)
+        and candidate_count == max_mutants + 1
+        and reason == "MUTANT_LIMIT_EXCEEDED"
+    )
+    if sentinel:
+        if "candidate_ids" in mutation:
+            failures.append(
+                "a pre-submission mutant-limit sentinel carries candidate_ids "
+                "although no candidate scope was submitted"
+            )
+        return
+
+    inventory = mutation.get("candidate_ids")
+    if not isinstance(inventory, list):
+        failures.append(
+            "a completed native mutation scope requires candidate_ids, "
+            "including an empty array"
+        )
+        inventory = []
+    inventory_values: list[str] = []
+    for value in inventory:
+        if not _is_sha256_digest(value):
+            failures.append("mutation.candidate_ids contains a malformed digest")
+        elif value in inventory_values:
+            failures.append("mutation.candidate_ids contains a duplicate candidate ID")
+        else:
+            inventory_values.append(value)
+
+    outcome_ids: list[str] = []
+    for bucket, entry in entries:
+        missing = sorted(b106_fields - set(entry))
+        if missing:
+            failures.append(
+                f"native mutation.{bucket} entry is missing B106 field(s) {missing}"
+            )
+            continue
+        candidate = entry.get("candidate_id")
+        source_digest = entry.get("source_sha256")
+        mutated_digest = entry.get("mutated_file_sha256")
+        if not all(
+            _is_sha256_digest(value)
+            for value in (candidate, source_digest, mutated_digest)
+        ):
+            failures.append(
+                f"native mutation.{bucket} entry has a malformed B106 digest"
+            )
+        else:
+            outcome_ids.append(candidate)
+            try:
+                expected = candidate_id_from_fields(
+                    path=entry.get("path"),
+                    source_sha256=source_digest,
+                    start_byte=entry.get("start_byte"),
+                    end_byte=entry.get("end_byte"),
+                    mutated_file_sha256=mutated_digest,
+                    operator=entry.get("operator"),
+                )
+            except (TypeError, ValueError, AttributeError):
+                expected = None
+            if candidate != expected:
+                failures.append(
+                    f"native mutation.{bucket} candidate_id does not match its "
+                    "recorded identity inputs"
+                )
+        _check_b106_execution(bucket, entry.get("execution"), failures)
+
+    if len(outcome_ids) != len(set(outcome_ids)):
+        failures.append("native mutation outcomes contain a duplicate candidate ID")
+    if set(inventory_values) != set(outcome_ids):
+        failures.append(
+            "native mutation.candidate_ids does not equal the candidate IDs "
+            "listed across the outcome buckets"
+        )
+
+
+def _check_b106_execution(bucket: str, execution: Any, failures: list[str]) -> None:
+    if not isinstance(execution, dict):
+        failures.append(f"native mutation.{bucket} execution must be an object")
+        return
+    mode = execution.get("mode")
+    if mode == "full":
+        if set(execution) - {"mode", "witness"}:
+            failures.append(
+                f"mutation.{bucket} full execution carries witness-prefix fields"
+            )
+        if bucket != "killed" and "witness" in execution:
+            failures.append(
+                f"mutation.{bucket} full execution carries a kill witness"
+            )
+        if "witness" in execution:
+            _check_b106_receipt(execution["witness"], bucket, failures)
+        return
+    if mode != "witness-prefix":
+        failures.append(f"mutation.{bucket} has an unknown execution mode")
+        return
+    required = {
+        "mode",
+        "witness",
+        "prior_verdict_sha256",
+        "prior_node_id",
+        "current_node_id",
+    }
+    if set(execution) != required:
+        failures.append(
+            "witness-prefix execution must carry exactly its prior digest, "
+            "prior/current node IDs and current receipt"
+        )
+    if bucket != "killed":
+        failures.append("only a killed outcome may use witness-prefix execution")
+    prior_digest = execution.get("prior_verdict_sha256")
+    if not _is_sha256_digest(prior_digest):
+        failures.append("witness-prefix prior verdict digest is malformed")
+    prior_node = execution.get("prior_node_id")
+    current_node = execution.get("current_node_id")
+    for label, node in (("prior", prior_node), ("current", current_node)):
+        if not _is_bounded_node_id(node):
+            failures.append(f"witness-prefix {label} node ID is malformed or oversized")
+    receipt = execution.get("witness")
+    _check_b106_receipt(receipt, bucket, failures)
+    if isinstance(receipt, dict) and (
+        prior_node != current_node or receipt.get("node_id") != current_node
+    ):
+        failures.append(
+            "witness-prefix prior, current and receipt node IDs must be identical"
+        )
+
+
+def _check_b106_receipt(receipt: Any, bucket: str, failures: list[str]) -> None:
+    required = {
+        "node_id",
+        "when",
+        "outcome",
+        "session_exit_status",
+        "process_exit_status",
+    }
+    if not isinstance(receipt, dict):
+        failures.append("mutation witness receipt must be an object")
+        return
+    if set(receipt) != required:
+        failures.append("mutation witness receipt has missing or unknown fields")
+    if not _is_bounded_node_id(receipt.get("node_id")):
+        failures.append("mutation witness node ID is malformed or oversized")
+    if receipt.get("when") != "call" or receipt.get("outcome") != "failed":
+        failures.append("mutation witness must be a failed call-phase report")
+    for name in ("session_exit_status", "process_exit_status"):
+        if type(receipt.get(name)) is not int or receipt.get(name) != 1:
+            failures.append(f"mutation witness {name} must equal 1")
+    if bucket != "killed":
+        failures.append("a mutation witness is legal only on a killed outcome")
+
+
+def _is_sha256_digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _is_bounded_node_id(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return len(value.encode("utf-8")) <= 4096
+    except UnicodeEncodeError:
+        return False
+
+
 def _check_identities_are_unique(
     mutation: dict, buckets: tuple[str, ...], failures: list[str]
 ) -> None:
@@ -1943,6 +2161,22 @@ def _reconstruct_red_first(raw: dict) -> RedFirstResult:
 
 
 def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
+    raw_execution = raw.get("execution")
+    execution = None
+    if isinstance(raw_execution, dict):
+        raw_witness = raw_execution.get("witness")
+        witness = (
+            MutationWitnessReceipt(**raw_witness)
+            if isinstance(raw_witness, dict)
+            else None
+        )
+        execution = MutationExecution(
+            mode=raw_execution["mode"],
+            witness=witness,
+            prior_verdict_sha256=raw_execution.get("prior_verdict_sha256"),
+            prior_node_id=raw_execution.get("prior_node_id"),
+            current_node_id=raw_execution.get("current_node_id"),
+        )
     item = MutantOutcome(
         path=raw["path"],
         lineno=raw["lineno"],
@@ -1953,6 +2187,10 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
         description=raw["description"],
         kill_signal=raw.get("kill_signal"),
         discard_reason=raw.get("discard_reason"),
+        candidate_id=raw.get("candidate_id"),
+        source_sha256=raw.get("source_sha256"),
+        mutated_file_sha256=raw.get("mutated_file_sha256"),
+        execution=execution,
     )
     _reject_unknown_keys(raw, item.to_dict(), "mutant outcome")
     return item
@@ -2831,6 +3069,7 @@ def verify_document(document: Any) -> list[str]:
     _check_worktree_integrity(document, failures)
     _check_r2_producer_vocabulary(document, failures)
     _check_mutation_payload_shapes(document, failures)
+    _check_b106_mutation_provenance(document, failures)
     _check_ingested_r2_agrees_with_its_payload(document, failures)
     _check_a_judged_status_carries_its_own_payload(document, failures)
     _check_helpers_have_a_judged_claim(document, failures)

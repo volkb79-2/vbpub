@@ -352,3 +352,73 @@ Focused verification after the first adversarial review found boundary cases:
   SHA-256 `a12909d52a86e5e17d334b1584daba4bb61bb1f744ca633b2dfab8754edf11fe`.
   The log and this result entry are report-only additions after the passing
   code-tip gate; the tested source tip remains `7859057f`.
+
+
+## P5 — B106 selective mutation reuse
+
+P5 is implemented in CIU worktree
+`/workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse`, branch
+`assay-wave-c-p5-b106-selective-reuse`, based on main tip `3f117b27`. The
+implementation adds schema v13 candidate identity, exhaustive current-scope
+inventory, bounded pytest failure-witness capture, current witness-prefix
+replay with full-suite fallback, preview classification, and README/design/
+consumer documentation. V12 is cold-start only. A-461 records the schema-only
+change; lane schema and reason codes are unchanged.
+
+GPT-6-Luna xhigh recommended v13 verdict fields only. Its initial adversarial
+review's five findings were repaired. The final follow-up found a P2 module
+prefix spoof; the hook allowlist now checks exact generated plugin paths and
+pytest's installed package path. A deceptive dynamically registered lookalike
+plugin regression verifies that a passing test cannot be replay-certified as
+a kill. A fresh final xhigh review found no actionable P1/P2 findings.
+
+Local evidence: the combined focused suite had 315 passes; after fixing the
+intentional empty-`PYTHONPATH` ShellCheck annotation, ShellCheck and the gate
+marker/order test passed. After the final P2 repair, the B106 suite passed 25
+tests, including the lookalike-hook and real liveness-plugin integration
+tests. The first registered gate attempt at `d43167c6` exited 1 in the
+historical-v6-v10 hard-cut check: its inline expectation still said the
+current verifier was v12 after P5 cut it to v13. The installed v13 verifier
+correctly refused a v6 template; this was stale gate expectation, not a
+product failure. The raw log is preserved at
+[`assay-WAVE-C-P5-gate-failed-2026-09-25-d43167c6.log`](assay-WAVE-C-P5-gate-failed-2026-09-25-d43167c6.log),
+SHA-256 `deb8164774864c80134b7f36244128515490ea2073aff1a4d0a15900f186fb18`.
+The gate now derives its refusal from `VERDICT_SCHEMA_VERSION` and pins the
+P5 cut to 13; its source test covers that assertion. P5 details are in
+[`assay-WAVE-C-P5-B106-REPORT.md`](assay-WAVE-C-P5-B106-REPORT.md).
+
+The next attempt started on `c28fbbb9` and passed the focused Wave C/P5
+phases, but was intentionally stopped with exit 143 when the 90-second check
+confirmed that shared `main` had advanced to `23214ef5` beyond P5's
+`3f117b27` base. Its exact container had a verified 3-CPU limit under
+`dev-gates.slice`. The raw log is preserved at
+[`assay-WAVE-C-P5-gate-cancelled-2026-09-25-c28fbbb9.log.gz`](assay-WAVE-C-P5-gate-cancelled-2026-09-25-c28fbbb9.log.gz).
+Current `main` was merged cleanly into the P5 branch as `34580468`; only the
+gate on that merged tree can count as final acceptance.
+
+The final registered `./run-gate.py tester-unified` gate passed on source tip
+`a0e2fe23d4a47ddd1c04564a901f5ef647acc670`, with current `main`
+`23214ef58d6ba91bca6e01ee6cef0553929e440a` included. It completed in 18m27s
+after all 13 phase markers passed, including the full self-hosted lane, Topos,
+CMRU B006(a), independent witness, and pyflakes. Exit evidence:
+`ASSAY_GATE_CONTAINER_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`, lane exit 0,
+`OUTER_GATE_EXIT=0`, and `GATE_EXIT=0`. Container
+`run-gate-assay-selfhosted-520812-20390-1790349632` was confirmed at 3 CPUs
+under `dev-gates.slice` and removed after completion. The optional profiling
+daemon was unavailable, so run-gate used coarse rusage sampling; this did not
+affect the result. The raw 6,955-byte log is preserved at
+[`assay-WAVE-C-P5-gate-2026-09-25-a0e2fe23.log.gz`](assay-WAVE-C-P5-gate-2026-09-25-a0e2fe23.log.gz),
+SHA-256 `f930192e75eca593d82fce196eb5a53a0323ef80621fc95a0bf7ac250570a056`.
+The tested source tip remains `a0e2fe23`; only its gate log and report were
+added after the pass.
+
+### Agreed continuation after P5
+
+After P5 is gated, merged, and included in the single Wave C release, B105 is
+the next package and must complete before M7. The Wave C pre-release lane stays
+R0-only. B105 will add an explicitly invocable whole-source R0–R3
+self-qualification run: R1 whole-target branch coverage with a full floor,
+native R2 mutation over the full source, R3 canary qualification, and a
+verifier-accepted report produced from the final B105 tree. The report, not a
+review, is the required evidence. See the P5 report for the recommended
+separate named gate and acceptance details.

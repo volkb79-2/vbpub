@@ -819,7 +819,7 @@ def test_verdict_inspection_reuses_real_verifier_and_refuses_false_certification
     elif problem == "duplicate":
         text = text.replace('"exit_code": 0', '"exit_code": 0, "exit_code": 0')
     elif problem == "schema":
-        text = text.replace('"schema_version": 12', '"schema_version": 11')
+        text = text.replace('"schema_version": 13', '"schema_version": 11')
     elif problem == "rollup":
         text = text.replace('"outcome": "PASS"', '"outcome": "FAIL"')
     else:
