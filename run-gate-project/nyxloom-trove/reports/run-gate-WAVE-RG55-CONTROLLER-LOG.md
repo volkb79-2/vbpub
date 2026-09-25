@@ -4270,3 +4270,18 @@ properties through `host-escape`. This is the documented operator deployment
 step, not a source repair and not a change under `/workspaces/dstdns`.
 P1's exact-tree R2 campaign remains untouched while this host prerequisite is
 established.
+
+### RW-336 — 2026-09-25 21:17:50Z — resume P1 R2 after externally terminated attempt
+
+The P1 R2 attempt on exact tree `429c076369b20587e395739892b3e1b715cd3482`
+was terminated with exit 143 at candidate 85/121. The run-gate receipt records
+no OOM kill and no verdict for that attempt; its existing verdict remained the
+earlier diagnostic tree's result, so the interrupted attempt is not mutation
+evidence. Its progress stream is resumable and was left intact.
+
+After a fresh PSI check (`memory full avg10=0.05`), the controller resumed the
+same exact tree with `./run-gate.py r2`. The 90-second acceptance check found
+container `run-gate-rg55-p1-r2-isolated-r2-1072906-1790370942` running under
+`dev-gates.slice` at `NanoCpus=3000000000`, with progress active and launch PSI
+`full avg10=0.01`; no HEAD or judged worktree mutation occurred. The resumed
+campaign is the authoritative attempt pending its final verdict.
