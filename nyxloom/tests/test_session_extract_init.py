@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from nyxloom.session_extract import DetectionError, ExtractConfig, extract, read_since_marker
+from nyxloom.session_extract.events import EventKind, NormalizedEvent
 from nyxloom.session_extract.render import render_json, render_text
 
 
@@ -145,3 +146,14 @@ def test_read_since_marker_takes_the_last_footer_not_the_first(tmp_path):
     fp.write_text(text, encoding="utf-8")
     fmt, marker = read_since_marker(fp)
     assert (fmt, marker) == ("claude-code", "REAL-CURRENT-MARKER")
+
+
+def test_read_since_marker_uses_leading_footer_for_pre_metadata(tmp_path):
+    quoted = "<!-- nyxloom-extract: format=claude-code marker=STALE-FAKE-MARKER -->"
+    event = NormalizedEvent(0, "event", "2026-01-01T00:00:00Z", EventKind.OPERATOR_TEXT,
+                            f"copied prior result:\n{quoted}")
+    text = render_text([event], "claude-code", "REAL-CURRENT-MARKER", metadata_position="pre")
+    fp = tmp_path / "pre-metadata.txt"
+    fp.write_text(text, encoding="utf-8")
+
+    assert read_since_marker(fp) == ("claude-code", "REAL-CURRENT-MARKER")

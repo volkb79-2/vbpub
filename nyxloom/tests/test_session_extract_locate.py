@@ -381,6 +381,18 @@ def test_xdg_data_home_equal_to_the_default_is_not_searched_twice(home, monkeypa
     ]
 
 
+def test_opencode_db_equal_to_xdg_store_is_not_searched_twice(home, tmp_path, monkeypatch):
+    xdg = tmp_path / "xdg"
+    configured = xdg / "opencode" / "opencode.db"
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+    monkeypatch.setenv("OPENCODE_DB", str(configured))
+
+    assert locate._opencode_db_candidates() == [
+        configured,
+        home / ".local" / "share" / "opencode" / "opencode.db",
+    ]
+
+
 def test_a_non_opencode_sqlite_file_at_the_default_path_is_skipped(home):
     # sniff() is the gate, not the filename: a DB without session/message/part
     # is not an opencode store and must not swallow the lookup.

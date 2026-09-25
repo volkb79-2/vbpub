@@ -40,8 +40,11 @@ period.
 - One JSON object per line: {timestamp, ordinal, type, payload}. Top-level
   `type` in {"session_meta", "event_msg", "response_item", "turn_context",
   "world_state", "compacted" (new-schema only)}.
-- `response_item` carries the raw API-level conversation and is NOT used by
-  this adapter (see `event_msg` below, used instead in both generations).
+- `response_item` carries the raw API-level conversation. Ordinary tool calls
+  stay hidden unless explicitly requested; `request_user_input_async` is the
+  exception because it is the only source for every displayed UI prompt and
+  its offered choices. These are normalized as `INTERVIEW:` prose at the call's
+  source position.
 - `event_msg` is a cleaner, already-classified layer, but its payload shape
   changed between generations:
   - OLD (cli_version <= ~0.145.0): `payload.type` directly names the kind --
@@ -73,17 +76,23 @@ period.
   every record in every rollout file from 2026-08 onward (both the old and
   new event_msg shapes appear with it) but ABSENT on older ones (verified
   on a 2026-06/07 file: only {timestamp, type, payload} at the top level).
-  Used directly as seq/marker when present; falls back to this adapter's
-  own enumerate index otherwise, which is stable within one parse but not
-  guaranteed comparable across Codex CLI versions -- --since chaining
-  across an old/new version boundary is therefore not guaranteed to line up.
+  Used directly as seq/marker when present. Without it, `event_msg` and
+  `compacted` records retain their historical numeric index markers for
+  cursor compatibility; newly surfaced `response_item` records use a
+  namespaced `response_item-<position>` marker. --since chaining across an
+  old/new Codex CLI version boundary is not guaranteed to line up.
 
 Known gaps, left honest rather than guessed:
-- No AskUserQuestion equivalent was found in either generation's sessions
-  inspected (including CollabAgentToolCall, checked directly -- it's a
-  sub-agent spawn, not a question/answer tool). QA_PAIR is never emitted by
-  this adapter; if Codex has a structured-question tool, this adapter
-  doesn't yet know its event shape.
+- This Codex interface records `request_user_input_async` as a
+  `response_item.function_call`; each question and its offered choices are
+  rendered as an `INTERVIEW:` block, even when Codex writes no assistant-prose
+  copy. An identical assistant copy is deduplicated. A submitted answer arrives
+  in a `UserMessage` containing a `send_user_message_question_reply` JSON
+  envelope and is rendered as `OPERATOR:` prose at the reply's source
+  position. The envelope's `questionItemId` links delayed answers to the right
+  choices; exact selected-option text and arbitrary free text are both kept
+  verbatim. Ordinary chat answers also remain visible as operator prose, with
+  no guessed association when the record carries no question ID.
 - **Sub-agent targeting (2026-09-11, corrected same day by a live test --
   the note this replaces was WRONG).** The original note here claimed
   Codex sub-agent activity is inline-only with no separate file, based on
@@ -147,14 +156,17 @@ Known gaps, left honest rather than guessed:
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..config import ExtractConfig
 from ..events import EventKind, NormalizedEvent
 
 name = "codex"
 
-_TOP_LEVEL_TYPES = {"event_msg", "compacted"}
+_TOP_LEVEL_TYPES = {"event_msg", "compacted", "response_item"}
+_LEGACY_MARKER_TYPES = {"event_msg", "compacted"}
 _SKIPPED_ITEM_TYPES = {"CommandExecution", "CollabAgentToolCall", "FileChange", "ContextCompaction"}
 
 
@@ -234,7 +246,7 @@ def _scan_event_counts(path: Path) -> tuple[int, str | None, str | None]:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if obj.get("type") in _TOP_LEVEL_TYPES:
+                if isinstance(obj, dict) and obj.get("type") in _TOP_LEVEL_TYPES:
                     count += 1
                     ts = obj.get("timestamp")
                     if ts:
@@ -284,7 +296,8 @@ def list_agents(path: Path) -> list["SessionNode"]:
         # consistent (see codex.py's module docstring's session_meta dump).
         raw_source = meta.get("source")
         subagent = raw_source.get("subagent") if isinstance(raw_source, dict) else None
-        spawn = (subagent or {}).get("thread_spawn") or {}
+        spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+        spawn = spawn if isinstance(spawn, dict) else {}
         is_subagent = thread_source == "subagent"
         depth = spawn.get("depth", 1) if is_subagent else 0
         parent_id = meta.get("forked_from_id") or spawn.get("parent_thread_id")
@@ -307,28 +320,378 @@ def _item_text(item: dict, block_type: str) -> str:
     )
 
 
+@dataclass
+class StreamState:
+    """Question metadata shared by a forward Codex parse or follow stream."""
+
+    questions: dict[tuple[str, int], dict[str, Any]] = field(default_factory=dict)
+    pending_prose_copies: list[tuple[list[dict[str, Any]], bool]] = field(default_factory=list)
+
+    def remember_question_call(
+        self, payload: dict[str, Any], *, prompt_emitted: bool = True,
+    ) -> list[dict[str, Any]]:
+        prompts = _question_call_items(payload)
+        call_id = payload.get("call_id") or payload.get("id")
+        if isinstance(call_id, str):
+            for prompt in prompts:
+                self.questions[(call_id, prompt["item_index"])] = prompt
+        if prompts:
+            self.pending_prose_copies.append((prompts, prompt_emitted))
+        return prompts
+
+    def question_for_reply(self, row: dict[str, Any]) -> dict[str, Any] | None:
+        key = _question_item_key(row.get("questionItemId"))
+        if key is not None and key in self.questions:
+            return self.questions[key]
+        question = row.get("question")
+        if isinstance(question, str):
+            matches = [
+                prompt for prompt in self.questions.values()
+                if question in (prompt.get("title"), prompt.get("question"))
+            ]
+            if len(matches) == 1:
+                return matches[0]
+        return None
+
+    def consume_question_prose_copy(self, text: str) -> list[dict[str, Any]] | None:
+        """Consume an exact assistant rendering of a known UI question.
+
+        Return ``[]`` when its marked prompt was already emitted, the matching
+        prompt records when a since/follow boundary excluded the call, and
+        ``None`` when the assistant text is not a question copy.
+        """
+        normalized = _normalize_question_prose(text)
+        if not normalized:
+            return None
+        blocks = _question_prose_blocks(text)
+        for group_index, (prompts, prompt_emitted) in enumerate(self.pending_prose_copies):
+            combined = _normalize_question_prose("\n\n".join(
+                _question_copy_text(prompt) for prompt in prompts
+            ))
+            if normalized == combined:
+                self.pending_prose_copies.pop(group_index)
+                return [] if prompt_emitted else prompts
+            # Codex sometimes copies an entire multi-question call into one
+            # AgentMessage. Match the rows as separate blank-line-delimited
+            # blocks too, including when each row's title differs from its
+            # question text.
+            if len(blocks) == len(prompts) and all(
+                block in {
+                    _normalize_question_prose(copy_text)
+                    for copy_text in _question_copy_variants(prompt)
+                }
+                for block, prompt in zip(blocks, prompts)
+            ):
+                self.pending_prose_copies.pop(group_index)
+                return [] if prompt_emitted else prompts
+            for prompt_index, prompt in enumerate(prompts):
+                if normalized in {
+                    _normalize_question_prose(copy_text)
+                    for copy_text in _question_copy_variants(prompt)
+                }:
+                    prompts.pop(prompt_index)
+                    if not prompts:
+                        self.pending_prose_copies.pop(group_index)
+                    return [] if prompt_emitted else [prompt]
+        return None
+
+    def clear_pending_prose_copies(self) -> None:
+        self.pending_prose_copies.clear()
+
+
+def _question_item_key(value: Any) -> tuple[str, int] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    if (
+        isinstance(value, list)
+        and len(value) >= 3
+        and value[0] == "request_user_input_async"
+        and isinstance(value[1], str)
+        and isinstance(value[2], int)
+        and not isinstance(value[2], bool)
+    ):
+        return value[1], value[2]
+    return None
+
+
+def _option_text(option: Any) -> str | None:
+    if isinstance(option, str):
+        return option
+    if not isinstance(option, dict):
+        return None
+    label = option.get("label") or option.get("title") or option.get("value")
+    description = option.get("description")
+    if isinstance(label, str) and isinstance(description, str) and description and description != label:
+        return f"{label}: {description}"
+    return label if isinstance(label, str) else None
+
+
+def _question_call_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    arguments = payload.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(arguments, dict):
+        return []
+    rows = arguments.get("questions")
+    if not isinstance(rows, list):
+        return []
+    prompts = []
+    for item_index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        title = row.get("title")
+        question = row.get("question")
+        if not isinstance(title, str) or not title.strip():
+            title = None
+        if not isinstance(question, str) or not question.strip():
+            question = None
+        if title is None and question is None:
+            continue
+        options = row.get("options")
+        option_texts = tuple(
+            text for text in (_option_text(option) for option in options or [])
+            if text is not None
+        ) if isinstance(options, list) else ()
+        prompts.append({
+            "item_index": item_index,
+            "title": title,
+            "question": question,
+            "options": option_texts,
+        })
+    return prompts
+
+
+def _question_header(prompt: dict[str, Any]) -> str:
+    title = prompt.get("title")
+    question = prompt.get("question")
+    if isinstance(title, str) and isinstance(question, str) and title != question:
+        return f"INTERVIEW: {title}\n{question}"
+    text = question if isinstance(question, str) else title
+    return f"INTERVIEW: {text or '[question text unavailable]'}"
+
+
+def _format_question_prompt(prompt: dict[str, Any]) -> str:
+    lines = [_question_header(prompt)]
+    lines.extend(f"- {option}" for option in prompt.get("options", ()))
+    return "\n".join(lines)
+
+
+def _question_copy_variants(prompt: dict[str, Any]) -> tuple[str, ...]:
+    headers = [
+        value for value in (prompt.get("title"), prompt.get("question"))
+        if isinstance(value, str) and value
+    ]
+    options = [f"- {option}" for option in prompt.get("options", ())]
+    variants = ["\n".join([header, *options]) for header in dict.fromkeys(headers)]
+    if len(headers) > 1:
+        variants.append("\n".join([*headers, *options]))
+    return tuple(variants)
+
+
+def _question_copy_text(prompt: dict[str, Any]) -> str:
+    variants = _question_copy_variants(prompt)
+    return variants[0] if variants else ""
+
+
+def _normalize_question_prose(text: str) -> str:
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
+
+
+def _question_prose_blocks(text: str) -> list[str]:
+    blocks: list[str] = []
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line.strip():
+            lines.append(line.strip())
+        elif lines:
+            blocks.append("\n".join(lines))
+            lines = []
+    if lines:
+        blocks.append("\n".join(lines))
+    return blocks
+
+
+def _advance_stream_state(
+    rec: dict[str, Any], state: StreamState, *, prompt_emitted: bool,
+) -> None:
+    """Replay one already-consumed record into the question-correlation state."""
+    payload = rec.get("payload", {}) or {}
+    if (
+        rec.get("type") == "response_item"
+        and payload.get("type") == "function_call"
+        and payload.get("name") == "request_user_input_async"
+    ):
+        state.remember_question_call(payload, prompt_emitted=prompt_emitted)
+        return
+
+    ptype = payload.get("type")
+    if ptype == "user_message":
+        if payload.get("message"):
+            state.clear_pending_prose_copies()
+        return
+    if ptype == "agent_message":
+        text = payload.get("message", "")
+        if text:
+            state.consume_question_prose_copy(text)
+        return
+    if ptype == "item_completed":
+        item = payload.get("item") or {}
+        if item.get("type") == "UserMessage":
+            if _item_text(item, "text"):
+                state.clear_pending_prose_copies()
+        elif item.get("type") == "AgentMessage":
+            text = _item_text(item, "text")
+            if text:
+                state.consume_question_prose_copy(text)
+
+
+def prime_stream_state(
+    path: Path, state: StreamState, upto_bytes: int, since_marker: str | None = None,
+) -> None:
+    """Restore question ids/options before a live-follow anchor.
+
+    The one-shot prefix has rendered question calls after its exclusive
+    ``since_marker``. Mark only those prompts as emitted so a delayed
+    assistant prose copy in the live tail is suppressed instead of repeating
+    the question. A pre-since call is kept as state, but its first visible
+    prose copy remains the marked prompt for this delta.
+    """
+    if upto_bytes <= 0:
+        return
+    records: list[dict[str, Any]] = []
+    consumed = 0
+    try:
+        handle = Path(path).open("rb")
+    except OSError:
+        return
+    with handle:
+        for raw_line in handle:
+            next_consumed = consumed + len(raw_line)
+            if next_consumed > upto_bytes:
+                break
+            consumed = next_consumed
+            try:
+                rec = json.loads(raw_line)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(rec, dict) and is_top_level_record(rec):
+                records.append(rec)
+
+    fallbacks = _fallback_markers(records)
+    since_index = None
+    if since_marker is not None:
+        since_index = next((
+            index for index, rec in enumerate(records)
+            if str(rec.get("ordinal", fallbacks[index])) == since_marker
+        ), None)
+    for index, rec in enumerate(records):
+        prompt_emitted = since_marker is None or (
+            since_index is not None and index > since_index
+        )
+        _advance_stream_state(rec, state, prompt_emitted=prompt_emitted)
+
+
+def _format_question_reply(text: str, state: StreamState | None = None) -> str | None:
+    """Decode Codex's user-facing question reply without losing free text.
+
+    Each JSON row carries its own question and answer. `questionItemId` ties it
+    to the original request so the declared choices can be included. Choice
+    selections and arbitrary free text use the same path and are preserved
+    verbatim. Unknown shapes return None so the caller preserves the original
+    operator text instead of partially decoding it.
+    """
+    raw = text.strip()
+    opening = "<send_user_message_question_reply>"
+    closing = "</send_user_message_question_reply>"
+    if not raw.startswith(opening) or not raw.endswith(closing):
+        return None
+    body = raw[len(opening):-len(closing)].strip()
+    try:
+        rows = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(rows, list) or not rows:
+        return None
+
+    blocks: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        question = row.get("question")
+        answer = row.get("answer")
+        if not isinstance(question, str) or not question.strip() or not isinstance(answer, str):
+            return None
+        prompt = state.question_for_reply(row) if state is not None else None
+        if prompt is not None:
+            question_text = prompt.get("question") or prompt.get("title") or question
+            prompt_copy = _format_question_prompt({**prompt, "question": question_text})
+        else:
+            prompt_copy = f"INTERVIEW: {question}"
+        blocks.append(f"{prompt_copy}\n\nOPERATOR: {answer}")
+    return "\n\n".join(blocks)
+
+
+def _operator_event(
+    seq: int, marker: str, ts: str, text: str, state: StreamState | None = None,
+) -> NormalizedEvent:
+    """Normalize plain operator prose or a structured question reply."""
+    qa_text = _format_question_reply(text, state)
+    if qa_text is not None:
+        return NormalizedEvent(seq, marker, ts, EventKind.QA_PAIR, qa_text)
+    return NormalizedEvent(seq, marker, ts, EventKind.OPERATOR_TEXT, text)
+
+
 def is_top_level_record(rec: dict) -> bool:
     """Whether this raw record is one parse() would even look at -- the
-    {event_msg, compacted} universe that also defines this adapter's own
+    event_msg/compacted/response_item universe that also defines this adapter's own
     ordinal-fallback marker space. Public because follow.py's tailer decides
     the same thing about each newly-arrived line, and because a disagreement
     there would silently shift every fallback marker."""
     return rec.get("type") in _TOP_LEVEL_TYPES
 
 
+def _fallback_markers(records: list[dict]) -> list[str]:
+    """Fallback marker per filtered rollout record.
+
+    Older nyxloom releases numbered only event_msg/compacted records. Keep
+    those marker values stable when adding response_item parsing so existing
+    --since-file cursors still resolve. Newly surfaced response items, which
+    had no old marker, receive a namespaced position.
+    """
+    legacy_index = 0
+    markers: list[str] = []
+    for position, rec in enumerate(records):
+        if rec.get("type") in _LEGACY_MARKER_TYPES:
+            markers.append(str(legacy_index))
+            legacy_index += 1
+        else:
+            markers.append(f"response_item-{position}")
+    return markers
+
+
 def parse_record(
-    rec: dict, seq: int, fallback_marker: str, config: ExtractConfig
+    rec: dict, seq: int, fallback_marker: str, config: ExtractConfig,
+    state: StreamState | None = None,
 ) -> list[NormalizedEvent]:
-    """One raw record -> the NormalizedEvents it yields (0 or 1 today).
+    """One raw record -> the NormalizedEvents it yields (usually zero or one).
 
     Factored out of parse()'s own loop (2026-09-12) so follow.py's
     incremental tailer applies literally the same per-record rules to a
     newly-appended line as a full parse does. `fallback_marker` is the
     marker for a record with no `ordinal` of its own (real pre-2026-08
     rollout files have none -- see the module docstring): parse() passes its
-    absolute pre-slice position, follow.py a stream-local token. Needs no
-    cross-record state at all, unlike claude_code.parse_record.
+    absolute pre-slice position, follow.py a stream-local token. The optional
+    state carries request_user_input_async question metadata so prose copies
+    can be normalized once and later replies can include the declared choices.
     """
+    if state is None:
+        state = StreamState()
     ordinal = str(rec.get("ordinal", fallback_marker))
     ts = rec.get("timestamp", "")
     payload = rec.get("payload", {}) or {}
@@ -339,28 +702,71 @@ def parse_record(
         # real compaction summary text, unlike the OLD generation's
         # content-free "context_compacted" event_msg.
         text = payload.get("message", "") or "[compacted]"
-        return [NormalizedEvent(seq, ordinal, ts, EventKind.LIFECYCLE_MARKER, text)]
+        if config.hide_compaction_content:
+            text = "[compaction summary omitted]"
+        event = NormalizedEvent(seq, ordinal, ts, EventKind.LIFECYCLE_MARKER, text)
+        event.meta["boundary_type"] = "compaction"
+        return [event]
+
+    if rec.get("type") == "response_item":
+        item_type = payload.get("type")
+        if item_type == "function_call" and payload.get("name") == "request_user_input_async":
+            prompts = state.remember_question_call(payload)
+            return [
+                NormalizedEvent(
+                    seq, ordinal, ts, EventKind.QA_PAIR,
+                    _format_question_prompt(prompt),
+                )
+                for prompt in prompts
+            ]
+        if item_type == "custom_tool_call" and config.show_tool_calls:
+            name = str(payload.get("name") or "unknown")
+            intent = ""
+            raw_input = payload.get("input")
+            if config.show_tool_call_intent and isinstance(raw_input, dict):
+                description = raw_input.get("description") or raw_input.get("intent")
+                if isinstance(description, str):
+                    intent = " ".join(description.split())[:240]
+            label = f"[tool call: {name}]" + (f" {intent}" if intent else "")
+            return [NormalizedEvent(seq, ordinal, ts, EventKind.TOOL_CALL, label)]
+        return []
 
     if ptype == "user_message":  # OLD generation
         text = payload.get("message", "")
         if text:
-            return [NormalizedEvent(seq, ordinal, ts, EventKind.OPERATOR_TEXT, text)]
+            event = _operator_event(seq, ordinal, ts, text, state)
+            state.clear_pending_prose_copies()
+            return [event]
     elif ptype == "agent_message":  # OLD generation
         text = payload.get("message", "")
         if text:
+            copy_prompts = state.consume_question_prose_copy(text)
+            if copy_prompts is not None:
+                return [NormalizedEvent(
+                    seq, ordinal, ts, EventKind.QA_PAIR, _format_question_prompt(prompt),
+                ) for prompt in copy_prompts]
             return [NormalizedEvent(seq, ordinal, ts, EventKind.ASSISTANT_TEXT, text)]
     elif ptype == "context_compacted":  # OLD generation
-        return [NormalizedEvent(seq, ordinal, ts, EventKind.LIFECYCLE_MARKER, "[context_compacted]")]
+        event = NormalizedEvent(seq, ordinal, ts, EventKind.LIFECYCLE_MARKER, "[context_compacted]")
+        event.meta["boundary_type"] = "compaction"
+        return [event]
     elif ptype == "item_completed":  # NEW generation
         item = payload.get("item") or {}
         itype = item.get("type")
         if itype == "UserMessage":
             text = _item_text(item, "text")
             if text:
-                return [NormalizedEvent(seq, ordinal, ts, EventKind.OPERATOR_TEXT, text)]
+                event = _operator_event(seq, ordinal, ts, text, state)
+                state.clear_pending_prose_copies()
+                return [event]
         elif itype == "AgentMessage":
             text = _item_text(item, "text")
             if text:
+                copy_prompts = state.consume_question_prose_copy(text)
+                if copy_prompts is not None:
+                    return [NormalizedEvent(
+                        seq, ordinal, ts, EventKind.QA_PAIR, _format_question_prompt(prompt),
+                    ) for prompt in copy_prompts]
                 return [NormalizedEvent(seq, ordinal, ts, EventKind.ASSISTANT_TEXT, text)]
         elif itype == "Reasoning" and config.include_thinking:
             text = "\n".join(item.get("raw_content") or [])
@@ -386,41 +792,48 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if is_top_level_record(obj):
+            if isinstance(obj, dict) and is_top_level_record(obj):
                 raw.append(obj)
 
-    # Tag every record with its absolute position in the full (unsliced)
-    # file BEFORE any --since/--until slicing, and use that absolute
-    # position -- never a position re-numbered from 0 after slicing -- as
-    # the ordinal fallback everywhere below (mirrors the fallback used when
-    # events are actually generated -- see this adapter's docstring on the
-    # pre-2026-08 files that lack `ordinal` entirely). Resolution must
-    # replicate the exact fallback used when a marker was originally
-    # emitted: re-enumerating a sliced list from 0 would make a record's
-    # fallback marker depend on how many prior --since hops had already
-    # been applied, so the same physical record could mint a different
-    # marker on every chained run -- and a later run resolving an old
-    # marker against a freshly re-parsed (unsliced) file would then land on
-    # the wrong record, silently re-emitting content already flushed to a
-    # prior snapshot. Absolute, pre-slice position is stable across any
-    # number of chained --since/--until runs since every run re-parses the
-    # same on-disk file from scratch.
+    # Keep stable pre-slice marker fallbacks. Older marker values for
+    # event_msg/compacted records remain their index in that original
+    # two-type universe; response_item records get a new namespaced fallback
+    # so adding them cannot invalidate a saved --since-file cursor.
     indexed = list(enumerate(raw))
+    fallback_markers = _fallback_markers(raw)
+    indexed_with_markers = [
+        (index, rec, fallback_markers[index]) for index, rec in indexed
+    ]
+    all_indexed_with_markers = indexed_with_markers
+    since_index: int | None = None
 
     if config.since_marker is not None:
-        idx = next((i for i, r in indexed if str(r.get("ordinal", i)) == config.since_marker), None)
+        idx = next((i for i, r, fallback in indexed_with_markers
+                    if str(r.get("ordinal", fallback)) == config.since_marker), None)
         if idx is None:
-            raise ValueError(f"--since marker {config.since_marker!r} not found as an ordinal in {path}")
-        indexed = [(i, r) for i, r in indexed if i > idx]
+            raise ValueError(f"--since marker {config.since_marker!r} not found as a source marker in {path}")
+        since_index = idx
+        indexed_with_markers = [row for row in indexed_with_markers if row[0] > idx]
 
     if config.until_marker is not None:
-        idx = next((i for i, r in indexed if str(r.get("ordinal", i)) == config.until_marker), None)
+        idx = next((i for i, r, fallback in indexed_with_markers
+                    if str(r.get("ordinal", fallback)) == config.until_marker), None)
         if idx is None:
-            raise ValueError(f"--until marker {config.until_marker!r} not found as an ordinal in {path}")
-        indexed = [(i, r) for i, r in indexed if i <= idx]
+            raise ValueError(f"--until marker {config.until_marker!r} not found as a source marker in {path}")
+        indexed_with_markers = [row for row in indexed_with_markers if row[0] <= idx]
+
+    state = StreamState()
+    if since_index is not None:
+        # Rebuild question state through the exclusive anchor. If a question
+        # call itself is before the span but its prose copy is after it, the
+        # visible copy becomes the marked prompt for this delta.
+        for index, rec, _fallback in all_indexed_with_markers:
+            if index > since_index:
+                break
+            _advance_stream_state(rec, state, prompt_emitted=False)
 
     events: list[NormalizedEvent] = []
-    for seq, (abs_i, rec) in enumerate(indexed):
-        events += parse_record(rec, seq, str(abs_i), config)
+    for seq, (_abs_i, rec, fallback) in enumerate(indexed_with_markers):
+        events += parse_record(rec, seq, fallback, config, state)
 
     return events

@@ -127,6 +127,20 @@ def test_render_ledger_line_plain_when_color_off():
     assert _GREEN not in text
 
 
+def test_extract_block_alignment_accepts_wide_and_fused_separators():
+    # extract-debug must compare the same blocks for every --blank-lines
+    # setting, including arbitrary padding and the fused -1 form.
+    lossless_text = _lossless("first block", "second block")
+    for rendered in (
+        "first block\n\n\n---\n\n\nsecond block\n",
+        "first block ---\nsecond block\n",
+        "first block --- [gap: 8 records omitted] ---\nsecond block\n",
+    ):
+        text = render_debug(lossless_text, rendered, use_color=False)
+        assert "first block" in text and "second block" in text
+        assert ">>> [gap:" not in text
+
+
 # --- per-block yellow "why was this dropped" reasons (2026-09-11, operator
 # direction: "which part of the algorithm made the decision") -- only
 # emitted when `config` is passed; every test above (config defaults to

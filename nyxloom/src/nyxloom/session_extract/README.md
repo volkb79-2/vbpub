@@ -7,9 +7,9 @@
 transcript into a compact, resumable brief — without an LLM round-trip.
 It is a `/compact` alternative you can run *outside* the model: point it
 at a session log, get back the real operator turns, the structured Q&A,
-and the assistant's own checkpoint/summary prose, windowed to a word
-budget, as delimited text (paste into a fresh session) or JSON (feed a
-second-stage tool).
+and the assistant's own checkpoint/summary prose, selected by a named use
+case and its stop conditions, as delimited text (paste into a fresh session)
+or JSON (feed a second-stage tool).
 
 Every word in the north-star sentence is load-bearing and rules out a
 simpler design:
@@ -26,10 +26,84 @@ simpler design:
   equivalents) is the highest-signal content in a session: it's the
   moment an operator's actual decision got recorded verbatim. It is
   never trimmed by length rules and never silently dropped.
+- Every Codex interactive question is rendered as `INTERVIEW:` prose with its
+  offered choices, even when no assistant-prose copy exists. Structured
+  replies become `OPERATOR:` prose and use the source question ID to restore
+  the matching choices; selected options and free-text answers are preserved
+  verbatim even after later session activity. See [the design rationale](../../../docs/DESIGN-GUIDE.md#codex-question-replies).
 - **content-aware** — "checkpoint" is not "long message." See
   `classifier.py`: a scored set of structural/lexical signals (headers,
   closure language, direct-address openers, a "followed by a pause"
   lookahead), not a length threshold.
+
+## Current operator contract
+
+Bare `nyxloom extract SESSION` uses `operator-review`: the newest `/clear`
+epoch, at most five classifier-detected assistant checkpoints, and a 10,000
+word cap. The 180-character answer-length threshold applies to non-checkpoint
+assistant messages; concrete findings survive at any length. The independent
+stop conditions are checkpoint count, words, actual compactions crossed, and
+elapsed minutes. Any enabled condition can stop the backward walk first.
+Compaction and time stops default to `-1` (disabled).
+
+`--profile all` disables checkpoint, word, compaction, and time stops and
+selects every epoch. It keeps ordinary operator, Q&A, and assistant prose
+events, including short messages, with minimal gaps. API-transport errors
+remain hidden unless `--show-api-errors` is used. It does not dump raw tool
+inputs/results, compaction summaries, or compaction prompt payloads. Use
+`--show-tool-calls` to add short Claude Code/Codex tool labels and
+`--show-tool-call-intent` to include a source description or intent when one
+exists. `--show-compaction-content` separately opts into compaction internals.
+`--include-thinking` controls recovered reasoning content.
+
+Profiles are operator use cases, not names for opaque compression strengths.
+`operator-review` is a concise review of recent work. `all` is a broad,
+near-lossless prose handoff for a fresh agent. Explicit selection and gap
+flags override the corresponding profile values. Timestamp and metadata
+placement, tool visibility, Markdown rendering, highlighting, and ANSI color
+are separately controlled. See the CLI's `extract --help` and
+[`docs/CONSUMERS.md`](../../../docs/CONSUMERS.md#extract-a-session-log) for
+worked commands.
+
+Checkpoints are not semantic compaction boundaries. The classifier scores
+assistant prose using report-like structure and the following event; it does
+not use message line count or single-line shape by itself. `/clear` starts a
+new epoch because it resets the conversation context. Default operator review
+stays within the newest epoch; `--epochs N`, `A:B`, or `all` chooses the span.
+Actual compactions may be crossed by default, with `--max-compactions N` as an
+optional stop. Explicit `/compact` commands and summary echoes do not count as
+automatic compaction boundaries.
+
+`extract-debug` runs the same selection and rendering configuration as
+`extract`, then compares the result with the lossless source view. It is the
+place to inspect why a raw record became a gap, whether the configured stop
+limits were reached, and how visible tool-call labels align with the raw log.
+Use `--profile all` to remove ordinary walk stops while inspecting prose.
+
+The default text output places `[HH:mm:ss]` before each event, renders source
+metadata and the machine-readable cursor at both ends, uses inline gap markers,
+and inserts no blank padding around separators. `--show-timestamps` and
+`--timestamp-format` control event times; `--extract-metadata` places the
+source name/path/size/creation time and cursor before, after, or at both ends.
+Creation time is reported as unavailable if the filesystem supplies no birth
+time. `--since-file` reads the cursor from saved text or JSON output; it emits
+only the new delta. Raw `--since` and inclusive `--until` accept the marker
+value shown in the `nyxloom-extract` comment.
+
+Rendering and color are separate controls. `--render-markdown` consumes
+Markdown markers for reading. `--highlight` colors Markdown source while
+preserving every character. A TTY defaults to highlight unless `NO_COLOR` is
+set; `--color` forces ANSI for a pipe and `--no-color` disables ANSI without
+changing the rendering mode. The two render modes cannot be combined, and
+JSON output contains no ANSI styling.
+
+`extract-report --type report-sheet` is the compact operator overview;
+`report-detailed` is a readable row per API call; `csv` is for spreadsheets
+and scripts. The old `--detailed` spelling aliases `csv`. `extract-sessions`
+accepts `claude`, `codex`, or `opencode` to infer environment-aware roots, or
+a path. Directory discovery recurses by default; for example,
+`CODEX_HOME="$HOME/.codex2" nyxloom extract-sessions codex` scans
+`~/.codex2/sessions` and its dated subdirectories.
 
 ## Why this exists (design history)
 
@@ -179,15 +253,22 @@ file>`, the same shape as targeting any other adapter's session. See
 `adapters/codex.py` / `adapters/opencode.py` for how (or whether) the
 same kind of targeting exists for those CLIs today.
 
-### Why is `compact_boundary` a hard stop, not ignored?
+### Compaction and clear are different boundaries
 
-Content on the far side of a compaction boundary (automatic
-`compact_boundary`/`isCompactSummary`, or an explicit `/compact`/`/clear`)
-already got summarized away by the CLI itself once — re-extracting raw
-prose from before that point would resurrect detail the operator (or the
-CLI) already decided to compress. The walk keeps the boundary itself (as
-a `LIFECYCLE_MARKER` note) and stops there; only content *newer* than the
-boundary is eligible for selection.
+An automatic compaction does not establish a safe semantic boundary for
+mechanical extraction. The default backward walk may cross it; operators can
+limit the number crossed with `--max-compactions N`. That counter ignores an
+explicit `/compact` command and compaction-summary echoes. Compaction text and
+prompt payloads are hidden by default and can be requested with
+`--show-compaction-content`.
+
+`/clear` starts an empty conversation context, so it defines a separate epoch.
+The default `operator-review` profile selects only the newest epoch rather
+than joining pre-clear history to the fresh context. `--epochs N`, `A:B`, or
+`all` selects other epoch spans. `--profile all` relaxes walk stops and
+selects all epochs for a broad prose extraction. A classifier checkpoint is
+not a lifecycle boundary: it is an assistant message selected as a useful
+review anchor, based on content shape and the following event.
 
 ### On "thinking" blocks
 
@@ -242,11 +323,13 @@ constrained the interface or turned up a real bug:
   OpenAI's Responses API "encrypted reasoning items" (stateless/ZDR mode),
   server-sealed and server-decrypt-only — not a code-path variance from
   the plain-text `raw_content` channel.
-  Remaining honest gap: no `AskUserQuestion`-equivalent structured Q&A
-  signal was found in either generation, including a
-  `"CollabAgentToolCall"` item that looked promising but turned out (its
-  `"tool": "spawn_agent"` field, checked directly) to be a sub-agent
-  spawn, not a question/answer mechanism.
+  Codex user-input prompts are present in `response_item.function_call`
+  records named `request_user_input_async`; the adapter renders each question
+  and its choices as marked `QA_PAIR` prose. Submitted replies are present in
+  `event_msg.UserMessage` records as `send_user_message_question_reply`
+  envelopes and become readable question/answer pairs. This is distinct from
+  `CollabAgentToolCall`, which is a sub-agent spawn, not a question/answer
+  mechanism. Exact assistant-prose copies of UI prompts are deduplicated.
 - **Claude Code** (`adapters/claude_code.py`) — flat JSONL, one record
   per line, `type` discriminates `user`/`assistant`/`system`/housekeeping.
   `AskUserQuestion` batches are pre-rendered by the harness into a single
@@ -438,37 +521,48 @@ a nonexistent uuid errors.
 
 ## Render modes
 
-The default text output is unchanged and stays the paste-into-a-fresh-agent
-format. `extract --render-markdown` is the *reading* mode: each kept block's
-prose goes through `rich`'s markdown renderer, so headers, bold, tables and
-fenced code render the way the CLI that wrote them showed you live (verified
-by eye against a real session: real tables, real code-block backgrounds).
+The default output is a delimited paste-into-a-fresh-agent brief. Each kept
+event has a `[HH:mm:ss]` timestamp before its prose; source metadata and the
+machine-readable cursor are placed at both ends. `--show-timestamps` changes
+event timestamp placement, while `--timestamp-format` changes its strftime
+format. `--extract-metadata pre|post|both` moves the source name/path/size,
+filesystem creation time, and cursor marker. Creation time is `unavailable`
+where the filesystem does not expose a birth time. These output controls do
+not change the selected content. A live `--follow` stream appends an updated
+post cursor after each emitted event; pre-only metadata is refused because
+the cursor would go stale as the file grows.
+
+`extract --render-markdown` is the *reading* mode: each kept block's prose goes
+through `rich`'s markdown renderer, so headers, bold, tables and fenced code
+render the way the CLI that wrote them showed you live (verified by eye
+against a real session: real tables, real code-block backgrounds).
 
 Scope is deliberately narrow — kept blocks' **own prose only**. The `---`
 separators, the bracketed gap/stop-reason notes this package authors itself,
-the E-012 ledger line and the trailing
-`<!-- nyxloom-extract: format=... marker=... -->` footer never pass through a
+the E-012 ledger line and the positioned
+`<!-- nyxloom-extract: format=... marker=... -->` cursor comments never pass through a
 renderer. Piping the whole output through one would mangle exactly that
 scaffolding (a `---` line *is* a horizontal rule; an HTML comment disappears),
-and the footer is machine-read back by `--since-file`, so it has to stay
+and the cursor is machine-read back by `--since-file`, so it has to stay
 byte-exact. `render.py` therefore takes an opaque per-block `block_render`
 callable and imports neither rendering library itself.
 
-`extract --highlight` and `extract-lossless --highlight` are the *other*
-mode, and the reason there are two rendering dependencies rather than one:
+`--highlight` is a source-preserving mode, available for `extract` and
+`extract-lossless`, and the reason there are two rendering dependencies rather
+than one:
 `pygments` colors markdown **source**, leaving every `#`, `**`, backtick and
 dash in place, the way an editor colors a markdown file. That matters because
 a running agent CLI only ever *renders* its own markdown — what you select in
 that pane has already lost the markup — so highlighting is what makes
-`--follow`'s stream something you can copy real markdown out of. Rendering
-and preserving are opposite goals, so the two flags error if combined.
-Verified as a property, not by eye: stripping every ANSI sequence from
-`--highlight`'s output returns the input byte-for-byte.
-
-`--color`/`--no-color` override the `isatty()` default, exactly as on
-`extract-debug`, and error if no render mode is active. `--render-markdown`
-and `--highlight` both error combined with `--json` (rendering flags, not data
-ones — the same rule already applied to `--insert-blank-lines` and friends).
+`--follow`'s stream something you can copy real markdown out of.
+`--render-markdown` and `--highlight` are mutually exclusive render modes.
+ANSI color is a separate control: on a TTY, source highlighting is the default
+unless `NO_COLOR` is set; `--color` forces ANSI even for piped output, and
+`--no-color` disables ANSI while keeping the selected rendering mode. Thus
+`--color` alone selects source highlighting, while
+`--render-markdown --color` renders Markdown with color. Stripping every ANSI
+sequence from `--highlight` output returns the source characters unchanged.
+Text rendering flags error with `--json`, whose output contains no ANSI.
 
 ## Fixed-span handoff transforms and follow
 
@@ -578,9 +672,10 @@ never saw.
 | `checkpoint_detected` | under `extract`, the real scored decision above; under `extract-lossless`, `classifier.shape_score` alone | all |
 | `long_block` | any new block over `--attention-min-chars N` (off by default) | all |
 
-**Honest gaps, not guessed at:** no `AskUserQuestion` equivalent has been
-identified in Codex's, Reasonix's, or opencode's schema (the adapters' own "Known gaps"
-notes say so), so signal 1 is Claude-Code-only. Signal 2's
+**Honest gaps, not guessed at:** Codex questions and replies are now preserved
+as marked `QA_PAIR` prose, but its pending-question state is not wired into
+attention detection; signal 1 remains Claude-Code-only. No structured Q&A
+equivalent has been identified in Reasonix's or opencode's schema. Signal 2's
 `extract-lossless` form is weaker than its `extract` form — no pause bonus,
 and it also scores operator/thinking text, which the scored path never does.
 "Turn end" is not a distinct marker in any adapter's schema, so it is not a
@@ -628,14 +723,14 @@ Two ways to resume from a known point instead of re-walking a whole
 session:
 
 - `--since <marker>` — an opaque `event.marker` value (adapter-specific:
-  a Claude Code `uuid`, a Codex event id, a Reasonix `line<N>` marker, or an
-  opencode message id) from a prior run. Only events strictly after it are
-  considered.
+  a Claude Code `uuid`, a Codex ordinal or `response_item-<position>` fallback,
+  a Reasonix `line<N>` marker, or an opencode message id) from a prior run.
+  Only events strictly after it are considered.
 - `--since-file <path>` — point at a **prior run's saved output** (text
   or JSON) instead of hunting down or hand-copying a raw marker. Every
   render embeds the true end-of-session marker from the *full* parse
   (not just what survived selection) — a JSON `last_marker` field, or a
-  text footer `<!-- nyxloom-extract: format=... marker=... -->`.
+  text cursor comment `<!-- nyxloom-extract: format=... marker=... -->`.
   `read_since_marker()` reads either back. This is also how the tool
   finds its own resume border for the "snapshot chain" pattern discussed
   in `nyxloom/docs/design-context-lifecycle.md` — an agent iteration
@@ -658,25 +753,15 @@ reproducing a run against a fixed hand-curated reference, which is exactly
 what made the exhaustive real-excerpt replay above reproducible.
 
 **Fixed bug, load-bearing for the whole chained-snapshot pattern above**: a
-record without a real id (a uuid-less Claude Code record, an ordinal-less
-pre-2026-08 Codex rollout line) falls back to a positional marker. Both
-adapters used to compute that fallback position by re-`enumerate()`-ing the
-record list — but they did this *after* slicing off everything at or before
-`--since`, so the fallback restarted at 0 on every hop instead of counting
-from the true start of the file. A marker minted from an already-sliced
-parse therefore lived in a different index space than the same marker
-resolved against a fresh, unsliced re-parse on the *next* run — so chaining
-a second `--since` hop off the first hop's own output marker could resolve
-to the wrong record and silently re-emit content a prior snapshot had
-already captured, tearing exactly the cache-stability invariant this tool
-exists to preserve (see "append-only / cache-stable extraction" above).
-Caught by a fresh adversarial review with an empirical two-hop repro, not
-by the test suite (the existing marker tests each only exercised a single
-hop off a fresh full parse — the one case where the two index spaces still
-happen to coincide). Fixed by tagging every record with its absolute,
-pre-slice position once, up front, and using that same tag as the fallback
-both when resolving a marker and when minting one — never a position
-re-numbered after slicing. Regression tests
+record without a real id (a uuid-less Claude Code record or an ordinal-less
+Codex record) falls back to a positional marker. Claude Code uses its
+absolute `lineN` position. Codex preserves historical numeric markers for
+`event_msg`/`compacted` records and gives newly surfaced `response_item`
+records a namespaced `response_item-<position>` marker, so adding prompt
+records cannot shift an older cursor. Fallbacks are computed in the full
+pre-slice record stream, never by re-`enumerate()`-ing after `--since`; a
+marker minted by one delta therefore resolves against the same source record
+on the next hop. Regression tests
 (`test_chained_since_on_uuid_less_records_never_reindexes_from_zero`,
 `test_chained_since_on_ordinal_less_rollout_never_reindexes_from_zero`)
 chain two real hops and assert the second returns nothing, not a replay.
@@ -814,8 +899,10 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   string interpolation (a store path containing `?`/`#`/`%` would break
   it), and part-fetching is one query per message (N+1; fine at real-world
   session scale seen so far, won't scale indefinitely).
-- Codex: no `AskUserQuestion`-equivalent found in either schema generation
-  (see "Cross-CLI adapter findings" above). **RESOLVED 2026-09-11**: the
+- Codex: structured interactive replies use the
+  `send_user_message_question_reply` envelope, not Claude Code's
+  `AskUserQuestion` tool-result shape (see "Cross-CLI adapter findings"
+  above). **RESOLVED 2026-09-11**: the
   OLD generation's `response_item.reasoning.encrypted_content` is
   confirmed genuinely, permanently unrecoverable — OpenAI's Responses API
   "encrypted reasoning items" (stateless/`store: false`/ZDR mode):
@@ -878,36 +965,32 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   source file's valid-conversation ordering is unchanged; inserting or
   reordering earlier records can invalidate it.
 
-## Open design questions (raised 2026-09-10, not yet decided)
+## Design decisions and open questions
 
-Surfaced building a cost/timeline analysis tool (V9 in
+Surfaced while building a cost/timeline analysis tool (V9 in
 `nyxloom/docs/design-context-lifecycle-experiments.md`) on top of this package,
 validated against a real dstdns session (`8ebff140-...`, E-009 in that file).
-Parked here rather than acted on unilaterally:
+The lifecycle and profile questions have since been resolved as follows; the
+remaining bullets are still open:
 
-- **Should `LIFECYCLE_MARKER` stay a hard stop?** — **RESOLVED 2026-09-10**:
-  the hard-stop-at-0 behavior is now a configurable knob,
-  `max_lifecycle_markers` (`config.py`, `--max-lifecycle-markers` on the
-  CLI: `0` keeps today's hard stop, `N` walks past N markers, `-1` ignores
-  them entirely). The *annotation* half is also shipped, in a different
-  shape than first proposed: rather than a literal
+- **Lifecycle stops and epochs — RESOLVED:** automatic compactions are the
+  only boundaries counted by `max_compactions` / `--max-compactions`; the
+  default is `-1` (ignore this stop). Explicit `/compact` commands and
+  compaction-summary echoes are not counted. `/clear` starts a new epoch and
+  is selected separately through `--epochs`, so the default review never
+  concatenates history across a cleared context. The *annotation* half is
+  shipped in a different shape than first proposed: rather than a literal
   `---restarted-after-lossy-compaction---` string, `select.py` attaches
-  `walk_stopped_because` (why the walk stopped short of the real session
-  start — a LIFECYCLE_MARKER's own kept text already self-explains that
-  case) and `gap_after` (how much raw content, including tool activity,
-  sits between two kept events that aren't actually time-adjacent) via
-  `NormalizedEvent.meta`; `render.py` surfaces both as bracketed text-mode
-  notes and typed JSON fields. See `design-context-lifecycle-experiments.md`'s
-  `E-011` for the full design + two rounds of real-data-driven refinement
-  (`vbpub@7c152e13`).
-- **Named "compression profiles"** — **SHIPPED 2026-09-10**: `config.py`'s
-  `PROFILES` dict (`tight`/`default`/`manual_fresh`), wired into the CLI as
-  `nyxloom extract --profile <name>`, with `--max-words` staying an
-  independent, always-overridable axis rather than baked into a profile's
-  identity. Still open: surfacing profiles as parallel columns in
-  `extract-report`' timeline view (`_simulate_profile` already computes the
-  per-profile running word count needed for this; nothing renders it as a
-  table yet).
+  `walk_stopped_because` and `gap_after` in `NormalizedEvent.meta`; the
+  renderer surfaces them as text notes and typed JSON fields. See
+  `design-context-lifecycle-experiments.md` E-011 for the design and its
+  real-data refinements.
+- **Named use-case profiles — RESOLVED:** `operator-review` is the concise
+  default for the newest epoch; `all` relaxes stop limits and selects every
+  epoch for broad prose extraction. Explicit selection and gap flags override
+  matching profile values. `extract-report --type csv` includes per-profile
+  running-word columns; the human-readable report shapes remain oriented to
+  per-call review.
 - **CLI-version-aware schema-drift detection** — every adapter's docstring
   already states its verified `cli_version`/`version` range (see
   `adapters/codex.py`'s 0.147.0 schema-break finding). Nothing today checks

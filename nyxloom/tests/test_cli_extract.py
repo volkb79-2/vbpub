@@ -33,7 +33,9 @@ def _write_claude_code_fixture(tmp_path: Path) -> Path:
         _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
              message={"role": "assistant", "content": [
                  {"type": "text", "text": "Let me check."},
-                 {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "ls"}},
+                 {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {
+                     "command": "ls", "description": "List the working tree",
+                 }},
              ]}),
         _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z",
              message={"role": "user", "content": [
@@ -73,6 +75,7 @@ def _write_current_codex_fixture(tmp_path: Path) -> Path:
                 "id": "current-codex-session",
                 "cli_version": "0.154.0",
                 "thread_source": "user",
+                "source": "exec",
             },
         },
         {
@@ -444,6 +447,7 @@ def test_extract_show_gap_source_names_the_marker(tmp_path, capsys):
     ("--insert-blank-lines", "0"),
     ("--gap-marker", "inline"),
     ("--min-gap-records", "1"),
+    ("--extract-metadata", "pre"),
     ("--task", "do the next thing"),
     ("--task-file", "/nonexistent/path/does/not/matter"),
 ])
@@ -453,7 +457,7 @@ def test_extract_render_only_flags_reject_json(tmp_path, capsys, flag, value):
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "only affect" in err
-    assert flag in err
+    assert ("--blank-lines" if flag == "--insert-blank-lines" else flag) in err
 
 
 def test_extract_show_gap_source_rejects_json(tmp_path, capsys):
@@ -517,6 +521,16 @@ def test_extract_debug_opencode_single_session_needs_no_session_flag(tmp_path, c
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "please look into this" in out
+
+
+def test_extract_metadata_names_the_opencode_database_when_given_its_directory(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=1)
+
+    assert cli.main(["extract", str(db.parent), "--no-color"]) == 0
+    out = capsys.readouterr().out
+
+    assert "name=opencode.db" in out
+    assert f"source={db}" in out
 
 
 def test_extract_debug_opencode_multi_session_requires_session_flag(tmp_path, capsys):
@@ -603,7 +617,24 @@ def test_extract_report_works_for_codex_too(tmp_path, capsys):
     assert "blocks total)" in out
 
 
-def test_extract_max_lifecycle_markers_walks_past_a_compaction(tmp_path, capsys):
+def test_extract_report_type_selects_sheet_readable_rows_or_csv(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+
+    assert cli.main(["extract-report", str(fp), "--type", "report-detailed"]) == 0
+    detailed = capsys.readouterr().out
+    assert "KIND" in detailed.splitlines()[0]
+    assert "please look into this" in detailed
+    assert "," not in detailed.splitlines()[0]
+
+    assert cli.main(["extract-report", str(fp), "--type", "csv"]) == 0
+    csv_text = capsys.readouterr().out
+    assert csv_text.splitlines()[0].startswith("marker,timestamp")
+
+    assert cli.main(["extract-report", str(fp), "--type", "csv", "--json"]) == 1
+    assert "cannot be combined with --json" in capsys.readouterr().err
+
+
+def test_extract_max_compactions_defaults_unlimited_and_zero_stops_at_boundary(tmp_path, capsys):
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
              message={"role": "user", "content": "before the boundary"}),
@@ -617,18 +648,14 @@ def test_extract_max_lifecycle_markers_walks_past_a_compaction(tmp_path, capsys)
 
     default = cli.main(["extract", str(fp)])
     assert default == 0
-    assert "before the boundary" not in capsys.readouterr().out
-
-    past_boundary = cli.main(["extract", str(fp), "--max-lifecycle-markers", "-1"])
-    assert past_boundary == 0
     assert "before the boundary" in capsys.readouterr().out
 
+    stopped = cli.main(["extract", str(fp), "--max-compactions", "0"])
+    assert stopped == 0
+    assert "before the boundary" not in capsys.readouterr().out
 
-def test_extract_debug_max_lifecycle_markers_walks_past_a_compaction_too(tmp_path, capsys):
-    # cmd_extract_debug carries its OWN copy of the --max-lifecycle-markers
-    # override (separate from cmd_extract's, same shape) -- must honor an
-    # explicit value exactly the same way, not silently fall back to the
-    # profile default.
+
+def test_extract_debug_uses_the_same_compaction_bound_as_extract(tmp_path, capsys):
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
              message={"role": "user", "content": "before the boundary"}),
@@ -643,48 +670,37 @@ def test_extract_debug_max_lifecycle_markers_walks_past_a_compaction_too(tmp_pat
     default = cli.main(["extract-debug", str(fp), "--no-color"])
     assert default == 0
     default_out = capsys.readouterr().out
-    # "before the boundary" was dropped -- its own lossless block sits
-    # AFTER the gap marker that reports it, inside the dropped span.
-    assert default_out.index(">>> [gap:") < default_out.index("before the boundary")
+    assert default_out.index("before the boundary") < default_out.index("after the boundary")
 
-    past_boundary = cli.main(["extract-debug", str(fp), "--max-lifecycle-markers", "-1", "--no-color"])
-    assert past_boundary == 0
-    past_out = capsys.readouterr().out
-    # Walked past the boundary: "before the boundary" is kept, printed
-    # BEFORE any gap marker (the remaining gap covers only the boundary's
-    # own bookkeeping blocks, not this content).
-    assert past_out.index("before the boundary") < past_out.index(">>> [gap:")
+    stopped = cli.main(["extract-debug", str(fp), "--max-compactions", "0", "--no-color"])
+    assert stopped == 0
+    stopped_out = capsys.readouterr().out
+    assert stopped_out.index(">>> [gap:") < stopped_out.index("before the boundary")
 
 
-def test_extract_profile_supplies_defaults_for_the_selection_knobs(tmp_path, capsys):
+def test_all_profile_keeps_short_assistant_prose_that_operator_review_filters(tmp_path, capsys):
     records = [
-        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
-             message={"role": "user", "content": "before the boundary"}),
-        _rec(type="system", subtype="compact_boundary", uuid="lc1",
-             timestamp="2026-01-01T00:00:01Z", compactMetadata={}),
-        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z",
-             message={"role": "user", "content": "after the boundary"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": "I will inspect the files."}]}),
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": "continue"}),
     ]
     fp = tmp_path / "session.jsonl"
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
-    # "manual_fresh"'s max_lifecycle_markers=-1 default applies with no
-    # --max-lifecycle-markers flag at all.
-    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh"])
+    exit_code = cli.main(["extract", str(fp), "--profile", "operator-review"])
     assert exit_code == 0
-    assert "before the boundary" in capsys.readouterr().out
+    assert "I will inspect the files." not in capsys.readouterr().out
 
-    # "default" (or no --profile) keeps today's hard-stop behavior.
-    exit_code = cli.main(["extract", str(fp), "--profile", "default"])
+    exit_code = cli.main(["extract", str(fp), "--profile", "all"])
     assert exit_code == 0
-    assert "before the boundary" not in capsys.readouterr().out
+    assert "I will inspect the files." in capsys.readouterr().out
 
 
 def test_extract_max_words_independently_overrides_a_profiles_own_default(tmp_path, capsys):
     # --max-words is a separate axis from --profile (operator request,
     # 2026-09-10): passing it alongside --profile overrides only the
-    # target-length knob, leaving the profile's other knobs (here,
-    # max_lifecycle_markers=-1) intact.
+    # target-length knob, leaving the profile's other stop conditions intact.
     records = [
         _rec(type="assistant", uuid="old0", timestamp="2026-01-01T00:00:00Z",
              message={"role": "assistant", "content": [
@@ -700,21 +716,21 @@ def test_extract_max_words_independently_overrides_a_profiles_own_default(tmp_pa
     fp = tmp_path / "session.jsonl"
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
-    # manual_fresh's own 8000-word default comfortably reaches old0.
-    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh"])
+    # all has no word stop by default.
+    exit_code = cli.main(["extract", str(fp), "--profile", "all"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "Found it" in out
 
     # Overridden down to an 8-word budget: still walks past the marker
-    # (manual_fresh's max_lifecycle_markers=-1 is untouched). 8, not a
+    # (all's max_compactions=-1 is untouched). 8, not a
     # smaller number, deliberately: the marker's own rendered text now
     # counts toward the budget too (select.py's 2026-09-11 fix -- see its
     # module docstring), and "after the boundary" (3 words) + the marker
     # ("[compaction: unknown happened]", 3 words) already total 6 before
     # "before the boundary" (3 more words) is even considered -- a 5-word
     # budget would stop the walk right at the marker and never reach it.
-    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh", "--max-words", "8"])
+    exit_code = cli.main(["extract", str(fp), "--profile", "all", "--max-words", "8"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "before the boundary" in out
@@ -746,6 +762,73 @@ def test_extract_since_file_auto_detected_valid_marker_resumes(tmp_path, capsys)
     assert cli.main(["extract", str(fp), "--since-file", str(prior)]) == 0
     out = capsys.readouterr().out
     assert "Done -- everything landed" in out
+
+
+def test_since_file_is_a_high_water_cursor_and_default_epoch_is_latest(tmp_path, capsys):
+    fp = tmp_path / "epoch-session.jsonl"
+    old_records = [
+        _rec(type="user", uuid="old-prompt", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "old epoch prompt"}),
+    ]
+    fp.write_text("\n".join(json.dumps(r) for r in old_records) + "\n", encoding="utf-8")
+
+    prior = tmp_path / "snapshot.md"
+    assert cli.main(["extract", str(fp), "--profile", "all"]) == 0
+    prior.write_text(capsys.readouterr().out, encoding="utf-8")
+    assert read_since_marker(prior) == ("claude-code", "old-prompt")
+    assert "name=epoch-session.jsonl" in prior.read_text(encoding="utf-8")
+
+    appended = [
+        _rec(type="user", uuid="clear", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": (
+                 "<command-name>/clear</command-name>\n<command-message>clear</command-message>"
+             )}),
+        _rec(type="user", uuid="new-prompt", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": "new epoch prompt"}),
+    ]
+    with fp.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(json.dumps(r) for r in appended) + "\n")
+
+    assert cli.main(["extract", str(fp), "--since-file", str(prior), "--profile", "all"]) == 0
+    delta = capsys.readouterr().out
+    assert "new epoch prompt" in delta
+    assert "old epoch prompt" not in delta
+
+    assert cli.main(["extract", str(fp), "--profile", "all"]) == 0
+    all_epochs = capsys.readouterr().out
+    assert "old epoch prompt" in all_epochs and "new epoch prompt" in all_epochs
+    assert "[epoch 1/2]" in all_epochs and "[epoch 2/2]" in all_epochs
+
+    assert cli.main(["extract", str(fp)]) == 0
+    latest = capsys.readouterr().out
+    assert "new epoch prompt" in latest
+    assert "old epoch prompt" not in latest
+
+    assert cli.main(["extract", str(fp), "--profile", "all", "--epochs", "2"]) == 0
+    epoch_two = capsys.readouterr().out
+    assert "new epoch prompt" in epoch_two
+    assert "old epoch prompt" not in epoch_two
+
+
+def test_extract_show_tool_calls_and_intent_without_payloads_match_debug(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    args = ["--profile", "all", "--show-tool-calls", "--show-tool-call-intent", "--no-color"]
+
+    assert cli.main(["extract", str(fp), *args]) == 0
+    extracted = capsys.readouterr().out
+    assert "[tool call: Bash] List the working tree" in extracted
+    assert '"command"' not in extracted
+
+    assert cli.main(["extract-debug", str(fp), *args]) == 0
+    debug = capsys.readouterr().out
+    assert "[tool call: Bash] List the working tree" in debug
+    assert '"command"' not in debug
+
+
+def test_show_tool_call_intent_requires_visible_tool_calls(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    assert cli.main(["extract", str(fp), "--show-tool-call-intent"]) == 1
+    assert "requires --show-tool-calls" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("command", ["extract", "extract-lossless"])
@@ -1031,7 +1114,7 @@ def test_extract_sessions_directory_lists_every_top_level_session(tmp_path, caps
             assert line.startswith("- ")
 
 
-def test_extract_sessions_directory_hints_at_subdirectory_one_level_down(tmp_path, capsys):
+def test_extract_sessions_recurses_by_default_and_can_disable_recursion(tmp_path, capsys):
     subproj = tmp_path / "-workspaces-dstdns"
     subproj.mkdir()
     fp = subproj / "session.jsonl"
@@ -1040,13 +1123,36 @@ def test_extract_sessions_directory_hints_at_subdirectory_one_level_down(tmp_pat
              message={"role": "user", "content": "hi"}),
     ]) + "\n", encoding="utf-8")
 
-    # Pointed at the PARENT (like the real ~/.claude/projects itself) --
-    # nothing directly in it, but a real project one level down.
+    # Default recursion finds a project one level down.
     exit_code = cli.main(["extract-sessions", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert str(fp) in out
+
+    # Operators can constrain discovery to direct children when needed.
+    exit_code = cli.main(["extract-sessions", str(tmp_path), "--recurse", "false"])
     err = capsys.readouterr().err
     assert exit_code == 1
     assert "did you mean" in err
     assert str(subproj) in err
+
+
+def test_extract_sessions_codex_infers_environment_path_and_recurses(tmp_path, capsys, monkeypatch):
+    codex_home = tmp_path / ".codex2"
+    sessions_root = codex_home / "sessions"
+    nested = sessions_root / "2026" / "09" / "24"
+    nested.mkdir(parents=True)
+    source = _write_current_codex_fixture(tmp_path)
+    rollout = nested / "rollout-2026-09-24T00-00-00-current-codex-session.jsonl"
+    rollout.write_text(source.read_text(encoding="utf-8") + "[]\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert cli.main(["extract-sessions", "codex"]) == 0
+    out = capsys.readouterr().out
+    assert "current-codex-session" in out
+
+    assert cli.main(["extract-sessions", "codex", "--recurse", "false"]) == 1
+    assert "recursive search: false" in capsys.readouterr().err
 
 
 def test_extract_sessions_empty_directory_without_a_hint_is_explicit(tmp_path, capsys):
@@ -1345,11 +1451,17 @@ def test_extract_render_markdown_errors_with_json(tmp_path, capsys):
     assert "--render-markdown" in capsys.readouterr().err
 
 
-def test_extract_color_without_a_render_mode_errors(tmp_path, capsys):
+def test_extract_color_alone_highlights_and_no_color_keeps_plain_source(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--color"])
+    colored = capsys.readouterr().out
+    assert exit_code == 0
+    assert "\x1b[" in colored
+
     exit_code = cli.main(["extract", str(fp), "--no-color"])
-    assert exit_code == 1
-    assert "--color/--no-color only apply to" in capsys.readouterr().err
+    plain = capsys.readouterr().out
+    assert exit_code == 0
+    assert "\x1b[" not in plain
 
 
 def test_extract_color_and_no_color_are_mutually_exclusive(tmp_path, capsys):
@@ -1478,11 +1590,12 @@ def test_extract_lossless_follow_only_flags_error_without_follow(tmp_path, capsy
     assert "--bell only has an effect with --follow" in capsys.readouterr().err
 
 
-def test_extract_lossless_color_without_highlight_errors(tmp_path, capsys):
+def test_extract_lossless_no_color_without_highlight_is_plain(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
     exit_code = cli.main(["extract-lossless", str(fp), "--no-color"])
-    assert exit_code == 1
-    assert "--color/--no-color only apply to --highlight" in capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "\x1b[" not in out
 
 
 def test_follow_anchor_is_taken_before_phase_one_parses(tmp_path, capsys, monkeypatch):
