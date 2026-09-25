@@ -358,7 +358,7 @@ The following release gates are now declared through `cmru tester-gate`:
 | Project | Current state | Required follow-up |
 |---|---|---|
 | ciu | Full pytest coverage floor | `run-ciu-tests.py` |
-| cmru | Full R0-R3 suite, coverage, mutation, and canary | `./run-gate.py gate` |
+| cmru | Assay R0/R1/R3, tag-based R2 mutation, coverage, canary, and enrollment | `./run-gate.py gate` |
 | nyxloom | Full unit/contract suite | `pytest tests -q` |
 | MDT | Source-first release-flow and OCI-staging contracts | focused `unittest` modules |
 | pwmcp | Resolver and builder contracts | `pytest tests -q` |

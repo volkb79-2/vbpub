@@ -415,11 +415,14 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`. The
-`assay` lane declares the complete R0-R3 ladder: the full suite and 100%
-line+branch coverage, native mutation, and an import-break canary. The
-selected worktree's Assay source is installed at lane time. Mutation runs
-stop each failing candidate at its first failed test (`--maxfail=1`) and
-enable Assay liveness for stalled pytest candidates; a successful full-suite
-run still executes all tests. `.assay/` verdict/progress artifacts are
-retained as gate evidence.
+`assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage,
+and an import-break canary. The release `gate` adds R2 through a separate
+changed-source mutation campaign based on the nearest ancestor `cmru-v*` tag.
+This keeps the release candidate set nonempty after the code is already merged
+to `main`; a main-based R2 lane would find no source changes. The selected
+worktree's Assay source is installed at lane time. Mutation runs stop each
+failing candidate at its first failed test (`--maxfail=1`), cap each candidate
+at 120 seconds, and resume from the mutation progress file. A successful
+full-suite run still executes all tests. `.assay/` verdict/progress artifacts
+are retained as gate evidence.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

@@ -201,25 +201,28 @@ project-relative files/directories and the transaction refuses missing or symlin
 rather than guessing what the gate meant. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
 
-## Why CMRU's release gate declares R0-R3
+## Why CMRU splits R2 from its Assay lane
 
-CMRU's internal `assay.toml` is the authoritative rigor contract for the
-selected worktree. R0 runs the existing full test command, R1 judges the
-100% line-and-branch coverage artifact against `base..HEAD`, R2 runs Assay's
-native serial Python mutation campaign with liveness monitoring, and R3 runs
-an import-break canary against CMRU source. `--maxfail=1` stops a failing
-mutant at its first failed test; on the known-good baseline it is inert, so
-R0/R1 still execute the full suite. Together liveness and fail-fast keep a
-mutant's failure from cascading into later tests or leaving a stalled
-candidate consuming the lane. The lane uses the estate-approved
-`repository-minus-unsafe-symlinks` snapshot and names the three tracked Topos
-fixture omissions explicitly; a new unsafe symlink therefore fails closed.
+The release candidate is a snapshot of `origin/main`. CMRU's native Assay
+lane uses `main` as the changed-line base, which is useful for a branch review
+but produces no mutation candidates after the same source has merged. Assay
+correctly reports `NO_MUTANTS` for that release state. CMRU therefore assigns
+R0/R1/R3 to the source-backed Assay lane and R2 to the dedicated release
+mutation lane, which uses the nearest ancestor `cmru-v*` tag. This measures
+the changed CMRU source since its previous release. If that source diff is
+empty, the mutation lane writes its explicit skipped-evidence record. The
+serial campaign caps each candidate at 120 seconds, stops each failed
+candidate at its first failing test (`--maxfail=1`), and resumes from its
+progress stream.
 
-`run-gate.py gate` also retains CMRU's release-specific coverage, mutation,
-canary, and real-enrollment lanes. Those lanes provide release evidence and
-host-facing checks; they do not replace or silently downgrade the Assay R0-R3
-judgment. The selected worktree's Assay source is installed at run time, so
-the gate has one reviewed tool source and records its version in the verdict.
+The full `run-gate.py gate` still covers R0 through R3: R0 runs the full test
+suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based
+changed-source campaign, and R3 runs an import-break canary. The gate also
+retains total-coverage, cause-sensitive canary, and real-enrollment lanes.
+The Assay lane uses the estate-approved `repository-minus-unsafe-symlinks`
+snapshot and names the three tracked Topos fixture omissions explicitly; a
+new unsafe symlink therefore fails closed. The selected worktree's Assay
+source is installed at run time, so its verdict records the tool version.
 
 ## Candidate-first promotion protects the source history
 

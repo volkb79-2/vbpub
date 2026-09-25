@@ -63,17 +63,25 @@ def test_version_policy_vocabulary_is_documented():
         assert value in corpus
 
 
-def test_assay_lane_declares_the_complete_rigor_ladder():
+def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     lane = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["cmru"]
-    assert lane["rigor"] == ["R0", "R1", "R2", "R3"]
+    assert lane["rigor"] == ["R0", "R1", "R3"]
     assert "--maxfail=1" in lane["argv"]
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
-    assert lane["judge"]["mutation"]["jobs"] == 1
-    assert lane["judge"]["mutation"]["liveness"] is True
+    assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
 
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    gate_command = " ".join(gate["lanes"]["gate"]["argv"])
+    for name in ("assay", "coverage", "mutation", "canary", "enroll"):
+        assert f"./run-gate.py --worktree {{worktree}} {name}" in gate_command
+    mutation_command = " ".join(gate["lanes"]["mutation"]["argv"])
+    assert "git describe --tags --abbrev=0 --match 'cmru-v*'" in mutation_command
+    assert 'git diff --quiet "$BASE"..HEAD -- src' in mutation_command
+    assert '"reason": "no-changed-source"' in mutation_command
+    assert "--require-candidates" in mutation_command
+
     for name in ("coverage", "mutation", "canary"):
         assert "--maxfail=1" in " ".join(gate["lanes"][name]["argv"])
 
@@ -85,7 +93,10 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
     ):
         text = document.read_text(encoding="utf-8")
         assert "--maxfail=1" in text
-        assert "liveness" in text.lower()
+        assert "120 seconds" in text or "120-second" in text
+        assert "progress" in text.lower()
+        assert "nearest ancestor" in text
+        assert "cmru-v*" in text
 
 
 def test_cross_document_links_resolve():
