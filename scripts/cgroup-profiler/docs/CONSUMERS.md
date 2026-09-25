@@ -18,15 +18,16 @@ is unchanged. Use
 
 ## Build or publish the daemon image
 
-From the repository root, preview and release the registered project:
+After the required cgprofile 1.0.0 release, preview and release this 1.1.0
+follow-up from the repository root:
 
 ```bash
-cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
-cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
+cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.1.0
+cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.1.0
 ```
 
-Use the explicit `1.0.0` override for the first release; later releases can
-omit it and follow CMRU's normal tag-based bump. CMRU creates the release tag
+The first 1.0.0 release used an explicit override because there was no prior
+cgprofile tag. CMRU creates the release tag
 before image build. `build-push.py` reads that exact tag to set the OCI
 tag/label and embedded runtime version, so CMRU releases need no manual
 `CGPROFILE_VERSION` export. An untagged local `--build` uses `0.0.0-dev`; a

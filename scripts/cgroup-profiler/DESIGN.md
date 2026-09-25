@@ -698,7 +698,9 @@ admission.md` §A1 (D-27..D-29) and §A2 (D-30); the wire shapes are
   process that might judge a lane's liveness (run-gate's own in-process
   stall watcher, chief among them) dies with that process; the daemon
   outlives any one consumer AND already reads the lane's cgroup on a fixed
-  cadence with `--pid=host`/`--cgroupns=host` access to its pid subtree.
+  cadence through explicit host `/proc` and cgroup binds, while keeping
+  private PID and cgroup namespaces. Host PID translation is resolved from
+  the mounted `/hostproc` view rather than a host-namespace shortcut.
   Implemented as `lib/liveness.py`'s `LivenessTracker` (the state machine:
   `ok`/`stalled`/`hung`/`runaway`/`throttled`/`over_ceiling`, the idle
   clock's pause condition, §8.4) wired into `lib/serve.py`'s discovery
@@ -764,8 +766,10 @@ number.
 
 - Host: 16 GiB RAM, ~70 GiB swap, zswap `zstd` at 25 % pool, KSM on.
 - cgroup v2 at `/sys/fs/cgroup`, mounted **without `memory_recursiveprot`**.
-- Devcontainer runs in `dev-interactive.slice`; gates run in
-  `dev-background.slice` (`$CGROUP_PARENT_DEV_BACKGROUND`).
+- Devcontainer runs in `dev-interactive.slice`; gate/lane containers and
+  placed `rg-*` leaves run in `dev-gates.slice`
+  (`$CGROUP_PARENT_DEV_GATES`). `dev-background.slice` remains for
+  long-running application stacks.
 - Workspace bind: host `/home/vb/volkb79-2/vbpub` → `/workspaces/vbpub`.
 - Python 3.14.6 in both the devcontainer and the helper image. The
   devcontainer's own interpreter is itself a venv (`/home/vscode/.venv`), so
