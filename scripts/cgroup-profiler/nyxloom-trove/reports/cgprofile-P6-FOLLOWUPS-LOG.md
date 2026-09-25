@@ -1345,3 +1345,23 @@ P1's separate R2 campaign is outside this tree. At the last observation
 running with a 3-CPU cap in loaded `dev-gates.slice`; the next observation is
 not due before 17:43:19Z. No early check is warranted absent an error or
 expected completion.
+
+## Session 16 — 2026-09-25 — Sol xhigh final adversarial review, round 3
+
+BLOCKED: The required own-image live daemon/carrier, placement and watch
+probes cannot run within the review packet's host safety boundary. A bounded
+read-only host-systemd probe reported `cgprofile.slice LoadState=loaded` but
+empty `FragmentPath` and `ControlGroup`; that does not verify an installed,
+active, bounded daemon parent, and Docker can silently auto-create an
+unlimited transient slice. The reviewer did not launch the daemon under an
+unverified slice or use forbidden host namespace modes. See
+`cgprofile-P6-FOLLOWUPS-REVIEW-round3.md` for the exact probe, findings,
+repairs, registered short-gate receipts, and remaining release evidence.
+
+The reviewed implementation tip before this LOG/report-only commit is
+`5ef6436051125f98c5f4ac65c7fa6d5d971bbfc7`. Its registered R0/R1
+passed 1,662 tests with 100% line and branch coverage; R3 rejected 7/7
+canaries. The old R2 at `aae66356` is not current-tree evidence. Current-tree
+R2 and the full gate remain intentionally pending for provisional code review
+and remain mandatory before release. No provisional merge or release is
+approved by this BLOCKED verdict.
