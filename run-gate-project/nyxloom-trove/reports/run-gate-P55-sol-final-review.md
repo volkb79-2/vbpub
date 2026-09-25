@@ -270,15 +270,17 @@ scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-HANDOFF
 ```
 
 The former detached campaign and stale `5917d362`/`9b70a46e` gate receipts are
-not evidence for the private-namespace candidate. On `0daa66e2`, the corrected
-`r0-r1` receipt passed with 1,324 tests and 100% line/branch coverage; `r3`
-passed with seven canaries rejected and zero survivors. Both exact-tree
-history records are PASS/exit 0. This review-packet refresh itself changes the
-candidate tree; the controller will commit it, rerun the final short gates on
-the new exact tip, and then launch a fresh R2. At review dispatch, verify the
-final tree's own explicit R2 verdict, completion marker, every candidate
-disposition, and final short-gate history. Do not infer from any prior-tree
-count.
+not evidence for the private-namespace candidate. The registered R2 on exact
+tree `51198f2e4759acbd69dfd770b843cdf20b1d6ed0` completed at
+`2026-09-24T09:19:52.297677Z`: 81/81 candidates executed, 71 killed, 10
+survived, and zero equivalent, budget-exceeded, crashed, or hung. Its
+mechanical result is `FAIL/MUTANTS_SURVIVED`; all ten are oracle gaps and the
+P1 report/LOG map each to new behavioral tests. That candidate's prior short
+gates are stale for the repair commit. The controller will commit the repair
+tests and records first, run final short gates and a fresh registered R2 on
+the same new quiet tip, then dispatch this final review. At review dispatch,
+verify the exact tree's own R2 verdict, completion marker, every candidate
+disposition, and short-gate history. Do not infer from any prior-tree count.
 
 Review the daemon's serve/ctl protocol, socket carrier, watch and placement
 behavior, liveness/finalization, safety on daemon absence, host/container
@@ -363,9 +365,10 @@ has pure admission arithmetic, checked overflow, dynamic capacity telemetry,
 strict registry/manifest provenance, and an order-independent estate pairing
 guard; its full local run-gate suite is 1101 passed/3 skipped. Review it only
 if time remains after the selected release target. Keep the current RG-55
-two-mutation-lane cap; `additional_slots` must be derived capacity telemetry,
-never a literal authorization to launch a third lane. Any RG56 repair must
-remain isolated and must not be merged as part of this final review.
+three-mutation-lane cap authorized by RW-319; `additional_slots` must be
+derived capacity telemetry, never an authorization beyond three lanes. Any
+RG56 repair must remain isolated and must not be merged as part of this final
+review.
 
 ## Review and repair procedure
 

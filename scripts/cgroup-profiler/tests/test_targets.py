@@ -494,6 +494,30 @@ class TestCgroupOfPid:
         monkeypatch.setattr(t.os, "getpid", lambda: self_pid)
         assert t.cgroup_of_pid(4242, str(root), str(proc)) is None
 
+    def test_nonpositive_local_self_pid_returns_none_before_lookup(self, monkeypatch):
+        monkeypatch.setattr(t.os, "getpid", lambda: 0)
+
+        def unexpected_lookup(*_args):
+            raise AssertionError("a nonpositive local PID must fail closed immediately")
+
+        monkeypatch.setattr(t, "_cgroup_path_for_visible_pid", unexpected_lookup)
+        assert t._cgroup_namespace_root("/host-cgroup", "/host-proc") is None
+
+    @pytest.mark.parametrize(
+        ("actual_path", "own_cgroup"),
+        [(None, "0::/profiler.scope\n"), ("/host/profiler.scope", None)],
+    )
+    def test_namespace_root_requires_both_mapping_facts(
+        self, monkeypatch, actual_path, own_cgroup,
+    ):
+        monkeypatch.setattr(t.os, "getpid", lambda: 9001)
+        monkeypatch.setattr(
+            t, "_cgroup_path_for_visible_pid", lambda _pid, _root: actual_path,
+        )
+        monkeypatch.setattr(t.util, "read_text", lambda _path: own_cgroup)
+
+        assert t._cgroup_namespace_root("/host-cgroup", "/host-proc") is None
+
     def test_private_namespace_scans_host_proc_and_matches_exact_subtree(
         self, tmp_path: Path, monkeypatch,
     ):

@@ -1288,3 +1288,43 @@ then passed 82 tests. The test-only repair is `8cc740a2`.
 That commit changes the judged tree, so the observed R2 is invalidated for
 release. A fresh R2 is required on `8cc740a2`, followed by final r0-r1/r3,
 fresh Sol xhigh review, and only then merge/release.
+
+### 27. Controller triage — registered R2 on `51198f2e` (2026-09-25)
+
+The registered P1 R2 on the quiet, exact tree
+`51198f2e4759acbd69dfd770b843cdf20b1d6ed0` completed at
+`2026-09-24T09:19:52.297677Z` in container
+`run-gate-vbpub-r2-2104925-1790236649`. The separately read verdict records
+R0 PASS and R2 `FAIL/MUTANTS_SURVIVED`, exit 1: 81 candidates, 71 killed,
+10 survived, and zero equivalent, budget-exceeded, crashed, or hung. Every
+candidate executed; this is not an incomplete or budget-limited run.
+
+All ten survivors were behavioral-oracle gaps, not accepted equivalents:
+
+- `access.py:390` (`True->False`): placement-probe announcement must be
+  flushed, including its container identity, before Docker starts. The new
+  `test_probe_diagnostic_is_flushed_before_docker_start` asserts this ordering.
+- `targets.py:262-263` (`<=-><`, `None->[]`): a nonpositive local PID must
+  return `None` before any host-tree lookup. The new
+  `test_nonpositive_local_self_pid_returns_none_before_lookup` asserts both.
+- `targets.py:267` (two `or->and` candidates): namespace-root derivation must
+  refuse if either the host-visible cgroup path or local visible path is
+  absent. The parameterized `test_namespace_root_requires_both_mapping_facts`
+  covers each missing-fact direction.
+- `version.py:52` (`or->and`): empty and non-string project prefixes must be
+  rejected; covered by `test_empty_or_non_string_project_prefix_is_refused`.
+- `version.py:57` (three subprocess-option flips): tag enumeration requires
+  captured text output and must not raise on a nonzero status. The test fake
+  now models `capture_output`, `text`, and `check`; the existing failure
+  assertions discriminate each altered behavior.
+- `version.py:60` (`or->and`): when stderr is empty, preserve the exit-code
+  fallback; when stderr is present, preserve that diagnostic. Covered by
+  `test_git_tag_probe_failure_preserves_diagnostic_or_exit_fallback`.
+
+The focused suite `tests/test_version.py tests/test_targets.py
+tests/test_access.py` passed 235 tests on the repair worktree. Its tests and
+this triage record are pending commit. Because the next commit changes the
+judged tree, no R2 evidence from `51198f2e` applies to the candidate: commit
+the repairs and records first, hold the new tip quiet, then run registered R2
+and the final short gates on that exact tip. Do not call this R2 a PASS or
+release evidence.

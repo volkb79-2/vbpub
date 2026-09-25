@@ -679,6 +679,34 @@ class TestVerifyHelperCgroupParent:
         assert calls[1][0] == ("update", "--cpus=3", name)
         assert calls[-1][0] == ("rm", "--force", name)
 
+    def test_probe_diagnostic_is_flushed_before_docker_start(self, monkeypatch):
+        calls = self._prepare(monkeypatch)
+
+        class TrackingStderr:
+            def __init__(self):
+                self.parts = []
+                self.flush_count = 0
+
+            def write(self, value):
+                self.parts.append(value)
+                return len(value)
+
+            def flush(self):
+                self.flush_count += 1
+
+        stderr = TrackingStderr()
+        monkeypatch.setattr(access.sys, "stderr", stderr)
+        docker = access._docker
+
+        def require_flushed_announcement(*args, **kwargs):
+            if args[0] == "run":
+                assert stderr.flush_count > 0
+                assert "cgprofile: placement probe container=" in "".join(stderr.parts)
+            return docker(*args, **kwargs)
+
+        monkeypatch.setattr(access, "_docker", require_flushed_announcement)
+        access.verify_helper_cgroup_parent("dev-gates.slice")
+
     @pytest.mark.parametrize(
         "parent", ["", "dev-gates.scope", "/dev-gates.slice", " dev-gates.slice"],
     )

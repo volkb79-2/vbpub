@@ -3954,3 +3954,20 @@ and resumability; timeout, interruption, pressure, or an unjudged candidate is
 incomplete/infrastructure evidence, never a product verdict. Do not change
 test semantics or classify a candidate from elapsed wall time. The controller
 must update review/dispatch packets that still encode the former two-lane cap.
+
+### RW-320 — 2026-09-25 02:49:51Z — P1 R2 survivors require behavioral oracles
+
+The exact registered P1 R2 on `51198f2e4759acbd69dfd770b843cdf20b1d6ed0`
+finished at `2026-09-24T09:19:52.297677Z`: 81/81 candidates executed, 71
+killed, 10 survived, and zero equivalent, budget-exceeded, crashed, or hung.
+The ten survivors at `access.py:390`, `targets.py:262-267`, and
+`version.py:52,57,60` are behavioral-oracle gaps, not accepted equivalents.
+The P1 worktree now contains focused tests for diagnostic flush-before-start,
+nonpositive-PID refusal, both missing namespace mapping facts, malformed
+prefix refusal, subprocess option semantics, and both diagnostic fallback
+paths. The focused 235-test suite passed. These edits plus this ruling/report
+change the tree, so the `51198f2e` mutation records are not release evidence
+for the next candidate. Commit all repair and record changes before starting
+the next registered R2; then keep that exact tree quiet through R2 and final
+short gates. The mechanical outcome for `51198f2e` remains
+`FAIL/MUTANTS_SURVIVED`.

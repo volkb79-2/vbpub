@@ -1672,3 +1672,20 @@ slot is live, `current == expected_end` and `expected_end = max(_owned) + 1`
 imply `current > baseline`. The mutant cannot alter a reachable release
 decision. No new oracle gap was found; the mechanical Assay verdict remains
 FAIL because Assay does not encode this human equivalence classification.
+
+## Controller addendum — registered P1 R2 on `51198f2e`
+
+The registered R2 on exact quiet tree
+`51198f2e4759acbd69dfd770b843cdf20b1d6ed0` completed at
+`2026-09-24T09:19:52.297677Z` in container
+`run-gate-vbpub-r2-2104925-1790236649`. The separately read verdict was R0
+PASS and R2 `FAIL/MUTANTS_SURVIVED`, exit 1: 81/81 candidates executed, 71
+killed and 10 survived; zero were equivalent, budget-exceeded, crashed, or
+hung. All ten survivors revealed missing behavioral assertions in placement
+diagnostic ordering, invalid local-PID handling, incomplete namespace-root
+mapping, version-prefix validation, subprocess option semantics, and
+diagnostic fallback. Regression tests for these cases are in the P1 source
+worktree and passed the focused 235-test suite. They are not yet confirmed by
+a new mutation run. The 51198 result is diagnostic evidence only and does not
+satisfy final P1 mutation acceptance. A new quiet-tree R2 plus final short
+gates and the required fresh Sol xhigh review remain required.

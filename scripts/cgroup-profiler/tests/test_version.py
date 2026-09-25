@@ -20,7 +20,19 @@ def _project_root(tmp_path: Path, prefix: str = "cgprofile-v") -> Path:
 def _git_tags(monkeypatch, *, stdout: str = "", returncode: int = 0, stderr: str = ""):
     def fake_run(argv, **kwargs):
         assert argv == ["git", "tag", "--points-at", "HEAD"]
-        return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+        captured = kwargs.get("capture_output", False)
+        result_stdout = stdout if captured else None
+        result_stderr = stderr if captured else None
+        if captured and not kwargs.get("text", False):
+            result_stdout = stdout.encode()
+            result_stderr = stderr.encode()
+        if returncode and kwargs.get("check", False):
+            raise subprocess.CalledProcessError(
+                returncode, argv, output=result_stdout, stderr=result_stderr,
+            )
+        return subprocess.CompletedProcess(
+            argv, returncode, result_stdout, result_stderr,
+        )
 
     monkeypatch.setattr(version.subprocess, "run", fake_run)
 
@@ -100,11 +112,31 @@ def test_publish_without_tag_or_override_is_refused(tmp_path, monkeypatch):
         version.resolve_build_version(root, require_release_tag=True, environ={})
 
 
-def test_git_tag_probe_failure_is_not_masked_by_local_build_fallback(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("stderr", "expected_detail"),
+    [("not a git repository", "not a git repository"), ("", "exit 128")],
+)
+def test_git_tag_probe_failure_preserves_diagnostic_or_exit_fallback(
+    tmp_path, monkeypatch, stderr, expected_detail,
+):
     root = _project_root(tmp_path)
-    _git_tags(monkeypatch, returncode=128, stderr="not a git repository")
-    with pytest.raises(RuntimeError, match="cannot resolve release tag at HEAD"):
+    _git_tags(monkeypatch, returncode=128, stderr=stderr)
+    with pytest.raises(RuntimeError) as exc_info:
         version.resolve_build_version(root, require_release_tag=False, environ={})
+    assert "cannot resolve release tag at HEAD" in str(exc_info.value)
+    assert expected_detail in str(exc_info.value)
+
+
+@pytest.mark.parametrize("prefix", ['""', "42"])
+def test_empty_or_non_string_project_prefix_is_refused(tmp_path, monkeypatch, prefix):
+    (tmp_path / "cmru.toml").write_text(
+        f"[project]\nprefix = {prefix}\n", encoding="utf-8",
+    )
+    _git_tags(monkeypatch)
+    with pytest.raises(RuntimeError, match="must declare a non-empty project.prefix"):
+        version.resolve_build_version(
+            tmp_path, require_release_tag=False, environ={},
+        )
 
 
 def test_project_prefix_is_read_from_cmru_contract(tmp_path, monkeypatch):
