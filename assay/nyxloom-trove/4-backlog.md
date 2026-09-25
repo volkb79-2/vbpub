@@ -133,7 +133,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B079 — closed v12 `discard_reason` split — SHIPPED (`assay-v7.0.0`, A-454, release commit `47435679`; tester-unified gate PASS); two original acceptance items remain open: correct the rationale in all five locations, and produce a genuine `RuntimeError` fixture or record an explicit deferral.
 
 **Wave C (current; B080, B081, B094, B025, B095, B076; B100 conditional)**
-- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; P1 implementation, independent review READY; authoritative gate pending; B089 is its withdrawn duplicate)
+- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; P1 review READY and tester-unified PASS at `8823bfea`; B089 is its withdrawn duplicate)
 - B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (P2)
 - B094 — unknown `--rejudge` reason mapping — OPEN (P2)
 - B025 — unresolvable infrastructure refusals lack their own verdict — PARTIAL (P2 closes the final attestation-timeout oracle)
@@ -141,8 +141,8 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B076 — unbounded R2 baseline has no bound — OPEN (P3 ruling and docs)
 - B100 — bounded operator report for live gate progress/verdicts — OPEN (conditional P4; start only after P0-P3 merge and gate)
 
-**Wave C P1 implemented (2026-09-24; review/gate pending)**
-- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation complete, independent review and authoritative gate pending)
+**Wave C P1 implemented (2026-09-24; independent review READY and authoritative gate PASS at `8823bfea`)**
+- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation, independent review and tester-unified gate complete)
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
@@ -8618,7 +8618,7 @@ the failed production attempt and its measurement cost.
 
 ## B080 — an istanbul `default-arg` branch sits on the function-SIGNATURE line, which the `javascript` adapter's own documented guarantee leaves unattributed — so `FileCoverage`'s "no branch line outside `executed | missing`" invariant refuses a fully-executed file whose arc count is genuinely non-zero
 
-**Status: DONE (Wave C P1 implementation, 2026-09-24, A-456/A-459) — parser-level shape C classifies statement-less default-argument node lines with a matching arm of the same branch from their enclosing function's call count and preserves their arcs. The multiline compatibility escalation is resolved by the operator's A-459 narrowing. Independent review and the controller's authoritative tester-unified gate remain pending. B089 remains a withdrawn duplicate and is resolved by this same change.**
+**Status: DONE (Wave C P1 implementation, 2026-09-24, A-456/A-459; independent review READY and authoritative tester-unified gate PASS at `8823bfea`) — parser-level shape C classifies statement-less default-argument node lines with a matching arm of the same branch from their enclosing function's call count and preserves their arcs. The multiline compatibility escalation is resolved by the operator's A-459 narrowing. B089 remains a withdrawn duplicate and is resolved by this same change.**
 
 **Implementation ruling and evidence (supersedes the proposed A/B contract and
 zero-count oracle below).** The fixed
@@ -9693,7 +9693,7 @@ source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
 
 ## B089 — istanbul branch-arc self-contradiction on some `.tsx` files
 
-**Status: WITHDRAWN (duplicate of B080, 2026-09-23; resolved by its Wave C P1 implementation, A-456) — the same six default-arg-on-signature-line branch sites (ChartCard.tsx:34, StatCard.tsx:17, StatTile.tsx:28, DataTable.tsx:33-35) B080 diagnoses as "Live specimens" and root-causes; this entry is B054's drop-and-continue path firing on those same files when they sit outside the judged/diff set (B080 is the hard-refuse path when they ARE in scope). B080's parser-level shape C, narrowed by A-459 to matching signature-line arms, preserves their arcs without a contradictory-record diagnostic; unmatched multiline node lines retain their documented gap. No separate fix is owed. See B080's status and implementation evidence; independent review and the authoritative gate remain pending.**
+**Status: WITHDRAWN (duplicate of B080, 2026-09-23; resolved by its Wave C P1 implementation, A-456/A-459; independent review READY and authoritative tester-unified gate PASS at `8823bfea`) — the same six default-arg-on-signature-line branch sites (ChartCard.tsx:34, StatCard.tsx:17, StatTile.tsx:28, DataTable.tsx:33-35) B080 diagnoses as "Live specimens" and root-causes; this entry is B054's drop-and-continue path firing on those same files when they sit outside the judged/diff set (B080 is the hard-refuse path when they ARE in scope). B080's parser-level shape C, narrowed by A-459 to matching signature-line arms, preserves their arcs without a contradictory-record diagnostic; unmatched multiline node lines retain their documented gap. No separate fix is owed. See B080's status and implementation evidence.**
 
 Observed live during dstdns's `ui_unit` lane (P186 post-merge gate, 2026-09-12,
 run-gate rev 40, assay-6.1.0.pyz), against unrelated pre-existing files (P186
