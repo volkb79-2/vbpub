@@ -384,9 +384,17 @@ product failure. The raw log is preserved at
 [`assay-WAVE-C-P5-gate-failed-2026-09-25-d43167c6.log`](assay-WAVE-C-P5-gate-failed-2026-09-25-d43167c6.log),
 SHA-256 `deb8164774864c80134b7f36244128515490ea2073aff1a4d0a15900f186fb18`.
 The gate now derives its refusal from `VERDICT_SCHEMA_VERSION` and pins the
-P5 cut to 13; its source test covers that assertion. A second full gate is
-pending. P5 details are in
+P5 cut to 13; its source test covers that assertion. P5 details are in
 [`assay-WAVE-C-P5-B106-REPORT.md`](assay-WAVE-C-P5-B106-REPORT.md).
+
+The next attempt started on `c28fbbb9` and passed the focused Wave C/P5
+phases, but was intentionally stopped with exit 143 when the 90-second check
+confirmed that shared `main` had advanced to `23214ef5` beyond P5's
+`3f117b27` base. Its exact container had a verified 3-CPU limit under
+`dev-gates.slice`. The raw log is preserved at
+[`assay-WAVE-C-P5-gate-cancelled-2026-09-25-c28fbbb9.log.gz`](assay-WAVE-C-P5-gate-cancelled-2026-09-25-c28fbbb9.log.gz).
+Current `main` was merged cleanly into the P5 branch as `34580468`; only the
+gate on that merged tree can count as final acceptance.
 
 ### Agreed continuation after P5
 

@@ -103,7 +103,23 @@ value could not be confirmed. It stopped before the self-hosted lane; the
 previous P4 gate's roughly 15-minute duration remains the runtime estimate for
 the complete retry.
 
-The next run must invoke `./run-gate.py tester-unified` from this worktree.
+The third attempt started on `c28fbbb9`, but the shared checkout's `main` had
+advanced to `23214ef5` since the package branch's `3f117b27` base. The 90-second
+progress check showed every focused Wave C/P5 phase passing and the
+self-hosted full suite starting. The exact container
+`run-gate-assay-selfhosted-509310-25194-1790349041` was confirmed at 3 CPUs
+under `dev-gates.slice`. I intentionally stopped that run with exit 143 before
+using it as acceptance evidence, because the prompt requires the final package
+tree to contain current `main`. The 4,199-byte raw log is preserved as
+[`assay-WAVE-C-P5-gate-cancelled-2026-09-25-c28fbbb9.log.gz`](assay-WAVE-C-P5-gate-cancelled-2026-09-25-c28fbbb9.log.gz),
+raw SHA-256 `e70016a4e5ed5d340047f86bd2cd35c975df1040fb8df4601224e4e66c9ecac2`,
+compressed SHA-256
+`35f30e8581f96d7a9d2d5637d364bdd0bf7f574521a65495f87feaba8ffa74b9`.
+Fetched `main` was merged cleanly into the P5 branch as `34580468`; the final
+registered gate must run on that merged tree.
+
+The next run must invoke `./run-gate.py tester-unified` from this worktree at
+`34580468`.
 The passing run must include the Wave C markers and
 `ASSAY_GATE_PHASE=verdict-v13-successors-verified`, plus
 `ASSAY_REGISTERED_GATE_COMPLETE=1`, the container exit, and the outer `GATE_EXIT`.
