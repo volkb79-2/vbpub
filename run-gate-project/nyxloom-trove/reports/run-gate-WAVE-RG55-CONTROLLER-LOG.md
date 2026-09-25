@@ -4113,3 +4113,29 @@ rusage profiling for these gates. This log/report/handoff update changes HEAD;
 repeat both short gates on the resulting final P1 tip before Sol review. These
 receipts do not change the old R2 terminal or substitute for fresh live
 review probes.
+
+### RW-329 — 2026-09-25 16:10:42Z — P1 reconciled current main; provisional review may precede R2
+
+Shared `main` advanced to `e5e9b95c5ac8be3452c93f1066f9436347f862fd`
+after the P1 private-namespace candidate was prepared. A read-only path
+comparison showed the intervening main changes did not modify
+`scripts/cgroup-profiler/` or `run-gate-project/` implementation paths. The
+clean P1 branch was reconciled with `git merge --no-ff main`, producing
+`d108ebb2a014ac204d6c50a3b82d65471e8ada7d`; its merge base is now the exact
+current main tip. On this clean tree, `r0-r1` passed 1,377 tests in 94.06 s
+with 5,021/5,021 statements and 1,732/1,732 branches, and `r3` passed with
+all seven canaries rejected and zero survivors. Run-gate history independently
+records PASS/exit 0 for both lanes on that hash. The R0/R1 container was
+`cgprofile-gate-572739-1790352189`; R3 was
+`run-gate-vbpub-r3-577036-1790352338`. Both used loaded `dev-gates.slice`
+with `NanoCpus=3000000000`; the daemon was down and R0/R1 used coarse rusage.
+
+The old R2 on `51198f2e` remains FAIL with ten real oracle gaps, repaired in
+the current candidate, but no replacement R2/full gate is complete for this
+tree. Per the operator's workflow change, a fresh Sol ACCEPT plus the short
+gates permits a **provisional merge** so other RG-55 work can proceed. This
+does not permit release or shipment. Launch the replacement R2 and full gate
+in an attached, separate CIU worktree after provisional merge; keep its HEAD
+quiet, and backport/rejudge any fixes. The updated Sol packet distinguishes
+review acceptance from mutation/release evidence. The R2 and full-gate status
+remain open until their exact-tree records are read separately.

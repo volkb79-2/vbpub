@@ -1341,3 +1341,23 @@ implementation and regression tests were unchanged by the merge, but the
 registered P1 R2 must judge the exact post-reconciliation tree. The earlier
 short-gate receipts on `3e6e657e` are not the final receipts: rerun r0-r1 and
 r3 on the final committed tip, then launch R2 on that same quiet tip.
+
+### 29. Reconcile latest main and rerun short gates (2026-09-25)
+
+Shared `main` subsequently advanced to
+`e5e9b95c5ac8be3452c93f1066f9436347f862fd`. Its intervening commits changed
+Assay/CMRU/CIU inputs but not the P1 implementation paths. The clean P1 branch
+was reconciled with `git merge --no-ff main`, producing
+`d108ebb2a014ac204d6c50a3b82d65471e8ada7d`, whose merge base is current main.
+On this exact clean tree, `r0-r1` passed 1,377 tests with 5,021/5,021
+statements and 1,732/1,732 branches; `r3` rejected all seven canaries. Both
+were PASS/exit 0 in separate run-gate history records. The exact containers
+`cgprofile-gate-572739-1790352189` and
+`run-gate-vbpub-r3-577036-1790352338` each used loaded `dev-gates.slice` and
+`NanoCpus=3000000000`. The daemon was down, so R0/R1 used coarse rusage.
+
+The old R2 on `51198f2e` remains FAIL with ten oracle gaps repaired in this
+candidate. No replacement R2 or full gate is complete. The operator now
+authorizes provisional merge after fresh review and short-gate acceptance;
+replacement R2/full gate proceed in a separate attached CIU worktree and
+remain mandatory for release/shipment. Backport and rejudge any fixes.

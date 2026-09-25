@@ -1777,3 +1777,18 @@ results. Because this report/log update changes the candidate tree, the
 controller will rerun R0/R1 and R3 on the final post-documentation tip before
 the Sol round-3 review. These short gates do not replace the pending live
 daemon review probes or a fresh R2.
+
+## Controller addendum — current-main reconciliation and short-gate evidence
+
+P1 was reconciled to current `main` `e5e9b95c5ac8be3452c93f1066f9436347f862fd`
+by merge commit `d108ebb2a014ac204d6c50a3b82d65471e8ada7d`. On that exact
+clean tree, R0/R1 passed 1,377 tests with 100% line and branch coverage
+(5,021/5,021 statements, 1,732/1,732 branches); R3 rejected all seven
+canaries. Run-gate history records exit 0 and PASS for both. Their exact gate
+containers and 3-CPU `dev-gates.slice` evidence are in the P1 LOG and RW-329.
+The daemon remained down; R0/R1 used coarse rusage. The old R2 on `51198f2e`
+is still FAIL; no replacement R2 or full gate is complete for this candidate.
+Per the operator's revised process, a fresh review and these short gates may
+authorize a provisional merge while R2/full-gate judging continues in a
+separate attached CIU worktree. Release/shipping remains blocked until that
+exact-tree campaign and full gate pass, with all fixes backported and rejudged.

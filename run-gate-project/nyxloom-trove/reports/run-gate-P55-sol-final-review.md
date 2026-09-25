@@ -282,6 +282,22 @@ the same new quiet tip, then dispatch this final review. At review dispatch,
 verify the exact tree's own R2 verdict, completion marker, every candidate
 disposition, and short-gate history. Do not infer from any prior-tree count.
 
+Current status supersedes the preceding snapshot: P1 was reconciled to current
+`main` `e5e9b95c5ac8be3452c93f1066f9436347f862fd` by merge commit
+`d108ebb2a014ac204d6c50a3b82d65471e8ada7d`. On that clean exact tree,
+R0/R1 passed 1,377 tests with 5,021/5,021 statements and 1,732/1,732
+branches; R3 rejected all seven canaries. Both history records are PASS/exit
+0 with loaded `dev-gates.slice` and 3-CPU caps. The daemon was down, so R0/R1
+used coarse rusage. Verify the latest exact tree and receipts at dispatch.
+
+The operator authorizes provisional merge after fresh review and green short
+gates while replacement R2/full-gate judging proceeds asynchronously in a
+separate attached CIU worktree. This review does not certify mutation
+completion, and provisional merge is not release/shipment. Release remains
+blocked until the replacement exact-tree campaign accounts for every
+candidate without budget/hung/incomplete results, the full gate passes, and
+any fixes are backported and rejudged. Never edit or switch the judged tree.
+
 Review the daemon's serve/ctl protocol, socket carrier, watch and placement
 behavior, liveness/finalization, safety on daemon absence, host/container
 namespace translations, and all four known-equivalent mutants from the brief.
@@ -401,8 +417,8 @@ review.
    package declares it; run run-gate-project's own bare-host selftest/r1/r2/r3
    lanes exactly as declared. Read each verdict separately and record exit
    markers, tree hashes, container names, PSI, and CPU caps.
-6. Review the final changed tree again. Return `ACCEPT` only when the complete
-   mutation result, 100% line+branch changed-line coverage, package gates,
+6. Review the final changed tree again. Return `ACCEPT` only when the reviewed
+   code's 100% line+branch changed-line coverage and short package gates,
    docs, live probes, R-36h, and D-15 safety all support the claim. Use
    `ACCEPT-CONDITIONAL` only for named non-blocking follow-up rows that cannot
    alter shipped behavior. Use `REJECT` for any blocker. Use `BLOCKED` for a
