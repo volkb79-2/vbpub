@@ -1,9 +1,11 @@
 # Wave C P5 — B106 selective mutation reuse report
 
-**Status:** IMPLEMENTED; final `tester-unified` gate pending. This report is
-bound to CIU worktree
+**Status:** IMPLEMENTED; registered `tester-unified` gate PASS on source tip
+`a0e2fe23`. This report is bound to CIU worktree
 `/workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse`, branch
-`assay-wave-c-p5-b106-selective-reuse`, based on main tip `3f117b27`.
+`assay-wave-c-p5-b106-selective-reuse`, originally based on main tip
+`3f117b27`; current main `23214ef5` was merged in `34580468` before the final
+gate.
 
 ## Decision and review
 
@@ -39,7 +41,8 @@ P1/P2 findings**. The review did not edit files or run tests.
 - After the final hook-allowlist repair, the lookalike-hook and genuine
   liveness-plugin integration tests passed (**2 passed**), and
   `tests/test_b106_reuse_and_witness.py` passed (**25 passed in 19.35s**).
-- The final `git diff --check` and registered gate result are pending.
+- `git diff --check` passed on the final merged source tree before its
+  registered gate. Final gate evidence follows.
 
 ## Registered gate
 
@@ -86,7 +89,7 @@ ShellCheck, `bash -n`, and `git diff --check` pass. A final follow-up review
 returned **no actionable defect**. Its focused run passed 37 checks across the
 v13 successor and gate-source suites, and its independent probe confirmed all
 W7/W8 templates produce the exact expected v13 refusal. The registered gate
-run is pending.
+history and final result follow.
 
 The first container was
 `run-gate-assay-selfhosted-397279-21079-1790344007`, confirmed at 3 CPUs under
@@ -115,16 +118,39 @@ tree to contain current `main`. The 4,199-byte raw log is preserved as
 raw SHA-256 `e70016a4e5ed5d340047f86bd2cd35c975df1040fb8df4601224e4e66c9ecac2`,
 compressed SHA-256
 `35f30e8581f96d7a9d2d5637d364bdd0bf7f574521a65495f87feaba8ffa74b9`.
-Fetched `main` was merged cleanly into the P5 branch as `34580468`; the final
-registered gate must run on that merged tree.
+Fetched `main` was merged cleanly into the P5 branch as `34580468`. The final
+registered gate ran on that merge plus the report-only commit `a0e2fe23`.
 
-The next run must invoke `./run-gate.py tester-unified` from this worktree at
-`34580468`.
-The passing run must include the Wave C markers and
-`ASSAY_GATE_PHASE=verdict-v13-successors-verified`, plus
-`ASSAY_REGISTERED_GATE_COMPLETE=1`, the container exit, and the outer `GATE_EXIT`.
-The run will be checked at 90 seconds for a progress log and runtime estimate;
-its exact container will be capped at 3 CPUs under the configured gate slice.
+### Final registered gate — PASS
+
+`./run-gate.py tester-unified` passed on exact source tip
+`a0e2fe23d4a47ddd1c04564a901f5ef647acc670`, which contains current main
+`23214ef58d6ba91bca6e01ee6cef0553929e440a` through merge `34580468`. The run
+started at 2026-09-25 15:20:32 UTC and completed at 15:38:59 UTC (18m27s).
+At the 90-second check, wheel installation and all focused v13/B106 phases had
+passed and the self-hosted full suite had started. At the near-completion
+check, the self-hosted suite, Topos and CMRU qualifications, and independent
+self-hosting witness had passed; the gate then completed its pyflakes phase.
+
+All 13 gate phase markers appeared, including
+`verdict-v13-successors-verified`, `topos-qualified`,
+`cmru-b006a-qualified`, `self-hosted-lane-passed`,
+`independent-self-hosting-passed`, and `pyflakes-clean`. Exit evidence is
+`ASSAY_GATE_CONTAINER_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`,
+`run-gate: lane 'tester-unified' exit 0`, `OUTER_GATE_EXIT=0`, and
+`GATE_EXIT=0`. The exact container
+`run-gate-assay-selfhosted-520812-20390-1790349632` ran under
+`dev-gates.slice` with `NanoCpus=3000000000`; it was removed after completion.
+The optional `cgprofile-host-daemon` was unavailable, so run-gate reported
+coarse rusage sampling; this did not affect the gate result.
+
+The raw 6,955-byte log is preserved at
+[`assay-WAVE-C-P5-gate-2026-09-25-a0e2fe23.log.gz`](assay-WAVE-C-P5-gate-2026-09-25-a0e2fe23.log.gz),
+SHA-256 `f930192e75eca593d82fce196eb5a53a0323ef80621fc95a0bf7ac250570a056`;
+the compressed artifact SHA-256 is
+`9d0f26b976bd0a21fcf59543815c79fb93d5d51890c21d3d7c4ba2e4f7b1d438`.
+The archived log and this report update are report-only additions after the
+passing source tip; the tested source tip remains `a0e2fe23`.
 
 ## Agreed work after P5
 

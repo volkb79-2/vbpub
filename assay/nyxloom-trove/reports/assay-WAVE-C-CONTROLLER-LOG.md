@@ -396,6 +396,22 @@ confirmed that shared `main` had advanced to `23214ef5` beyond P5's
 Current `main` was merged cleanly into the P5 branch as `34580468`; only the
 gate on that merged tree can count as final acceptance.
 
+The final registered `./run-gate.py tester-unified` gate passed on source tip
+`a0e2fe23d4a47ddd1c04564a901f5ef647acc670`, with current `main`
+`23214ef58d6ba91bca6e01ee6cef0553929e440a` included. It completed in 18m27s
+after all 13 phase markers passed, including the full self-hosted lane, Topos,
+CMRU B006(a), independent witness, and pyflakes. Exit evidence:
+`ASSAY_GATE_CONTAINER_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`, lane exit 0,
+`OUTER_GATE_EXIT=0`, and `GATE_EXIT=0`. Container
+`run-gate-assay-selfhosted-520812-20390-1790349632` was confirmed at 3 CPUs
+under `dev-gates.slice` and removed after completion. The optional profiling
+daemon was unavailable, so run-gate used coarse rusage sampling; this did not
+affect the result. The raw 6,955-byte log is preserved at
+[`assay-WAVE-C-P5-gate-2026-09-25-a0e2fe23.log.gz`](assay-WAVE-C-P5-gate-2026-09-25-a0e2fe23.log.gz),
+SHA-256 `f930192e75eca593d82fce196eb5a53a0323ef80621fc95a0bf7ac250570a056`.
+The tested source tip remains `a0e2fe23`; only its gate log and report were
+added after the pass.
+
 ### Agreed continuation after P5
 
 After P5 is gated, merged, and included in the single Wave C release, B105 is
