@@ -102,6 +102,12 @@ no override for local-only commits. It then fetches `origin/main`, creates an ep
 remote commit, and re-execs there. All caller
 working-tree edits that survive the preflight (i.e. that don't touch a released project's path)
 are still ignored: they cannot enter the immutable remote snapshot regardless.
+The child MUST resolve each selected project's `cmru.toml` from the isolated
+snapshot. If the loaded orchestration paths already point inside that snapshot,
+it MUST use them relative to the snapshot root directly; if the central
+orchestration file is external, it MUST map project paths relative to the
+source Git root. It MUST reject project paths outside both roots and any
+resolved project config that escapes the isolated snapshot.
 
 #### S-CLI.5a — Projects release one after another, not in a shared batch
 

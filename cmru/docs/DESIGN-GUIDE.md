@@ -123,6 +123,13 @@ project root, contain it, or sit above it. `..` and symlink escapes remain
 configuration errors because a project registry must not reach an unrelated
 checkout by path trickery.
 
+Release children load the authoritative orchestration config from the isolated
+source snapshot. Their project config paths may therefore already be rooted
+inside that snapshot; CMRU uses those paths directly relative to the child root.
+When orchestration policy is stored outside the checkout, project paths are
+mapped from the source Git root into the child. Both paths must resolve inside
+the selected source snapshot before a command can run.
+
 CMRU names a transaction with the shared six-character workspace identity. The
 final basename contains that token, so the adapter gives the neutral allocator
 an explicit canonical allocation identity path and keeps it in the durable
