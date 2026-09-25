@@ -972,6 +972,13 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     versions = _parse_versions(
         raw.get("versions"), f"{ORCHESTRATION_CONFIG_FILENAME} [versions]",
     )
+    discovery = versions.get("discovery", {})
+    project_discovery_keys = {"pypi_extras", "requirements_files"} & set(discovery)
+    if project_discovery_keys:
+        _error(
+            f"{ORCHESTRATION_CONFIG_FILENAME} [versions.discovery] may set scope only; "
+            "pypi_extras and requirements_files belong in each project's cmru.toml"
+        )
     orch_raw = raw.get("orchestration")
     if not isinstance(orch_raw, dict):
         _error("[orchestration] is required")

@@ -49,21 +49,39 @@ def test_version_policy_vocabulary_is_documented():
         assert f".{source_type}" in corpus
     for value in ('mode = "single"', 'mode = "aligned"'):
         assert value in corpus
-    for field in ("age_window_days", "constraint", "version", "reason", "expires", "resolved"):
+    for value in ('selection = "semver"', 'selection = "rolling"', 'Docker-Content-Digest'):
+        assert value in corpus
+    assert 'vnd.docker.reference.type = "attestation-manifest"' in corpus
+    assert "commit time rather than the proxy publication time" in corpus
+    assert "age-window refusal" in corpus
+    for field in (
+        "age_window_days", "constraint", "version", "reason", "expires", "resolved",
+        "pypi_extras", "requirements_files", "digest",
+    ):
         assert field in corpus
+    for value in ('scope = "shipped"', 'scope = "all"'):
+        assert value in corpus
 
 
-def test_assay_lane_declares_the_complete_rigor_ladder():
+def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     lane = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["cmru"]
-    assert lane["rigor"] == ["R0", "R1", "R2", "R3"]
+    assert lane["rigor"] == ["R0", "R1", "R3"]
     assert "--maxfail=1" in lane["argv"]
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
-    assert lane["judge"]["mutation"]["jobs"] == 1
-    assert lane["judge"]["mutation"]["liveness"] is True
+    assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
 
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    gate_command = " ".join(gate["lanes"]["gate"]["argv"])
+    for name in ("assay", "coverage", "mutation", "canary", "enroll"):
+        assert f"./run-gate.py --worktree {{worktree}} {name}" in gate_command
+    mutation_command = " ".join(gate["lanes"]["mutation"]["argv"])
+    assert "git describe --tags --abbrev=0 --match 'cmru-v*'" in mutation_command
+    assert 'git diff --quiet "$BASE"..HEAD -- src' in mutation_command
+    assert '"reason": "no-changed-source"' in mutation_command
+    assert "--require-candidates" in mutation_command
+
     for name in ("coverage", "mutation", "canary"):
         assert "--maxfail=1" in " ".join(gate["lanes"][name]["argv"])
 
@@ -74,8 +92,12 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
         ROOT / "docs" / "CONSUMERS.md",
     ):
         text = document.read_text(encoding="utf-8")
+        normalized = " ".join(text.split())
         assert "--maxfail=1" in text
-        assert "liveness" in text.lower()
+        assert "120 seconds" in text or "120-second" in text
+        assert "progress" in text.lower()
+        assert "nearest ancestor" in normalized
+        assert "cmru-v*" in text
 
 
 def test_cross_document_links_resolve():
@@ -124,7 +146,21 @@ def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Pat
     assert config.cleanup is not None
     assert config.projects["example-wheel"].name == "example-wheel"
     assert config.versions["age_window_days"] == 14
+    assert config.versions["discovery"]["scope"] == "shipped"
     assert config.versions["targets"]["pypi.requests"]["pypi"]["name"] == "requests"
     project_versions = config.projects["example-wheel"].versions
     assert project_versions["age_window_days"] == 21
+    assert project_versions["discovery"]["scope"] == "shipped"
     assert project_versions["targets"]["pypi.requests"]["mode"] == "single"
+    assert project_versions["targets"]["oci.node"]["oci"]["selection"] == "rolling"
+    assert project_versions["targets"]["go.golang.org.x.text"]["go"]["module"] == "golang.org/x/text"
+
+
+def test_registered_projects_track_their_shared_pwmcp_runtime_image():
+    workspace = ROOT.parent
+    for project in ("topos", "nyxloom"):
+        config = tomllib.loads((workspace / project / "cmru.toml").read_text(encoding="utf-8"))
+        target = config["versions"]["targets"]["oci.pwmcp"]
+        assert target["mode"] == "single"
+        assert target["oci"]["image"] == "ghcr.io/volkb79-2/pwmcp"
+        assert target["oci"]["tag"] == "{version}"
