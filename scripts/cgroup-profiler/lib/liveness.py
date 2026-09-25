@@ -51,6 +51,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
@@ -280,8 +281,16 @@ def read_progress_stream(path: str, *, previous: Optional[StreamSample] = None) 
     """
     carried_hint = previous.cadence_hint_seconds if previous is not None else None
     try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as fh:
+        # The lane controls this path. A FIFO with no writer blocks a plain
+        # open forever, freezing its sampler and the enforcement clock. Open
+        # nonblocking, then judge the opened object (not a prior path stat)
+        # before reading. Regular files ignore O_NONBLOCK.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as fh:
+            info = os.fstat(fh.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return StreamSample(path=path, present=False, cadence_hint_seconds=carried_hint)
+            size = info.st_size
             if size > STREAM_TAIL_BYTES:
                 fh.seek(size - STREAM_TAIL_BYTES)
                 partial = True

@@ -231,12 +231,15 @@ The daemon's version response is contract major 1:
   `infra/README.md` (`sudo cp infra/cgprofile.slice
   /etc/systemd/system/ && sudo systemctl daemon-reload`). Not installed →
   the daemon still starts, under an implicitly-created, unbounded slice;
-  `ctl host`'s `daemon_slice.present` says which is true. This is a
+  `ctl host` reports the actual `daemon_slice.memory_min_bytes` and
+  `memory_high_bytes` (a zero or null floor means no memory reservation).
+  This is a
   DIFFERENT slice from the gates slice below — one bounds the daemon
   itself, the other is where placed lanes live.
 - **Liveness/watch policy (D-27, contract §8.2/§8.4) — `start` options.**
-  `--progress-stream <path as the lane sees it>` (read through
-  `/proc/<pid>/root/<path>`), `--idle-bound auto|<seconds>` (`auto` =
+  `--progress-stream <regular file path as the lane sees it>` (read through
+  `/proc/<pid>/root/<path>`; FIFOs and devices are ignored),
+  `--idle-bound auto|<seconds>` (`auto` =
   `max(300, 3 x cadence hint)`), `--ceiling auto|<seconds>` (`auto` = `3 x
   meta.expected.duration_s`, else none), `--on-stall kill|report` (default
   `report`). An unparsable value is `bad-policy` — the session is not
@@ -259,6 +262,7 @@ The daemon's version response is contract major 1:
   applied values are always READ BACK from the kernel, never echoed. Any
   host condition (no gates slice, a write refusal, …) is a
   `place-refused:*` code — the session still starts, unplaced;
+  an existing token leaf is refused rather than reused or modified;
   `--on-stall kill` then falls back to signalling the pid subtree
   directly. A malformed cap value is `bad-argument` (exit 2, no session)
   — the client typed it wrong, not the host.

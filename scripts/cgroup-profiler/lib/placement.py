@@ -195,21 +195,22 @@ class CgroupWriteGuard:
     smuggle a write out of it.
     """
 
-    def __init__(self, *, cgroup_root: str, gates_cgroup: str, origin_cgroup: Optional[str]) -> None:
+    def __init__(
+        self, *, cgroup_root: str, gates_cgroup: str, origin_cgroup: Optional[str],
+        leaf_name: str,
+    ) -> None:
         self.cgroup_root = cgroup_root
         self.gates_cgroup = gates_cgroup
         self.gates_abs = abs_path(cgroup_root, gates_cgroup)
         self.origin_abs = abs_path(cgroup_root, origin_cgroup) if origin_cgroup else None
+        self.leaf_name = leaf_name
 
     # -- predicates --------------------------------------------------------
 
     def is_leaf(self, path: str) -> bool:
         """Whether ``path`` is a direct ``rg-*`` child of the gates slice."""
         real = os.path.realpath(path)
-        return (
-            os.path.dirname(real) == os.path.realpath(self.gates_abs)
-            and os.path.basename(real).startswith(LEAF_PREFIX)
-        )
+        return real == os.path.join(os.path.realpath(self.gates_abs), self.leaf_name)
 
     # -- the three checks --------------------------------------------------
 
@@ -317,7 +318,8 @@ class LanePlacement:
         # before it calls this).
         self._rmdir_fn = rmdir
         self.guard = CgroupWriteGuard(
-            cgroup_root=cgroup_root, gates_cgroup=gates_cgroup, origin_cgroup=origin_cgroup
+            cgroup_root=cgroup_root, gates_cgroup=gates_cgroup,
+            origin_cgroup=origin_cgroup, leaf_name=self.leaf_name,
         )
         self.leaf_cgroup: Optional[str] = None
         self.applied: Dict[str, Optional[int]] = {}
@@ -359,7 +361,7 @@ class LanePlacement:
 
     def _mkdir(self, abs_target: str) -> None:
         self.guard.check_mkdir(abs_target)
-        os.makedirs(abs_target, exist_ok=True)
+        os.mkdir(abs_target)
         if self._on_write is not None:
             self._on_write(self._relative(abs_target), "mkdir")
 
@@ -404,6 +406,12 @@ class LanePlacement:
             # `parent-not-gates-slice`, and the reason every guard comparison
             # is on `realpath`.
             self.error = REFUSED_PARENT_NOT_GATES_SLICE
+            return
+        if os.path.lexists(leaf_abs):
+            # An orphan or another session's leaf is not ours to cap, move
+            # processes into, or remove.  The mkdir below also refuses a
+            # leaf appearing between this check and creation.
+            self.error = write_failed(self._relative(leaf_abs))
             return
         try:
             self._delegate_controllers(gates_abs)

@@ -223,7 +223,7 @@ class TestWriteGuard:
     def _guard(self, root: Path) -> placement.CgroupWriteGuard:
         return placement.CgroupWriteGuard(
             cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
-            origin_cgroup="/" + SCOPE_CGROUP,
+            origin_cgroup="/" + SCOPE_CGROUP, leaf_name=LEAF_NAME,
         )
 
     @pytest.mark.parametrize("name", list(placement.LEAF_FILES))
@@ -289,6 +289,26 @@ class TestWriteGuard:
         with pytest.raises(placement.HostWriteError):
             self._guard(root).check_write(str(_leaf(root) / "memory.high"), "1")
 
+    def test_a_symlinked_leaf_cannot_smuggle_a_kill_to_another_rg_leaf(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        victim = root / "dev.slice" / "dev-gates.slice" / "rg-victim-token"
+        victim.mkdir()
+        _leaf(root).symlink_to(victim)
+        guard = self._guard(root)
+        with pytest.raises(placement.HostWriteError):
+            guard.check_write(str(_leaf(root) / "cgroup.kill"), "1")
+        assert not (victim / "cgroup.kill").exists()
+
+    def test_another_session_leaf_is_outside_this_sessions_whitelist(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        other = root / "dev.slice" / "dev-gates.slice" / "rg-other-token"
+        other.mkdir()
+        guard = self._guard(root)
+        with pytest.raises(placement.HostWriteError):
+            guard.check_write(str(other / "memory.max"), "1")
+        with pytest.raises(placement.HostWriteError):
+            guard.check_rmdir(str(other))
+
     def test_only_an_rg_leaf_may_be_created_or_removed(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         guard = self._guard(root)
@@ -302,7 +322,8 @@ class TestWriteGuard:
     def test_a_placement_without_an_origin_scope_writes_no_scope_procs(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         guard = placement.CgroupWriteGuard(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, origin_cgroup=None
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            origin_cgroup=None, leaf_name=LEAF_NAME,
         )
         with pytest.raises(placement.HostWriteError):
             guard.check_write(str(root / SCOPE_CGROUP / "cgroup.procs"), "4242")
@@ -429,6 +450,18 @@ class TestApply:
         assert plc.error == placement.REFUSED_PARENT_NOT_GATES_SLICE
         assert plc.leaf_cgroup is None
         assert not (elsewhere / "memory.high").exists()
+
+    def test_an_existing_leaf_is_refused_without_changing_its_caps(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        _leaf(root).mkdir()
+        (_leaf(root) / "memory.high").write_text("123")
+        plc = _placement(root)
+        plc.apply([101])
+        assert plc.error == placement.write_failed(
+            f"dev.slice/dev-gates.slice/{LEAF_NAME}"
+        )
+        assert plc.leaf_cgroup is None
+        assert (_leaf(root) / "memory.high").read_text() == "123"
 
     def test_a_failed_cap_write_abandons_the_leaf_and_names_the_file(self, tmp_path):
         """`place-refused:write-failed:<file>` names the path relative to the
@@ -608,13 +641,15 @@ class TestLeafReadingsAndKill:
         assert plc.kill() is True
         assert (_leaf(root) / "cgroup.kill").read_text() == "1"
 
-    def test_a_preexisting_safe_leaf_is_reused_idempotently(self, tmp_path):
+    def test_a_preexisting_leaf_is_refused_even_without_caps(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         _leaf(root).mkdir()
         plc = _placement(root, request=placement.PlacementRequest())
         plc.apply([])
-        assert plc.placed is True
-        assert plc.error is None
+        assert plc.placed is False
+        assert plc.error == placement.write_failed(
+            f"dev.slice/dev-gates.slice/{LEAF_NAME}"
+        )
 
     def test_a_memory_max_equal_to_the_slice_ceiling_is_allowed(self, tmp_path):
         root = _fake_cgroup_root(tmp_path, slice_memory_max=SLICE_MAX)

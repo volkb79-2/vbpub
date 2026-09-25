@@ -121,6 +121,18 @@ def _write_stream(path, *objects, trailing_newline=True):
 
 
 class TestReadProgressStream:
+    def test_fifo_without_writer_is_absent_and_cannot_block_the_watcher(self, tmp_path):
+        path = tmp_path / "progress.ndjson"
+        os.mkfifo(path)
+        sample = liveness.read_progress_stream(str(path))
+        assert sample.present is False
+        assert sample.last_event is None
+
+    def test_character_device_is_absent(self, tmp_path):
+        path = tmp_path / "progress.ndjson"
+        path.symlink_to("/dev/null")
+        assert liveness.read_progress_stream(str(path)).present is False
+
     def test_absent_file_is_not_an_error(self, tmp_path):
         sample = liveness.read_progress_stream(str(tmp_path / "nope.ndjson"))
         assert sample.present is False

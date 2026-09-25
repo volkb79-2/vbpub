@@ -119,7 +119,9 @@ A cap that is not a number, or a `cpu_weight` outside `[1, 10000]`, is a
 `place-refused:*` code is the opposite case — what the HOST turned out to
 be — and none of them fails `start`: the session runs unplaced with
 `placement.error` set and `leaf: null`. The block itself is `null` only for
-a session that never asked to be placed.
+a session that never asked to be placed. An existing token leaf is refused
+as `place-refused:write-failed:<leaf path>`; the daemon never reuses a leaf
+whose ownership it cannot verify.
 
 ## 4. Authorisation on the socket carrier (§8.1)
 

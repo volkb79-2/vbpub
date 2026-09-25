@@ -124,12 +124,12 @@ command, and metadata values for the consuming project:
 
 ```bash
 set -euo pipefail
-: "${CGROUP_PARENT_DEV_BACKGROUND:?set the real host dev-background slice}"
+: "${CGROUP_PARENT_DEV_GATES:?set the real host dev-gates slice}"
 
 PROFILE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 LANE_NAME="rg55-example-lane"
 docker run -d --name "$LANE_NAME" \
-  --cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND" \
+  --cgroup-parent="$CGROUP_PARENT_DEV_GATES" \
   -e RUN_GATE_PROFILE_SESSION="$PROFILE_TOKEN" \
   example-lane-image:local sleep 3600
 
@@ -163,6 +163,11 @@ Use `--scope container-shared` when the target cgroup is shared with unrelated
 work and the summary must report sampled-max memory plus deltas. Use
 `--scope container` for a lane-owned cgroup; its `memory.peak` and absolute
 counters have the schema-1 semantics documented in the contract.
+For `--progress-stream`, provide a regular NDJSON file path inside the lane;
+the daemon ignores a FIFO or device. A placement request with an existing
+`rg-<token>` leaf starts unplaced with `placement.error` set. Use a fresh
+token for each new lane attempt; a retry of a live session is reused by the
+server's `(container_id, token)` lookup.
 
 ## Closed values and response evidence
 

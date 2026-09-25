@@ -13,11 +13,18 @@ That feature creates a token-named `rg-*` leaf under the verified gates slice,
 applies and reads back its caps, moves the lane's processes into it, and moves
 survivors back on stop; explicit `--on-stall kill` may write that leaf's
 `cgroup.kill`. `CgroupWriteGuard` is the program-level allowlist for those
-operations, including controller delegation and the original scope's
+operations. It is bound to the session's exact token leaf and refuses an
+existing leaf: an orphan or symlink might belong to another lane. The guard
+also covers controller delegation and the original scope's
 `cgroup.procs` restoration path. The daemon's host cgroup-v2 bind is therefore
 writable: Linux cgroupfs placement cannot work through a read-only bind. This
 is a deliberate, bounded exception to observation-only operation, not a
 general host-control surface.
+
+The progress stream is a lane-controlled path reached through its process
+root. The watcher opens it nonblocking and reads only a regular file; a FIFO
+or device is absent evidence, so it cannot freeze the sampler or its kill
+clock.
 
 Host visibility does not require joining host namespaces. The daemon and
 one-shot helper keep private PID/cgroup namespaces; host `/proc` is explicitly
