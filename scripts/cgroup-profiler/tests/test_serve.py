@@ -2261,10 +2261,17 @@ def test_on_session_sample_no_token_path_recommits_only_on_pid_set_change(simple
     assert sess.no_token_pids == [100, 200, 300]
 
 
-def test_on_session_sample_treats_a_partial_cpu_baseline_as_unreadable(simple_server):
-    # The two previous CPU fields are a pair.  If an interrupted or restored
-    # session has only the counter but no timestamp, it is not a usable rate
-    # baseline and must be carried forward without attempting `mono - None`.
+@pytest.mark.parametrize(
+    ("previous_usage_usec", "previous_mono"),
+    [(None, 0.0), (1_000_000, None)],
+    ids=["missing-previous-counter", "missing-previous-time"],
+)
+def test_on_session_sample_skips_rate_without_a_complete_cpu_baseline(
+    simple_server, monkeypatch, previous_usage_usec, previous_mono,
+):
+    # A rate needs both the previous counter and its monotonic timestamp.  A
+    # partial/restored baseline must leave the last valid rate alone and must
+    # not call util.rate with missing input (which can clear the value or fail).
     resolved = targets_mod.find_container_cgroup(SIMPLE_CONTAINER_ID, root=simple_server.cgroup_root)
     with simple_server._lock:
         sess = simple_server._create_session_locked(
@@ -2274,15 +2281,23 @@ def test_on_session_sample_treats_a_partial_cpu_baseline_as_unreadable(simple_se
                   "run_gate_revision": 1, "kind": "command", "expected": None},
         )
         simple_server._sessions[sess.session_id] = sess
-    sess._prev_cpu_usage_usec = 1_000_000
-    sess._prev_mono = None
+    sess._prev_cpu_usage_usec = previous_usage_usec
+    sess._prev_mono = previous_mono
+    sess.live_cpu_cores_recent = 0.5
     abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
 
+    def reject_incomplete_rate(*args):
+        pytest.fail(f"util.rate must not receive an incomplete baseline: {args!r}")
+
+    monkeypatch.setattr(serve.util, "rate", reject_incomplete_rate)
+
     simple_server._on_session_sample(
-        sess, {"mono": 1.0, "cg": {sess.cgroup: {}}, "host": {}}, abs_target, None
+        sess,
+        {"mono": 1.0, "cg": {sess.cgroup: {"cpu": {"usage_usec": 2_000_000}}}, "host": {}},
+        abs_target, None,
     )
 
-    assert sess.live_cpu_cores_recent is None
+    assert sess.live_cpu_cores_recent == 0.5
 
 # ── host snapshot: observe_slices and non-slice children ─────────────────
 

@@ -1437,3 +1437,66 @@ and `git diff --check` passed. These are diagnostic local results, not the
 registered gate. The exact candidate still needs a clean committed-tree
 `r0-r1`, `r3`, current-tree mutation disposition, Sol xhigh adversarial review
 and required live probes. No merge or release is authorized by this entry.
+
+## Session 14 — exact P6 R2 disposition and survivor-oracle repairs
+
+### Terminal campaign evidence
+
+The preserved P6 campaign checkout `.worktrees/rg55-p6-r2-ciu` was judged at
+exact commit `aae66356bf3a65ef8b3ba7fa04a8042f2feee55c`. Its terminal
+`.assay/verdict-r2.json` says `BUDGET_EXCEEDED` / `LANE_TIMEOUT`, exit 4;
+`started` was `2026-09-24T07:12:32Z` and `ended` was `2026-09-24T11:12:29Z`.
+The corresponding progress and per-candidate records account for **362
+candidates: 312 killed, 12 survived, 38 budget_exceeded, 0 crashed**. It is
+not final mutation evidence. The campaign is retained as diagnostic evidence
+only; it will not be resumed onto a different tree because the P6 branch must
+adopt current main and two real survivor-oracle gaps need regression tests.
+The assay resume records are left intact in that checkout.
+
+### Complete disposition of the 12 survivors
+
+| Candidate ID | Site / mutation | Disposition |
+|---|---|---|
+| `23cc3272fbb716de04b28d1d998e6e216bb9e7783894a96e2722027d8e8f2e8b` | `liveness.py:120`, `Policy` frozen flag `True->False` | EQUIVALENT — E13: production callers read policy fields; none mutates them. |
+| `291c97bf1cb733d2daba728c3d1d9cdb7f37f3a55c4a50364b4f3ca1558727f9` | `liveness.py:235`, `StreamSample` frozen flag `True->False` | EQUIVALENT — E01. |
+| `0ac911396f768ca120d086189f627730f327073e1de00033547231611169f7e1` | `liveness.py:370`, `Or->And` | EQUIVALENT — E03: `_proc_cpu_usec()` returns both counters or `(None, None)`. |
+| `d6a09e9e73777f3f3d0a26bbb26364edb7ebbe627d85ccfee5242161dd291834` | `liveness.py:292`, `Gt->GtE` | EQUIVALENT — E02: at exact tail size, the extra head read duplicates the complete bytes already in the tail. |
+| `d00fb69ac0509549eb67ceaf610b9c244dd58e6b5717c361a512af0ae956a614` | `liveness.py:512`, `len(window) > 1` to `>= 1` | EQUIVALENT — E12; the older table incorrectly mapped this candidate to the separate cutoff-comparison test. |
+| `13eaacfc97ac002dd0a4c93fd86f096e077fe5ab07b9a2da23fdddd742666cc8` | `placement.py:123`, `PlacementRequest` frozen flag `True->False` | EQUIVALENT — E04. |
+| `3aab8ccd744d1d12ff8f1db54c3d9a27e72ac7c0a39d3c4c01444f7c4a886f3f` | `placement.py:507`, `False->True` | EQUIVALENT — E05: production kill caller establishes a placed leaf before `kill()`. |
+| `1eeda859f19b44d2a532fa33eb31c2c8d1eda6b65a04b1790c0ee84fe2c20e8e` | `placement.py:574`, `[]->None` | EQUIVALENT — E06: the only caller immediately tests falsiness. |
+| `46a90cd56805683059320366042551028baf5072cd23a54109880dbfa9f3ce21` | `access.py:390`, diagnostic `flush=True->False` | REAL — regression added as `tests/test_access.py::TestVerifyHelperCgroupParent::test_probe_diagnostic_is_flushed_before_docker_start`. |
+| `6d18e3ebe52eef544f6584d9a070c4e0d9cc5e70b1cf88bcb275ca24e2e64883` | `serve.py:1129`, `And->Or` | REAL — regression added as `tests/test_serve.py::test_on_session_sample_skips_rate_without_a_complete_cpu_baseline` (missing-time and missing-counter cases). |
+| `9be137a82bd0862bd0eca4b4b4d00dc055ff2f8bd9a073167a7e2d9f4c34f2f2` | `serve.py:1141`, `dt > 0` to `dt >= 0` | EQUIVALENT — E08: `Detector.observe()` returns no events for `dt <= 0`. |
+| `5894078486c432d0bba410f19b77122ae117bc66cad9132d11e31b486c588a06` | `serve.py:1243`, `False->True` | EQUIVALENT — E09: without a placed leaf, PSI is `None` and `memory_high_applied` false; this cannot produce a throttled verdict. |
+
+E12's exact mutation changes the **length guard**, not the CPU cutoff
+comparison. Each `_observe_cpu()` call first appends `(sample.mono,
+cpu_seconds)` and computes `cutoff = sample.mono - CPU_WINDOW_SECONDS`. With
+the shipped non-negative window, if this is the sole deque entry its timestamp
+equals `sample.mono` and cannot be less than `cutoff`. The loop therefore
+cannot pop the sole entry whether the guard is `len > 1` or `len >= 1`. The
+same-line `Lt->LtE` mutant is distinct and is killed by
+`test_the_cpu_window_never_pops_its_sole_entry_at_the_cutoff`; the existing
+`test_cpu_at_the_exact_window_cutoff_is_retained` does **not** kill E12.
+
+After the pre-launch memory PSI check showed `full avg10=0.52`, the bounded
+focused set was run serially with `nice -n 19 ionice -c 3` and the estate venv:
+
+```
+/home/vscode/.venv/bin/python -m pytest tests/test_access.py tests/test_serve.py -q -x
+279 passed, 6 skipped in 18.07s
+```
+
+This is targeted local evidence, not the registered gate. It ran before the
+P6 branch merged current main `603cd7fd` as merge commit `06b27339`; the merge
+did not touch cgprofile files. The same focused set was rerun after the merge
+on the resulting P6 candidate:
+
+```
+279 passed, 6 skipped in 11.17s
+```
+
+Both runs are local iteration evidence only. Full registered gates and a
+fresh exact-tree R2 remain required. The previous 362-candidate campaign
+remains `BUDGET_EXCEEDED` and cannot satisfy that gate.

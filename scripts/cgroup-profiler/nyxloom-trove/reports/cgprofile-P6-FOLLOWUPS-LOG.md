@@ -1260,3 +1260,55 @@ memory PSI was `full avg10=23.20 avg60=22.71 avg300=21.01` and
 current PSI check is still above the `<=5` launch gate.  Therefore this
 checkpoint launches no further pytest/container or assay process, and does
 not run R2.
+
+## Session 14 — 2026-09-25 03:32:34Z — exact P6 R2 disposition and two oracle gaps
+
+The terminal P6 R2 receipt in the preserved campaign checkout
+`.worktrees/rg55-p6-r2-ciu` is bound to exact tree
+`aae66356bf3a65ef8b3ba7fa04a8042f2feee55c`, not to this branch's eventual
+release candidate. Its verdict is `BUDGET_EXCEEDED` / `LANE_TIMEOUT`, exit 4,
+from `2026-09-24T07:12:32Z` to `2026-09-24T11:12:29Z`: **362 candidates,
+312 killed, 12 survived, 38 budget_exceeded, 0 crashed**. The old receipt is
+preserved as diagnostic evidence and is not claimed as final. Do not resume
+it after main reconciliation or test changes: assay resume is per exact tree.
+
+The complete 12-candidate disposition is appended to the P6 REPORT. Ten are
+call-path equivalents. Two are real oracle gaps; source-only tests now cover
+both, pending validation: `test_probe_diagnostic_is_flushed_before_docker_start`
+proves the placement diagnostic is flushed before the Docker start call, and
+`test_on_session_sample_skips_rate_without_a_complete_cpu_baseline` exercises
+both missing-prior-counter and missing-prior-time shapes with a valid current
+sample. The latter closes a masking hole in the prior test, whose current CPU
+usage was absent and therefore made `util.rate()` return `None` before
+checking the missing time.
+
+The earlier P6 REPORT mapped candidate
+`d00fb69ac0509549eb67ceaf610b9c244dd58e6b5717c361a512af0ae956a614`
+(`liveness.py:512`, `len(window) > 1` to `>= 1`) to the exact-cutoff test.
+That mapping was wrong: the exact-cutoff test covers the separate `<` to `<=`
+comparison mutant. E12 in the REPORT records the actual invariant: a sole
+entry is appended at `sample.mono`, while the shipped window is 30 seconds,
+so it cannot satisfy `entry.mono < sample.mono - window`. This is a
+source-call-path equivalence, not a test-kill claim.
+
+The CIU-managed R2 checkout remains detached by design so its Git tree equals
+the judged commit, as required for assay resume identity. Its ignored
+`ciu.worktree-instance.json` still says the attached branch name; CIU
+correctly refuses that mismatch. This detachment was intentional; leaving
+the managed identity stale was not. It is left untouched while the separate
+P5 worktree setup proceeds, and must be reconciled before reusing that CIU
+identity.
+
+At the pre-launch PSI check `full avg10=0.52`, the bounded targeted set was
+run serially with `nice -n 19 ionice -c 3` and the estate venv:
+`tests/test_access.py tests/test_serve.py -q -x` — **279 passed, 6 skipped
+in 18.07s**. This is local iteration evidence, not the registered gate; it
+was run before reconciling current main.
+
+Current main was `603cd7fd` (Assay Wave C P1 merge) and was merged into P6 as
+`06b27339ab3b3a29a6e43d6b1c4cf9850d248ca4`, without conflicts. The merge did
+not touch cgprofile source or tests. The same focused set was rerun after the
+merge, before commit: **279 passed, 6 skipped in 11.17s**. Both bounded local
+runs are iteration evidence only. The registered gates and a fresh exact-tree
+P6 R2 remain outstanding. No new gate container or assay campaign was
+launched in this session.
