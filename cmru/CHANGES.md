@@ -18,6 +18,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
 
 ### Fixed
+- Resolve project configs already loaded from an isolated release worktree without prefixing the child path twice.
 - Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
 - Scope registry authorization to its HTTPS origin while preserving safe redirects to signed registry storage URLs.
 - Query rolling OCI tags by exact manifest reference, and exclude explicitly marked Docker attestations from runnable-platform timestamp checks.

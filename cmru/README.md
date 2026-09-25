@@ -248,6 +248,9 @@ while naming both paths. Worktrees retained under the
 older nested `cmru/release/…` naming are still recognised. A local `main` behind the remote is warned about but safe because the
 remote is authoritative. This matters because setuptools-scm sees the
 whole Git worktree: a harmless edit in another project can otherwise make a wheel dirty.
+The release child reads registered project configs from this isolated snapshot; when the central
+orchestration file is external, CMRU maps its project paths from the source Git root into the
+snapshot.
 
 cmru ignores every uncommitted caller path, including a selected project's files: none can
 enter the remote snapshot. It instead rejects only committed local `main` changes not yet on

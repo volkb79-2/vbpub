@@ -382,6 +382,11 @@ cmru release <name>     # one source-first transaction: gate → tag → build �
 cmru release                      # changed projects, one transaction per Git family (S-CLI.5a)
 ```
 
+CMRU resolves the selected project's release config from the transaction's
+isolated source snapshot. A central orchestration file inside that snapshot
+already points to snapshot paths; an external central file maps its registered
+project paths from the source Git root.
+
 `cmru release` never publishes from your working tree (`S-CLI.5`). It fetches `origin/main`,
 refuses local-only `main` commits the snapshot would omit, and creates a temporary worktree at
 that exact remote commit, named (`S-CLI.5b`, KI-16, ciu-aligned):

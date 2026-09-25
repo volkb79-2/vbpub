@@ -46,6 +46,11 @@ repository-root `cmru.secret.toml` and each selected project's explicit secret o
 into that worktree with mode `0600`; they are removed with a successful worktree and are
 never staged.
 
+The re-execed child reads project configs from the isolated snapshot. A central
+orchestration file in the snapshot already names project configs relative to
+that checkout; an external central file maps them from the source Git root.
+Either way, a selected project config must resolve inside the isolated worktree.
+
 Inside the worktree, before touching any project, cmru also validates the release
 *plan* itself against `origin` two ways a purely local `git tag --list` read cannot (SPEC
 S12.2a): the local clone's chosen `<prefix>-v*` tag must resolve to the exact same commit
