@@ -107,6 +107,7 @@ items:
   - {id: B103, title: "Execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL (stub -- design carved on unmerged branch assay-b099-p35-repair, ID collision with main B099/A-448 only -- A-449/A-450 exist only on the branch, not yet on main, see report)", type: feature, component: execution, context_estimate: large}
   - {id: B104, title: "test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness FAILS on unmodified main: the normalized verdict differs from the frozen v6 witness, and the verdict schema has moved on to v11 since (B070) -- cause unexamined (witness staleness vs. dstdns pin drift vs. a real regression); also names the hazard that a Docker-reaching test runs by default in the local suite when a socket is present", type: bugfix, component: gate}
   - {id: B105, title: "Assay's own source has no registered full-source R2 lane; the v7.0.0 release therefore carries no mutation evidence for assay itself (finding filed during Wave C P0)", type: bugfix, component: gate, context_estimate: small}
+  - {id: B106, title: "Incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence", type: feature, component: mutation, context_estimate: large}
 ---
 
 # assay — backlog
@@ -149,6 +150,9 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B105 — assay itself has no full-source R2 lane and no release mutation evidence — OPEN (finding filed in P0; not a Wave C implementation package)
+
+**Filed after the 2026-09-23 triage**
+- B106 — provenance-safe selective mutation reruns across source/test changes — OPEN (filed 2026-09-25 from CMRU's 494-candidate mutation campaign)
 
 **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
 - B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
@@ -10647,3 +10651,60 @@ either declare and qualify a full-source R2 lane or explicitly accept and
 document the absence of self-mutation evidence. The release gate's PASS remains
 valid for its configured acceptance suite; it does not imply R2 evidence for
 assay's own source.
+
+## B106 -- incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence
+
+**Status: OPEN (filed 2026-09-25 from CMRU's FEAT-03 review campaign).**
+
+**Observed use case:** CMRU's completed campaign at `e4f34c0c` ran 494
+candidates in 14,989.596 seconds (4h09m50s), killing 492 and leaving 2
+survivors. Fixing the survivors changed judged source and tests. The campaign's
+resume validation rejected the old evidence because it predated a source or
+test change, and the declared gate has no survivor-only selection mode that
+produces complete evidence for the changed tree. The controller therefore
+started the full 494-candidate campaign again. On comparable hardware, this
+costs about another four hours.
+
+This is a safe-reuse problem, not just a candidate filter. A selective path
+must not turn an outcome from an old judging context into a current PASS. It
+needs to establish which prior candidate results still apply after source,
+test, command, environment, or tool changes, and which candidates need fresh
+execution. If that proof is unavailable, the candidate must be rerun or the
+campaign must remain explicitly incomplete.
+
+### Desired behavior
+
+- Given prior complete mutation evidence and a changed tree, planning identifies
+  results that can be safely reused, candidates invalidated by changed inputs,
+  newly discovered candidates, and prior survivors that need another judgment.
+- Reuse is tied to enough candidate and judging-input identity to prove that a
+  cached outcome still applies. The design determines the safe granularity; it
+  must not assume unchanged mutant bytes alone make a result valid when tests
+  or execution context changed.
+- Selective execution runs every candidate without a valid reusable result
+  and records which outcomes were executed now versus carried forward, with
+  provenance to the prior evidence.
+- A resulting artifact is complete only when every candidate in the current
+  plan has exactly one fresh or justified reused outcome. Missing, duplicate,
+  stale, or unproven records cannot be reported as a complete passing campaign
+  or accepted by the gate.
+- Ordinary `--resume` and `--rejudge` remain safe and predictable; selecting
+  only prior survivors does not by itself certify campaign completeness.
+
+### Acceptance
+
+- [ ] A fixture starts with a complete campaign containing killed and
+      surviving candidates, then changes selected source and judging inputs.
+      The plan classifies reusable, invalidated, new, and surviving candidates
+      from evidence rather than operator assumptions.
+- [ ] The selective run executes the candidates the plan marks for execution
+      and emits auditable provenance for every reused result.
+- [ ] `assay verify` and the registered gate accept the resulting complete
+      campaign only when current-plan coverage is exhaustive, disjoint, and
+      every reused outcome satisfies the decided identity rules; stale,
+      missing, duplicate, or unproven evidence is refused or explicitly
+      incomplete.
+- [ ] Existing resume behavior remains safe for unchanged inputs, and a
+      survivor-only request cannot silently stand in for a complete campaign.
+- [ ] README, DESIGN-GUIDE, and CONSUMERS.md explain when selective reuse is
+      safe, what evidence is retained, and when a full campaign is still needed.
