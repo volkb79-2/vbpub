@@ -234,6 +234,15 @@ The `cmru.bundle` help description currently calls every configured archive
 deterministic, though S9 guarantees the normalized writer for `xztar`; KI-34
 tracks correcting that description.
 
+The CMRU wheel also bundles `worktree`, the shared stable API for generic Git
+workspace identity, records, leases, and lifecycle operations. It is an
+internal dependency embedded in the CMRU wheel, not a separately released
+package. Projects that need these primitives can use them without parsing Git
+porcelain or rebuilding generic checkout lifecycle logic; CMRU itself retains
+release and transaction policy. Follow the separate
+[worktree consumer guide](../../libraries/worktree/CONSUMERS.md) for its
+pasteable examples and complete contract.
+
 Until KI-11 is resolved, a project step that invokes CMRU must use an
 environment where the intended wheel is installed and verify that the selected
 interpreter resolves the expected CMRU version. An unqualified `cmru` found

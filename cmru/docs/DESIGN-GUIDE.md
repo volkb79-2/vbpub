@@ -102,14 +102,14 @@ installs it into a fresh venv without system packages, and renders/compiles a
 project installer from outside the checkout. That catches both omitted package
 data and a missing bundled `cli-extended` import.
 
-### Module commands are component interfaces, not spare grammars
+### Module commands and library APIs are explicit interfaces
 
 The installed console scripts are the canonical operator launchers. The wheel
 also contains module entrypoints for use cases that benefit from an explicit
 Python interpreter or a component-level command. They all build their grammar
 from `cli-extended`; a module adapter must not maintain a parallel parser.
 
-Each supported module has a specific job:
+Each supported module or bundled library has a specific job:
 
 - `python -m cmru.handlers` is used by project step contracts and by
   `build-initial-standalone.sh`. The bootstrap must build the wheel before an
@@ -129,6 +129,11 @@ Each supported module has a specific job:
   `python -m cmru.controller.cli` invoke the same registered CLIs as the
   console scripts. They are for source or wheel debugging under a deliberately
   selected interpreter; operators should use the installed console commands.
+
+`worktree` is a bundled shared library, not another CMRU CLI. It owns neutral
+Git workspace identity, records, leases, and lifecycle primitives; CMRU owns
+release and transaction policy. Its separate consumer guide is the canonical
+place for those APIs and examples.
 
 Low usage by itself is not a reason to delete a module interface. Reviewers
 should ask what caller contract it serves, whether it exposes a capability

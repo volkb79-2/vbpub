@@ -438,6 +438,7 @@ deliberate product interfaces, not retained legacy spellings:
 | `python -m cmru.runner` / `cmru run-step` | Single-step diagnostic CLI | Preview or reproduce one declared project step with the same project config and registered grammar. The `cmru.runner.run_step` API is also consumed by MDT. |
 | `python -m cmru.bundle` | Component CLI | Build a stack bundle from its dedicated TOML; S9 guarantees deterministic output for `xztar`. `cmru.bundle.run_bundle` is used by PWMCP; no root `cmru bundle` verb is added without an operator workflow that needs it. |
 | `cmru.runner.run_step`, `cmru.bundle.run_bundle` | Supported Python APIs | Compose the documented component behavior from Python. Other module internals are not promised as public API. |
+| `worktree` package | Bundled shared library API | Stable, product-neutral Git workspace primitives shipped inside the CMRU wheel; its own consumer guide and spec define the API. CMRU layers release/transaction policy on top. |
 | Generated `get.py` | Standalone generated CLI | Runs without the CMRU wheel and intentionally keeps its own `argparse` parser. |
 
 Low usage alone is not a reason to remove an interface. A review must identify

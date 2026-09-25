@@ -409,6 +409,7 @@ fits the work:
 | Preview or reproduce one declared step | `python -m cmru.runner …` or `cmru run-step …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
 | Build a configured stack archive directly | `python -m cmru.bundle --config bundle.toml` | Standalone bundle component; its config is specified in [S9 of the CMRU spec](docs/SPEC.md), and the library entrypoint is `cmru.bundle.run_bundle` |
 | Compose step or bundle behavior in Python | `cmru.runner.run_step` or `cmru.bundle.run_bundle` | Supported library entrypoints used by estate consumers |
+| Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |
 | Debug a chosen installed/source interpreter | `python -m cmru.cli`, `python -m cmru.agent.cli`, or `python -m cmru.controller.cli` | Alternate launchers for the same operator grammars, not extra commands |
 
 `cmru.bundle` builds an archive from its dedicated bundle TOML configuration;
