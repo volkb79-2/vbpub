@@ -30,6 +30,68 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.5.0] - 2026-09-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=2ea8f43b27692b9fe794dfbc683bc04e85e06c2e -->
+
+### Added
+- feat(cmru): adopt age-windowed version tracking estate-wide (910b151d)
+- feat(cmru): add age-windowed version resolution (dddf988e)
+
+### Fixed
+- fix(cmru): resolve child worktree project configs correctly (0e96f960)
+- fix(cmru): map credential policy fields correctly (2bcd3ad9)
+- fix(cmru): reject empty registry URL fragments (441696f7)
+- fix(cmru): close version resolver review gaps (1427dbf6)
+- fix(cmru): exclude strict Go pseudo-version bounds (417e5c46)
+- fix(cmru): timebox and resume mutation campaigns (57ba11d3)
+- fix(cmru): handle Go pseudo-versions and workspace rollback (c3b3a692)
+- fix(cmru): prepare external versions during dry-run (3629bf12)
+
+### Changed
+- merge(cmru): FEAT-03 age-windowed version resolution (325736a1)
+- Merge CIU CMRU shared workspace instance (bf02c233)
+- doc(cmru): add backlog KI-29 — Release abandonment needs a first-class (239ee8c5)
+- test qualify shared worktree and deterministic properties (b6ce9752)
+- test CMRU workspace listing mutation survivors (0da8f158)
+- fix shared CIU and CMRU workspace ownership review (84b7919d)
+- Share native Git worktree inventory across CIU and CMRU (b9cad87c)
+- Adapt dry-run test to project scope preflight (61ff5e9d)
+- bound mutation candidates and document gate liveness (343d17e7)
+- harden workspace lifecycle and gate oracles (8d634211)
+- Merge branch 'main' into feat/ciu-cmru-workspace-instance (15e1a346)
+- cover transaction failure branches (4115f9e7)
+- ci: raise serialized tester gate memory ceiling (e518a9fd)
+- Implement CIU CMRU workspace instance plan (d1eb9877)
+
+### Documentation
+- docs(cmru): specify registry URL and redirect limits (e97803f8)
+- docs(cmru): record FEAT-03 gate result (9a7ef680)
+- docs(assay): close v7 release records and log Wave C findings (36723684)
+
+### Testing
+- test(cmru): make mutation witnesses deterministic (b399fa95)
+- test(cmru): cover empty root version resolution (e4f34c0c)
+- test(cmru): close mutation review survivors (b10bc5b0)
+- test(cmru): cover registry edge paths (e5b9e3de)
+- test(cmru): keep npm target declared in malformed lock case (beaeaf0f)
+- test(cmru): align resolver diagnostic assertion (e66d661c)
+- test(cmru): accept missing-host URL diagnostic (d323659f)
+- test(cmru): model killed mutation exit code (5951dc85)
+- test(cmru): cover mutation resume timeout policy (b27c252a)
+- test(cmru): close Go age evidence mutation gaps (7b76df47)
+- test(cmru): cover Go workspace detection errors (cb2a32ab)
+- test(cmru): exercise remaining Go failure branches (ccc83d2a)
+- test(cmru): cover Go proxy missing metadata paths (9dd4b535)
+- test(cmru): exercise strict versions config loader (687cce59)
+- test(cmru): cover version config dispatch edges (94d07303)
+- test: preserve CMRU documentation link fixtures (5e8eb9b5)
+- test: include shared worktree library in CMRU fixtures (f5b32813)
+- test: isolate CMRU runtime-kind validation (6d8a5e06)
+- test: close final CMRU mutation witnesses (7b7b51a6)
+- test: close CMRU mutation survivors and Git spawn retries (67c45c8d)
+- test(cmru): assert dry-run consumes prepared version (521c6d65)
+
 ## [5.4.1] - 2026-09-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=39c2a8f94c42965ad3bd07570580a2811ab34426 -->
