@@ -4139,3 +4139,51 @@ in an attached, separate CIU worktree after provisional merge; keep its HEAD
 quiet, and backport/rejudge any fixes. The updated Sol packet distinguishes
 review acceptance from mutation/release evidence. The R2 and full-gate status
 remain open until their exact-tree records are read separately.
+
+### RW-330 — 2026-09-25 16:57:50Z — P1 accepted and provisionally merged; R2/full gate remain release blockers
+
+The fresh final reviewer was launched with `CODEX_HOME=/home/vscode/.codex2`,
+`--model gpt-6-sol`, and `model_reasoning_effort="xhigh"`. The persisted
+Codex `turn_context` independently records `model=gpt-6-sol`, `effort=xhigh`,
+and the P1 worktree cwd. Review round 3 ACCEPT is committed at
+`b0544d50a5b3151bc218236a411d9d38e31a8791`; report:
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round3.md`.
+It found B1: explicit empty/whitespace `CGPROFILE_VERSION` had collapsed into
+the absent-value development default. Fix `158488ccbae418bba6b4022e8c9295742a6f9885`
+now validates any present value, with four build/publish regression cases.
+
+Exact short-gate evidence is clean: R0/R1 and R3 passed on code tip
+`158488cc` (1,381 tests; all seven canaries rejected), and both lanes were
+then independently rerun on the report-only tip `b0544d50`. The final R3
+container was `run-gate-vbpub-r3-656577-1790355222`, under loaded
+`dev-gates.slice` with a 3-CPU cap. The clean branch was provisionally
+merged with `--no-ff` as `d5d53afc8f72c50c01ade684dd84bfeee2f946ac`;
+its tree is identical to the reviewed/gated `b0544d50` tree.
+
+This merge is not release evidence. No replacement P1 R2 or full gate has
+passed; the older R2 records remain invalid for this tree. Run them in a new,
+isolated CIU clone/worktree because the root CIU family still has the stale
+P6 identity described in RW-326. Keep the attached campaign HEAD quiet and
+use the pre-merge `origin/main` base `e5e9b95c5ac8be3452c93f1066f9436347f862fd`
+to measure the P1 delta; after resolving the base once, do not change it.
+The current R2 config uses `base = "origin/main"`, `jobs = 2`, and a
+4-hour resumable campaign. Any fix must be backported and judged on the
+resulting exact tree before release.
+
+The review's live ephemeral/shared/helper probes succeeded for memory
+sampling, HTML report creation, and private-namespace helper-PID identity.
+The host kernel rejected DAMON `kdamond_commit` with `EINVAL`; no live DAMON
+series or overhead measurement was obtained. Record this as an open P3
+close-out item, not as passed DAMON evidence. The final host daemon must still
+be brought up and verified through CIU after release.
+
+P2's old detached retry instruction is obsolete: current `main` already
+contains the run-gate 23.7.0 integration (`a921100d`). Two attempted
+background wrappers for the old `186461de` checkout produced no exit marker,
+no new history entry, and no changed Assay progress timestamp; no new P2
+mutation run occurred. Do not resume that stale tree with today's `main` ref.
+
+The host `host-escape systemctl show dev-gates.slice` check confirmed
+`LoadState=loaded` and `/dev.slice/dev-gates.slice`. `host-escape` also
+reported restoring the expected cgroup2 mount options; no tracked host-setup
+source was changed.
