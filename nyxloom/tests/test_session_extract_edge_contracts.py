@@ -108,6 +108,7 @@ def test_codex_question_shapes_and_prose_copies_preserve_each_prompt():
     assert multiline.consume_question_prose_copy("First line\n\nSecond line") == [prompt]
     assert multiline.pending_prose_copies == []
     assert codex._question_prose_blocks("First\n\n") == ["First"]
+    assert codex._question_prose_blocks("\nFirst") == ["First"]
 
 
 def test_codex_reply_envelopes_fail_closed_and_keep_free_text():
