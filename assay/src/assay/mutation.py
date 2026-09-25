@@ -298,9 +298,9 @@ def _reject_unknown_rejudge_ids(
     if unknown_rejudge_ids:
         raise InvalidRejudgeIdError(
             "--rejudge named a candidate id not present in "
-            "this lane's current candidate set (unknown, or "
-            "the mutant's own source bytes changed since the "
-            "id was recorded -- B088's own 'an identity that "
+            "this run's selected candidate set (unknown, stale "
+            "because source bytes changed, or excluded by the selected "
+            "operators/shard -- B088's own 'an identity that "
             "no longer matches current reality must not be "
             "silently trusted' principle): "
             f"{sorted(unknown_rejudge_ids)}"

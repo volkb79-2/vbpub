@@ -39,6 +39,7 @@ from assay import git, provenance, verdict as verdict_module
 from assay.cli import _built_in_registry, main
 from assay.config import RIGOR_LEVELS
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.mutation import select_mutation_shard
 from assay.verify import verify_document
 from assay.vocabulary import WITHDRAWN_MUTATION_OPERATORS
 
@@ -950,6 +951,47 @@ def test_stale_source_rejudge_id_is_bad_lane_config_and_verifiable(
     assert "source bytes changed" in err
     assert verify_document(document) == []
     _cli_verify_document(document, tmp_path, "stale-rejudge-verdict.json")
+
+
+def test_rejudge_id_excluded_by_shard_is_a_verified_bad_lane_config(
+    git_repo: GitRepo, tmp_path: Path
+):
+    state_dir = tmp_path / "mutation-state"
+    path, candidate_ids = _seed_cli_rejudge_store(git_repo, state_dir)
+    excluded_id = candidate_ids[0]
+    shard_index = next(
+        index
+        for index in range(2)
+        if 0 not in select_mutation_shard(candidate_ids, index=index, count=2)
+    )
+
+    code, out, err = run(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--resume",
+            "--shard",
+            f"{shard_index}/2",
+            "--rejudge",
+            excluded_id,
+            "--state-dir",
+            str(state_dir),
+            "--verdict-json",
+            "-",
+        ]
+    )
+
+    assert code == 2
+    document = json.loads(out)
+    assert (document["outcome"], document["reason_code"]) == (
+        "ERROR",
+        "BAD_LANE_CONFIG",
+    )
+    assert "selected candidate set" in err
+    assert "operators/shard" in err
+    _cli_verify_document(document, tmp_path, "shard-rejudge-verdict.json")
 
 
 def test_stale_rejudge_id_refuses_when_source_edit_removes_all_candidates(
