@@ -215,6 +215,11 @@ serial campaign caps each candidate at 120 seconds, stops each failed
 candidate at its first failing test (`--maxfail=1`), and resumes from its
 progress stream.
 
+The mutation and coverage-canary controls use the same disposable CMRU test
+closure. It includes the Topos and nyxloom CMRU manifests read by the estate
+adoption contract test; otherwise the control could fail before exercising a
+mutant and provide no valid R2 or canary evidence.
+
 The full `run-gate.py gate` still covers R0 through R3: R0 runs the full test
 suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based
 changed-source campaign, and R3 runs an import-break canary. The gate also

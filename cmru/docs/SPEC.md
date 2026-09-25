@@ -1563,7 +1563,10 @@ the `cmru` lane with the mandatory resume/progress arguments. Its verdict is
 mutation lane records `.assay/mutation-cmru.json` and appends
 `.assay/progress-mutation-cmru.jsonl`; its first-failure limit stops a bad
 mutant from running the rest of the suite. Both campaigns preserve their own
-resume state. The `gate` lane runs these with the total-coverage,
+resume state. The mutation and canary controls copy the CMRU test closure,
+including `topos/cmru.toml` and `nyxloom/cmru.toml`, which the estate adoption
+contract test reads. Missing closure files fail the control before mutation or
+canary evidence is written. The `gate` lane runs these with the total-coverage,
 cause-sensitive canary, and real-system enrollment checks as one release
 contract.
 

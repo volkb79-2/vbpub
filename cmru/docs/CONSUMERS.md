@@ -375,6 +375,9 @@ after its first failed test (`--maxfail=1`), and resumes from its progress
 file; passing full-suite runs still execute every test. Every Assay invocation
 resumes and writes
 `.assay/progress-cmru.jsonl`; its verdict is `.assay/verdict-cmru.json`.
+The disposable controls include the Topos and nyxloom CMRU manifests consumed
+by CMRU's estate-adoption test, so the full suite remains runnable in each
+baseline and mutant copy.
 `gate` also runs CMRU's total-coverage, cause-sensitive canary, and
 real-enrollment evidence lanes.
 

@@ -19,6 +19,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 - Keep the release-time mutation campaign based on the previous CMRU tag instead of Assay's main-based candidate set, which is empty after merge.
+- Include the Topos and nyxloom manifests required by the estate adoption test in disposable mutation and canary controls.
 - Resolve project configs already loaded from an isolated release worktree without prefixing the child path twice.
 - Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
 - Scope registry authorization to its HTTPS origin while preserving safe redirects to signed registry storage URLs.
