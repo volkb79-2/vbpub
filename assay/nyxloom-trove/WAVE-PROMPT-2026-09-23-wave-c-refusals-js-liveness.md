@@ -545,12 +545,14 @@ in scope under the operator's 2026-09-25 ruling; do not release before it is
 complete. A verdict schema v13 is permitted for this package. A reason-code or
 lane-schema change is permitted only after the GPT-6-Luna xhigh recommendation
 and review required by the operator, recorded before implementation. That
-review recommends no such additional change.
+review recommends no such additional change. Its follow-up review also
+confirmed the candidate identity inputs, inventory scope for shards, and the
+requirement that a replay receipt agree with pytest's ordinary exit code.
 
 **Contract:** reuse must be based on current evidence, not candidate bytes
 alone. Add `assay plan <lane> --reuse-from <verdict>` as a read-only preview
 and `assay run <lane> --reuse-from <verdict>` as the execution option. Read one
-complete native R2 verdict, validate it with the current verifier, and classify
+prior native R2 verdict and validate it with the current verifier. Classify
 current candidates as (a) eligible for a current witness replay, (b) prior
 outcomes that require a full current run, including survivors, crashes, hangs,
 budget exhaustion, equivalence and missing witnesses, (c) current candidates
@@ -558,24 +560,31 @@ absent from the prior plan, or (d) prior candidate IDs no longer in the current
 plan. A complete source verdict may have an overall R2 FAIL because candidates
 survived; its individually verified killed outcomes can still supply witnesses.
 The run must always execute the current R0 baseline first and require PASS
-before any candidate replay.
+before any candidate replay. After baseline PASS, `run` rediscovers the full
+current candidate inventory from its own snapshot; the `plan` preview is an
+estimate, not a certificate of what execution covered. `--reuse-from` with
+any shard selection is a preflight `BAD_LANE_CONFIG` refusal; selective reuse
+produces only a complete unsharded campaign.
 
-**Chosen safe granularity:** a v13 full pytest mutation run records the first
-call-phase failing pytest node ID for each killed candidate when that test is
-observable.
+**Chosen safe granularity:** a v13 full sequential pytest mutation run records
+the first call-phase failing pytest node ID in final collection order for each
+killed candidate when that test is observable.
 On a later run, for an identical candidate ID, assay may replay the current
 pytest suite up to that prior witness. Preserve the full collected item list
 and its final order; do not deselect later items or alter collection, so
 session fixtures and plugins see the same collection and all setup before the
 witness executes. The witness node must occur exactly once. Stop the ordinary
 sequential runner only after the witness item completes; a report for that exact
-node must show a call-phase failure to certify a current kill. An earlier node
-failure or a setup/teardown error alone is insufficient. A PASS, skip, missing
-witness, malformed/oversized receipt, absent or duplicate node ID, unsupported
-pytest command, xdist or custom test-loop execution, or any other uncertain
-result triggers a separate full-suite execution in a fresh process against a
-freshly materialized copy of the same current candidate snapshot, with fresh
-output paths. Never carry forward a `survived`, `crashed`, `hung`,
+node must show a call-phase failure and pytest must exit with its ordinary
+test-failure status (`1`) to certify a current kill. An earlier node failure
+or a setup/teardown error alone is insufficient. A PASS, skip, missing witness,
+malformed/oversized receipt, absent or duplicate node ID, unsupported pytest
+command, xdist or custom test-loop execution, inconsistent exit status, or any
+other uncertain result triggers a separate full-suite execution in a fresh
+process through the ordinary candidate lifecycle, including a snapshot freshly
+materialized from the pristine current candidate input, new output paths, and
+any ordinary resets for shared or linked resources. Never carry forward a
+`survived`, `crashed`, `hung`,
 `budget_exceeded`, or `equivalent` outcome. New candidates and prior survivors
 always get a full run. The current run records per candidate whether it ran
 fully or was killed by a current witness-prefix replay, including the prior
@@ -588,21 +597,33 @@ candidate-ID inventory or test-level kill witness, so it proves no reusable
 candidate. When supplied for preview, classify the evidence as unproven and
 show that every current candidate will run fully; when supplied for execution,
 report this fallback before continuing. A missing or malformed path is a
-preflight refusal. Only direct sequential pytest command forms supported by
-the adapter can capture/replay witnesses; wrapped, parallel, or otherwise
-unsupported test commands safely run every current candidate in full. A
-replay that reaches the witness only after most of the suite may save little
+preflight refusal with the existing `UNREADABLE_ARTIFACT` reason. A valid but
+incomplete source verdict, including a shard or a v12 artifact, is unproven and
+falls back to a full run. Initially support only a direct `pytest` executable
+command or the lane's Python executable invoked with `-m pytest`; shell and
+tool wrappers are unsupported. Capture/replay is allowed only in sequential
+mode with pytest's ordinary runtest loop and protocol; xdist, a custom loop,
+or uncertain plugin behavior falls back to full execution. A replay that
+reaches the witness only after most of the suite may save little
 time; the feature promises correctness and records the measured work, not a
 particular speedup.
 
-**Completeness:** v13 native mutation verdicts carry an exhaustive current
-candidate-ID inventory and one candidate ID on every outcome. Each ID is bound
-to recorded identity inputs sufficient to recalculate it: relative path,
-operator, source-file SHA-256, mutation span, and mutated-file SHA-256. Closed
+**Completeness:** v13 native mutation verdicts carry an exhaustive candidate-ID
+inventory for the verdict's scope and one candidate ID on every outcome. For
+an unsharded run, that inventory is the full current plan; for a shard, it is
+the selected slice. The inventory must equal the outcome-ID set in either
+case, and shard metadata prevents that slice from claiming campaign
+completeness. Only a full unsharded campaign can be a B106 reuse source. Each
+ID is bound to recorded identity inputs sufficient to recalculate it through
+one canonical candidate-ID function shared by planning, execution and verify:
+canonical relative path, operator, SHA-256 of the original UTF-8 source-file
+bytes, exact start/end byte span, and SHA-256 of the entire mutated file (not
+merely `replacement_sha256`). Closed
 per-item execution provenance records `full` or `witness-prefix`. A full run
-may include a call-phase failure witness for later reuse. A witness-prefix run
-must include the prior verdict digest, prior witness node ID, matching current
-node ID, and receipt of the current failed call-phase report. `assay verify`
+may include a call-phase failure witness only when pytest also exits 1. A
+witness-prefix run must include the SHA-256 of the exact prior verdict bytes,
+prior witness node ID, matching current node ID, current failed call-phase
+receipt, and pytest exit 1. `assay verify`
 requires inventory/outcome sets to be equal, duplicate-free, disjoint across
 outcome buckets, structurally valid for the recorded execution mode, and each
 candidate ID to match its recorded identity inputs. The producer refuses to
@@ -622,7 +643,9 @@ IDs, mutated prior outcome, changed source or mutated-file digest, and
 unsupported/xdist command all cause full execution or refusal; resume/rejudge
 retain their current contracts; a complete verdict passes `assay verify` and
 the registered gate while missing, duplicate, stale, or unproven coverage does
-not. Docs in the same package: README feature and
+not. The prior-verdict digest is an audit reference, not a signature; only the
+fresh current baseline and candidate execution establish a current result.
+Docs in the same package: README feature and
 DESIGN-GUIDE rationale, plus a pasteable CONSUMERS example showing full-run
 witness capture and a later `--reuse-from` run. The docs must state the v12
 cold-start and unsupported-command full-run behavior.
