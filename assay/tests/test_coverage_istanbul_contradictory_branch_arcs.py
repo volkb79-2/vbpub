@@ -216,6 +216,34 @@ def test_a_clean_document_records_no_contradiction_at_all():
     assert profile.files["/p/src/clean.ts"].contradictory_branch_lines is None
 
 
+@pytest.mark.parametrize("branch_type", ["if", "cond-expr", "binary-expr", "switch"])
+@pytest.mark.parametrize("arm_counts", [[0, 0], [1, 0]])
+def test_b054_neither_bucket_branches_still_drop_and_name(branch_type, arm_counts):
+    """B054's zero-count braceless-if witness must survive B080 unchanged.
+
+    Include a matchable function header so M2 (type-blind mapping) cannot
+    accidentally preserve isolation by finding no function. M1 (tolerating
+    all neither-bucket arcs) also loses the required drop-and-name result.
+    The additional types pin the same unchanged boundary for all non-defaults.
+    """
+    key = "/p/src/never_imported.ts"
+    record = _contradictory_record(key, arc_line=215)
+    record["branchMap"]["0"].update(
+        type=branch_type, loc={"start": {"line": 215, "column": 8}}
+    )
+    record["b"]["0"] = arm_counts
+    record["fnMap"] = {"0": {
+        "decl": {"start": {"line": 215, "column": 0}},
+        "loc": {"start": {"line": 215, "column": 20}},
+    }}
+    record["f"] = {"0": max(arm_counts)}
+    result = coverage_istanbul_json.parse(_document({key: record}), producer="istanbul").files[key]
+    assert result.executed == frozenset({1})
+    assert result.missing == frozenset()
+    assert result.branches.by_line == {}
+    assert result.contradictory_branch_lines == frozenset({215})
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -246,8 +274,10 @@ def test_the_committed_real_artifacts_carry_no_contradiction(name: str):
 # --- the lane: the two-file disposition, end to end through the CLI ----------
 
 
+@pytest.mark.parametrize("arm_counts", [[1, 0], [0, 0]])
 def test_a_defective_file_outside_the_judged_set_is_skipped_and_named(
     git_repo: GitRepo,
+    arm_counts,
 ):
     """DA-D3's first half, and B054's own oracle: the lane PASSES on the
     strength of the changed-lines diff actually being fully covered, and the
@@ -257,10 +287,12 @@ def test_a_defective_file_outside_the_judged_set_is_skipped_and_named(
     `ERROR`/`UNREADABLE_ARTIFACT` — the adoption blocker the entry filed.
     """
     base_rev = _seed(git_repo)
+    bystander = _contradictory_record(BYSTANDER, arc_line=215)
+    bystander["b"]["0"] = arm_counts
     document = _document(
         {
             JUDGED: _covering_statements(JUDGED, 3),
-            BYSTANDER: _contradictory_record(BYSTANDER, arc_line=215),
+            BYSTANDER: bystander,
         }
     )
     path = git_repo.write(
@@ -283,14 +315,17 @@ def test_a_defective_file_outside_the_judged_set_is_skipped_and_named(
     assert "contradicts itself" in named[0], named
 
 
+@pytest.mark.parametrize("arm_counts", [[1, 0], [0, 0]])
 def test_a_defective_file_inside_the_judged_set_refuses_and_names_the_arc_line(
     git_repo: GitRepo,
+    arm_counts,
 ):
     """DA-D3's second half. Same lane, same defect — moved onto the file the
     diff touches. There is no honest branch number for it, so the lane
     refuses `ERROR`/`UNREADABLE_ARTIFACT` naming the file and the line."""
     base_rev = _seed(git_repo)
     judged = _covering_statements(JUDGED, 3)
+    judged["b"]["0"] = arm_counts
     judged["branchMap"]["0"] = {
         "type": "if",
         "line": 215,

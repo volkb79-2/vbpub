@@ -18,8 +18,8 @@ estate-wide `AGENTS.md`:
    Each vocabulary is DERIVED from the shipped module, never hand-copied,
    and the derived sets are asserted non-empty so an import that silently
    yields nothing cannot make this check pass forever.
-3. every ``docs/DESIGN-GUIDE.md#...`` anchor ``README.md`` links to resolves
-   against a real DESIGN-GUIDE heading.
+3. every cross-document ``.md#...`` anchor among the README, CONSUMERS and
+   DESIGN-GUIDE resolves against a real heading or explicit HTML id.
 
 Every check pairs a real must-succeed proof with a must-fail control that
 proves the SAME checking logic can go red -- a check that cannot fail is
@@ -576,6 +576,11 @@ def test_derived_vocabularies_are_not_accidentally_identical_placeholders():
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 _LINK_RE = re.compile(r"\]\(docs/DESIGN-GUIDE\.md#([A-Za-z0-9_-]+)\)")
+_CROSS_DOC_LINK_RE = re.compile(
+    r"\]\((?P<target>(?:docs/)?(?:README|CONSUMERS|DESIGN-GUIDE)\.md)"
+    r"#(?P<anchor>[^)\s]+)\)"
+)
+_HTML_ID_RE = re.compile(r"<a\s+id=[\"']([^\"']+)[\"']\s*>\s*</a>", re.IGNORECASE)
 
 
 def _github_slug(heading_text: str) -> str:
@@ -598,6 +603,33 @@ def _design_guide_anchors() -> set[str]:
 def _readme_design_guide_links() -> list[str]:
     text = README.read_text(encoding="utf-8")
     return _LINK_RE.findall(text)
+
+
+def _document_anchors(doc: Path) -> set[str]:
+    text = doc.read_text(encoding="utf-8")
+    return {_github_slug(match.group(2)) for match in _HEADING_RE.finditer(text)} | set(
+        _HTML_ID_RE.findall(text)
+    )
+
+
+def _cross_document_links() -> list[tuple[Path, Path, str]]:
+    links: list[tuple[Path, Path, str]] = []
+    for source in DOCS:
+        text = source.read_text(encoding="utf-8")
+        for match in _CROSS_DOC_LINK_RE.finditer(text):
+            target = (source.parent / match.group("target")).resolve()
+            links.append((source.resolve(), target, match.group("anchor")))
+    return links
+
+
+def _dangling_cross_document_links(
+    links: list[tuple[Path, Path, str]], anchors_by_doc: dict[Path, set[str]]
+) -> list[str]:
+    dangling: list[str] = []
+    for source, target, anchor in links:
+        if target not in anchors_by_doc or anchor not in anchors_by_doc[target]:
+            dangling.append(f"{source.name} -> {target.name}#{anchor}")
+    return dangling
 
 
 def test_slugify_reproduces_known_preexisting_anchors():
@@ -625,6 +657,26 @@ def test_every_readme_design_guide_link_resolves():
     assert anchors, "DESIGN-GUIDE.md must have at least one heading"
     dangling = [link for link in links if link not in anchors]
     assert not dangling, f"dangling README -> DESIGN-GUIDE anchor(s): {dangling}"
+
+
+def test_every_cross_document_anchor_resolves():
+    links = _cross_document_links()
+    assert links, "expected cross-document anchors among the public docs"
+    anchors_by_doc = {doc.resolve(): _document_anchors(doc) for doc in DOCS}
+    dangling = _dangling_cross_document_links(links, anchors_by_doc)
+    assert not dangling, f"dangling cross-document anchor(s): {dangling}"
+
+
+def test_a_dangling_cross_document_anchor_is_detected_by_the_same_sweep():
+    """Must-fail control for the all-doc anchor sweep above."""
+    anchors_by_doc = {doc.resolve(): _document_anchors(doc) for doc in DOCS}
+    fabricated_anchor = "this-wave-anchor-does-not-exist-26f4d"
+    assert fabricated_anchor not in anchors_by_doc[DESIGN_GUIDE.resolve()]
+    dangling = _dangling_cross_document_links(
+        [(README.resolve(), DESIGN_GUIDE.resolve(), fabricated_anchor)],
+        anchors_by_doc,
+    )
+    assert dangling == [f"README.md -> DESIGN-GUIDE.md#{fabricated_anchor}"]
 
 
 def test_a_dangling_anchor_is_detected_the_broken_control():
