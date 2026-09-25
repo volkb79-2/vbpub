@@ -137,7 +137,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — DONE (P2; merged at `130ba5ba`)
 - B094 — unknown `--rejudge` reason mapping — DONE (A-458; P2; merged at `130ba5ba`)
 - B025 — unresolvable infrastructure refusals lack their own verdict — DONE (P2 closes the final attestation-timeout oracle; merged at `130ba5ba`)
-- B095 — monitor hot-loop cost / unbounded CPU history — IMPLEMENTED (P3 focused tests pass; independent review and gate pending)
+- B095 — monitor hot-loop cost / unbounded CPU history — DONE (P3 independent review READY and tester-unified PASS on `09d1f38d`)
 - B076 — unbounded R2 baseline has no bound — RULED (A-457; caller-watched, with documentation)
 - B100 — bounded operator report for live gate progress/verdicts — OPEN (conditional P4; start only after P0-P3 merge and gate)
 
@@ -10080,7 +10080,7 @@ classification and its ordering cost.
 
 ## B095 — P7 S5: monitor hot-loop cost and unbounded CPU history
 
-**Status: IMPLEMENTED (Wave C P3, 2026-09-25) — focused tests pass; independent review and registered gate pending. CPU history is bounded to the 30-second trailing edge; monitoring reads only newly appended event bytes.**
+**Status: DONE (Wave C P3, 2026-09-25; implementation `09d1f38d`, independent review READY, tester-unified PASS). CPU history is bounded to the 30-second trailing edge; monitoring reads only newly appended event bytes.**
 
 The one-second loop previously rescanned the whole event file and retained an
 unbounded `cpu_samples` list, including for unbounded candidates. The monitor

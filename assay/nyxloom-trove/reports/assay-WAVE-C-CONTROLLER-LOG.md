@@ -274,4 +274,31 @@ Ruff's `E4,E7,E9,F` selection passed on changed Python modules; `git diff
 --check` passed. Fresh independent review against main `130ba5ba` returned
 READY, with no blockers; the reviewer verified a 25,289-poll differential
 probe, the 20,000-tick CPU history oracle, docs anchors, and the replacement
-and separator regressions. The authoritative gate is pending.
+and separator regressions.
+
+### Authoritative gate
+
+The registered `./run-gate.py tester-unified` gate passed on exact code tip
+`09d1f38d0c95118b0a98724bd541a5c16cf109cc`. Container
+`run-gate-assay-selfhosted-3989906-21494-1790318054` ran under
+`dev-gates.slice`; inspection found it initially had no CPU cap, so
+`docker update --cpus=3` was applied within about 39 seconds and verified at
+3 CPUs for the rest of the run. At the required 90-second check, all six setup
+and compatibility phases had passed and the self-hosted lane was progressing;
+the estimate was 10–15 minutes based on P2. It completed in about 17 minutes
+from launch. Run-gate removed the container on completion.
+
+All 12 `ASSAY_GATE_PHASE=` markers were present, along with
+`ASSAY_GATE_CONTAINER_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`, the
+registered lane exit 0, and the outer `GATE_EXIT=0` marker. The Topos
+qualification, CMRU B006A qualification, seven independent self-hosting tests,
+and pyflakes phase passed. The optional cgprofile daemon was absent; run-gate
+used coarse rusage sampling and reported no effect on the gate result.
+
+The raw gate output is preserved at
+[`assay-WAVE-C-P3-gate-2026-09-25-09d1f38d.log`](assay-WAVE-C-P3-gate-2026-09-25-09d1f38d.log),
+SHA-256 `fa478e0c3c6e15e1b3e7c336a6299cde2bd3405a4e80e49336ff9b8626b46a4c`.
+It is 6,348 bytes; no compression was needed.
+
+The gate log and this result entry are report-only additions after the passing
+code-tip gate. The tested source tip remains `09d1f38d`.
