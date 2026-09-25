@@ -4,6 +4,34 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- fix(assay): classify istanbul `default-arg` signature lines from the
+  enclosing function's call count (`fnMap`/`f`) when an arm of that same
+  branch is attributed to the node's physical line, preserving its branch arcs
+  even when the default is unused (B080; resolves withdrawn duplicate B089).
+  Judged files now produce coverage numbers instead of a contradictory-record
+  refusal; bystanders keep their arcs without a contradiction diagnostic.
+  Previously-PASS numbers are unchanged. Multiline defaults whose arms all
+  start on other lines retain their unclassified node-line gap (A-459); the
+  broader function-call alternative would change some prior 0/0 PASS counts
+  to 1/1. Previously-refused whole-target lanes can now count those signatures:
+  the measured consumer artifact gains
+  six executable lines (ChartCard 54→55, DataTable 105→108, StatCard 1→2,
+  StatTile 37→38). Required missing, malformed, or ambiguous function metadata
+  refuses `UNREADABLE_ARTIFACT`. B054's braceless-`if` disposition and all
+  `FileCoverage` invariants are unchanged.
+- fix(assay): replace Git's unreachable `safe.directory` remedy on dubious-
+  ownership failures, and classify unknown/stale `--rejudge` ids as
+  `BAD_LANE_CONFIG` while preserving corrupt-store errors (B081/B094)
+
+### Documentation
+- docs(assay): explain Git ownership refusals, rejudge input classification,
+  and the consumer remedies (B081/B094)
+
+### Testing
+- test(assay): drive unknown, stale, valid, and corrupt `--rejudge` state
+  through the CLI and `assay verify`; guard the attestation-timeout
+  infrastructure forward (B094/B025)
 <!-- cmru: release history -->
 
 ## [7.0.0] - 2026-09-23

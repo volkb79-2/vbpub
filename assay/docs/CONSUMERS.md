@@ -1431,19 +1431,67 @@ launder it past the floor — it just makes the line non-code, the same as a
 comment.
 
 **Some real lines are not judged at all, and which ones depends on your
-provider.** A line the artifact records no statement for falls out of both the
-numerator and the denominator — the same treatment a comment gets. Under
-`@vitest/coverage-istanbul` that includes **every function signature line,
-every function-level closing brace, and a `const x =` line whose recorded
+provider.** A line with neither a statement nor a supported default-argument
+node falls out of both the numerator and the denominator. Under
+`@vitest/coverage-istanbul` that includes **plain function signature lines,
+function-level closing braces, and a `const x =` line whose recorded
 statement starts on its initialiser**: measured on assay's own committed
 fixture, 23 non-comment lines across six files. Under `@vitest/coverage-v8`
 only 13, all of them type declarations TypeScript erases anyway. The practical
-consequence: a diff that touches *only* a function signature can report
+consequence: a diff that touches *only* a signature without a default can report
 `executable = 0` and PASS. This is not a coverage claim about those lines, it
 is the absence of one — assay reports what the artifact measured and never
 invents a status for a line the instrumenter did not record. If that matters
 for your gate, `judge.mode = "whole_target"` judges whole files instead of a
 diff.
+
+**Defaulted parameters with signature-line arcs are judged, including when the
+default is unused
+(B080).** Keep `producer = "istanbul"` in the lane above and set
+`require_branch = true` to require branch evidence. For example:
+
+```typescript
+export function label({ text = 'untitled' }: { text?: string }) {
+  return text;
+}
+
+label({ text: 'given' }); // function ran; its default branch is still uncovered
+label({});               // exercises the default branch
+```
+
+When the signature has no statement entry and an arm of that same default
+branch is attributed to its node's physical line, assay uses the enclosing
+function's call count to classify that line. The first call covers the signature
+line
+while leaving its default branch at 0/1; adding the second covers that branch
+at 1/1. With no call, both the line and branch are uncovered. Existing
+statement classifications take priority. Required missing or ambiguous
+function metadata produces `ERROR/UNREADABLE_ARTIFACT`; regenerate the complete
+coverage JSON with the declared producer so its `fnMap` and `f` are retained.
+
+**Known multiline gap:** if the default node starts on one line and all of its
+arms are attributed to other lines, the node line stays unclassified. Its
+arms keep their existing treatment. For example, a default on the next line
+can already have a measured statement inside an immediately invoked function:
+
+```typescript
+export function label({ text =
+  (() => { return 'untitled'; })()
+}: { text?: string }) { return text; }
+```
+
+A diff touching only the first line can still PASS at 0/0. A broader rule
+could classify that line from function calls and change its number to 1/1;
+the operator chose to preserve the existing count in this release (A-459).
+
+Files with the supported signature-line arcs previously triggered a named
+refusal when judged, or a
+contradictory-record diagnostic outside the diff. Both symptoms are fixed.
+Previously-PASS changed-line numbers stay the same; previously-refused
+whole-target lanes now include the newly classified signatures. The measured
+four-file consumer example gains six executable lines (54→55, 105→108, 1→2,
+37→38). B054's separate braceless-`if` contradiction handling is unchanged.
+See the [classification rationale](DESIGN-GUIDE.md#default-argument-signature-lines-b080-a-456).
 
 **`require_branch = true` is legal on this format when — and only when — you
 declare `producer = "istanbul"`.** Istanbul's `branchMap` means one thing
@@ -2429,9 +2477,17 @@ wins whenever it is the nearer of the two.
 **One command is deliberately left unbounded** on an unbounded R2 lane: the
 lane's own *baseline* run, executed once before any mutant to prove the suite
 is green. `budget_per_candidate` is a per-*mutant* bound, and a baseline runs
-the whole suite, so tightening the baseline to it would refuse healthy lanes.
-That one command is covered by the caller's stall detection, not by a bound of
-assay's.
+first and may pay cold-cache, fixture-setup, and first-run compilation costs
+that later mutant invocations do not. Reusing the per-mutant bound for that
+startup work could refuse a healthy lane.
+Assay launches that baseline with `timeout=None`; the caller alone owns its
+stall detection (A-457). When invoked with `--progress`, the
+`command_running` heartbeat gives the caller's watch a liveness signal while
+the baseline command is running. Assay does not derive or apply a baseline
+timeout, and `assay verify` does not treat progress as evidence. The
+[design rationale](DESIGN-GUIDE.md#an-unbounded-r2-baseline-remains-caller-watched-a-457)
+records why this option was chosen over a new `budget_per_baseline` key or an
+overloaded `budget`.
 
 ### The progress stream
 
@@ -2589,11 +2645,16 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
   accepted and resolved to `"crashed"` before `run_mutation` ever sees it —
   `"error"` is never added to `MUTATION_BUCKETS` itself, so a verdict or a
   state record never spells it that way.
-- **An unknown `--rejudge` id refuses the WHOLE lane**
-  (`MutationStateError`), before any candidate executes — this is the one
-  rejudge refusal that cannot be validated at CLI-parse time, because the
-  current candidate set does not exist until mutation-site collection has
-  run against the current tree.
+- **An unknown or stale-source `--rejudge` id refuses the WHOLE lane** as
+  `ERROR`/`BAD_LANE_CONFIG`, before any resume record is replayed or candidate
+  executes. The check cannot run at CLI-parse time because the current
+  candidate set does not exist until mutation-site collection has run against
+  the current tree. Since that discovery follows the baseline, the whole-lane
+  refusal intentionally discards any earlier R0/R1 measurement so every
+  declared tier carries the same pair accepted by `assay verify`. A valid id
+  still re-executes only its selected candidate. A malformed, unreadable, or
+  corrupt state record remains `ERROR`/`UNREADABLE_ARTIFACT`; it is not
+  relabeled as bad input. See the [design rationale](DESIGN-GUIDE.md#mutation-resume-and-sharding-b012).
 - **The ids `--rejudge` takes are `mutation.candidate_id()` digests — the
   same sha256 string a state record and a `candidate`/`plan` progress event
   key by — NOT `MutantOutcome.identity`.** `MutantOutcome.identity` (on a
@@ -3135,6 +3196,16 @@ assay: NO_MEASUREMENT/MISSING_EXTERNAL_TOOL: the 'go' adapter needs the external
 assay: ERROR/BAD_LANE_CONFIG: lane 'unit' declares env_required ['DATABASE_URL'] which is not set in the invoking environment -- assay refuses to run a lane whose declared inputs are absent rather than measure it with them missing. Set DATABASE_URL, or drop it from 'env_required'.
 assay: ERROR/BAD_LANE_CONFIG: --shard 'one-of-two' is not a shard spec: it must be INDEX/COUNT with zero-based integers and 0 <= INDEX < COUNT (for example --shard 0/4).
 ```
+
+<a id="b081-ownership-remedy"></a>
+**Git's dubious-ownership message needs an ownership fix (B081).** Assay
+retains Git's `fatal: detected dubious ownership` line but removes Git's
+following `safe.directory` command. Assay replaces Git's environment and
+sets `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so that
+configuration cannot be read by Git during the run. Run assay as the
+repository owner or fix the tree's ownership/uid mapping. Adding a local
+repository setting does not grant Git's protected `safe.directory` exception.
+See the [design reason](DESIGN-GUIDE.md#git-dubious-ownership-and-safe-directory-b081).
 
 The complement of that rule also holds, and matters more: **a refusal whose
 claim the verdict does not carry prints no line.** One R2 refusal — a

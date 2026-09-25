@@ -654,10 +654,12 @@ def test_a_real_unbounded_R2_lane_runs_every_candidate_with_no_lane_timeout(
     )
     assert decided == r2.mutation.total
 
-    # The baseline ran unbounded (it is the lane's own single command, and
-    # `budget_per_candidate` is a PER-MUTANT bound -- a baseline runs the
-    # whole suite, so tightening it to the per-mutant value would refuse
-    # healthy lanes); every mutant after it ran under the declared bound.
+    # A-457 leaves the baseline unbounded at the process boundary: callers
+    # own its stall watch, with `--progress`'s command_running heartbeat as
+    # their signal. `budget_per_candidate` is a PER-MUTANT bound; the first
+    # baseline can pay cold-cache, fixture-setup and first-run compilation
+    # costs that later mutant invocations do not. Every mutant after the
+    # baseline ran under the declared bound.
     assert timeouts[0] is None
     assert timeouts[1:] == [45.0] * (len(timeouts) - 1)
     assert len(timeouts) == r2.mutation.total + 1

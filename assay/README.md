@@ -149,6 +149,13 @@ assay exists to close that gap mechanically, not by policy:
   ambient environment names, cwd, links, project prefix, and assay version
   remain identity inputs. See the
   [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
+- **Refusals name the usable cause and keep unrelated failures distinct.** A
+  Git dubious-ownership refusal explains why `safe.directory` cannot be set in
+  assay's replacement environment and points to the ownership fix. Unknown or
+  stale `--rejudge` ids use `ERROR`/`BAD_LANE_CONFIG`; unreadable or corrupt
+  state remains `ERROR`/`UNREADABLE_ARTIFACT`. See the
+  [refusal design](docs/DESIGN-GUIDE.md#git-dubious-ownership-and-safe-directory-b081)
+  and [consumer pitfall](docs/CONSUMERS.md#b081-ownership-remedy).
 - **Zero runtime dependencies.** assay imports nothing but the Python
   standard library. It consumes the *output* of tools like `coverage.py`; it
   never imports them. Adoption risk is close to zero — there is no
@@ -299,6 +306,16 @@ last-resort kill switch — "stall detection stays with the caller"
 (run-gate's own `stall_timeout`/`LogStreamWatch`, RG-36/RG-41), which can
 choose to extend a wait based on the heartbeat still ticking, in front of
 assay's unconditional numeric backstop, not instead of it.
+
+**An admitted native R2 lane's unbounded baseline is caller-watched too
+(A-457).** Its baseline command receives `timeout=None`; Assay does not
+derive a baseline limit from the per-mutant bound: the baseline is first and
+can pay cold-cache, fixture-setup, and first-run compilation costs that later
+mutant invocations do not. With `--progress`, the
+`command_running` heartbeat lets the caller's stall watch observe that
+command. See the [design rationale](docs/DESIGN-GUIDE.md#an-unbounded-r2-baseline-remains-caller-watched-a-457)
+and [worked consumer guidance](docs/CONSUMERS.md#budget--unbounded-the-recommended-shape-for-a-long-mutation-lane-b067)
+for the ruling and invocation.
 
 **What the heartbeat does *not* give you: true percentage/ETA of the
 runner's own internal progress.** `command_finished` can legitimately be the
@@ -469,6 +486,13 @@ as `judgment.r1.coverage_producer`; declaring `istanbul` is also what makes
 `require_branch = true` legal on a JavaScript lane. The vocabulary, the three
 producers assay refuses **by name**, and the one-line migration are in
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md#declaring-the-coverage-producer-b045).
+
+Defaulted parameters with an arc on their signature line are included: a
+statement-less node line is classified from its function's call count, and
+its default branch is counted even when the default was never used. If all
+arms start on other lines, the node line stays unclassified. See the
+[classification rationale](docs/DESIGN-GUIDE.md#default-argument-signature-lines-b080-a-456)
+and the [JavaScript consumer examples](docs/CONSUMERS.md#javascripttypescript-lanes-r1-and-r2-by-ingestion).
 
 The `coverage-final.json` document is emitted natively by nyc/istanbul and by
 Jest (`--coverageReporters=json`), and by Vitest through either coverage

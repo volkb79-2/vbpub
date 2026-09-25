@@ -4494,6 +4494,16 @@ def _run_prepared_lane(
                     rejudge_ids=rejudge_ids,
                     rejudge_outcomes=rejudge_outcomes,
                 )
+            except mutation.InvalidRejudgeIdError:
+                # (B094/A-458) The current candidate set exists only here,
+                # after the baseline (and any R1 result) has been measured.
+                # Let the existing outer whole-lane refusal render
+                # BAD_LANE_CONFIG identically at every declared level; an
+                # R2-only claim beside a passing baseline is not verifiable
+                # for this input error. The whole-lane shape deliberately
+                # discards the earlier measurements rather than widening
+                # verify.py's accepted terminals.
+                raise
             except AssayError as exc:
                 # (B053/A-409) Announced once, here. The SAME error also
                 # refuses R3 below (`r2_orchestration_fault`), and a second

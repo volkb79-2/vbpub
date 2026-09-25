@@ -133,18 +133,27 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B079 — closed v12 `discard_reason` split — SHIPPED (`assay-v7.0.0`, A-454, release commit `47435679`; tester-unified gate PASS); two original acceptance items remain open: correct the rationale in all five locations, and produce a genuine `RuntimeError` fixture or record an explicit deferral.
 
 **Wave C (current; B080, B081, B094, B025, B095, B076; B100 conditional)**
-- B080 — istanbul default-arg branch on the signature line — OPEN (P1; B089 is its withdrawn duplicate)
-- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (P2)
-- B094 — unknown `--rejudge` reason mapping — OPEN (P2)
-- B025 — unresolvable infrastructure refusals lack their own verdict — PARTIAL (P2 closes the final attestation-timeout oracle)
-- B095 — monitor hot-loop cost / unbounded CPU history — OPEN (P3)
-- B076 — unbounded R2 baseline has no bound — OPEN (P3 ruling and docs)
+- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; P1 review READY and tester-unified PASS at `8823bfea`; B089 is its withdrawn duplicate)
+- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — DONE (P2; merged at `130ba5ba`)
+- B094 — unknown `--rejudge` reason mapping — DONE (A-458; P2; merged at `130ba5ba`)
+- B025 — unresolvable infrastructure refusals lack their own verdict — DONE (P2 closes the final attestation-timeout oracle; merged at `130ba5ba`)
+- B095 — monitor hot-loop cost / unbounded CPU history — DONE (P3 independent review READY and tester-unified PASS on `09d1f38d`)
+- B076 — unbounded R2 baseline has no bound — RULED (A-457; caller-watched, with documentation)
 - B100 — bounded operator report for live gate progress/verdicts — OPEN (conditional P4; start only after P0-P3 merge and gate)
+
+**Wave C P1 implemented (2026-09-24; independent review READY and authoritative gate PASS at `8823bfea`)**
+- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation, independent review and tester-unified gate complete)
+
+**Wave C P2 (merged at `130ba5ba`)**
+- B081 — dubious-ownership `GIT_FAILED` remedy — implementation, review and registered gate complete
+- B094 — unknown/stale `--rejudge` classification — implementation and CLI/verify oracles complete (A-458)
+- B025 — attestation-timeout infrastructure forward — dedicated regression and registered gate complete
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
+- B100 — bounded operator report for live gate progress/verdicts — OPEN (design only)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B105 — assay itself has no full-source R2 lane and no release mutation evidence — OPEN (finding filed in P0; not a Wave C implementation package)
 
@@ -2609,7 +2618,7 @@ evidence — filed as **B062**.
 
 ## B025 — a refusal whose OWN cause is an unresolvable infrastructure declaration writes no verdict artifact
 
-**Status: PARTIAL (v2.4.0/2.4.1, 2026-08-25) — A-308; 4 crash sites fixed, one acceptance box (attestation-LANE_TIMEOUT forward test) explicitly unmet.**
+**Status: IMPLEMENTED (Wave C P2, 2026-09-24; targeted test and controlled-red proof complete, registered gate pending) — A-308 plus the attestation-timeout forward oracle.**
 
 **Filed 2026-08-25 (round 1 remediation), rescoped 2026-08-25 after round 2
 review + a round-3 partial fix narrowed it.** Not itself a crash — the
@@ -2678,12 +2687,11 @@ resolutions:
    fix, see A-299); resolves every case EXCEPT the one this entry is now
    scoped to (the source itself is the thing that's broken).
 
-**Known gap, not yet closed:** `cli.py`'s attestation `LANE_TIMEOUT` refusal
-(the OTHER of the two `cli.py` sites, alongside the adapter-refusal one the
-new test exercises) is forwarded by inspection/symmetry but has **no test**
-— reverting only that site leaves the full `test_cli_run.py` suite green.
-Triggering it needs a real attestation-deadline timeout, not attempted in
-any round. Close this alongside whichever acceptance item below lands next.
+**Acceptance gap closed in Wave C P2.** A dedicated CLI test reaches this
+attestation `LANE_TIMEOUT` call by monkeypatching `git.verify_exact_commit`,
+and declares a resolvable `derived:` infrastructure fact. It proves the
+refusal carries the resolved environment and goes red when only the
+attestation-timeout call's infrastructure kwargs are removed.
 
 ### Acceptance
 
@@ -2691,10 +2699,10 @@ any round. Close this alongside whichever acceptance item below lands next.
       in `_run_reserved` (`cli.py`, 2 sites) forwards
       `infrastructure_source`/`infrastructure_environment` (round 3, both
       passes — see A-298/A-299);
-- [ ] the `cli.py` attestation-`LANE_TIMEOUT` forward gets its own test
-      (currently unguarded — see "Known gap" above; still open, needs a real
-      attestation-deadline timeout to trigger, not attempted this wave
-      either — a known, accepted, narrow gap, not a regression);
+- [x] the `cli.py` attestation-`LANE_TIMEOUT` forward gets its own test at
+      the `git.verify_exact_commit` monkeypatch seam. Removing only that
+      call's infrastructure kwargs makes the new test fail on the degraded
+      `env_effective`/`env_effective_incomplete` result.
 - [x] a decision recorded on which of options 1-3 handles the remaining case
       (infrastructure itself unresolvable) — decided: a refined option 1
       (A-308) — `env_effective` becomes exactly `lane.env`, paired with a new
@@ -2720,12 +2728,11 @@ any round. Close this alongside whichever acceptance item below lands next.
       test per crash site (four total, two per round), all verified
       red-first.
 
-**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), except the
-one known, narrow, pre-existing gap noted above (attestation-timeout
-forward test) and the DIFFERENT, wider "lane-wide `LANE_TIMEOUT` also
-writes no verdict" gap round 2 review found and filed separately as
-B028 (same family, bigger blast radius, needs its own design pass).**
-See A-308.
+**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), with the
+separate attestation-timeout forward-test gap closed in Wave C P2 on
+2026-09-24.** The different, wider "lane-wide `LANE_TIMEOUT` also writes no
+verdict" gap found by round 2 review remains filed separately as B028; it was
+resolved in Wave D/v5.0.0 under A-415. See A-308.
 
 ---
 
@@ -8275,7 +8282,7 @@ two independent tests fail, naming the file and function.
 
 ## B076 — an unbounded R2 lane's own BASELINE run is the one command B067 leaves with no bound at all
 
-**Status: OPEN (filed 2026-09-08, deliberately not ruled) — `config.py`'s own docstring still says "B076: filed, reasoned, and deliberately not closed here"; no `budget_per_baseline` and no A-row exist. (Corrected 2026-09-23: this entry was first created fresh on 2026-09-08, `7f2ba056` — there is no earlier 2026-08-25 filing to restate; the commit's own body confirms "Filed while building this: B076".)**
+**Status: RULED (A-457, 2026-09-25) — option (a): the native R2 baseline remains unbounded at Assay's process boundary and watched by the caller. No new lane key, reason code, or schema field is introduced.**
 
 **Filed 2026-09-08 by the progress/resume wave's implementer, from building
 B067 rather than from a review. Recorded because B067's own rule —
@@ -8322,30 +8329,29 @@ defensible together only because the R2 sweep, not the baseline, is the part
 whose length cannot be guessed. That is a judgment, and it should be recorded
 as one.
 
-### The options, none of them chosen here
+### The ruling
 
-- **(a) Leave it.** The caller already watches; B064's `command_running`
-  heartbeat makes a stalled baseline legible in the progress stream. Costs
-  nothing, states the gap in the docs (what shipped).
-- **(b) `judge.mutation.budget_per_baseline`.** A third per-unit key, only
+- **(a) Leave it — chosen.** An unbounded R2 lane's baseline keeps
+  `timeout=None`. The caller owns stall detection; `--progress` exposes the
+  `command_running` heartbeat while that baseline command runs. This is the
+  existing division of responsibility and needs no config or wire change.
+- **(b) `judge.mutation.budget_per_baseline` — rejected.** A third per-unit key, only
   meaningful under `unbounded`. Honest, and it makes B067's rule literally
   true — at the cost of a key most lanes would have to guess a value for,
   which is the failure mode `unbounded` was introduced to remove.
-- **(c) Reuse `budget` as the baseline bound.** i.e. `budget = "unbounded"`
+- **(c) Reuse `budget` as the baseline bound — rejected.** i.e. `budget = "unbounded"`
   means "unbounded for the SWEEP", and a lane declares a numeric duration
   that applies to the baseline alone. Compact, but it gives one key two
   meanings depending on rigor, which is exactly the kind of overload
   DESIGN-GUIDE §5 refuses elsewhere.
 
-### Acceptance (for whoever picks this up)
+### Acceptance
 
-- [ ] a ruling recorded, naming the rejected options above;
-- [ ] if (b) or (c) is built: an unbounded R2 lane's baseline is observably
-      bounded at the process boundary (the `timeouts` assertion above flips
-      from `None` to the declared value), and a baseline that exceeds it is
-      a NAMED terminal rather than a bare `LANE_TIMEOUT` a reader would
-      misattribute to the sweep;
-- [ ] `assay verify` untouched either way — none of this is evidence.
+- [x] A-457 rules option (a) and records options (b) and (c) as rejected.
+- [x] The existing real-run assertion confirms `timeout=None` for the
+      baseline and `45s` for each mutant; README, DESIGN-GUIDE, and CONSUMERS
+      document the caller-owned stall watch and progress heartbeat.
+- [x] `assay verify` remains untouched; this is not evidence.
 
 ---
 
@@ -8615,7 +8621,60 @@ the failed production attempt and its measurement cost.
 
 ## B080 — an istanbul `default-arg` branch sits on the function-SIGNATURE line, which the `javascript` adapter's own documented guarantee leaves unattributed — so `FileCoverage`'s "no branch line outside `executed | missing`" invariant refuses a fully-executed file whose arc count is genuinely non-zero
 
-**Status: OPEN (filed 2026-09-08, addendum 2026-09-09) — no fix commit in CHANGES.md; the predicted "latent tripwire" has now fired live six times through 2026-09-22 (D-423, D-429, D-433, plus B089's three sightings), still unfixed — see the 2026-09-23 audit addendum below for the full count.**
+**Status: DONE (Wave C P1 implementation, 2026-09-24, A-456/A-459; independent review READY and authoritative tester-unified gate PASS at `8823bfea`) — parser-level shape C classifies statement-less default-argument node lines with a matching arm of the same branch from their enclosing function's call count and preserves their arcs. The multiline compatibility escalation is resolved by the operator's A-459 narrowing. B089 remains a withdrawn duplicate and is resolved by this same change.**
+
+**Implementation ruling and evidence (supersedes the proposed A/B contract and
+zero-count oracle below).** The fixed
+`handoffs/assay-P80-js-default-arg.md` contract selects A-456's shape C,
+narrowed by A-459 to nodes with at least one arm of the same branch attributed
+to the node's physical line using the existing per-arm location/fallback rule:
+`decl.start <= node < loc.start`, comparing full `(line, column)` positions,
+with exactly one function match. `f>0,b=[0]` is an executed line with an
+uncovered branch; `f=0,b=[0]` is missing with an uncovered branch. Required
+missing/malformed/ambiguous function metadata refuses `UNREADABLE_ARTIFACT`.
+Statement-derived line classifications retain priority. `FileCoverage`,
+the evaluator and B054's non-default branch disposition are unchanged.
+
+Shape A's model relaxation leaves the arc uncounted if the line is unclassified;
+B′ (drop only zero-count defaults) and D (drop every statement-less default)
+discard measurable branch evidence. The original `[0] → refuse` proposal
+confused unused defaults with uncalled functions and is withdrawn. The corrected
+A-342 adapter guarantee now includes parser classification of default-argument
+signature lines; other untracked signatures still take rule 4. The historical
+decision rows remain intact; A-459 appends the operator's governing narrowing.
+
+The broader function-call rule remains a documented alternative. A multiline
+default node on line 34 can have its arm and an executed nested-return statement
+on 35, with the outer function body starting on 36. The old parser already
+passes a diff touching only 34 at 0/0. The broad rule classifies that signature
+line from function calls and changes its count to 1/1; it can catch multiline
+defaults whose arms begin later, but changes previously-PASS numbers. The
+operator ruled on 2026-09-24 to preserve the old count: with no matching arm,
+keep the node unclassified, leave arc aggregation/disposition unchanged, and
+leave `fnMap`/`f` unread for that node. The compatibility escalation is resolved;
+the unmatched signature gap is explicit in the user-facing docs.
+
+The controller re-measured the 35-file consumer artifact read-only against this
+implementation: ChartCard 54→55, DataTable 105→108, StatCard 1→2, StatTile 37→38
+executable lines, exactly six added and no others. Each new signature line is
+executed with its original 1/1 branch and no contradiction. StatCard's
+`f=18,b=[15]` and StatTile's `f=26,b=[7]` independently show why branch counts
+cannot substitute for function counts. The controller confirmed all six nodes
+have their sole arm on the node's physical line, so all remain eligible under
+A-459. The preferences.ts:138 default already has a statement and is unchanged.
+No test reads the consumer checkout.
+Previously-PASS changed-lines numbers remain stable: a judged affected file
+previously refused because a recovered line necessarily carried an arc on
+that same unclassified line; an out-of-diff file contributes nothing to the judged
+numbers. Previously-refused whole-target lanes can now count those six lines.
+
+Focused tests cover the committed ChartCard specimen, zero-count variants,
+function boundaries/columns, malformed metadata, unchanged statement priority,
+multiple functions on one physical line, direct `tampered_missing`, and CLI
+judged/bystander/whole-target cases with `require_branch = true`. Controlled M1
+(global tolerance replacing shape C) gives 11 failures with the independent
+tamper oracle still green; M2 (type-blind classification) gives 8 B054 failures.
+Commands and complete local results are in the handoff's implementation evidence.
 
 **Proposed by:** dstdns, 2026-09-08, out of the P176 (`ui-design-system-primitives`)
 phase-2 code review and the P177 code review that inherited its consequence.
@@ -8901,7 +8960,7 @@ this entry's priority.
 
 ## B081 — a "dubious ownership" `GIT_FAILED` passes through git's own remedy, which `_REPLACEMENT_ENV` has made unreachable by construction: the message sends the consumer to a fix assay guarantees cannot work
 
-**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — no ownership/`safe.directory` remedy message exists anywhere in `src/assay/git.py`.**
+**Status: IMPLEMENTED (Wave C P2, 2026-09-24; targeted tests pass, registered gate pending) — `_resolve_repo` names the ownership mismatch, assay's replacement Git configuration, and the ownership remedy before retaining Git's `fatal:` line.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, while wiring an assay 6.0.0 Go R1
 changed-line-coverage lane into the `pterodactyl/wings` patch stack
@@ -8998,18 +9057,21 @@ ownership is the only thing that works.
 
 ### Acceptance
 
-- [ ] a tree whose owner uid differs from the running user refuses with an
+- [x] a tree whose owner uid differs from the running user refuses with an
       assay-composed sentence naming the ownership mismatch and the fact that
       `safe.directory` is unreachable under assay's replacement environment,
       with git's own `fatal:` retained after it;
-- [ ] the message does NOT propose `git config --global --add safe.directory`
+- [x] the message does NOT propose `git config --global --add safe.directory`
       as a remedy anywhere;
-- [ ] a healthy resolution is unchanged and the probe is never consulted on
+- [x] a healthy resolution is unchanged and the probe is never consulted on
       it (B068's diagnostic-only contract);
-- [ ] the OTHER bootstrap failures stay exactly as they are — the linked-
+- [x] the OTHER bootstrap failures stay exactly as they are — the linked-
       worktree gap (B068) still wins where it applies, and an unrecognised
       cause still passes through unchanged;
-- [ ] a regression test pins the new sentence.
+- [x] regression tests pin Git's captured fatal line, including a path longer
+      than the generic 200-character diagnostic cap, strip its remedy, keep
+      healthy resolution probe-free, and preserve an unrecognised bootstrap
+      failure's existing message (`tests/test_git_boundary.py`).
 
 ## B082 — a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so
 
@@ -9637,7 +9699,7 @@ source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
 
 ## B089 — istanbul branch-arc self-contradiction on some `.tsx` files
 
-**Status: WITHDRAWN (duplicate of B080, 2026-09-23) — the same six default-arg-on-signature-line branch sites (ChartCard.tsx:34, StatCard.tsx:17, StatTile.tsx:28, DataTable.tsx:33-35) B080 diagnoses as "Live specimens" and root-causes; this entry is B054's drop-and-continue path firing on those same files when they sit outside the judged/diff set (B080 is the hard-refuse path when they ARE in scope). No separate fix is owed here: whichever shape (A/B) B080 ships resolves this entry's symptom too. See B080's own status line and its 2026-09-23 audit addendum for the full sighting count.**
+**Status: WITHDRAWN (duplicate of B080, 2026-09-23; resolved by its Wave C P1 implementation, A-456/A-459; independent review READY and authoritative tester-unified gate PASS at `8823bfea`) — the same six default-arg-on-signature-line branch sites (ChartCard.tsx:34, StatCard.tsx:17, StatTile.tsx:28, DataTable.tsx:33-35) B080 diagnoses as "Live specimens" and root-causes; this entry is B054's drop-and-continue path firing on those same files when they sit outside the judged/diff set (B080 is the hard-refuse path when they ARE in scope). B080's parser-level shape C, narrowed by A-459 to matching signature-line arms, preserves their arcs without a contradictory-record diagnostic; unmatched multiline node lines retain their documented gap. No separate fix is owed. See B080's status and implementation evidence.**
 
 Observed live during dstdns's `ui_unit` lane (P186 post-merge gate, 2026-09-12,
 run-gate rev 40, assay-6.1.0.pyz), against unrelated pre-existing files (P186
@@ -10000,36 +10062,53 @@ README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the policy.
 
 ## B094 — P7 S3 / N5: unknown `--rejudge` reason mapping
 
-**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — explicitly excluded from the B091 P7 round-1 fold-in commit (S2,S4,S7-S10 only); no later CHANGES.md entry addresses it.**
+**Status: IMPLEMENTED (Wave C P2, 2026-09-24; CLI and `assay verify` oracles complete, registered gate pending) — A-458 routes invalid input through the existing whole-lane `BAD_LANE_CONFIG` refusal.**
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** An unknown candidate
-id correctly refuses with the right message, but reports
-`ERROR/UNREADABLE_ARTIFACT` (exit 2). `MutationStateError` is shared across
-the mutation-state refusal path; use a distinct exception or an explicit
-per-raise reason to classify invalid user input without relabeling real
-unreadable/corrupt state. Round-2 N5 reproduced the current behavior on
-the real CLI; no mapping change is included in 6.2.0's B6 repair.
+An unknown id or an id made stale by source-byte changes refuses with
+`ERROR`/`BAD_LANE_CONFIG` (exit 2) before any record is replayed. A distinct
+input exception leaves `MutationStateError` and its
+`ERROR`/`UNREADABLE_ARTIFACT` classification intact for corrupt stores. The
+check occurs after the baseline, so A-458 uses the existing whole-lane
+refusal shape; this preserves `assay verify` acceptance on R0/R2/R3 lanes at
+the cost of discarding already-measured R0/R1 results.
 
-Oracle: unknown and stale-source ids refuse before record replay with the
-chosen input-refusal code; unreadable/corrupt stores retain artifact-error
-codes; valid ids still rejudge only their selected records. Sync all three
-user documents if the public reason vocabulary or compatibility changes.
+Oracle: real CLI tests cover unknown, stale-source, corrupt, and valid ids;
+unknown and stale refusals are passed through `assay verify`, corrupt state
+remains `UNREADABLE_ARTIFACT`, and valid ids rejudge only the selected
+record. README, DESIGN-GUIDE, and CONSUMERS document the user-visible
+classification and its ordering cost.
 
 ## B095 — P7 S5: monitor hot-loop cost and unbounded CPU history
 
-**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — explicitly excluded from the B091 P7 round-1 fold-in commit; no later CHANGES.md entry addresses it.**
+**Status: DONE (Wave C P3, 2026-09-25; implementation `09d1f38d`, independent review READY, tester-unified PASS). CPU history is bounded to the 30-second trailing edge; monitoring reads only newly appended event bytes.**
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** The one-second loop
-rescans event/proc data and retains an unbounded `cpu_samples` list, including
-for unbounded candidates. Trim history while retaining the sample needed
-at the trailing-window edge; assess incremental event parsing and proc
-sampling costs separately. This is a performance change in the loop just
-hardened by B1/B2/B6 and needs its own review and measurement.
+The one-second loop previously rescanned the whole event file and retained an
+unbounded `cpu_samples` list, including for unbounded candidates. The monitor
+now retains a deque with exactly the newest successful CPU sample at least
+one window old plus newer samples. Its event reader parses appended bytes,
+keeps a possible partial tail for the next tick, and resets on file replacement
+or truncation. The existing process-tree `/proc` accounting and its failure
+semantics are unchanged.
 
-Oracle: a long virtual run retains bounded history while preserving exact
-CPU-window boundary classifications, partial-line tolerance, process-tree
-accounting and `/proc` failure behavior. Measure before/after cost against
-large events files; no timing threshold replaces those behavioral checks.
+Oracle: a 20,000-tick virtual run differentially compares each CPU-growth
+classification with the prior reverse-list search and bounds retained history
+at 121 samples for a 30-second window with a 250ms minimum sample interval.
+Append-reader outputs are compared with the full-file reference across partial
+lines, malformed records, all `str.splitlines()` boundaries (including the
+Unicode separators), finish-pid mixtures, atomic replacement and truncation.
+Existing tests retain the exact window boundary, process-tree accounting and
+`/proc` failure behavior. After the line-boundary compatibility fix, a
+Python 3.14.7/Linux x86_64 probe used an 8,377,780-byte / 60,000-record event
+file: full re-read median 209.15ms (201.18–542.46ms), incremental initial
+parse median 164.48ms (152.84–192.38ms), one-record append 0.056ms, and
+unchanged poll median 0.0213ms (0.0192–0.1742ms). The unchanged-poll median
+is about 9,800 times lower than a full re-read in that probe. The full reader
+and append reader returned the same `(60000, False)` result before append and
+`(60001, False)` after it. `tree_cpu_seconds` remained unchanged; 1,000 calls
+on a one-process tree previously measured 0.0471ms median / 0.0774ms p95.
+Measurements are descriptive only; no timing threshold replaces behavioral
+checks. The full measurements and review/gate evidence are in the Wave C
+controller log.
 
 ## B096 — P7 S6: derive `--rejudge-outcome` help from the vocabulary
 

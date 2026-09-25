@@ -47,12 +47,18 @@ unattributed" — that is false, and measured false: in the committed
 sit in neither ``executed`` nor ``missing``, because that instrumenter
 records no statement for a function's own signature line, for a
 function-level closing brace, or for a ``const x =`` line whose recorded
-statement is its initialiser. Those lines take ``evaluate.py``'s rule 4 and
-leave the denominator, exactly as an untracked line does for every other
-format in this registry. The real guarantee is narrower and is what
-``requires_span_attribution = False`` actually needs: **every line any
-statement extent covers is classified, so no line is left unattributed that
-this artifact carried the information to attribute.** Span attribution
+statement is its initialiser. **B080/A-456/A-459 qualifies the signature case:**
+under an arc-bearing producer, a statement-less ``default-arg`` node's line
+is classified by the unique enclosing function's call count in ``fnMap``/``f``
+only when an arm of that same branch is attributed to the node's physical line.
+A default that never applied still has an executed line if its function ran;
+the unchanged arc remains uncovered. Required missing or ambiguous function
+metadata refuses the artifact. Signatures without such a node, closing
+braces, untracked initialiser prefixes and multiline defaults with no arm
+on their node line still take rule 4 and leave the
+denominator. The parser's guarantee is: **every line any statement extent
+covers is classified, as is each supported statement-less default-argument
+node line.** Span attribution
 (rule 3b) exists to recover interior lines of a multi-line construct from a
 re-parse; the extent expansion already recovers precisely those, from the
 artifact, which is why a ``statement_spans`` implementation would have
@@ -488,8 +494,10 @@ class JavaScriptAdapter:
         {"node_modules", "dist", "coverage"}
     )
     #: Measured, not assumed (A-342): the istanbul parser expands each
-    #: statement's own extent, so a measured file leaves no unattributed line
-    #: for rule 3b to resolve. See this module's own docstring for the probe.
+    #: statement's own extent and classifies statement-less default arguments
+    #: with a matching signature-line arc from function calls (A-456/A-459).
+    #: Other untracked lines still take rule 4;
+    #: see the exact guarantee and limits in this module's docstring.
     requires_span_attribution: bool = False
     external_tools: tuple[str, ...] = ()
     #: Istanbul's own JSON (and the lcov it emits) is already
