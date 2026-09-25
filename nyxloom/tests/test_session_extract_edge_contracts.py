@@ -98,6 +98,17 @@ def test_codex_question_shapes_and_prose_copies_preserve_each_prompt():
     no_call_id.remember_question_call({"call_id": 7, "arguments": {"questions": []}})
     assert no_call_id.questions == {} and no_call_id.pending_prose_copies == []
 
+    single_header = codex._question_copy_variants({"title": "One heading", "options": []})
+    assert single_header == ("One heading",)
+    multiline = codex.StreamState()
+    multiline.remember_question_call({"call_id": "multi", "arguments": {"questions": [{
+        "title": "A heading", "question": "First line\n\nSecond line",
+    }]}}, prompt_emitted=False)
+    prompt = multiline.questions[("multi", 0)]
+    assert multiline.consume_question_prose_copy("First line\n\nSecond line") == [prompt]
+    assert multiline.pending_prose_copies == []
+    assert codex._question_prose_blocks("First\n\n") == ["First"]
+
 
 def test_codex_reply_envelopes_fail_closed_and_keep_free_text():
     state = codex.StreamState()
@@ -228,6 +239,15 @@ def test_codex_old_and_new_records_clear_pending_copies_and_keep_tool_intent():
     }}
     assert codex.parse_record(old_copy, 4, "4", ExtractConfig())[0].text == "plain response"
 
+    old_copy_state = codex.StreamState()
+    old_copy_state.remember_question_call({**_question_call()["payload"]}, prompt_emitted=False)
+    old_question_copy = {"type": "event_msg", "payload": {
+        "type": "agent_message", "message": "Deployment\n- Local\n- Remote: shared host",
+    }}
+    normalized_copy = codex.parse_record(old_question_copy, 5, "5", ExtractConfig(), old_copy_state)
+    assert normalized_copy[0].kind is EventKind.QA_PAIR
+    assert "INTERVIEW: Deployment" in normalized_copy[0].text
+
 
 def test_codex_lossless_blocks_render_questions_replies_and_safe_tool_calls():
     call = _question_call()
@@ -244,6 +264,11 @@ def test_codex_lossless_blocks_render_questions_replies_and_safe_tool_calls():
     assert visible == [LosslessBlock("===[2 | t | TOOL_CALL]===", "[tool call: Shell] inspect files")]
     without_intent = codex_blocks(tool, "2", show_tool_calls=True)
     assert without_intent[0].text == "[tool call: Shell]"
+    invalid_intent = codex_blocks(
+        {**tool, "payload": {**tool["payload"], "input": {"intent": 7}}}, "2",
+        show_tool_calls=True, show_tool_call_intent=True,
+    )
+    assert invalid_intent[0].text == "[tool call: Shell]"
 
     reply = {
         "type": "event_msg", "timestamp": "t", "payload": {"type": "user_message", "message": (
@@ -522,12 +547,12 @@ def test_cli_report_conflict_and_detailed_json_paths(tmp_path, capsys):
 def test_cli_debug_rejects_missing_cursor_and_unsupported_tool_visibility(tmp_path, capsys, monkeypatch):
     source = tmp_path / "source.jsonl"
     source.write_text("{}\n")
-    no_cursor = tmp_path / "no-cursor.txt"
-    no_cursor.write_text("no marker here")
+    no_cursor = tmp_path / "wrong-format-cursor.txt"
+    no_cursor.write_text("<!-- nyxloom-extract: format=codex marker=5 -->\n")
     assert cli.main([
         "extract-debug", str(source), "--format", "claude-code", "--since-file", str(no_cursor),
     ]) == 1
-    assert "no embedded" in capsys.readouterr().err
+    assert "produced by the 'codex' adapter" in capsys.readouterr().err
 
     assert cli.main([
         "extract-debug", str(source), "--format", "claude-code", "--show-tool-call-intent",
