@@ -1715,6 +1715,9 @@ def test_registry_exact_candidate_and_redundant_oci_tags(monkeypatch):
     monkeypatch.setattr(registry._OCIClient, "tag_timestamp", lambda _self, _tag: (
         stamp, "oci-registry-last-modified",
     ))
+    # Reverse future completion order so the lexicographically lower tag is
+    # seen first; the winner must still be selected by the explicit tie key.
+    monkeypatch.setattr(registry, "as_completed", lambda futures: reversed(tuple(futures)))
     tied = original_oci_candidates({"image": "ghcr.io/acme/app", "tag": "{version}"}, "*")
     assert tied["1.0.0"].tag == "v1.0.0"
 
@@ -2361,8 +2364,11 @@ def test_versions_main_reports_text_and_maps_domain_failures(monkeypatch, capsys
     assert missing_action.value.code == 2
     assert versions.main(["check"]) == 0
     assert "No version targets" in capsys.readouterr().out
+    monkeypatch.setattr(versions, "_recorded_versions", lambda *_args: [{"z": 1, "a": 2}])
     assert versions.main(["check", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["schema_version"] == 1
+    json_report = json.loads(capsys.readouterr().out)
+    assert json_report["schema_version"] == 1
+    assert list(json_report["targets"][0]) == ["a", "z"]
 
     cases = (
         (versions.VersionsPrerequisiteError("missing tool"), versions.exit_codes.PREREQ_MISSING),

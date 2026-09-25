@@ -730,7 +730,11 @@ def oci_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Cand
             else:
                 result[key] = max(
                     (previous, candidate),
-                    key=lambda item: (item.released_at, item.tag or "", item.age_source),
+                    key=lambda item: (
+                        item.released_at,
+                        item.tag if item.tag is not None else "",
+                        item.age_source,
+                    ),
                 )
     return result
 
