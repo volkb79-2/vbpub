@@ -3,8 +3,10 @@
 # the existing project test command, rather than recursively invoking CMRU's
 # tester-gate wrapper.
 #
-# CMRU uses the same source-backed tester-unified Assay lane for the complete
-# Python rigor ladder.  The repository-minus-unsafe-symlinks selection is the
+# Assay owns R0/R1/R3 here. R2 lives in run-gate.toml's tag-based mutation
+# lane: a release candidate is already at origin/main, so an Assay mutation
+# base of main would find no changed source and refuse with NO_MUTANTS.
+# The repository-minus-unsafe-symlinks selection is the
 # estate-approved monorepo boundary: it omits only the three tracked Topos
 # fixture links that cannot be materialised safely, while preserving every
 # other tracked path from the judged commit.
@@ -12,18 +14,17 @@ schema_version = 2
 
 [lanes.cmru]
 scope = "S1"
-rigor = ["R0", "R1", "R2", "R3"]
+rigor = ["R0", "R1", "R3"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--maxfail=1",
   "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
-# A green run still executes the complete suite. A failing mutation candidate
-# stops on its first failing test instead of cascading into later teardown or
-# lock tests; R2 liveness independently bounds and cleans up stalled candidates.
-# These are project test facts, not ambient conveniences: pytest must import
-# the source snapshot it is judging, and it must not create bytecode there.
+# A green run still executes the complete suite. These are project test facts,
+# not ambient conveniences: pytest must import the source snapshot it is
+# judging, and it must not create bytecode there. The separate R2 campaign
+# uses the nearest release tag, fail-fast candidates, and a bounded timeout.
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = []
-budget = "8h"
+budget = "20m"
 allow_argv_append = false
 
 [lanes.cmru.isolation]
@@ -45,20 +46,6 @@ base = "main"
 [lanes.cmru.judge.coverage]
 format = "coverage-py-json"
 artifact = "coverage.json"
-
-[lanes.cmru.judge.mutation]
-# Keep mutation candidates serial: the baseline already uses the project's
-# normal test process, and the host shares capacity with production services.
-jobs = 1
-liveness = true
-max_mutants = 10000
-operators = [
-  "python:compare-swap",
-  "python:boolop-swap",
-  "python:bool-const-flip",
-  "python:falsy-swap",
-]
-budget_per_candidate = "5m"
 
 [lanes.cmru.judge.canary]
 # Import-break proves that the complete declared gate rejects a known-bad

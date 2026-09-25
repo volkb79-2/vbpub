@@ -122,12 +122,34 @@ def same_cgroup_namespace(pid: int, proc_root: str = PROC_ROOT) -> bool:
     different root; absent namespace metadata is indeterminate and refuses
     that translation.
     """
+    target = namespace_inode(pid, "cgroup", proc_root)
+    current = local_namespace_inode("cgroup")
+    return target is not None and target == current
+
+
+def namespace_inode(pid: int, name: str, proc_root: str = PROC_ROOT) -> Optional[int]:
+    """Return a process namespace's kernel inode from the selected proc view.
+
+    Only PID and cgroup namespaces participate in target identity. Missing or
+    unreadable proc metadata stays indeterminate so callers can refuse a
+    translation instead of inferring an identity from a numeric PID.
+    """
+    if name not in ("pid", "cgroup") or pid <= 0:
+        return None
     try:
-        target = os.stat(os.path.join(proc_root, str(pid), "ns", "cgroup")).st_ino
-        current = os.stat("/proc/self/ns/cgroup").st_ino
+        return os.stat(os.path.join(proc_root, str(pid), "ns", name)).st_ino
     except OSError:
-        return False
-    return target == current
+        return None
+
+
+def local_namespace_inode(name: str) -> Optional[int]:
+    """Return this process's PID or cgroup namespace inode, when readable."""
+    if name not in ("pid", "cgroup"):
+        return None
+    try:
+        return os.stat(os.path.join("/proc/self/ns", name)).st_ino
+    except OSError:
+        return None
 
 
 def cgroup_root_is_writable(root: str = CGROUP_ROOT) -> bool:

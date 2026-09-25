@@ -73,9 +73,8 @@ def resolve_build_version(
         return _validated_version(tag[len(prefix):], f"release tag {tag!r}")
 
     env = os.environ if environ is None else environ
-    override = env.get(VERSION_ENV, "").strip()
-    if override:
-        return _validated_version(override, VERSION_ENV)
+    if VERSION_ENV in env:
+        return _validated_version(env[VERSION_ENV], VERSION_ENV)
     if require_release_tag:
         raise RuntimeError(
             f"no {prefix}<version> tag points at HEAD; refuse publication without an exact release version"

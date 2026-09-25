@@ -59,6 +59,7 @@ oracle for its own claim.
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 from pathlib import Path
 
@@ -67,6 +68,7 @@ from conftest import PROJECT_ROOT, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.cli import main
+from assay.candidate_identity import candidate_id_from_fields
 from assay.verdict import Outcome, rollup
 from assay.verify import cmd_verify, verify_document, verify_text
 
@@ -1204,7 +1206,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-            "schema_version": 12,
+            "schema_version": 13,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1316,9 +1318,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 12: a verdict "
+        "schema_version 2 is not this verifier's version 13: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 12"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 13"
     ]
 
 
@@ -1337,7 +1339,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 12" in failures[0]
+    assert "schema_version 3 is not this verifier's version 13" in failures[0]
 
 
 # ============================================================================
@@ -1394,7 +1396,28 @@ def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
 ):
     document = _load(fixture)
     claim = next(c for c in document["claims"] if c["rigor"] == "R2")
-    claim["mutation"][bucket] = [_a_survivor()]
+    survivor = _a_survivor()
+    source_digest = hashlib.sha256(b"B106 precedence fixture source").hexdigest()
+    mutated_digest = hashlib.sha256(
+        f"B106 precedence fixture {fixture} {bucket}".encode()
+    ).hexdigest()
+    survivor.update(
+        {
+            "candidate_id": candidate_id_from_fields(
+                path=survivor["path"],
+                source_sha256=source_digest,
+                start_byte=survivor["start_byte"],
+                end_byte=survivor["end_byte"],
+                mutated_file_sha256=mutated_digest,
+                operator=survivor["operator"],
+            ),
+            "source_sha256": source_digest,
+            "mutated_file_sha256": mutated_digest,
+            "execution": {"mode": "full"},
+        }
+    )
+    claim["mutation"][bucket] = [survivor]
+    claim["mutation"]["candidate_ids"].append(survivor["candidate_id"])
     claim["mutation"]["total"] += 1
     # P21: `candidate_count` moves with `total`, or the payload is neither of
     # the two legal arithmetic shapes and the schema rejects it before this
@@ -1450,9 +1473,18 @@ def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
     judgment_r2["discarded"] = []
     judgment_r2["fail_under"] = fail_under
     claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    mutation = claim["mutation"]
+    mutation.pop("candidate_ids", None)
     for bucket in ("killed", "survived", "crashed", "budget_exceeded", "equivalent"):
         for mutant in claim["mutation"].get(bucket, []):
             mutant["operator"] = "stryker:ConditionalExpression"
+            for field in (
+                "candidate_id",
+                "source_sha256",
+                "mutated_file_sha256",
+                "execution",
+            ):
+                mutant.pop(field, None)
     return document
 
 

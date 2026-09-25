@@ -473,16 +473,23 @@ def load_config(
         parsed = forge.projects[name]
         source_project_config_path = orchestration.project_configs[name]
         try:
-            project_rel_to_source = source_project_config_path.parent.resolve().relative_to(
-                source_git_root
-            )
+            configured_project_root = source_project_config_path.parent.resolve()
+            # The central orchestration file may itself have been loaded from
+            # the isolated worktree. In that case its project paths already
+            # describe the execution snapshot and must not be joined to that
+            # snapshot a second time. Configurations intentionally kept outside
+            # the checkout still map from the caller's source Git root.
+            try:
+                project_rel_to_execution = configured_project_root.relative_to(execution_root)
+            except ValueError:
+                project_rel_to_execution = configured_project_root.relative_to(source_git_root)
         except ValueError as exc:
             raise ValueError(
                 f"{name}: project root {source_project_config_path.parent} is outside "
                 f"the selected Git root {source_git_root}"
             ) from exc
         project_config_path = (
-            execution_root / project_rel_to_source / PROJECT_CONFIG_FILENAME
+            execution_root / project_rel_to_execution / PROJECT_CONFIG_FILENAME
         ).resolve()
         if not project_config_path.is_file():
             raise ValueError(

@@ -59,3 +59,98 @@ quiet = true
 commands = [
   { label = "nyxloom: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "nyxloom", "--cwd", ".", "--notes-env", "NYXLOOM_RELEASE_NOTES"], cwd = "." },
 ]
+
+[versions]
+
+[versions.targets]
+
+[versions.targets."pypi.pyyaml"]
+mode = "single"
+constraint = ">=6"
+
+[versions.targets."pypi.pyyaml".pypi]
+name = "pyyaml"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.jsonschema"]
+mode = "single"
+constraint = ">=4"
+
+[versions.targets."pypi.jsonschema".pypi]
+name = "jsonschema"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.structlog"]
+mode = "single"
+constraint = ">=24,<27"
+
+[versions.targets."pypi.structlog".pypi]
+name = "structlog"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.rich"]
+mode = "single"
+constraint = ">=15.0.0"
+
+[versions.targets."pypi.rich".pypi]
+name = "rich"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pygments"]
+mode = "single"
+constraint = ">=2.21.0"
+
+[versions.targets."pypi.pygments".pypi]
+name = "pygments"
+registry = "https://pypi.org"
+
+[versions.targets."oci.node-agent"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.node-agent".oci]
+image = "docker.io/library/node"
+tag = "26-slim"
+selection = "rolling"
+
+[versions.targets."oci.mdt-base"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.mdt-base".oci]
+image = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-php85-vsc-devcontainer"
+tag = "trixie-py3.14-latest"
+selection = "rolling"
+
+[versions.targets."oci.ntfy"]
+mode = "single"
+constraint = ">=2.14.0"
+
+[versions.targets."oci.ntfy".oci]
+image = "docker.io/binwiederhier/ntfy"
+tag = "v{version}"
+
+[versions.targets."oci.postgres"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.postgres".oci]
+image = "docker.io/library/postgres"
+tag = "16-alpine"
+selection = "rolling"
+
+[versions.targets."oci.mattermost"]
+mode = "single"
+constraint = ">=11.10.1"
+
+[versions.targets."oci.mattermost".oci]
+image = "docker.io/mattermost/mattermost-team-edition"
+tag = "{version}"
+
+[versions.targets."oci.pwmcp"]
+mode = "single"
+constraint = ">=1.61.0-r6,<2.0.0"
+
+[versions.targets."oci.pwmcp".oci]
+image = "ghcr.io/volkb79-2/pwmcp"
+tag = "{version}"

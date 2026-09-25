@@ -70,6 +70,10 @@ clean_tree = false
 # enforcement is assay's own budget_s, read from assay.toml).
 budget = "4h"
 artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
+[lanes.r2.resources]
+# Apply the ceiling before any mutation candidate can execute; it remains
+# directly verifiable as Docker NanoCpus on the exact campaign container.
+cpus = "3"
 
 # Proves the gate REJECTS known-bad code — this project's own
 # tools/canary-run.sh (7 real canaries, built by a prior session). Runs
@@ -84,6 +88,8 @@ argv = [
 ]
 clean_tree = false
 budget = "10m"
+[lanes.r3.resources]
+cpus = "3"
 
 # The implementation/release gate: every consumer (release steps, agents,
 # humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every

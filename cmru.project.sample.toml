@@ -57,6 +57,12 @@ artifact_dirs = ["dist"]
 # Optional: list files/directories actually produced by the release gate.
 # evidence_paths = ["coverage.json"]
 
+[versions]
+age_window_days = 14
+
+[versions.discovery]
+scope = "shipped"
+
 # Every release phase is project-owned and explicit. A meaningful gate always
 # runs through tester-unified.
 [steps.run-tests]

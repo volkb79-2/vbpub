@@ -41,6 +41,7 @@ from cmru.version_registry import (
     candidates,
     candidate_for,
     normalized_version,
+    oci_rolling_candidate,
     validate_constraint,
     version_satisfies,
 )
@@ -89,6 +90,7 @@ class TargetResult:
                     "released_at": _timestamp(candidate.released_at),
                     "age_source": candidate.age_source,
                     **({"tag": candidate.tag} if candidate.tag else {}),
+                    **({"digest": candidate.digest} if candidate.digest else {}),
                 }
                 for source_type, candidate in sorted(self.sources.items())
             },
@@ -302,6 +304,28 @@ def _resolve_target(
     override = target.get("version")
     selected: dict[str, Candidate] = {}
     try:
+        oci_source = source_tables.get("oci")
+        if isinstance(oci_source, dict) and oci_source.get("selection", "semver") == "rolling":
+            if set(source_tables) != {"oci"} or target.get("mode") != "single" or constraint != "*":
+                raise VersionsError(
+                    f"target {target_id!r} rolling OCI selection requires one OCI source, mode='single', and constraint='*'"
+                )
+            if override is not None:
+                raise VersionsError(f"target {target_id!r} rolling OCI selection does not support exact overrides")
+            candidate = oci_rolling_candidate(oci_source)
+            if candidate.released_at > cutoff:
+                warning = _age_evidence_warning(owner, target_id, candidate)
+                warning_text = f"; {warning}" if warning else ""
+                raise VersionsError(
+                    f"target {target_id!r} rolling OCI tag {candidate.tag!r} is newer than the "
+                    f"{age_window_days}-day age cutoff ({_timestamp(candidate.released_at)} > "
+                    f"{_timestamp(cutoff)}){warning_text}"
+                )
+            return TargetResult(
+                target_id=target_id, version=candidate.version, resolved_at=resolved_at,
+                age_cutoff=cutoff, sources={"oci": candidate}, override=False, reason=None,
+                expires=None, owner=owner,
+            )
         if override is not None:
             version = str(override)
             if not version_satisfies(version, constraint):
@@ -323,9 +347,12 @@ def _resolve_target(
                 )
             if too_new and expires is None:
                 freshest = max(too_new, key=lambda item: item.released_at)
+                warning = _age_evidence_warning(owner, target_id, freshest)
+                warning_text = f"; {warning}" if warning else ""
                 raise VersionsError(
                     f"target {target_id!r} override {version!r} bypasses the {age_window_days}-day age window "
-                    f"(published {_timestamp(freshest.released_at)}); set a future expires date after review"
+                    f"(published {_timestamp(freshest.released_at)}){warning_text}; "
+                    "set a future expires date after review"
                 )
             return TargetResult(
                 target_id=target_id, version=version, resolved_at=resolved_at,
@@ -348,8 +375,11 @@ def _resolve_target(
                 if not compatible:
                     detail = "registry returned no compatible candidates"
                 else:
-                    newest_date = max(item.released_at for item in compatible.values())
-                    detail = f"newest compatible release is {_timestamp(newest_date)}, newer than the cutoff"
+                    newest = max(compatible.values(), key=lambda item: item.released_at)
+                    detail = f"newest compatible release is {_timestamp(newest.released_at)}, newer than the cutoff"
+                    warning = _age_evidence_warning(owner, target_id, newest)
+                    if warning:
+                        detail += f"; {warning}"
                 raise VersionsError(
                     f"target {target_id!r} source {source_type} has no age-eligible version: {detail} "
                     f"(age_window_days={age_window_days}, cutoff={_timestamp(cutoff)})"
@@ -459,10 +489,16 @@ def _local_target_overlays(forge: ForgeConfig, name: str) -> dict[str, dict[str,
         if not isinstance(overlay, dict):
             continue
         base = root.get(target_id)
-        result[target_id] = (
+        merged = (
             deep_merge_versions(base, overlay)
             if isinstance(base, dict) else copy.deepcopy(overlay)
         )
+        try:
+            result[target_id] = parse_versions_section(
+                {"targets": {target_id: merged}}, f"projects.{name}.versions",
+            )["targets"][target_id]
+        except ValueError as exc:
+            raise VersionsError(f"invalid effective project target {name}:{target_id}: {exc}") from exc
     return result
 
 
@@ -477,11 +513,22 @@ def _merged_outputs(forge: ForgeConfig, name: str) -> dict[str, dict[str, str]]:
 
 
 def _report_record(result: TargetResult, declaration: Mapping[str, object], current: object = None) -> dict:
+    recorded_version = current.get("version") if isinstance(current, dict) else current
+    recorded_sources = current.get("sources", {}) if isinstance(current, dict) else {}
+    matches = recorded_version == result.version
+    if matches:
+        for source_type, candidate in result.sources.items():
+            if candidate.digest is None:
+                continue
+            recorded_source = recorded_sources.get(source_type, {}) if isinstance(recorded_sources, dict) else {}
+            if not isinstance(recorded_source, dict) or recorded_source.get("digest") != candidate.digest:
+                matches = False
+                break
     return {
         "target": result.target_id,
         "owner": result.owner,
         "eligible_version": result.version,
-        "recorded_version": current if isinstance(current, str) else None,
+        "recorded_version": recorded_version if isinstance(recorded_version, str) else None,
         "mode": declaration.get("mode"),
         "constraint": declaration.get("constraint"),
         "override": result.override,
@@ -495,12 +542,13 @@ def _report_record(result: TargetResult, declaration: Mapping[str, object], curr
                 "released_at": _timestamp(candidate.released_at),
                 "age_source": candidate.age_source,
                 **({"tag": candidate.tag} if candidate.tag else {}),
+                **({"digest": candidate.digest} if candidate.digest else {}),
             }
             for source_type, candidate in sorted(result.sources.items())
         },
         "status": (
             "override" if result.override else
-            "matches" if current == result.version else
+            "matches" if matches else
             "refresh-available" if current is not None else
             "unresolved"
         ),
@@ -516,24 +564,31 @@ def _emit_age_evidence_warnings(
     all_results = [("root", root_results), *sorted(project_results.items())]
     for owner, results in all_results:
         for target_id, result in results.items():
-            for source_type, candidate in result.sources.items():
-                if candidate.age_source == "go-proxy-info-vcs-commit-time":
-                    warnings.add(
-                        f"CMRU versions: warning: {owner}:{target_id} uses Go proxy .info Time "
-                        "(VCS commit time), not proxy publication time"
-                    )
-                elif candidate.age_source == "oci-image-created-fallback":
-                    warnings.add(
-                        f"CMRU versions: warning: {owner}:{target_id} uses publisher-supplied OCI "
-                        "image-created time because the registry has no Last-Modified timestamp"
-                    )
+            for candidate in result.sources.values():
+                warning = _age_evidence_warning(owner, target_id, candidate)
+                if warning:
+                    warnings.add(warning)
     for warning in sorted(warnings):
         print(warning, file=sys.stderr)
 
 
+def _age_evidence_warning(owner: str, target_id: str, candidate: Candidate) -> str | None:
+    if candidate.age_source == "go-proxy-info-vcs-commit-time":
+        return (
+            f"CMRU versions: warning: {owner}:{target_id} uses Go proxy .info Time "
+            "(VCS commit time), not proxy publication time"
+        )
+    if candidate.age_source == "oci-image-created-fallback":
+        return (
+            f"CMRU versions: warning: {owner}:{target_id} uses publisher-supplied OCI "
+            "image-created time because the registry has no Last-Modified timestamp"
+        )
+    return None
+
+
 def _read_recorded(target: Mapping[str, object]) -> object:
     resolved = target.get("resolved")
-    return resolved.get("version") if isinstance(resolved, dict) else None
+    return resolved if isinstance(resolved, dict) else None
 
 
 def _target_declarations_for_project(forge: ForgeConfig, name: str) -> dict[str, dict[str, object]]:
@@ -625,6 +680,7 @@ def _template_artifacts(
                         "released_at": _timestamp(item.released_at),
                         "age_source": item.age_source,
                         "tag": item.tag,
+                        "digest": item.digest,
                     }
                     for source_type, item in sorted(result.sources.items())
                 },
@@ -680,6 +736,7 @@ def _native_output_files(
                     "released_at": _timestamp(candidate.released_at),
                     "age_source": candidate.age_source,
                     "reason": result.reason,
+                    **({"digest": candidate.digest} if candidate.digest else {}),
                 }
 
     if oci_items:
@@ -936,9 +993,32 @@ def _versions_init(forge: ForgeConfig, projects: list[str], *, dry_run: bool) ->
         targets = versions.setdefault("targets", {})
         if not isinstance(targets, dict):
             raise VersionsError(f"{config_path} [versions].targets must be a table")
+        effective = (
+            deep_merge_versions(dict(forge.versions), versions)
+            if forge.orchestration else copy.deepcopy(versions)
+        )
+        try:
+            effective = parse_versions_section(effective, f"{config_path}: effective [versions]")
+        except ValueError as exc:
+            raise VersionsError(str(exc)) from exc
+        discovery = effective.get("discovery", {})
+        scope = discovery.get("scope", "shipped")
+        pypi_extras = discovery.get("pypi_extras", [])
+        requirements_files = discovery.get("requirements_files", [])
+        discovery_note = f"{name}: dependency discovery scope={scope!r}"
+        if pypi_extras:
+            discovery_note += f"; PyPI extras={', '.join(pypi_extras)}"
+        if requirements_files:
+            discovery_note += f"; requirements files={', '.join(requirements_files)}"
+        summaries.append(discovery_note)
         added = []
         shared = []
-        facts, skipped = _init_facts(project_root)
+        facts, skipped = _init_facts(
+            project_root,
+            scope=scope,
+            pypi_extras=pypi_extras,
+            requirements_files=requirements_files,
+        )
         for family, slug, constraint, source in facts:
             target_id = _target_id(family, slug)
             if target_id in targets:
@@ -1005,44 +1085,99 @@ def _versions_init(forge: ForgeConfig, projects: list[str], *, dry_run: bool) ->
 
 def _init_facts(
     project_root: Path,
+    *,
+    scope: str = "shipped",
+    pypi_extras: list[str] | tuple[str, ...] = (),
+    requirements_files: list[str] | tuple[str, ...] = (),
 ) -> tuple[list[tuple[str, str, str, dict[str, str]]], list[str]]:
-    """Derive only explicit dependency facts from standard project manifests."""
+    """Derive declared package facts from the configured dependency scope."""
+    if scope not in {"shipped", "all"}:
+        raise VersionsError("versions.discovery.scope must be one of: shipped, all")
+    if scope == "all" and pypi_extras:
+        raise VersionsError("versions.discovery.pypi_extras is redundant when scope = 'all'")
     findings: list[tuple[str, str, str, dict[str, str]]] = []
     skipped: list[str] = []
     pypi_registry = "https://pypi.org"
     npm_registry = "https://registry.npmjs.org"
     go_proxy = "https://proxy.golang.org"
 
-    requirements = project_root / "requirements.in"
-    if requirements.is_file():
+    def add_python_requirement(value: object, origin: str) -> None:
+        if not isinstance(value, str):
+            skipped.append(f"{origin}: dependency must be a string")
+            return
+        match = _REQUIREMENT.fullmatch(value.strip())
+        if not match:
+            if value.strip():
+                skipped.append(f"{origin} {value!r}: unsupported requirement syntax")
+            return
+        name, constraint = match.groups()
+        name = re.sub(r"[-_.]+", "-", name).lower()
+        constraint = re.sub(r"\s*,\s*", ",", constraint.strip()) or "*"
+        try:
+            validate_constraint(constraint)
+        except RegistryError as exc:
+            skipped.append(f"{origin} {name}: {exc}")
+            return
+        findings.append((
+            "pypi", name, constraint,
+            {"name": name, "registry": pypi_registry},
+        ))
+
+    requirement_paths: dict[str, Path] = {}
+    if scope == "all":
+        candidates = [*project_root.glob("requirements*.in"), *project_root.glob("requirements*.txt")]
+        requirements_dir = project_root / "requirements"
+        if requirements_dir.is_dir():
+            candidates.extend(requirements_dir.rglob("*.in"))
+            candidates.extend(requirements_dir.rglob("*.txt"))
+        for candidate in sorted(candidates):
+            if candidate.is_file():
+                requirement_paths[candidate.relative_to(project_root).as_posix()] = candidate
+    else:
+        root_requirements = project_root / "requirements.in"
+        if root_requirements.is_file():
+            requirement_paths["requirements.in"] = root_requirements
+    for relative in requirements_files:
+        candidate = project_root / Path(*relative.split("/"))
+        try:
+            candidate.resolve().relative_to(project_root.resolve())
+        except ValueError as exc:
+            raise VersionsError(
+                f"versions.discovery.requirements_files path {relative!r} resolves outside {project_root}"
+            ) from exc
+        if not candidate.is_file():
+            raise VersionsError(
+                f"versions.discovery.requirements_files path {relative!r} is not a regular file"
+            )
+        requirement_paths[relative] = candidate
+
+    pyproject = project_root / "pyproject.toml"
+    if pypi_extras and not pyproject.is_file():
+        raise VersionsError(
+            "versions.discovery.pypi_extras requires a pyproject.toml with "
+            "[project.optional-dependencies]"
+        )
+
+    project_root_resolved = project_root.resolve()
+    for relative, requirements in sorted(requirement_paths.items()):
+        try:
+            requirements.resolve().relative_to(project_root_resolved)
+        except ValueError as exc:
+            raise VersionsError(
+                f"requirements manifest {relative!r} resolves outside {project_root}"
+            ) from exc
         for line in requirements.read_text(encoding="utf-8").splitlines():
             clean = line.split("#", 1)[0].strip()
             if not clean:
                 continue
             if clean.startswith(("-", "http:", "https:", ".", "/")):
                 skipped.append(
-                    f"requirements.in line {line.strip()!r}: includes/options/URL/path dependencies "
+                    f"{relative} line {line.strip()!r}: includes/options/URL/path dependencies "
                     "need a named registry target"
                 )
                 continue
-            match = _REQUIREMENT.fullmatch(clean)
-            if not match:
-                skipped.append(f"requirements.in line {line.strip()!r}: unsupported requirement syntax")
-                continue
-            name, constraint = match.groups()
-            name = re.sub(r"[-_.]+", "-", name).lower()
-            constraint = re.sub(r"\s*,\s*", ",", constraint.strip()) or "*"
-            try:
-                validate_constraint(constraint)
-            except RegistryError as exc:
-                skipped.append(f"requirements.in {name}: {exc}")
-                continue
-            findings.append((
-                "pypi", name, constraint,
-                {"name": name, "registry": pypi_registry},
-            ))
+            add_python_requirement(clean, f"{relative} line {line.strip()!r}")
 
-    pyproject = project_root / "pyproject.toml"
     if pyproject.is_file():
         try:
             with pyproject.open("rb") as stream:
@@ -1052,6 +1187,14 @@ def _init_facts(
         project_metadata = metadata.get("project", {})
         if not isinstance(project_metadata, dict):
             raise VersionsError(f"{pyproject} [project] must be a table")
+        dynamic_fields = project_metadata.get("dynamic", [])
+        if not isinstance(dynamic_fields, list) or any(not isinstance(item, str) for item in dynamic_fields):
+            raise VersionsError(f"{pyproject} [project].dynamic must be an array of strings")
+        if "dependencies" in dynamic_fields:
+            raise VersionsError(
+                f"{pyproject} declares project.dependencies as dynamic; CMRU cannot safely derive "
+                "the shipped dependency set from a dynamic value"
+            )
         if "dependencies" not in project_metadata:
             dependencies = []
         elif isinstance(project_metadata["dependencies"], list):
@@ -1060,25 +1203,68 @@ def _init_facts(
             skipped.append("pyproject.toml project.dependencies: expected an array of requirement strings")
             dependencies = []
         for value in dependencies:
-            if not isinstance(value, str):
-                skipped.append(f"pyproject.toml dependency {value!r}: dependency must be a string")
-                continue
-            match = _REQUIREMENT.fullmatch(value)
-            if match:
-                name, constraint = match.groups()
-                name = re.sub(r"[-_.]+", "-", name).lower()
-                constraint = re.sub(r"\s*,\s*", ",", constraint.strip()) or "*"
-                try:
-                    validate_constraint(constraint)
-                except RegistryError as exc:
-                    skipped.append(f"pyproject.toml {name}: {exc}")
+            add_python_requirement(value, "pyproject.toml project.dependencies")
+
+        optional_dependencies = project_metadata.get("optional-dependencies", {})
+        if pypi_extras or scope == "all":
+            if not isinstance(optional_dependencies, dict):
+                raise VersionsError(
+                    "pyproject.toml project.optional-dependencies must be a table "
+                    "when selected by versions.discovery"
+                )
+            normalized_groups: dict[str, tuple[str, object]] = {}
+            for name, values in optional_dependencies.items():
+                normalized_name = re.sub(r"[-_.]+", "-", name).lower()
+                if normalized_name in normalized_groups:
+                    previous_name = normalized_groups[normalized_name][0]
+                    raise VersionsError(
+                        f"pyproject.toml project.optional-dependencies has ambiguous normalized "
+                        f"extra names {previous_name!r} and {name!r}"
+                    )
+                normalized_groups[normalized_name] = (name, values)
+            if scope == "all":
+                selected_groups = list(optional_dependencies.items())
+            else:
+                selected_groups = []
+                for requested in pypi_extras:
+                    normalized = re.sub(r"[-_.]+", "-", requested).lower()
+                    found = normalized_groups.get(normalized)
+                    if found is None:
+                        raise VersionsError(
+                            f"versions.discovery.pypi_extras names {requested!r}, which is absent "
+                            "from pyproject.toml [project.optional-dependencies]"
+                        )
+                    selected_groups.append(found)
+            for group_name, group_values in selected_groups:
+                origin = f"pyproject.toml project.optional-dependencies.{group_name}"
+                if not isinstance(group_values, list):
+                    skipped.append(f"{origin}: expected an array of requirement strings")
                     continue
-                findings.append((
-                    "pypi", name, constraint,
-                    {"name": name, "registry": pypi_registry},
-                ))
-            elif value.strip():
-                skipped.append(f"pyproject.toml dependency {value!r}: unsupported requirement syntax")
+                for value in group_values:
+                    add_python_requirement(value, origin)
+
+        if scope == "all":
+            dependency_groups = metadata.get("dependency-groups", {})
+            if not isinstance(dependency_groups, dict):
+                skipped.append("pyproject.toml dependency-groups: expected a table")
+            else:
+                for group_name, group_values in dependency_groups.items():
+                    origin = f"pyproject.toml dependency-groups.{group_name}"
+                    if not isinstance(group_values, list):
+                        skipped.append(f"{origin}: expected an array of requirement strings")
+                        continue
+                    for value in group_values:
+                        add_python_requirement(value, origin)
+            build_system = metadata.get("build-system", {})
+            if not isinstance(build_system, dict):
+                skipped.append("pyproject.toml build-system: expected a table")
+            elif "requires" in build_system:
+                requires = build_system["requires"]
+                if not isinstance(requires, list):
+                    skipped.append("pyproject.toml build-system.requires: expected an array of requirement strings")
+                else:
+                    for value in requires:
+                        add_python_requirement(value, "pyproject.toml build-system.requires")
 
     package_json = project_root / "package.json"
     if package_json.is_file():
@@ -1088,7 +1274,10 @@ def _init_facts(
             raise VersionsError(f"could not read {package_json}: {exc}") from exc
         if not isinstance(metadata, dict):
             raise VersionsError(f"{package_json} must contain a JSON object")
-        for field in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+        fields = ["dependencies", "optionalDependencies", "peerDependencies"]
+        if scope == "all":
+            fields.append("devDependencies")
+        for field in fields:
             if field not in metadata:
                 continue
             values = metadata[field]
@@ -1670,6 +1859,7 @@ def _resolve_all_for_command(
             _project_root(forge, name),
             {**root_results, **project_results[name]},
             declarations[name],
+            discovery=versions.get("discovery", {}),
         )
     return root_results, project_results, declarations
 
@@ -1678,9 +1868,17 @@ def _validate_manifest_target_compatibility(
     project_root: Path,
     results: Mapping[str, TargetResult],
     declarations: Mapping[str, Mapping[str, object]],
+    *,
+    discovery: Mapping[str, object] | None = None,
 ) -> None:
     """Refuse a registry target that contradicts this project's declared range."""
-    facts, _skipped = _init_facts(project_root)
+    discovery = discovery or {}
+    facts, _skipped = _init_facts(
+        project_root,
+        scope=str(discovery.get("scope", "shipped")),
+        pypi_extras=discovery.get("pypi_extras", ()),
+        requirements_files=discovery.get("requirements_files", ()),
+    )
     for family, _slug, constraint, manifest_source in facts:
         for target_id, result in results.items():
             declaration = declarations.get(target_id, {})

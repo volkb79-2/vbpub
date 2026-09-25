@@ -1672,3 +1672,123 @@ slot is live, `current == expected_end` and `expected_end = max(_owned) + 1`
 imply `current > baseline`. The mutant cannot alter a reachable release
 decision. No new oracle gap was found; the mechanical Assay verdict remains
 FAIL because Assay does not encode this human equivalence classification.
+
+## Controller addendum — registered P1 R2 on `51198f2e`
+
+The registered R2 on exact quiet tree
+`51198f2e4759acbd69dfd770b843cdf20b1d6ed0` completed at
+`2026-09-24T09:19:52.297677Z` in container
+`run-gate-vbpub-r2-2104925-1790236649`. The separately read verdict was R0
+PASS and R2 `FAIL/MUTANTS_SURVIVED`, exit 1: 81/81 candidates executed, 71
+killed and 10 survived; zero were equivalent, budget-exceeded, crashed, or
+hung. All ten survivors revealed missing behavioral assertions in placement
+diagnostic ordering, invalid local-PID handling, incomplete namespace-root
+mapping, version-prefix validation, subprocess option semantics, and
+diagnostic fallback. Regression tests for these cases are in the P1 source
+worktree and passed the focused 235-test suite. They are not yet confirmed by
+a new mutation run. The 51198 result is diagnostic evidence only and does not
+satisfy final P1 mutation acceptance. A new quiet-tree R2 plus final short
+gates and the required fresh Sol xhigh review remain required.
+
+## Controller addendum — terminal R2 on `1908316b` (2026-09-25)
+
+The registered R2 on the detached, quiet tree
+`1908316b227df8a2b8fd259969725b4c7a9f1b27` ran in container
+`run-gate-vbpub-r2-3690082-1790305991` from
+`2026-09-25T03:13:17.949231Z` through
+`2026-09-25T04:27:11.853270Z`. Its terminal event accounts for all 81
+candidates: 80 killed and one classified `hung`; zero survived, equivalent,
+budget-exceeded, or crashed candidates. The separate verdict is
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4. This is not an R2 PASS.
+
+The hung candidate is index 40, ID
+`7692929c11d002ae02db963540fb42e06618318c814e1e99e71fed42894eea9c`,
+`lib/targets.py:191`, `Eq->NotEq`. Its progress record reports 1,321 tests
+completed, but that does not establish a kill or explain why the candidate
+was classified hung. The retained mutation-state and progress artifacts
+contain no kill proof for it. Per RW-319, do not attribute this terminal to
+scheduler load or treat a time/liveness classification as a product verdict;
+the candidate needs a fresh, exact-tree judgment and any real hang must be
+diagnosed on its behavior.
+
+This campaign predates the latest-main reconciliation. P1 has since merged
+current `main` at `007b208859b99d380b87a9d4ea3479bdbfc8d5b6`, so the old R2
+records do not apply to the reconciled tree. The next sequence is fresh
+registered `r0-r1` and `r3`, a fresh Sol xhigh review, provisional P1 merge,
+then a new R2 and full gate in an isolated CIU worktree. Backport and
+revalidate any required repair; do not report the old R2 as green.
+
+## Controller addendum — cap acceptance on the short canary lane (2026-09-25)
+
+The R3 functional run on `d94c58b9` rejected all seven canaries, but live
+inspection of `run-gate-vbpub-r3-4169091-1790332576` found
+`NanoCpus=0`; by the time an exact-name `docker update --cpus=3` was
+attempted, that short-lived container had exited. The result is therefore
+not accepted as final R3 evidence. The P1 R2/R3 lane definitions now declare
+`resources.cpus = "3"`, so Docker applies the cap before running candidate
+code. The refreshed exact-tree gate must separately confirm
+`NanoCpus=3000000000`. This closes the post-launch update race without
+changing test verdict semantics; see RW-323 in the controller log.
+
+## Focused follow-up — helper-mode PID identity (2026-09-25)
+
+The helper translation for public `pid:N` now carries the selected process's
+PID namespace inode, innermost `NSpid`, proc stat start time, and cgroup
+namespace inode alongside its validated cgroup-namespace-relative path. The
+helper resolves those facts only among positive PIDs whose proc cgroup path
+maps to that exact container/subpath. It creates a `kind="pid"` target only
+for one unique match; a missing or ambiguous match raises `TargetError` before
+the collector starts. `cmd_collect` passes the selected proc root explicitly
+to target resolution and per-process sampling, and DAMON vaddr targets use the
+resolved helper-view PID.
+
+The regression fixture uses separate private caller/helper PID and cgroup
+views: caller PID 4242 maps to helper proc PID 51001 while
+`cgroup.procs` exposes only PID 0 for host processes. The collector test
+asserts the exact selected cgroup, the helper proc sample for PID 51001, and
+DAMON's `vaddr` PID 51001. A companion case moves the matching process to a
+sibling cgroup and asserts the selected subpath refuses the mapping.
+
+Focused verification, serial and load-niced:
+
+```text
+nice -n 19 ionice -c 3 /home/vscode/.venv/bin/python -m pytest -q \
+  tests/test_access.py tests/test_targets.py tests/test_helper_pid_target.py
+220 passed in 2.18s
+```
+
+The broader `tests/test_cgprofile.py` run could not collect because the estate
+venv lacks optional `pandas` (`ModuleNotFoundError` while importing
+`lib.analyze`); NumPy is present. The helper regression and target/access tests
+above ran and passed. No Docker, daemon, registered gate, or host-namespace
+probe was run for this follow-up.
+
+## Controller addendum — first fresh short-gate pair (2026-09-25)
+
+On clean exact tree `43daf53e09f15227cacdcd80156dcdecc7cc19a6`, R0/R1
+passed in 75.396 s with 5,021/5,021 statements and 1,732/1,732 branches
+covered. R3 passed in 11.132 s: all seven canaries were rejected and none
+survived. Exact containers
+`cgprofile-gate-279657-1790339528` (R0/R1 test container) and
+`run-gate-vbpub-r3-284762-1790339665` both used loaded `dev-gates.slice`
+with `NanoCpus=3000000000`. The daemon was not running during these gates;
+their profiler summaries therefore used coarse rusage. RW-328 records these
+results. Because this report/log update changes the candidate tree, the
+controller will rerun R0/R1 and R3 on the final post-documentation tip before
+the Sol round-3 review. These short gates do not replace the pending live
+daemon review probes or a fresh R2.
+
+## Controller addendum — current-main reconciliation and short-gate evidence
+
+P1 was reconciled to current `main` `e5e9b95c5ac8be3452c93f1066f9436347f862fd`
+by merge commit `d108ebb2a014ac204d6c50a3b82d65471e8ada7d`. On that exact
+clean tree, R0/R1 passed 1,377 tests with 100% line and branch coverage
+(5,021/5,021 statements, 1,732/1,732 branches); R3 rejected all seven
+canaries. Run-gate history records exit 0 and PASS for both. Their exact gate
+containers and 3-CPU `dev-gates.slice` evidence are in the P1 LOG and RW-329.
+The daemon remained down; R0/R1 used coarse rusage. The old R2 on `51198f2e`
+is still FAIL; no replacement R2 or full gate is complete for this candidate.
+Per the operator's revised process, a fresh review and these short gates may
+authorize a provisional merge while R2/full-gate judging continues in a
+separate attached CIU worktree. Release/shipping remains blocked until that
+exact-tree campaign and full gate pass, with all fixes backported and rejudged.

@@ -1,5 +1,5 @@
 {
- "schema_version": 12,
+ "schema_version": 13,
  "assay_version": "0.1.0",
  "lane": "package",
  "commit": "555555555555555555555555555555555555555e",
@@ -81,7 +81,13 @@
       "end_byte": 41,
       "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
       "operator": "python:compare-swap",
-      "description": "Lt->LtE"
+      "description": "Lt->LtE",
+      "candidate_id": "6c408146e8531fd0a1d7edeed6932b8e87bb1cd44aae811eaf6d959461bbf3e0",
+      "source_sha256": "0a92f45540369284bbab0d19e107b78836b8e6c5345ab48b45a30ee8acf94bab",
+      "mutated_file_sha256": "77e8f4f4fc93e8d7d64ae7e0a4f456fdcd2b6a3dfb408615f2faa667118707c4",
+      "execution": {
+       "mode": "full"
+      }
      }
     ],
     "survived": [],
@@ -96,8 +102,18 @@
       "end_byte": 99,
       "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
       "operator": "python:boolop-swap",
-      "description": "And->Or"
+      "description": "And->Or",
+      "candidate_id": "35e56dc426dd28dd534f30cb54f53c69dae5f707988560c8d83ed3b45f0cbff5",
+      "source_sha256": "0a92f45540369284bbab0d19e107b78836b8e6c5345ab48b45a30ee8acf94bab",
+      "mutated_file_sha256": "04bb68cae028bb2e7b84d8510f5b9b24ba47323a06a05bfe6298ca97eb748573",
+      "execution": {
+       "mode": "full"
+      }
      }
+    ],
+    "candidate_ids": [
+     "6c408146e8531fd0a1d7edeed6932b8e87bb1cd44aae811eaf6d959461bbf3e0",
+     "35e56dc426dd28dd534f30cb54f53c69dae5f707988560c8d83ed3b45f0cbff5"
     ]
    }
   }

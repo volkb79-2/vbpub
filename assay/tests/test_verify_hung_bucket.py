@@ -62,16 +62,21 @@ def test_a_hung_entry_verifies_clean_and_counts_toward_total() -> None:
     mutation = r2_claim["mutation"]
     hung_entry = {
         "path": "pkg/checks.py",
-        "lineno": 25,
+        "lineno": 30,
         "start_byte": 300,
-        "end_byte": 301,
-        "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+        "end_byte": 302,
+        "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
         "operator": "python:compare-swap",
-        "description": "Lt->LtE",
+        "description": "Eq->NotEq",
+        "candidate_id": "5a15c9c792fc3a529a4fe0436e05e5b9a848c78aef9cfac34eaa2de09fe83cc4",
+        "source_sha256": "4d6ae68c084958848c0f45ca958aeca0ebd5089d71b0e4d8aa27e70f20001298",
+        "mutated_file_sha256": "93174d3ddf91258398d19c1009184df60c239e33654425191ca696960ac83dc0",
+        "execution": {"mode": "full"},
     }
     mutation["hung"] = [hung_entry]
     mutation["candidate_count"] = 3
     mutation["total"] = 3
+    mutation["candidate_ids"].append(hung_entry["candidate_id"])
     document["outcome"] = "BUDGET_EXCEEDED"
     document["exit_code"] = 4
     document["reason_code"] = "CANDIDATE_HUNG"
@@ -91,12 +96,16 @@ def test_a_hung_entry_uncounted_in_total_is_refused() -> None:
     mutation["hung"] = [
         {
             "path": "pkg/checks.py",
-            "lineno": 25,
+            "lineno": 30,
             "start_byte": 300,
-            "end_byte": 301,
-            "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+            "end_byte": 302,
+            "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
             "operator": "python:compare-swap",
-            "description": "Lt->LtE",
+            "description": "Eq->NotEq",
+            "candidate_id": "5a15c9c792fc3a529a4fe0436e05e5b9a848c78aef9cfac34eaa2de09fe83cc4",
+            "source_sha256": "4d6ae68c084958848c0f45ca958aeca0ebd5089d71b0e4d8aa27e70f20001298",
+            "mutated_file_sha256": "93174d3ddf91258398d19c1009184df60c239e33654425191ca696960ac83dc0",
+            "execution": {"mode": "full"},
         }
     ]
     # `total`/`candidate_count` deliberately left at their ORIGINAL 2 --

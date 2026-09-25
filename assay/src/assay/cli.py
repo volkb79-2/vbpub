@@ -288,6 +288,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--operators", default=None)
     run.add_argument("--shard", default=None, metavar="INDEX/COUNT")
     run.add_argument(
+        "--reuse-from",
+        type=Path,
+        default=None,
+        metavar="VERDICT",
+        help=(
+            "reuse only current pytest kill witnesses from a verified complete "
+            "native v13 verdict; v12 starts cold, and every uncertain candidate "
+            "runs fully. Cannot be combined with --shard."
+        ),
+    )
+    run.add_argument(
         "--rejudge",
         default=None,
         metavar="ID[,ID...]",
@@ -337,6 +348,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    plan.add_argument(
+        "--reuse-from",
+        type=Path,
+        default=None,
+        metavar="VERDICT",
+        help=(
+            "classify planned candidates against a bounded, verified prior "
+            "verdict without executing the lane"
+        ),
+    )
     _add_request_base_argument(plan)
     plan.add_argument(
         "--file",
@@ -1489,6 +1510,7 @@ def _run_reserved(
                 progress_stream=progress_stream,
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
                 state_dir=state_dir,
+                reuse_from=getattr(args, "reuse_from", None),
                 # B019/A-328: the gate request's own comparison base, threaded
                 # verbatim. `run_lane` decides whether this lane delegated to
                 # it, and refuses every disagreement -- the CLI does not
@@ -1558,6 +1580,18 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
     lane = lane_file.lane(args.lane)
     if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
         raise LaneConfigError(f"lane {lane.name!r} does not declare an R2 mutation judge")
+    reuse_source = None
+    if args.reuse_from is not None:
+        if args.shard is not None:
+            raise LaneConfigError(
+                "--reuse-from cannot be combined with --shard; selective reuse "
+                "produces only a complete unsharded campaign"
+            )
+        if lane.judge.mutation.format is not None:
+            raise LaneConfigError("--reuse-from requires a native R2 mutation lane")
+        from .reuse import load_reuse_source
+
+        reuse_source = load_reuse_source(args.reuse_from)
     adapter = _resolve_declared_adapters(lane)
     if adapter is None:
         raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
@@ -1626,6 +1660,24 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
         remaining=deadline.remaining,
     )
     project_prefix = runner._resolved_project_prefix(repo_top, lane_file.project_root)
+    reuse_command_plan = None
+    reuse_command_cwd = None
+    if reuse_source is not None:
+        try:
+            reuse_command_plan = runner.resolve_command_plan(
+                lane,
+                passthrough_source=os.environ,
+                project_prefix=project_prefix,
+            )
+            reuse_command_cwd = runner.resolve_run_cwd(
+                lane_file.project_root,
+                reuse_command_plan,
+            )
+        except AssayError:
+            # A plan is only a preview. If the effective command environment
+            # cannot be resolved here, do not promise a witness replay.
+            reuse_command_plan = None
+            reuse_command_cwd = None
     snapshot_policy = runner._snapshot_policy_for_lane(lane)
     assert snapshot_policy is not None
     resolved_base = runner._resolve_declared_base(
@@ -1750,6 +1802,43 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             per_candidate_seconds = parse_duration(per_candidate)
         serial_estimate = len(jobs) * per_candidate_seconds
         wall_estimate = serial_estimate / max(1, lane.judge.mutation.jobs)
+        candidate_rows: list[dict[str, Any]] = []
+        sequential_pytest_supported = False
+        if reuse_source is not None:
+            from .mutation_witness import supports_sequential_pytest
+            from .reuse import classify_candidate
+
+            sequential_pytest_supported = (
+                worktree_integrity is None
+                and reuse_command_plan is not None
+                and reuse_command_cwd is not None
+                and supports_sequential_pytest(
+                    reuse_command_plan.argv_effective,
+                    cwd=reuse_command_cwd,
+                    env=reuse_command_plan.env_effective,
+                )
+            )
+        for job in jobs:
+            row: dict[str, Any] = {
+                "id": _plan_candidate_id(job),
+                "path": job.path,
+                "operator": job.site.operator,
+                "start_byte": job.site.start_byte,
+                "end_byte": job.site.end_byte,
+                "lineno": job.site.lineno,
+                "description": job.site.description,
+            }
+            if reuse_source is not None:
+                classification, detail = classify_candidate(
+                    reuse_source,
+                    row["id"],
+                    sequential_pytest_supported=sequential_pytest_supported,
+                )
+                row["reuse"] = {
+                    "classification": classification,
+                    "detail": detail,
+                }
+            candidate_rows.append(row)
         payload = {
             "status": "ok",
             "candidate_count": len(jobs),
@@ -1761,22 +1850,40 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             "estimated_wall_seconds": round(wall_estimate, 3),
             "by_operator": dict(sorted(by_operator.items())),
             "by_file": dict(sorted(by_file.items())),
-            "candidates": [
-                {
-                    "id": _plan_candidate_id(job),
-                    "path": job.path,
-                    "operator": job.site.operator,
-                    "start_byte": job.site.start_byte,
-                    "end_byte": job.site.end_byte,
-                    "lineno": job.site.lineno,
-                    "description": job.site.description,
-                }
-                for job in jobs
-            ],
+            "candidates": candidate_rows,
             "worktree_integrity": (
                 None if worktree_integrity is None else worktree_integrity.to_dict()
             ),
         }
+        if reuse_source is not None:
+            from .reuse import prior_only_candidates, classify_candidate
+
+            labels = [
+                classify_candidate(
+                    reuse_source,
+                    candidate["id"],
+                    sequential_pytest_supported=sequential_pytest_supported,
+                )[0]
+                for candidate in candidate_rows
+            ]
+            payload["reuse_from"] = {
+                "path": str(reuse_source.path),
+                "schema_version": reuse_source.schema_version,
+                "verdict_sha256": reuse_source.sha256,
+                "cold_start": reuse_source.cold_start,
+                "complete_unsharded_native": reuse_source.complete_unsharded_native,
+                "sequential_pytest_supported": sequential_pytest_supported,
+                "prior_candidate_count": len(reuse_source.candidate_ids),
+                "prior_only_candidates": prior_only_candidates(
+                    reuse_source,
+                    [_plan_candidate_id(job) for job in jobs],
+                ),
+                "classification_counts": dict(
+                    sorted(
+                        Counter(labels).items()
+                    )
+                ),
+            }
     print(json.dumps(payload, indent=2, sort_keys=True), file=out)
     return 0
 

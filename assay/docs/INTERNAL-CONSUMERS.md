@@ -61,6 +61,32 @@ argv = ["bash", "-c",
   mounted and a working pip; building one here would be solving a problem
   this consumption path doesn't have.
 
+## Read one live gate snapshot (B100)
+
+The same worktree-installed CLI includes `assay analyze report`. Use it when a
+registered gate is still running or its full output no longer fits the
+controller's terminal buffer. Set `WORKTREE` to the checkout, `REVIEW_HEAD` to
+the agreed full commit, and `GATE_LOG` to the retained output file. The command
+reads the files you name, returns once, and does not launch or poll the gate:
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze report --expected-commit "$REVIEW_HEAD" \
+  --verdict tester-unified "$WORKTREE/.assay/verdict-tester-unified.json" \
+  --progress tester-unified "$WORKTREE/.assay/progress-tester-unified.jsonl" \
+  --log tester-unified "$GATE_LOG" --format text
+```
+
+The verdict is checked by Assay's verifier and bound to the controller's full
+expected commit. Fresh, nonterminal progress can report `running`; a stale
+heartbeat or terminal stream without a verdict reports an evidence error.
+The log contributes only bounded diagnostics and a displayed phase, never a
+status. Every named file's complete byte count and SHA-256 are included so the
+controller can locate and verify the original artifact. Exit codes are 0 for
+all-pass, 1 for a valid failure, 2 for evidence errors, and 3 when running is
+the highest-priority status present. Mixed states prioritize evidence error,
+then fail, running, and pass. See Assay's [B100 design notes](DESIGN-GUIDE.md#bounded-live-gate-snapshot-b100).
+
 ## Why this is not the "ambient image version" failure CONSUMERS.md warns about
 
 CONSUMERS.md's CMRU section already rejects one specific shape: baking a

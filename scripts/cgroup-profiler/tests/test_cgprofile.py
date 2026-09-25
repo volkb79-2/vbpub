@@ -203,9 +203,19 @@ class TestPredigestSpecs:
         same_namespace: bool = True, host_view: bool = False, process_exists: bool = True,
     ):
         proc_root = tmp_path / "proc"
+        pid_namespace = tmp_path / "pid-ns"
+        cgroup_namespace = tmp_path / "cgroup-ns"
+        pid_namespace.touch()
+        cgroup_namespace.touch()
         process_dir = proc_root / "4242"
         if process_exists:
             process_dir.mkdir(parents=True)
+            namespace_dir = process_dir / "ns"
+            namespace_dir.mkdir()
+            (namespace_dir / "pid").symlink_to(pid_namespace)
+            (namespace_dir / "cgroup").symlink_to(cgroup_namespace)
+            (process_dir / "status").write_text("Name:\tworker\nNSpid:\t4242\n")
+            (process_dir / "stat").write_text(_fake_proc_stat(98765))
             if cgroup_text is not None:
                 (process_dir / "cgroup").write_text(cgroup_text)
         monkeypatch.setattr(access, "PROC_ROOT", str(proc_root))
@@ -213,7 +223,17 @@ class TestPredigestSpecs:
         monkeypatch.setattr(
             access, "same_cgroup_namespace", lambda pid, root: same_namespace,
         )
+        cgroup_namespace_inode = cgroup_namespace.stat().st_ino
+        monkeypatch.setattr(
+            access, "local_namespace_inode",
+            lambda name: cgroup_namespace_inode if name == "cgroup" else None,
+        )
         monkeypatch.setattr(access, "self_container_id", lambda: "a" * 64)
+
+    def _helper_identity_option(self, tmp_path: Path) -> str:
+        pid_namespace_inode = (tmp_path / "pid-ns").stat().st_ino
+        cgroup_namespace_inode = (tmp_path / "cgroup-ns").stat().st_ino
+        return f"_cgprofile_pid={pid_namespace_inode}:4242:98765:{cgroup_namespace_inode}"
 
     def test_helper_self_resolves_to_the_invoking_container_id(self, monkeypatch):
         monkeypatch.setattr(access, "self_container_id", lambda: "a" * 64)
@@ -247,21 +267,28 @@ class TestPredigestSpecs:
 
         out = cg._predigest_specs(["pid:4242@follow"], resolve_self=True)
 
-        assert out == [f"containerid:{'a' * 64}@subpath=/worker.scope,follow=1,as=pid-4242"]
+        assert out == [
+            f"containerid:{'a' * 64}@subpath=/worker.scope,{self._helper_identity_option(tmp_path)},"
+            "follow=1,as=pid-4242"
+        ]
 
     def test_helper_pid_preserves_an_explicit_label(self, monkeypatch, tmp_path: Path):
         self._configure_helper_pid(monkeypatch, tmp_path)
 
         out = cg._predigest_specs(["pid:4242@as=worker"], resolve_self=True)
 
-        assert out == [f"containerid:{'a' * 64}@subpath=/worker.scope,as=worker"]
+        assert out == [
+            f"containerid:{'a' * 64}@subpath=/worker.scope,{self._helper_identity_option(tmp_path)},as=worker"
+        ]
 
     def test_helper_pid_can_target_the_callers_container_root(self, monkeypatch, tmp_path: Path):
         self._configure_helper_pid(monkeypatch, tmp_path, cgroup_text="0::/\n")
 
         out = cg._predigest_specs(["pid:4242"], resolve_self=True)
 
-        assert out == [f"containerid:{'a' * 64}@subpath=/,as=pid-4242"]
+        assert out == [
+            f"containerid:{'a' * 64}@subpath=/,{self._helper_identity_option(tmp_path)},as=pid-4242"
+        ]
 
     @pytest.mark.parametrize(
         ("spec", "config", "message"),
@@ -862,6 +889,11 @@ def make_collect_args(run_dir: Path, **overrides) -> argparse.Namespace:
     for key, value in overrides.items():
         setattr(ns, key, value)
     return ns
+
+
+def _fake_proc_stat(start_ticks: int, pid: int = 4242) -> str:
+    fields = ["S", *(["0"] * 18), str(start_ticks)]
+    return f"{pid} (worker (fixture)) {' '.join(fields)}\n"
 
 
 class TestCmdCollect:

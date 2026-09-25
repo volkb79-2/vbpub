@@ -205,6 +205,16 @@ def test_versions_config_is_strict_and_deep_merges_project_tables():
         "name": "requests", "registry": "https://packages.example/simple"
     }
 
+    discovery = parse_versions_section({"discovery": {
+        "scope": "shipped", "pypi_extras": ["Schema"],
+        "requirements_files": ["requirements/toolkit.txt"],
+    }}, "project")
+    assert discovery["discovery"] == {
+        "scope": "shipped", "pypi_extras": ["Schema"],
+        "requirements_files": ["requirements/toolkit.txt"],
+    }
+    assert parse_versions_section({"discovery": {"scope": "all"}}, "project")["discovery"]["scope"] == "all"
+
     with pytest.raises(ValueError, match="positive integer"):
         parse_versions_section({"age_window_days": 0}, "root")
     for invalid_days in (True, False, -1, 1.5, "14"):
@@ -212,6 +222,21 @@ def test_versions_config_is_strict_and_deep_merges_project_tables():
             parse_versions_section({"age_window_days": invalid_days}, "root")
     with pytest.raises(ValueError, match="unknown keys"):
         parse_versions_section({"window_days": 14}, "root")
+    invalid_discovery = (
+        ([], "must be a table"),
+        ({"scope": "everything"}, "scope must be one of"),
+        ({"pypi_extras": "test"}, "pypi_extras must be an array"),
+        ({"pypi_extras": ["schema", "Schema"]}, "duplicate normalized name"),
+        ({"scope": "all", "pypi_extras": ["test"]}, "redundant when scope = 'all'"),
+        ({"requirements_files": "requirements.in"}, "requirements_files must be an array"),
+        ({"requirements_files": ["requirements.in", "requirements.in"]}, "duplicate path"),
+        ({"requirements_files": ["../outside.in"]}, "project-relative .in or .txt path"),
+        ({"requirements_files": ["/outside.in"]}, "project-relative .in or .txt path"),
+        ({"requirements_files": ["requirements.json"]}, "project-relative .in or .txt path"),
+    )
+    for raw_discovery, message in invalid_discovery:
+        with pytest.raises(ValueError, match=message):
+            parse_versions_section({"discovery": raw_discovery}, "project")
     with pytest.raises(ValueError, match="requires mode and constraint"):
         parse_versions_section({"targets": {"broken": {"pypi": {"name": "x", "registry": "https://pypi.org"}}}}, "root")
     with pytest.raises(ValueError, match="at least two"):
@@ -248,6 +273,24 @@ def test_versions_config_loader_maps_bad_policy_and_overlay_to_config_errors(tmp
         root_versions=_versions_table(14),
         project_versions='''[versions.targets."pypi.requests"]
 mode = "aligned"''',
+    )
+    with pytest.raises(SystemExit) as caught:
+        config_module.load_forge_config(root_config)
+    assert caught.value.code == 2
+
+
+def test_root_discovery_policy_cannot_name_project_specific_manifests(tmp_path):
+    root_config, _project_root = _estate(
+        tmp_path / "project-extra",
+        root_versions='[versions]\n[versions.discovery]\npypi_extras = ["schema"]',
+    )
+    with pytest.raises(SystemExit) as caught:
+        config_module.load_forge_config(root_config)
+    assert caught.value.code == 2
+
+    root_config, _project_root = _estate(
+        tmp_path / "project-file",
+        root_versions='[versions]\n[versions.discovery]\nrequirements_files = ["requirements.in"]',
     )
     with pytest.raises(SystemExit) as caught:
         config_module.load_forge_config(root_config)
@@ -310,6 +353,37 @@ def test_versions_config_validates_recorded_state_and_custom_output_paths():
     assert parsed["outputs"]["requirements"]["dated_path"].endswith("{date}.txt")
     assert parsed["targets"]["requests"]["resolved"]["version"] == "2.32.0"
 
+    digest = "sha256:" + "a" * 64
+    rolling_state = {
+        "version": "26-slim", "resolved_at": "2026-09-24T00:00:00Z",
+        "age_cutoff": "2026-09-10T00:00:00Z",
+        "sources": {"oci": {
+            "version": "26-slim", "released_at": "2026-08-01T00:00:00Z",
+            "age_source": "oci-registry-last-modified", "tag": "26-slim", "digest": digest,
+        }},
+    }
+    rolling = parse_versions_section({"targets": {"node": {
+        "mode": "single", "constraint": "*",
+        "oci": {"image": "docker.io/library/node", "tag": "26-slim", "selection": "rolling"},
+        "resolved": rolling_state,
+    }}}, "root")
+    assert rolling["targets"]["node"]["resolved"]["sources"]["oci"]["digest"] == digest
+    for source_type, bad_digest in (("oci", "sha256:abc"), ("pypi", digest)):
+        invalid_state = {
+            **rolling_state,
+            "sources": {source_type: {**rolling_state["sources"]["oci"], "digest": bad_digest}},
+        }
+        target_config = {
+            "mode": "single", "constraint": "*",
+            source_type: (
+                {"image": "docker.io/library/node", "tag": "26-slim", "selection": "rolling"}
+                if source_type == "oci" else {"name": "node", "registry": "https://pypi.org"}
+            ),
+            "resolved": invalid_state,
+        }
+        with pytest.raises(ValueError, match="digest must be a sha256 OCI digest"):
+            parse_versions_section({"targets": {"node": target_config}}, "root")
+
     bad_records = (
         {"resolved_at": "2026-09-24", "age_cutoff": "2026-09-10T00:00:00Z"},
         {"resolved_at": "2026-09-24T00:00:00Z", "age_cutoff": "bad"},
@@ -345,6 +419,10 @@ def test_versions_config_rejects_malformed_sources_state_and_partial_overlays():
         parse_versions_section({"targets": {"x": {**base, "oci": {"image": "app", "tag": "v{version}"}}}}, "root")
     with pytest.raises(ValueError, match=r"only the \{version\} placeholder"):
         parse_versions_section({"targets": {"x": {**base, "oci": {"image": "ghcr.io/a/app", "tag": "v{version}-{unknown}"}}}}, "root")
+    with pytest.raises(ValueError, match="selection must be one of"):
+        parse_versions_section({"targets": {"x": {**base, "oci": {
+            "image": "ghcr.io/a/app", "tag": "v{version}", "selection": "other",
+        }}}}, "root")
     with pytest.raises(ValueError, match="malformed placeholders"):
         parse_versions_section({"targets": {"x": {**base, "oci": {"image": "ghcr.io/a/app", "tag": "v{{version}}"}}}}, "root")
     with pytest.raises(ValueError, match="environment variable"):
@@ -597,6 +675,142 @@ def test_oci_source_tag_template_requires_one_well_formed_version_placeholder(ta
         parse_versions_section({"targets": {"image": target}}, "root")
 
 
+def test_oci_rolling_source_uses_literal_tag_and_rejects_incompatible_policy():
+    target = {
+        "mode": "single", "constraint": "*",
+        "oci": {
+            "image": "docker.io/library/node", "tag": "26-slim",
+            "selection": "rolling",
+        },
+    }
+    parsed = parse_versions_section({"targets": {"node": target}}, "project")
+    assert parsed["targets"]["node"]["oci"]["tag"] == "26-slim"
+    assert parsed["targets"]["node"]["oci"]["selection"] == "rolling"
+
+    invalid = (
+        ({**target, "constraint": ">=26"}, "requires constraint"),
+        ({**target, "mode": "aligned", "pypi": {"name": "node", "registry": "https://pypi.org"}}, "OCI-only target"),
+        ({**target, "version": "26.0.0", "reason": "hold"}, "does not support exact version overrides"),
+        ({**target, "oci": {**target["oci"], "tag": "v{version}"}}, "valid literal OCI tag"),
+    )
+    for bad_target, message in invalid:
+        with pytest.raises(ValueError, match=message):
+            parse_versions_section({"targets": {"node": bad_target}}, "project")
+    with pytest.raises(ValueError, match="requires mode"):
+        parse_versions_section(
+            {"targets": {"node": {**target, "mode": "aligned"}}},
+            "project", allow_partial=True,
+        )
+
+
+def test_oci_rolling_candidate_captures_tag_digest(monkeypatch):
+    digest = "sha256:" + "a" * 64
+    stamp = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(registry._OCIClient, "tag_list", lambda _self: ["26-slim"])
+    monkeypatch.setattr(registry._OCIClient, "tag_evidence", lambda _self, _tag: (
+        stamp, "oci-registry-last-modified", digest,
+    ))
+    candidate = registry.oci_rolling_candidate({
+        "image": "docker.io/library/node", "tag": "26-slim", "selection": "rolling",
+    })
+    assert candidate.version == "26-slim"
+    assert candidate.tag == "26-slim"
+    assert candidate.digest == digest
+
+
+def test_oci_rolling_candidate_refuses_missing_or_malformed_digest(monkeypatch):
+    stamp = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(registry._OCIClient, "tag_list", lambda _self: ["26-slim"])
+    for digest in ("", "sha256:abc", "sha512:" + "a" * 128):
+        monkeypatch.setattr(registry._OCIClient, "tag_evidence", lambda _self, _tag, d=digest: (
+            stamp, "oci-registry-last-modified", d,
+        ))
+        with pytest.raises(registry.RegistryError, match="valid Docker-Content-Digest sha256"):
+            registry.oci_rolling_candidate({
+                "image": "docker.io/library/node", "tag": "26-slim", "selection": "rolling",
+            })
+
+
+def test_oci_rolling_candidate_queries_exact_tag_without_listing_registry(monkeypatch):
+    monkeypatch.setattr(registry._OCIClient, "tag_list", lambda _self: pytest.fail("rolling tags must not enumerate registry"))
+    monkeypatch.setattr(registry._OCIClient, "tag_evidence", lambda *_: (_ for _ in ()).throw(
+        registry.RegistryNotFoundError("OCI registry returned HTTP 404 for /manifests/26-slim"),
+    ))
+    with pytest.raises(registry.RegistryNotFoundError, match="HTTP 404"):
+        registry.oci_rolling_candidate({
+            "image": "docker.io/library/node", "tag": "26-slim", "selection": "rolling",
+        })
+
+
+def test_rolling_oci_resolve_enforces_age_window_and_records_digest(monkeypatch):
+    now = datetime(2026, 9, 24, tzinfo=timezone.utc)
+    digest = "sha256:" + "a" * 64
+    candidate = registry.Candidate(
+        "bookworm-slim", now - timedelta(days=30), "oci-registry-last-modified",
+        "bookworm-slim", digest,
+    )
+    monkeypatch.setattr(versions, "oci_rolling_candidate", lambda _source: candidate)
+    target = {
+        "mode": "single", "constraint": "*",
+        "oci": {"image": "docker.io/library/debian", "tag": "bookworm-slim", "selection": "rolling"},
+    }
+    result = versions._resolve_target(
+        "debian", target, age_window_days=14, resolved_at=now, owner="project",
+    )
+    assert result.version == "bookworm-slim"
+    assert result.state()["sources"]["oci"]["digest"] == digest
+
+    fresh = registry.Candidate(
+        "bookworm-slim", now - timedelta(days=2), "oci-image-created-fallback",
+        "bookworm-slim", digest,
+    )
+    monkeypatch.setattr(versions, "oci_rolling_candidate", lambda _source: fresh)
+    with pytest.raises(versions.VersionsError, match="newer than the 14-day age cutoff") as caught:
+        versions._resolve_target(
+            "debian", target, age_window_days=14, resolved_at=now, owner="project",
+        )
+    assert "publisher-supplied OCI image-created time" in str(caught.value)
+
+
+def test_rolling_oci_check_compares_digest_even_when_tag_is_unchanged():
+    now = datetime(2026, 9, 24, tzinfo=timezone.utc)
+    old_digest = "sha256:" + "a" * 64
+    new_digest = "sha256:" + "b" * 64
+    result = versions.TargetResult(
+        target_id="node", version="26-slim", resolved_at=now,
+        age_cutoff=now - timedelta(days=14),
+        sources={"oci": registry.Candidate(
+            "26-slim", now - timedelta(days=30), "oci-registry-last-modified", "26-slim", new_digest,
+        )},
+        override=False, reason=None, expires=None, owner="project",
+    )
+    record = result.state()
+    record["sources"]["oci"]["digest"] = old_digest
+    report = versions._report_record(result, {"mode": "single", "constraint": "*"}, record)
+    assert report["recorded_version"] == "26-slim"
+    assert report["status"] == "refresh-available"
+    assert report["sources"]["oci"]["digest"] == new_digest
+    matching = versions._report_record(result, {"mode": "single", "constraint": "*"}, result.state())
+    assert matching["status"] == "matches"
+
+
+def test_rolling_oci_resolver_rejects_invalid_shape_and_override():
+    now = datetime(2026, 9, 24, tzinfo=timezone.utc)
+    target = {
+        "mode": "single", "constraint": "*",
+        "oci": {"image": "docker.io/library/node", "tag": "26-slim", "selection": "rolling"},
+    }
+    for invalid_target in (
+        {**target, "constraint": ">=26"},
+        {**target, "mode": "aligned"},
+        {**target, "version": "26.0.0", "reason": "reviewed pin"},
+    ):
+        with pytest.raises(versions.VersionsError, match="rolling OCI selection"):
+            versions._resolve_target(
+                "node", invalid_target, age_window_days=14, resolved_at=now, owner="project",
+            )
+
+
 def test_resolve_target_uses_cutoff_alignment_and_expiring_overrides(monkeypatch):
     now = datetime(2026, 9, 24, tzinfo=timezone.utc)
     released = now - timedelta(days=40)
@@ -639,6 +853,17 @@ def test_resolve_target_uses_cutoff_alignment_and_expiring_overrides(monkeypatch
     monkeypatch.setattr(versions, "candidate_for", lambda *_: _candidate("2.33.0", recent))
     with pytest.raises(versions.VersionsError, match="set a future expires date"):
         versions._resolve_target("requests", fresh_override, age_window_days=14, resolved_at=now, owner="root")
+    go_override = {
+        "mode": "single", "constraint": "*", "version": "1.0.0", "reason": "urgent fix",
+        "go": {"module": "example.com/mod", "proxy": "https://proxy.golang.org"},
+    }
+    monkeypatch.setattr(versions, "candidate_for", lambda *_: _candidate(
+        "1.0.0", recent, "go-proxy-info-vcs-commit-time",
+    ))
+    with pytest.raises(versions.VersionsError, match="set a future expires date") as caught:
+        versions._resolve_target("go.example.com.mod", go_override, age_window_days=14, resolved_at=now, owner="root")
+    assert "Go proxy .info Time (VCS commit time)" in str(caught.value)
+    monkeypatch.setattr(versions, "candidate_for", lambda *_: _candidate("2.33.0", recent))
     fresh_override["expires"] = "2026-09-25"
     pinned = versions._resolve_target("requests", fresh_override, age_window_days=14, resolved_at=now, owner="root")
     assert pinned.override and pinned.reason == "urgent fix"
@@ -659,6 +884,17 @@ def test_resolve_target_refuses_no_eligible_or_no_aligned_version(monkeypatch):
     monkeypatch.setattr(versions, "candidates", lambda *_: {"2.33.0": fresh})
     with pytest.raises(versions.VersionsError, match="no age-eligible version"):
         versions._resolve_target("requests", _pypi_target(), age_window_days=14, resolved_at=now, owner="root")
+    go_target = {
+        "mode": "single", "constraint": "*",
+        "go": {"module": "example.com/mod", "proxy": "https://proxy.golang.org"},
+    }
+    go_fresh = _candidate("1.0.0", now - timedelta(days=1), "go-proxy-info-vcs-commit-time")
+    monkeypatch.setattr(versions, "candidates", lambda *_: {"1.0.0": go_fresh})
+    with pytest.raises(versions.VersionsError, match="no age-eligible version") as caught:
+        versions._resolve_target(
+            "go.example.com.mod", go_target, age_window_days=14, resolved_at=now, owner="root",
+        )
+    assert "Go proxy .info Time (VCS commit time)" in str(caught.value)
     aligned = {
         "mode": "aligned", "constraint": "*",
         "pypi": {"name": "x", "registry": "https://pypi.org"},
@@ -1447,6 +1683,16 @@ def test_oci_authorized_request_handles_cached_tokens_challenges_and_transport_e
                 "https://registry.example/x",
             )
 
+    missing = urllib.error.HTTPError(
+        "https://registry.example/v2/acme/app/manifests/no-such-tag", 404, "not found",
+        Message(), io.BytesIO(b"manifest unknown"),
+    )
+    monkeypatch.setattr(registry, "_urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(missing))
+    with pytest.raises(registry.RegistryNotFoundError, match="HTTP 404"):
+        registry._OCIClient("https://registry.example", "acme/app", {})._authorized_request(
+            "https://registry.example/v2/acme/app/manifests/no-such-tag",
+        )
+
     challenge = Message()
     challenge["WWW-Authenticate"] = 'Bearer realm="http://registry.example/token"'
     bad_realm = urllib.error.HTTPError(
@@ -1800,6 +2046,64 @@ def test_oci_timestamp_paths_cover_registry_platform_and_config_fallbacks(monkey
     assert client._created_time({"annotations": {"org.opencontainers.image.created": ""}}) is None
 
 
+def test_oci_timestamp_ignores_docker_attestation_manifests_but_checks_each_runtime_platform(monkeypatch):
+    client = registry._OCIClient("https://registry.example", "acme/app", {})
+    responses = iter([
+        ({"manifests": [
+            {"digest": "sha256:amd64", "platform": {"os": "linux", "architecture": "amd64"}},
+            {
+                "digest": "sha256:attestation",
+                "platform": {"os": "unknown", "architecture": "unknown"},
+                "annotations": {"vnd.docker.reference.type": "attestation-manifest"},
+            },
+            {"digest": "sha256:arm64", "platform": {"os": "linux", "architecture": "arm64"}},
+        ]}, {}),
+        ({"annotations": {"org.opencontainers.image.created": "2026-08-01T00:00:00Z"}}, {}),
+        ({"annotations": {"org.opencontainers.image.created": "2026-09-01T00:00:00Z"}}, {}),
+    ])
+    requested = []
+
+    def read_manifest(url, _headers=None):
+        requested.append(url)
+        return next(responses)
+
+    monkeypatch.setattr(client, "_json", read_manifest)
+    stamp, age_source = client.tag_timestamp("rolling")
+    assert stamp == datetime(2026, 9, 1, tzinfo=timezone.utc)
+    assert age_source == "oci-image-created-fallback"
+    assert len(requested) == 3
+    assert all("attestation" not in url for url in requested)
+
+    monkeypatch.setattr(client, "_json", lambda *_: ({"manifests": [
+        {
+            "digest": "sha256:attestation-only",
+            "annotations": {"vnd.docker.reference.type": "attestation-manifest"},
+        },
+    ]}, {}))
+    with pytest.raises(registry.RegistryError, match="no runnable image manifests"):
+        client.tag_timestamp("attestation-only")
+
+
+def test_oci_tag_evidence_returns_registry_digest(monkeypatch):
+    client = registry._OCIClient("https://registry.example", "acme/app", {})
+    digest = "sha256:" + "a" * 64
+    requested = []
+
+    def read_manifest(url, _headers=None):
+        requested.append(url)
+        return {}, {
+            "docker-content-digest": digest,
+            "last-modified": "Tue, 01 Sep 2026 00:00:00 GMT",
+        }
+
+    monkeypatch.setattr(client, "_json", read_manifest)
+    released_at, age_source, found_digest = client.tag_evidence("rolling")
+    assert released_at == datetime(2026, 9, 1, tzinfo=timezone.utc)
+    assert age_source == "oci-registry-last-modified"
+    assert found_digest == digest
+    assert requested == ["https://registry.example/v2/acme/app/manifests/rolling"]
+
+
 def test_oci_index_metadata_rejects_malformed_manifests_field(monkeypatch):
     client = registry._OCIClient("https://registry.example", "acme/app", {})
     monkeypatch.setattr(client, "_json", lambda *_: ({"manifests": "not-an-array"}, {}))
@@ -2068,6 +2372,17 @@ def test_project_selection_declarations_and_recorded_fallbacks(monkeypatch, tmp_
     ), "p") == tmp_path.resolve()
     assert versions._local_target_overlays(forge, "p1")["x"]["pypi"]["name"] == "x"
     assert versions._target_declarations_for_project(forge, "p1")["x"]["pypi"]["registry"] == "https://pypi.org"
+    malformed_overlay = types.SimpleNamespace(
+        versions={"targets": {"oci.base": {
+            "mode": "single", "constraint": "*",
+            "oci": {"image": "ghcr.io/acme/base", "tag": "v{version}"},
+        }}},
+        projects={"demo": types.SimpleNamespace(versions={"targets": {
+            "oci.base": {"oci": {"selection": "rolling"}},
+        }})},
+    )
+    with pytest.raises(versions.VersionsError, match="invalid effective project target"):
+        versions._local_target_overlays(malformed_overlay, "demo")
     p2.versions = {"targets": "bad"}
     assert versions._local_target_overlays(forge, "p2") == {}
     assert versions._target_declarations_for_project(forge, "p2")["x"] == root_target
@@ -2785,7 +3100,7 @@ def test_init_facts_covers_all_manifest_forms_and_deduplicates_constraints(tmp_p
         "retract v1.2.0\n",
         encoding="utf-8",
     )
-    facts, skipped = versions._init_facts(tmp_path)
+    facts, skipped = versions._init_facts(tmp_path, scope="all")
     by_key = {(family, slug): constraint for family, slug, constraint, _source in facts}
     assert by_key[("pypi", "foo-bar")] == ">=1.0.0,<2.0.0"
     assert by_key[("pypi", "requests")] == ">=2.0.0,<3.0.0"
@@ -2795,12 +3110,142 @@ def test_init_facts_covers_all_manifest_forms_and_deduplicates_constraints(tmp_p
     assert ("go", "example.com.single") in by_key and ("go", "example.com.block") in by_key
     assert ("go", "retract") not in by_key
     assert len([line for line in skipped if "requirements.in line" in line]) >= 4
-    assert any("pyproject.toml dependency" in line for line in skipped)
+    assert any("pyproject.toml project.dependencies" in line for line in skipped)
     assert any("wrong-type" in line and "must be a string" in line for line in skipped)
     assert any("devDependencies" in line and "expected a dependency object" in line for line in skipped)
     assert any("example.com/no-version" in line and "unsupported module version" in line for line in skipped)
     assert any("peerDependencies" not in line and "bad-peer" in line for line in skipped)
     assert any("go.mod example.com/invalid" in line for line in skipped)
+
+
+def test_init_facts_selects_shipped_python_extras_and_opt_in_all_groups(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools==82.0.0"]\n'
+        '[project]\nname="demo"\ndependencies=["runtime-pkg>=1.0.0"]\n'
+        '[project.optional-dependencies]\nssh=["paramiko>=3.0.0"]\n'
+        'test=["pytest>=8.0.0"]\n'
+        '[dependency-groups]\ndev=["ruff>=0.5.0"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.in").write_text("requirements-pkg>=2.0.0\n", encoding="utf-8")
+    (tmp_path / "requirements-test.in").write_text("test-file-pkg>=3.0.0\n", encoding="utf-8")
+    nested = tmp_path / "requirements" / "toolkit.txt"
+    nested.parent.mkdir()
+    nested.write_text("toolkit-pkg\n", encoding="utf-8")
+    (tmp_path / "package.json").write_text(json.dumps({
+        "dependencies": {"runtime-js": "^1.0.0"},
+        "optionalDependencies": {"optional-js": "^2.0.0"},
+        "peerDependencies": {"peer-js": "^3.0.0"},
+        "devDependencies": {"test-js": "^4.0.0"},
+    }), encoding="utf-8")
+
+    shipped, shipped_skipped = versions._init_facts(
+        tmp_path, pypi_extras=["SSH"], requirements_files=["requirements/toolkit.txt"],
+    )
+    shipped_by_key = {(family, slug): constraint for family, slug, constraint, _source in shipped}
+    assert set(shipped_by_key) == {
+        ("pypi", "runtime-pkg"), ("pypi", "paramiko"), ("pypi", "requirements-pkg"),
+        ("pypi", "toolkit-pkg"), ("npm", "runtime-js"), ("npm", "optional-js"),
+        ("npm", "peer-js"),
+    }
+    assert not shipped_skipped
+
+    all_facts, all_skipped = versions._init_facts(tmp_path, scope="all")
+    all_by_key = {(family, slug) for family, slug, _constraint, _source in all_facts}
+    assert all_by_key == set(shipped_by_key) | {
+        ("pypi", "pytest"), ("pypi", "ruff"), ("pypi", "setuptools"),
+        ("pypi", "test-file-pkg"), ("npm", "test-js"),
+    }
+    assert not all_skipped
+
+
+def test_init_facts_requires_configured_extra_and_requirements_file(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nname="demo"\n', encoding="utf-8")
+    with pytest.raises(versions.VersionsError, match="absent from pyproject.toml"):
+        versions._init_facts(tmp_path, pypi_extras=["missing"])
+    with pytest.raises(versions.VersionsError, match="not a regular file"):
+        versions._init_facts(tmp_path, requirements_files=["requirements/runtime.in"])
+    (tmp_path / "pyproject.toml").unlink()
+    with pytest.raises(versions.VersionsError, match="requires a pyproject.toml"):
+        versions._init_facts(tmp_path, pypi_extras=["missing"])
+
+
+def test_init_facts_fails_closed_on_dynamic_dependencies_bad_paths_and_bad_scope(tmp_path):
+    with pytest.raises(versions.VersionsError, match="scope must be one of"):
+        versions._init_facts(tmp_path, scope="runtime")
+    with pytest.raises(versions.VersionsError, match="redundant when scope = 'all'"):
+        versions._init_facts(tmp_path, scope="all", pypi_extras=["docs"])
+
+    outside = tmp_path / "outside.in"
+    outside.write_text("requests>=2.0.0\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "linked.in").symlink_to(outside)
+    with pytest.raises(versions.VersionsError, match="resolves outside"):
+        versions._init_facts(project, requirements_files=["linked.in"])
+    (project / "linked.in").unlink()
+    (project / "requirements.in").symlink_to(outside)
+    with pytest.raises(versions.VersionsError, match="requirements manifest .* resolves outside"):
+        versions._init_facts(project)
+    (project / "requirements.in").unlink()
+
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="demo"\ndynamic="dependencies"\n', encoding="utf-8",
+    )
+    with pytest.raises(versions.VersionsError, match="dynamic must be an array"):
+        versions._init_facts(project)
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="demo"\ndynamic=["dependencies"]\n', encoding="utf-8",
+    )
+    with pytest.raises(versions.VersionsError, match="cannot safely derive"):
+        versions._init_facts(project)
+
+
+def test_init_facts_reports_malformed_optional_groups_and_build_metadata(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname="demo"\noptional-dependencies="invalid"\n', encoding="utf-8",
+    )
+    with pytest.raises(versions.VersionsError, match="optional-dependencies must be a table"):
+        versions._init_facts(tmp_path, pypi_extras=["docs"])
+
+    pyproject.write_text(
+        '[project]\nname="demo"\n[project.optional-dependencies]\n'
+        'Docs=["sphinx>=7"]\ndocs=["another>=1"]\n', encoding="utf-8",
+    )
+    with pytest.raises(versions.VersionsError, match="ambiguous normalized extra names"):
+        versions._init_facts(tmp_path, pypi_extras=["docs"])
+
+    pyproject.write_text(
+        'dependency-groups="invalid"\n[project]\nname="demo"\n', encoding="utf-8",
+    )
+    _facts, skipped = versions._init_facts(tmp_path, scope="all")
+    assert any("dependency-groups: expected a table" in item for item in skipped)
+
+    pyproject.write_text(
+        '[project]\nname="demo"\n[project.optional-dependencies]\n'
+        'docs="invalid"\n[dependency-groups]\ndev="invalid"\n', encoding="utf-8",
+    )
+    _facts, skipped = versions._init_facts(tmp_path, scope="all")
+    assert any("optional-dependencies.docs" in item and "expected an array" in item for item in skipped)
+    assert any("dependency-groups.dev" in item and "expected an array" in item for item in skipped)
+
+    pyproject.write_text(
+        'build-system="invalid"\n[project]\nname="demo"\n', encoding="utf-8",
+    )
+    _facts, skipped = versions._init_facts(tmp_path, scope="all")
+    assert any("build-system: expected a table" in item for item in skipped)
+
+    pyproject.write_text(
+        '[project]\nname="demo"\n[build-system]\nrequires="invalid"\n', encoding="utf-8",
+    )
+    _facts, skipped = versions._init_facts(tmp_path, scope="all")
+    assert any("build-system.requires: expected an array" in item for item in skipped)
+
+
+def test_init_facts_ignores_requirement_glob_directories_in_all_scope(tmp_path):
+    (tmp_path / "requirements-empty.in").mkdir()
+    assert versions._init_facts(tmp_path, scope="all") == ([], [])
 
 
 def test_init_facts_refuses_malformed_manifests_and_coordinate_collisions(tmp_path, monkeypatch):
@@ -2993,6 +3438,31 @@ registry = "https://pypi.org"
     )
     with pytest.raises(versions.VersionsError, match="valid registry package name"):
         versions._versions_init(versions.load_forge_config(invalid_root), ["demo"], dry_run=True)
+
+
+def test_versions_init_reports_discovery_policy_and_refuses_bad_effective_config(tmp_path):
+    project_versions = '''[versions.discovery]
+scope = "shipped"
+pypi_extras = ["docs"]
+requirements_files = ["requirements/runtime.in"]
+'''
+    root_config, project_root = _estate(tmp_path, project_versions=project_versions)
+    (project_root / "pyproject.toml").write_text(
+        '[project]\nname="demo"\n[project.optional-dependencies]\ndocs=["sphinx>=7"]\n',
+        encoding="utf-8",
+    )
+    requirements = project_root / "requirements" / "runtime.in"
+    requirements.parent.mkdir()
+    requirements.write_text("runtime-pkg>=1.0.0\n", encoding="utf-8")
+    forge = versions.load_forge_config(root_config)
+    summary = versions._versions_init(forge, ["demo"], dry_run=True)
+    assert any("PyPI extras=docs" in line for line in summary)
+    assert any("requirements files=requirements/runtime.in" in line for line in summary)
+    assert any("would add pypi.runtime-pkg" in line for line in summary)
+
+    forge.versions["unexpected"] = True
+    with pytest.raises(versions.VersionsError, match="unknown keys"):
+        versions._versions_init(forge, ["demo"], dry_run=True)
 
 
 def test_versions_init_standalone_writes_and_validates_the_project_config(tmp_path, monkeypatch):

@@ -1,15 +1,15 @@
-"""O5 -- the baseline and EVERY mutant invocation receive the lane's
-declared argv byte-for-byte; the only thing that varies between calls is
-``cwd``, never derived from which file was mutated.
+"""O5 -- the baseline and EVERY mutant invocation preserve the lane's
+declared argv byte-for-byte; B106 adds one fixed witness plugin to each
+candidate command, never something derived from the mutated file.
 
 The negative this defends (O5, verbatim): *deriving `tests/test_<module>`
 from a mutated source path changes the fake runner's recorded argv and
 fails the paired two-source fixture.* Proven with a PAIRED two-source
 fixture (two files, at two DIFFERENT paths) -- if argv were ever derived
 from a source path (the exact anti-pattern A-012 already deleted from
-nyxloom's own reference), the two files' own mutant calls would record
-DIFFERENT argv from each other and from the baseline; here every recorded
-argv is identical.
+nyxloom's own reference), the two files' mutant calls would record DIFFERENT
+argv from each other. Here both candidate calls share the same fixed plugin
+suffix, and the baseline remains byte-identical to the lane declaration.
 
 **P23**: both the baseline and every mutant now run through ONE shared,
 already-resolved :class:`~assay.runner.CommandPlan` (:func:`conftest.
@@ -104,16 +104,19 @@ def test_baseline_and_every_mutant_receive_byte_identical_argv(tmp_path: Path):
     assert len(recorder.calls) == 3
 
     argvs = {call.argv for call in recorder.calls}
-    assert argvs == {_DECLARED_ARGV}, (
-        f"every call must declare the identical argv regardless of which "
-        f"file was mutated, got {argvs}"
-    )
+    expected_mutant_argv = (*_DECLARED_ARGV, "-p", "assay_mutation_witness_plugin")
+    assert recorder.calls[0].argv == _DECLARED_ARGV
+    assert {call.argv for call in recorder.calls[1:]} == {expected_mutant_argv}
+    assert all(
+        call.argv[: len(_DECLARED_ARGV)] == _DECLARED_ARGV
+        for call in recorder.calls
+    ), f"the lane-declared argv must be an unchanged prefix, got {argvs}"
     assert baseline.plan.argv_declared == _DECLARED_ARGV
     assert baseline.plan.argv_effective == _DECLARED_ARGV
     assert baseline.plan is plan
 
 
-def test_cwd_is_the_only_thing_that_varies_between_calls(tmp_path: Path):
+def test_each_mutant_runs_in_its_own_snapshot(tmp_path: Path):
     lane = make_lane(argv=_DECLARED_ARGV)
     repo = _seed_repo(tmp_path)
     scratch_root = tmp_path / "scratch"

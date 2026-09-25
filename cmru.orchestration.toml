@@ -161,3 +161,9 @@ release_tag_prefixes = ["*"]
 keep_release_tags = ["ciu-latest", "cmru-latest", "pwmcp-latest"]
 ghcr_packages = ["*"]
 ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
+
+[versions]
+age_window_days = 14
+
+[versions.discovery]
+scope = "shipped"

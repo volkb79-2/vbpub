@@ -102,11 +102,15 @@ bind mounts of host `/proc` and cgroup v2. The helper uses the host proc mount
 for process details; it does not join either host namespace, and you do not
 need a host install. Container targets are resolved to Docker IDs by the
 caller before re-exec; in helper mode `self` means the invoking container,
-not the short-lived helper. A caller-visible `pid:N` is mapped through the
-caller's cgroup namespace into that container; if namespace identity cannot
-be established, the helper refuses rather than guessing. This avoids treating
-host PIDs as visible in the helper's private PID namespace, where
-`cgroup.procs` cannot identify them. Before the helper starts, a bounded probe
+not the short-lived helper. For `pid:N`, the caller carries the PID- and
+cgroup-namespace identities, namespace-local PID, process start time, and
+relative cgroup path. The helper matches those facts against processes in
+that container subpath and requires exactly one live match; it then uses the
+PID visible in its host `/proc` view for process sampling and DAMON. Missing,
+changed, or ambiguous identity is a refusal, never a guess from the caller's
+numeric PID. This avoids treating caller PIDs as visible in the helper's
+private PID namespace, where `cgroup.procs` cannot identify them. Before the
+helper starts, a bounded probe
 asks host systemd to confirm that both the configured
 placement slice and the cockpit's injected interactive slice are loaded, not
 transient, and have instantiated cgroups. The probe uses the local

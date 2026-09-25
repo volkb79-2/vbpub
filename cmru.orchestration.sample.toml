@@ -55,3 +55,9 @@ release_tag_prefixes = ["*"]
 keep_release_tags = ["example-wheel-latest"]
 ghcr_packages = ["*"]
 ghcr_delete_packages = []
+
+[versions]
+age_window_days = 14
+
+[versions.discovery]
+scope = "shipped"

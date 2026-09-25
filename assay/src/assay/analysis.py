@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
+from collections import deque
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from typing import TextIO
 
-from . import __version__
-from . import git
+from . import __version__, git
 from .errors import AssayError
 from .verify import verify_text
 
@@ -349,6 +352,607 @@ def inspect_progress(path: Path, expected: str) -> dict:
             "artifact": artifact, "runs": runs}
 
 
+# Report limits are diagnostic policy, independent of verdict/receipt validation.
+_REPORT_WINDOW = 64 * 1024
+_REPORT_RECORD_LIMIT = 1024 * 1024
+_REPORT_LINE_LIMIT = 512
+_REPORT_FRESH_SECONDS = 120
+_REPORT_JSON_DEPTH_LIMIT = 512
+_REPORT_EXITS = {"pass": 0, "running": 3, "fail": 1, "evidence_error": 2}
+
+
+class _ReportJSONFramer:
+    """Bounded syntax check for an oversized, unterminated JSONL record."""
+
+    def __init__(self):
+        self.decoder = codecs.getincrementaldecoder("utf-8")()
+        self.stack = []
+        self.root_done = False
+        self.mode = "normal"
+        self.string_role = None
+        self.unicode_left = 0
+        self.literal = None
+        self.literal_index = 0
+        self.number_state = None
+        self.state = "incomplete"
+
+    def _mark_value_started(self):
+        if self.stack:
+            self.stack[-1]["state"] = "comma_or_end"
+        else:
+            self.root_done = True
+
+    def _start_value(self, char):
+        if char == '"':
+            self._mark_value_started()
+            self.mode = "string"
+            self.string_role = "value"
+        elif char in "{[":
+            self._mark_value_started()
+            if len(self.stack) >= _REPORT_JSON_DEPTH_LIMIT:
+                self.state = "indeterminate"
+                return
+            self.stack.append({"kind": "object" if char == "{" else "array",
+                               "state": "key_or_end" if char == "{" else "value_or_end"})
+        elif char in "tfn":
+            self._mark_value_started()
+            self.mode = "literal"
+            self.literal = {"t": "true", "f": "false", "n": "null"}[char]
+            self.literal_index = 1
+            if self.literal_index == len(self.literal):
+                self.mode = "normal"
+        elif char == "-":
+            self._mark_value_started()
+            self.mode = "number"
+            self.number_state = "minus"
+        elif char == "0":
+            self._mark_value_started()
+            self.mode = "number"
+            self.number_state = "zero"
+        elif "1" <= char <= "9":
+            self._mark_value_started()
+            self.mode = "number"
+            self.number_state = "integer"
+        else:
+            self.state = "invalid"
+
+    def _number_char(self, char):
+        state = self.number_state
+        if state == "minus":
+            if char == "0":
+                self.number_state = "zero"
+            elif "1" <= char <= "9":
+                self.number_state = "integer"
+            else:
+                self.state = "invalid"
+        elif state == "zero":
+            if char == ".":
+                self.number_state = "dot"
+            elif char in "eE":
+                self.number_state = "exponent"
+            elif char.isdigit():
+                self.state = "invalid"
+            elif char in " \t\r\n,]}":
+                self.mode = "normal"
+                self._char(char)
+            else:
+                self.state = "invalid"
+        elif state == "integer":
+            if "0" <= char <= "9":
+                return
+            if char == ".":
+                self.number_state = "dot"
+            elif char in "eE":
+                self.number_state = "exponent"
+            elif char in " \t\r\n,]}":
+                self.mode = "normal"
+                self._char(char)
+            else:
+                self.state = "invalid"
+        elif state == "dot":
+            if "0" <= char <= "9":
+                self.number_state = "fraction"
+            else:
+                self.state = "invalid"
+        elif state == "fraction":
+            if "0" <= char <= "9":
+                return
+            if char in "eE":
+                self.number_state = "exponent"
+            elif char in " \t\r\n,]}":
+                self.mode = "normal"
+                self._char(char)
+            else:
+                self.state = "invalid"
+        elif state == "exponent":
+            if char in "+-":
+                self.number_state = "exponent_sign"
+            elif "0" <= char <= "9":
+                self.number_state = "exponent_digits"
+            else:
+                self.state = "invalid"
+        elif state == "exponent_sign":
+            if "0" <= char <= "9":
+                self.number_state = "exponent_digits"
+            else:
+                self.state = "invalid"
+        elif state == "exponent_digits":
+            if "0" <= char <= "9":
+                return
+            if char in " \t\r\n,]}":
+                self.mode = "normal"
+                self._char(char)
+            else:
+                self.state = "invalid"
+
+    def _close_container(self, char):
+        if not self.stack:
+            self.state = "invalid"
+            return
+        top = self.stack[-1]
+        valid_state = ("key_or_end", "comma_or_end") if top["kind"] == "object" else (
+            "value_or_end", "comma_or_end")
+        expected = "}" if top["kind"] == "object" else "]"
+        if char != expected or top["state"] not in valid_state:
+            self.state = "invalid"
+            return
+        self.stack.pop()
+
+    def _char(self, char):
+        if self.state in ("invalid", "indeterminate"):
+            return
+        if self.mode == "string":
+            if char == '"':
+                self.mode = "normal"
+                if self.string_role == "key":
+                    self.stack[-1]["state"] = "colon"
+                self.string_role = None
+            elif char == "\\":
+                self.mode = "escape"
+            elif ord(char) < 0x20:
+                self.state = "invalid"
+            return
+        if self.mode == "escape":
+            if char == "u":
+                self.mode = "unicode"
+                self.unicode_left = 4
+            elif char in '"\\/bfnrt':
+                self.mode = "string"
+            else:
+                self.state = "invalid"
+            return
+        if self.mode == "unicode":
+            if char not in "0123456789abcdefABCDEF":
+                self.state = "invalid"
+                return
+            self.unicode_left -= 1
+            if self.unicode_left == 0:
+                self.mode = "string"
+            return
+        if self.mode == "literal":
+            if char != self.literal[self.literal_index]:
+                self.state = "invalid"
+                return
+            self.literal_index += 1
+            if self.literal_index == len(self.literal):
+                self.mode = "normal"
+            return
+        if self.mode == "number":
+            self._number_char(char)
+            return
+        if char in " \t\r\n":
+            return
+        if not self.stack:
+            if self.root_done:
+                self.state = "invalid"
+            else:
+                self._start_value(char)
+            return
+        top = self.stack[-1]
+        state = top["state"]
+        if top["kind"] == "object":
+            if state == "key_or_end" and char == "}":
+                self._close_container(char)
+            elif state in ("key_or_end", "key") and char == '"':
+                self.mode = "string"
+                self.string_role = "key"
+            elif state == "colon" and char == ":":
+                top["state"] = "value"
+            elif state == "value":
+                self._start_value(char)
+            elif state == "comma_or_end" and char in ",}":
+                if char == ",":
+                    top["state"] = "key"
+                else:
+                    self._close_container(char)
+            else:
+                self.state = "invalid"
+        elif state == "value_or_end" and char == "]":
+            self._close_container(char)
+        elif state in ("value_or_end", "value"):
+            self._start_value(char)
+        elif state == "comma_or_end" and char in ",]":
+            if char == ",":
+                top["state"] = "value"
+            else:
+                self._close_container(char)
+        else:
+            self.state = "invalid"
+
+    def feed(self, raw):
+        if self.state in ("invalid", "indeterminate"):
+            return
+        try:
+            text = self.decoder.decode(raw, final=False)
+        except UnicodeDecodeError:
+            self.state = "invalid"
+            return
+        for char in text:
+            self._char(char)
+            if self.state in ("invalid", "indeterminate"):
+                break
+
+    def finish(self):
+        if self.state in ("invalid", "indeterminate"):
+            return self.state
+        try:
+            remainder = self.decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return "invalid"
+        for char in remainder:
+            self._char(char)
+        if self.state in ("invalid", "indeterminate"):
+            return self.state
+        if self.mode == "number" and self.number_state in (
+                "zero", "integer", "fraction", "exponent_digits"):
+            self.mode = "normal"
+        if self.mode != "normal" or self.stack or not self.root_done:
+            return "incomplete"
+        return "complete"
+
+
+def _report_commit(value: str) -> str:
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value):
+        raise argparse.ArgumentTypeError("expected commit must be full lowercase 40- or 64-hex")
+    return value
+
+
+def _report_max_errors(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("max-errors must be an integer from 0 to 10") from None
+    if not 0 <= number <= 10:
+        raise argparse.ArgumentTypeError("max-errors must be an integer from 0 to 10")
+    return number
+
+
+def _report_now() -> datetime:
+    """Observe freshness after the progress snapshot has been read."""
+    return datetime.now(UTC)
+
+
+def _report_diagnostic(errors: dict, source: str, message: str, limit: int) -> None:
+    # One record is one displayed line, even when a child emits control bytes.
+    message = json.dumps(message, ensure_ascii=True)[1:-1]
+    errors["count"] += 1
+    if len(message) > _REPORT_LINE_LIMIT:
+        errors["truncated"] = True
+        message = message[:_REPORT_LINE_LIMIT - 3] + "..."
+    if len(errors["records"]) < limit:
+        errors["records"].append({"source": source, "message": message})
+    else:
+        errors["truncated"] = True
+
+
+def _report_blocks(path: Path, artifact: dict):
+    """Hash and consume the same bounded snapshot, including malformed inputs."""
+    artifact["path"] = str(path.resolve())
+    # Nonblocking open plus fstat also refuses a FIFO swapped in after a stat.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("input is not a regular file")
+        remaining = info.st_size
+        digest = hashlib.sha256()
+        size = 0
+        while remaining:
+            block = stream.read(min(_REPORT_WINDOW, remaining))
+            if not block:
+                raise ValueError("input was truncated during report snapshot")
+            remaining -= len(block)
+            size += len(block)
+            digest.update(block)
+            yield block
+        artifact.update(sha256=digest.hexdigest(), bytes=size)
+
+
+def _report_verdict(path: Path, artifact: dict, lane: dict) -> None:
+    raw = b"".join(_report_blocks(path, artifact))
+    text = raw.decode("utf-8")
+    document = _json(text)
+    if not isinstance(document, dict):
+        raise TypeError("Assay verdict must be a JSON object")
+    if isinstance(document.get("commit"), str) and re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", document["commit"]):
+        lane["actual_commit"] = document["commit"]
+    failures = verify_text(text)
+    if failures:
+        raise ValueError("invalid Assay verdict: " + "; ".join(failures))
+    for key in ("outcome", "exit_code", "reason_code"):
+        lane[key] = document.get(key)
+    lane["overridden_dirty_paths"] = (document.get("worktree_integrity") or {}).get(
+        "overridden_dirty_paths", [])
+    # References remain labels: never resolve/open an implicitly named artifact.
+    def references(value, field=""):
+        if isinstance(value, dict):
+            for key, child in sorted(value.items()):
+                location = f"{field}.{key}" if field else key
+                if (key == "artifact" or key.endswith("_artifact")) and isinstance(child, str):
+                    lane["evidence_artifacts"].append({"field": location, "path": child})
+                else:
+                    references(child, location)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                references(child, f"{field}[{index}]")
+    references(document)
+    if document["lane"] != lane["name"]:
+        raise ValueError(f"verdict lane {document['lane']!r} differs from {lane['name']!r}")
+    if document["commit"] != lane["expected_commit"]:
+        raise ValueError(f"verdict commit {document['commit']} differs from {lane['expected_commit']}")
+    lane["status"] = "pass" if document["outcome"] == "PASS" and document["exit_code"] == 0 else "fail"
+
+
+def _report_progress(path: Path, artifact: dict, lane: dict) -> None:
+    from .mutation import PROGRESS_EVENTS
+
+    progress = {"actual_commit": None, "run_line": None, "latest_event": None,
+                "latest_phase": None, "emitted_at": None, "freshness": "unknown",
+                "event_counts": {}, "candidate_counts": {}, "terminal": False,
+                "torn_final_record": False, "details_truncated": False}
+    lane["progress"] = progress
+    failure = None
+    oversized_pending = False
+    oversized_framer = None
+    line_number = 0
+    pending = bytearray()
+    count_keys = ("candidate_total", "candidate_index", "selected_total", "pending_total",
+                  "resumed_total", "rejected_total", "rejudged_total")
+
+    def consume(raw, terminated):
+        nonlocal line_number
+        line_number += 1
+        try:
+            event = _json(raw.decode("utf-8"))
+        except (ValueError, UnicodeError) as exc:
+            if not terminated:
+                progress["torn_final_record"] = True
+                return
+            raise ValueError(f"malformed progress JSON at line {line_number}: {exc}") from exc
+        if not isinstance(event, dict) or event.get("event") not in PROGRESS_EVENTS:
+            raise ValueError(f"malformed progress event at line {line_number}")
+        name = event["event"]
+        if name == "run":
+            commit = event.get("commit")
+            if not isinstance(commit, str) or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
+                raise ValueError(f"run lacks a full commit at line {line_number}")
+            if event.get("lane") != lane["name"]:
+                raise ValueError(f"run lane {event.get('lane')!r} differs from {lane['name']!r}")
+            progress.update(actual_commit=commit, run_line=line_number, latest_event=None,
+                            latest_phase=None, emitted_at=None, event_counts={},
+                            candidate_counts={}, terminal=False)
+        if progress["run_line"] is None:
+            raise ValueError("progress event precedes first run identity")
+        if "lane" in event and event["lane"] != lane["name"]:
+            raise ValueError(f"progress lane {event['lane']!r} differs from {lane['name']!r}")
+        if "commit" in event and event["commit"] != progress["actual_commit"]:
+            raise ValueError(f"progress event has conflicting commit at line {line_number}")
+        if "phase" in event and not isinstance(event["phase"], str):
+            raise ValueError(f"malformed progress phase at line {line_number}")
+        counts = progress["candidate_counts"]
+        for key in count_keys:
+            if key in event and event[key] is not None:
+                if type(event[key]) is not int or event[key] < 0:
+                    raise ValueError(f"malformed progress count {key} at line {line_number}")
+                counts[key] = event[key]
+        progress["event_counts"][name] = progress["event_counts"].get(name, 0) + 1
+        progress["latest_event"] = name
+        phase = event.get("phase")
+        if isinstance(phase, str) and len(phase) > _REPORT_LINE_LIMIT:
+            progress["latest_phase"] = phase[:_REPORT_LINE_LIMIT - 3] + "..."
+            progress["details_truncated"] = True
+        else:
+            progress["latest_phase"] = phase
+        emitted_at = event.get("emitted_at")
+        if isinstance(emitted_at, str) and len(emitted_at) > _REPORT_LINE_LIMIT:
+            progress["emitted_at"] = emitted_at[:_REPORT_LINE_LIMIT - 3] + "..."
+            progress["details_truncated"] = True
+        else:
+            progress["emitted_at"] = emitted_at if isinstance(emitted_at, str) else None
+        progress["terminal"] |= name in ("verdict_written", "end")
+
+    # Stop parsing on the first invalid complete record, but finish hashing.
+    for block in _report_blocks(path, artifact):
+        if failure is not None:
+            continue
+        if oversized_pending:
+            if b"\n" in block:
+                failure = ValueError("progress record exceeds 1 MiB")
+            else:
+                oversized_framer.feed(block)
+            continue
+        records = (bytes(pending) + block).split(b"\n")
+        pending = bytearray(records.pop())
+        for raw in records:
+            try:
+                if len(raw) > _REPORT_RECORD_LIMIT:
+                    raise ValueError("progress record exceeds 1 MiB")
+                consume(raw, True)
+            except (ValueError, TypeError) as exc:
+                failure = exc
+                pending.clear()
+                break
+        if failure is None and len(pending) > _REPORT_RECORD_LIMIT:
+            oversized_framer = _ReportJSONFramer()
+            oversized_framer.feed(pending)
+            pending.clear()
+            oversized_pending = True
+    if failure is None and oversized_pending:
+        framing = oversized_framer.finish()
+        if framing in ("complete", "indeterminate"):
+            failure = ValueError("progress record exceeds 1 MiB and is complete or cannot be classified")
+        else:
+            progress["torn_final_record"] = True
+    elif failure is None and pending:
+        try:
+            consume(pending, False)
+        except (ValueError, TypeError) as exc:
+            failure = exc
+    if lane["actual_commit"] is None:
+        lane["actual_commit"] = progress["actual_commit"]
+    if failure is not None:
+        raise failure
+    if progress["run_line"] is None:
+        raise ValueError("progress has no complete run header")
+    if progress["actual_commit"] != lane["expected_commit"]:
+        raise ValueError(f"latest progress commit {progress['actual_commit']} differs from {lane['expected_commit']}")
+    now = _report_now()
+    try:
+        emitted = datetime.fromisoformat(progress["emitted_at"])
+        if emitted.tzinfo is not None:
+            age = (now - emitted).total_seconds()
+            progress["freshness"] = "fresh" if 0 <= age <= _REPORT_FRESH_SECONDS else (
+                "future" if age < 0 else "stale")
+    except (ValueError, TypeError, OverflowError):
+        pass
+
+
+def _report_log(path: Path, artifact: dict, lane: dict, limit: int) -> None:
+    tail = bytearray()
+    boundary_byte = None
+    for block in _report_blocks(path, artifact):
+        combined = tail + block
+        if len(combined) > _REPORT_WINDOW:
+            removed = len(combined) - _REPORT_WINDOW
+            boundary_byte = combined[removed - 1]
+            tail = bytearray(combined[removed:])
+        else:
+            tail = combined
+    omitted = artifact["bytes"] > len(tail)
+    lane["errors"]["truncated"] |= omitted
+    if omitted:  # Keep a complete first line when the byte window starts at a boundary.
+        at_line_boundary = boundary_byte == 10 or boundary_byte == 13
+        if boundary_byte == 13 and tail.startswith(b"\n"):
+            del tail[:1]
+        if not at_line_boundary:
+            separators = [index for index in (tail.find(b"\n"), tail.find(b"\r")) if index >= 0]
+            if separators:
+                _, separator, remainder = tail.partition(tail[min(separators):min(separators) + 1])
+                tail = remainder
+                if separator == b"\r" and tail.startswith(b"\n"):
+                    del tail[:1]
+            else:
+                tail.clear()
+    selected = deque(maxlen=limit)
+    count = 0
+    phase = None
+    for line in tail.decode("utf-8", errors="backslashreplace").splitlines():
+        if line.startswith("ASSAY_GATE_PHASE="):
+            phase_value = line.removeprefix("ASSAY_GATE_PHASE=")
+            phase = phase_value[:_REPORT_LINE_LIMIT - 3] + "..." if len(phase_value) > _REPORT_LINE_LIMIT else phase_value
+            lane["errors"]["truncated"] |= len(phase_value) > _REPORT_LINE_LIMIT
+        if re.search(r"error|failed|exception|traceback", line, re.IGNORECASE):
+            count += 1
+            selected.append(line)
+    if lane["latest_phase"] is None and phase is not None:
+        lane.update(latest_phase=phase, phase_source="log")
+    lane["errors"]["count"] += count - len(selected)
+    lane["errors"]["truncated"] |= count > len(selected)
+    for line in selected:
+        _report_diagnostic(lane["errors"], "log", line, limit)
+
+
+def report(expected: str, verdicts, progress, logs, max_errors: int = 5) -> dict:
+    """Read explicit evidence once; status comes only from bound structured facts."""
+    _report_commit(expected)
+    if type(max_errors) is not int or not 0 <= max_errors <= 10:
+        raise ValueError("max-errors must be an integer from 0 to 10")
+    inputs = {"verdict": _named(verdicts), "progress": _named(progress), "log": _named(logs)}
+    names = sorted(set().union(*inputs.values()))
+    if not names:
+        raise ValueError("report requires at least one explicit input")
+    result = {"schema_version": SCHEMA_VERSION, "expected_commit": expected, "exit_code": 0, "lanes": []}
+    for name in names:
+        lane = {"name": name, "status": "evidence_error", "expected_commit": expected,
+                "actual_commit": None, "outcome": None, "exit_code": None, "reason_code": None,
+                "progress": None, "latest_phase": None, "phase_source": None,
+                "overridden_dirty_paths": [], "evidence_artifacts": [], "inputs": {},
+                "errors": {"records": [], "count": 0, "truncated": False}}
+        invalid = False
+        for kind, selected in inputs.items():
+            if name not in selected:
+                continue
+            path = Path(selected[name][0])
+            artifact = {"path": str(path.absolute()), "sha256": None, "bytes": None}
+            lane["inputs"][kind] = artifact
+            try:
+                if kind == "verdict":
+                    _report_verdict(path, artifact, lane)
+                elif kind == "progress":
+                    _report_progress(path, artifact, lane)
+                    lane["latest_phase"] = lane["progress"]["latest_phase"]
+                    if lane["latest_phase"] is not None:
+                        lane["phase_source"] = "progress"
+                else:
+                    _report_log(path, artifact, lane, max_errors)
+            except (OSError, ValueError, RecursionError, KeyError, TypeError) as exc:
+                invalid = True
+                _report_diagnostic(lane["errors"], kind, f"{artifact['path']}: {exc}", max_errors)
+        if invalid:
+            lane["status"] = "evidence_error"
+        elif name not in inputs["verdict"]:
+            stream = lane["progress"]
+            if stream and not stream["terminal"] and stream["freshness"] == "fresh":
+                lane["status"] = "running"
+            else:
+                message = ("terminal progress has no supplied verdict" if stream and stream["terminal"]
+                           else f"progress freshness is {stream['freshness']}" if stream
+                           else "no verdict or progress facts supplied")
+                _report_diagnostic(lane["errors"], "evidence", message, max_errors)
+        result["lanes"].append(lane)
+    priority = max(("pass", "running", "fail", "evidence_error").index(lane["status"])
+                   for lane in result["lanes"])
+    result["exit_code"] = _REPORT_EXITS[("pass", "running", "fail", "evidence_error")[priority]]
+    return result
+
+
+def _report_text(result: dict, stdout: TextIO) -> None:
+    # JSON quoting keeps untrusted path/phase characters on their own line.
+    def display(value):
+        return json.dumps(value, ensure_ascii=True, sort_keys=True)
+    for lane in result["lanes"]:
+        print(f"{display(lane['name'])}: {lane['status']} expected={lane['expected_commit']} "
+              f"actual={display(lane['actual_commit'])} outcome={display(lane['outcome'])} "
+              f"exit={display(lane['exit_code'])} reason={display(lane['reason_code'])}", file=stdout)
+        for kind, artifact in lane["inputs"].items():
+            print(f"  {kind}: {display(artifact['path'])} bytes={artifact['bytes']} "
+                  f"sha256={artifact['sha256']}", file=stdout)
+        if lane["progress"] is not None:
+            print("  progress facts: " + display(lane["progress"]), file=stdout)
+        if lane["latest_phase"] is not None:
+            print(f"  phase ({lane['phase_source']}): {display(lane['latest_phase'])}", file=stdout)
+        for artifact in lane["evidence_artifacts"]:
+            print(f"  evidence {artifact['field']}: {display(artifact['path'])}", file=stdout)
+        if lane["overridden_dirty_paths"]:
+            print("  overridden dirty paths: " + display(lane["overridden_dirty_paths"]), file=stdout)
+        errors = lane["errors"]
+        print(f"  diagnostics: count={errors['count']} shown={len(errors['records'])} "
+              f"truncated={str(errors['truncated']).lower()}", file=stdout)
+        for record in errors["records"]:
+            print(f"  {record['source']} diagnostic: {record['message']}", file=stdout)
+
+
 def record(worktree: Path, expected: str, output: Path, command: list[str]) -> tuple[dict, int]:
     """Capture command evidence. A changed tree is recorded, never silently certified."""
     root = git.repo_top(worktree)
@@ -449,6 +1053,13 @@ def build_analyze_parser(subparsers: argparse._SubParsersAction) -> None:
     verdict.add_argument("path", type=Path)
     verdict.add_argument("--expected-commit", required=True)
     verdict.add_argument("--format", choices=("json", "text"), default="json")
+    snapshot = commands.add_parser("report", help="bounded snapshot of explicit lane evidence")
+    snapshot.add_argument("--expected-commit", type=_report_commit, required=True)
+    for option in ("verdict", "progress", "log"):
+        snapshot.add_argument("--" + option, metavar=("LANE", "FILE"), nargs=2,
+                              action="append", default=[])
+    snapshot.add_argument("--format", choices=("json", "text"), default="json")
+    snapshot.add_argument("--max-errors", type=_report_max_errors, default=5)
     progress = commands.add_parser("progress", help="summarize matching runs in appended progress JSONL")
     progress.add_argument("path", type=Path)
     progress.add_argument("--expected-commit", required=True)
@@ -500,6 +1111,12 @@ def cmd_analyze(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> 
                         if dropped_key in document:
                             print(f"  {stream} dropped bytes: {document[dropped_key]}", file=stdout)
                 return 0
+        elif args.analysis_command == "report":
+            result = report(args.expected_commit, args.verdict, args.progress, args.log, args.max_errors)
+            code = result["exit_code"]
+            if args.format == "text":
+                _report_text(result, stdout)
+                return code
         elif args.analysis_command == "progress":
             result = inspect_progress(args.path, args.expected_commit)
         else:
@@ -512,6 +1129,6 @@ def cmd_analyze(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> 
     except (OSError, ValueError, RecursionError, KeyError, TypeError,
             AttributeError, AssayError, subprocess.CalledProcessError) as exc:
         print(f"assay analyze: {exc}", file=stderr)
-        return 1
+        return 2 if args.analysis_command == "report" else 1
     print(json.dumps(result, indent=2, sort_keys=True), file=stdout)
     return code

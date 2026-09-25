@@ -1,9 +1,10 @@
 # =============================================================================
 # cmru project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml; judgment
-# policy lives in assay.toml [lanes.cmru] (R0-R3: full Python rigor ladder).
+# Assay owns R0/R1/R3 in assay.toml [lanes.cmru]; the release-specific
+# mutation lane owns R2 using the nearest ancestor cmru-v* tag as its base.
 # The release-gate conjunction is lane
-# `gate`; cmru.toml [steps.test] points at it and owns NO test logic itself.
+# `gate`; cmru.toml [steps.run-tests] points at it and owns NO test logic itself.
 # The lanes use a 2g hard ceiling and ample swap for mutation campaigns. The
 # current run-gate revision has no cgroup-v2 memory.high placement actuator;
 # this file therefore records only limits it can actually pass and verify.
@@ -20,7 +21,7 @@ schema_version = 1
 kind = "assay"
 assay_lane = "cmru"                 # -> assay.toml [lanes.cmru]
 environment = "tester-unified"
-budget = "8h"
+budget = "20m"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
 # verdict records the exact runtime assay version and source commit.
@@ -138,7 +139,8 @@ kind = "command"
 environment = "bare-host"
 argv = ["bash", "-c", "cd {worktree}/cmru && ./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary && ./run-gate.py --worktree {worktree} enroll"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
-# The conjunction includes the 8h native R0-R3 lane plus the retained
-# coverage/mutation/canary/enroll evidence lanes; this is advisory but must not
-# understate the declared work.
+# The conjunction includes the 20m Assay R0/R1/R3 lane plus the retained
+# total-coverage, 7h tag-based R2 mutation, cause-sensitive canary, and
+# real-enrollment evidence lanes; this is advisory but must not understate the
+# declared work.
 budget = "14h"

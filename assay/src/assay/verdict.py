@@ -72,6 +72,7 @@ from .config import (
     SNAPSHOT_SELECTIONS,
 )
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
+from .candidate_identity import candidate_id_from_fields
 from .vocabulary import (
     INGESTED_OPERATOR_RE,
     MAX_INGESTED_MUTANTS,
@@ -129,6 +130,8 @@ __all__ = [
     "RedFirstResult",
     "JudgmentResolved",
     "Mutation",
+    "MutationExecution",
+    "MutationWitnessReceipt",
     "MutantOutcome",
     "MutationProducerTool",
     "SnapshotPolicy",
@@ -333,7 +336,18 @@ __all__ = [
 #: major because a v11 consumer cannot interpret the new provenance and a
 #: v11 discarded entry cannot state the new distinction. Producers emit v12,
 #: and ``assay verify`` refuses v11 exactly as v11 refused v10.
-VERDICT_SCHEMA_VERSION = 12
+#:
+#: **Bumped 12 -> 13 (B106, provenance-safe selective native R2 replay).** A
+#: completed native mutation scope now carries the exact candidate inventory
+#: in ``mutation.candidate_ids`` (including a meaningful empty array) and each
+#: outcome carries the source digest, full mutated-file digest, canonical
+#: candidate ID and closed execution provenance. Only the pre-submission
+#: mutant-limit sentinel and ingested reports omit the inventory. A killed
+#: outcome may record a bounded call-phase failure witness; a witness-prefix
+#: result additionally names the exact prior verdict digest and matching prior
+#: and current node IDs. ``assay verify`` still refuses v12. ``--reuse-from``
+#: recognizes a v12 envelope only as an unproven full-run cold start.
+VERDICT_SCHEMA_VERSION = 13
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -1457,6 +1471,117 @@ class CanaryResult:
 
 
 @dataclass(frozen=True, kw_only=True)
+class MutationWitnessReceipt:
+    """Minimal current-run pytest evidence for one failed call phase."""
+
+    node_id: str
+    when: str
+    outcome: str
+    session_exit_status: int
+    process_exit_status: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.node_id, str) or not self.node_id:
+            raise ValueError("mutation witness node_id must be a non-empty string")
+        try:
+            node_bytes = self.node_id.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError("mutation witness node_id must be valid UTF-8") from exc
+        if len(node_bytes) > 4096:
+            raise ValueError("mutation witness node_id exceeds 4096 UTF-8 bytes")
+        if self.when != "call" or self.outcome != "failed":
+            raise ValueError(
+                "mutation witness must identify a failed call-phase report"
+            )
+        for name in ("session_exit_status", "process_exit_status"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value != 1:
+                raise ValueError(f"mutation witness {name} must equal 1")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "node_id": self.node_id,
+            "when": self.when,
+            "outcome": self.outcome,
+            "session_exit_status": self.session_exit_status,
+            "process_exit_status": self.process_exit_status,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class MutationExecution:
+    """How a native candidate reached its recorded outcome."""
+
+    mode: str
+    witness: MutationWitnessReceipt | None = None
+    prior_verdict_sha256: str | None = None
+    prior_node_id: str | None = None
+    current_node_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("full", "witness-prefix"):
+            raise ValueError(
+                "mutation execution mode must be 'full' or 'witness-prefix'"
+            )
+        if self.witness is not None and not isinstance(
+            self.witness, MutationWitnessReceipt
+        ):
+            raise ValueError("mutation execution witness has the wrong type")
+        if self.mode == "full":
+            if any(
+                value is not None
+                for value in (
+                    self.prior_verdict_sha256,
+                    self.prior_node_id,
+                    self.current_node_id,
+                )
+            ):
+                raise ValueError("full execution cannot carry prior-witness fields")
+            return
+        if self.witness is None:
+            raise ValueError("witness-prefix execution requires a witness receipt")
+        if (
+            not isinstance(self.prior_verdict_sha256, str)
+            or not _SHA256_RE.fullmatch(self.prior_verdict_sha256)
+        ):
+            raise ValueError(
+                "witness-prefix prior_verdict_sha256 must be a SHA-256 digest"
+            )
+        for name in ("prior_node_id", "current_node_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"witness-prefix {name} must be a non-empty string")
+            try:
+                size = len(value.encode("utf-8"))
+            except UnicodeEncodeError as exc:
+                raise ValueError(f"witness-prefix {name} must be valid UTF-8") from exc
+            if size > 4096:
+                raise ValueError(f"witness-prefix {name} exceeds 4096 UTF-8 bytes")
+        if self.prior_node_id != self.current_node_id:
+            raise ValueError(
+                "witness-prefix prior_node_id and current_node_id must match"
+            )
+        if self.witness.node_id != self.current_node_id:
+            raise ValueError(
+                "witness-prefix receipt node_id must match current_node_id"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"mode": self.mode}
+        if self.witness is not None:
+            payload["witness"] = self.witness.to_dict()
+        if self.mode == "witness-prefix":
+            payload.update(
+                {
+                    "prior_verdict_sha256": self.prior_verdict_sha256,
+                    "prior_node_id": self.prior_node_id,
+                    "current_node_id": self.current_node_id,
+                }
+            )
+        return payload
+
+
+@dataclass(frozen=True, kw_only=True)
 class MutantOutcome:
     """One mutant's identity, projected for the R2 artifact (A-116): the
     lightweight subset of :class:`~assay.mutation.Mutant`'s own identity a
@@ -1514,6 +1639,12 @@ class MutantOutcome:
     #: (B079/schema v12) present only on ``judgment.r2.discarded`` entries;
     #: bucket entries are attempted mutants and must omit it.
     discard_reason: str | None = None
+    #: B106/schema v13 native candidate identity inputs. All four are absent
+    #: for ingested outcomes and present together for native outcomes.
+    candidate_id: str | None = None
+    source_sha256: str | None = None
+    mutated_file_sha256: str | None = None
+    execution: MutationExecution | None = None
 
     def __post_init__(self) -> None:
         _check_wire_path(self.path, "MutantOutcome.path")
@@ -1572,6 +1703,39 @@ class MutantOutcome:
                 f"MutantOutcome.discard_reason must be one of "
                 f"{list(DISCARD_REASONS)}, got {self.discard_reason!r}"
             )
+        b106_values = (
+            self.candidate_id,
+            self.source_sha256,
+            self.mutated_file_sha256,
+            self.execution,
+        )
+        if any(value is not None for value in b106_values):
+            if any(value is None for value in b106_values):
+                raise ValueError(
+                    "native candidate identity and execution fields must be "
+                    "present together"
+                )
+            for name in ("candidate_id", "source_sha256", "mutated_file_sha256"):
+                value = getattr(self, name)
+                if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+                    raise ValueError(
+                        f"MutantOutcome.{name} must be a lowercase SHA-256 digest"
+                    )
+            if not isinstance(self.execution, MutationExecution):
+                raise ValueError("MutantOutcome.execution has the wrong type")
+            expected = candidate_id_from_fields(
+                path=self.path,
+                source_sha256=self.source_sha256,
+                start_byte=self.start_byte,
+                end_byte=self.end_byte,
+                mutated_file_sha256=self.mutated_file_sha256,
+                operator=self.operator,
+            )
+            if self.candidate_id != expected:
+                raise ValueError(
+                    "MutantOutcome.candidate_id does not match its recorded "
+                    "identity inputs"
+                )
 
     @property
     def identity(self) -> tuple[str, int, int, str, str]:
@@ -1601,6 +1765,12 @@ class MutantOutcome:
             payload["kill_signal"] = self.kill_signal
         if self.discard_reason is not None:
             payload["discard_reason"] = self.discard_reason
+        if self.candidate_id is not None:
+            payload["candidate_id"] = self.candidate_id
+            payload["source_sha256"] = self.source_sha256
+            payload["mutated_file_sha256"] = self.mutated_file_sha256
+            assert self.execution is not None
+            payload["execution"] = self.execution.to_dict()
         return payload
 
 
@@ -1698,8 +1868,10 @@ class Mutation:
     #: NATIVE-only, like `liveness` itself (RW-33: applied only to native R2
     #: python lanes) -- an ingested report never populates this bucket.
     hung: tuple[MutantOutcome, ...] = ()
-    #: (B012) Deterministic candidate IDs covered by a shard run. Omitted,
-    #: never empty, so non-shard v6 payloads are unchanged.
+    #: (B106/schema v13) Exact candidate scope submitted by this native run:
+    #: the full plan or selected shard slice. An empty tuple is a real empty
+    #: scope. Omitted only when native discovery stopped before submission at
+    #: the mutant cap, or for non-native producers.
     candidate_ids: tuple[str, ...] | None = None
     #: (B091/D-23) The `budget_per_candidate` value
     #: :func:`assay.mutation.run_mutation` actually DERIVED from the measured
@@ -1749,8 +1921,6 @@ class Mutation:
         for name in MUTATION_BUCKETS:
             _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
         if self.candidate_ids is not None:
-            if not self.candidate_ids:
-                raise ValueError("mutation.candidate_ids must be omitted when empty")
             if len(self.candidate_ids) != len(set(self.candidate_ids)):
                 raise ValueError("mutation.candidate_ids contains a duplicate")
             for candidate in self.candidate_ids:
@@ -1785,6 +1955,7 @@ class Mutation:
         would use to claim a better result than it earned.
         """
         seen: dict[tuple[str, int, int, str, str], str] = {}
+        seen_candidates: dict[str, str] = {}
         for name in MUTATION_BUCKETS:
             for item in getattr(self, name):
                 previous = seen.get(item.identity)
@@ -1795,6 +1966,21 @@ class Mutation:
                         f"one outcome"
                     )
                 seen[item.identity] = name
+                if item.candidate_id is not None:
+                    previous_candidate_bucket = seen_candidates.get(item.candidate_id)
+                    if previous_candidate_bucket is not None:
+                        raise ValueError(
+                            f"mutation candidate_id {item.candidate_id!r} appears "
+                            f"in both {previous_candidate_bucket!r} and {name!r}"
+                        )
+                    seen_candidates[item.candidate_id] = name
+
+                if name != "killed" and item.execution is not None:
+                    if item.execution.witness is not None or item.execution.mode == "witness-prefix":
+                        raise ValueError(
+                            f"mutation.{name} cannot carry a kill witness or "
+                            "witness-prefix execution"
+                        )
 
     def _check_kill_signal_is_killed_only(self) -> None:
         """(P33/A-223e) a ``kill_signal`` is legal ONLY on a ``killed`` entry.
@@ -5099,6 +5285,63 @@ class Verdict:
         over-sized artifact at all, which is a stronger guarantee than an
         after-the-fact arithmetic check on a document already accepted.
         """
+        outcomes = [
+            item
+            for name in MUTATION_BUCKETS
+            for item in getattr(mutation, name)
+        ]
+        if policy.producer == "native":
+            if mutation.is_limit_sentinel:
+                if mutation.candidate_ids is not None:
+                    raise ValueError(
+                        "a pre-submission mutant-limit sentinel cannot carry "
+                        "mutation.candidate_ids because no scope was submitted"
+                    )
+            else:
+                if mutation.candidate_ids is None:
+                    raise ValueError(
+                        "a completed native mutation scope requires "
+                        "mutation.candidate_ids, including an empty scope"
+                    )
+                outcome_ids: list[str] = []
+                for item in outcomes:
+                    if any(
+                        value is None
+                        for value in (
+                            item.candidate_id,
+                            item.source_sha256,
+                            item.mutated_file_sha256,
+                            item.execution,
+                        )
+                    ):
+                        raise ValueError(
+                            "every native mutation outcome requires B106 "
+                            "candidate identity and execution provenance"
+                        )
+                    assert item.candidate_id is not None
+                    outcome_ids.append(item.candidate_id)
+                if set(mutation.candidate_ids) != set(outcome_ids):
+                    raise ValueError(
+                        "native mutation.candidate_ids must equal the IDs "
+                        "listed across every outcome bucket"
+                    )
+        else:
+            if mutation.candidate_ids is not None:
+                raise ValueError(
+                    "an ingested mutation report cannot carry native "
+                    "candidate-scope inventory"
+                )
+            if any(
+                item.candidate_id is not None
+                or item.source_sha256 is not None
+                or item.mutated_file_sha256 is not None
+                or item.execution is not None
+                for item in outcomes
+            ):
+                raise ValueError(
+                    "ingested mutation outcomes cannot carry native B106 "
+                    "identity or execution fields"
+                )
         if policy.max_mutants is None:
             return
         # (B070 fix round 1) The NATIVE product ceiling, applied HERE rather
