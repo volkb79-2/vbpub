@@ -152,6 +152,45 @@ must-fail control; this also guards the README's new B080 consumer link.
 
 ### Gate
 
-P1 reviewer result: READY. Authoritative tester-unified gate: pending. The
-gate will run against this branch tip before merge; its exact container,
-host-capacity checks, phases, exit status, and log hash will be recorded here.
+P1 reviewer result: READY. The first registered gate attempt at
+`5ba8e0a5` failed in the Topos qualification because
+`test_stream_window_without_bounds_and_frame_response_without_sequence`
+started its producer thread and immediately read `stream_window()`. That API
+is nonblocking, so the test could observe empty history if the test thread ran
+before the producer published its frame. This is a scheduling race in the
+test; host load only changes how often the race is exposed and must not define
+the assertion. The fix synchronizes through bounded `broker.current()` before
+checking history, without changing `stream_window()`'s nonblocking behavior.
+The failed raw log is preserved byte-for-byte, gzip-compressed, at
+[`assay-WAVE-C-P1-gate-2026-09-24-5ba8e0a5.log.gz`](assay-WAVE-C-P1-gate-2026-09-24-5ba8e0a5.log.gz).
+Its decompressed SHA-256 is
+`7b7a28185fece0d394e072b6657637202ae7fc66c45fea693e50519b74369cd2`; the
+compressed artifact SHA-256 is
+`d768ba76026eeafcad2d03eebc5d7ec8817ec6646adcc7d8098b9dc3533c053d`.
+
+The authoritative rerun passed at `8823bfeabffc4c1e22560753c1679b27efc28e9a`
+with all 12 expected phase markers, `ASSAY_REGISTERED_GATE_COMPLETE=1`, and
+`GATE_EXIT=0`. Container: `run-gate-assay-selfhosted-3675926-27679-1790305476`.
+The raw log is preserved at
+[`assay-WAVE-C-P1-gate-2026-09-25-8823bfea.log`](assay-WAVE-C-P1-gate-2026-09-25-8823bfea.log),
+SHA-256 `36bcde21e86e2821aef8bc51d79d23df40d9b7c79978cb10e2f90da9daf3ccde`.
+The optional cgprofile daemon was absent; run-gate used coarse rusage sampling
+and the gate result was unaffected.
+
+## P2 — B081, B094, B025 refusals
+
+The independent review of the P2 implementation at `f7895bd2` returned READY
+with no blockers. It verified B081's ownership-remedy diagnostic, B094's
+whole-lane `BAD_LANE_CONFIG` refusal and `assay verify` acceptance across R2/R3,
+and B025's attestation-timeout forward test. Its one nonblocking note was that
+a valid rejudge ID assigned to another shard was described only as unknown or
+stale. Commit `045dac4c` names operator/shard filtering in that diagnostic and
+adds a verify-accepted CLI oracle for the shard case.
+
+The earlier registered gate passed at `f7895bd255255b332f1ec5a04e6607f029e3b12c`
+with exit 0 and all 12 markers; its raw log is preserved at
+[`assay-WAVE-C-P2-gate-2026-09-25-f7895bd2.log`](assay-WAVE-C-P2-gate-2026-09-25-f7895bd2.log),
+SHA-256 `0f98ba640f2f43b3b3008c226f511ed6e7893fa13021657d49a056ca89399b16`.
+That gate predates the shard-message oracle and the later `main` tip, so it is
+historical evidence only. The current branch merged `main` at `8a4a9709` and
+is queued for a fresh registered gate before merge.
