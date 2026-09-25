@@ -102,10 +102,14 @@ default) for `.pypi`, `.npm`, `.go`, and `.oci` targets. `init` derives package 
 project manifests; `resolve` is the explicit write step for resolved state and native lock or
 constraint outputs; `check` queries registries and reports the current recorded and eligible
 versions without writing. Go `.info` commit-time and OCI image-created fallback evidence are
-called out in warnings and the report. These commands do not run as part of build, release, gate,
-or a schedule. Read [the design guide](docs/DESIGN-GUIDE.md#supply-chain-age-windowed-version-determination)
+called out in warnings and the report. Go targets also check a constrained pseudo-version and use
+the proxy's `@latest` fallback when no listed version matches. A resolve inside a Go workspace can
+update `go.work` and `go.work.sum` along with module files; inconsistent Go timestamps fail closed.
+These commands do not run as part of
+build, release, gate, or a schedule. Read [the design guide](docs/DESIGN-GUIDE.md#supply-chain-age-windowed-version-determination)
 for the policy and timestamp choices, and use the [consumer examples](docs/CONSUMERS.md#using-a-supply-chain-age-window)
-to configure targets and consume the generated artifacts.
+to configure targets and consume the generated artifacts. Registry HTTPS redirects are followed
+without forwarding credentials to a different origin; see the guides for the credential behavior.
 
 Both version spellings print exactly one `cmru <version>` identity line to
 stdout and exit 0 without diagnostics on stderr. At every parser depth,
