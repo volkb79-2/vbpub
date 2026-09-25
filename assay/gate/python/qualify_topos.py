@@ -594,7 +594,16 @@ def _expected_comparator(spec: ScenarioSpec) -> dict[str, Any] | None:
 
 def _invoke(assay_executable: Path, repo: Path, artifact_path: Path) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     proc = _run(
-        [str(assay_executable), "run", "topos-qualification", "--verdict-json", str(artifact_path)],
+        [
+            str(assay_executable),
+            "run",
+            "topos-qualification",
+            "--resume",
+            "--progress",
+            ".assay/progress-topos-qualification.jsonl",
+            "--verdict-json",
+            str(artifact_path),
+        ],
         cwd=repo,
         check=False,
     )
