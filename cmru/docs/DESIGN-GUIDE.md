@@ -79,7 +79,9 @@ rewrite argv before dispatch.
 `dependency-graph`, and `graph` are registered aliases for one implementation.
 The `handler` verb is the supported route to the project's explicit step
 handlers; `cmru-agent` and `cmru-controller` are separate installed commands,
-not hidden subcommands of `cmru`.
+not hidden subcommands of `cmru`. The [canonical CLI grammar and semantic
+audit](SPEC.md#s-cli-grammar-audit) inventories their complete option surfaces
+and is updated with every product grammar change.
 
 The get.py template is a package resource, not a path inferred from `__file__`.
 Source-checkout execution and installed-wheel execution therefore read the

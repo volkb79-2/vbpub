@@ -97,6 +97,11 @@ cmru get-py ciu --config cmru.orchestration.toml --output ciu-get.py  # render f
 cmru --help                       # generated verb catalog; use `cmru help <verb>` for options
 ```
 
+These are representative operator workflows. The complete registered grammar,
+including `cmru-agent`, `cmru-controller`, nested handler verbs, module
+adapters, every option, and the required semantic review table, is maintained
+in the [canonical CLI spec](docs/SPEC.md#s-cli-grammar-audit).
+
 `cleanup` applies the configured remote asset policy: GitHub Release records and their
 assets, release tags covered by that policy, and GHCR package versions. It does not remove a
 retained local release transaction or its `cmru-release-*` candidate branch. `abandon` is
