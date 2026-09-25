@@ -4253,3 +4253,20 @@ R2 clone, resolve `origin/main` to the exact P1 baseline (current main before
 P6 integration), not the stale repository remote-tracking ref at `e5e9b95c`;
 record the resolved base from the run verdict. The P3 DAMON live-series and
 overhead measurement remains open from RW-330.
+
+### RW-335 — 2026-09-25 21:11:56Z — install and verify the authored D-29 daemon slice
+
+The host check for P6's required daemon containment reported
+`cgprofile.slice` as `LoadState=loaded` but with empty `FragmentPath` and
+`ControlGroup`, plus unlimited `MemoryMax` and `TasksMax`. This is the
+systemd auto-vivified, unbounded placeholder explicitly covered by D-29; it
+cannot qualify the P6 live review or daemon deployment.
+
+The P6 candidate already contains the authored
+`scripts/cgroup-profiler/infra/cgprofile.slice` unit. The controller will
+install that exact file at `/etc/systemd/system/cgprofile.slice`, reload
+systemd, and verify the loaded fragment, control group, and bounded resource
+properties through `host-escape`. This is the documented operator deployment
+step, not a source repair and not a change under `/workspaces/dstdns`.
+P1's exact-tree R2 campaign remains untouched while this host prerequisite is
+established.
