@@ -364,13 +364,19 @@ pytest command:
 
 The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0
-(full tests), R1 (100% line and branch coverage), R2 (native mutation), and
-R3 (import-break canary). R2 enables liveness monitoring, and a mutant stops
-after its first failed test (`--maxfail=1`); passing full-suite runs still
-execute every test. Every assay invocation resumes and writes
-`.assay/progress-cmru.jsonl`; the verdict is `.assay/verdict-cmru.json`.
-`gate` additionally runs CMRU's release-specific coverage, mutation, canary,
-and real-enrollment evidence lanes.
+(full tests), R1 (100% line and branch coverage), and R3 (import-break
+canary). It omits native Assay R2 because a post-merge release candidate is
+already at `origin/main`, so the configured `main` base would produce no
+mutation candidates. The `gate` lane supplies R2 through its separate
+changed-source mutation campaign, based on the nearest ancestor `cmru-v*` tag;
+when that source diff is empty, it records a skipped result instead of claiming
+mutants ran. The serial R2 campaign caps each candidate at 120 seconds, stops
+after its first failed test (`--maxfail=1`), and resumes from its progress
+file; passing full-suite runs still execute every test. Every Assay invocation
+resumes and writes
+`.assay/progress-cmru.jsonl`; its verdict is `.assay/verdict-cmru.json`.
+`gate` also runs CMRU's total-coverage, cause-sensitive canary, and
+real-enrollment evidence lanes.
 
 ---
 

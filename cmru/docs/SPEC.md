@@ -1531,18 +1531,25 @@ action, reviewed like any other source change before it is committed.
 
 ## S16 — Release-gate rigor (Assay-backed)
 
-CMRU's internal `assay.toml` declares the `cmru` lane with the complete
-`R0`, `R1`, `R2`, and `R3` ladder. The lane command is the full CMRU test
-suite and emits `coverage.json`; its judge requires 100% line and branch
-coverage, forbids excluded source, and compares changed source against
-`base = "main"`. The pytest command sets `--maxfail=1`: a green run still
-executes the complete suite, while a failing mutation candidate stops at its
-first failed test instead of cascading into unrelated teardown/lock tests.
-R2 is native serial Python mutation with the declared operator set and
-per-candidate budget, with Assay liveness enabled for stalled pytest
-candidates. R3 is an import-break canary against `src/cmru/config.py`.
+CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
+the full CMRU test suite. R1 judges the `coverage.json` artifact against
+`base = "main"`, requires 100% line and branch coverage, and forbids excluded
+source. R3 runs an import-break canary against `src/cmru/config.py`.
+`--maxfail=1` is inert on the passing baseline, so it does not shorten a green
+full-suite run.
 
-**S16.1 — Snapshot boundary.** R1-R3 run in
+The release `gate` supplies R2 separately through `run-gate.toml`'s
+`mutation` lane. A release candidate is already at `origin/main`; using
+`main` as Assay's mutation base would leave no changed-source candidates and
+correctly produce `NO_MUTANTS`. The dedicated lane resolves the nearest
+ancestor `cmru-v*` tag and mutates CMRU source changed since that release tag,
+with a serial campaign, a 120-second per-candidate timeout, `--maxfail=1`,
+`--resume`, and a progress stream. An empty source diff writes explicit
+skipped evidence.
+`run-gate.py gate` runs the Assay R0/R1/R3 lane plus the tag-based R2 campaign,
+total coverage, cause-sensitive canary, and real-system enrollment checks.
+
+**S16.1 — Snapshot boundary.** Assay R1/R3 run in
 `repository-minus-unsafe-symlinks`, with exactly the three tracked Topos
 fixture paths listed in `cmru/assay.toml` omitted because their absolute link
 targets cannot be materialised safely. A new unsafe symlink is a gate error;
@@ -1552,13 +1559,13 @@ the omission list is not a general exclusion mechanism.
 `run-gate.toml` installs Assay from the selected vbpub worktree and invokes
 the `cmru` lane with the mandatory resume/progress arguments. Its verdict is
 `.assay/verdict-cmru.json` and its progress stream is
-`.assay/progress-cmru.jsonl`, both outside the judged tree. The R2 liveness
-plugin bounds stalled pytest candidates and performs process-group cleanup;
-the first-failure limit prevents a bad mutant from running the rest of the
-suite. The `gate` lane also runs CMRU's release-specific coverage, mutation,
-canary, and real-system enrollment checks; those are supplemental evidence,
-not a second definition of the shared workspace lifecycle or a substitute
-for the Assay ladder.
+`.assay/progress-cmru.jsonl`, both outside the judged tree. The separate R2
+mutation lane records `.assay/mutation-cmru.json` and appends
+`.assay/progress-mutation-cmru.jsonl`; its first-failure limit stops a bad
+mutant from running the rest of the suite. Both campaigns preserve their own
+resume state. The `gate` lane runs these with the total-coverage,
+cause-sensitive canary, and real-system enrollment checks as one release
+contract.
 
 **S16.3 — Admission boundary.** The canonical entrypoint is
 `./run-gate.py`; the tester-unified lane requires the estate-provided

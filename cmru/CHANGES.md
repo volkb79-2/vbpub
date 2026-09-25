@@ -18,6 +18,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
 
 ### Fixed
+- Keep the release-time mutation campaign based on the previous CMRU tag instead of Assay's main-based candidate set, which is empty after merge.
 - Resolve project configs already loaded from an isolated release worktree without prefixing the child path twice.
 - Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
 - Scope registry authorization to its HTTPS origin while preserving safe redirects to signed registry storage URLs.
