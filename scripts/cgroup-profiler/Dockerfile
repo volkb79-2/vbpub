@@ -55,6 +55,7 @@ WORKDIR /opt/cgprofile
 
 COPY --from=builder /opt/cgprofile/venv /opt/cgprofile/venv
 COPY cgprofile.py ./cgprofile.py
+COPY pyproject.toml ./pyproject.toml
 COPY lib/ ./lib/
 COPY docs/ ./docs/
 COPY cgprofile ./cgprofile
