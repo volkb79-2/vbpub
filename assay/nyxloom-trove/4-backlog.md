@@ -133,13 +133,16 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B079 — closed v12 `discard_reason` split — SHIPPED (`assay-v7.0.0`, A-454, release commit `47435679`; tester-unified gate PASS); two original acceptance items remain open: correct the rationale in all five locations, and produce a genuine `RuntimeError` fixture or record an explicit deferral.
 
 **Wave C (current; B080, B081, B094, B025, B095, B076; B100 conditional)**
-- B080 — istanbul default-arg branch on the signature line — OPEN (P1; B089 is its withdrawn duplicate)
+- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; P1 review READY and tester-unified PASS at `8823bfea`; B089 is its withdrawn duplicate)
 - B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (P2)
 - B094 — unknown `--rejudge` reason mapping — OPEN (P2)
 - B025 — unresolvable infrastructure refusals lack their own verdict — PARTIAL (P2 closes the final attestation-timeout oracle)
 - B095 — monitor hot-loop cost / unbounded CPU history — OPEN (P3)
 - B076 — unbounded R2 baseline has no bound — OPEN (P3 ruling and docs)
 - B100 — bounded operator report for live gate progress/verdicts — OPEN (conditional P4; start only after P0-P3 merge and gate)
+
+**Wave C P1 implemented (2026-09-24; independent review READY and authoritative gate PASS at `8823bfea`)**
+- B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation, independent review and tester-unified gate complete)
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
@@ -8615,7 +8618,60 @@ the failed production attempt and its measurement cost.
 
 ## B080 — an istanbul `default-arg` branch sits on the function-SIGNATURE line, which the `javascript` adapter's own documented guarantee leaves unattributed — so `FileCoverage`'s "no branch line outside `executed | missing`" invariant refuses a fully-executed file whose arc count is genuinely non-zero
 
-**Status: OPEN (filed 2026-09-08, addendum 2026-09-09) — no fix commit in CHANGES.md; the predicted "latent tripwire" has now fired live six times through 2026-09-22 (D-423, D-429, D-433, plus B089's three sightings), still unfixed — see the 2026-09-23 audit addendum below for the full count.**
+**Status: DONE (Wave C P1 implementation, 2026-09-24, A-456/A-459; independent review READY and authoritative tester-unified gate PASS at `8823bfea`) — parser-level shape C classifies statement-less default-argument node lines with a matching arm of the same branch from their enclosing function's call count and preserves their arcs. The multiline compatibility escalation is resolved by the operator's A-459 narrowing. B089 remains a withdrawn duplicate and is resolved by this same change.**
+
+**Implementation ruling and evidence (supersedes the proposed A/B contract and
+zero-count oracle below).** The fixed
+`handoffs/assay-P80-js-default-arg.md` contract selects A-456's shape C,
+narrowed by A-459 to nodes with at least one arm of the same branch attributed
+to the node's physical line using the existing per-arm location/fallback rule:
+`decl.start <= node < loc.start`, comparing full `(line, column)` positions,
+with exactly one function match. `f>0,b=[0]` is an executed line with an
+uncovered branch; `f=0,b=[0]` is missing with an uncovered branch. Required
+missing/malformed/ambiguous function metadata refuses `UNREADABLE_ARTIFACT`.
+Statement-derived line classifications retain priority. `FileCoverage`,
+the evaluator and B054's non-default branch disposition are unchanged.
+
+Shape A's model relaxation leaves the arc uncounted if the line is unclassified;
+B′ (drop only zero-count defaults) and D (drop every statement-less default)
+discard measurable branch evidence. The original `[0] → refuse` proposal
+confused unused defaults with uncalled functions and is withdrawn. The corrected
+A-342 adapter guarantee now includes parser classification of default-argument
+signature lines; other untracked signatures still take rule 4. The historical
+decision rows remain intact; A-459 appends the operator's governing narrowing.
+
+The broader function-call rule remains a documented alternative. A multiline
+default node on line 34 can have its arm and an executed nested-return statement
+on 35, with the outer function body starting on 36. The old parser already
+passes a diff touching only 34 at 0/0. The broad rule classifies that signature
+line from function calls and changes its count to 1/1; it can catch multiline
+defaults whose arms begin later, but changes previously-PASS numbers. The
+operator ruled on 2026-09-24 to preserve the old count: with no matching arm,
+keep the node unclassified, leave arc aggregation/disposition unchanged, and
+leave `fnMap`/`f` unread for that node. The compatibility escalation is resolved;
+the unmatched signature gap is explicit in the user-facing docs.
+
+The controller re-measured the 35-file consumer artifact read-only against this
+implementation: ChartCard 54→55, DataTable 105→108, StatCard 1→2, StatTile 37→38
+executable lines, exactly six added and no others. Each new signature line is
+executed with its original 1/1 branch and no contradiction. StatCard's
+`f=18,b=[15]` and StatTile's `f=26,b=[7]` independently show why branch counts
+cannot substitute for function counts. The controller confirmed all six nodes
+have their sole arm on the node's physical line, so all remain eligible under
+A-459. The preferences.ts:138 default already has a statement and is unchanged.
+No test reads the consumer checkout.
+Previously-PASS changed-lines numbers remain stable: a judged affected file
+previously refused because a recovered line necessarily carried an arc on
+that same unclassified line; an out-of-diff file contributes nothing to the judged
+numbers. Previously-refused whole-target lanes can now count those six lines.
+
+Focused tests cover the committed ChartCard specimen, zero-count variants,
+function boundaries/columns, malformed metadata, unchanged statement priority,
+multiple functions on one physical line, direct `tampered_missing`, and CLI
+judged/bystander/whole-target cases with `require_branch = true`. Controlled M1
+(global tolerance replacing shape C) gives 11 failures with the independent
+tamper oracle still green; M2 (type-blind classification) gives 8 B054 failures.
+Commands and complete local results are in the handoff's implementation evidence.
 
 **Proposed by:** dstdns, 2026-09-08, out of the P176 (`ui-design-system-primitives`)
 phase-2 code review and the P177 code review that inherited its consequence.
@@ -9637,7 +9693,7 @@ source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
 
 ## B089 — istanbul branch-arc self-contradiction on some `.tsx` files
 
-**Status: WITHDRAWN (duplicate of B080, 2026-09-23) — the same six default-arg-on-signature-line branch sites (ChartCard.tsx:34, StatCard.tsx:17, StatTile.tsx:28, DataTable.tsx:33-35) B080 diagnoses as "Live specimens" and root-causes; this entry is B054's drop-and-continue path firing on those same files when they sit outside the judged/diff set (B080 is the hard-refuse path when they ARE in scope). No separate fix is owed here: whichever shape (A/B) B080 ships resolves this entry's symptom too. See B080's own status line and its 2026-09-23 audit addendum for the full sighting count.**
+**Status: WITHDRAWN (duplicate of B080, 2026-09-23; resolved by its Wave C P1 implementation, A-456/A-459; independent review READY and authoritative tester-unified gate PASS at `8823bfea`) — the same six default-arg-on-signature-line branch sites (ChartCard.tsx:34, StatCard.tsx:17, StatTile.tsx:28, DataTable.tsx:33-35) B080 diagnoses as "Live specimens" and root-causes; this entry is B054's drop-and-continue path firing on those same files when they sit outside the judged/diff set (B080 is the hard-refuse path when they ARE in scope). B080's parser-level shape C, narrowed by A-459 to matching signature-line arms, preserves their arcs without a contradictory-record diagnostic; unmatched multiline node lines retain their documented gap. No separate fix is owed. See B080's status and implementation evidence.**
 
 Observed live during dstdns's `ui_unit` lane (P186 post-merge gate, 2026-09-12,
 run-gate rev 40, assay-6.1.0.pyz), against unrelated pre-existing files (P186
