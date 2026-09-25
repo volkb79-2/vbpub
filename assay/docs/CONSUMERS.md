@@ -2477,9 +2477,17 @@ wins whenever it is the nearer of the two.
 **One command is deliberately left unbounded** on an unbounded R2 lane: the
 lane's own *baseline* run, executed once before any mutant to prove the suite
 is green. `budget_per_candidate` is a per-*mutant* bound, and a baseline runs
-the whole suite, so tightening the baseline to it would refuse healthy lanes.
-That one command is covered by the caller's stall detection, not by a bound of
-assay's.
+first and may pay cold-cache, fixture-setup, and first-run compilation costs
+that later mutant invocations do not. Reusing the per-mutant bound for that
+startup work could refuse a healthy lane.
+Assay launches that baseline with `timeout=None`; the caller alone owns its
+stall detection (A-457). When invoked with `--progress`, the
+`command_running` heartbeat gives the caller's watch a liveness signal while
+the baseline command is running. Assay does not derive or apply a baseline
+timeout, and `assay verify` does not treat progress as evidence. The
+[design rationale](DESIGN-GUIDE.md#an-unbounded-r2-baseline-remains-caller-watched-a-457)
+records why this option was chosen over a new `budget_per_baseline` key or an
+overloaded `budget`.
 
 ### The progress stream
 
@@ -2637,11 +2645,16 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
   accepted and resolved to `"crashed"` before `run_mutation` ever sees it —
   `"error"` is never added to `MUTATION_BUCKETS` itself, so a verdict or a
   state record never spells it that way.
-- **An unknown `--rejudge` id refuses the WHOLE lane**
-  (`MutationStateError`), before any candidate executes — this is the one
-  rejudge refusal that cannot be validated at CLI-parse time, because the
-  current candidate set does not exist until mutation-site collection has
-  run against the current tree.
+- **An unknown or stale-source `--rejudge` id refuses the WHOLE lane** as
+  `ERROR`/`BAD_LANE_CONFIG`, before any resume record is replayed or candidate
+  executes. The check cannot run at CLI-parse time because the current
+  candidate set does not exist until mutation-site collection has run against
+  the current tree. Since that discovery follows the baseline, the whole-lane
+  refusal intentionally discards any earlier R0/R1 measurement so every
+  declared tier carries the same pair accepted by `assay verify`. A valid id
+  still re-executes only its selected candidate. A malformed, unreadable, or
+  corrupt state record remains `ERROR`/`UNREADABLE_ARTIFACT`; it is not
+  relabeled as bad input. See the [design rationale](DESIGN-GUIDE.md#mutation-resume-and-sharding-b012).
 - **The ids `--rejudge` takes are `mutation.candidate_id()` digests — the
   same sha256 string a state record and a `candidate`/`plan` progress event
   key by — NOT `MutantOutcome.identity`.** `MutantOutcome.identity` (on a
@@ -3183,6 +3196,16 @@ assay: NO_MEASUREMENT/MISSING_EXTERNAL_TOOL: the 'go' adapter needs the external
 assay: ERROR/BAD_LANE_CONFIG: lane 'unit' declares env_required ['DATABASE_URL'] which is not set in the invoking environment -- assay refuses to run a lane whose declared inputs are absent rather than measure it with them missing. Set DATABASE_URL, or drop it from 'env_required'.
 assay: ERROR/BAD_LANE_CONFIG: --shard 'one-of-two' is not a shard spec: it must be INDEX/COUNT with zero-based integers and 0 <= INDEX < COUNT (for example --shard 0/4).
 ```
+
+<a id="b081-ownership-remedy"></a>
+**Git's dubious-ownership message needs an ownership fix (B081).** Assay
+retains Git's `fatal: detected dubious ownership` line but removes Git's
+following `safe.directory` command. Assay replaces Git's environment and
+sets `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so that
+configuration cannot be read by Git during the run. Run assay as the
+repository owner or fix the tree's ownership/uid mapping. Adding a local
+repository setting does not grant Git's protected `safe.directory` exception.
+See the [design reason](DESIGN-GUIDE.md#git-dubious-ownership-and-safe-directory-b081).
 
 The complement of that rule also holds, and matters more: **a refusal whose
 claim the verdict does not carry prints no line.** One R2 refusal — a
@@ -3836,6 +3859,32 @@ lane time; Assay's own self-hosting gate builds and installs an exact-OID wheel
 in temporary container environments. `analyze` is part of that CLI, not a
 separately injected tool. These operations accept explicit files and paths,
 require no lane configuration, and add no runtime dependencies.
+
+### Take one gate snapshot with `assay analyze report` (B100)
+
+When a long gate's terminal buffer is too small, give `report` the exact
+verdict, progress stream, and retained log paths. It returns a single sorted
+JSON snapshot (or `--format text`) and exits immediately:
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze report --expected-commit "$REVIEW_HEAD" \
+  --verdict selftest "$WORKTREE/.assay/verdict-selftest.json" \
+  --progress selftest "$WORKTREE/.assay/progress-selftest.jsonl" \
+  --log selftest "$GATE_LOG" --format json
+```
+
+Set `WORKTREE` to the reviewed checkout, `REVIEW_HEAD` to the controller's
+agreed candidate, and `GATE_LOG` to the retained gate output file; do not infer
+the expected commit from the current checkout. A valid passing verdict exits 0; a valid adverse
+verdict exits 1; missing, malformed, stale-only, or mismatched evidence exits
+2; and fresh nonterminal progress with no verdict exits 3 when running is the
+highest-priority status present. For several lanes,
+repeat the named options; status and exit precedence are
+`evidence_error > fail > running > pass`. Log text is diagnostic only. The
+report hashes the complete supplied files but displays at most the selected
+bounded error lines, so a controller can retrieve the full log by the reported
+path when necessary. See the [B100 design and limits](DESIGN-GUIDE.md#bounded-live-gate-snapshot-b100).
 
 Set `WORKTREE` to the reviewed project's directory containing `run-gate.py`
 (for P5, the checkout's `run-gate-project/`) and `REVIEW_HEAD` to the full expected

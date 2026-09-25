@@ -152,6 +152,203 @@ must-fail control; this also guards the README's new B080 consumer link.
 
 ### Gate
 
-P1 reviewer result: READY. Authoritative tester-unified gate: pending. The
-gate will run against this branch tip before merge; its exact container,
-host-capacity checks, phases, exit status, and log hash will be recorded here.
+P1 reviewer result: READY. The first registered gate attempt at
+`5ba8e0a5` failed in the Topos qualification because
+`test_stream_window_without_bounds_and_frame_response_without_sequence`
+started its producer thread and immediately read `stream_window()`. That API
+is nonblocking, so the test could observe empty history if the test thread ran
+before the producer published its frame. This is a scheduling race in the
+test; host load only changes how often the race is exposed and must not define
+the assertion. The fix synchronizes through bounded `broker.current()` before
+checking history, without changing `stream_window()`'s nonblocking behavior.
+The failed raw log is preserved byte-for-byte, gzip-compressed, at
+[`assay-WAVE-C-P1-gate-2026-09-24-5ba8e0a5.log.gz`](assay-WAVE-C-P1-gate-2026-09-24-5ba8e0a5.log.gz).
+Its decompressed SHA-256 is
+`7b7a28185fece0d394e072b6657637202ae7fc66c45fea693e50519b74369cd2`; the
+compressed artifact SHA-256 is
+`d768ba76026eeafcad2d03eebc5d7ec8817ec6646adcc7d8098b9dc3533c053d`.
+
+The authoritative rerun passed at `8823bfeabffc4c1e22560753c1679b27efc28e9a`
+with all 12 expected phase markers, `ASSAY_REGISTERED_GATE_COMPLETE=1`, and
+`GATE_EXIT=0`. Container: `run-gate-assay-selfhosted-3675926-27679-1790305476`.
+The raw log is preserved at
+[`assay-WAVE-C-P1-gate-2026-09-25-8823bfea.log`](assay-WAVE-C-P1-gate-2026-09-25-8823bfea.log),
+SHA-256 `36bcde21e86e2821aef8bc51d79d23df40d9b7c79978cb10e2f90da9daf3ccde`.
+The optional cgprofile daemon was absent; run-gate used coarse rusage sampling
+and the gate result was unaffected.
+
+## P2 — B081, B094, B025 refusals
+
+The independent review of the P2 implementation at `f7895bd2` returned READY
+with no blockers. It verified B081's ownership-remedy diagnostic, B094's
+whole-lane `BAD_LANE_CONFIG` refusal and `assay verify` acceptance across R2/R3,
+and B025's attestation-timeout forward test. Its one nonblocking note was that
+a valid rejudge ID assigned to another shard was described only as unknown or
+stale. Commit `045dac4c` names operator/shard filtering in that diagnostic and
+adds a verify-accepted CLI oracle for the shard case.
+
+The earlier registered gate passed at `f7895bd255255b332f1ec5a04e6607f029e3b12c`
+with exit 0 and all 12 markers; its raw log is preserved at
+[`assay-WAVE-C-P2-gate-2026-09-25-f7895bd2.log`](assay-WAVE-C-P2-gate-2026-09-25-f7895bd2.log),
+SHA-256 `0f98ba640f2f43b3b3008c226f511ed6e7893fa13021657d49a056ca89399b16`.
+That gate predates the shard-message oracle and the later `main` tip, so it is
+historical evidence only. The branch merged `main` at `8a4a9709`.
+
+### Final review and repairs
+
+A fresh independent review at `11ff984f` returned NEEDS-FIX for three findings:
+the shared Topos helper passed progress flags to the pinned Assay 1.2.5 release
+smoke (whose CLI rejects them); P0's already-released B101/B102/B093/B079 and
+`assay analyze` changelog records had reappeared under `[Unreleased]`; and the
+merge had introduced unrelated trailing-whitespace cleanup in
+`libraries/cli-extended/BACKLOG.md`. The gate confirmed the first finding:
+4,988 passed, 21 skipped, one release-smoke failure in 492.14s. Its raw log is
+preserved byte-for-byte, gzip-compressed, at
+[`assay-WAVE-C-P2-gate-2026-09-25-11ff984f.log.gz`](assay-WAVE-C-P2-gate-2026-09-25-11ff984f.log.gz).
+Raw SHA-256: `fcbac36218e6d50728120dda35aa8884f05fcb0549a3d39389c00101a007d45b`;
+compressed artifact SHA-256:
+`a785a979951dad239920cd5927fa9c9920094f846d4b98d62bdd11a80a58dd61`.
+
+Commit `7d45deaa` makes progress recording conditional for the historical
+release owner while current judge invocations retain `--resume --progress`,
+restores the main changelog and adds only P2 notes, and removes the unrelated
+backlog diff. Its full gate then found one test-stub signature mismatch after
+the helper gained a keyword-only progress option: 4,988 passed, 21 skipped,
+one failed in 536.84s. The stub now accepts the keyword and asserts that the
+current judge enables progress. The focused diagnostic test passed (`1 passed
+in 0.13s`). The failed raw log is preserved at
+[`assay-WAVE-C-P2-gate-2026-09-25-7d45deaa.log.gz`](assay-WAVE-C-P2-gate-2026-09-25-7d45deaa.log.gz),
+raw SHA-256 `e05a193193d56593babd04572ee0d196618da4b56f30b8a681e6c9f87fbde3a8`;
+compressed artifact SHA-256
+`789af01c8b605a427a8f9e4fc235713e81fd9ea6f3c2494eca4120400c4797be`.
+
+The final read-only review returned READY at `f21f96291e6bd36b3ceff836a9aa97cb52b530a9`
+against `8a4a9709`, with no actionable findings. It confirmed the P2 behavior,
+docs, corrected release-smoke argv, changelog, and test-stub update.
+
+### Authoritative gate
+
+The registered `./run-gate.py tester-unified` gate passed on exact code tip
+`f21f96291e6bd36b3ceff836a9aa97cb52b530a9`. Container
+`run-gate-assay-selfhosted-3892837-23513-1790314123` was inspected with a
+3-CPU limit under `dev-gates.slice`. At the 90-second check, all six setup and
+compatibility phases had passed; the `tester-unified` assay progress stream
+reported the direct pytest command running at 60s, with no error. That main
+lane then passed in 533.29s. The nested current Topos run used
+`--resume --progress`, wrote its progress stream, and passed its primary
+coverage phase in 125.46s; the pinned 1.2.5 smoke also passed with its original
+CLI arguments. The CMRU B006A qualification, 7 independent self-hosting tests
+(13.61s), and pyflakes passed. All 12 `ASSAY_GATE_PHASE=` markers were
+present, as were `ASSAY_GATE_CONTAINER_EXIT=0`,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, run-gate lane exit 0, and
+`GATE_OUTER_EXIT=0`. The optional `cgprofile-host-daemon` was absent; run-gate
+used coarse rusage sampling and reported no gate impact.
+
+The passing raw output is preserved at
+[`assay-WAVE-C-P2-gate-2026-09-25-f21f9629.log.gz`](assay-WAVE-C-P2-gate-2026-09-25-f21f9629.log.gz),
+raw SHA-256 `8561f720e6c8251ed8183de169254093582b6ad8603bc564cbd1d9478da466f9`;
+compressed artifact SHA-256
+`efe5a25ec15783e617d14ca127c66b06e3699f7d81718e8b2b634475e463395a`.
+
+The controller report and three preserved gate logs are report-only evidence
+after the passing code-tip gate; the tested source tip remains `f21f9629`.
+
+
+## P3 — B095 monitor cost and B076 baseline ruling
+
+P2 merged serially to `main` at `130ba5ba0b639dcdafbf1c2a18d0f09c9c4a5c4a`; this package's CIU worktree was created from that exact main tip on branch `assay-wave-c-p3-b095-b076`.
+
+B095 now keeps the CPU samples needed for the trailing 30-second comparison in a deque, dropping an old sample only when its successor also meets the window boundary. A deterministic 20,000-tick virtual run compares every resulting baseline and CPU-growth classification against the former reverse-list algorithm, includes `/proc`-style missing samples, and asserts a maximum of 121 entries at a 250ms minimum interval. `_EventProgressReader` tracks each candidate file's appended bytes, pending partial line, record count and finish-pid state; it resets on missing/replaced/truncated files. Differential tests compare it with `_read_events_progress` through split records, malformed tails, all original `str.splitlines()` boundaries (including Unicode separators), mixed stamped/unstamped finish records, atomic file replacement and in-place truncation. A reviewer also ran 25,289 differential event polls across 640 deterministic append sequences. Process-tree accounting and `/proc` failure behavior remain as before, with the existing regression tests still exercising them.
+
+After the line-boundary compatibility fix, a refreshed probe used a valid 60,000-record NDJSON fixture (8,377,780 bytes) under Python 3.14.7 on Linux 7.1.8 / x86_64. It warmed the full-file reference twice, then measured seven calls: median 209.15ms (201.18–542.46ms). Seven independent incremental readers parsed the initial file at a median 164.48ms (152.84–192.38ms); reading one subsequently appended record took 0.0562ms; seven unchanged polls had a 0.0213ms median (0.0192–0.1742ms). Results matched at `(60000, False)` and `(60001, False)`. The unchanged-poll median is about 9,800 times lower than a full re-read in this probe. Times are descriptive and do not gate behavior.
+
+The process-tree sampling probe separately called `tree_cpu_seconds` 1,000 times on a one-process tree: 0.0471ms median, 0.0774ms p95, 0.9978ms maximum. Its code remains unchanged because the measured sampling cost is small beside the former full event rescan, and preserving its process-tree and `/proc` failure semantics is more valuable than speculative changes.
+
+B076 is ruled in A-457 as option (a): the native R2 baseline continues to receive `timeout=None`; caller-side stall detection owns it, with `command_running` as the signal when `--progress` is enabled. The docs name the rejected `budget_per_baseline` and overloaded-`budget` alternatives. No reason-code or lane/verdict schema changed, and `assay verify` remains untouched.
+
+Focused checks after the line-boundary and replacement regressions landed:
+`tests/test_liveness_runner_monitor.py`, `tests/test_liveness_proc_helpers.py`,
+`tests/test_config_unbounded_budget.py`, and
+`tests/test_docs_examples_and_vocabulary.py` passed (163 tests, 1.62s).
+Ruff's `E4,E7,E9,F` selection passed on changed Python modules; `git diff
+--check` passed. Fresh independent review against main `130ba5ba` returned
+READY, with no blockers; the reviewer verified a 25,289-poll differential
+probe, the 20,000-tick CPU history oracle, docs anchors, and the replacement
+and separator regressions.
+
+### Authoritative gate
+
+The registered `./run-gate.py tester-unified` gate passed on exact code tip
+`09d1f38d0c95118b0a98724bd541a5c16cf109cc`. Container
+`run-gate-assay-selfhosted-3989906-21494-1790318054` ran under
+`dev-gates.slice`; inspection found it initially had no CPU cap, so
+`docker update --cpus=3` was applied within about 39 seconds and verified at
+3 CPUs for the rest of the run. At the required 90-second check, all six setup
+and compatibility phases had passed and the self-hosted lane was progressing;
+the estimate was 10–15 minutes based on P2. It completed in about 17 minutes
+from launch. Run-gate removed the container on completion.
+
+All 12 `ASSAY_GATE_PHASE=` markers were present, along with
+`ASSAY_GATE_CONTAINER_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`, the
+registered lane exit 0, and the outer `GATE_EXIT=0` marker. The Topos
+qualification, CMRU B006A qualification, seven independent self-hosting tests,
+and pyflakes phase passed. The optional cgprofile daemon was absent; run-gate
+used coarse rusage sampling and reported no effect on the gate result.
+
+The raw gate output is preserved at
+[`assay-WAVE-C-P3-gate-2026-09-25-09d1f38d.log`](assay-WAVE-C-P3-gate-2026-09-25-09d1f38d.log),
+SHA-256 `fa478e0c3c6e15e1b3e7c336a6299cde2bd3405a4e80e49336ff9b8626b46a4c`.
+It is 6,348 bytes; no compression was needed.
+
+The gate log and this result entry are report-only additions after the passing
+code-tip gate. The tested source tip remains `09d1f38d`.
+
+
+## P4 — B100 `assay analyze report` (review READY; gate PASS)
+
+P4 is in CIU worktree `/workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report`,
+branch `assay-wave-c-p4-b100-report`, CIU id `9fcfcc`, created from the
+P3-merged base `8911e636ad09071868c813347bf7a4d0a00049bb`.
+
+The implementation adds the read-only `assay analyze report` snapshot under
+A-460, a packaged JSON schema v1, and CLI examples in README, DESIGN-GUIDE,
+CONSUMERS, and INTERNAL-CONSUMERS. Status is derived only from a verifier-valid
+commit-bound verdict or fresh nonterminal progress. The progress reader uses
+the latest run and tolerates one malformed unterminated final record; the log
+reader hashes the complete file and scans only its final 64 KiB for bounded
+diagnostics. The command writes no report or progress artifact.
+
+Focused verification after the first adversarial review found boundary cases:
+
+- `tests/test_analysis.py` and `tests/test_docs_examples_and_vocabulary.py`:
+  **165 passed**. Added regressions for malformed oversized torn progress,
+  oversized complete progress records both newline-terminated and valid but
+  unterminated, freshness observed after an earlier lane's log snapshot, a
+  complete diagnostic exactly at the retained-window boundary, ignored-file
+  writes, and parser coverage for each B100 example.
+- Focused Ruff selections (`E4,E7,E9,F` and `I001`), pyflakes on the changed
+  Python files, and `git diff --check`: **PASS** (estate venv).
+- Fresh independent adversarial review against the P4 base: **READY** after
+  round 3. The reviewer confirmed the earlier findings were fixed and
+  differential-checked the oversized-record framer against 5,000 generated
+  or mutated JSON documents and 18 explicit syntax cases; no remaining
+  blockers.
+- Registered detached `./run-gate.py tester-unified` passed on exact code tip
+  `7859057f802640e905497f0132cc802212e07c41`. It started at approximately
+  2026-09-25 10:37:54 UTC and completed at approximately 10:53 UTC. At the
+  required 90-second check, six of twelve phase markers had passed and the
+  gate was progressing; the estimate was 18–25 minutes. All twelve phase
+  markers later appeared, including the Topos and CMRU qualifications, and
+  the self-hosted lane passed. Exit evidence: `ASSAY_GATE_CONTAINER_EXIT=0`,
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, lane exit 0, and `GATE_EXIT=0`.
+- Container `run-gate-assay-selfhosted-4171085-30356-1790332674` ran under
+  `dev-gates.slice`. The nested gate container was capped at 3 CPUs with
+  `docker update --cpus=3`; the limit was verified in Docker's `NanoCpus`
+  field. The container was removed after completion. The optional
+  `cgprofile-host-daemon` was unavailable, so run-gate reported coarse rusage
+  sampling; this did not affect the gate result.
+- The raw output is preserved at
+  [`assay-WAVE-C-P4-gate-2026-09-25-7859057f.log`](assay-WAVE-C-P4-gate-2026-09-25-7859057f.log),
+  SHA-256 `a12909d52a86e5e17d334b1584daba4bb61bb1f744ca633b2dfab8754edf11fe`.
+  The log and this result entry are report-only additions after the passing
+  code-tip gate; the tested source tip remains `7859057f`.

@@ -361,6 +361,8 @@ _DURATION_HINT = "expected a duration such as '90s', '5m' or '1h30m'"
 #: **Admissible only where every unit is bounded** (see
 #: :func:`_refuse_unbounded_without_unit_bounds`): an R0/R1 lane is ONE
 #: command whose only bound IS ``budget``, so it is refused there by name.
+#: A native R2 lane's pre-sweep baseline intentionally remains ``timeout=None``
+#: under A-457; stall detection for that command belongs to the caller.
 #: Stall detection is NOT assay's -- assay's job stops at emitting a rich
 #: enough progress stream (B064/B065) for an external watcher (run-gate
 #: RG-36) to compute staleness. assay gains no stall threshold of its own.
@@ -2069,8 +2071,9 @@ def _refuse_unbounded_without_unit_bounds(
     ``judge.mutation.budget_per_candidate``, so the unguessable bulk -- the
     part whose length genuinely cannot be predicted, which is the reason
     ``unbounded`` exists at all -- is bounded per unit. The single command
-    that shape still leaves unbounded is the pre-sweep baseline, which is
-    B076: filed, reasoned, and deliberately not closed here.
+    that shape still leaves unbounded is the pre-sweep baseline. B076's A-457
+    ruling intentionally leaves it at ``timeout=None`` for the caller to
+    watch; ``--progress``'s ``command_running`` heartbeat is the signal.
 
     **An R3 canary does not make a lane admissible.** This was the shipped
     bug: both refusal arms were conditioned on the ABSENCE of R3
@@ -2102,11 +2105,15 @@ def _refuse_unbounded_without_unit_bounds(
     the suite is green before any mutant -- is not covered by
     ``budget_per_candidate`` and is deliberately NOT bounded by it here:
     a baseline runs the whole suite while a mutant runs it once under a
-    per-mutant bound, so tightening the baseline to the per-candidate value
-    would refuse healthy lanes. On an unbounded lane that one command is
+    per-mutant bound. The first baseline can also pay cold-cache,
+    fixture-setup and first-run compilation costs that later mutant
+    invocations do not, so reusing the per-candidate value can refuse healthy
+    lanes. On an unbounded lane that one command is
     therefore bounded only by the caller's own stall detection, for which
-    B064's ``command_running`` heartbeat is the signal. Recorded here rather
-    than left for a reader to discover, and filed as its own backlog entry.
+    B064's ``command_running`` heartbeat is the signal when ``--progress``
+    is enabled. B076 is ruled by A-457: no baseline key is added, and this
+    function's admission rule does not claim that the baseline itself is
+    bounded.
     """
     rigor = tuple(rigor)
     r2 = "R2" in rigor

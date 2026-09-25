@@ -132,17 +132,22 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B084 — Go-section docs drift (stale pin table, `golang:1.25` wording) — DONE (consumer docs in `5bf832a4`; tester-unified PASS on `4ed15f31`)
 - B079 — closed v12 `discard_reason` split — SHIPPED (`assay-v7.0.0`, A-454, release commit `47435679`; tester-unified gate PASS); two original acceptance items remain open: correct the rationale in all five locations, and produce a genuine `RuntimeError` fixture or record an explicit deferral.
 
-**Wave C (current; B080, B081, B094, B025, B095, B076; B100 conditional)**
+**Wave C (current; B080, B081, B094, B025, B095, B076; B100 P4)**
 - B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; P1 review READY and tester-unified PASS at `8823bfea`; B089 is its withdrawn duplicate)
-- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (P2)
-- B094 — unknown `--rejudge` reason mapping — OPEN (P2)
-- B025 — unresolvable infrastructure refusals lack their own verdict — PARTIAL (P2 closes the final attestation-timeout oracle)
-- B095 — monitor hot-loop cost / unbounded CPU history — OPEN (P3)
-- B076 — unbounded R2 baseline has no bound — OPEN (P3 ruling and docs)
-- B100 — bounded operator report for live gate progress/verdicts — OPEN (conditional P4; start only after P0-P3 merge and gate)
+- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — DONE (P2; merged at `130ba5ba`)
+- B094 — unknown `--rejudge` reason mapping — DONE (A-458; P2; merged at `130ba5ba`)
+- B025 — unresolvable infrastructure refusals lack their own verdict — DONE (P2 closes the final attestation-timeout oracle; merged at `130ba5ba`)
+- B095 — monitor hot-loop cost / unbounded CPU history — DONE (P3 independent review READY and tester-unified PASS on `09d1f38d`)
+- B076 — unbounded R2 baseline has no bound — RULED (A-457; caller-watched, with documentation)
+- B100 — bounded operator report for live gate progress/verdicts — DONE (P4 review READY; registered tester-unified PASS on `7859057f`; merged evidence recorded in the Wave C controller log)
 
 **Wave C P1 implemented (2026-09-24; independent review READY and authoritative gate PASS at `8823bfea`)**
 - B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation, independent review and tester-unified gate complete)
+
+**Wave C P2 (merged at `130ba5ba`)**
+- B081 — dubious-ownership `GIT_FAILED` remedy — implementation, review and registered gate complete
+- B094 — unknown/stale `--rejudge` classification — implementation and CLI/verify oracles complete (A-458)
+- B025 — attestation-timeout infrastructure forward — dedicated regression and registered gate complete
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
@@ -2612,7 +2617,7 @@ evidence — filed as **B062**.
 
 ## B025 — a refusal whose OWN cause is an unresolvable infrastructure declaration writes no verdict artifact
 
-**Status: PARTIAL (v2.4.0/2.4.1, 2026-08-25) — A-308; 4 crash sites fixed, one acceptance box (attestation-LANE_TIMEOUT forward test) explicitly unmet.**
+**Status: IMPLEMENTED (Wave C P2, 2026-09-24; targeted test and controlled-red proof complete, registered gate pending) — A-308 plus the attestation-timeout forward oracle.**
 
 **Filed 2026-08-25 (round 1 remediation), rescoped 2026-08-25 after round 2
 review + a round-3 partial fix narrowed it.** Not itself a crash — the
@@ -2681,12 +2686,11 @@ resolutions:
    fix, see A-299); resolves every case EXCEPT the one this entry is now
    scoped to (the source itself is the thing that's broken).
 
-**Known gap, not yet closed:** `cli.py`'s attestation `LANE_TIMEOUT` refusal
-(the OTHER of the two `cli.py` sites, alongside the adapter-refusal one the
-new test exercises) is forwarded by inspection/symmetry but has **no test**
-— reverting only that site leaves the full `test_cli_run.py` suite green.
-Triggering it needs a real attestation-deadline timeout, not attempted in
-any round. Close this alongside whichever acceptance item below lands next.
+**Acceptance gap closed in Wave C P2.** A dedicated CLI test reaches this
+attestation `LANE_TIMEOUT` call by monkeypatching `git.verify_exact_commit`,
+and declares a resolvable `derived:` infrastructure fact. It proves the
+refusal carries the resolved environment and goes red when only the
+attestation-timeout call's infrastructure kwargs are removed.
 
 ### Acceptance
 
@@ -2694,10 +2698,10 @@ any round. Close this alongside whichever acceptance item below lands next.
       in `_run_reserved` (`cli.py`, 2 sites) forwards
       `infrastructure_source`/`infrastructure_environment` (round 3, both
       passes — see A-298/A-299);
-- [ ] the `cli.py` attestation-`LANE_TIMEOUT` forward gets its own test
-      (currently unguarded — see "Known gap" above; still open, needs a real
-      attestation-deadline timeout to trigger, not attempted this wave
-      either — a known, accepted, narrow gap, not a regression);
+- [x] the `cli.py` attestation-`LANE_TIMEOUT` forward gets its own test at
+      the `git.verify_exact_commit` monkeypatch seam. Removing only that
+      call's infrastructure kwargs makes the new test fail on the degraded
+      `env_effective`/`env_effective_incomplete` result.
 - [x] a decision recorded on which of options 1-3 handles the remaining case
       (infrastructure itself unresolvable) — decided: a refined option 1
       (A-308) — `env_effective` becomes exactly `lane.env`, paired with a new
@@ -2723,12 +2727,11 @@ any round. Close this alongside whichever acceptance item below lands next.
       test per crash site (four total, two per round), all verified
       red-first.
 
-**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), except the
-one known, narrow, pre-existing gap noted above (attestation-timeout
-forward test) and the DIFFERENT, wider "lane-wide `LANE_TIMEOUT` also
-writes no verdict" gap round 2 review found and filed separately as
-B028 (same family, bigger blast radius, needs its own design pass).**
-See A-308.
+**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), with the
+separate attestation-timeout forward-test gap closed in Wave C P2 on
+2026-09-24.** The different, wider "lane-wide `LANE_TIMEOUT` also writes no
+verdict" gap found by round 2 review remains filed separately as B028; it was
+resolved in Wave D/v5.0.0 under A-415. See A-308.
 
 ---
 
@@ -8278,7 +8281,7 @@ two independent tests fail, naming the file and function.
 
 ## B076 — an unbounded R2 lane's own BASELINE run is the one command B067 leaves with no bound at all
 
-**Status: OPEN (filed 2026-09-08, deliberately not ruled) — `config.py`'s own docstring still says "B076: filed, reasoned, and deliberately not closed here"; no `budget_per_baseline` and no A-row exist. (Corrected 2026-09-23: this entry was first created fresh on 2026-09-08, `7f2ba056` — there is no earlier 2026-08-25 filing to restate; the commit's own body confirms "Filed while building this: B076".)**
+**Status: RULED (A-457, 2026-09-25) — option (a): the native R2 baseline remains unbounded at Assay's process boundary and watched by the caller. No new lane key, reason code, or schema field is introduced.**
 
 **Filed 2026-09-08 by the progress/resume wave's implementer, from building
 B067 rather than from a review. Recorded because B067's own rule —
@@ -8325,30 +8328,29 @@ defensible together only because the R2 sweep, not the baseline, is the part
 whose length cannot be guessed. That is a judgment, and it should be recorded
 as one.
 
-### The options, none of them chosen here
+### The ruling
 
-- **(a) Leave it.** The caller already watches; B064's `command_running`
-  heartbeat makes a stalled baseline legible in the progress stream. Costs
-  nothing, states the gap in the docs (what shipped).
-- **(b) `judge.mutation.budget_per_baseline`.** A third per-unit key, only
+- **(a) Leave it — chosen.** An unbounded R2 lane's baseline keeps
+  `timeout=None`. The caller owns stall detection; `--progress` exposes the
+  `command_running` heartbeat while that baseline command runs. This is the
+  existing division of responsibility and needs no config or wire change.
+- **(b) `judge.mutation.budget_per_baseline` — rejected.** A third per-unit key, only
   meaningful under `unbounded`. Honest, and it makes B067's rule literally
   true — at the cost of a key most lanes would have to guess a value for,
   which is the failure mode `unbounded` was introduced to remove.
-- **(c) Reuse `budget` as the baseline bound.** i.e. `budget = "unbounded"`
+- **(c) Reuse `budget` as the baseline bound — rejected.** i.e. `budget = "unbounded"`
   means "unbounded for the SWEEP", and a lane declares a numeric duration
   that applies to the baseline alone. Compact, but it gives one key two
   meanings depending on rigor, which is exactly the kind of overload
   DESIGN-GUIDE §5 refuses elsewhere.
 
-### Acceptance (for whoever picks this up)
+### Acceptance
 
-- [ ] a ruling recorded, naming the rejected options above;
-- [ ] if (b) or (c) is built: an unbounded R2 lane's baseline is observably
-      bounded at the process boundary (the `timeouts` assertion above flips
-      from `None` to the declared value), and a baseline that exceeds it is
-      a NAMED terminal rather than a bare `LANE_TIMEOUT` a reader would
-      misattribute to the sweep;
-- [ ] `assay verify` untouched either way — none of this is evidence.
+- [x] A-457 rules option (a) and records options (b) and (c) as rejected.
+- [x] The existing real-run assertion confirms `timeout=None` for the
+      baseline and `45s` for each mutant; README, DESIGN-GUIDE, and CONSUMERS
+      document the caller-owned stall watch and progress heartbeat.
+- [x] `assay verify` remains untouched; this is not evidence.
 
 ---
 
@@ -8957,7 +8959,7 @@ this entry's priority.
 
 ## B081 — a "dubious ownership" `GIT_FAILED` passes through git's own remedy, which `_REPLACEMENT_ENV` has made unreachable by construction: the message sends the consumer to a fix assay guarantees cannot work
 
-**Status: OPEN (docs ask, filed 2026-09-08 as B081-B084 batch, `57d52972`) — no ownership/`safe.directory` remedy message exists anywhere in `src/assay/git.py`.**
+**Status: IMPLEMENTED (Wave C P2, 2026-09-24; targeted tests pass, registered gate pending) — `_resolve_repo` names the ownership mismatch, assay's replacement Git configuration, and the ownership remedy before retaining Git's `fatal:` line.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, while wiring an assay 6.0.0 Go R1
 changed-line-coverage lane into the `pterodactyl/wings` patch stack
@@ -9054,18 +9056,21 @@ ownership is the only thing that works.
 
 ### Acceptance
 
-- [ ] a tree whose owner uid differs from the running user refuses with an
+- [x] a tree whose owner uid differs from the running user refuses with an
       assay-composed sentence naming the ownership mismatch and the fact that
       `safe.directory` is unreachable under assay's replacement environment,
       with git's own `fatal:` retained after it;
-- [ ] the message does NOT propose `git config --global --add safe.directory`
+- [x] the message does NOT propose `git config --global --add safe.directory`
       as a remedy anywhere;
-- [ ] a healthy resolution is unchanged and the probe is never consulted on
+- [x] a healthy resolution is unchanged and the probe is never consulted on
       it (B068's diagnostic-only contract);
-- [ ] the OTHER bootstrap failures stay exactly as they are — the linked-
+- [x] the OTHER bootstrap failures stay exactly as they are — the linked-
       worktree gap (B068) still wins where it applies, and an unrecognised
       cause still passes through unchanged;
-- [ ] a regression test pins the new sentence.
+- [x] regression tests pin Git's captured fatal line, including a path longer
+      than the generic 200-character diagnostic cap, strip its remedy, keep
+      healthy resolution probe-free, and preserve an unrecognised bootstrap
+      failure's existing message (`tests/test_git_boundary.py`).
 
 ## B082 — a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so
 
@@ -10056,36 +10061,53 @@ README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the policy.
 
 ## B094 — P7 S3 / N5: unknown `--rejudge` reason mapping
 
-**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — explicitly excluded from the B091 P7 round-1 fold-in commit (S2,S4,S7-S10 only); no later CHANGES.md entry addresses it.**
+**Status: IMPLEMENTED (Wave C P2, 2026-09-24; CLI and `assay verify` oracles complete, registered gate pending) — A-458 routes invalid input through the existing whole-lane `BAD_LANE_CONFIG` refusal.**
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** An unknown candidate
-id correctly refuses with the right message, but reports
-`ERROR/UNREADABLE_ARTIFACT` (exit 2). `MutationStateError` is shared across
-the mutation-state refusal path; use a distinct exception or an explicit
-per-raise reason to classify invalid user input without relabeling real
-unreadable/corrupt state. Round-2 N5 reproduced the current behavior on
-the real CLI; no mapping change is included in 6.2.0's B6 repair.
+An unknown id or an id made stale by source-byte changes refuses with
+`ERROR`/`BAD_LANE_CONFIG` (exit 2) before any record is replayed. A distinct
+input exception leaves `MutationStateError` and its
+`ERROR`/`UNREADABLE_ARTIFACT` classification intact for corrupt stores. The
+check occurs after the baseline, so A-458 uses the existing whole-lane
+refusal shape; this preserves `assay verify` acceptance on R0/R2/R3 lanes at
+the cost of discarding already-measured R0/R1 results.
 
-Oracle: unknown and stale-source ids refuse before record replay with the
-chosen input-refusal code; unreadable/corrupt stores retain artifact-error
-codes; valid ids still rejudge only their selected records. Sync all three
-user documents if the public reason vocabulary or compatibility changes.
+Oracle: real CLI tests cover unknown, stale-source, corrupt, and valid ids;
+unknown and stale refusals are passed through `assay verify`, corrupt state
+remains `UNREADABLE_ARTIFACT`, and valid ids rejudge only the selected
+record. README, DESIGN-GUIDE, and CONSUMERS document the user-visible
+classification and its ordering cost.
 
 ## B095 — P7 S5: monitor hot-loop cost and unbounded CPU history
 
-**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — explicitly excluded from the B091 P7 round-1 fold-in commit; no later CHANGES.md entry addresses it.**
+**Status: DONE (Wave C P3, 2026-09-25; implementation `09d1f38d`, independent review READY, tester-unified PASS). CPU history is bounded to the 30-second trailing edge; monitoring reads only newly appended event bytes.**
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** The one-second loop
-rescans event/proc data and retains an unbounded `cpu_samples` list, including
-for unbounded candidates. Trim history while retaining the sample needed
-at the trailing-window edge; assess incremental event parsing and proc
-sampling costs separately. This is a performance change in the loop just
-hardened by B1/B2/B6 and needs its own review and measurement.
+The one-second loop previously rescanned the whole event file and retained an
+unbounded `cpu_samples` list, including for unbounded candidates. The monitor
+now retains a deque with exactly the newest successful CPU sample at least
+one window old plus newer samples. Its event reader parses appended bytes,
+keeps a possible partial tail for the next tick, and resets on file replacement
+or truncation. The existing process-tree `/proc` accounting and its failure
+semantics are unchanged.
 
-Oracle: a long virtual run retains bounded history while preserving exact
-CPU-window boundary classifications, partial-line tolerance, process-tree
-accounting and `/proc` failure behavior. Measure before/after cost against
-large events files; no timing threshold replaces those behavioral checks.
+Oracle: a 20,000-tick virtual run differentially compares each CPU-growth
+classification with the prior reverse-list search and bounds retained history
+at 121 samples for a 30-second window with a 250ms minimum sample interval.
+Append-reader outputs are compared with the full-file reference across partial
+lines, malformed records, all `str.splitlines()` boundaries (including the
+Unicode separators), finish-pid mixtures, atomic replacement and truncation.
+Existing tests retain the exact window boundary, process-tree accounting and
+`/proc` failure behavior. After the line-boundary compatibility fix, a
+Python 3.14.7/Linux x86_64 probe used an 8,377,780-byte / 60,000-record event
+file: full re-read median 209.15ms (201.18–542.46ms), incremental initial
+parse median 164.48ms (152.84–192.38ms), one-record append 0.056ms, and
+unchanged poll median 0.0213ms (0.0192–0.1742ms). The unchanged-poll median
+is about 9,800 times lower than a full re-read in that probe. The full reader
+and append reader returned the same `(60000, False)` result before append and
+`(60001, False)` after it. `tree_cpu_seconds` remained unchanged; 1,000 calls
+on a one-process tree previously measured 0.0471ms median / 0.0774ms p95.
+Measurements are descriptive only; no timing threshold replaces behavioral
+checks. The full measurements and review/gate evidence are in the Wave C
+controller log.
 
 ## B096 — P7 S6: derive `--rejudge-outcome` help from the vocabulary
 
@@ -10186,64 +10208,58 @@ refusal and protection against silent guard removal.
 
 ## B100 — bounded operator report for live gate progress, verdicts, errors, and retained evidence
 
-**Status: OPEN (2026-09-19) — design proposal only; no `assay analyze report` subcommand exists in `cli.py` on main.**
+**Status: DONE (Wave C P4; implementation `0624ab95`; independent review READY; registered tester-unified PASS on `7859057f`) — `assay analyze report` provides a read-only, bounded snapshot of commit-bound verdicts, progress, logs and retained evidence.**
 
-**Proposed by:** estate release review, 2026-09-19. **Status: OPEN; backlog
-only.** Assay already has separate `analyze progress` and `analyze verdict`
+**Proposed by:** estate release review, 2026-09-19. The implementation adds
+the bounded snapshot alongside Assay's existing `analyze progress` and `analyze verdict`
 commands, but a long gate's wrapper output can exceed the controller's retained
 terminal buffer. Operators and AI/tool-call consumers need one deterministic
 snapshot command that selects the useful facts without scraping a terminal.
 
-### Proposed interface
-
-Add a read-only command such as:
+### Shipped interface
 
 ```text
-assay analyze report \
-  --expected-commit <SHA> \
-  --verdict <lane>=<path>... \
-  --progress <lane>=<path>... \
-  --log <lane>=<path>... \
+assay analyze report --expected-commit SHA \
+  [--verdict LANE FILE]... [--progress LANE FILE]... [--log LANE FILE]... \
   [--format text|json] [--max-errors N]
 ```
 
-The exact spelling can follow the shipped CLI's established option style, but
-the contract should remain explicit and tool-call friendly:
+The command's contract is:
 
-- `--expected-commit` is required and every supplied verdict/receipt is
-  checked against it; an absent, unreadable, malformed, or mismatched artifact
-  returns an evidence error rather than a guessed status;
+- `--expected-commit` is a full lowercase 40- or 64-hex commit. Verdicts and
+  progress are checked against it and against the explicitly supplied lane
+  name. An unreadable, malformed, wrong-lane, or wrong-commit input is an
+  evidence error;
 - input paths are explicit and repeatable, with no parent search, network
   access, or implicit current-directory selection;
 - JSON is stable machine output with one object per lane and fields for
   `status` (`running`, `pass`, `fail`, or `evidence_error`), expected/actual
   commit, exit code, reason code, latest phase/event, bounded error records,
-  progress counts when present, and paths to the full log, verdict, progress,
-  and evidence artifacts;
+  progress event/candidate counts when present, and explicit input paths,
+  complete byte counts, SHA-256 fingerprints, and evidence paths referenced by
+  the verified verdict;
 - text starts with one compact status line per lane, then a short bounded
-  detail block. It never dumps a complete log by default. `--max-errors` (with
-  a small validated upper bound) selects error records; a separate explicit
-  path or full-detail operation can retrieve complete detail;
+  detail block. It never dumps a complete log. `--max-errors` defaults to 5
+  and accepts 0–10 records per lane; each displayed diagnostic is capped at
+  512 characters, with total and truncation fields;
 - a live progress file may produce `running` when no terminal verdict exists,
-  but the command takes one snapshot and exits. It does not poll, sleep, or
-  convert a stale heartbeat into a pass;
-- process exit status remains machine meaningful: zero only when every
-  selected lane has a valid passing verdict, a distinct nonzero result for a
-  valid failing lane, and an evidence/refusal result when the report cannot
-  establish the requested facts;
-- reports expose the next evidence lookup as a path and lane identity, never
-  fabricate a repair command or interpret arbitrary child output as a verdict.
+  the latest event timestamp is parseable and at most 120 seconds old, and the
+  progress stream has no terminal event. The command takes one snapshot and
+  exits; it does not poll or sleep;
+- a valid `PASS` verdict with exit 0 is `pass`; every other verifier-valid
+  terminal verdict is `fail`. Logs are diagnostic only and never create or
+  repair a status, outcome, reason code, or commit;
+- exit code 0 means all lanes pass, 1 means a valid failure, 2 means an
+  evidence error, and 3 means running is the highest-priority present status.
+  Mixed states prioritize `evidence_error > fail > running > pass`.
 
 ### AI and tool-call design constraints
 
-The output should be safe to request after any gate invocation and cheap to
-parse from a tool result. Keep the summary bounded, deterministic, and
-commit-bound; include the full-artifact paths and hashes needed for a follow-up
-call; and preserve the distinction between a running job, a failed job, and
-missing evidence. A controller can then call `assay analyze report` once after
-a long command returns, select a single lane's full log only when needed, and
-avoid repeating a one-minute polling loop. The report is an evidence index,
-not a replacement for the structured verdict or for the gate's own exit code.
+The output is bounded, deterministic, and commit-bound. A controller can call
+`assay analyze report` once after a long command returns, inspect the full log
+by the reported path only when needed, and avoid a one-minute polling loop.
+The report is an evidence index, not a replacement for the structured verdict
+or for the gate's own exit code.
 
 ### Oracles before implementation
 

@@ -382,6 +382,23 @@ judged until it is declared — the honest failure direction, since an
 undeclared file is visibly missing from `targets`, where an unmeasured file
 under directory expansion was invisibly present.
 
+### An unbounded R2 baseline remains caller-watched (A-457)
+
+For a native R2 lane with `budget = "unbounded"`, the pre-sweep baseline
+still runs with `timeout=None`. `budget_per_candidate` bounds one mutant
+command; the first baseline may also pay cold-cache, fixture-setup, and
+first-run compilation costs that later mutant invocations do not. Reusing its
+bound for that startup work can stop a healthy lane. Assay does not add a
+`budget_per_baseline` key or give `budget` a second meaning. The caller owns
+stall detection, consistent with the rest of the unbounded-lane policy.
+
+With `--progress`, the baseline's `command_running` heartbeat is the signal
+for that external watch. The heartbeat is observability only: it neither
+sets a timeout nor changes the verdict, and `assay verify` does not read it.
+The real-run test pins `timeout=None` for the baseline and the declared bound
+for each mutant. README describes the feature; [CONSUMERS](CONSUMERS.md#budget--unbounded-the-recommended-shape-for-a-long-mutation-lane-b067)
+shows the invocation.
+
 ## 6. The verdict contract
 
 **Three channels, none duplicating another's authority.** The **exit code is
@@ -1005,6 +1022,35 @@ runtime while remaining absent from the operator-facing help. The CLI-only
 separately as an alias for canonical `crashed`; it must never become a verdict
 or resume-state bucket. The parser and runtime therefore share the canonical
 source without making the alias look like a second canonical outcome.
+
+**(B094/A-458) An unknown or stale `--rejudge` id is bad input, not corrupt
+state.** Candidate IDs are checked against the current selected candidates
+before resume records are loaded. The current set exists only after the lane
+baseline has passed and mutation discovery has run, so the CLI cannot use the
+early `--rejudge` syntax preflight for this check. The check raises
+`ERROR`/`BAD_LANE_CONFIG` through the existing whole-lane refusal, which puts
+the same pair on every declared rigor level and is accepted by `assay verify`.
+That choice deliberately discards any already-measured R0 or R1 result: an
+R2-only `BAD_LANE_CONFIG` beside a passing baseline is not an accepted
+post-baseline terminal. Extending `verify.py`'s accepted reason set would be a
+verification-policy change; this package keeps the existing verifier
+contract. Actual unreadable or corrupt records still report
+`ERROR`/`UNREADABLE_ARTIFACT`, and a valid id still drops and re-executes
+only its matching record.
+
+### Git dubious ownership and safe directory (B081)
+
+Git's dubious-ownership fatal line is retained as evidence, but its following
+`safe.directory` instruction is removed from assay's refusal. The child
+environment replaces ambient Git configuration, sets
+`GIT_CONFIG_NOSYSTEM=1`, and points `GIT_CONFIG_GLOBAL` at `/dev/null` (A-173),
+so Git cannot read the configuration that command would write. The diagnostic
+names the ownership mismatch and directs the operator to run assay as the
+repository owner or fix the tree's ownership/uid mapping. It does not disable
+Git's ownership protection with a command-line exception. As with B068, this
+probe runs only after bootstrap fails; the linked-worktree diagnostic keeps
+precedence, healthy resolution never consults it, and other Git failures pass
+through unchanged. See the [consumer remedy](CONSUMERS.md#b081-ownership-remedy).
 
 ### Filtered native-R2 judge identity (B092)
 
@@ -3185,6 +3231,53 @@ did.
 
 
 ## Review evidence analysis
+
+### Bounded live gate snapshot (B100)
+
+`assay analyze report` takes one read-only snapshot of the explicit
+`--verdict`, `--progress`, and `--log` inputs for each named lane. The caller
+supplies the full expected commit. A verifier-valid verdict with that commit
+sets the lane status: `PASS` with exit 0 is `pass`; any other valid terminal
+verdict is `fail`. A verdict's referenced evidence paths are listed as labels
+and are never opened implicitly.
+
+With no verdict, a progress file can say `running` only when its latest event
+has a parseable timestamp no more than 120 seconds old and is not terminal.
+That boundary is twice the shipped 60-second heartbeat period. A stale stream,
+an absent timestamp, a terminal event without a verdict, or malformed complete
+record is `evidence_error`. One malformed final JSONL fragment without a
+newline is ignored as an interrupted append. A stale but otherwise valid
+optional progress file remains visible and does not overturn a valid verdict.
+
+The command does not poll or sleep. JSON output follows
+`schemas/analysis-report.schema.json`; text starts with one status line per
+sorted lane. Every supplied regular file is fully hashed and its byte count
+and resolved path are retained. Logs contribute only matching diagnostic
+lines from their last 64 KiB; even a `PASS`, `FAIL`, or `ERROR` line cannot
+create or repair a verdict. Error records are limited by `--max-errors` (0–10,
+default 5) and each displayed record is capped at 512 characters. Truncation
+and the full log fingerprint let a controller decide whether to inspect the
+artifact separately.
+
+The exit code is 0 when all lanes pass, 1 when at least one lane fails and
+none has an evidence error, 2 when any lane has an evidence error, and 3 when
+running is the highest-priority status present (including a mix of passing and
+running lanes). Mixed results use `evidence_error > fail > running > pass`.
+A missing path is not evidence of a
+running job, and a child log is never promoted to a status source. These rules
+keep one controller call useful without introducing a watcher, a log parser
+that guesses tool semantics, or another durable report artifact.
+
+Use this after the gate has returned or while it is running; the command
+returns immediately either way:
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze report --expected-commit "$REVIEW_HEAD" \
+  --verdict r2 "$WORKTREE/.assay/verdict-r2.json" \
+  --progress r2 "$WORKTREE/.assay/progress-r2.jsonl" \
+  --log r2 "$GATE_LOG" --format json
+```
 
 P4 and P5 run-gate reviews repeatedly needed the same operations: archive logs,
 check exact Git identities, read the job's exit separately from the launching
