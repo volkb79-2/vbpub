@@ -4216,3 +4216,40 @@ asked to identify ownership and apply the exact-name 3-CPU cap. One mutation
 lane is active; starting P1 R2 would be the second mutation lane and remain
 within the current three-lane estate limit. Recheck slice/PSI immediately
 before launch and verify P1's exact container cap after launch.
+
+### RW-332 — 2026-09-25 17:29:55Z — P1 R2 progressing; P6 current-main gates green, review still pending
+
+P1 R2 started at 17:16:39Z on quiet tree
+`450fe53d0baca81ec5d32432c6c47117862fa992`, with the isolated clone's
+`origin/main` fixed at `e5e9b95c5ac8be3452c93f1066f9436347f862fd`. The
+90-second check found the exact container
+`run-gate-rg55-p1-r2-isolated-r2-693694-1790356599` running under
+`dev-gates.slice` with `NanoCpus=3000000000`. Assay had recorded its baseline
+and candidate 0 as killed (1/121); host memory PSI `full avg10=1.25`, below
+the launch ceiling. The plan's 10-hour estimate is the 600-second-per-mutant
+worst case; the closest previous P1 run judged 81 candidates in 74 minutes.
+The last startup progress event was at 17:18:19Z; next check is no earlier
+than 17:43:19Z, unless an expected early completion or error appears.
+
+P6 branch `rg55-followups-cgprofile-final` reconciled current `main` in
+`41c6fba6d712fbf70d4d11ba5f37cb22a919b733`. The merge retained main's RW-312
+and RW-313 once, P6's RW-314..RW-317, and main's RW-318..RW-331. Its exact
+R0/R1 run passed in 140.682 s (exit 0): 1,651 tests; 5,994/5,994 statements
+and 2,056/2,056 branches. Container `cgprofile-gate-704906-1790357010`
+reported loaded `dev-gates.slice` and `NanoCpus=3000000000`; the daemon was
+down, so sampling was coarse `rusage-maxrss`. Exact-tree R3 also passed in
+13.994 s (exit 0), rejecting all seven canaries. Its creation argv included
+`--cpus 3`, but the container exited before a follow-up `docker inspect`; a
+fresh short R3 with a live cap observation is required before provisional
+merge.
+
+P6 has no current-tree R2 evidence. Its older `aae66356` run remains
+`BUDGET_EXCEEDED/LANE_TIMEOUT` (362 candidates: 312 killed, 12 survived, 38
+budget-exceeded); that result and its survivor repairs are documented in the
+P6 REPORT but do not qualify the reconciled tree. Per RW-296, the short gates
+plus fresh Sol xhigh review may authorize provisional integration only; P6
+R2 and the full gate remain mandatory before release. For the post-merge P6
+R2 clone, resolve `origin/main` to the exact P1 baseline (current main before
+P6 integration), not the stale repository remote-tracking ref at `e5e9b95c`;
+record the resolved base from the run verdict. The P3 DAMON live-series and
+overhead measurement remains open from RW-330.
