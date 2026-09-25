@@ -98,16 +98,23 @@ still validates the exact checkout before changing Git state. See the
 ## Supply-chain age-windowed versions
 
 `cmru versions` selects registry releases older than the configured age window (14 days by
-default) for `.pypi`, `.npm`, `.go`, and `.oci` targets. `init` derives package targets from
-project manifests; `resolve` is the explicit write step for resolved state and native lock or
+default) for `.pypi`, `.npm`, `.go`, and `.oci` targets. OCI targets use `selection = "semver"`
+by default; set `.oci.selection = "rolling"` to age-check a literal rolling tag such as
+`26-slim` or `bookworm-slim`. Rolling-tag records include the registry manifest digest, and
+`check` detects a digest change even when the tag is unchanged. `init` derives package targets from
+project manifests using the configurable discovery scope: shipped dependencies by default,
+including explicitly selected Python extras, or all supported manifest groups when opted in.
+`resolve` is the explicit write step for resolved state and native lock or
 constraint outputs; `check` queries registries and reports the current recorded and eligible
-versions without writing. Go `.info` commit-time and OCI image-created fallback evidence are
-called out in warnings and the report. Go targets also check a constrained pseudo-version and use
+versions without writing. Go `.info` times are VCS commit times, and OCI image-created timestamps
+are publisher supplied; CMRU calls both out in warnings and the report. For multi-platform OCI
+indexes, known Docker attestation manifests are excluded from runtime age calculation. Go targets
+also check a constrained pseudo-version and use
 the proxy's `@latest` fallback when no listed version matches. A resolve inside a Go workspace can
 update `go.work` and `go.work.sum` along with module files; inconsistent Go timestamps fail closed.
 These commands do not run as part of
 build, release, gate, or a schedule. Read [the design guide](docs/DESIGN-GUIDE.md#supply-chain-age-windowed-version-determination)
-for the policy and timestamp choices, and use the [consumer examples](docs/CONSUMERS.md#using-a-supply-chain-age-window)
+for the scope policy and timestamp choices, and use the [consumer examples](docs/CONSUMERS.md#using-a-supply-chain-age-window)
 to configure targets and consume the generated artifacts. Registry HTTPS redirects are followed
 without forwarding credentials to a different origin; see the guides for the credential behavior.
 

@@ -49,3 +49,19 @@ quiet = true
 commands = [
   { label = "tls-edge: publish tarball", argv = ["python3", "-m", "cmru.handlers", "tarball-publish", "--prefix", "tls-edge", "--cwd", ".", "--glob", "tls-edge-v*.tar.xz", "--version-file", "VERSION", "--notes-env", "TLS_EDGE_RELEASE_NOTES"], cwd = "." },
 ]
+
+[versions.targets."oci.socket-proxy"]
+mode = "single"
+constraint = ">=0.4.2"
+
+[versions.targets."oci.socket-proxy".oci]
+image = "docker.io/tecnativa/docker-socket-proxy"
+tag = "v{version}"
+
+[versions.targets."oci.traefik"]
+mode = "single"
+constraint = ">=3.7.0,<3.8.0"
+
+[versions.targets."oci.traefik".oci]
+image = "docker.io/library/traefik"
+tag = "v{version}"

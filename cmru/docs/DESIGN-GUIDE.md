@@ -20,7 +20,11 @@ The 14-day default is a policy window, not a claim that age alone proves safety.
 target chooses the newest eligible release from one source. An `aligned` target chooses the
 newest version available and age-eligible in every declared source. The shared constraint
 grammar is a SemVer-compatible subset so one target means the same version across PyPI, npm,
-Go, and OCI tags. An exact override requires a reason; when its source timestamp is newer
+Go, and SemVer OCI tags. OCI `selection = "semver"` is the default; `selection = "rolling"`
+accepts a literal non-SemVer tag. Rolling selection is limited to one OCI source with
+`constraint = "*"`, cannot be aligned with package versions, and requires a registry manifest
+digest. The recorded digest makes a moved tag visible to `check` even when its name remains the
+same. An exact override requires a reason; when its source timestamp is newer
 than the cutoff, it also requires a future expiry date. The reviewable config and artifact diff
 remains the control for deliberate holds and urgent fixes.
 
@@ -36,6 +40,21 @@ provide an HTTP `Last-Modified` value; when they do not, CMRU accepts the publis
 `org.opencontainers.image.created` annotation or image-config `created` field as the documented
 fallback, with a warning. A source that provides no usable timestamp fails closed. These limits
 are visible in the report so an age cutoff does not claim stronger evidence than it has.
+Rolling tags use the registry's `Docker-Content-Digest` as immutable identity evidence; the
+timestamp policy remains registry `Last-Modified` with the documented publisher-created-time
+fallback. Multi-platform indexes may also contain build attestations; CMRU skips descriptors
+marked `vnd.docker.reference.type = "attestation-manifest"` and checks age evidence on every
+remaining runtime platform. Rolling selection queries the declared tag's manifest directly, so a
+large registry does not need to enumerate its full tag collection.
+
+Discovery defaults to the shipped dependency surface: Python project dependencies, explicitly
+selected Python extras, runtime npm dependency tables, and declared Go requirements. Test and
+build dependencies can change more frequently and do not necessarily ship with the product, so
+they are excluded by default. A project may opt into `scope = "all"` to derive targets from all
+supported optional/dependency groups and build requirements. This is a declared policy choice;
+CMRU does not infer which extras a product ships from source imports or build scripts. Project-only
+manifest facts such as selected Python extras and additional requirements files stay in that
+project's `cmru.toml`.
 
 Registry clients follow HTTPS redirects because registries can move blob bodies to signed storage
 URLs. The [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec/blob/main/spec.md)

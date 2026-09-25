@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import re
 from datetime import date, datetime
+from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
 from cmru.version_registry import RegistryError, validate_constraint, version_satisfies
@@ -18,7 +19,7 @@ SOURCE_FIELDS = {
     "npm": {"name", "registry", "token_env", "username_env", "password_env"},
     "pypi": {"name", "registry", "token_env", "username_env", "password_env"},
     "go": {"module", "proxy", "token_env", "username_env", "password_env"},
-    "oci": {"image", "tag", "token_env", "username_env", "password_env"},
+    "oci": {"image", "tag", "selection", "token_env", "username_env", "password_env"},
 }
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -42,6 +43,61 @@ def _nonempty(value: object, where: str) -> str:
     if not isinstance(value, str) or not value.strip():
         _fail(f"{where} must be a non-empty string")
     return value.strip()
+
+
+def _discovery(raw: object, where: str) -> dict:
+    if not isinstance(raw, dict):
+        _fail(f"{where} must be a table")
+    _keys(raw, {"scope", "pypi_extras", "requirements_files"}, where)
+    result: dict = {}
+    scope = raw.get("scope")
+    if scope is not None:
+        if not isinstance(scope, str) or scope not in {"shipped", "all"}:
+            _fail(f"{where}.scope must be one of: shipped, all")
+        result["scope"] = scope
+    extras = raw.get("pypi_extras", [])
+    if not isinstance(extras, list):
+        _fail(f"{where}.pypi_extras must be an array of extra names")
+    clean_extras: list[str] = []
+    normalized_extras: set[str] = set()
+    for index, item in enumerate(extras):
+        value = _nonempty(item, f"{where}.pypi_extras[{index}]")
+        normalized = re.sub(r"[-_.]+", "-", value).lower()
+        if normalized in normalized_extras:
+            _fail(f"{where}.pypi_extras contains duplicate normalized name {value!r}")
+        normalized_extras.add(normalized)
+        clean_extras.append(value)
+    if clean_extras:
+        result["pypi_extras"] = clean_extras
+    if result.get("scope") == "all" and clean_extras:
+        _fail(f"{where}.pypi_extras is redundant when scope = 'all'")
+
+    files = raw.get("requirements_files", [])
+    if not isinstance(files, list):
+        _fail(f"{where}.requirements_files must be an array of project-relative paths")
+    clean_files: list[str] = []
+    seen_files: set[str] = set()
+    for index, item in enumerate(files):
+        value = _nonempty(item, f"{where}.requirements_files[{index}]")
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or not path.parts
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or path.suffix not in {".in", ".txt"}
+        ):
+            _fail(
+                f"{where}.requirements_files[{index}] must be a project-relative .in or .txt path "
+                "without '.' or '..' components"
+            )
+        normalized = path.as_posix()
+        if normalized in seen_files:
+            _fail(f"{where}.requirements_files contains duplicate path {normalized!r}")
+        seen_files.add(normalized)
+        clean_files.append(normalized)
+    if clean_files:
+        result["requirements_files"] = clean_files
+    return result
 
 
 def _https_url(value: object, where: str) -> str:
@@ -93,6 +149,9 @@ def _source(raw: object, source_type: str, where: str, *, allow_partial: bool) -
                 _fail(f"{where}.module is not a valid Go module path")
             result[key] = value if key == "module" else _https_url(value, f"{where}.{key}")
     else:
+        selection = raw.get("selection", "semver")
+        if not isinstance(selection, str) or selection not in {"semver", "rolling"}:
+            _fail(f"{where}.selection must be one of: semver, rolling")
         image = _nonempty(raw.get("image"), f"{where}.image") if "image" in raw or not allow_partial else None
         if image is not None:
             if not _IMAGE.fullmatch(image) or ".." in image.split("/"):
@@ -100,13 +159,16 @@ def _source(raw: object, source_type: str, where: str, *, allow_partial: bool) -
             result["image"] = image
         tag = _nonempty(raw.get("tag"), f"{where}.tag") if "tag" in raw or not allow_partial else None
         if tag is not None:
-            if tag.count("{version}") != 1:
-                _fail(f"{where}.tag must contain exactly one {{version}} placeholder")
-            placeholders = re.findall(r"\{([^{}]+)\}", tag)
-            if any(token != "version" for token in placeholders):
-                _fail(f"{where}.tag supports only the {{version}} placeholder")
-            if "{{" in tag or "}}" in tag:
-                _fail(f"{where}.tag contains malformed placeholders")
+            if selection == "semver":
+                if tag.count("{version}") != 1:
+                    _fail(f"{where}.tag must contain exactly one {{version}} placeholder")
+                placeholders = re.findall(r"\{([^{}]+)\}", tag)
+                if any(token != "version" for token in placeholders):
+                    _fail(f"{where}.tag supports only the {{version}} placeholder")
+                if "{{" in tag or "}}" in tag:
+                    _fail(f"{where}.tag contains malformed placeholders")
+            elif not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag):
+                _fail(f"{where}.tag must be a valid literal OCI tag for rolling selection")
             result["tag"] = tag
     _validate_auth_fields(result, where, allow_partial=allow_partial)
     return result
@@ -143,7 +205,7 @@ def _resolved(raw: object, where: str) -> dict:
     for source_type, source_result in raw["sources"].items():
         if source_type not in SOURCE_FIELDS or not isinstance(source_result, dict):
             _fail(f"{where}.sources.{source_type} must be a supported source table")
-        _keys(source_result, {"version", "released_at", "age_source", "tag"}, f"{where}.sources.{source_type}")
+        _keys(source_result, {"version", "released_at", "age_source", "tag", "digest"}, f"{where}.sources.{source_type}")
         _nonempty(source_result.get("version"), f"{where}.sources.{source_type}.version")
         released_at = _nonempty(source_result.get("released_at"), f"{where}.sources.{source_type}.released_at")
         try:
@@ -155,6 +217,10 @@ def _resolved(raw: object, where: str) -> dict:
         _nonempty(source_result.get("age_source"), f"{where}.sources.{source_type}.age_source")
         if "tag" in source_result:
             _nonempty(source_result["tag"], f"{where}.sources.{source_type}.tag")
+        if "digest" in source_result:
+            digest = _nonempty(source_result["digest"], f"{where}.sources.{source_type}.digest")
+            if source_type != "oci" or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                _fail(f"{where}.sources.{source_type}.digest must be a sha256 OCI digest")
     provenance = raw.get("provenance")
     if provenance is not None and not isinstance(provenance, str):
         _fail(f"{where}.provenance must be a string")
@@ -177,13 +243,17 @@ def parse_versions_section(raw: object, where: str, *, allow_partial: bool = Fal
         return {}
     if not isinstance(raw, dict):
         _fail(f"{where} must be a table")
-    _keys(raw, {"age_window_days", "targets", "outputs"}, where)
+    _keys(raw, {"age_window_days", "targets", "outputs", "discovery"}, where)
     result: dict = {}
     if "age_window_days" in raw:
         days = raw["age_window_days"]
         if not isinstance(days, int) or isinstance(days, bool) or days <= 0:
             _fail(f"{where}.age_window_days must be a positive integer")
         result["age_window_days"] = days
+    discovery = raw.get("discovery", {})
+    clean_discovery = _discovery(discovery, f"{where}.discovery")
+    if clean_discovery:
+        result["discovery"] = clean_discovery
     targets = raw.get("targets", {})
     if not isinstance(targets, dict):
         _fail(f"{where}.targets must be a table")
@@ -253,6 +323,16 @@ def parse_versions_section(raw: object, where: str, *, allow_partial: bool = Fal
                 target_raw[source_type], source_type, f"{target_where}.{source_type}",
                 allow_partial=allow_partial,
             )
+        oci = clean.get("oci")
+        if isinstance(oci, dict) and oci.get("selection", "semver") == "rolling":
+            if source_types != ["oci"]:
+                _fail(f"{target_where}.oci.selection = 'rolling' requires an OCI-only target")
+            if mode not in {None, "single"}:
+                _fail(f"{target_where}.oci.selection = 'rolling' requires mode = 'single'")
+            if constraint is not None and constraint != "*":
+                _fail(f"{target_where}.oci.selection = 'rolling' requires constraint = '*'")
+            if version is not None:
+                _fail(f"{target_where}.oci.selection = 'rolling' does not support exact version overrides")
         if "resolved" in target_raw:
             clean["resolved"] = _resolved(target_raw["resolved"], f"{target_where}.resolved")
         clean_targets[target_id] = clean
