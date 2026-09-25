@@ -134,26 +134,24 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Wave C (current; B080, B081, B094, B025, B095, B076; B100 conditional)**
 - B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; P1 review READY and tester-unified PASS at `8823bfea`; B089 is its withdrawn duplicate)
-- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — OPEN (P2)
-- B094 — unknown `--rejudge` reason mapping — OPEN (P2)
-- B025 — unresolvable infrastructure refusals lack their own verdict — PARTIAL (P2 closes the final attestation-timeout oracle)
-- B095 — monitor hot-loop cost / unbounded CPU history — OPEN (P3)
-- B076 — unbounded R2 baseline has no bound — OPEN (P3 ruling and docs)
+- B081 — dubious-ownership `GIT_FAILED` sends consumers to an unreachable remedy — DONE (P2; merged at `130ba5ba`)
+- B094 — unknown `--rejudge` reason mapping — DONE (A-458; P2; merged at `130ba5ba`)
+- B025 — unresolvable infrastructure refusals lack their own verdict — DONE (P2 closes the final attestation-timeout oracle; merged at `130ba5ba`)
+- B095 — monitor hot-loop cost / unbounded CPU history — DONE (P3 independent review READY and tester-unified PASS on `09d1f38d`)
+- B076 — unbounded R2 baseline has no bound — RULED (A-457; caller-watched, with documentation)
 - B100 — bounded operator report for live gate progress/verdicts — OPEN (conditional P4; start only after P0-P3 merge and gate)
 
 **Wave C P1 implemented (2026-09-24; independent review READY and authoritative gate PASS at `8823bfea`)**
 - B080 — istanbul default-arg branch on the signature line — DONE (A-456/A-459; implementation, independent review and tester-unified gate complete)
 
-**Wave C P2 (implemented; registered gate and merge pending)**
-- B081 — dubious-ownership `GIT_FAILED` remedy — implementation and targeted regressions complete
+**Wave C P2 (merged at `130ba5ba`)**
+- B081 — dubious-ownership `GIT_FAILED` remedy — implementation, review and registered gate complete
 - B094 — unknown/stale `--rejudge` classification — implementation and CLI/verify oracles complete (A-458)
-- B025 — attestation-timeout infrastructure forward — dedicated regression and controlled-red proof complete
+- B025 — attestation-timeout infrastructure forward — dedicated regression and registered gate complete
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
-- B095 — P7 S5: monitor hot-loop cost / unbounded CPU history — OPEN (liveness wave)
-- B076 — unbounded R2 lane's baseline run has no bound — OPEN (liveness wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B100 — bounded operator report for live gate progress/verdicts — OPEN (design only)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
@@ -8284,7 +8282,7 @@ two independent tests fail, naming the file and function.
 
 ## B076 — an unbounded R2 lane's own BASELINE run is the one command B067 leaves with no bound at all
 
-**Status: OPEN (filed 2026-09-08, deliberately not ruled) — `config.py`'s own docstring still says "B076: filed, reasoned, and deliberately not closed here"; no `budget_per_baseline` and no A-row exist. (Corrected 2026-09-23: this entry was first created fresh on 2026-09-08, `7f2ba056` — there is no earlier 2026-08-25 filing to restate; the commit's own body confirms "Filed while building this: B076".)**
+**Status: RULED (A-457, 2026-09-25) — option (a): the native R2 baseline remains unbounded at Assay's process boundary and watched by the caller. No new lane key, reason code, or schema field is introduced.**
 
 **Filed 2026-09-08 by the progress/resume wave's implementer, from building
 B067 rather than from a review. Recorded because B067's own rule —
@@ -8331,30 +8329,29 @@ defensible together only because the R2 sweep, not the baseline, is the part
 whose length cannot be guessed. That is a judgment, and it should be recorded
 as one.
 
-### The options, none of them chosen here
+### The ruling
 
-- **(a) Leave it.** The caller already watches; B064's `command_running`
-  heartbeat makes a stalled baseline legible in the progress stream. Costs
-  nothing, states the gap in the docs (what shipped).
-- **(b) `judge.mutation.budget_per_baseline`.** A third per-unit key, only
+- **(a) Leave it — chosen.** An unbounded R2 lane's baseline keeps
+  `timeout=None`. The caller owns stall detection; `--progress` exposes the
+  `command_running` heartbeat while that baseline command runs. This is the
+  existing division of responsibility and needs no config or wire change.
+- **(b) `judge.mutation.budget_per_baseline` — rejected.** A third per-unit key, only
   meaningful under `unbounded`. Honest, and it makes B067's rule literally
   true — at the cost of a key most lanes would have to guess a value for,
   which is the failure mode `unbounded` was introduced to remove.
-- **(c) Reuse `budget` as the baseline bound.** i.e. `budget = "unbounded"`
+- **(c) Reuse `budget` as the baseline bound — rejected.** i.e. `budget = "unbounded"`
   means "unbounded for the SWEEP", and a lane declares a numeric duration
   that applies to the baseline alone. Compact, but it gives one key two
   meanings depending on rigor, which is exactly the kind of overload
   DESIGN-GUIDE §5 refuses elsewhere.
 
-### Acceptance (for whoever picks this up)
+### Acceptance
 
-- [ ] a ruling recorded, naming the rejected options above;
-- [ ] if (b) or (c) is built: an unbounded R2 lane's baseline is observably
-      bounded at the process boundary (the `timeouts` assertion above flips
-      from `None` to the declared value), and a baseline that exceeds it is
-      a NAMED terminal rather than a bare `LANE_TIMEOUT` a reader would
-      misattribute to the sweep;
-- [ ] `assay verify` untouched either way — none of this is evidence.
+- [x] A-457 rules option (a) and records options (b) and (c) as rejected.
+- [x] The existing real-run assertion confirms `timeout=None` for the
+      baseline and `45s` for each mutant; README, DESIGN-GUIDE, and CONSUMERS
+      document the caller-owned stall watch and progress heartbeat.
+- [x] `assay verify` remains untouched; this is not evidence.
 
 ---
 
@@ -10083,19 +10080,35 @@ classification and its ordering cost.
 
 ## B095 — P7 S5: monitor hot-loop cost and unbounded CPU history
 
-**Status: OPEN (deferred by RW-53/RW-57, 2026-09-13 filing) — explicitly excluded from the B091 P7 round-1 fold-in commit; no later CHANGES.md entry addresses it.**
+**Status: DONE (Wave C P3, 2026-09-25; implementation `09d1f38d`, independent review READY, tester-unified PASS). CPU history is bounded to the 30-second trailing edge; monitoring reads only newly appended event bytes.**
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** The one-second loop
-rescans event/proc data and retains an unbounded `cpu_samples` list, including
-for unbounded candidates. Trim history while retaining the sample needed
-at the trailing-window edge; assess incremental event parsing and proc
-sampling costs separately. This is a performance change in the loop just
-hardened by B1/B2/B6 and needs its own review and measurement.
+The one-second loop previously rescanned the whole event file and retained an
+unbounded `cpu_samples` list, including for unbounded candidates. The monitor
+now retains a deque with exactly the newest successful CPU sample at least
+one window old plus newer samples. Its event reader parses appended bytes,
+keeps a possible partial tail for the next tick, and resets on file replacement
+or truncation. The existing process-tree `/proc` accounting and its failure
+semantics are unchanged.
 
-Oracle: a long virtual run retains bounded history while preserving exact
-CPU-window boundary classifications, partial-line tolerance, process-tree
-accounting and `/proc` failure behavior. Measure before/after cost against
-large events files; no timing threshold replaces those behavioral checks.
+Oracle: a 20,000-tick virtual run differentially compares each CPU-growth
+classification with the prior reverse-list search and bounds retained history
+at 121 samples for a 30-second window with a 250ms minimum sample interval.
+Append-reader outputs are compared with the full-file reference across partial
+lines, malformed records, all `str.splitlines()` boundaries (including the
+Unicode separators), finish-pid mixtures, atomic replacement and truncation.
+Existing tests retain the exact window boundary, process-tree accounting and
+`/proc` failure behavior. After the line-boundary compatibility fix, a
+Python 3.14.7/Linux x86_64 probe used an 8,377,780-byte / 60,000-record event
+file: full re-read median 209.15ms (201.18–542.46ms), incremental initial
+parse median 164.48ms (152.84–192.38ms), one-record append 0.056ms, and
+unchanged poll median 0.0213ms (0.0192–0.1742ms). The unchanged-poll median
+is about 9,800 times lower than a full re-read in that probe. The full reader
+and append reader returned the same `(60000, False)` result before append and
+`(60001, False)` after it. `tree_cpu_seconds` remained unchanged; 1,000 calls
+on a one-process tree previously measured 0.0471ms median / 0.0774ms p95.
+Measurements are descriptive only; no timing threshold replaces behavioral
+checks. The full measurements and review/gate evidence are in the Wave C
+controller log.
 
 ## B096 — P7 S6: derive `--rejudge-outcome` help from the vocabulary
 

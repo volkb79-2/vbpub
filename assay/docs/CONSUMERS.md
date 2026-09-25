@@ -2477,9 +2477,17 @@ wins whenever it is the nearer of the two.
 **One command is deliberately left unbounded** on an unbounded R2 lane: the
 lane's own *baseline* run, executed once before any mutant to prove the suite
 is green. `budget_per_candidate` is a per-*mutant* bound, and a baseline runs
-the whole suite, so tightening the baseline to it would refuse healthy lanes.
-That one command is covered by the caller's stall detection, not by a bound of
-assay's.
+first and may pay cold-cache, fixture-setup, and first-run compilation costs
+that later mutant invocations do not. Reusing the per-mutant bound for that
+startup work could refuse a healthy lane.
+Assay launches that baseline with `timeout=None`; the caller alone owns its
+stall detection (A-457). When invoked with `--progress`, the
+`command_running` heartbeat gives the caller's watch a liveness signal while
+the baseline command is running. Assay does not derive or apply a baseline
+timeout, and `assay verify` does not treat progress as evidence. The
+[design rationale](DESIGN-GUIDE.md#an-unbounded-r2-baseline-remains-caller-watched-a-457)
+records why this option was chosen over a new `budget_per_baseline` key or an
+overloaded `budget`.
 
 ### The progress stream
 

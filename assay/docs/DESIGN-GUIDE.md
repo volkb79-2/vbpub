@@ -382,6 +382,23 @@ judged until it is declared — the honest failure direction, since an
 undeclared file is visibly missing from `targets`, where an unmeasured file
 under directory expansion was invisibly present.
 
+### An unbounded R2 baseline remains caller-watched (A-457)
+
+For a native R2 lane with `budget = "unbounded"`, the pre-sweep baseline
+still runs with `timeout=None`. `budget_per_candidate` bounds one mutant
+command; the first baseline may also pay cold-cache, fixture-setup, and
+first-run compilation costs that later mutant invocations do not. Reusing its
+bound for that startup work can stop a healthy lane. Assay does not add a
+`budget_per_baseline` key or give `budget` a second meaning. The caller owns
+stall detection, consistent with the rest of the unbounded-lane policy.
+
+With `--progress`, the baseline's `command_running` heartbeat is the signal
+for that external watch. The heartbeat is observability only: it neither
+sets a timeout nor changes the verdict, and `assay verify` does not read it.
+The real-run test pins `timeout=None` for the baseline and the declared bound
+for each mutant. README describes the feature; [CONSUMERS](CONSUMERS.md#budget--unbounded-the-recommended-shape-for-a-long-mutation-lane-b067)
+shows the invocation.
+
 ## 6. The verdict contract
 
 **Three channels, none duplicating another's authority.** The **exit code is

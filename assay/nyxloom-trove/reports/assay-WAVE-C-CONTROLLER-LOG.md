@@ -252,3 +252,53 @@ compressed artifact SHA-256
 
 The controller report and three preserved gate logs are report-only evidence
 after the passing code-tip gate; the tested source tip remains `f21f9629`.
+
+
+## P3 — B095 monitor cost and B076 baseline ruling
+
+P2 merged serially to `main` at `130ba5ba0b639dcdafbf1c2a18d0f09c9c4a5c4a`; this package's CIU worktree was created from that exact main tip on branch `assay-wave-c-p3-b095-b076`.
+
+B095 now keeps the CPU samples needed for the trailing 30-second comparison in a deque, dropping an old sample only when its successor also meets the window boundary. A deterministic 20,000-tick virtual run compares every resulting baseline and CPU-growth classification against the former reverse-list algorithm, includes `/proc`-style missing samples, and asserts a maximum of 121 entries at a 250ms minimum interval. `_EventProgressReader` tracks each candidate file's appended bytes, pending partial line, record count and finish-pid state; it resets on missing/replaced/truncated files. Differential tests compare it with `_read_events_progress` through split records, malformed tails, all original `str.splitlines()` boundaries (including Unicode separators), mixed stamped/unstamped finish records, atomic file replacement and in-place truncation. A reviewer also ran 25,289 differential event polls across 640 deterministic append sequences. Process-tree accounting and `/proc` failure behavior remain as before, with the existing regression tests still exercising them.
+
+After the line-boundary compatibility fix, a refreshed probe used a valid 60,000-record NDJSON fixture (8,377,780 bytes) under Python 3.14.7 on Linux 7.1.8 / x86_64. It warmed the full-file reference twice, then measured seven calls: median 209.15ms (201.18–542.46ms). Seven independent incremental readers parsed the initial file at a median 164.48ms (152.84–192.38ms); reading one subsequently appended record took 0.0562ms; seven unchanged polls had a 0.0213ms median (0.0192–0.1742ms). Results matched at `(60000, False)` and `(60001, False)`. The unchanged-poll median is about 9,800 times lower than a full re-read in this probe. Times are descriptive and do not gate behavior.
+
+The process-tree sampling probe separately called `tree_cpu_seconds` 1,000 times on a one-process tree: 0.0471ms median, 0.0774ms p95, 0.9978ms maximum. Its code remains unchanged because the measured sampling cost is small beside the former full event rescan, and preserving its process-tree and `/proc` failure semantics is more valuable than speculative changes.
+
+B076 is ruled in A-457 as option (a): the native R2 baseline continues to receive `timeout=None`; caller-side stall detection owns it, with `command_running` as the signal when `--progress` is enabled. The docs name the rejected `budget_per_baseline` and overloaded-`budget` alternatives. No reason-code or lane/verdict schema changed, and `assay verify` remains untouched.
+
+Focused checks after the line-boundary and replacement regressions landed:
+`tests/test_liveness_runner_monitor.py`, `tests/test_liveness_proc_helpers.py`,
+`tests/test_config_unbounded_budget.py`, and
+`tests/test_docs_examples_and_vocabulary.py` passed (163 tests, 1.62s).
+Ruff's `E4,E7,E9,F` selection passed on changed Python modules; `git diff
+--check` passed. Fresh independent review against main `130ba5ba` returned
+READY, with no blockers; the reviewer verified a 25,289-poll differential
+probe, the 20,000-tick CPU history oracle, docs anchors, and the replacement
+and separator regressions.
+
+### Authoritative gate
+
+The registered `./run-gate.py tester-unified` gate passed on exact code tip
+`09d1f38d0c95118b0a98724bd541a5c16cf109cc`. Container
+`run-gate-assay-selfhosted-3989906-21494-1790318054` ran under
+`dev-gates.slice`; inspection found it initially had no CPU cap, so
+`docker update --cpus=3` was applied within about 39 seconds and verified at
+3 CPUs for the rest of the run. At the required 90-second check, all six setup
+and compatibility phases had passed and the self-hosted lane was progressing;
+the estimate was 10–15 minutes based on P2. It completed in about 17 minutes
+from launch. Run-gate removed the container on completion.
+
+All 12 `ASSAY_GATE_PHASE=` markers were present, along with
+`ASSAY_GATE_CONTAINER_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`, the
+registered lane exit 0, and the outer `GATE_EXIT=0` marker. The Topos
+qualification, CMRU B006A qualification, seven independent self-hosting tests,
+and pyflakes phase passed. The optional cgprofile daemon was absent; run-gate
+used coarse rusage sampling and reported no effect on the gate result.
+
+The raw gate output is preserved at
+[`assay-WAVE-C-P3-gate-2026-09-25-09d1f38d.log`](assay-WAVE-C-P3-gate-2026-09-25-09d1f38d.log),
+SHA-256 `fa478e0c3c6e15e1b3e7c336a6299cde2bd3405a4e80e49336ff9b8626b46a4c`.
+It is 6,348 bytes; no compression was needed.
+
+The gate log and this result entry are report-only additions after the passing
+code-tip gate. The tested source tip remains `09d1f38d`.
