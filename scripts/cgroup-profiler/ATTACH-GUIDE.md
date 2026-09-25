@@ -178,10 +178,10 @@ every exit path, but do not point it at production cgroups casually.
 
 ## 6. DAMON
 
-`--damon` adds working-set hot/warm/cold breakdown alongside the counters,
-reusing `scripts/damon-analysis`. It takes the host's single DAMON facility for
-the duration of the run and always releases it, so do not run two DAMON
-consumers at once.
+In the short-lived `run`/`attach` collector, `--damon` adds working-set
+hot/warm/cold breakdown alongside the counters, reusing
+`scripts/damon-analysis`. That collector claims and releases a DAMON slot for
+its run. The daemon in §8 has a shared pool that supports concurrent sessions.
 
 ---
 
@@ -227,18 +227,19 @@ and calls:
 ```bash
 docker exec cgprofile-host-daemon cgprofile ctl start \
   --target "containerid:$CONTAINER_ID" \
-  --scope container            `# an ephemeral lane container: the cgroup IS the lane` \
+  --scope container \
   --token "$TOKEN" \
   --damon on \
   --meta '{"lane":"gate","project":"...","worktree":"...","commit":null,"run_gate_revision":0,"kind":"command","expected":null}' \
   --json
 ```
 
-`--scope container-shared` is the exec-mode twin: a long-lived container
-where the cgroup is shared and only the token-attributed pid subtree
-(walked from `/proc/<pid>/environ`, re-discovered every 2 s) counts toward
-the lane's numbers — `memory.current` is baseline-subtracted since
-`memory.peak` there is lifetime, not per-lane. `start` is idempotent by
+`--scope container-shared` is the exec-mode twin for a long-lived container.
+The token identifies a PID subtree (walked from `/proc/<pid>/environ`,
+re-discovered every 2 s) for target counts and DAMON. Memory and CPU still
+come from the shared cgroup; their deltas can include unrelated concurrent
+work. `memory.current` is baseline-subtracted because `memory.peak` there is
+lifetime, not per-lane. `start` is idempotent by
 `(container id, token)`: a retried/duplicate call returns the same live
 session (`"reused": true`) rather than starting a second one.
 
