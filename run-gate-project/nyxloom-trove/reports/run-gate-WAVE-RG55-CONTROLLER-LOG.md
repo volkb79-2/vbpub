@@ -4058,3 +4058,17 @@ by that probe, and must leave shared cockpit containers untouched. No file
 under `/workspaces/dstdns` was read or changed. No gate or mutation process is
 currently running; host memory `full avg10=0.00`, and host systemd confirms
 the `dev-gates.slice` unit is loaded with `CPUQuotaPerSecUSec=5s`.
+
+### RW-325 — 2026-09-25 12:10:10Z — P1 R0/R1 requires resolver test completion
+
+P1's fresh `r0-r1` on quiet tree
+`8df969674b343da17305a85a8e0b466d257f8f27` launched in a gate container
+under the loaded `dev-gates.slice`; live inspection confirmed
+`NanoCpus=3000000000`. The lane exited 2 because the coverage threshold is
+100%: the new `lib/targets.py` resolver remained at 96% line coverage, with
+uncovered branches in malformed/missing proc facts and identity-match refusal
+paths. The focused 220-test local suite passed but does not satisfy the
+changed-line line-and-branch bar. The next commit must add behavioral oracles
+for every changed branch; rerun exact-tip `r0-r1` and `r3` after that commit.
+No merge or Sol review is authorized by the failed gate. The contract mirror
+remains byte-identical.
