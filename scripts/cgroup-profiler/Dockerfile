@@ -20,7 +20,8 @@
 # Two stages: `ruptures==1.1.9` (pyproject.toml's pin) ships no prebuilt
 # wheel for cp314 yet, so it compiles a C extension at `pip install` time —
 # needing gcc, which has no business in the RUNNING daemon's attack surface
-# (this image is `--privileged --pid=host --cgroupns=host`; every package
+# (this image is privileged but uses private namespaces and explicit
+# read-only host proc/cgroup mounts; every package
 # not needed at runtime is one this daemon does not carry). The builder
 # stage installs build-essential and produces venv/; the final stage copies
 # only the finished venv, never the compiler that made it.
@@ -41,6 +42,8 @@ FROM python:3.14-slim
 ARG CGPROFILE_VERSION=1.0.0
 ARG GIT_REVISION=unknown
 
+ENV CGPROFILE_VERSION="${CGPROFILE_VERSION}"
+
 LABEL org.opencontainers.image.title="cgprofile" \
       org.opencontainers.image.description="RG-55 cgroup/DAMON profiling daemon (RG55-INTERFACE-CONTRACT.md)" \
       org.opencontainers.image.source="https://github.com/volkb79-2/vbpub" \
@@ -52,6 +55,7 @@ WORKDIR /opt/cgprofile
 
 COPY --from=builder /opt/cgprofile/venv /opt/cgprofile/venv
 COPY cgprofile.py ./cgprofile.py
+COPY pyproject.toml ./pyproject.toml
 COPY lib/ ./lib/
 COPY docs/ ./docs/
 COPY cgprofile ./cgprofile

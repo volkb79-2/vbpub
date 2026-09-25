@@ -159,15 +159,20 @@ retried or reported as such; it is neither a product PASS nor a product FAIL.
 Budgets are safety/resume controls, never correctness oracles.
 
 Before launching any container or mutation lane, read
-`/proc/pressure/memory`; do not launch while memory `full avg10 > 5`. Keep no
-more than two mutation lanes estate-wide. Use the declared cgroup environment,
-not a hard-coded slice, and apply `docker update --cpus=3 <exact-container>`
-immediately after each launch, then verify it. Bare pytest may run beside a
-mutation lane only when PSI-gated and with `nice -n 19 ionice -c 3`. Detached
-jobs must append an explicit job exit marker and the marker must be read
-separately from the wrapper's status. Do not poll a long gate every minute;
-leave it detached with a watcher and inspect it at a meaningful completion or
-wakeup point.
+`/proc/pressure/memory`; do not launch while memory `full avg10 > 5`. RW-319
+permits up to **three** mutation lanes estate-wide under the verified
+five-CPU `dev-gates.slice` quota. This is a bounded concurrent allowance, not
+a promise of non-contended CPU: scheduler interference is expected and must
+not affect functional results or mutation classifications. Each lane needs a
+unique exact container name, the declared and verified gates-slice parent,
+and immediate verified `docker update --cpus=3 <exact-container>`. Bare pytest
+may run beside mutation lanes only when PSI-gated and with
+`nice -n 19 ionice -c 3`. Detached jobs must append an explicit job exit marker
+and the marker must be read separately from the wrapper's status. Do not poll
+a long gate every minute; leave it detached with a watcher and inspect it at a
+meaningful completion or wakeup point. Budgets are safety/resume controls;
+an interrupted, timed-out, pressure-affected, or unjudged candidate is
+incomplete infrastructure evidence, never a product PASS/FAIL.
 
 Assay identity is per TREE. A commit in a judged worktree voids all
 mutation records for that worktree. Keep the HEAD quiet while judging. Resume
@@ -253,8 +258,10 @@ release, install, start the final daemon, or touch dstdns.
 
 ### `P1`: cgprofile 1.0.0 daemon
 
-Worktree: `.worktrees/rg55-profiler-daemon`, branch `rg55-profiler-daemon`,
-current branch tip `5917d362`. Read:
+Worktree: `.worktrees/rg55-p1-private-ns`, branch `rg55-p1-private-ns`.
+The controller will supply the exact current `main` base and committed
+candidate tip at dispatch; do not use historical SHAs below as current review
+identity. Read:
 
 ```
 scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-HANDOFF.md
@@ -262,13 +269,34 @@ scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-BRIEF-7.md
 scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-HANDOFF.md
 ```
 
-At packet creation, a detached R2 was still running as PID `3301167` in exact
-container `run-gate-vbpub-r2-3301167-1789437789`. Do not edit this worktree,
-switch its HEAD, or triage an old verdict while that process/container is
-alive. On completion, read its explicit verdict and completion marker
-separately, verify the judged tree, and reconcile every candidate. Historical
-P1 evidence included seven survivor dispositions and earlier budget
-placeholders, but those counts are not current evidence for `5917d362`.
+The former detached campaign and stale `5917d362`/`9b70a46e` gate receipts are
+not evidence for the private-namespace candidate. The registered R2 on exact
+tree `51198f2e4759acbd69dfd770b843cdf20b1d6ed0` completed at
+`2026-09-24T09:19:52.297677Z`: 81/81 candidates executed, 71 killed, 10
+survived, and zero equivalent, budget-exceeded, crashed, or hung. Its
+mechanical result is `FAIL/MUTANTS_SURVIVED`; all ten are oracle gaps and the
+P1 report/LOG map each to new behavioral tests. That candidate's prior short
+gates are stale for the repair commit. The controller will commit the repair
+tests and records first, run final short gates and a fresh registered R2 on
+the same new quiet tip, then dispatch this final review. At review dispatch,
+verify the exact tree's own R2 verdict, completion marker, every candidate
+disposition, and short-gate history. Do not infer from any prior-tree count.
+
+Current status supersedes the preceding snapshot: P1 was reconciled to current
+`main` `e5e9b95c5ac8be3452c93f1066f9436347f862fd` by merge commit
+`d108ebb2a014ac204d6c50a3b82d65471e8ada7d`. On that clean exact tree,
+R0/R1 passed 1,377 tests with 5,021/5,021 statements and 1,732/1,732
+branches; R3 rejected all seven canaries. Both history records are PASS/exit
+0 with loaded `dev-gates.slice` and 3-CPU caps. The daemon was down, so R0/R1
+used coarse rusage. Verify the latest exact tree and receipts at dispatch.
+
+The operator authorizes provisional merge after fresh review and green short
+gates while replacement R2/full-gate judging proceeds asynchronously in a
+separate attached CIU worktree. This review does not certify mutation
+completion, and provisional merge is not release/shipment. Release remains
+blocked until the replacement exact-tree campaign accounts for every
+candidate without budget/hung/incomplete results, the full gate passes, and
+any fixes are backported and rejudged. Never edit or switch the judged tree.
 
 Review the daemon's serve/ctl protocol, socket carrier, watch and placement
 behavior, liveness/finalization, safety on daemon absence, host/container
@@ -313,16 +341,22 @@ scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-BRIEF-10.md
 scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-HANDOFF.md
 ```
 
-At packet creation, the fresh R2 was still running as PID `3403254` in exact
-container `run-gate-vbpub-r2-3403254-1789439415`, after the timeout-oracle
-repair commit `8076246c`. Do not edit this worktree while it runs. The repair's
-targeted `tests/test_summary.py tests/test_serve.py` suite was 143/143. The
-older aggregate had five budget placeholders caused by summary/status tests;
-that evidence is stale for this repaired tree. On completion, read the new
-verdict and progress separately, then triage all survivors and any incomplete
-candidate. Verify CP-2..CP-12, socket peer credentials, watch role, placement
-guard, `cgprofile.slice`, host-PSI seam, kill-finalizes behavior, and both
-carriers. No release follows from an incomplete mutation lane.
+Current source candidate: `/workspaces/vbpub/.worktrees/rg55-followups-cgprofile-final`,
+branch `rg55-followups-cgprofile-final`, exact tree `aae66356` at last
+checkpoint. Its R0/R1 and R3 passed on that tree; the focused repair suite
+passed 247 tests with 6 skips. The fresh R2 is running in the separate CIU
+worktree `.worktrees/rg55-p6-r2-ciu`, detached at that exact tree, PID
+`1960695`, container `run-gate-vbpub-r2-1960695-1790233947`. The exact
+container was verified in `dev-gates.slice` and capped at 3 CPUs. Do not
+modify/switch the campaign worktree or poll it more frequently than every 25
+minutes. At review dispatch, verify the live status and terminal marker,
+read the exact-tree verdict and progress separately, then triage all survivors
+and incomplete candidates. Any controller-record-only commit on the source
+branch must be followed by final short gates and a fresh exact-tree R2 if it
+changes the candidate identity. Verify CP-2..CP-12, socket peer credentials,
+watch role, placement guard, `cgprofile.slice`, host-PSI seam,
+kill-finalizes behavior, and both carriers. No release follows from an
+incomplete mutation lane.
 
 ### `CMRU`: release-recovery repair encountered during this wave
 
@@ -347,9 +381,10 @@ has pure admission arithmetic, checked overflow, dynamic capacity telemetry,
 strict registry/manifest provenance, and an order-independent estate pairing
 guard; its full local run-gate suite is 1101 passed/3 skipped. Review it only
 if time remains after the selected release target. Keep the current RG-55
-two-mutation-lane cap; `additional_slots` must be derived capacity telemetry,
-never a literal authorization to launch a third lane. Any RG56 repair must
-remain isolated and must not be merged as part of this final review.
+three-mutation-lane cap authorized by RW-319; `additional_slots` must be
+derived capacity telemetry, never an authorization beyond three lanes. Any
+RG56 repair must remain isolated and must not be merged as part of this final
+review.
 
 ## Review and repair procedure
 
@@ -382,8 +417,8 @@ remain isolated and must not be merged as part of this final review.
    package declares it; run run-gate-project's own bare-host selftest/r1/r2/r3
    lanes exactly as declared. Read each verdict separately and record exit
    markers, tree hashes, container names, PSI, and CPU caps.
-6. Review the final changed tree again. Return `ACCEPT` only when the complete
-   mutation result, 100% line+branch changed-line coverage, package gates,
+6. Review the final changed tree again. Return `ACCEPT` only when the reviewed
+   code's 100% line+branch changed-line coverage and short package gates,
    docs, live probes, R-36h, and D-15 safety all support the claim. Use
    `ACCEPT-CONDITIONAL` only for named non-blocking follow-up rows that cannot
    alter shipped behavior. Use `REJECT` for any blocker. Use `BLOCKED` for a
@@ -476,10 +511,10 @@ perform those operations after your ACCEPT and the required post-review gates.
    transaction/project isolation, dirty-main recovery, and actual remote
    promotion behavior? Are README, DESIGN-GUIDE, CONSUMERS, SPEC, CHANGES, and
    backlog consistent?
-5. Does RG56 preserve a hard current cap of two mutation lanes and derive any
-   future additional capacity from verified host facts, with no shadowing or
-   empty-default path? This is a future-wave review, not authorization to add a
-   third live lane now.
+5. Does RG56 derive any future additional capacity from verified host facts,
+   with no shadowing or empty-default path? RW-319 already authorizes up to
+   three current RG-55 mutation lanes under the verified five-CPU
+   `dev-gates.slice`; that operational ruling does not approve RG56 changes.
 6. Which exact post-review release order is still valid: run-gate 23.8.0,
    cgprofile 1.0.0, cgprofile 1.1.0, then run-gate 23.9.0 after P4/P6? Identify
    any dependency that makes a sequence unsafe, but do not release it yourself.

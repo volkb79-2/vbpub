@@ -1,5 +1,5 @@
 # Keep the build context to what the image actually needs (Dockerfile only
-# COPYs cgprofile.py, lib/, docs/, cgprofile, requirements.txt) — everything
+# COPYs cgprofile.py, pyproject.toml, lib/, docs/, cgprofile, requirements.txt) — everything
 # below is test/gate/dev-only state that must never end up baked into
 # `cgprofile:local`.
 .git
@@ -22,7 +22,6 @@ run-gate.py
 run-gate.toml
 assay.toml
 setup.sh
-pyproject.toml
 README.md
 DESIGN.md
 ATTACH-GUIDE.md

@@ -3849,6 +3849,40 @@ the helper's own visible PID membership in the mounted cgroup tree and local
 derived root. Reject missing/ambiguous membership or an absent resolved
 cgroup; do not use a host cgroup namespace to avoid the translation.
 
+### RW-312 — 2026-09-24 00:49:07Z — scope token roots to the selected cgroup
+
+The private-PID fix must preserve §2.2's attribution boundary: resolve the
+positive PIDs directly in the selected target cgroup (using the explicit host
+proc view when `cgroup.procs` exposes only zero), then match the exact token
+among those PIDs. Do not search all host processes for token roots. Their
+descendants remain attributed if they later move to another cgroup. A target
+of `/` means processes directly in the hierarchy root, not every descendant.
+This also avoids resolving the no-token PID list a second time on token-backed
+session startup. P1 source and regression tests now encode this ruling; fresh
+registered gates are still required after the edits.
+
+### RW-313 — 2026-09-24 00:49:07Z — distinct gate worktrees may run concurrently
+
+The operator clarified that independent CIU worktrees may host concurrent gate
+containers; the other controller's local one-at-a-time scheduling choice is
+not a host-wide exclusion rule. Each container still needs its own unique
+exact name, read-only source bind, verified loaded `dev-gates.slice` parent,
+and immediate 3-CPU cap. Worktree isolation separates source/evidence, not host
+resources; keep the two-mutation-lane ceiling and the memory-PSI admission
+guard (`full avg10` must be at most 5 before launching work). The Wave C
+`run-gate-assay-selfhosted-1477047-21288-1790210014` and P1
+`cgprofile-gate-1478779-1790210092` containers did overlap; P1's exact-tree
+`r0-r1` completed cleanly with 1,324 tests and 100% statement/branch coverage
+in 72.891 seconds. The P1 tree changed afterward under RW-312, so this result
+is historical, not final evidence. Earlier this session I also mistakenly
+launched a local targeted pytest when memory PSI full avg10 was 6.97; collection
+stopped because the devcontainer lacked `numpy`, and no test body ran. I will
+not launch further validation until the admission threshold is met.
+
+The P1-local RW-310/RW-311 were renumbered RW-312/RW-313 because canonical
+main already assigns RW-310/RW-311 to cockpit/BuildKit and release-identity
+rulings. The P1 meanings are preserved above.
+
 ### RW-310 — 2026-09-24 06:04:07Z — record current cockpit source and BuildKit socket remediation
 
 The operator confirms the running devcontainer is based on
@@ -3887,3 +3921,221 @@ tag, so P1's first release must keep the settled explicit `--set-version
 version/build/CLI tests pass (`26 passed`); registered P6 `r0-r1` is running
 on the clean `dfef6bad` tree, and `r3`, P6 R2, independent review, and release
 remain outstanding.
+
+### RW-318 — 2026-09-24 07:26:57Z — disqualify the legacy P1 gate receipt
+
+The nested `r0-r1` invocation on stale candidate
+`9b70a46e902b5ea63ea9de699165593ddae8bd54` reported exit 0, 1,202 tests
+passed and 100% line/branch coverage (history duration 69.198 s). The exact
+test container `bold_dewdney` was in `dev-background.slice`, not the required
+loaded `dev-gates.slice`; inspection showed the gate's placement probe used
+`--cgroupns=host`. I applied `docker update --cpus=3` and verified
+`NanoCpus=3000000000`, then stopped that exact container. This receipt is
+therefore NOT accepted as RG-55 shipping evidence despite the test/coverage
+PASS. The P1-private-ns branch carries the corrected named-container launcher
+and private-namespace probe; its reconciled exact-tree gate is still required.
+No unrelated container was stopped.
+
+### RW-319 — 2026-09-24 07:41:38Z — permit a third mutation lane under verified gate capacity
+
+The operator supersedes the earlier hard two-lane ceiling. The host's
+`dev-gates.slice` is verified loaded with `CPUQuotaPerSecUSec=5s` (five CPU
+equivalents); allow up to **three** concurrent mutation containers estate-wide.
+This is permission to use the bounded capacity, not a claim that three
+three-CPU containers can receive five CPUs simultaneously: CPU scheduling and
+contention are expected, allowed conditions. Each lane gets a unique exact
+container name, the declared and verified `dev-gates.slice` parent, and an
+immediate verified `docker update --cpus=3`. Check memory PSI before launch and
+do not launch while `full avg10 > 5`.
+
+Functional outcomes and mutation classifications must be deterministic and
+agnostic to scheduler contention. Time/budget controls exist only for safety
+and resumability; timeout, interruption, pressure, or an unjudged candidate is
+incomplete/infrastructure evidence, never a product verdict. Do not change
+test semantics or classify a candidate from elapsed wall time. The controller
+must update review/dispatch packets that still encode the former two-lane cap.
+
+### RW-320 — 2026-09-25 02:49:51Z — P1 R2 survivors require behavioral oracles
+
+The exact registered P1 R2 on `51198f2e4759acbd69dfd770b843cdf20b1d6ed0`
+finished at `2026-09-24T09:19:52.297677Z`: 81/81 candidates executed, 71
+killed, 10 survived, and zero equivalent, budget-exceeded, crashed, or hung.
+The ten survivors at `access.py:390`, `targets.py:262-267`, and
+`version.py:52,57,60` are behavioral-oracle gaps, not accepted equivalents.
+The P1 worktree now contains focused tests for diagnostic flush-before-start,
+nonpositive-PID refusal, both missing namespace mapping facts, malformed
+prefix refusal, subprocess option semantics, and both diagnostic fallback
+paths. The focused 235-test suite passed. These edits plus this ruling/report
+change the tree, so the `51198f2e` mutation records are not release evidence
+for the next candidate. Commit all repair and record changes before starting
+the next registered R2; then keep that exact tree quiet through R2 and final
+short gates. The mechanical outcome for `51198f2e` remains
+`FAIL/MUTANTS_SURVIVED`.
+
+### RW-321 — 2026-09-25 03:06:05Z — reconcile P1 to current main before long mutation
+
+Before launching its next long R2, the P1 worktree was found behind `main`
+(`b52dc9f8` versus `7f465669`). The intervening main diff was read and
+contained only the 61-line assay backlog entry in
+`assay/nyxloom-trove/4-backlog.md`; no P1 implementation code changed.
+Current main was merged cleanly into the P1 branch as `a3b4dc1c`, ensuring
+the source-backed gate picks up main's current assay tree. All short-gate and
+mutation evidence must now match the post-reconciliation commit; rerun both
+short gates before starting the new R2. This reconciles an already-settled
+candidate with main and does not reopen the P1 design decisions.
+
+### RW-322 — 2026-09-25 10:30:44Z — P1 R2 terminal is incomplete; reconcile before new evidence
+
+The detached registered P1 R2 on quiet tree
+`1908316b227df8a2b8fd259969725b4c7a9f1b27` ran in
+`run-gate-vbpub-r2-3690082-1790305991` from
+`2026-09-25T03:13:17.949231Z` to `2026-09-25T04:27:11.853270Z`. All 81
+candidates are accounted for: 80 killed, one `hung`, and zero survivors,
+equivalents, per-candidate budget excesses, or crashes. The separate verdict
+is `BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4; do not call it a PASS or a
+mutant survival. Candidate 40 (`7692929c11d002ae02db963540fb42e06618318c814e1e99e71fed42894eea9c`,
+`lib/targets.py:191`, `Eq->NotEq`) reported 1,321 completed tests but has no
+kill proof in the retained candidate-state/progress artifacts. RW-319 binds:
+do not explain this as scheduler contention or let elapsed time decide
+product behavior. Diagnose it from a fresh, exact-tree run.
+
+The campaign's judged tree predates current-main Assay Wave C P2/P3. P1 has
+now reconciled current `main` as `007b208859b99d380b87a9d4ea3479bdbfc8d5b6`;
+the old mutation record is inapplicable. Fresh P1 `r0-r1`/`r3` and the
+required fresh Sol xhigh review are next. Under the operator's provisional
+merge workflow, after those short gates and review pass, merge P1 to unblock
+P6, then launch the new R2 and full gate in an isolated CIU worktree. Any
+repair is backported and its affected evidence rerun.
+
+### RW-323 — 2026-09-25 10:43:38Z — require P1 container caps before execution
+
+P1's fresh R3 on `d94c58b9` rejected all seven canaries, but live inspection
+of its exact container `run-gate-vbpub-r3-4169091-1790332576` showed
+`NanoCpus=0`. The attempted exact-name `docker update --cpus=3` found that
+the short-lived container had already exited. Treat that green functional
+result as non-qualifying gate evidence: it does not prove the required cap.
+The P1 `r2` and `r3` lane configs now declare `resources.cpus = "3"`, making
+Docker apply `--cpus 3` before the command starts; the refreshed live gate
+must verify `NanoCpus=3000000000`. This avoids a post-launch race for the
+11-second canary lane while preserving the same 3-CPU ceiling required by
+RW-319. Because this config/report/log commit changes the tree, refresh both
+P1 short-gate receipts on its exact commit before review. The prior R2
+candidate-hung result remains incomplete under RW-322 and is not changed by
+this ruling.
+
+### RW-324 — 2026-09-25 11:34:01Z — resume P1 after interrupted Sol review
+
+The controller resumed from clean P1 worktree `rg55-p1-private-ns` at
+`f76f1f0154615547d8828a15e28f93a597915009`; main is
+`031c37ddc615545aa819e722e160c877d84157ea`. This candidate includes the
+interrupted Sol review's two committed follow-ups (`e93a40fc` runtime project
+metadata in the image, `f76f1f01` corrected shared-cgroup attribution), but no
+round-3 report or verdict exists. These commits invalidate the earlier
+`ec288209` short-gate receipts, and main's Assay B100 merge requires current-
+main reconciliation before new registered evidence.
+
+The interrupted live review observed that helper-mode `pid:N` is translated
+to a container-id/subpath spec, which may lose the PID identity that enables
+per-process sampling and DAMON attribution. Treat this as an unresolved
+behavioral defect until an oracle proves the original `pid:N` identity is
+preserved across the private namespaces, or the target is rejected explicitly
+before sampling; silently broadening it to the whole container is forbidden.
+The next order is: reconcile P1 with current main; implement and test this
+bounded behavior; refresh exact-tip `r0-r1` and `r3` evidence with the live
+3-CPU/cgroup-parent checks; then continue the unfinished third Sol review
+round using rounds 1-2 and the interrupted findings. No P1 merge or release
+is implied by this ruling. The old P1 R2 at `1908316b` remains
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, not a pass; run the replacement in an
+isolated quiet CIU worktree after provisional integration, per RW-296.
+
+Safety note: the interrupted reviewer disconnected and removed
+`cgroup-profiler-1299a7-network` while `dstdns-devcontainer-vb` was attached
+to it. The devcontainer remains running with its other networks. The
+controller will not recreate the network or alter any pre-existing
+container/network attachment without an operator-directed, provenance-backed
+recovery; future live probes may mutate only uniquely named resources created
+by that probe, and must leave shared cockpit containers untouched. No file
+under `/workspaces/dstdns` was read or changed. No gate or mutation process is
+currently running; host memory `full avg10=0.00`, and host systemd confirms
+the `dev-gates.slice` unit is loaded with `CPUQuotaPerSecUSec=5s`.
+
+### RW-325 — 2026-09-25 12:10:10Z — P1 R0/R1 requires resolver test completion
+
+P1's fresh `r0-r1` on quiet tree
+`8df969674b343da17305a85a8e0b466d257f8f27` launched in a gate container
+under the loaded `dev-gates.slice`; live inspection confirmed
+`NanoCpus=3000000000`. The lane exited 2 because the coverage threshold is
+100%: the new `lib/targets.py` resolver remained at 96% line coverage, with
+uncovered branches in malformed/missing proc facts and identity-match refusal
+paths. The focused 220-test local suite passed but does not satisfy the
+changed-line line-and-branch bar. The next commit must add behavioral oracles
+for every changed branch; rerun exact-tip `r0-r1` and `r3` after that commit.
+No merge or Sol review is authorized by the failed gate. The contract mirror
+remains byte-identical.
+
+### RW-326 — 2026-09-25 12:30:19Z — detached CIU campaign identity is intentionally refused
+
+The reported `ciu worktree` refusal is not a new CIU behavior or a controller
+mutation. `.worktrees/rg55-p6-r2-ciu` is Git-detached at
+`aae66356bf3a65ef8b3ba7fa04a8042f2feee55c`, while its generated
+`ciu.worktree-instance.json` still claims branch `rg55-p6-r2-ciu`. CIU's
+`list_instance_records` cross-checks the recorded branch against Git and
+refuses a contradictory family identity by design. The checkout was detached
+to honor assay's exact-tree resume identity. Leave both checkout and generated
+record untouched; create the next CIU gate worktree from an isolated local
+clone with its own Git family. No CIU implementation or Docker network action
+is authorized by this ruling.
+
+### RW-327 — 2026-09-25 12:30:19Z — P1 helper-PID coverage repair is test-only
+
+Test-only commit `d201537328ba8574968e8e1e9ff1ab8ad931f1f5` adds deterministic
+oracles for missing/malformed proc facts, each PID/cgroup identity filter,
+PID reuse, ambiguous/absent matches, reserved-option misuse, and the
+caller-to-helper target conversion. Its load-niced focused run passed 260
+tests; branch-aware coverage measured `lib/targets.py` at 441/441 lines and
+220/220 branches, and all changed helper-PID lines/branches in `cgprofile.py`
+were covered. No implementation changed. The focused local run is not an
+authoritative package gate; after this ruling is committed, rerun P1 `r0-r1`
+and `r3` on the final exact tip with loaded-slice and 3-CPU evidence. The old
+R2 remains `BUDGET_EXCEEDED/CANDIDATE_HUNG` per RW-322.
+
+### RW-328 — 2026-09-25 12:35:52Z — P1 short gates pass; record before final rerun
+
+Fresh short gates passed on clean exact code tree
+`43daf53e09f15227cacdcd80156dcdecc7cc19a6`: R0/R1 exit 0 in 75.396 s
+with 5,021/5,021 statements and 1,732/1,732 branches covered; R3 exit 0 in
+11.132 s with all seven canaries rejected and none surviving. The R0/R1
+test container `cgprofile-gate-279657-1790339528` and R3 container
+`run-gate-vbpub-r3-284762-1790339665` both reported the loaded
+`dev-gates.slice` parent and `NanoCpus=3000000000`. The tree was clean and
+unchanged throughout; the daemon itself was down, so run-gate reported coarse
+rusage profiling for these gates. This log/report/handoff update changes HEAD;
+repeat both short gates on the resulting final P1 tip before Sol review. These
+receipts do not change the old R2 terminal or substitute for fresh live
+review probes.
+
+### RW-329 — 2026-09-25 16:10:42Z — P1 reconciled current main; provisional review may precede R2
+
+Shared `main` advanced to `e5e9b95c5ac8be3452c93f1066f9436347f862fd`
+after the P1 private-namespace candidate was prepared. A read-only path
+comparison showed the intervening main changes did not modify
+`scripts/cgroup-profiler/` or `run-gate-project/` implementation paths. The
+clean P1 branch was reconciled with `git merge --no-ff main`, producing
+`d108ebb2a014ac204d6c50a3b82d65471e8ada7d`; its merge base is now the exact
+current main tip. On this clean tree, `r0-r1` passed 1,377 tests in 94.06 s
+with 5,021/5,021 statements and 1,732/1,732 branches, and `r3` passed with
+all seven canaries rejected and zero survivors. Run-gate history independently
+records PASS/exit 0 for both lanes on that hash. The R0/R1 container was
+`cgprofile-gate-572739-1790352189`; R3 was
+`run-gate-vbpub-r3-577036-1790352338`. Both used loaded `dev-gates.slice`
+with `NanoCpus=3000000000`; the daemon was down and R0/R1 used coarse rusage.
+
+The old R2 on `51198f2e` remains FAIL with ten real oracle gaps, repaired in
+the current candidate, but no replacement R2/full gate is complete for this
+tree. Per the operator's workflow change, a fresh Sol ACCEPT plus the short
+gates permits a **provisional merge** so other RG-55 work can proceed. This
+does not permit release or shipment. Launch the replacement R2 and full gate
+in an attached, separate CIU worktree after provisional merge; keep its HEAD
+quiet, and backport/rejudge any fixes. The updated Sol packet distinguishes
+review acceptance from mutation/release evidence. The R2 and full-gate status
+remain open until their exact-tree records are read separately.

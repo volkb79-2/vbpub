@@ -26,12 +26,13 @@ registry = ["ghcr.io"]
 #   pwmcp <- cmru  (declared release order)
 #   tls-edge <- cmru  (declared release order)
 #   run-gate-project <- none  (declared release order)
+#   cgroup-profiler <- cmru  (declared release order)
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
 [orchestration]
-project_order = ["ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project"]
-default_projects = ["ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project"]
+project_order = ["ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project", "cgroup-profiler"]
+default_projects = ["ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project", "cgroup-profiler"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -148,6 +149,12 @@ depends_on = ["cmru"]
 [orchestration.project.run-gate-project]
 config = "run-gate-project/cmru.toml"
 depends_on = []
+
+# RG-55 daemon image release. Its lifecycle is CIU-owned; CMRU builds and
+# publishes the tagged image, while the controller deploys it via `ciu up`.
+[orchestration.project.cgroup-profiler]
+config = "scripts/cgroup-profiler/cmru.toml"
+depends_on = ["cmru"]
 
 [cleanup]
 release_tag_prefixes = ["*"]

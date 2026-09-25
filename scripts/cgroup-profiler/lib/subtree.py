@@ -6,8 +6,8 @@ lane, for one). The daemon cannot attribute memory/CPU to *the lane* from
 the cgroup alone — it has to know which pids in that cgroup belong to the
 lane run-gate just started. The contract's answer is an environment-variable
 token: run-gate exports ``RUN_GATE_PROFILE_SESSION=<token>`` into the lane
-process before it execs, and the daemon finds every pid that carries it,
-plus everything that pid has spawned since.
+process before it execs, and the daemon selects exact-token PIDs directly in
+the target cgroup, plus everything those PIDs have spawned since.
 
 **Two things this module refuses to do**, because the whole daemon leans on
 the refusal: raise on a pid that vanished between listing it and reading its
@@ -19,6 +19,11 @@ appeared for one tick and exited before the next must still count in
 ``targets_seen`` (contract §3: "distinct pids ever attributed"), the same
 running-union discipline :class:`lib.summary.SummaryAccumulator` applies to
 the pids it is fed.
+
+Token roots are processes directly in the selected cgroup whose environment
+contains the exact token. When host PIDs appear as zero in ``cgroup.procs``,
+their membership is resolved through the explicit host proc view first;
+unrelated host processes are not eligible roots.
 
 **Descendant discovery** has a fast path and a fallback, tried in that order
 every call (never cached across calls: the kernel's ``/proc`` capability is
@@ -44,8 +49,7 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Optional, Set
 
-from . import util
-from .summary import read_cgroup_pids
+from . import targets as targets_mod, util
 
 _ENVIRON_SEP = "\x00"
 
@@ -57,9 +61,8 @@ def _environ_has(pid: int, proc_root: str, needle: str) -> bool:
     holding invalid UTF-8 (a stray binary blob some tool exported) must not
     turn "does this pid carry our token" into a crash. A zombie, a pid that
     exited between being listed and being read, or one this process lacks
-    permission for (rare — the daemon runs ``pid: host`` precisely so this
-    does not happen for lane processes) all read the same way: "no", never
-    an exception.
+    permission for all read the same way: "no", never an exception. A
+    token-bearing process that cannot be read is not attributed.
     """
     path = os.path.join(proc_root, str(pid), "environ")
     try:
@@ -149,13 +152,17 @@ class SubtreeResolver:
     :class:`lib.summary.SummaryAccumulator`. The session server calls
     :meth:`refresh` once per discovery interval (contract §2.2: 2 s) and
     feeds :attr:`current_pids` straight into
-    ``SummaryAccumulator.add_sample(pids=...)`` — this class never talks to
-    cgroup controller files itself beyond ``cgroup.procs`` (the accumulator
-    owns everything else about the sample).
+    ``SummaryAccumulator.add_sample(pids=...)``. Direct cgroup membership is
+    resolved by :func:`lib.targets.pids_in_cgroup`, including private-PID
+    namespace translation when an explicit host proc view is configured.
     """
 
-    def __init__(self, *, cgroup_abs_path: str, token: str, proc_root: str = "/proc") -> None:
-        self.cgroup_abs_path = cgroup_abs_path
+    def __init__(
+        self, *, cgroup: str, cgroup_root: str = targets_mod.CGROUP_ROOT,
+        token: str, proc_root: str = targets_mod.PROC_ROOT,
+    ) -> None:
+        self.cgroup = cgroup
+        self.cgroup_root = cgroup_root
         self.token = token
         self.proc_root = proc_root
         self._current: Set[int] = set()
@@ -194,7 +201,12 @@ class SubtreeResolver:
 
     def _token_owners(self) -> Set[int]:
         needle = f"RUN_GATE_PROFILE_SESSION={self.token}"
-        pids = read_cgroup_pids(self.cgroup_abs_path)
+        # In a private PID namespace, host PIDs in cgroup.procs appear as 0.
+        # Resolve the selected cgroup's real PIDs through host proc first;
+        # token identity is scoped to that target, not the whole host.
+        pids = targets_mod.pids_in_cgroup(
+            self.cgroup, self.cgroup_root, self.proc_root,
+        )
         return {pid for pid in pids if _environ_has(pid, self.proc_root, needle)}
 
     def _descendants(self, owners: Set[int]) -> Set[int]:
