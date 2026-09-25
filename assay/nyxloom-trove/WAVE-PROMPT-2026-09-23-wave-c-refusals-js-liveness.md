@@ -19,7 +19,11 @@ verdict schema v13 is permitted if required for its evidence contract. A
 reason-code or lane-schema change is also permitted after a GPT-6-Luna xhigh
 recommendation and review, before the change is made. The 2026-09-25 GPT-6-Luna
 xhigh B106 design review recommends v13 verdict fields only; it finds no need
-for a lane-schema field or new reason code. Gate containers may run
+for a lane-schema field or new reason code. The GPT-6-Luna xhigh follow-up
+design review confirmed that boundary and identified the v12 hard-cut
+conflict: recognize a bounded, parseable v12 JSON object as an unproven cold
+start, do not validate or consume its candidate fields, and require a full
+current run. Gate containers may run
 in parallel when host resources allow. Use a unique CIU worktree and the
 unique gate container name created by `run-gate.py`; no pre-gate RG-55 message
 is required. Keep every gate in
@@ -552,8 +556,15 @@ requirement that a replay receipt agree with pytest's ordinary exit code.
 **Contract:** reuse must be based on current evidence, not candidate bytes
 alone. Add `assay plan <lane> --reuse-from <verdict>` as a read-only preview
 and `assay run <lane> --reuse-from <verdict>` as the execution option. Read one
-prior native R2 verdict and validate it with the current verifier. Classify
-current candidates as (a) eligible for a current witness replay, (b) prior
+prior artifact with a bounded, duplicate-key-rejecting JSON parser. A v13
+artifact is inspected only after it passes the current verifier. A v12 JSON
+object is the sole cold-start exception: recognize `schema_version = 12`,
+classify it as unproven, and do not validate or consume any of its candidate
+fields. This does not make v12 valid under `assay verify`; it preserves the
+v13 hard cut while making an old artifact a safe full-run starting point.
+Every other foreign version, unreadable path, malformed JSON, duplicate key,
+or invalid v13 artifact is a preflight `UNREADABLE_ARTIFACT` refusal.
+Classify current candidates as (a) eligible for a current witness replay, (b) prior
 outcomes that require a full current run, including survivors, crashes, hangs,
 budget exhaustion, equivalence and missing witnesses, (c) current candidates
 absent from the prior plan, or (d) prior candidate IDs no longer in the current
@@ -575,8 +586,9 @@ and its final order; do not deselect later items or alter collection, so
 session fixtures and plugins see the same collection and all setup before the
 witness executes. The witness node must occur exactly once. Stop the ordinary
 sequential runner only after the witness item completes; a report for that exact
-node must show a call-phase failure and pytest must exit with its ordinary
-test-failure status (`1`) to certify a current kill. An earlier node failure
+node must show a call-phase failure, pytest's session exit status and the
+child process exit status must both be the ordinary test-failure status (`1`),
+and those facts must agree in a bounded receipt to certify a current kill. An earlier node failure
 or a setup/teardown error alone is insufficient. A PASS, skip, missing witness,
 malformed/oversized receipt, absent or duplicate node ID, unsupported pytest
 command, xdist or custom test-loop execution, inconsistent exit status, or any
@@ -592,14 +604,15 @@ verdict digest, prior node ID, current node ID, and receipt of the current
 failed report. The previous artifact is an input to choose a replay point,
 never evidence for the current kill.
 
-**Compatibility and limits:** an existing v12 artifact has no complete
-candidate-ID inventory or test-level kill witness, so it proves no reusable
-candidate. When supplied for preview, classify the evidence as unproven and
-show that every current candidate will run fully; when supplied for execution,
-report this fallback before continuing. A missing or malformed path is a
-preflight refusal with the existing `UNREADABLE_ARTIFACT` reason. A valid but
-incomplete source verdict, including a shard or a v12 artifact, is unproven and
-falls back to a full run. Initially support only a direct `pytest` executable
+**Compatibility and limits:** a v12 artifact has no complete candidate-ID
+inventory or test-level kill witness, so it proves no reusable candidate.
+When supplied for preview, classify the evidence as unproven and show that
+every current candidate will run fully; when supplied for execution, report
+this fallback before continuing. `assay verify` still rejects v12 under the
+hard cut; the `--reuse-from` cold-start path reads only the bounded JSON
+envelope and its exact version. A valid but incomplete v13 source verdict,
+including a shard, is unproven and falls back to a full run. Initially support
+only a direct `pytest` executable
 command or the lane's Python executable invoked with `-m pytest`; shell and
 tool wrappers are unsupported. Capture/replay is allowed only in sequential
 mode with pytest's ordinary runtest loop and protocol; xdist, a custom loop,
@@ -608,22 +621,35 @@ reaches the witness only after most of the suite may save little
 time; the feature promises correctness and records the measured work, not a
 particular speedup.
 
-**Completeness:** v13 native mutation verdicts carry an exhaustive candidate-ID
-inventory for the verdict's scope and one candidate ID on every outcome. For
-an unsharded run, that inventory is the full current plan; for a shard, it is
-the selected slice. The inventory must equal the outcome-ID set in either
-case, and shard metadata prevents that slice from claiming campaign
-completeness. Only a full unsharded campaign can be a B106 reuse source. Each
-ID is bound to recorded identity inputs sufficient to recalculate it through
-one canonical candidate-ID function shared by planning, execution and verify:
-canonical relative path, operator, SHA-256 of the original UTF-8 source-file
-bytes, exact start/end byte span, and SHA-256 of the entire mutated file (not
-merely `replacement_sha256`). Closed
-per-item execution provenance records `full` or `witness-prefix`. A full run
-may include a call-phase failure witness only when pytest also exits 1. A
-witness-prefix run must include the SHA-256 of the exact prior verdict bytes,
-prior witness node ID, matching current node ID, current failed call-phase
-receipt, and pytest exit 1. `assay verify`
+**Completeness:** schema v13 reuses `mutation.candidate_ids` as the exhaustive
+inventory for the verdict's candidate scope. For a complete unsharded run it
+is the full current plan; for a shard it is the selected slice. An empty array
+means an empty submitted scope (a genuine zero-candidate run or empty shard).
+A pre-submission `MUTANT_LIMIT_EXCEEDED` sentinel omits this inventory because
+no candidate scope was submitted; its existing `candidate_count =
+max_mutants + 1`, `total = 0` shape never qualifies as a complete or reusable
+campaign. For completed native scopes, the inventory must equal the
+outcome-ID set, including the empty case, and shard metadata prevents a slice
+from claiming campaign completeness. Only a full unsharded campaign can be
+a B106 reuse source. Every native outcome carries its `candidate_id`,
+`source_sha256`, and `mutated_file_sha256` alongside the existing path,
+operator, span and `replacement_sha256`. These fields bind each ID to
+sufficient inputs to recalculate it through one pure canonical candidate-ID
+helper shared by planning, execution and verify: canonical relative path,
+operator, SHA-256 of the original UTF-8 source-file bytes, exact start/end
+byte span, and SHA-256 of the entire mutated file. `verify` imports only that
+leaf helper and still independently checks native-only requiredness, shapes
+and cross-object coverage. Ingested outcomes omit all B106 fields.
+
+Closed per-item execution provenance records `full` or `witness-prefix`. A
+full run may include a call-phase failure witness only on a killed outcome
+when the pytest session and child process both exit 1. A witness-prefix run
+must be killed and include the SHA-256 of the exact prior verdict bytes, prior
+witness node ID, matching current node ID, and the current failed call-phase
+receipt with both exit statuses equal to 1. A receipt contains only the node
+ID, `when = "call"`, `outcome = "failed"`, and the two exit statuses; each
+node ID is bounded to 4096 UTF-8 bytes, and arbitrary output/tracebacks are
+never recorded. `assay verify`
 requires inventory/outcome sets to be equal, duplicate-free, disjoint across
 outcome buckets, structurally valid for the recorded execution mode, and each
 candidate ID to match its recorded identity inputs. The producer refuses to
@@ -633,13 +659,16 @@ An ordinary `--resume` continues to require its exact judge identity;
 `--rejudge` overrides selective replay and forces a full run for the named
 candidate. A survivor-only or sharded run is never a complete campaign.
 
-**Required oracles:** a v12 prior artifact yields no reusable outcomes; a v13
+**Required oracles:** a parseable v12 prior artifact is a cold start that
+yields no reusable outcomes while `assay verify` still rejects it; malformed
+and duplicate-key inputs refuse; a v13
 complete pytest campaign with killed, surviving, and timed-out candidates
 classifies each safely; changed candidate bytes become new work; changed tests
 are exercised under the current command; replay failure is accepted only when
 the designated current node's call-phase report fails after current baseline
 PASS; witness pass, deleted test, fake/oversized receipt, duplicate/missing
-IDs, mutated prior outcome, changed source or mutated-file digest, and
+IDs, mutated prior outcome, changed source or mutated-file digest, mismatched
+session/process exit statuses, the pre-submission mutant-limit sentinel, and
 unsupported/xdist command all cause full execution or refusal; resume/rejudge
 retain their current contracts; a complete verdict passes `assay verify` and
 the registered gate while missing, duplicate, stale, or unproven coverage does
