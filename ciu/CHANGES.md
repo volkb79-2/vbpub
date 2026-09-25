@@ -21,6 +21,38 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.15.1] - 2026-09-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=62183d0cffc0f40ec8368889d8027fa30d09b19f -->
+
+### Changed
+- doc(ciu): CIU-112 cannot remove worktree with ciu instance (f5e50ce0)
+- close remaining worktree mutation survivors (6b5d7fe3)
+- test qualify shared worktree and deterministic properties (b6ce9752)
+- test CIU worktree root guard boolean edges (4a59d43a)
+- fix shared CIU and CMRU workspace ownership review (84b7919d)
+- Share native Git worktree inventory across CIU and CMRU (b9cad87c)
+- bound mutation candidates and document gate liveness (343d17e7)
+- record gate boundary and deduplicate CIU naming (33dbc009)
+- Merge main into workspace instance feature (e2a4a68d)
+- tighten CIU schema mutation oracles (20236e43)
+- enable liveness in CIU assay mutation lane (245765e0)
+- docs(ciu) add backlog CIU-110, CIU-111 (1d8989b5)
+- harden workspace lifecycle and gate oracles (8d634211)
+- Merge branch 'main' into feat/ciu-cmru-workspace-instance (15e1a346)
+- ci: raise serialized tester gate memory ceiling (e518a9fd)
+- Run CIU gate tests without xdist (a7642484)
+- Bound CIU gate test worker fanout (a3fa81ed)
+- Bound Assay Git index preload resources (294aaf94)
+- Harden CIU gate Git snapshot concurrency (69e1c304)
+- Bound CIU tester mutation worker fanout (52e86cd3)
+- Strengthen CIU mutation witnesses (79c16fa1)
+- Adapt cleanup durability test to network invariant (abc2e4a3)
+- Implement CIU CMRU workspace instance plan (d1eb9877)
+
+### Documentation
+- docs(backlog): CIU-109 — `ciu profiles` persists ciu.global.toml as a side effect (83d93915)
+
 ## [7.15.0] - 2026-09-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=3e5e336d5696659744edab0202ef52740f23d944 -->
