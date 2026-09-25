@@ -99,6 +99,20 @@ def test_invalid_manual_version_is_refused(tmp_path, monkeypatch):
         )
 
 
+@pytest.mark.parametrize("require_release_tag", [False, True])
+@pytest.mark.parametrize("explicit_value", ["", "   "])
+def test_explicit_empty_manual_version_is_refused_for_build_and_publish(
+    tmp_path, monkeypatch, require_release_tag, explicit_value,
+):
+    root = _project_root(tmp_path)
+    _git_tags(monkeypatch)
+    with pytest.raises(RuntimeError, match="CGPROFILE_VERSION must be a semantic version"):
+        version.resolve_build_version(
+            root, require_release_tag=require_release_tag,
+            environ={version.VERSION_ENV: explicit_value},
+        )
+
+
 def test_untagged_local_build_uses_development_identity(tmp_path, monkeypatch):
     root = _project_root(tmp_path)
     _git_tags(monkeypatch)
