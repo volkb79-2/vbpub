@@ -27,6 +27,11 @@ never migrates survivors back or `rmdir`s the leaf. The leaf — and whatever
 pids are still in it — is left behind under the gates slice with no code
 path that will ever clean it up.
 
+The P6 round-3 safety repair refuses a later placement request when that
+token's leaf already exists. It does not reclaim the old leaf or its pids;
+this row remains open. Refusal prevents a new session from silently taking
+ownership of the orphan and changing its caps or killing its processes.
+
 ## Why this matters
 
 A gates slice accumulating orphaned `rg-<token>` leaves after every daemon

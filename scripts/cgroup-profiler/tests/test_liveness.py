@@ -240,13 +240,29 @@ class TestReadProgressStream:
         # an event.
         assert sample.last_event == "real"
 
-    def test_a_file_with_no_complete_object_yet_still_tracks_growth(self, tmp_path):
+    def test_a_file_with_no_complete_object_does_not_report_progress(self, tmp_path):
         path = tmp_path / "p.ndjson"
         path.write_text("")
         first = liveness.read_progress_stream(str(path))
         assert first.present is True and first.last_event is None
         path.write_text("partial")
-        assert liveness.read_progress_stream(str(path), previous=first).identity != first.identity
+        second = liveness.read_progress_stream(str(path), previous=first)
+        assert second.identity is None and second.last_event is None
+        path.write_text('{"event":"candidate"}\n')
+        assert liveness.read_progress_stream(str(path), previous=second).identity is not None
+
+    def test_appending_an_unfinished_line_keeps_the_complete_event_identity(self, tmp_path):
+        path = _write_stream(tmp_path / "p.ndjson", {"event": "candidate"})
+        first = liveness.read_progress_stream(str(path))
+        with path.open("a") as fh:
+            fh.write('{"event":"candidate","partial":')
+        second = liveness.read_progress_stream(str(path), previous=first)
+        assert second.identity == first.identity
+        assert second.last_event == "candidate"
+        with path.open("a") as fh:
+            fh.write('true}\n')
+        third = liveness.read_progress_stream(str(path), previous=second)
+        assert third.identity != first.identity
 
     def test_a_complete_line_exactly_at_the_tail_limit_is_kept(self, tmp_path):
         prefix = b'{"event":"plan","pad":"'
@@ -382,6 +398,18 @@ def _stream(identity, event=None, hint=None):
 
 
 class TestStateMachine:
+    def test_partial_stream_bytes_cannot_keep_a_silent_lane_alive(self, tmp_path):
+        path = _write_stream(tmp_path / "p.ndjson", {"event": "candidate"})
+        tracker = _tracker(idle_bound=20, progress_stream=str(path))
+        fake = _Fake(tracker)
+        first = liveness.read_progress_stream(str(path))
+        fake.tick(stream=first)
+        with path.open("a") as fh:
+            fh.write('{"event":"candidate","partial":')
+        partial = liveness.read_progress_stream(str(path), previous=first)
+        assert fake.tick(2, stream=partial) == "stalled"
+        assert tracker.verdict == "reported"
+
     def test_a_busy_session_stays_ok(self):
         t = _tracker(idle_bound=100)
         fake = _Fake(t)

@@ -24,7 +24,8 @@ general host-control surface.
 The progress stream is a lane-controlled path reached through its process
 root. The watcher opens it nonblocking and reads only a regular file; a FIFO
 or device is absent evidence, so it cannot freeze the sampler or its kill
-clock.
+clock. Only complete newline-terminated JSON events reset the progress clock;
+appending an unfinished line cannot postpone a stall verdict.
 
 Host visibility does not require joining host namespaces. The daemon and
 one-shot helper keep private PID/cgroup namespaces; host `/proc` is explicitly

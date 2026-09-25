@@ -164,7 +164,7 @@ work and the summary must report sampled-max memory plus deltas. Use
 `--scope container` for a lane-owned cgroup; its `memory.peak` and absolute
 counters have the schema-1 semantics documented in the contract.
 For `--progress-stream`, provide a regular NDJSON file path inside the lane;
-the daemon ignores a FIFO or device. A placement request with an existing
+the daemon ignores a FIFO, device, or unfinished line. A placement request with an existing
 `rg-<token>` leaf starts unplaced with `placement.error` set. Use a fresh
 token for each new lane attempt; a retry of a live session is reused by the
 server's `(container_id, token)` lookup.

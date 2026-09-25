@@ -238,7 +238,8 @@ The daemon's version response is contract major 1:
   itself, the other is where placed lanes live.
 - **Liveness/watch policy (D-27, contract §8.2/§8.4) — `start` options.**
   `--progress-stream <regular file path as the lane sees it>` (read through
-  `/proc/<pid>/root/<path>`; FIFOs and devices are ignored),
+  `/proc/<pid>/root/<path>`; FIFOs, devices, and unfinished lines are
+  ignored),
   `--idle-bound auto|<seconds>` (`auto` =
   `max(300, 3 x cadence hint)`), `--ceiling auto|<seconds>` (`auto` = `3 x
   meta.expected.duration_s`, else none), `--on-stall kill|report` (default

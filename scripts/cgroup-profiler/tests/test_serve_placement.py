@@ -463,6 +463,27 @@ class TestApply:
         assert plc.leaf_cgroup is None
         assert (_leaf(root) / "memory.high").read_text() == "123"
 
+    def test_a_leaf_created_between_check_and_mkdir_is_refused(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        original_mkdir = placement.os.mkdir
+        leaf = str(_leaf(root))
+
+        def competing_mkdir(path):
+            if path == leaf:
+                original_mkdir(path)
+                (_leaf(root) / "memory.high").write_text("456")
+                raise FileExistsError(17, "leaf appeared", path)
+            return original_mkdir(path)
+
+        monkeypatch.setattr(placement.os, "mkdir", competing_mkdir)
+        plc = _placement(root)
+        plc.apply([])
+        assert plc.error == placement.write_failed(
+            f"dev.slice/dev-gates.slice/{LEAF_NAME}"
+        )
+        assert plc.leaf_cgroup is None
+        assert (_leaf(root) / "memory.high").read_text() == "456"
+
     def test_a_failed_cap_write_abandons_the_leaf_and_names_the_file(self, tmp_path):
         """`place-refused:write-failed:<file>` names the path relative to the
         cgroup root: three files in a placement are called `cgroup.procs`,

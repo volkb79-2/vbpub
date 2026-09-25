@@ -296,6 +296,7 @@ def read_progress_stream(path: str, *, previous: Optional[StreamSample] = None) 
                 partial = True
             else:
                 partial = False
+            start_offset = fh.tell()
             blob = fh.read(STREAM_TAIL_BYTES)
             head = b""
             if previous is None and size > STREAM_TAIL_BYTES:
@@ -304,29 +305,34 @@ def read_progress_stream(path: str, *, previous: Optional[StreamSample] = None) 
     except OSError:
         return StreamSample(path=path, present=False, cadence_hint_seconds=carried_hint)
 
-    lines = blob.decode("utf-8", errors="replace").split("\n")
-    if partial and lines:
-        lines = lines[1:]  # the first line is a fragment of a line we cut
-    # The last line is complete only if the blob ended with a newline; a
-    # producer caught mid-write must never be parsed (its truncated JSON
-    # would read as "no event", losing the PREVIOUS complete one).
-    complete = [line for line in lines[:-1] if line.strip()]
+    # Only newline-terminated objects can be progress. Track the byte offset
+    # of each complete line, so a producer appending an unfinished line does
+    # not change the identity of the last event and reset the idle clock.
+    complete = []
+    end_offset = start_offset
+    for index, raw in enumerate(blob.split(b"\n")[:-1]):
+        end_offset += len(raw) + 1
+        if (partial and index == 0) or not raw.strip():
+            continue  # the first tail line may start in the middle of JSON
+        complete.append((raw.decode("utf-8", errors="replace"), end_offset))
 
-    last_event: Optional[str] = None
+    last_event: Optional[str] = previous.last_event if previous is not None else None
     hint = carried_hint
-    identity: Optional[str] = None
-    for line in reversed(complete):
+    identity: Optional[str] = previous.identity if previous is not None else None
+    found_latest = False
+    for line, line_end in reversed(complete):
         try:
             obj = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
         if not isinstance(obj, dict):
             continue
-        if identity is None:
+        if not found_latest:
             digest = hashlib.sha256(line.encode("utf-8", errors="replace")).hexdigest()[:16]
-            identity = f"{size}:{digest}"
+            identity = f"{line_end}:{digest}"
             event = obj.get("event")
             last_event = event if isinstance(event, str) else None
+            found_latest = True
         found = _cadence_hint(obj)
         if found is not None:
             hint = found
@@ -344,11 +350,6 @@ def read_progress_stream(path: str, *, previous: Optional[StreamSample] = None) 
                 if found is not None:
                     hint = found
                     break
-    if identity is None:
-        # The file exists but holds no complete JSON object yet (a lane that
-        # has only just created it). Size still moves as it fills, and that
-        # IS a new-line signal, so identity tracks size alone here.
-        identity = f"{size}:"
     return StreamSample(
         path=path, present=True, identity=identity, last_event=last_event,
         cadence_hint_seconds=hint,
@@ -538,7 +539,9 @@ class LivenessTracker:
             return False
         previous = self.stream
         self.stream = stream
-        new_line = previous is None or previous.identity != stream.identity
+        new_line = stream.identity is not None and (
+            previous is None or previous.identity != stream.identity
+        )
         if new_line:
             # The daemon's OWN observation time, not a timestamp parsed out
             # of the producer's event: `last_event_at` sits beside
