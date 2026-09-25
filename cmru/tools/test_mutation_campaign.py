@@ -10,6 +10,40 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 import mutation_campaign
+import project_fixture
+
+
+def test_disposable_fixture_copies_estate_configs_read_by_cmrus_tests(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    workspace = tmp_path / "fixture"
+    workspace.mkdir()
+    project.mkdir(parents=True)
+    library = repo / "libraries" / "worktree"
+    library.mkdir(parents=True)
+    (library / "__init__.py").write_text("", encoding="utf-8")
+    for relative in (Path("topos/cmru.toml"), Path("nyxloom/cmru.toml")):
+        source = repo / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"name = {relative.parts[0]!r}\n", encoding="utf-8")
+
+    monkeypatch.setattr(project_fixture, "ROOT_CMRU_ARTIFACTS", ())
+    monkeypatch.setattr(project_fixture, "EXTERNAL_DOC_ARTIFACTS", ())
+    monkeypatch.setattr(
+        project_fixture,
+        "ESTATE_CONFIG_FIXTURES",
+        (Path("topos/cmru.toml"), Path("nyxloom/cmru.toml")),
+    )
+
+    copied = project_fixture.copy_project_fixture(
+        repo_root=repo, project_root=project, workspace=workspace
+    )
+
+    assert copied == workspace / "cmru"
+    for relative in project_fixture.ESTATE_CONFIG_FIXTURES:
+        assert (workspace / relative).read_text(encoding="utf-8") == (
+            f"name = {relative.parts[0]!r}\n"
+        )
 
 
 def _job(path: str = "cmru/src/cmru/thing.py", line: int = 7):
