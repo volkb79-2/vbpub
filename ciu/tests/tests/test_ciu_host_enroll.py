@@ -39,6 +39,21 @@ from ciu.hosts import load_hosts, resolve_hosts_file, write_host_row
 
 CIU_ROOT = Path(__file__).resolve().parents[2]
 
+
+def _without_toml_table_tree(text: str, root: str) -> str:
+    """Remove one TOML table and its nested tables from compatibility input."""
+    output: list[str] = []
+    dropping = False
+    header_re = re.compile(r"\[{1,2}(.+?)\]{1,2}(?:\s+#.*)?$")
+    for line in text.splitlines(keepends=True):
+        header = header_re.fullmatch(line.strip())
+        if header:
+            table_name = header.group(1).strip()
+            dropping = table_name == root or table_name.startswith(f"{root}.")
+        if not dropping:
+            output.append(line)
+    return "".join(output)
+
 # A deliberately hostile inventory: a multi-line string whose BODY looks like a
 # table header, hand-aligned whitespace, comments in three positions, a quoted
 # host name, a sub-table under the host being edited, and a table AFTER the
@@ -1095,7 +1110,7 @@ class TestRenderedInstaller:
         assert "--extra-asset" in argv
         assert argv[argv.index("--extra-asset") + 1] == "get.py"
 
-    def test_render_is_byte_identical_to_the_committed_file(self, tmp_path):
+    def test_render_is_byte_identical_to_the_committed_file(self, tmp_path, capsys):
         """O6's byte-identity half. It needs cmru's `get.py.tmpl`, which the
         installed cmru wheel does not ship (`[tool.setuptools.package-data]`
         packages only `templates/*.toml`), so it runs against a cmru source
@@ -1137,17 +1152,23 @@ class TestRenderedInstaller:
         try:
             cfg = load_forge_config(effective_project)
         except SystemExit:
-            # The installed cmru may predate the mandatory closed runtime
-            # declaration.  This test exercises get.py rendering, so retry
-            # with that unrelated section removed only for that old parser;
-            # current CMRU accepts the first form and remains covered by its
-            # own config contract tests.
-            compatible = re.sub(
-                r"\n\[runtime\]\nkind = \"[^\"]+\"\n",
-                "\n",
-                effective_project.read_text(encoding="utf-8"),
-                count=1,
-            )
+            # The installed cmru may predate the runtime declaration or
+            # version-tracking policy. This test exercises get.py rendering,
+            # so retry only when the loader explicitly rejects those newer,
+            # unrelated tables; current CMRU validates both in its own
+            # configuration contract tests.
+            output = capsys.readouterr().out
+            unknown_tables = re.findall(r"unknown keys \[([^\]]*)\]", output)
+            rejected = [set(re.findall(r"'([^']+)'", item)) for item in unknown_tables]
+            allowed_legacy_gaps = {"runtime", "versions"}
+            if (
+                not rejected
+                or any(not tables or tables - allowed_legacy_gaps for tables in rejected)
+            ):
+                pytest.fail(f"unexpected installed cmru config refusal: {output}")
+            compatible = effective_project.read_text(encoding="utf-8")
+            for table in set.union(*rejected):
+                compatible = _without_toml_table_tree(compatible, table)
             effective_project.write_text(compatible, encoding="utf-8")
             cfg = load_forge_config(effective_project)
         proj = cfg.projects["ciu"]
