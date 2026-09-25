@@ -45,6 +45,9 @@ def test_runtime_vocabulary_and_workspace_contract_are_documented():
 
 def test_version_policy_vocabulary_is_documented():
     corpus = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
+    for document in DOCS:
+        normalized = " ".join(document.read_text(encoding="utf-8").lower().split())
+        assert "timestamp exactly at the age cutoff is eligible" in normalized, document
     for source_type in SOURCE_FIELDS:
         assert f".{source_type}" in corpus
     for value in ('mode = "single"', 'mode = "aligned"'):

@@ -24,9 +24,10 @@ Go, and SemVer OCI tags. OCI `selection = "semver"` is the default; `selection =
 accepts a literal non-SemVer tag. Rolling selection is limited to one OCI source with
 `constraint = "*"`, cannot be aligned with package versions, and requires a registry manifest
 digest. The recorded digest makes a moved tag visible to `check` even when its name remains the
-same. An exact override requires a reason; when its source timestamp is newer
-than the cutoff, it also requires a future expiry date. The reviewable config and artifact diff
-remains the control for deliberate holds and urgent fixes.
+same. A release timestamp exactly at the age cutoff is eligible for both SemVer and rolling OCI
+selection; only timestamps later than the cutoff are rejected. An exact override requires a
+reason; when its source timestamp is newer than the cutoff, it also requires a future expiry date.
+The reviewable config and artifact diff remains the control for deliberate holds and urgent fixes.
 
 Shared targets and their resolved records belong to `cmru.orchestration.toml`. A project may
 redeclare a target under its own `[versions.targets]`; that project's age window and resolved
