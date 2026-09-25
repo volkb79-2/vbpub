@@ -237,6 +237,9 @@ def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
     v13 = source.index("ASSAY_GATE_PHASE=verdict-v13-successors-verified")
     self_hosted = source.index('run_self_hosted_lane "$worktree"')
     assert v12 < v13_suite < v13 < self_hosted
+    assert "from assay.verdict import VERDICT_SCHEMA_VERSION" in source
+    assert "assert VERDICT_SCHEMA_VERSION == 13" in source
+    assert 'f"{VERDICT_SCHEMA_VERSION}: a "' in source
 
     for required in (
         "--network=none",

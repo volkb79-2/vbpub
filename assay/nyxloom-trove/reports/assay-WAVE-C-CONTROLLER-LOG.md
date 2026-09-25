@@ -376,7 +376,16 @@ Local evidence: the combined focused suite had 315 passes; after fixing the
 intentional empty-`PYTHONPATH` ShellCheck annotation, ShellCheck and the gate
 marker/order test passed. After the final P2 repair, the B106 suite passed 25
 tests, including the lookalike-hook and real liveness-plugin integration
-tests. The registered gate is pending; details are in
+tests. The first registered gate attempt at `d43167c6` exited 1 in the
+historical-v6-v10 hard-cut check: its inline expectation still said the
+current verifier was v12 after P5 cut it to v13. The installed v13 verifier
+correctly refused a v6 template; this was stale gate expectation, not a
+product failure. The raw log is preserved at
+[`assay-WAVE-C-P5-gate-failed-2026-09-25-d43167c6.log`](assay-WAVE-C-P5-gate-failed-2026-09-25-d43167c6.log),
+SHA-256 `deb8164774864c80134b7f36244128515490ea2073aff1a4d0a15900f186fb18`.
+The gate now derives its refusal from `VERDICT_SCHEMA_VERSION` and pins the
+P5 cut to 13; its source test covers that assertion. A second full gate is
+pending. P5 details are in
 [`assay-WAVE-C-P5-B106-REPORT.md`](assay-WAVE-C-P5-B106-REPORT.md).
 
 ### Agreed continuation after P5

@@ -587,8 +587,10 @@ import json
 import sys
 from pathlib import Path
 
+from assay.verdict import VERDICT_SCHEMA_VERSION
 from assay.verify import verify_document
 
+assert VERDICT_SCHEMA_VERSION == 13
 root = Path(sys.argv[1]) / "nyxloom-trove" / "carve-assets"
 checked = 0
 for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9), ("W6", 10)):
@@ -599,9 +601,11 @@ for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9), ("W6", 10)):
         document = json.loads(path.read_text())
         failures = verify_document(document)
         assert failures == [
-            f"schema_version {version} is not this verifier's version 12: a "
+            f"schema_version {version} is not this verifier's version "
+            f"{VERDICT_SCHEMA_VERSION}: a "
             f"verdict artifact is rejected, never upgraded in place -- "
-            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 12"
+            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is "
+            f"{VERDICT_SCHEMA_VERSION}"
         ], (wave, path.name, failures)
         checked += 1
 print(f"v6/v7/v8/v9/v10 hard-cut guard passed for {checked} frozen templates")

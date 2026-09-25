@@ -43,7 +43,28 @@ P1/P2 findings**. The review did not edit files or run tests.
 
 ## Registered gate
 
-Pending from this worktree after commit: `./run-gate.py tester-unified`.
+The first committed-code attempt ran `./run-gate.py tester-unified` at
+`d43167c6cfc0280d27a9173fff301a52df1ae714` and exited 1 during the historical
+v6-v10 hard-cut check. The installed v13 verifier correctly rejected the v6
+template, but the inline gate assertion still expected the diagnostic to say
+the current verifier was v12. The gate stopped before the P5 suite or
+self-hosted lane. Its raw 3,995-byte log is preserved at
+[`assay-WAVE-C-P5-gate-failed-2026-09-25-d43167c6.log`](assay-WAVE-C-P5-gate-failed-2026-09-25-d43167c6.log),
+SHA-256 `deb8164774864c80134b7f36244128515490ea2073aff1a4d0a15900f186fb18`.
+
+The gate now imports `VERDICT_SCHEMA_VERSION`, asserts the intended Wave C v13
+cut, and derives the expected historical refusal from that constant. A static
+gate-source test pins this invariant. A follow-up commit and complete gate run
+are pending.
+
+The first container was
+`run-gate-assay-selfhosted-397279-21079-1790344007`, confirmed at 3 CPUs under
+`dev-gates.slice`; run-gate removed it after the early failure. At the required
+90-second check, the log showed the mismatch and terminal exit. Since the run
+stopped before the main lane, it does not provide a full runtime estimate; the
+prior P4 gate took about 15 minutes.
+
+The retry must run `./run-gate.py tester-unified` from this worktree.
 The passing run must include the existing twelve Wave C markers and
 `ASSAY_GATE_PHASE=verdict-v13-successors-verified`, plus
 `ASSAY_REGISTERED_GATE_COMPLETE=1`, the container exit, and the outer `GATE_EXIT`.
