@@ -653,6 +653,37 @@ class TestMigration:
         assert "systemd attach of pid 101 was not visible" in logged[-1]
         assert not _leaf(root).exists()
 
+    def test_systemd_attach_failures_without_log_sinks_still_refuse(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path / "attach")
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target.endswith("cgroup.procs"):
+                    raise OSError(errno.ESRCH, "pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        attach_failed = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+            request=placement.PlacementRequest(),
+            systemd_attach=lambda _unit, _subcgroup, _pid: False,
+            pid_exists=lambda _pid: True,
+        )
+        attach_failed.apply([101])
+        assert attach_failed.error is not None
+
+        mismatch_root = _fake_cgroup_root(tmp_path / "mismatch")
+        mismatch = _PrivateNamespace(
+            cgroup_root=str(mismatch_root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+            request=placement.PlacementRequest(),
+            systemd_attach=lambda _unit, _subcgroup, _pid: True,
+            pid_exists=lambda _pid: True,
+            pid_cgroup=lambda _pid: "/dev.slice/dev-gates.slice/other-leaf",
+        )
+        mismatch.apply([101])
+        assert mismatch.error is not None
+
     def test_default_proc_helpers_use_the_placement_proc_root(self, tmp_path, monkeypatch):
         root = _fake_cgroup_root(tmp_path)
         proc = _fake_proc(tmp_path)
@@ -827,6 +858,19 @@ class TestLeafReadingsAndKill:
         _fake_rmdir(str(_leaf(root)))
         assert plc.kill() is False
         assert "cgroup.kill" in logged[0]
+
+    def test_a_cgroup_kill_write_error_is_false_and_logged(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        logged: List[str] = []
+        plc = _placement(root, log=logged.append)
+        plc.apply([101])
+
+        def fail_write(_path: str, _value: str) -> None:
+            raise OSError(1, "operation not permitted")
+
+        plc._write = fail_write
+        assert plc.kill() is False
+        assert "cgroup.kill" in logged[-1]
 
 
 # ── §8.3 through the daemon: start / status / watch / stop ──────────────
