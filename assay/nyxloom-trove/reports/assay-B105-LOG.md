@@ -64,14 +64,20 @@ verification, review, and merge results will be appended below as they occur.
   outcomes.
 - Source-backed `assay lanes --file assay.toml` passed. `./run-gate.py --list`
   lists `self-qualification` in `tester-unified`. `bash -n` and
-  `git diff --check` passed. `assay plan` correctly refused the still-dirty
-  lane declaration; its plan and runtime estimate remain outstanding until
-  after the package commit.
+  `git diff --check` passed. After implementation commit `774d99bb`,
+  `assay plan self-qualification --file assay.toml` returned `status=ok`,
+  `candidate_count=3774`, `jobs=1`, and `shard=null`. By operator inventory:
+  `compare-swap=2180`, `boolop-swap=961`, `bool-const-flip=498`, and
+  `falsy-swap=135`; the inventory is below the 10,000 ceiling and is not
+  sharded. The planner estimated `226440` serial seconds (about 62h54m),
+  using its 60-second-per-candidate fallback because no campaign baseline had
+  yet been measured. This is a forecast, not elapsed-time evidence or a gate
+  deadline.
 - Repacked reachable Git objects into the temporary CIU clone and removed its
   object-store alternate. A targeted connectivity check for main tip
   `456164d5` then passed, so the tester-unified container will not depend on
   mounting `/workspaces/vbpub/.git/objects` from outside the selected clone.
 
-No qualification gate has started yet. R1's 100% measurement, the candidate
-count versus Assay's hard 10,000-candidate ceiling, the full R0-R3 run, retained
-report/log, and serial merge remain open.
+No qualification gate has started yet. The candidate-count and shard checks
+are complete; R1's 100% measurement, the full R0-R3 run, retained report/log,
+and serial merge remain open.
