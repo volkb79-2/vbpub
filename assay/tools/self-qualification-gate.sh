@@ -150,6 +150,9 @@ run_and_verify_lane() {
   local progress_path=".assay/progress-$lane.jsonl"
   local state_path=".assay/mutation-state-$lane"
 
+  export ASSAY_B105_COVERAGE_SOURCE=".assay/coverage-$lane.json"
+  export ASSAY_B105_COVERAGE_ARCHIVE="$project/.assay/coverage-$lane-snapshot.json"
+
   echo "B105_PHASE=assay-run-$lane"
   if "$assay_bin" run "$lane" --file assay.toml \
       --require-judge-provenance \

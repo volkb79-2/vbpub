@@ -100,7 +100,9 @@ fi
 ```
 
 The gate writes `.assay/verdict-self-qualification.json` and
-`.assay/progress-self-qualification.jsonl`. The gate itself runs the selected
+`.assay/progress-self-qualification.jsonl`, plus
+`.assay/coverage-self-qualification-snapshot.json` with the raw coverage.py
+JSON from the exact baseline snapshot. The gate itself runs the selected
 worktree's installed CLI against the report before printing
 `ASSAY_SELF_QUALIFICATION_VERIFIED=1`. To inspect the artifact again from the
 Assay checkout, run:

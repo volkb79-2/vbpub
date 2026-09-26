@@ -16,7 +16,9 @@ from __future__ import annotations
 import io
 import tomllib
 
-from conftest import PROJECT_ROOT
+import pytest
+
+from conftest import PROJECT_ROOT, pytest_sessionfinish as archive_b105_coverage
 
 from assay.cli import main
 from assay.config import load_lane_file
@@ -143,8 +145,10 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     assert lane["artifacts"] == [
         ".assay/verdict-self-qualification.json",
         ".assay/progress-self-qualification.jsonl",
+        ".assay/coverage-self-qualification-snapshot.json",
         ".assay/verdict-self-qualification-preflight.json",
         ".assay/progress-self-qualification-preflight.jsonl",
+        ".assay/coverage-self-qualification-preflight-snapshot.json",
     ]
 
     preflight = run_gate["lanes"][PREFLIGHT_ID]
@@ -156,6 +160,7 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     assert preflight["artifacts"] == [
         ".assay/verdict-self-qualification-preflight.json",
         ".assay/progress-self-qualification-preflight.jsonl",
+        ".assay/coverage-self-qualification-preflight-snapshot.json",
     ]
 
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(
@@ -167,6 +172,8 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     assert "--require-hashes" in script
     assert "--require-judge-provenance" in script
     assert 'identity.get("digest") == expected_digest' in script
+    assert 'export ASSAY_B105_COVERAGE_SOURCE=".assay/coverage-$lane.json"' in script
+    assert 'export ASSAY_B105_COVERAGE_ARCHIVE="$project/.assay/coverage-$lane-snapshot.json"' in script
     assert '"$assay_bin" verify "$verdict_path"' in script
     assert "run_and_verify_lane self-qualification-preflight" in script
     assert "B105_STOPPED_BEFORE_R2=preflight-failed" in script
@@ -215,3 +222,40 @@ def test_preflight_measures_the_same_complete_source_inventory_before_r2():
     assert preflight.isolation == qualification.isolation
     assert preflight.judge.mutation is None
     assert preflight.judge.canary is None
+    assert "ASSAY_B105_COVERAGE_SOURCE" in preflight.env_passthrough
+    assert "ASSAY_B105_COVERAGE_ARCHIVE" in preflight.env_passthrough
+
+
+def test_b105_coverage_export_requires_explicit_paths_and_archives_raw_json(
+    tmp_path, monkeypatch
+):
+    snapshot = tmp_path / "snapshot"
+    source = snapshot / ".assay" / "coverage.json"
+    source.parent.mkdir(parents=True)
+    source.write_text('{"files": {}}', encoding="utf-8")
+    archive_dir = tmp_path / "worktree" / ".assay"
+    archive_dir.mkdir(parents=True)
+    archive = archive_dir / "coverage.json"
+
+    monkeypatch.chdir(snapshot)
+    monkeypatch.setenv("ASSAY_B105_COVERAGE_SOURCE", ".assay/coverage.json")
+    monkeypatch.setenv("ASSAY_B105_COVERAGE_ARCHIVE", str(archive))
+    archive_b105_coverage(session=None, exitstatus=0)
+
+    assert archive.read_bytes() == source.read_bytes()
+
+
+def test_b105_coverage_export_refuses_a_symlinked_source(tmp_path, monkeypatch):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    target = tmp_path / "coverage.json"
+    target.write_text("{}", encoding="utf-8")
+    (snapshot / "coverage.json").symlink_to(target)
+    archive = tmp_path / "worktree" / ".assay" / "coverage.json"
+    archive.parent.mkdir(parents=True)
+
+    monkeypatch.chdir(snapshot)
+    monkeypatch.setenv("ASSAY_B105_COVERAGE_SOURCE", "coverage.json")
+    monkeypatch.setenv("ASSAY_B105_COVERAGE_ARCHIVE", str(archive))
+    with pytest.raises(RuntimeError, match="not a regular file"):
+        archive_b105_coverage(session=None, exitstatus=0)

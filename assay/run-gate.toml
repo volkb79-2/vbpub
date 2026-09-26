@@ -40,8 +40,10 @@ resources = { cpus = "3", memory = "2g", memory_swap = "8g" }
 artifacts = [
   ".assay/verdict-self-qualification.json",
   ".assay/progress-self-qualification.jsonl",
+  ".assay/coverage-self-qualification-snapshot.json",
   ".assay/verdict-self-qualification-preflight.json",
   ".assay/progress-self-qualification-preflight.jsonl",
+  ".assay/coverage-self-qualification-preflight-snapshot.json",
 ]
 
 [lanes.self-qualification-preflight]
@@ -54,4 +56,5 @@ resources = { cpus = "3", memory = "2g", memory_swap = "8g" }
 artifacts = [
   ".assay/verdict-self-qualification-preflight.json",
   ".assay/progress-self-qualification-preflight.jsonl",
+  ".assay/coverage-self-qualification-preflight-snapshot.json",
 ]

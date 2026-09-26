@@ -1969,7 +1969,11 @@ The registered `self-qualification-preflight` lane runs the same R0 test
 command and whole-source R1 coverage declaration without R2 or R3. The full
 gate runs it first and verifies its report; if R0 or R1 fails, the controller
 stops before launching the long mutation campaign. Operators can also invoke
-the preflight directly while bringing coverage to its required floor.
+the preflight directly while bringing coverage to its required floor. The
+gate copies coverage.py's raw JSON arcs out of the disposable baseline
+snapshot into `.assay/coverage-self-qualification-preflight-snapshot.json`, so
+each unvisited branch has a reviewable source/destination arc rather than only
+a line-level summary.
 
 ```bash
 cd assay

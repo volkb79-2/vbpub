@@ -89,7 +89,7 @@ argv = [
   "--cov-report=json:.assay/coverage-self-qualification.json",
 ]
 env = {}
-env_passthrough = ["PATH"]
+env_passthrough = ["PATH", "ASSAY_B105_COVERAGE_SOURCE", "ASSAY_B105_COVERAGE_ARCHIVE"]
 budget = "unbounded"
 allow_argv_append = false
 
@@ -193,7 +193,7 @@ argv = [
   "--cov-report=json:.assay/coverage-self-qualification-preflight.json",
 ]
 env = {}
-env_passthrough = ["PATH"]
+env_passthrough = ["PATH", "ASSAY_B105_COVERAGE_SOURCE", "ASSAY_B105_COVERAGE_ARCHIVE"]
 budget = "60m"
 allow_argv_append = false
 

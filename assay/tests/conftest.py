@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tomllib
@@ -53,6 +54,43 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
     f"expected assay's project root at {PROJECT_ROOT}, but there is no "
     f"pyproject.toml there"
 )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Copy B105's raw coverage JSON out of its disposable snapshot.
+
+    The preflight's verifier report carries summary lines, while this artifact
+    retains the exact coverage.py arcs needed to review each missing branch.
+    Both paths are supplied explicitly by the registered gate; ordinary test
+    runs leave both variables unset and do nothing here.
+    """
+    del session, exitstatus
+    source_name = os.environ.get("ASSAY_B105_COVERAGE_SOURCE")
+    archive_name = os.environ.get("ASSAY_B105_COVERAGE_ARCHIVE")
+    if source_name is None and archive_name is None:
+        return
+    if source_name is None or archive_name is None:
+        raise RuntimeError("B105 coverage export requires both explicit paths")
+
+    source = Path(source_name)
+    archive = Path(archive_name)
+    if source.is_absolute() or ".." in source.parts:
+        raise RuntimeError("B105 coverage source must stay within the snapshot")
+    if not archive.is_absolute():
+        raise RuntimeError("B105 coverage archive path must be absolute")
+
+    source_info = source.lstat()
+    if not stat.S_ISREG(source_info.st_mode):
+        raise RuntimeError(f"B105 coverage source is not a regular file: {source}")
+    if source.resolve() == archive.resolve(strict=False):
+        raise RuntimeError("B105 coverage source and archive path must differ")
+    if not archive.parent.is_dir() or archive.parent.is_symlink():
+        raise RuntimeError(f"B105 coverage archive directory is not a real directory: {archive.parent}")
+
+    temporary = archive.with_name(f".{archive.name}.{os.getpid()}.tmp")
+    with source.open("rb") as input_stream, temporary.open("xb") as output_stream:
+        shutil.copyfileobj(input_stream, output_stream)
+    os.replace(temporary, archive)
 
 #: The monorepo checkout `assay/` sits in — a real repository only when the
 #: tree is IN that checkout (B063).

@@ -957,7 +957,8 @@ you're changing assay itself:
   tracks the current package queue and its dependency order.
 - `./run-gate.py tester-unified` is the ordinary R0 release gate. The
   separately invoked `./run-gate.py self-qualification` runs full-source
-  R0-R3 qualification in `tester-unified`, writes its verdict and progress,
+  R0-R3 qualification in `tester-unified`, writes its verdict, progress, and
+  raw baseline coverage arcs,
   and verifies the verdict before success. Before starting mutation, it runs
   the same full-source R0/R1 check as
   `./run-gate.py self-qualification-preflight`; that preflight stops on a red
