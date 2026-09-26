@@ -4,43 +4,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-### Added
-- feat(assay): add provenance-safe selective native R2 reruns using current
-  pytest kill-witness replay, with bounded v13 candidate inventory and a
-  full-suite fallback for uncertain cases (B106)
-
-### Fixed
-- fix(assay): classify istanbul `default-arg` signature lines from the
-  enclosing function's call count (`fnMap`/`f`) when an arm of that same
-  branch is attributed to the node's physical line, preserving its branch arcs
-  even when the default is unused (B080; resolves withdrawn duplicate B089).
-  Judged files now produce coverage numbers instead of a contradictory-record
-  refusal; bystanders keep their arcs without a contradiction diagnostic.
-  Previously-PASS numbers are unchanged. Multiline defaults whose arms all
-  start on other lines retain their unclassified node-line gap (A-459); the
-  broader function-call alternative would change some prior 0/0 PASS counts
-  to 1/1. Previously-refused whole-target lanes can now count those signatures:
-  the measured consumer artifact gains
-  six executable lines (ChartCard 54→55, DataTable 105→108, StatCard 1→2,
-  StatTile 37→38). Required missing, malformed, or ambiguous function metadata
-  refuses `UNREADABLE_ARTIFACT`. B054's braceless-`if` disposition and all
-  `FileCoverage` invariants are unchanged.
-- fix(assay): replace Git's unreachable `safe.directory` remedy on dubious-
-  ownership failures, and classify unknown/stale `--rejudge` ids as
-  `BAD_LANE_CONFIG` while preserving corrupt-store errors (B081/B094)
-
-### Documentation
-- docs(assay): explain Git ownership refusals, rejudge input classification,
-  and the consumer remedies (B081/B094)
-- docs(assay): document selective R2 reuse, v12 cold starts, and supported
-  JavaScript R2 ingestion (B106)
-
-### Testing
-- test(assay): drive unknown, stale, valid, and corrupt `--rejudge` state
-  through the CLI and `assay verify`; guard the attestation-timeout
-  infrastructure forward (B094/B025)
-- test(assay): verify B106 identity inventories and current pytest witness
-  replay, including fallback to a full run (B106)
 <!-- cmru: release history -->
 
 ## [7.1.0] - 2026-09-25
@@ -97,6 +60,44 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(assay): align rejudge message assertions (9595548e)
 - test(assay): guard all Wave C documentation anchors (5ba8e0a5)
 - test(assay): close Wave C P1 adversarial case (e29c1fb0)
+
+### Added (hand-written release detail)
+- feat(assay): add provenance-safe selective native R2 reruns using current
+  pytest kill-witness replay, with bounded v13 candidate inventory and a
+  full-suite fallback for uncertain cases (B106)
+
+### Fixed (hand-written release detail)
+- fix(assay): classify istanbul `default-arg` signature lines from the
+  enclosing function's call count (`fnMap`/`f`) when an arm of that same
+  branch is attributed to the node's physical line, preserving its branch arcs
+  even when the default is unused (B080; resolves withdrawn duplicate B089).
+  Judged files now produce coverage numbers instead of a contradictory-record
+  refusal; bystanders keep their arcs without a contradiction diagnostic.
+  Previously-PASS numbers are unchanged. Multiline defaults whose arms all
+  start on other lines retain their unclassified node-line gap (A-459); the
+  broader function-call alternative would change some prior 0/0 PASS counts
+  to 1/1. Previously-refused whole-target lanes can now count those signatures:
+  the measured consumer artifact gains
+  six executable lines (ChartCard 54→55, DataTable 105→108, StatCard 1→2,
+  StatTile 37→38). Required missing, malformed, or ambiguous function metadata
+  refuses `UNREADABLE_ARTIFACT`. B054's braceless-`if` disposition and all
+  `FileCoverage` invariants are unchanged.
+- fix(assay): replace Git's unreachable `safe.directory` remedy on dubious-
+  ownership failures, and classify unknown/stale `--rejudge` ids as
+  `BAD_LANE_CONFIG` while preserving corrupt-store errors (B081/B094)
+
+### Documentation (hand-written release detail)
+- docs(assay): explain Git ownership refusals, rejudge input classification,
+  and the consumer remedies (B081/B094)
+- docs(assay): document selective R2 reuse, v12 cold starts, and supported
+  JavaScript R2 ingestion (B106)
+
+### Testing (hand-written release detail)
+- test(assay): drive unknown, stale, valid, and corrupt `--rejudge` state
+  through the CLI and `assay verify`; guard the attestation-timeout
+  infrastructure forward (B094/B025)
+- test(assay): verify B106 identity inventories and current pytest witness
+  replay, including fallback to a full run (B106)
 
 ## [7.0.0] - 2026-09-23
 <!-- cmru: generated -->
