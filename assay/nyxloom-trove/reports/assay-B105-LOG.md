@@ -81,3 +81,20 @@ verification, review, and merge results will be appended below as they occur.
 No qualification gate has started yet. The candidate-count and shard checks
 are complete; R1's 100% measurement, the full R0-R3 run, retained report/log,
 and serial merge remain open.
+
+### Gate attempt 1 — 2026-09-26
+
+- The first registered gate started in `tester-unified` on source commit
+  `322459e2640ff393d46db994381cc1c94033c44e` (tree
+  `f8a92178583e617c13af2dccf883333f3beca824`) and stopped at the baseline in
+  about seven seconds, before coverage or mutation work. Its verdict was
+  verifier-written `NO_MEASUREMENT/EMPTY_COVERAGE`; the captured pytest stderr
+  was `/usr/local/bin/python: No module named pytest`.
+- The failure came from the lane resolving bare `python` on tester-unified's
+  ambient PATH instead of the declared gate interpreter. A detached,
+  cgroup-placed probe confirmed `/opt/tester-venv/bin/python` has pytest 9.1.1
+  and coverage.py 7.16.1, while ambient `python` is `/usr/local/bin/python`.
+  The gate driver now puts the tester interpreter's bin directory first on
+  PATH before invoking Assay; this is the PATH that the lane explicitly
+  passes through. The initial failed verdict and full logs remain in ignored
+  `.assay/` and the host run-gate log for diagnostic retention.

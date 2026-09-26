@@ -25,6 +25,14 @@ echo "B105_PHASE=install-selected-source"
   --no-deps --no-build-isolation --editable "$project"
 [[ -x "$assay_bin" ]] || { echo "editable source install did not provide $assay_bin" >&2; exit 2; }
 
+# The lane passes PATH through to its declared `python -m pytest` command.
+# tester-unified's ambient `python` is /usr/local/bin/python, which lacks the
+# gate's pytest/coverage packages; the gate interpreter owns those packages.
+# Put that interpreter first so the lane cannot silently resolve a different
+# Python than the one used to install the selected Assay source.
+export PATH="${python%/*}:$PATH"
+echo "B105_PYTHON=$python"
+
 echo "B105_PHASE=assay-run-self-qualification"
 "$assay_bin" run self-qualification --file assay.toml \
   --resume \
