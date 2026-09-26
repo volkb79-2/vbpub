@@ -600,6 +600,7 @@ class TestMigration:
 
     def test_failed_systemd_attach_abandons_empty_leaf(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
+        logged: List[str] = []
 
         class _PrivateNamespace(placement.LanePlacement):
             def _write(self, abs_target: str, value: str) -> None:
@@ -613,6 +614,7 @@ class TestMigration:
             request=placement.PlacementRequest(),
             systemd_attach=lambda _unit, _subcgroup, _pid: False,
             pid_exists=lambda _pid: True,
+            log=logged.append,
         )
         plc.apply([101])
 
@@ -620,7 +622,53 @@ class TestMigration:
         assert plc.error == placement.write_failed(
             f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs"
         )
+        assert "systemd could not attach pid 101" in logged[-1]
         assert not _leaf(root).exists()
+
+    def test_systemd_attach_membership_mismatch_is_failure_and_logged(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        logged: List[str] = []
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target.endswith("cgroup.procs"):
+                    raise OSError(errno.ESRCH, "pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+            request=placement.PlacementRequest(),
+            systemd_attach=lambda _unit, _subcgroup, _pid: True,
+            pid_exists=lambda _pid: True,
+            pid_cgroup=lambda _pid: "/dev.slice/dev-gates.slice/other-leaf",
+            log=logged.append,
+        )
+        plc.apply([101])
+
+        assert plc.leaf_cgroup is None
+        assert plc.error == placement.write_failed(
+            f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs"
+        )
+        assert "systemd attach of pid 101 was not visible" in logged[-1]
+        assert not _leaf(root).exists()
+
+    def test_default_proc_helpers_use_the_placement_proc_root(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        (proc / "4242").mkdir()
+        plc = _placement(root, proc_root=str(proc))
+        calls: List[Any] = []
+
+        def fake_cgroup_of_pid(pid, cgroup_root, proc_root):
+            calls.append((pid, cgroup_root, proc_root))
+            return "/dev.slice/dev-background.slice/work.scope"
+
+        monkeypatch.setattr("lib.targets.cgroup_of_pid", fake_cgroup_of_pid)
+        assert plc._default_pid_cgroup(4242) == "/dev.slice/dev-background.slice/work.scope"
+        assert calls == [(4242, str(root), str(proc))]
+        assert plc._default_pid_exists(4242) is True
+        assert plc._default_pid_exists(9999) is False
 
 
 def test_systemd_attach_uses_the_narrow_manager_method(monkeypatch):
@@ -643,6 +691,15 @@ def test_systemd_attach_uses_the_narrow_manager_method(monkeypatch):
         ],
         {"check": False, "capture_output": True, "text": True, "timeout": 5.0},
     )]
+
+
+def test_systemd_attach_returns_false_when_busctl_cannot_start():
+    def unavailable(*_args, **_kwargs):
+        raise OSError(2, "busctl not found")
+
+    assert placement._systemd_attach_process(
+        "dev-gates.slice", LEAF_NAME, 4242, run=unavailable
+    ) is False
 
 
 class TestRelease:
@@ -1009,6 +1066,38 @@ class TestPlacedKill:
         assert not any(path.endswith("cgroup.kill") for path, _ in written)
         assert sess.watch.verdict == liveness.VERDICT_REPORTED
         assert sess.finished is False
+
+    def test_esrch_with_indeterminate_host_proc_is_not_certified(self, tmp_path, monkeypatch):
+        root, server, sess = self._stalled_session(tmp_path)
+        (_leaf(root) / "cgroup.procs").write_text("")
+        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
+
+        def kill_lookup_error(_pid, _sig):
+            raise ProcessLookupError(3, "outside the local pid namespace")
+
+        def stat_indeterminate(_path):
+            raise OSError(5, "proc view unavailable")
+
+        monkeypatch.setattr(os, "kill", kill_lookup_error)
+        monkeypatch.setattr(serve.os, "stat", stat_indeterminate)
+        server._enforce_stall_kill(sess, [4242])
+
+        assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert "signalled-0-of-1-pids" in sess.watch.reason
+
+    def test_generic_pid_kill_error_is_not_certified(self, tmp_path, monkeypatch):
+        root, server, sess = self._stalled_session(tmp_path)
+        (_leaf(root) / "cgroup.procs").write_text("")
+        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
+
+        def kill_error(_pid, _sig):
+            raise OSError(1, "operation not permitted")
+
+        monkeypatch.setattr(os, "kill", kill_error)
+        server._enforce_stall_kill(sess, [4242])
+
+        assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert "signalled-0-of-1-pids" in sess.watch.reason
 
     def test_a_leaf_that_will_not_take_the_write_falls_back_to_pids(self, tmp_path, monkeypatch):
         """A kernel without `cgroup.kill` must not be reported as a kill that
