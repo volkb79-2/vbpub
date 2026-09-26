@@ -72,3 +72,18 @@ leaves (C8), not the daemon itself. `ctl host`'s `gates_slice` block reads
 that slice (name configurable via `serve --gates-slice`, default
 `dev-gates.slice`) — this package only READS it, never installs or writes
 its unit. See mdt host-setup's own `README.md`/`AGENTS.md` for that side.
+
+## Host system bus
+
+The daemon's private PID namespace cannot write a host-visible PID directly to
+`cgroup.procs`. The compose stack therefore bind-mounts the host system bus
+socket read-only and uses only systemd's `AttachProcessesToUnit` method for
+that one placement bridge. Before `ciu up`, verify the host prerequisite:
+
+```sh
+test -S /run/dbus/system_bus_socket
+```
+
+The bind declares `create_host_path: false`; a missing socket refuses the
+daemon deployment instead of silently turning into an empty directory. The
+daemon remains in private PID, cgroup, and network namespaces.
