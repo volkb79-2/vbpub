@@ -70,8 +70,8 @@ cli-extended migration.
 The package is explicitly allowed to update README.md,
 docs/CLI-REFERENCE.md, docs/DESIGN-GUIDE.md, docs/CONSUMERS.md, and the
 decisions/report files named in scope.touch. This is a package-scoped amendment
-to the frozen-file rule in nyxloom-trove/STANDING.md; no other normally frozen
-file is authorized.
+to the frozen-file rule in nyxloom-trove/STANDING.md; this P111 audit has no
+other frozen-file ownership.
 
 ## Approved operator decisions
 
@@ -90,6 +90,10 @@ Treat these as fixed inputs; do not ask the operator to decide them again.
 5. This audit and canonical reference come first. A separate implementation
    handoff follows after the operator reviews the audit and resolves any new
    public grammar decisions.
+6. The operator authorized the follow-up implementation handoff to name
+   pyproject.toml as a bounded frozen-file exception for bundling cli_extended
+   into the Nyxloom wheel. No general STANDING.md policy change is included in
+   this CLI audit; report any broader freeze-policy recommendation separately.
 
 ## Context to read first
 
