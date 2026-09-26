@@ -99,6 +99,22 @@ def test_an_unterminated_block_comment_fails_closed():
     assert ADAPTER.has_executable_code("src/broken.ts", "/* never closed\n") is True
 
 
+def test_a_trailing_line_comment_without_a_newline_is_still_only_a_comment():
+    assert ADAPTER.has_executable_code("src/placeholder.ts", "// no newline") is False
+
+
+def test_literal_scanning_skips_an_escaped_quote_and_returns_none_when_unclosed():
+    from assay.adapters.javascript import _skip_literal
+
+    escaped = '"a\\"b"'
+    assert _skip_literal(escaped, 0) == len(escaped)
+    assert _skip_literal("'unfinished", 0) is None
+
+
+def test_javascript_declares_no_statement_block_oracle():
+    assert ADAPTER.statement_blocks(Path("."), ()) is None
+
+
 # --- B038(b): the type-only module ------------------------------------------
 #
 # The gap this closes, in one sentence: a `.ts` module holding only type

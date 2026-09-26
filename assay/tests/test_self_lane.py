@@ -14,6 +14,7 @@ enforces it is a fact split across two files with nothing holding it together.
 from __future__ import annotations
 
 import io
+import json
 import tomllib
 
 import pytest
@@ -232,7 +233,18 @@ def test_b105_coverage_export_requires_explicit_paths_and_archives_raw_json(
     snapshot = tmp_path / "snapshot"
     source = snapshot / ".assay" / "coverage.json"
     source.parent.mkdir(parents=True)
-    source.write_text('{"files": {}}', encoding="utf-8")
+    exclusion_map = json.loads(
+        (PROJECT_ROOT / "tests/fixtures/b105-coverage-exclusions.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    coverage_document = {
+        "files": {
+            path: {"excluded_lines": entry["lines"]}
+            for path, entry in exclusion_map["files"].items()
+        }
+    }
+    source.write_text(json.dumps(coverage_document), encoding="utf-8")
     archive_dir = tmp_path / "worktree" / ".assay"
     archive_dir.mkdir(parents=True)
     archive = archive_dir / "coverage.json"

@@ -258,7 +258,7 @@ def _spawn_with_eagain_retry(
                 _GIT_SPAWN_RETRY_SECONDS
                 if left is None else min(_GIT_SPAWN_RETRY_SECONDS, left)
             )
-    raise AssertionError(f"unreachable after {what}")
+    raise AssertionError("the Git spawn retry budget must be positive")
 
 
 def _kill_owned_group(proc: subprocess.Popen[bytes]) -> None:
@@ -1272,7 +1272,7 @@ def _p22_kill(proc: subprocess.Popen[bytes] | None) -> None:
         return
     try:
         os.killpg(proc.pid, signal.SIGKILL)
-    except (OSError, ProcessLookupError):  # pragma: no cover - race with exit
+    except (OSError, ProcessLookupError):
         proc.kill()
 
 
@@ -1375,15 +1375,12 @@ def _p22_git(
     what = f"running git {' '.join(args[:2])}"
     out = bytearray()
     err = bytearray()
-    overflow: list[str] = []
-
     def take_stdout(chunk: bytes) -> None:
         if on_stdout is not None:
             on_stdout(chunk)
             return
         out.extend(chunk)
         if len(out) > max_stdout:
-            overflow.append("standard output")
             raise _git_failed(
                 f"git {' '.join(args[:2])} produced more than {max_stdout} "
                 f"bytes on standard output; refusing to process an unbounded "
@@ -1420,8 +1417,6 @@ def _p22_git(
     finally:
         proc.stdout.close()
         proc.stderr.close()
-    if overflow:  # pragma: no cover - take_stdout already raised
-        raise _git_failed(f"git {' '.join(args[:2])} overflowed {overflow[0]}")
     if proc.returncode != 0:
         raise _git_failed(
             f"git {' '.join(args)} failed in {git_dir} ({proc.returncode}): "
@@ -1467,19 +1462,29 @@ def _p22_stream_pack(
         producer_argv, cwd=source_cwd, identity=False, stdin=subprocess.PIPE,
         deadline=deadline,
     )
-    consumer: subprocess.Popen[bytes] | None = None
-    counted = 0
-    producer_err = bytearray()
-    consumer_err = bytearray()
     try:
         consumer = _p22_spawn(
             consumer_argv, cwd=seed_git_dir, identity=False, stdin=subprocess.PIPE,
             deadline=deadline,
         )
+    except BaseException:
+        _p22_kill(producer)
+        producer.wait()
         assert producer.stdin is not None and producer.stdout is not None
         assert producer.stderr is not None
-        assert consumer.stdin is not None and consumer.stdout is not None
-        assert consumer.stderr is not None
+        producer.stdin.close()
+        producer.stdout.close()
+        producer.stderr.close()
+        raise
+
+    assert producer.stdin is not None and producer.stdout is not None
+    assert producer.stderr is not None
+    assert consumer.stdin is not None and consumer.stdout is not None
+    assert consumer.stderr is not None
+    counted = 0
+    producer_err = bytearray()
+    consumer_err = bytearray()
+    try:
         producer_stdin = os.dup(producer.stdin.fileno())
         producer.stdin.close()
         consumer_stdin = consumer.stdin.fileno()
@@ -1531,17 +1536,17 @@ def _p22_stream_pack(
         _p22_kill(producer)
         _p22_kill(consumer)
         producer.wait()
-        if consumer is not None:
-            consumer.wait()
+        consumer.wait()
         raise
     finally:
+        if producer.stdin is not None and not producer.stdin.closed:
+            producer.stdin.close()
         producer.stdout.close()
         producer.stderr.close()
-        if consumer is not None:
-            if consumer.stdin is not None and not consumer.stdin.closed:
-                consumer.stdin.close()
-            consumer.stdout.close()
-            consumer.stderr.close()
+        if consumer.stdin is not None and not consumer.stdin.closed:
+            consumer.stdin.close()
+        consumer.stdout.close()
+        consumer.stderr.close()
     if producer.returncode != 0:
         raise _git_failed(
             f"git pack-objects failed reading {source_git_dir} "

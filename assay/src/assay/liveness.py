@@ -90,7 +90,7 @@ from typing import (
 
 from .errors import AssayError, Outcome, ReasonCode
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover -- annotation-only import; importing at runtime creates a cycle
     from .runner import CommandPlan
 
 #: The module name assay's `-p` injection asks pytest to load. Chosen to be

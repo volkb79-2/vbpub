@@ -484,7 +484,7 @@ def main(
             return cmd_verify(args.path, stdin=inp, stderr=err)
         elif args.command == "analyze":
             return cmd_analyze(args, stdout=out, stderr=err)
-        else:  # pragma: no cover - argparse rejects unknown subcommands first
+        else:
             raise AssertionError(f"unhandled command {args.command!r}")
     except AssayError as exc:
         # (B053/A-409) The same one emitter every internal conversion site
@@ -942,8 +942,7 @@ def _containments(target: Path, project_root: Path) -> "list[tuple[Path, Path]]"
                 relative = candidate.relative_to(root)
             except ValueError:
                 continue
-            if (root, relative) not in found:
-                found.append((root, relative))
+            found.append((root, relative))
     return found
 
 
@@ -1041,7 +1040,7 @@ def _refuse_a_destination_reached_through_a_symlink(
             continue
         try:
             points_to = os.readlink(walked)
-        except OSError:  # pragma: no cover - raced away between the two calls
+        except OSError:
             points_to = "<unreadable>"
         real = _resolve_through_existing_prefix(walked)
         raise LaneConfigError(
@@ -2059,5 +2058,5 @@ def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, 
     }
 
 
-if __name__ == "__main__":  # pragma: no cover - exercised as a subprocess
+if __name__ == "__main__":
     sys.exit(main())

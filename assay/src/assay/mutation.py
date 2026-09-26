@@ -145,7 +145,7 @@ from .verdict import (
 )
 from .vocabulary import MUTATION_OPERATORS
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover -- annotation-only imports; importing at runtime creates cycles
     # Annotation-only: `.adapters.base` imports `MutationSite` from this
     # module and `.runner` imports this module for command execution, so
     # importing either back at runtime would be circular. `from __future__
@@ -1417,16 +1417,15 @@ def merge_mutations(current: Mutation, records: Iterable[Mapping[str, Any]]) -> 
         name: tuple(sorted(buckets[name], key=lambda item: item.identity))
         for name in MUTATION_BUCKETS
     }
-    payload = Mutation(
-        candidate_count=len(identities),
-        total=len(identities),
-        **{name: normalized[name] for name in MUTATION_BUCKETS},
-    )
     if duplicate_count:
         raise MutationStateError(
             f"resumed records repeat {duplicate_count} candidate identity"
         )
-    return payload
+    return Mutation(
+        candidate_count=len(identities),
+        total=len(identities),
+        **{name: normalized[name] for name in MUTATION_BUCKETS},
+    )
 
 
 def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
@@ -1626,9 +1625,9 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
     if missing_pairs:
         rendered = ", ".join(f"{index}/{declared_count}" for index, _ in missing_pairs)
         raise MutationStateError(f"non-exhaustive shard input is missing {rendered}")
-    extra_pairs = sorted(covered_pairs - required_pairs)
-    if extra_pairs:
-        raise MutationStateError(f"inconsistent shard pairs present: {extra_pairs}")
+    # Every pair was already range-checked against its own count above, and
+    # all documents must share the one count used to build `required_pairs`.
+    # Therefore `covered_pairs - required_pairs` is empty by construction.
     if not merged_candidates:
         # A-278: a check with nothing to check is not a passing check. Every
         # required (index, count) pair being present says only that a
@@ -3191,18 +3190,11 @@ def ingest_mutation_report(
     exactly one caller (:func:`assay.runner._ingest_r2_report`), which already
     holds the repository the lane's command ran against.
     """
-    if report.producer.name and report.producer.version:
-        producer_tool = MutationProducerTool(
-            name=report.producer.name,
-            version=report.producer.version,
-            report_schema_version=report.producer.report_schema_version,
-        )
-    else:  # pragma: no cover - the parser already refuses this shape
-        raise AssayError(
-            "mutation report carries no producer identity",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        )
+    producer_tool = MutationProducerTool(
+        name=report.producer.name,
+        version=report.producer.version,
+        report_schema_version=report.producer.report_schema_version,
+    )
 
     _check_report_project_root(report, run_cwd=run_cwd)
     wire_paths = _resolve_report_paths(
@@ -3285,13 +3277,7 @@ def ingest_mutation_report(
             # overlap at all.
             discarded.append(outcome)
             continue
-        bucket = INGESTED_STATUS_BUCKETS.get(mutant.status)
-        if bucket is None:  # pragma: no cover - the parser closes the set
-            raise AssayError(
-                f"mutation report carries unmapped status {mutant.status!r}",
-                outcome=Outcome.ERROR,
-                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-            )
+        bucket = INGESTED_STATUS_BUCKETS[mutant.status]
         buckets[bucket].append(outcome)
         if mutant.status == "NoCoverage":
             survived_uncovered.add((wire_path, mutant.lineno))

@@ -18,6 +18,7 @@ import pytest
 
 from assay.adapters.go_modfile import (
     ModuleDeclaration,
+    _unquote,
     find_module_declaration,
     parse_module_directive,
 )
@@ -212,6 +213,24 @@ def test_an_unterminated_string_refuses():
     assert "newline inside a string literal" in str(error)
 
 
+def test_a_double_quoted_string_that_reaches_eof_without_its_quote_refuses():
+    error = _refusal('module "example.com/foo')
+    assert "unterminated string literal" in str(error)
+
+
+def test_unquote_refuses_a_malformed_token_with_a_trailing_backslash():
+    with pytest.raises(AssayError, match="ends in a trailing backslash"):
+        _unquote('"example.com/foo' + "\\" + '"', source="go.mod")
+
+
+def test_a_comment_marker_can_end_an_identifier_without_becoming_its_path():
+    assert parse("module example.com/foo// trailing comment\n") == "example.com/foo"
+
+
+def test_a_module_path_reaching_eof_without_a_final_newline_is_complete():
+    assert parse("module example.com/foo") == "example.com/foo"
+
+
 def test_an_unclosed_factored_block_refuses():
     error = _refusal("module (\n\texample.com/foo\n\texample.com/bar\n)\n")
     assert "exactly one" in str(error)
@@ -284,3 +303,10 @@ def test_a_project_root_outside_the_repository_refuses(tmp_path: Path):
 
     with pytest.raises(AssayError, match="is not contained by its own repository"):
         find_module_declaration(repo, other)
+
+
+def test_a_go_mod_that_is_not_utf8_refuses_without_guessing_a_path(tmp_path: Path):
+    (tmp_path / "go.mod").write_bytes(b"module example.com/\xff\n")
+
+    with pytest.raises(AssayError, match="not valid UTF-8"):
+        find_module_declaration(tmp_path, tmp_path)

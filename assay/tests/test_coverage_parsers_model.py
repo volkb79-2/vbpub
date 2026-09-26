@@ -17,7 +17,13 @@ from __future__ import annotations
 
 import pytest
 
-from assay.coverage_parsers.model import BranchCoverage, FileCoverage
+from assay.coverage_parsers.model import (
+    BranchCoverage,
+    ClassifiedLineBudget,
+    CoverageBlock,
+    FileCoverage,
+)
+from assay.errors import AssayError, Outcome, ReasonCode
 
 
 def test_disjoint_executed_and_missing_with_no_excluded_data_is_accepted():
@@ -135,6 +141,86 @@ def test_branch_coverage_accepts_zero_covered():
     assert BranchCoverage(by_line={1: (0, 2)}).by_line == {1: (0, 2)}
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("start_line", 0),
+        ("end_line", -1),
+        ("start_col", -1),
+        ("end_col", -1),
+        ("num_stmts", -1),
+        ("count", -1),
+    ],
+)
+def test_coverage_block_refuses_negative_coordinates_and_counts(field, value):
+    fields = {
+        "start_line": 1,
+        "start_col": 0,
+        "end_line": 1,
+        "end_col": 1,
+        "num_stmts": 1,
+        "count": 0,
+    }
+    fields[field] = value
+    with pytest.raises(ValueError):
+        CoverageBlock(**fields)
+
+
+def test_coverage_block_refuses_an_extent_that_ends_before_it_starts():
+    with pytest.raises(ValueError, match="before it starts"):
+        CoverageBlock(
+            start_line=2,
+            start_col=4,
+            end_line=2,
+            end_col=3,
+            num_stmts=1,
+            count=0,
+        )
+
+
+def test_coverage_block_preserves_whole_extent_and_derives_remapping():
+    ordinary = CoverageBlock(
+        start_line=2,
+        start_col=4,
+        end_line=3,
+        end_col=1,
+        num_stmts=1,
+        count=1,
+    )
+    assert ordinary.extent == (2, 4, 3, 1)
+    assert ordinary.has_remapped_position is False
+
+    file_coverage = FileCoverage(
+        executed=frozenset({2}),
+        missing=frozenset(),
+        excluded=None,
+        blocks=(ordinary,),
+    )
+    assert file_coverage.line_directive_remapped is False
+
+    remapped = CoverageBlock(
+        start_line=100,
+        start_col=0,
+        end_line=102,
+        end_col=1,
+        num_stmts=1,
+        count=0,
+    )
+    assert remapped.has_remapped_position is True
+
+
+def test_classified_line_budget_allows_the_exact_ceiling_and_refuses_overflow():
+    budget = ClassifiedLineBudget(format_name="test artifact", remaining=3)
+    budget.spend(3, "pkg/a.go")
+    assert budget.remaining == 0
+
+    with pytest.raises(AssayError) as caught:
+        budget.spend(1, "pkg/b.go")
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "pkg/b.go" in str(caught.value)
+
+
 # --- FileCoverage.branches: wave-1 §3.1 invariants 3-5 (cross-bucket rules) --
 
 
@@ -142,6 +228,28 @@ def test_file_coverage_defaults_branches_to_none():
     # Every caller written before this field existed is unchanged.
     fc = FileCoverage(executed=frozenset({1}), missing=frozenset(), excluded=None)
     assert fc.branches is None
+    assert fc.line_directive_remapped is False
+    assert fc.executable == frozenset({1})
+
+
+def test_file_coverage_accepts_branch_lines_disjoint_from_known_exclusions():
+    coverage = FileCoverage(
+        executed=frozenset({1}),
+        missing=frozenset(),
+        excluded=frozenset({2}),
+        branches=BranchCoverage(by_line={1: (1, 2)}),
+    )
+    assert coverage.branches.by_line == {1: (1, 2)}
+
+
+def test_file_coverage_rejects_branch_lines_also_marked_excluded():
+    with pytest.raises(ValueError, match="also in .excluded"):
+        FileCoverage(
+            executed=frozenset({1}),
+            missing=frozenset(),
+            excluded=frozenset({2}),
+            branches=BranchCoverage(by_line={2: (0, 1)}),
+        )
 
 
 def test_file_coverage_accepts_a_branch_line_that_is_executed():
@@ -202,6 +310,26 @@ def test_file_coverage_excluded_none_skips_the_branch_excluded_check():
         branches=BranchCoverage(by_line={1: (1, 1)}),
     )
     assert fc.branches.by_line == {1: (1, 1)}
+
+
+def test_file_coverage_refuses_non_positive_contradictory_branch_lines():
+    with pytest.raises(ValueError, match="contradictory_branch_lines"):
+        FileCoverage(
+            executed=frozenset(),
+            missing=frozenset(),
+            excluded=None,
+            contradictory_branch_lines=frozenset({0}),
+        )
+
+
+def test_file_coverage_accepts_positive_contradictory_branch_lines():
+    coverage = FileCoverage(
+        executed=frozenset({1}),
+        missing=frozenset(),
+        excluded=None,
+        contradictory_branch_lines=frozenset({2}),
+    )
+    assert coverage.contradictory_branch_lines == frozenset({2})
 
 
 def test_file_coverage_rejects_a_missing_branch_line_with_a_nonzero_covered_count():

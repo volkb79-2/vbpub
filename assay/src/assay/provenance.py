@@ -129,7 +129,7 @@ def _installed_wheel_digest(dist: Distribution) -> str | None:
     """
     try:
         raw = dist.read_text("direct_url.json")
-    except (OSError, ValueError):  # pragma: no cover - unreadable metadata dir
+    except (OSError, ValueError):
         return None
     if not raw:
         return None
@@ -214,7 +214,7 @@ def identify_judge(
     """
     if module is None:
         module = sys.modules.get(__package__ or DISTRIBUTION_NAME)
-    if module is None:  # pragma: no cover - `assay` is imported to get here
+    if module is None:
         return None, (
             f"the {DISTRIBUTION_NAME!r} package is not imported in this "
             f"interpreter, so nothing here can be identified"

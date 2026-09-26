@@ -1975,6 +1975,21 @@ snapshot into `.assay/coverage-self-qualification-preflight-snapshot.json`, so
 each unvisited branch has a reviewable source/destination arc rather than only
 a line-level summary.
 
+Coverage.py's default exclusions are too broad for this claim: they silently
+remove Protocol method bodies and `TYPE_CHECKING` blocks from the denominator.
+The self-qualification suite replaces those defaults with the explicit
+`pragma: no cover` marker and executes every Protocol stub. Its reviewed map
+records four annotation-only import blocks plus two narrow selector-cleanup
+race branches in
+`tests/fixtures/b105-coverage-exclusions.json`. The gate compares the raw
+coverage report's complete `excluded_lines` map with that checked-in inventory
+before preserving it. A new exclusion, a removed one, or a moved line fails
+the gate until the map and its reason are reviewed together. The imports exist
+only for static type checking and would introduce runtime import cycles; the
+selector branches catch descriptors already removed by the OS or selector
+during process cleanup. The 100% floor remains in force for all executable
+source lines and branches.
+
 ```bash
 cd assay
 ./run-gate.py self-qualification

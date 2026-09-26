@@ -66,12 +66,28 @@ def test_an_interior_single_dot_component_is_lexically_absorbed_and_reaches_the_
     assert safeio.read_bounded_file(tmp_path, "a/./b", limit=LIMIT) == b"content"
 
 
-@pytest.mark.parametrize("caller", ["reserve_output", "read_bounded_file"])
+@pytest.mark.parametrize("caller", ["reserve_output", "read_bounded_file", "read_bounded_input"])
 def test_a_non_positive_limit_is_a_programmer_error(tmp_path: Path, caller: str):
     with pytest.raises(ValueError):
         getattr(safeio, caller)(tmp_path, "cov.json", limit=0)
     with pytest.raises(ValueError):
         getattr(safeio, caller)(tmp_path, "cov.json", limit=-1)
+
+
+def test_read_bounded_input_refuses_an_unreadable_existing_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    real_open = safeio.os.open
+
+    def fail_named_component(path, flags, *args, **kwargs):
+        if path == "locked" and "dir_fd" in kwargs:
+            raise PermissionError("directory traversal denied")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(safeio.os, "open", fail_named_component)
+    with pytest.raises(AssayError, match="locked.*not an existing") as caught:
+        safeio.read_bounded_input(tmp_path, "locked/review.json", limit=LIMIT)
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
 # --- parent traversal: missing / symlinked / non-directory parents ------------

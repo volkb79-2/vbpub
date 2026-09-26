@@ -24,10 +24,14 @@ right way -- not merely implied by an end-to-end pipeline run.
 
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
-from assay.canary import build_canary_claim, judge_attempt, judge_canary
-from assay.errors import Outcome, ReasonCode
+import pytest
+from conftest import make_deadline, make_lane, make_plan
+
+from assay.canary import _judge_unit, build_canary_claim, judge_attempt, judge_canary
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.runner import CommandResult, SnapshotUnitResult
 from assay.verdict import CanaryAttempt, CanaryResult, Claim
 
 
@@ -366,6 +370,47 @@ def test_any_passes_on_the_first_caught_probe():
         attempts=(_caught("src/a.py"), skipped("src/b.py")),
     )
     assert judge_canary(result, aggregation="any") == (Outcome.PASS, None)
+
+
+def test_a_result_containing_only_not_attempted_targets_is_a_surviving_canary():
+    result = wrap(skipped("src/a.py"), skipped("src/b.py"))
+    assert judge_canary(result, aggregation="any") == (
+        Outcome.FAIL,
+        ReasonCode.CANARY_SURVIVED,
+    )
+
+
+def test_a_profile_error_is_reported_before_r1_is_evaluated():
+    lane = make_lane(rigor=("R0", "R1"))
+    plan = make_plan(lane)
+    unit = SnapshotUnitResult(
+        result=CommandResult(
+            plan=plan,
+            outcome=Outcome.PASS,
+            reason_code=None,
+            returncode=0,
+            started="2026-09-01T00:00:00+00:00",
+            ended="2026-09-01T00:00:01+00:00",
+        ),
+        post_reason=None,
+        profile=None,
+        profile_error=AssayError(
+            "bad profile",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ),
+    )
+
+    assert _judge_unit(
+        lane,
+        unit,
+        repo=Path("/repo"),
+        project_root=Path("/repo"),
+        scratch_project_root=Path("/tmp/snapshot"),
+        base=None,
+        adapter=object(),
+        deadline=make_deadline(),
+    ) == (Outcome.ERROR, ReasonCode.UNREADABLE_ARTIFACT)
 
 
 def test_any_fails_only_when_every_probe_survived():

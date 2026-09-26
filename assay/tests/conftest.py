@@ -82,6 +82,16 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     source_info = source.lstat()
     if not stat.S_ISREG(source_info.st_mode):
         raise RuntimeError(f"B105 coverage source is not a regular file: {source}")
+    try:
+        coverage_document = json.loads(source.read_text(encoding="utf-8"))
+        exclusion_map = json.loads(
+            (PROJECT_ROOT / "tests/fixtures/b105-coverage-exclusions.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        _validate_b105_exclusion_inventory(coverage_document, exclusion_map)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"B105 coverage exclusion check failed: {exc}") from exc
     if source.resolve() == archive.resolve(strict=False):
         raise RuntimeError("B105 coverage source and archive path must differ")
     if not archive.parent.is_dir() or archive.parent.is_symlink():
@@ -91,6 +101,55 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     with source.open("rb") as input_stream, temporary.open("xb") as output_stream:
         shutil.copyfileobj(input_stream, output_stream)
     os.replace(temporary, archive)
+
+
+def _validate_b105_exclusion_inventory(coverage_document, exclusion_map) -> None:
+    """Require the raw coverage report's exclusions to match the reviewed map."""
+    if not isinstance(coverage_document, dict) or not isinstance(
+        coverage_document.get("files"), dict
+    ):
+        raise ValueError("raw coverage JSON has no files object")
+    if not isinstance(exclusion_map, dict) or exclusion_map.get("format") != 1:
+        raise ValueError("the checked-in B105 exclusion map has an unknown format")
+    expected_files = exclusion_map.get("files")
+    if not isinstance(expected_files, dict):
+        raise ValueError("the checked-in B105 exclusion map has no files object")
+
+    expected = {}
+    for path, entry in expected_files.items():
+        if (
+            not isinstance(path, str)
+            or not isinstance(entry, dict)
+            or not isinstance(entry.get("lines"), list)
+            or not entry["lines"]
+            or any(type(line) is not int or line < 1 for line in entry["lines"])
+            or len(entry["lines"]) != len(set(entry["lines"]))
+            or not isinstance(entry.get("reason"), str)
+            or not entry["reason"].strip()
+        ):
+            raise ValueError(f"malformed reviewed B105 exclusion entry for {path!r}")
+        expected[path] = sorted(entry["lines"])
+
+    actual = {}
+    for path, record in coverage_document["files"].items():
+        if not isinstance(path, str) or not isinstance(record, dict):
+            raise ValueError("raw coverage JSON contains a malformed file record")
+        excluded = record.get("excluded_lines", [])
+        if (
+            not isinstance(excluded, list)
+            or any(type(line) is not int or line < 1 for line in excluded)
+            or len(excluded) != len(set(excluded))
+        ):
+            raise ValueError(f"raw coverage exclusions are malformed for {path!r}")
+        if excluded:
+            actual[path] = sorted(excluded)
+    if actual != expected:
+        missing = {path: lines for path, lines in expected.items() if actual.get(path) != lines}
+        unexpected = {path: lines for path, lines in actual.items() if expected.get(path) != lines}
+        raise ValueError(
+            f"raw exclusions differ from the reviewed inventory; expected={missing!r}, "
+            f"unexpected_or_changed={unexpected!r}"
+        )
 
 #: The monorepo checkout `assay/` sits in — a real repository only when the
 #: tree is IN that checkout (B063).

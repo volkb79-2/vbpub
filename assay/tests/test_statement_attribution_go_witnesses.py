@@ -32,11 +32,57 @@ from conftest import load_go_statement_oracle
 from assay.coverage_parsers import go_cover
 from assay.coverage_parsers.model import CoverageBlock, CoverageProfile, FileCoverage
 from assay.errors import AssayError, Outcome, ReasonCode
-from assay.statement_attribution import StatementBlock, attribute_statements
+from assay.statement_attribution import StatementBlock, _sample, attribute_statements
 
 _CARVE = Path(__file__).resolve().parents[1] / "nyxloom-trove" / "carve-assets"
 _WITNESS = _CARVE / "P27" / "witness"
 _ORACLE_JSON = _CARVE / "P27-recarve" / "stmtpos-witness-oracle.json"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("start_line", 0),
+        ("end_line", 0),
+        ("start_col", -1),
+        ("end_col", -1),
+        ("num_stmts", -1),
+        ("stmt_lines", (0,)),
+    ],
+)
+def test_statement_block_rejects_invalid_coordinates_and_statement_counts(
+    field, value
+):
+    fields = {
+        "start_line": 1,
+        "start_col": 0,
+        "end_line": 1,
+        "end_col": 1,
+        "num_stmts": 1,
+        "stmt_lines": (1,),
+    }
+    fields[field] = value
+    with pytest.raises(ValueError):
+        StatementBlock(**fields)
+
+
+@pytest.mark.parametrize("stmt_lines", [(2, 1), (1, 1)])
+def test_statement_block_requires_sorted_duplicate_free_statement_lines(stmt_lines):
+    with pytest.raises(ValueError, match="sorted and duplicate-free"):
+        StatementBlock(
+            start_line=1,
+            start_col=1,
+            end_line=1,
+            end_col=2,
+            num_stmts=2,
+            stmt_lines=stmt_lines,
+        )
+
+
+def test_sample_reports_empty_and_truncated_extent_lists():
+    assert _sample([]) == "none"
+    extents = [(line, 0, line, 1) for line in range(1, 5)]
+    assert _sample(extents, limit=2) == "1.0,1.1, 2.0,2.1, ..."
 
 
 def _oracle_blocks() -> dict[str, tuple[StatementBlock, ...]]:
@@ -303,6 +349,36 @@ def test_a_line_based_format_is_passed_through_untouched():
     )
     result = attribute_statements(original, {})
     assert result.files["a.py"] == original.files["a.py"]
+    assert result.statement_attributed
+
+
+def test_a_remapped_go_file_is_emptied_without_source_oracle_lookup():
+    block = CoverageBlock(
+        start_line=100,
+        start_col=0,
+        end_line=102,
+        end_col=1,
+        num_stmts=1,
+        count=1,
+    )
+    original = CoverageProfile(
+        files={
+            "generated.go": FileCoverage(
+                executed=frozenset({100}),
+                missing=frozenset(),
+                excluded=None,
+                blocks=(block,),
+            )
+        }
+    )
+
+    result = attribute_statements(original, {})
+
+    corrected = result.files["generated.go"]
+    assert corrected.executed == frozenset()
+    assert corrected.missing == frozenset()
+    assert corrected.blocks == (block,)
+    assert corrected.line_directive_remapped
     assert result.statement_attributed
 
 

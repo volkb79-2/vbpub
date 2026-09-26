@@ -549,3 +549,26 @@ def test_the_oracle_is_never_ASKED_about_a_line_directive_remapped_file(
     assert "pkg/gen.blk" in _flagged_beside_ordinary().files
     assert claim.status is Outcome.PASS
     assert claim.coverage.executable == 2
+
+
+def test_all_block_files_remapped_skip_the_oracle_without_vacuous_lines(
+    git_repo: GitRepo,
+):
+    _seed(git_repo)
+    git_repo.write("pkg/gen.blk", "".join(f"line {n}\n" for n in range(1, 11)))
+    git_repo.commit_all("seed only remapped source")
+    flagged = _flagged_beside_ordinary().files["pkg/gen.blk"]
+    profile = CoverageProfile(files=MappingProxyType({"pkg/gen.blk": flagged}))
+    adapter = _OracleAdapter()
+
+    corrected = runner._attribute_statements_for_lane(
+        profile,
+        adapter,
+        repo_top=git_repo.path,
+        project_root=git_repo.path,
+        remaining=None,
+    )
+
+    assert adapter.calls == []
+    assert corrected.statement_attributed
+    assert corrected.files["pkg/gen.blk"].executable == frozenset()

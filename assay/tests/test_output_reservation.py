@@ -58,6 +58,23 @@ def test_stdout_mode_refuses_a_stream_that_cannot_be_written():
     assert caught.value.outcome is Outcome.ERROR
 
 
+def test_stdout_emission_wraps_a_late_flush_failure():
+    class FlushFails(io.StringIO):
+        flushes = 0
+
+        def flush(self):
+            self.flushes += 1
+            if self.flushes > 1:
+                raise OSError("pipe closed after reservation")
+
+    destination = reserve_verdict_output("-", stdout=FlushFails())
+
+    with pytest.raises(AssayError, match="cannot write the verdict to stdout") as caught:
+        destination.emit("{}\n")
+
+    assert caught.value.reason_code is ReasonCode.OUTPUT_WRITE_FAILED
+
+
 # --- file mode: reservation refuses what cannot work --------------------
 
 
@@ -319,13 +336,155 @@ def test_a_failed_cleanup_does_not_replace_the_real_diagnosis(
 
     target = tmp_path / "verdict.json"
     destination = reserve_verdict_output(str(target), stdout=io.StringIO())
-    target.write_text("intruder\n", encoding="utf-8")
+    real_replace = output.os.replace
+    real_unlink = output.os.unlink
+
+    def exploding_replace(*args, **kwargs):
+        raise OSError("atomic replace failed")
 
     def exploding_unlink(*args, **kwargs):
         raise OSError("cleanup itself failed")
 
+    monkeypatch.setattr(output.os, "replace", exploding_replace)
     monkeypatch.setattr(output.os, "unlink", exploding_unlink)
 
-    # The destination-changed refusal still surfaces, not the cleanup error.
-    with pytest.raises(AssayError, match="changed after it was reserved"):
+    # The replace refusal still surfaces, not the cleanup error. The temp
+    # remains observable because the filesystem refused cleanup too.
+    with pytest.raises(AssayError, match="cannot write the verdict") as caught:
         destination.emit("new\n")
+    assert isinstance(caught.value.__cause__, OSError)
+    assert str(caught.value.__cause__) == "atomic replace failed"
+    temps = [name for name in _names(tmp_path) if name.endswith(".tmp")]
+    assert len(temps) == 1
+
+    # Remove the deliberately retained temp after returning the real diagnosis.
+    monkeypatch.setattr(output.os, "unlink", real_unlink)
+    monkeypatch.setattr(output.os, "replace", real_replace)
+    real_unlink(temps[0], dir_fd=destination._parent_fd)
+
+
+def test_temporary_creation_failure_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from assay import output
+
+    target = tmp_path / "verdict.json"
+    destination = reserve_verdict_output(str(target), stdout=io.StringIO())
+    real_open = output.os.open
+
+    def fail_emission_temp(path, *args, **kwargs):
+        if isinstance(path, str) and path.endswith(".tmp"):
+            raise OSError("temp creation refused")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(output.os, "open", fail_emission_temp)
+    with pytest.raises(AssayError, match="cannot create a temporary file") as caught:
+        destination.emit("{}\n")
+    assert caught.value.reason_code is ReasonCode.OUTPUT_WRITE_FAILED
+    assert _names(tmp_path) == []
+
+
+def test_destination_revalidation_stat_error_is_not_reported_as_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from assay import output
+
+    target = tmp_path / "verdict.json"
+    destination = reserve_verdict_output(str(target), stdout=io.StringIO())
+    real_stat = output.os.stat
+
+    def fail_target_stat(path, *args, **kwargs):
+        if path == target.name and kwargs.get("dir_fd") == destination._parent_fd:
+            raise PermissionError("cannot inspect destination")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(output.os, "stat", fail_target_stat)
+    with pytest.raises(AssayError, match="cannot inspect the verdict destination"):
+        destination.emit("{}\n")
+
+
+def test_reservation_stat_error_is_not_reported_as_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from assay import output
+
+    target = tmp_path / "verdict.json"
+    real_stat = output.os.stat
+
+    def fail_target_stat(path, *args, **kwargs):
+        if path == target.name and "dir_fd" in kwargs:
+            raise PermissionError("cannot inspect destination")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(output.os, "stat", fail_target_stat)
+    with pytest.raises(AssayError, match="cannot inspect the verdict destination"):
+        reserve_verdict_output(str(target), stdout=io.StringIO())
+
+
+@pytest.mark.parametrize("validator", ["progress", "state"])
+def test_path_inspection_error_for_progress_and_state_is_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, validator: str
+):
+    from assay import output
+
+    target = tmp_path / "artifact"
+    real_stat = output.os.stat
+
+    def fail_target_stat(path, *args, **kwargs):
+        if path == str(target):
+            raise PermissionError("cannot inspect artifact")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(output.os, "stat", fail_target_stat)
+    with pytest.raises(AssayError, match="cannot inspect"):
+        if validator == "progress":
+            output.validate_progress_destination(str(target))
+        else:
+            output.resolve_state_directory(str(target))
+
+
+@pytest.mark.parametrize("validator", ["progress", "state"])
+def test_root_spelling_is_refused_as_not_naming_a_file_or_directory(
+    validator: str,
+):
+    from assay import output
+
+    with pytest.raises(AssayError, match="does not name"):
+        if validator == "progress":
+            output.validate_progress_destination("/")
+        else:
+            output.resolve_state_directory("/")
+
+
+def test_progress_destination_accepts_absent_and_regular_files(tmp_path: Path):
+    from assay.output import validate_progress_destination
+
+    absent = tmp_path / "nested" / "progress.jsonl"
+    assert validate_progress_destination(str(absent)) is None
+    assert not absent.exists()
+
+    existing = tmp_path / "progress.jsonl"
+    existing.write_text("{}\n", encoding="utf-8")
+    assert validate_progress_destination(str(existing)) is None
+
+
+def test_state_directory_accepts_absent_and_existing_directories(tmp_path: Path):
+    from assay.output import resolve_state_directory
+
+    absent = tmp_path / "nested-state"
+    assert resolve_state_directory(str(absent)) == str(absent)
+    assert not absent.exists()
+
+    existing = tmp_path / "state"
+    existing.mkdir()
+    assert resolve_state_directory(str(existing)) == str(existing)
+
+
+def test_state_directory_rejects_an_existing_file(tmp_path: Path):
+    from assay.output import resolve_state_directory
+
+    target = tmp_path / "state"
+    target.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(AssayError, match="exists and is not a directory"):
+        resolve_state_directory(str(target))

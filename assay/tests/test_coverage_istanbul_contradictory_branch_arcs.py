@@ -40,6 +40,7 @@ from conftest import GitRepo
 
 from assay.cli import main
 from assay.coverage_parsers import coverage_istanbul_json
+from assay.errors import AssayError, ReasonCode
 
 
 def run(argv: list[str]) -> tuple[int, str, str]:
@@ -203,6 +204,35 @@ def test_the_parser_isolates_the_defect_and_keeps_every_other_file(
     assert 215 not in broken.branches.by_line
     # The line classification the record DID get right survives.
     assert broken.executed == frozenset({1})
+
+
+def test_a_model_value_error_is_wrapped_as_an_unreadable_istanbul_record(
+    monkeypatch,
+):
+    record = {
+        "path": "/p/src/a.ts",
+        "statementMap": {
+            "0": {
+                "start": {"line": 1, "column": 0},
+                "end": {"line": 1, "column": 5},
+            }
+        },
+        "s": {"0": 1},
+        "fnMap": {},
+        "f": {},
+        "branchMap": {},
+        "b": {},
+    }
+
+    def invalid_model(**_fields):
+        raise ValueError("controlled cross-field rejection")
+
+    monkeypatch.setattr(coverage_istanbul_json, "FileCoverage", invalid_model)
+    with pytest.raises(AssayError, match="arcs contradict") as caught:
+        coverage_istanbul_json.parse(
+            _document({"/p/src/a.ts": record}), producer="istanbul"
+        )
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
 def test_a_clean_document_records_no_contradiction_at_all():

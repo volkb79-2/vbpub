@@ -20,7 +20,7 @@ artifact)::
     }
 
 coverage.py is the ONE format in this registry that can express an exclusion
-(``# pragma: no cover``) as a first-class, dedicated field distinct from
+(``no-cover pragma``) as a first-class, dedicated field distinct from
 "missing" — so ``FileCoverage.excluded`` here is ALWAYS a ``frozenset``
 (possibly empty), never ``None`` (DESIGN-GUIDE §11, A-008). Cross-referenced
 against ``topos/tools/coverage_gate.py``'s ``_validate_cov_record`` (handoff

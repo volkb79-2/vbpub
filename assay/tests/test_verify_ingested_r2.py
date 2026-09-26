@@ -35,6 +35,7 @@ from conftest import GitRepo
 from assay import runner
 from assay.adapters.javascript import JavaScriptAdapter
 from assay.errors import Outcome
+from assay import verify as raw_verify
 from assay.verify import verify_document
 
 from test_runner_ingested_r2 import (  # the same real-artifact harness
@@ -72,6 +73,12 @@ def _named(document: dict, fragment: str) -> None:
     failures = _failures(document)
     assert failures, "the mutated document was accepted -- the checker is vacuous"
     assert any(fragment in failure for failure in failures), failures
+
+
+def _raw_ingested_failures(document: dict) -> list[str]:
+    failures: list[str] = []
+    raw_verify._check_ingested_r2_agrees_with_its_payload(document, failures)
+    return failures
 
 
 # --------------------------------------------------------------------------
@@ -373,6 +380,63 @@ def test_an_ingested_judgment_with_no_payload_is_caught(ingested_document: dict)
     )
     del r2_claim["mutation"]
     _named(document, "the ingested facts beside it describe a payload")
+
+
+def test_raw_ingested_rederivation_rejects_malformed_entries_and_positions(
+    ingested_document: dict,
+):
+    document = copy.deepcopy(ingested_document)
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    claim["mutation"]["survived"][0].pop("replacement_sha256", None)
+    assert _raw_ingested_failures(document) == []
+
+    document = copy.deepcopy(ingested_document)
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    claim["mutation"]["survived"][0]["path"] = None
+    failures = _raw_ingested_failures(document)
+    assert any("is not a position the payload's own 'survived' bucket" in item for item in failures)
+
+    document = copy.deepcopy(ingested_document)
+    r2 = document["judgment"]["r2"]
+    r2["survived_uncovered"] = [None, {"path": 4, "lineno": "bad"}]
+    r2["lines_without_candidates"] = [None, {"path": 4, "lineno": "bad"}]
+    failures = _raw_ingested_failures(document)
+    assert failures == []
+
+
+def test_raw_ingested_rederivation_checks_discarded_shape_reason_and_residual(
+    ingested_document: dict,
+):
+    document = copy.deepcopy(ingested_document)
+    r2 = document["judgment"]["r2"]
+    r2["discarded"] = [None]
+    failures = _raw_ingested_failures(document)
+    assert any("lists 1 mutant(s)" in item for item in failures)
+
+    document = copy.deepcopy(ingested_document)
+    r2 = document["judgment"]["r2"]
+    r2["discarded"] = [{"discard_reason": "unknown"}]
+    failures = _raw_ingested_failures(document)
+    assert any("discard_reason 'unknown'" in item for item in failures)
+
+    document = copy.deepcopy(ingested_document)
+    r2 = document["judgment"]["r2"]
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    discarded = copy.deepcopy(claim["mutation"]["killed"][0])
+    discarded["path"] = "app/src/unlisted.ts"
+    discarded["start_byte"] = 900_000
+    discarded["end_byte"] = 900_004
+    discarded["replacement_sha256"] = "f" * 64
+    discarded["discard_reason"] = "compile_error"
+    r2["discarded"] = [discarded]
+    claim["mutation"]["candidate_count"] += 1
+    assert _raw_ingested_failures(document) == []
+
+    document = copy.deepcopy(ingested_document)
+    payload = next(item for item in document["claims"] if item["rigor"] == "R2")["mutation"]
+    payload["total"] = True
+    failures = _raw_ingested_failures(document)
+    assert not any("residual of" in item for item in failures)
 
 
 # --------------------------------------------------------------------------

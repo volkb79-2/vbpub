@@ -399,8 +399,6 @@ class _ReportJSONFramer:
             self.mode = "literal"
             self.literal = {"t": "true", "f": "false", "n": "null"}[char]
             self.literal_index = 1
-            if self.literal_index == len(self.literal):
-                self.mode = "normal"
         elif char == "-":
             self._mark_value_started()
             self.mode = "number"
@@ -484,6 +482,8 @@ class _ReportJSONFramer:
                 self._char(char)
             else:
                 self.state = "invalid"
+        else:
+            self.state = "invalid"
 
     def _close_container(self, char):
         if not self.stack:
@@ -596,13 +596,9 @@ class _ReportJSONFramer:
         if self.state in ("invalid", "indeterminate"):
             return self.state
         try:
-            remainder = self.decoder.decode(b"", final=True)
+            self.decoder.decode(b"", final=True)
         except UnicodeDecodeError:
             return "invalid"
-        for char in remainder:
-            self._char(char)
-        if self.state in ("invalid", "indeterminate"):
-            return self.state
         if self.mode == "number" and self.number_state in (
                 "zero", "integer", "fraction", "exponent_digits"):
             self.mode = "normal"

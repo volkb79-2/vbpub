@@ -169,6 +169,8 @@ def test_a_non_go_extension_parses_identically_proving_no_language_binding():
         pytest.param("mode: set\npkg/f.go:bad,2.2 1 1\n", id="no-dot-in-start-position"),
         pytest.param("mode: set\npkg/f.go:1.1,bad 1 1\n", id="no-dot-in-end-position"),
         pytest.param("mode: set\npkg/f.go:x.5,2.2 1 1\n", id="start-position-has-a-dot-but-not-an-integer"),
+        pytest.param("mode: set\npkg/f.go:1.5,2.x 1 1\n", id="end-column-has-a-dot-but-not-an-integer"),
+        pytest.param("mode: set\npkg/f.go:1.5,2.-1 1 1\n", id="end-column-is-negative"),
         pytest.param("mode: set\npkg/f.go:1.5 1 1\n", id="position-spec-has-no-comma"),
         pytest.param("mode: set\npkg/f.go:0.1,2.2 1 1\n", id="start-line-not-positive"),
         pytest.param("mode: set\npkg/f.go:3.1,2.2 1 1\n", id="end-before-start"),

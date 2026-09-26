@@ -261,6 +261,25 @@ def test_generate_mutants_is_deterministic_across_repeated_calls():
     assert first == second
 
 
+def test_a_later_walk_candidate_replaces_the_worst_retained_site_under_the_limit():
+    """AST breadth-first order finds the later literal before the literal
+    nested in the earlier call. The bounded heap must replace that worse
+    retained candidate when the earlier source identity arrives."""
+    text = (
+        "def outer():\n"
+        "    def inner():\n"
+        "        return []\n"
+        "def sibling():\n"
+        "    return 0\n"
+    )
+    (site,) = _sites(
+        {3, 5}, operators=("python:falsy-swap",), limit=1, text=text
+    )
+
+    assert site.lineno == 3
+    assert site.apply(text.encode("utf-8")) == text.replace("return []", "return None").encode("utf-8")
+
+
 # --- O2: validity ------------------------------------------------------------
 
 

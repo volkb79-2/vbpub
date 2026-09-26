@@ -98,3 +98,9 @@ fallback_version = "0.1.0"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.coverage.report]
+# B105 measures every executable production line and branch. Replace coverage.py's
+# broad defaults (including its implicit Protocol-stub and TYPE_CHECKING
+# exclusions) with the one explicit marker reviewed in the exact exclusion map.
+exclude_lines = ["pragma: no cover"]

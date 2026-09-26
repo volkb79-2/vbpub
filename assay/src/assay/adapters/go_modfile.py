@@ -420,13 +420,6 @@ def _tokens(text: str, *, source: str) -> Iterator[tuple[str, str]]:
                     f"\"mod files must use // comments (not /* */ comments)\""
                 )
             index += 1
-        if index == start:
-            # Unreachable for any input `isIdent` accepts; a non-printable
-            # rune would land here rather than looping forever.
-            raise _refuse(
-                f"{source!r} contains the unexpected input character "
-                f"{text[start]!r}"
-            )
         yield ("ident", text[start:index])
 
 

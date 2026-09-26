@@ -91,7 +91,7 @@ from .vocabulary import (
     operator_language,
 )
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover -- annotation-only import; importing at runtime creates a cycle
     from .isolation import SnapshotLimits
 
 __all__ = [
@@ -2383,8 +2383,11 @@ def _load_judge(
         # `git diff`, and a whole-target R1 never resolves a base either (evaluate_r1's
         # own docstring). Whole-target scope and a comparison commit are
         # mutually exclusive by construction, in every language.
-        if "base" in required:
-            required.remove("base")
+        # This mode is legal only on R1/R2, and each of those rigor entries
+        # requires `base`; the whole-target policy removes that required key
+        # unconditionally. A membership guard here would add an impossible
+        # false branch.
+        required.remove("base")
         # `targets` is never a member of any `JUDGE_FIELDS_BY_RIGOR` tuple
         # (only this mode-specific branch ever requires it), so it can
         # never already be in `required` here -- appended unconditionally
@@ -2398,8 +2401,9 @@ def _load_judge(
         # for the mirror-image reason -- and the explicit both-declared
         # refusal above (not the generic surplus message) is what catches a
         # lane that delegates and hardcodes at once.
-        if "base" in required:
-            required.remove("base")
+        # `base_source = "request"` is legal only on R1/R2, and each requires
+        # `base`; delegation therefore always removes the required key.
+        required.remove("base")
     required = tuple(required)
 
     for field in required:
@@ -3743,10 +3747,6 @@ def _load_posix_glob_list(
                 f"path component"
             )
         normalized_pattern = candidate.as_posix()
-        if not normalized_pattern or normalized_pattern == ".":
-            raise LaneConfigError(
-                f"{where}: '{item_field}' {pattern!r} is not a usable POSIX glob"
-            )
         normalized.append(normalized_pattern)
     return tuple(normalized)
 

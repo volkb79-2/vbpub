@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import io
 import json
@@ -1081,3 +1082,441 @@ def test_documented_analysis_commands_parse_with_shipped_cli():
     assert set(subcommands) == seen
     with pytest.raises(SystemExit):
         parser.parse_args(["analyze", "verdict", "file.json"])  # No invented commit.
+
+
+def _valid_receipt_for_collection(repository, tmp_path):
+    root, head, tree = repository
+    prefix = recorded(tmp_path, head, tree)
+    return analysis.receipt(
+        root, head, [("gate", prefix, "JOB_EXIT")], [], []
+    )
+
+
+def test_digest_refuses_a_directory_as_an_artifact(tmp_path):
+    directory = tmp_path / "directory"
+    directory.mkdir()
+
+    with pytest.raises(ValueError, match="not a regular file"):
+        analysis._digest(directory)
+
+
+@pytest.mark.parametrize("problem", ["fields", "identity", "worktree", "fingerprint"])
+def test_collect_refuses_malformed_receipt_facts_before_creating_archive(
+    repository, tmp_path, problem
+):
+    document = _valid_receipt_for_collection(repository, tmp_path)
+    if problem == "fields":
+        del document["progress"]
+    elif problem == "identity":
+        document["head"] = "g" * 40
+    elif problem == "worktree":
+        document["current_worktree_status"] = "dirty"
+    else:
+        document["jobs"]["gate"]["files"][".log"]["bytes"] = -1
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(document), encoding="utf-8")
+    output = tmp_path / "archive"
+
+    with pytest.raises(ValueError):
+        analysis.collect(output, [], receipt_path)
+
+    assert not output.exists()
+
+
+def test_collect_requires_at_least_one_explicit_artifact(tmp_path):
+    with pytest.raises(ValueError, match="at least one artifact"):
+        analysis.collect(tmp_path / "archive", [])
+
+
+@pytest.mark.parametrize(
+    ("manifest", "artifact"),
+    [
+        ({"schema_version": 2, "artifacts": {"file": {}}}, None),
+        ({"schema_version": 1, "artifacts": []}, None),
+        ({"schema_version": 1, "artifacts": {"file": {"sha256": "0" * 64}}}, b"content"),
+    ],
+)
+def test_check_archive_refuses_unsupported_empty_or_malformed_manifests(
+    tmp_path, manifest, artifact
+):
+    directory = tmp_path / "archive"
+    directory.mkdir()
+    if artifact is not None:
+        (directory / "file").write_bytes(artifact)
+    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        analysis.check_archive(directory)
+
+
+def test_check_archive_refuses_a_symlink_even_when_its_bytes_match(tmp_path):
+    directory = tmp_path / "archive"
+    directory.mkdir()
+    target = directory / "target"
+    target.write_bytes(b"same bytes")
+    link = directory / "artifact"
+    link.symlink_to(target.name)
+    manifest = {
+        "schema_version": 1,
+        "artifacts": {
+            "artifact": {
+                "source": "historical source",
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                "bytes": target.stat().st_size,
+            }
+        },
+    }
+    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="symlinks"):
+        analysis.check_archive(directory)
+
+
+def test_analysis_marker_rejects_delimiter_in_its_name():
+    with pytest.raises(ValueError, match="job marker"):
+        analysis._marker("EXIT=0\n", "BAD=MARKER")
+
+
+def test_recorded_job_refuses_a_log_without_the_command_header(repository, tmp_path):
+    _root, head, tree = repository
+    prefix = recorded(tmp_path, head, tree)
+    Path(str(prefix) + ".log").write_text("ordinary output\nJOB_EXIT=0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="COMMAND"):
+        analysis._recorded(prefix, "JOB_EXIT", head, tree)
+
+
+@pytest.mark.parametrize("problem", ["inspect-shape", "network", "cpu", "wait"])
+def test_tester_run_refuses_malformed_docker_acceptance_facts(
+    repository, tmp_path, problem
+):
+    _root, head, _tree = repository
+    directory = _launcher(tmp_path, head)
+    inspect_path = directory / "container.inspect.json"
+    document = json.loads(inspect_path.read_text(encoding="utf-8"))
+    if problem == "inspect-shape":
+        inspect_path.write_text("{}", encoding="utf-8")
+    elif problem == "network":
+        launch_path = directory / "launch.txt"
+        launch_path.write_text(launch_path.read_text() + "network_mode=bridge\n", encoding="utf-8")
+        document[0]["HostConfig"]["NetworkMode"] = "host"
+        inspect_path.write_text(json.dumps(document), encoding="utf-8")
+    elif problem == "cpu":
+        document[0]["HostConfig"]["NanoCpus"] = True
+        inspect_path.write_text(json.dumps(document), encoding="utf-8")
+    else:
+        (directory / "docker-wait.exit").write_text("not-a-status\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        analysis._tester_run(directory, head)
+
+
+def test_report_argument_parsers_refuse_unbound_values():
+    with pytest.raises(argparse.ArgumentTypeError, match="expected commit"):
+        analysis._report_commit("not-a-full-commit")
+    with pytest.raises(argparse.ArgumentTypeError, match="max-errors"):
+        analysis._report_max_errors("11")
+    with pytest.raises(argparse.ArgumentTypeError, match="max-errors"):
+        analysis._report_max_errors("not-an-integer")
+
+
+def test_report_blocks_refuses_a_fifo_without_opening_it_for_blocking(tmp_path):
+    fifo = tmp_path / "progress"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ValueError, match="not a regular file"):
+        list(analysis._report_blocks(fifo, {}))
+
+
+def test_report_blocks_accepts_an_empty_regular_file(tmp_path):
+    path = tmp_path / "empty"
+    path.write_bytes(b"")
+    artifact = {}
+
+    assert list(analysis._report_blocks(path, artifact)) == []
+    assert artifact["bytes"] == 0
+    assert artifact["sha256"] == hashlib.sha256(b"").hexdigest()
+
+
+def test_report_blocks_detects_a_file_truncated_after_its_size_was_read(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "changing"
+    path.write_bytes(b"initial bytes")
+    real_fstat = os.fstat
+
+    def truncate_after_stat(fd):
+        info = real_fstat(fd)
+        path.write_bytes(b"")
+        return info
+
+    monkeypatch.setattr(analysis.os, "fstat", truncate_after_stat)
+
+    with pytest.raises(ValueError, match="truncated during report snapshot"):
+        list(analysis._report_blocks(path, {}))
+
+
+@pytest.mark.parametrize("document", ["[]", "{}"])
+def test_report_verdict_refuses_nonobjects_and_schema_invalid_objects(
+    tmp_path, document
+):
+    path = tmp_path / "verdict.json"
+    path.write_text(document, encoding="utf-8")
+    lane = {"name": "package", "expected_commit": "a" * 40, "evidence_artifacts": []}
+
+    with pytest.raises((TypeError, ValueError)):
+        analysis._report_verdict(path, {}, lane)
+
+
+def _report_progress_direct(path, head, events):
+    path.write_bytes(
+        b"".join(json.dumps(event).encode("utf-8") + b"\n" for event in events)
+    )
+    lane = {"name": "package", "expected_commit": head, "actual_commit": None}
+    analysis._report_progress(path, {}, lane)
+    return lane
+
+
+@pytest.mark.parametrize(
+    ("events", "message"),
+    [
+        ([{"event": "run", "commit": "short", "lane": "package"}], "full commit"),
+        ([{"event": "run", "commit": "a" * 40, "lane": "wrong"}], "differs"),
+        ([{"event": "run", "commit": "a" * 40, "lane": "package"},
+          {"event": "unknown"}], "malformed progress event"),
+        ([{"event": "command_running"}], "precedes first run identity"),
+        ([{"event": "run", "commit": "a" * 40, "lane": "package"},
+          {"event": "command_running", "commit": "b" * 40}], "conflicting commit"),
+        ([{"event": "run", "commit": "a" * 40, "lane": "package"},
+          {"event": "command_running", "phase": 4}], "malformed progress phase"),
+        ([{"event": "run", "commit": "a" * 40, "lane": "package"},
+          {"event": "command_running", "candidate_total": -1}], "malformed progress count"),
+        ([{"event": "run", "commit": "a" * 40, "lane": "package"},
+          {"event": "command_running", "lane": "wrong"}], "differs"),
+    ],
+)
+def test_report_progress_refuses_unbound_or_malformed_events(
+    tmp_path, events, message
+):
+    path = tmp_path / "progress.jsonl"
+
+    with pytest.raises(ValueError, match=message):
+        _report_progress_direct(path, "a" * 40, events)
+
+
+def test_report_progress_refuses_a_file_with_no_complete_run_header(tmp_path):
+    path = tmp_path / "empty-progress.jsonl"
+    path.write_bytes(b"")
+    lane = {"name": "package", "expected_commit": "a" * 40, "actual_commit": None}
+
+    with pytest.raises(ValueError, match="no complete run header"):
+        analysis._report_progress(path, {}, lane)
+
+
+def test_report_progress_refuses_a_semantically_bad_unterminated_event(tmp_path):
+    head = "a" * 40
+    path = tmp_path / "bad-torn-event.jsonl"
+    path.write_bytes(
+        json.dumps({"event": "run", "commit": head, "lane": "package"}).encode()
+        + b"\n"
+        + json.dumps({"event": "command_running", "commit": "b" * 40}).encode()
+    )
+    lane = {"name": "package", "expected_commit": head, "actual_commit": None}
+
+    with pytest.raises(ValueError, match="conflicting commit"):
+        analysis._report_progress(path, {}, lane)
+
+
+def test_report_progress_truncates_long_details_but_retains_the_run(tmp_path):
+    head = "a" * 40
+    now = datetime.now(UTC).replace(tzinfo=None).isoformat()
+    lane = _report_progress_direct(
+        tmp_path / "progress.jsonl",
+        head,
+        [
+            {"event": "run", "commit": head, "lane": "package"},
+            {
+                "event": "command_running",
+                "phase": "p" * (analysis._REPORT_LINE_LIMIT + 10),
+                "emitted_at": "t" * (analysis._REPORT_LINE_LIMIT + 10),
+            },
+        ],
+    )
+
+    assert lane["progress"]["details_truncated"] is True
+    assert lane["progress"]["latest_phase"].endswith("...")
+    assert len(lane["progress"]["latest_phase"]) == analysis._REPORT_LINE_LIMIT
+    assert lane["progress"]["freshness"] == "unknown"
+
+    naive_lane = _report_progress_direct(
+        tmp_path / "naive-progress.jsonl",
+        head,
+        [
+            {"event": "run", "commit": head, "lane": "package"},
+            {"event": "command_running", "emitted_at": now},
+        ],
+    )
+    assert naive_lane["progress"]["freshness"] == "unknown"
+
+
+def test_report_progress_keeps_hashing_after_a_complete_bad_record(tmp_path):
+    path = tmp_path / "bad-then-large.jsonl"
+    path.write_bytes(b"null\n" + b"x" * (analysis._REPORT_WINDOW * 2))
+    lane = {"name": "package", "expected_commit": "a" * 40, "actual_commit": None}
+
+    with pytest.raises(ValueError, match="malformed progress event"):
+        analysis._report_progress(path, {}, lane)
+
+
+def test_report_progress_classifies_oversized_records_after_the_limit_block(
+    tmp_path,
+):
+    head = "a" * 40
+    run = json.dumps({"event": "run", "commit": head, "lane": "package"}).encode() + b"\n"
+    padding = b"x" * (
+        analysis._REPORT_RECORD_LIMIT + analysis._REPORT_WINDOW + 100
+    )
+    complete = (
+        b'{"event":"command_running","padding":"' + padding + b'"}\n'
+    )
+    complete_path = tmp_path / "oversized-complete.jsonl"
+    complete_path.write_bytes(run + complete)
+    complete_lane = {
+        "name": "package",
+        "expected_commit": head,
+        "actual_commit": None,
+    }
+
+    with pytest.raises(ValueError, match="progress record exceeds 1 MiB"):
+        analysis._report_progress(complete_path, {}, complete_lane)
+
+    torn = b'{"event":"unfinished","padding":"' + padding
+    torn_path = tmp_path / "oversized-torn.jsonl"
+    torn_path.write_bytes(run + torn)
+    torn_lane = {
+        "name": "package",
+        "expected_commit": head,
+        "actual_commit": None,
+    }
+
+    analysis._report_progress(torn_path, {}, torn_lane)
+
+    assert torn_lane["progress"]["torn_final_record"] is True
+
+
+def test_report_log_trims_crlf_and_recovers_a_complete_error_line(tmp_path):
+    window = analysis._REPORT_WINDOW
+
+    cases = [
+        # The retained window begins just after CR in a CRLF pair.
+        b"old\r" + b"\nerror: boundary\r\n" + b"x" * (
+            window - len(b"\nerror: boundary\r\n")
+        ),
+        # A partial prefix is discarded through an LF separator.
+        b"old" + b"x\nerror: lf separator\n" + b"x" * (
+            window - len(b"x\nerror: lf separator\n")
+        ),
+        # A partial prefix is discarded through CRLF as one separator.
+        b"old" + b"x\r\nerror: crlf separator\n" + b"x" * (
+            window - len(b"x\r\nerror: crlf separator\n")
+        ),
+        # A window with no line boundary is discarded in full.
+        b"old" + b"x" * window,
+    ]
+    for index, data in enumerate(cases):
+        path = tmp_path / f"log-{index}"
+        path.write_bytes(data)
+        lane = {
+            "errors": {"records": [], "count": 0, "truncated": False},
+            "latest_phase": None,
+            "phase_source": None,
+        }
+
+        analysis._report_log(path, {}, lane, 5)
+
+        if index == 3:
+            assert lane["errors"]["records"] == []
+        else:
+            assert len(lane["errors"]["records"]) == 1
+            assert "error:" in lane["errors"]["records"][0]["message"]
+        assert lane["errors"]["truncated"] is True
+
+
+def test_report_refuses_invalid_policy_and_empty_input_sets():
+    head = "a" * 40
+    with pytest.raises(ValueError, match="max-errors"):
+        analysis.report(head, [], [], [], max_errors=True)
+    with pytest.raises(ValueError, match="at least one explicit input"):
+        analysis.report(head, [], [], [])
+
+
+def test_record_refuses_an_empty_command_before_creating_evidence(repository, tmp_path):
+    root, head, _tree = repository
+    output = tmp_path / "evidence"
+
+    with pytest.raises(ValueError, match="requires a command"):
+        analysis.record(root, head, output, [])
+
+    assert not output.exists()
+
+
+def test_receipt_refuses_a_name_shared_by_recorded_and_tester_jobs(
+    repository, tmp_path
+):
+    root, head, tree = repository
+    prefix = recorded(tmp_path, head, tree)
+
+    with pytest.raises(ValueError, match="overlap"):
+        analysis.receipt(
+            root,
+            head,
+            [("same", prefix, "JOB_EXIT")],
+            [("same", tmp_path / "unused")],
+            [],
+        )
+
+
+def test_receipt_refuses_git_identity_that_changes_during_collection(
+    repository, tmp_path, monkeypatch
+):
+    root, head, tree = repository
+    prefix = recorded(tmp_path, head, tree)
+    values = iter(((head, tree), (head, "b" * 40)))
+    monkeypatch.setattr(analysis, "_identity", lambda *_args: next(values))
+
+    with pytest.raises(ValueError, match="changed while inspecting"):
+        analysis.receipt(root, head, [("gate", prefix, "JOB_EXIT")], [], [])
+
+
+def test_record_cli_requires_the_command_separator(repository, tmp_path):
+    root, head, _tree = repository
+    code, out, err = cli(
+        "record",
+        "--worktree",
+        root,
+        "--expected-head",
+        head,
+        "--output",
+        tmp_path / "evidence",
+        "echo",
+    )
+
+    assert code == 1 and out == ""
+    assert "requires a command after --" in err
+
+
+def test_new_artifact_writer_removes_partial_file_when_serialization_fails(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "artifact.json"
+
+    def fail_dump(*_args, **_kwargs):
+        raise RuntimeError("serialization failed")
+
+    monkeypatch.setattr(analysis.json, "dump", fail_dump)
+
+    with pytest.raises(RuntimeError, match="serialization failed"):
+        analysis._write_new(output, {"evidence": "fact"})
+
+    assert not output.exists()
+    assert list(tmp_path.iterdir()) == []

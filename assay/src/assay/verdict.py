@@ -902,7 +902,7 @@ class Coverage:
     #: same shape :attr:`files_missing_coverage` already established.
     files_with_unclassified_lines: tuple[str, ...] = ()
     #: (P16) changed, considered lines the coverage artifact classifies
-    #: EXCLUDED (``pragma: no cover`` and its format-specific equivalents),
+    #: EXCLUDED (a no-cover marker and its format-specific equivalents),
     #: keyed exactly like :attr:`missing_lines` — a file contributing none
     #: is ABSENT, never present with an empty frozenset. Always present
     #: (possibly empty), the same "empty means known-and-empty" discipline
@@ -2060,13 +2060,6 @@ class Mutation:
                 f"{self.total} attempted mutant(s); a mutant that was "
                 f"attempted was first observed as a candidate, so "
                 f"candidate_count is never below total"
-            )
-        if self.candidate_count > MAX_INGESTED_MUTANTS:  # pragma: no cover
-            # Already refused in __post_init__; restated so this method's own
-            # three-shape statement is closed rather than resting on a caller.
-            raise ValueError(
-                f"mutation.candidate_count ({self.candidate_count}) exceeds "
-                f"the document ceiling {MAX_INGESTED_MUTANTS:,}"
             )
 
     @property

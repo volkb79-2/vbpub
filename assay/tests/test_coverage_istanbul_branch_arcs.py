@@ -199,6 +199,10 @@ def test_the_arc_bearing_vocabulary_is_what_the_parser_actually_honours():
         assert derive_branch_capability(profile) == "unavailable"
 
 
+def test_dropping_lines_from_a_non_branch_artifact_preserves_none():
+    assert coverage_istanbul_json._without_lines(None, frozenset({1})) is None
+
+
 # ---------------------------------------------------------------------------
 # The v8-shaped documents, as REAL negative evidence
 # ---------------------------------------------------------------------------

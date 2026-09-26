@@ -1825,6 +1825,28 @@ def test_plan_accepts_a_valid_shard(tmp_path):
     assert payload["shard"] == "0/2"
 
 
+def test_plan_accepts_a_valid_operator_override(tmp_path):
+    from assay.cli import main
+
+    path = _write_plan_fixture(tmp_path)
+    out = io.StringIO()
+    exit_code = main(
+        [
+            "plan",
+            "package",
+            "--operators",
+            "python:bool-const-flip",
+            "--file",
+            str(path),
+        ],
+        stdout=out,
+    )
+    payload = json.loads(out.getvalue())
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert "python:bool-const-flip" in payload["by_operator"]
+
+
 def test_plan_refuses_an_out_of_range_shard_with_a_clean_exit_not_a_crash(tmp_path):
     """(B012 remediation, D-6) The dry bounds-check call in `_cmd_plan` used
     to sit outside any try/except, so an out-of-range `--shard` raised a

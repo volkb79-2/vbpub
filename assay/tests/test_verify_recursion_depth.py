@@ -110,6 +110,28 @@ def test_assay_verify_exits_1_with_a_message_on_a_file_path(tmp_path: Path):
     assert "assay verify: not valid JSON" in err.getvalue()
 
 
+def test_integrity_notice_parse_recursion_error_does_not_invalidate_a_verified_document(
+    monkeypatch,
+):
+    """The status document has already passed ``verify_text``. A later
+    best-effort read of its optional integrity notice may fail independently;
+    that diagnostic pass must not replace the verified result."""
+    import io
+
+    monkeypatch.setattr(verify, "verify_text", lambda text: [])
+
+    def exhausted_parser(text):
+        raise RecursionError("injected second-pass parser exhaustion")
+
+    monkeypatch.setattr(verify.json, "loads", exhausted_parser)
+    err = io.StringIO()
+
+    code = cmd_verify("-", stdin=io.StringIO("{}"), stderr=err)
+
+    assert code == 0
+    assert err.getvalue() == ""
+
+
 def test_it_is_the_same_through_cli_main(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     """And once more through the actual entry point, so the wiring is proven
     and not assumed from the unit."""

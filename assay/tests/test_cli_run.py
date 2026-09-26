@@ -25,21 +25,24 @@ the older convention every test in this module used through P16 — now trips
 from __future__ import annotations
 
 import contextlib
+import argparse
 import io
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import R0_LANE, R1_LANE, GitRepo, set_key, why_invalid
 from jsonschema import Draft202012Validator
 
-from assay import cli as cli_module
+from assay import attestation, cli as cli_module
 from assay import git, provenance, verdict as verdict_module
 from assay.cli import _built_in_registry, main
 from assay.config import RIGOR_LEVELS
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import select_mutation_shard
+from assay.output import reserve_verdict_output
 from assay.verify import verify_document
 from assay.vocabulary import WITHDRAWN_MUTATION_OPERATORS
 
@@ -2296,6 +2299,93 @@ img = "derived:deploy.image"
     )
     assert document["env_effective"]["img"] == "postgres:18"
     assert "env_effective_incomplete" not in document
+
+    # The same atomic timeout remains a normal terminal when the operator
+    # deliberately requested no artifact; the CLI still prints the summary.
+    lane_file = cli_module._resolve_lane_file(str(path))
+    summary = io.StringIO()
+    code = cli_module._run_reserved(
+        SimpleNamespace(verdict_json=None, require_judge_provenance=False),
+        lane_file.lane("attested"),
+        lane_file,
+        [],
+        None,
+        summary,
+        io.StringIO(),
+    )
+    assert code == 4
+
+    # Stdout is also a real reserved destination. In this mode the verdict
+    # JSON owns stdout, so the normal human summary must stay suppressed.
+    artifact_stdout = io.StringIO()
+    stdout_destination = reserve_verdict_output("-", stdout=artifact_stdout)
+    try:
+        code = cli_module._run_reserved(
+            SimpleNamespace(verdict_json="-", require_judge_provenance=False),
+            lane_file.lane("attested"),
+            lane_file,
+            [],
+            stdout_destination,
+            artifact_stdout,
+            io.StringIO(),
+        )
+    finally:
+        stdout_destination.close()
+    assert code == 4
+    stdout_document = json.loads(artifact_stdout.getvalue())
+    assert verify_document(stdout_document) == []
+    assert (stdout_document["outcome"], stdout_document["reason_code"]) == (
+        "BUDGET_EXCEEDED",
+        "LANE_TIMEOUT",
+    )
+    assert "attested: BUDGET_EXCEEDED/LANE_TIMEOUT (exit 4)" in summary.getvalue()
+
+
+def test_non_timeout_attestation_error_is_not_relabelled_as_a_deadline(
+    git_repo: GitRepo, monkeypatch
+):
+    lane_text = """\
+schema_version = 2
+
+[lanes.attested]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "exit 0"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.attested.judge]
+attestation_dir = ".assay/attestations"
+evidence = [{source="attested",key="broken"}]
+"""
+    git_repo.write(".gitignore", ".assay/\n")
+    lane_path = _write_and_commit_lane(git_repo, lane_text)
+    lane_file = cli_module._resolve_lane_file(str(lane_path))
+    failure = AssayError(
+        "attestation repository lookup failed",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.GIT_FAILED,
+    )
+
+    def fail_attestation(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(attestation, "load_attested_evidence", fail_attestation)
+    with pytest.raises(AssayError) as caught:
+        cli_module._run_reserved(
+            SimpleNamespace(verdict_json=None, require_judge_provenance=False),
+            lane_file.lane("attested"),
+            lane_file,
+            [],
+            None,
+            io.StringIO(),
+            io.StringIO(),
+        )
+
+    assert caught.value is failure
 
 
 # --- B004/A-430: a lane declaring BOTH attested and adjudicated evidence -----

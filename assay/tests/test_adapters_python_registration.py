@@ -39,6 +39,7 @@ def test_the_python_adapter_declares_the_expected_protocol_surface():
     assert adapter.excluded_dir_names == frozenset()
     assert adapter.requires_span_attribution is True
     assert adapter.external_tools == ()
+    assert adapter.statement_blocks(Path("/repo"), ()) is None
 
 
 def test_a_registry_built_adapter_evaluates_coverage_identically_to_a_direct_one():

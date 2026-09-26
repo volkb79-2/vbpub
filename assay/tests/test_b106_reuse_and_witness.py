@@ -6,16 +6,18 @@ import hashlib
 import io
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo, make_lane, make_r2_judge
+from conftest import GitRepo, make_lane, make_r2_judge, native_mutation, native_outcome
 
-from assay import runner
+from assay import candidate_identity, mutation, runner, verdict
 from assay.adapters.python import PythonAdapter
 from assay.candidate_identity import candidate_id_from_fields
 from assay.config import MutationConfig
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.verdict import Mutation, MutationExecution, MutationWitnessReceipt
 from assay.mutation_witness import (
     MAX_INTERNAL_RECEIPT_BYTES,
     read_internal_receipt,
@@ -23,6 +25,7 @@ from assay.mutation_witness import (
     supports_sequential_pytest,
 )
 from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
+from assay import verify as raw_verify
 from assay.verify import verify_document
 
 FIXTURES = Path(__file__).parent / "fixtures" / "verdicts"
@@ -137,6 +140,328 @@ def test_current_v13_verifier_rejects_incomplete_candidate_inventory():
     assert any("candidate_ids does not equal" in failure for failure in failures)
 
 
+def _raw_failures(function, *args):
+    failures = []
+    function(*args, failures)
+    return failures
+
+
+def test_raw_b106_execution_checks_full_and_witness_prefix_modes():
+    assert _raw_failures(raw_verify._check_b106_execution, "killed", {"mode": "full"}) == []
+    assert any("execution must be an object" in item for item in _raw_failures(
+        raw_verify._check_b106_execution, "killed", None
+    ))
+    assert any("witness-prefix fields" in item for item in _raw_failures(
+        raw_verify._check_b106_execution, "killed", {"mode": "full", "prior_node_id": "x"}
+    ))
+    assert any("kill witness" in item for item in _raw_failures(
+        raw_verify._check_b106_execution,
+        "survived",
+        {"mode": "full", "witness": {"node_id": "x"}},
+    ))
+    assert any("unknown execution mode" in item for item in _raw_failures(
+        raw_verify._check_b106_execution, "killed", {"mode": "partial"}
+    ))
+
+    receipt = {
+        "node_id": "tests/test_checks.py::test_boundary",
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    prefix = {
+        "mode": "witness-prefix",
+        "witness": receipt,
+        "prior_verdict_sha256": "a" * 64,
+        "prior_node_id": receipt["node_id"],
+        "current_node_id": receipt["node_id"],
+    }
+    assert _raw_failures(raw_verify._check_b106_execution, "killed", prefix) == []
+    malformed = {**prefix, "extra": True}
+    assert any("exactly its prior digest" in item for item in _raw_failures(
+        raw_verify._check_b106_execution, "killed", malformed
+    ))
+    assert any("only a killed" in item for item in _raw_failures(
+        raw_verify._check_b106_execution, "survived", prefix
+    ))
+    assert any("digest is malformed" in item for item in _raw_failures(
+        raw_verify._check_b106_execution,
+        "killed",
+        {**prefix, "prior_verdict_sha256": "z" * 64},
+    ))
+    assert any("node ID is malformed" in item for item in _raw_failures(
+        raw_verify._check_b106_execution,
+        "killed",
+        {**prefix, "current_node_id": "bad\ud800"},
+    ))
+    assert any("must be identical" in item for item in _raw_failures(
+        raw_verify._check_b106_execution,
+        "killed",
+        {**prefix, "current_node_id": "other"},
+    ))
+
+
+def test_raw_b106_receipt_refuses_malformed_and_non_killed_witnesses():
+    receipt = {
+        "node_id": "tests/test_checks.py::test_boundary",
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    assert _raw_failures(raw_verify._check_b106_receipt, receipt, "killed") == []
+    assert any("must be an object" in item for item in _raw_failures(
+        raw_verify._check_b106_receipt, None, "killed"
+    ))
+    invalid = {**receipt, "extra": True, "node_id": "bad\ud800", "when": "setup", "session_exit_status": True}
+    failures = _raw_failures(raw_verify._check_b106_receipt, invalid, "survived")
+    assert any("missing or unknown fields" in item for item in failures)
+    assert any("node ID is malformed" in item for item in failures)
+    assert any("failed call-phase" in item for item in failures)
+    assert any("session_exit_status must equal 1" in item for item in failures)
+    assert any("legal only on a killed" in item for item in failures)
+
+
+def test_raw_b106_mutation_provenance_accepts_a_complete_native_record():
+    document = _v13_killed_source()
+
+    assert _raw_failures(raw_verify._check_b106_mutation_provenance, document) == []
+
+
+def test_raw_b106_mutation_provenance_checks_inventory_and_entry_binding():
+    document = _v13_killed_source()
+    mutation = document["claims"][1]["mutation"]
+    mutation["candidate_ids"] = ["bad"]
+    failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
+    assert any("malformed digest" in item for item in failures)
+    assert any("does not equal" in item for item in failures)
+
+    document = _v13_killed_source()
+    mutation = document["claims"][1]["mutation"]
+    mutation["killed"][0]["source_sha256"] = "bad"
+    failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
+    assert any("malformed B106 digest" in item for item in failures)
+
+    document = _v13_killed_source()
+    mutation = document["claims"][1]["mutation"]
+    mutation["killed"][0]["candidate_id"] = "f" * 64
+    failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
+    assert any("does not match its recorded identity inputs" in item for item in failures)
+
+    document = _v13_killed_source()
+    mutation = document["claims"][1]["mutation"]
+    mutation["killed"][0]["execution"] = {}
+    failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
+    assert any("unknown execution mode" in item for item in failures)
+
+
+def test_raw_b106_mutation_provenance_rejects_duplicate_inventory_and_outcome_ids(
+    monkeypatch,
+):
+    document = _v13_killed_source()
+    mutation = document["claims"][1]["mutation"]
+    mutation["candidate_ids"] = [mutation["candidate_ids"][0]] * 2
+    failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
+    assert any("candidate_ids contains a duplicate" in item for item in failures)
+
+    document = _v13_killed_source()
+    mutation = document["claims"][1]["mutation"]
+    same_candidate = "c" * 64
+    monkeypatch.setattr(raw_verify, "candidate_id_from_fields", lambda **_kwargs: same_candidate)
+    for entry in mutation["killed"]:
+        entry["candidate_id"] = same_candidate
+    mutation["candidate_ids"] = [same_candidate]
+    failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
+    assert any("outcomes contain a duplicate candidate ID" in item for item in failures)
+
+
+def test_raw_b106_mutation_provenance_handles_ingested_and_limit_sentinel_shapes():
+    document = _v13_killed_source()
+    document["judgment"]["r2"]["producer"] = "ingested"
+    document["claims"][1]["mutation"]["candidate_ids"] = []
+    failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
+    assert any("ingested mutation payload carries the native candidate inventory" in item for item in failures)
+
+    sentinel = {
+        "claims": [{
+            "rigor": "R2",
+            "reason_code": "MUTANT_LIMIT_EXCEEDED",
+            "mutation": {"candidate_count": 51, "total": 0, "candidate_ids": []},
+        }],
+        "judgment": {"r2": {"producer": "native", "max_mutants": 50}},
+    }
+    failures = _raw_failures(raw_verify._check_b106_mutation_provenance, sentinel)
+    assert any("pre-submission mutant-limit sentinel carries candidate_ids" in item for item in failures)
+
+
+def test_raw_node_id_bound_rejects_unencodable_text():
+    assert raw_verify._is_bounded_node_id("tests/test_x.py::test_x")
+    assert not raw_verify._is_bounded_node_id("bad\ud800")
+
+
+def _valid_mutation_witness(node_id: str = "tests/test_checks.py::test_boundary"):
+    return MutationWitnessReceipt(
+        node_id=node_id,
+        when="call",
+        outcome="failed",
+        session_exit_status=1,
+        process_exit_status=1,
+    )
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"node_id": ""}, "node_id must be a non-empty string"),
+        ({"node_id": "x" * 4097}, "node_id exceeds 4096"),
+        ({"when": "setup"}, "failed call-phase"),
+        ({"outcome": "passed"}, "failed call-phase"),
+        ({"session_exit_status": True}, "session_exit_status must equal 1"),
+        ({"process_exit_status": 0}, "process_exit_status must equal 1"),
+    ],
+)
+def test_mutation_witness_receipt_rejects_non_witness_facts(changes, message):
+    fields = {
+        "node_id": "tests/test_checks.py::test_boundary",
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    fields.update(changes)
+
+    with pytest.raises(ValueError, match=message):
+        MutationWitnessReceipt(**fields)
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"mode": "partial"}, "mode must be"),
+        ({"mode": "full", "witness": "receipt"}, "witness has the wrong type"),
+        ({"mode": "full", "prior_node_id": "test::node"}, "full execution cannot"),
+        ({"mode": "witness-prefix"}, "requires a witness receipt"),
+        (
+            {
+                "mode": "witness-prefix",
+                "witness": _valid_mutation_witness(),
+                "prior_verdict_sha256": "x" * 64,
+                "prior_node_id": "same",
+                "current_node_id": "same",
+            },
+            "prior_verdict_sha256 must be a SHA-256",
+        ),
+        (
+            {
+                "mode": "witness-prefix",
+                "witness": _valid_mutation_witness(),
+                "prior_verdict_sha256": "a" * 64,
+                "prior_node_id": "",
+                "current_node_id": "",
+            },
+            "prior_node_id must be a non-empty string",
+        ),
+        (
+            {
+                "mode": "witness-prefix",
+                "witness": _valid_mutation_witness(),
+                "prior_verdict_sha256": "a" * 64,
+                "prior_node_id": "x" * 4097,
+                "current_node_id": "same",
+            },
+            "prior_node_id exceeds 4096",
+        ),
+        (
+            {
+                "mode": "witness-prefix",
+                "witness": _valid_mutation_witness("same"),
+                "prior_verdict_sha256": "a" * 64,
+                "prior_node_id": "prior",
+                "current_node_id": "current",
+            },
+            "prior_node_id and current_node_id must match",
+        ),
+        (
+            {
+                "mode": "witness-prefix",
+                "witness": _valid_mutation_witness("receipt-node"),
+                "prior_verdict_sha256": "a" * 64,
+                "prior_node_id": "current",
+                "current_node_id": "current",
+            },
+            "receipt node_id must match current_node_id",
+        ),
+    ],
+)
+def test_mutation_execution_rejects_incomplete_or_mismatched_provenance(
+    fields, message
+):
+    with pytest.raises(ValueError, match=message):
+        MutationExecution(**fields)
+
+
+def _valid_native_outcome(path: str = "a.py"):
+    return native_outcome(
+        path=path,
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="b" * 64,
+        operator="python:compare-swap",
+        description="changed comparison",
+    )
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"discard_reason": "invented"}, "discard_reason must be one of"),
+        ({"candidate_id": None}, "fields must be present together"),
+        ({"source_sha256": "bad"}, "source_sha256 must be a lowercase SHA-256"),
+        ({"execution": "full"}, "execution has the wrong type"),
+    ],
+)
+def test_native_mutant_outcome_requires_a_complete_valid_execution_identity(
+    changes, message
+):
+    with pytest.raises(ValueError, match=message):
+        replace(_valid_native_outcome(), **changes)
+
+
+def test_mutation_rejects_witness_execution_outside_the_killed_bucket():
+    outcome = replace(
+        _valid_native_outcome(),
+        execution=MutationExecution(mode="full", witness=_valid_mutation_witness()),
+    )
+
+    with pytest.raises(ValueError, match="cannot carry a kill witness"):
+        native_mutation(
+            candidate_count=1,
+            total=1,
+            survived=(outcome,),
+        )
+
+
+def test_mutation_rejects_duplicate_candidate_ids_across_distinct_outcomes(
+    monkeypatch,
+):
+    constant_identity = lambda **_kwargs: "c" * 64
+    monkeypatch.setattr(candidate_identity, "candidate_id_from_fields", constant_identity)
+    monkeypatch.setattr(verdict, "candidate_id_from_fields", constant_identity)
+    killed = _valid_native_outcome("a.py")
+    survived = _valid_native_outcome("b.py")
+
+    with pytest.raises(ValueError, match="candidate_id .* appears in both"):
+        Mutation(
+            candidate_count=2,
+            total=2,
+            killed=(killed,),
+            survived=(survived,),
+            candidate_ids=None,
+        )
+
+
 def test_internal_witness_receipts_are_bounded_strict_and_not_boolean_statuses(
     tmp_path: Path,
 ):
@@ -223,7 +548,7 @@ def test_pytest_parallelism_from_effective_environment_is_not_replayable():
 
 
 def test_plan_refuses_to_preview_witness_reuse_when_pytest_ini_enables_xdist(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ):
     from assay.cli import main
 
@@ -291,6 +616,46 @@ operators = ["python:compare-swap"]
     payload = json.loads(out.getvalue())
     assert payload["reuse_from"]["sequential_pytest_supported"] is False
     assert payload["reuse_from"]["classification_counts"] == {"new-candidate": 1}
+
+    def command_plan_unavailable(*_args, **_kwargs):
+        raise AssayError(
+            "the effective plan cannot be resolved in a preview",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+    monkeypatch.setattr(runner, "resolve_command_plan", command_plan_unavailable)
+    out = io.StringIO()
+    exit_code = main(
+        [
+            "plan",
+            "package",
+            "--file",
+            str(project / "assay.toml"),
+            "--reuse-from",
+            str(prior),
+        ],
+        stdout=out,
+    )
+    assert exit_code == 0
+    payload = json.loads(out.getvalue())
+    assert payload["reuse_from"]["sequential_pytest_supported"] is False
+
+    monkeypatch.setattr(mutation, "collect_mutation_sites", lambda *_a, **_k: mutation.UNSUPPORTED)
+    out = io.StringIO()
+    exit_code = main(
+        [
+            "plan",
+            "package",
+            "--file",
+            str(project / "assay.toml"),
+            "--reuse-from",
+            str(prior),
+        ],
+        stdout=out,
+    )
+    assert exit_code == 0
+    assert json.loads(out.getvalue())["status"] == "unsupported"
 
 
 def _seed_pytest_mutation(repo: GitRepo) -> tuple[str, str]:

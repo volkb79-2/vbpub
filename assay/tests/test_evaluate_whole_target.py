@@ -68,6 +68,26 @@ def test_a_fully_covered_target_passes(repo: Path):
     assert result.files_with_unclassified_lines == ()
 
 
+def test_a_contradictory_branch_record_on_a_declared_target_refuses(repo: Path):
+    profile = _profile({
+        "pkg/mod.zzz": FileCoverage(
+            executed=frozenset({1}),
+            missing=frozenset(),
+            excluded=frozenset(),
+            contradictory_branch_lines=frozenset({2}),
+        ),
+    })
+
+    with pytest.raises(AssayError, match="branchMap.*contradict") as caught:
+        evaluate_targets(
+            profile=profile, adapter=ADAPTER, repo_top=repo, project_root=repo,
+            targets=("pkg/mod.zzz",), source_root_paths=(repo / "pkg",),
+            fail_under=100.0, allow_excluded=False,
+        )
+
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
 def test_a_missing_line_fails_as_uncovered_lines(repo: Path):
     profile = _profile({
         "pkg/mod.zzz": FileCoverage(

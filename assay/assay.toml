@@ -159,7 +159,7 @@ targets = [
   "src/assay/vocabulary.py",
 ]
 fail_under = 100.0
-allow_excluded = false
+allow_excluded = true
 require_branch = true
 
 [lanes.self-qualification.judge.coverage]
@@ -263,7 +263,7 @@ targets = [
   "src/assay/vocabulary.py",
 ]
 fail_under = 100.0
-allow_excluded = false
+allow_excluded = true
 require_branch = true
 
 [lanes.self-qualification-preflight.judge.coverage]

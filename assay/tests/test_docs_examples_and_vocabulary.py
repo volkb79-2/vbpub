@@ -53,6 +53,7 @@ from assay.vocabulary import (
     COVERAGE_PRODUCER_REQUIRED_FORMATS,
     MUTATION_OPERATORS,
     MUTATION_OPERATORS_BY_LANGUAGE,
+    operator_language,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +61,11 @@ README = REPO_ROOT / "README.md"
 CONSUMERS = REPO_ROOT / "docs" / "CONSUMERS.md"
 DESIGN_GUIDE = REPO_ROOT / "docs" / "DESIGN-GUIDE.md"
 DOCS = (README, CONSUMERS, DESIGN_GUIDE)
+
+
+def test_operator_language_is_absent_without_a_nonempty_prefix():
+    assert operator_language("compare-swap") is None
+    assert operator_language(":compare-swap") is None
 
 # --- (1) TOML example extraction --------------------------------------------
 
