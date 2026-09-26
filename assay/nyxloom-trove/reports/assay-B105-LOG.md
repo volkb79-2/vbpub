@@ -237,3 +237,14 @@ review, and serial merge remain open.
   actionable findings. It noted that the private-clone invocation and final
   worktree guard are currently covered by source assertions; the registered
   non-R2 gates remain pending. No final B105 pass is claimed.
+
+### Tester-unified launcher refused the temporary CIU root — 2026-09-26
+
+- After provisional commit `d9873a24bca008f876349a8be2f8c284e516dcf5`,
+  `python ./run-gate.py tester-unified` was first invoked from the temporary
+  CIU repository under `/tmp/vbpub-b105-ciu-root-20260926`. The registered
+  launcher exited 1 before starting tests because
+  `tester-unified-gate.sh` accepts only worktrees under `/workspaces/vbpub`.
+  This attempt has no test result; its log is
+  `/tmp/b105-tester-unified-d9873a24.log`. The same commit will be gated from
+  a separate CIU worktree under the canonical workspace.
