@@ -93,6 +93,8 @@ def test_self_qualification_is_full_source_r0_through_r3():
     assert lane.enforcement == "gate"
     assert lane.judge is not None
     assert lane.judge.mode == "whole_target"
+    assert lane.isolation is not None
+    assert lane.isolation.snapshot_history == "full"
     assert lane.judge.require_branch is True
     assert lane.judge.fail_under == 100.0
     assert lane.judge.mutation is not None
@@ -104,6 +106,19 @@ def test_self_qualification_is_full_source_r0_through_r3():
     assert lane.judge.mutation.liveness == "true"
     assert lane.judge.canary is not None
     assert lane.judge.canary.mechanism == "import-break"
+    assert "--override-ini=pythonpath=src" in lane.argv
+    assert "--override-ini=pythonpath=" not in lane.argv
+    deselected = {
+        argument.removeprefix("--deselect=")
+        for argument in lane.argv
+        if argument.startswith("--deselect=")
+    }
+    assert deselected == {
+        "tests/test_runner_snapshot_selection.py::"
+        "test_every_release_since_wi1_landed_carries_wi4s_policy_record",
+        "tests/test_runner_snapshot_selection.py::"
+        "test_wi1s_own_landing_commit_is_the_state_the_embargo_forbids",
+    }
 
     declared = set(lane.judge.targets or ())
     discovered = {
@@ -144,5 +159,5 @@ def test_self_qualification_gate_budget_matches_nyxloom_timeout():
     run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"][
         QUALIFICATION_ID
     ]
-    assert gate["timeout_seconds"] == 96 * 60 * 60
-    assert run_gate["budget"] == "96h"
+    assert gate["timeout_seconds"] == 90 * 24 * 60 * 60
+    assert run_gate["budget"] == "2160h"

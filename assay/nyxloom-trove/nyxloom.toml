@@ -189,11 +189,13 @@ environment = "tester-unified"
 [gates.self-qualification]
 # B105's deliberately invoked full-source R0-R3 campaign is separate from the
 # ordinary R0 release gate above. run-gate places it in tester-unified and the
-# inner driver verifies the exact verdict before reporting success.
+# inner driver verifies the exact verdict before reporting success. This
+# controller timeout is a failure-only watchdog; Assay's lane budget is
+# unbounded and resumable, and an interrupted campaign cannot qualify.
 argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} self-qualification"]
 phase = "implementation"
 asserts = ["tests-pass"]
-timeout_seconds = 345600
+timeout_seconds = 7776000
 environment = "tester-unified"
 
 [mutexes.merge-lane]

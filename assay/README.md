@@ -958,7 +958,9 @@ you're changing assay itself:
 - `./run-gate.py tester-unified` is the ordinary R0 release gate. The
   separately invoked `./run-gate.py self-qualification` runs full-source
   R0-R3 qualification in `tester-unified`, writes its verdict and progress,
-  and verifies the verdict before success. See the
+  and verifies the verdict before success. It judges code imported from each
+  isolated snapshot; two tag-ref audit tests remain in the ordinary release
+  gate because snapshots do not carry refs. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
 

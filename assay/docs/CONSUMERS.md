@@ -63,6 +63,14 @@ invoke the separate, more expensive full-source R0-R3 campaign when that
 qualification is required. It runs in the dedicated `tester-unified`
 environment, uses the exact selected worktree source, resumes native R2 from
 gitignored state, and verifies its verdict before it can report success.
+The pytest command resolves `src/` inside each isolated snapshot so R1 coverage
+and R2 mutations apply to the snapshot being judged. It carries full commit
+history for tests that name older commits. Snapshot refs/tags are not copied;
+the two release-tag audit tests are explicitly deselected here and remain part
+of the ordinary checkout-based release gate.
+When Nyxloom launches the gate, its 90-day watchdog can only fail an
+unfinished campaign; it cannot accept a partial report. Saved mutation state
+can be resumed by invoking the gate again.
 
 From a clean Assay worktree, capture the gate output under `.assay/` so it does
 not dirty the judged tree:

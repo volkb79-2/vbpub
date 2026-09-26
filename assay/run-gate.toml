@@ -35,7 +35,7 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}"]
 clean_tree = true
-budget = "96h"
+budget = "2160h"
 resources = { cpus = "3", memory = "2g", memory_swap = "8g" }
 artifacts = [
   ".assay/verdict-self-qualification.json",

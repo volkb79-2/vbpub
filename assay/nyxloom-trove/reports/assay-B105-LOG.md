@@ -17,8 +17,9 @@ recorded at `4-backlog.md:10653` against main `456164d528b11adea23b8812094bb510d
   `assay-b105-self-qualification` there, pinned to the exact main SHA above.
   Its worktree is
   `/tmp/vbpub-b105-ciu-root-20260926/.worktrees/assay-b105-self-qualification`.
-  The clone uses the primary repository's object store as an alternate; its
-  eventual branch can be fetched into the primary repository for serial merge.
+  Reachable Git objects have since been repacked into the clone's own object
+  store, and the external alternate was removed. Its eventual branch can be
+  fetched into the primary repository for serial merge.
 
 ## Planned construction
 
@@ -59,9 +60,12 @@ verification, review, and merge results will be appended below as they occur.
   per-candidate bounds and liveness, plus a bounded `import-break` canary on
   `src/assay/cli.py`.
 - Added A-462, updated README/DESIGN-GUIDE/CONSUMERS, and aligned Assay's
-  Nyxloom gate registry. The Nyxloom gate timeout and run-gate advisory budget
-  are both 96 hours; only per-unit execution bounds determine candidate
-  outcomes.
+  Nyxloom gate registry. The initial controller timeout and run-gate advisory
+  budget were 96 hours; attempt 2's 8m49s full-suite run showed the planner's
+  60-second-per-candidate fallback was not a reliable campaign runtime
+  estimate. The controller watchdog and advisory budget are now 90 days; the
+  Assay lane itself remains unbounded, and a controller timeout cannot accept
+  partial evidence.
 - Source-backed `assay lanes --file assay.toml` passed. `./run-gate.py --list`
   lists `self-qualification` in `tester-unified`. `bash -n` and
   `git diff --check` passed. After implementation commit `774d99bb`,
@@ -78,9 +82,9 @@ verification, review, and merge results will be appended below as they occur.
   `456164d5` then passed, so the tester-unified container will not depend on
   mounting `/workspaces/vbpub/.git/objects` from outside the selected clone.
 
-No qualification gate has started yet. The candidate-count and shard checks
-are complete; R1's 100% measurement, the full R0-R3 run, retained report/log,
-and serial merge remain open.
+The candidate-count and shard checks completed before the first gate attempt.
+R1's 100% measurement, the full R0-R3 run, retained report/log, and serial
+merge remain open.
 
 ### Gate attempt 1 — 2026-09-26
 
@@ -96,5 +100,26 @@ and serial merge remain open.
   and coverage.py 7.16.1, while ambient `python` is `/usr/local/bin/python`.
   The gate driver now puts the tester interpreter's bin directory first on
   PATH before invoking Assay; this is the PATH that the lane explicitly
-  passes through. The initial failed verdict and full logs remain in ignored
-  `.assay/` and the host run-gate log for diagnostic retention.
+  passes through. The failed verdict and progress stream were saved under
+  `/tmp/b105-gate-attempt-1-20260926/` for diagnostic retention.
+
+### Gate attempt 2 — 2026-09-26
+
+- The interpreter fix reached and completed the full baseline pytest command
+  in 8m49s: 5,053 passed, 21 skipped, 17 failed. The failures all read
+  historical project commits that Assay's default shallow snapshot omitted;
+  the suite's parent-repository guard did not skip because the isolated tree
+  is itself a repository. The baseline's coverage file contained no data
+  because `--override-ini=pythonpath=` caused imports to resolve through the
+  editable package in the invoking worktree, outside the measured snapshot.
+  R1 correctly refused `BRANCH_UNAVAILABLE`; R2 did not start.
+- The lane now explicitly uses `snapshot_history = "full"`, sets
+  `pythonpath=src` so each baseline/mutant imports its own snapshot source,
+  and deselects only the two tag-ref audit tests because snapshot materializes
+  commit history but intentionally does not preserve refs/tags. The ordinary
+  checkout-based release lane continues to run those two tests. A drift test
+  pins the exact history policy, import path, and deselections. The failed
+  verdict and logs were saved under `/tmp/b105-gate-attempt-2-20260926/`.
+  The outer controller watchdog and run-gate advisory budget were also widened
+  together to 90 days. Assay's lane budget remains `unbounded`; reaching the
+  controller watchdog is an incomplete gate, never an R2 pass.

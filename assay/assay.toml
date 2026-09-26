@@ -67,11 +67,27 @@ allow_argv_append = false
 # reads this run's not-yet-written verdict; the ordinary tester-unified release
 # lane independently runs that self-hosting proof. Every production source file
 # is named literally below: whole_target does not expand directories.
+#
+# Unlike the R0 wheel lane above, these snapshot commands must import
+# `src/assay` from the exact baseline/mutant snapshot so coverage and R2 judge
+# the tree being measured. The project-root history is also required by tests
+# that read pinned commits, so snapshot_history is full. Snapshots deliberately
+# do not carry refs/tags; the two release-tag audit tests are therefore named
+# as explicit deselections here and still run in the ordinary checkout-based
+# release gate.
 [lanes.self-qualification]
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
-argv = ["python", "-m", "pytest", "tests", "-q", "--ignore=tests/test_self_hosting.py", "--override-ini=pythonpath=", "--cov=src/assay", "--cov-branch", "--cov-report=json:.assay/coverage-self-qualification.json"]
+argv = [
+  "python", "-m", "pytest", "tests", "-q",
+  "--ignore=tests/test_self_hosting.py",
+  "--deselect=tests/test_runner_snapshot_selection.py::test_every_release_since_wi1_landed_carries_wi4s_policy_record",
+  "--deselect=tests/test_runner_snapshot_selection.py::test_wi1s_own_landing_commit_is_the_state_the_embargo_forbids",
+  "--override-ini=pythonpath=src",
+  "--cov=src/assay", "--cov-branch",
+  "--cov-report=json:.assay/coverage-self-qualification.json",
+]
 env = {}
 env_passthrough = ["PATH"]
 budget = "unbounded"
@@ -79,6 +95,7 @@ allow_argv_append = false
 
 [lanes.self-qualification.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
+snapshot_history = "full"
 unsafe_symlink_omissions = [
   "topos/tests/fixtures/inspect_files/_danger/passwd_link",
   "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",

@@ -10679,6 +10679,11 @@ report; code review alone is not evidence of qualification.
       100% branch floor; no source path disappears from the denominator by
       being absent from the diff. Any exception to the 100% floor requires an
       explicit decision and evidence before it can ship.
+- [ ] The isolated test command imports each baseline/mutant's own `src/`
+      tree and carries full commit history for tests that name older commits.
+      It explicitly deselects only the two release-tag audit tests, because
+      snapshots do not carry refs/tags; the ordinary checkout-based R0 release
+      gate continues to run those tests. A drift test pins these exclusions.
 - [ ] R2 runs native mutation over the full declared source target and
       produces a complete, unsharded, verifier-accepted candidate inventory
       and outcomes. No budget-limited, sentinel, partial, or no-candidate
