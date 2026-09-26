@@ -424,7 +424,7 @@ verifier-accepted report produced from the final B105 tree. The report, not a
 review, is the required evidence. See the P5 report for the recommended
 separate named gate and acceptance details.
 
-## Release and final closeout — 2026-09-25
+## Release and final closeout — 2026-09-26
 
 The single Wave C release is complete. The release used `origin/main` at P5
 source tip `e5e9b95c5ac8be3452c93f1066f9436347f862fd` for its dry run and
