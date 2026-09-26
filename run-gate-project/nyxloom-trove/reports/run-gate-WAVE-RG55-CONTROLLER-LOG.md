@@ -4307,3 +4307,21 @@ B2 as the critical placement-design blocker. No P6 merge, release, or mutation
 campaign is authorized until placement is either safely implemented while
 preserving D-15 private namespaces or the contract is changed by a recorded
 product ruling.
+
+### RW-338 — 2026-09-26 00:24:01Z — namespace-safe P6 placement bridge selected
+
+The controller selects the D-15-compliant repair for P6 B2: retain private
+PID, cgroup, and network namespaces; keep the existing guarded cgroupfs leaf
+creation/cap/kill writes; and, only when a direct leaf `cgroup.procs` write
+returns `ESRCH`, call host systemd's `AttachProcessesToUnit` over the daemon's
+explicit read-only system-bus socket mount. The call names only the verified
+gates slice, the session's `rg-<token>` subcgroup, and one resolved host PID.
+The daemon then verifies that PID's host-proc cgroup path equals the leaf.
+
+An attach failure or failed read-back is a placement refusal, never a success
+with an empty leaf. This uses systemd as the host PID-namespace authority
+without putting any RG-55 container in a host namespace, adding a Docker
+socket, or broadening the D-25 write whitelist. P6's Docker image therefore
+supplies `busctl` and its compose stack mounts only the host system bus socket
+read-only. The contract/design/README/consumer docs and focused oracles are
+updated together on the P6 repair branch.

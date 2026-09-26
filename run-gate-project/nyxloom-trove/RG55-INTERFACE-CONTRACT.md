@@ -346,6 +346,12 @@ mode, `self` is resolved by the caller to its full Docker ID; `pid:N` is
 carried as a validated cgroup-namespace-relative subpath under that ID only
 when the caller and target share a cgroup namespace. An unverifiable mapping
 is refused. No RG-55 container uses a host PID, cgroup, or network namespace.
+A private-PID daemon uses the read-only host system bus only as a namespace-
+safe placement bridge: when a direct `cgroup.procs` write returns `ESRCH`, it
+calls systemd's `AttachProcessesToUnit` for the verified gates slice and its
+`rg-<token>` subcgroup, then verifies the PID's host-proc cgroup path. The
+bridge does not join a host namespace and is not a general systemd control
+surface.
 
 ## 6. Test fixtures shared by both packages
 
