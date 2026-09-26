@@ -4393,3 +4393,17 @@ running; peak was at the 38,469,632-byte floor. The separately read
 `.run-gate/history.json` records this lane PASS, `dirty=false`, and revision
 46. P1 R3 is now running at commit `1080ac2f`; its detached owner is recorded
 in `/tmp/rg55-p1-r3-1080.pid`.
+
+### RW-343 — 2026-09-26 23:20:36Z — P1 r3 passed on 1080ac2f
+
+The registered `r3` lane completed at `2026-09-26T23:12:23Z` on clean
+commit `1080ac2f068732dcd490bcc2c5cefe56db8ec805`; its separately read
+`.run-gate/history.json` receipt records PASS, exit 0, `dirty=false`, and
+revision 46. Seven canaries were rejected and zero survived. Launch PSI was
+`memory full avg10=0.03%`; the exact invocation declared
+`--cgroup-parent dev-gates.slice` and `--cpus 3`, and used unique container
+`run-gate-rg55-p1-r2-isolated-r3-1360087-1790464331`. The daemon was down,
+so this lane did not supply live-daemon or DAMON evidence. Together with the
+R0/R1 and R2 receipts recorded above, this clears P1's exact-tree mutation and
+registered-lane gates for the fresh final review; the already-provisionally-
+merged daemon still needs full-gate verification before release.
