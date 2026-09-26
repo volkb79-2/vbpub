@@ -1558,3 +1558,31 @@ The repair branch is now dirty only in those two test files. Commit the
 scoped oracle fixes, then run the exact-tree short gates and one fresh full
 R2; the final mutation verdict must be read separately and must replace this
 diagnostic receipt before release.
+
+## Session 18 — 2026-09-26 23:06:22Z — replacement R2 outcome on 6540f877
+
+The quiet-tree replacement campaign on `6540f87761a66ff933c8bb45f81d8ac9117f407b`
+started at `2026-09-26T18:20:25.378856Z` and ended at
+`2026-09-26T21:53:35.217876Z`. The separately read verdict is
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4. All 312 candidates were accounted
+for: 301 killed, 10 survived, one hung, zero budget-exceeded and zero crashed.
+The two newly added regression tests killed the two previously identified
+real oracle gaps; the ten survivors are exactly the ten candidates listed as
+contract-equivalent in Session 17. This does not qualify as a passing P6 R2.
+
+The hung candidate is `0a38e7d8ab99ea0483119223cf9b8e38184e85124ca37f631ee264fed7a135d1`,
+`lib/liveness.py:530`, `is not` → `is` in `_observe_io`. Its record reports
+138.953 seconds of candidate execution and 675 completed tests, but preserves
+no last test node or lower-level timeout reason. The run-gate profile reports
+957 MiB peak RSS, 911 MiB p90 RSS, 1.53 average CPU cores, and 135.1 seconds
+of memory-full stall. The timing correlation raises a load-sensitivity
+question; the saved evidence does not establish that memory pressure caused
+the candidate to hang. Keep this candidate unresolved and preserve its
+`mutation-state` record. Do not relabel it equivalent or treat the campaign
+as a pass.
+
+This run is diagnostic for the `6540f877` tree. The P1 daemon safety repair
+in `0a2e0cd8` is not present in this P6 tree, and the eventual P6 candidate
+must reconcile it before final gates and mutation judgment. The isolated P1
+R2 on `1080ac2f` separately passed all 125 candidates; its registered
+short-gate receipts and fresh final Sol review are still pending.

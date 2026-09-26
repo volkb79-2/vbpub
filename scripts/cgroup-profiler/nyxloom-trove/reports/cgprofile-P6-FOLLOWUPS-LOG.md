@@ -1377,3 +1377,22 @@ placement bridge's non-ESRCH guard (`placement.py:570`) and the fail-closed
 PID identity exception (`serve.py:1296`). Focused regression tests were
 added for both; no production behavior was changed. The new test tree must
 be rejudged, and the b3df5602 receipt is diagnostic only.
+
+### 2026-09-26 23:06:22Z — replacement R2 result on 6540f877
+
+The detached run on quiet commit `6540f87761a66ff933c8bb45f81d8ac9117f407b`
+ended at `2026-09-26T21:53:35.217876Z` with
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4. Its separate verdict and progress
+stream account for all 312 candidates: 301 killed, 10 survived, one hung,
+zero budget-exceeded, zero crashed. The ten survivors match the ten
+contract-equivalent dispositions in REPORT Session 17; both real oracle gaps
+from that run were killed by the two new regression tests.
+
+The hung record is candidate
+`0a38e7d8ab99ea0483119223cf9b8e38184e85124ca37f631ee264fed7a135d1`,
+`lib/liveness.py:530` (`is not` → `is` in `_observe_io`), with 138.953 seconds
+and 675 completed tests. The gate profile reports 135.1 seconds of
+memory-full stall. No last pytest node or lower-level timeout reason was
+preserved, so the cause remains unresolved; the profile correlation is not
+causal proof. Keep the exact state record and treat the R2 as non-passing.
+P6 must reconcile the P1 repair before its final gates and final R2.
