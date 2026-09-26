@@ -7,16 +7,10 @@
 # in assay's own config on day one. So: R0 only, and therefore NO [judge] table
 # at all, which is exactly what A-048 says an R0-only lane looks like.
 #
-# This file stays R0-only PERMANENTLY, not pending a future upgrade (A-133):
-# self-hosting (P14) proves the BUILT WHEEL runs assay's own tests inside
-# tester-unified, but assay's own gate never mechanically applies R1+ rigor to
-# its own diff -- doing that would need a coverage/canary/mutation judge
-# configured against assay's OWN source, which is out of scope for a project
-# whose subject matter is judging OTHER projects' changes, not its own. (An
-# earlier note here pointed at "P11 upgrades this file when the capability is
-# real" -- P11 was valid-mutant construction and never touched this file; that
-# note was simply stale, not a promise P11 kept.) The lane is named
-# `tester-unified` because it is the gate id in nyxloom-trove/nyxloom.toml.
+# The ordinary release lane stays R0-only (A-133, superseded only for the
+# separate B105 qualification lane by A-462). Self-qualification is explicit,
+# expensive, full-source R0-R3 evidence; it does not change the release lane's
+# default cost or release semantics. Both declarations run in tester-unified.
 
 schema_version = 2
 
@@ -67,3 +61,102 @@ env_passthrough = ["PATH"]
 budget = "60m"
 
 allow_argv_append = false
+
+# B105: explicitly invoked full-source self-qualification. The test module
+# test_self_hosting.py is excluded because it recursively runs assay lanes and
+# reads this run's not-yet-written verdict; the ordinary tester-unified release
+# lane independently runs that self-hosting proof. Every production source file
+# is named literally below: whole_target does not expand directories.
+[lanes.self-qualification]
+scope = "S1"
+rigor = ["R0", "R1", "R2", "R3"]
+enforcement = "gate"
+argv = ["python", "-m", "pytest", "tests", "-q", "--ignore=tests/test_self_hosting.py", "--override-ini=pythonpath=", "--cov=src/assay", "--cov-branch", "--cov-report=json:.assay/coverage-self-qualification.json"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "unbounded"
+allow_argv_append = false
+
+[lanes.self-qualification.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.self-qualification.judge]
+language = "python"
+source_roots = ["src/assay"]
+mode = "whole_target"
+targets = [
+  "src/assay/__init__.py",
+  "src/assay/adapters/__init__.py",
+  "src/assay/adapters/base.py",
+  "src/assay/adapters/go.py",
+  "src/assay/adapters/go_modfile.py",
+  "src/assay/adapters/go_stmtpos.py",
+  "src/assay/adapters/javascript.py",
+  "src/assay/adapters/python.py",
+  "src/assay/adapters/sql.py",
+  "src/assay/adapters/sql_lex.py",
+  "src/assay/adjudication.py",
+  "src/assay/analysis.py",
+  "src/assay/attestation.py",
+  "src/assay/canary.py",
+  "src/assay/candidate_identity.py",
+  "src/assay/cli.py",
+  "src/assay/config.py",
+  "src/assay/coverage.py",
+  "src/assay/coverage_parsers/__init__.py",
+  "src/assay/coverage_parsers/cobertura.py",
+  "src/assay/coverage_parsers/coverage_istanbul_json.py",
+  "src/assay/coverage_parsers/coverage_py_json.py",
+  "src/assay/coverage_parsers/go_cover.py",
+  "src/assay/coverage_parsers/lcov.py",
+  "src/assay/coverage_parsers/model.py",
+  "src/assay/diff.py",
+  "src/assay/errors.py",
+  "src/assay/evaluate.py",
+  "src/assay/git.py",
+  "src/assay/isolation.py",
+  "src/assay/liveness.py",
+  "src/assay/measurability.py",
+  "src/assay/mutation.py",
+  "src/assay/mutation_parsers/__init__.py",
+  "src/assay/mutation_parsers/model.py",
+  "src/assay/mutation_parsers/mutation_report_json.py",
+  "src/assay/mutation_witness.py",
+  "src/assay/output.py",
+  "src/assay/provenance.py",
+  "src/assay/registry.py",
+  "src/assay/result_reports/__init__.py",
+  "src/assay/result_reports/model.py",
+  "src/assay/result_reports/vitest_json.py",
+  "src/assay/reuse.py",
+  "src/assay/runner.py",
+  "src/assay/safeio.py",
+  "src/assay/statement_attribution.py",
+  "src/assay/verdict.py",
+  "src/assay/verify.py",
+  "src/assay/vocabulary.py",
+]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+
+[lanes.self-qualification.judge.coverage]
+format = "coverage-py-json"
+artifact = ".assay/coverage-self-qualification.json"
+
+[lanes.self-qualification.judge.mutation]
+jobs = 1
+max_mutants = 10000
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "auto"
+liveness = true
+
+[lanes.self-qualification.judge.canary]
+mechanism = "import-break"
+target = "src/assay/cli.py"
+budget_per_attempt = "30m"

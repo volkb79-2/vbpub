@@ -1922,7 +1922,7 @@ No circularity: the first establishes correctness, the second establishes
 coverage of a diff. assay's own lane argv *is* `pytest`, so the gate
 transitively re-runs its own independent oracle.
 
-**One gated lane: `tester-unified`.** A `local` bare-pytest lane was considered
+**Ordinary release lane: `tester-unified`, R0-only.** A `local` bare-pytest lane was considered
 and rejected — *"greens from the interactive cockpit are explicitly not a ship
 signal"*, and a cockpit lane manufactures exactly that pathway. The standalone
 claim is instead proven **inside** the gated suite: a test builds a clean venv,
@@ -1930,6 +1930,37 @@ installs only assay, and asserts `assay run` works against a fixture project.
 That is O1 discharged mechanically, with no cockpit-green pathway. Bare
 `pytest` remains a documented developer convenience and explicitly **not**
 evidence.
+
+### Full-source self-qualification (B105)
+
+The separate `self-qualification` gate is deliberately invoked only when a
+complete R0-R3 qualification is intended. It runs inside the same dedicated
+`tester-unified` image as the release lane and does not turn each release into
+a full-source mutation campaign. `assay.toml` names every production Python
+file under `src/assay` literally, applies whole-target line and branch coverage
+with a 100% floor, runs all four native Python mutation operators unsharded
+and serially, and performs an import-break canary. A drift test fails if a new
+production file is absent from that declaration.
+
+The lane has no total campaign cutoff: candidate execution resumes from
+gitignored state, emits progress, and each candidate uses the explicitly
+declared baseline-derived liveness bound. Host scheduling can change elapsed
+time and may cause an explicit timeout outcome; a timeout cannot count as a
+kill or produce a pass. The gate records the exact source commit/tree, runs
+`assay verify` on the result, and prints a success marker only after both checks
+pass. Its report and captured gate log are retained with the source revision.
+This is a deliberate, expensive maintenance gate, not the default release
+cadence.
+
+```bash
+cd assay
+./run-gate.py self-qualification
+```
+
+The [consumer guide](CONSUMERS.md#assays-own-full-source-self-qualification-b105)
+shows how to preserve the log and inspect the report. Decision A-462 records
+why this separate lane supersedes A-133's former permanent R0-only limit while
+leaving the ordinary release lane unchanged.
 
 **Zero runtime dependencies** (stdlib only: `tomllib`, `json`,
 `xml.etree.ElementTree`, `ast`, `re`, `subprocess`, `pathlib`, `argparse`) makes

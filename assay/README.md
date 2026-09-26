@@ -955,9 +955,12 @@ you're changing assay itself:
   something is an oversight rather than a deliberate choice.
 - [`nyxloom-trove/handoffs/README.md`](nyxloom-trove/handoffs/README.md)
   tracks the current package queue and its dependency order.
-- The registered gate (`tools/tester-unified-gate.sh`, run only inside its
-  dedicated container, never the interactive devcontainer) is the only
-  accepted ship signal.
+- `./run-gate.py tester-unified` is the ordinary R0 release gate. The
+  separately invoked `./run-gate.py self-qualification` runs full-source
+  R0-R3 qualification in `tester-unified`, writes its verdict and progress,
+  and verifies the verdict before success. See the
+  [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
+  and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
 
 ## Further reading
 

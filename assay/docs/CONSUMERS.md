@@ -44,7 +44,7 @@ Stated as MEASURED rather than as intended, because the two have differed:
 | `cmru` | internal source mode: its run-gate lanes install the selected worktree's `assay/`; the mutation evidence records version and source commit |
 | `nyxloom` | internal source mode: its run-gate lanes install the selected worktree's `assay/` and record runtime provenance |
 | `dstdns` | vendored pinned zipapp, `tools/assay/assay-6.4.0.pyz`, with a `[lanes.*.pins.assay]` sha256 block per lane |
-| `assay` itself | builds its own wheel in-repo and installs it into a clean venv for the gate; it never imports its own source under test |
+| `assay` itself | the ordinary release gate builds its own wheel in-repo and installs it into a clean venv; B105's separate self-qualification gate installs the selected source editably so all R0-R3 tiers measure that exact tree |
 
 Thus internal consumers resolve assay from the selected worktree, while
 external consumers still vendor a pinned, sha256-verified `.pyz`. Nothing is
@@ -55,6 +55,45 @@ judge attributable without duplicating an artifact pin.
 A later estate direction — bake the judge into the shared gate image and keep
 only a version pin per repository — is recorded in the backlog (B009 item 2)
 and is **not** the shipped state. Do not write a gate that assumes it.
+
+## Assay's own full-source self-qualification (B105)
+
+Inside vbpub, the ordinary `tester-unified` gate stays R0-only. Maintainers
+invoke the separate, more expensive full-source R0-R3 campaign when that
+qualification is required. It runs in the dedicated `tester-unified`
+environment, uses the exact selected worktree source, resumes native R2 from
+gitignored state, and verifies its verdict before it can report success.
+
+From a clean Assay worktree, capture the gate output under `.assay/` so it does
+not dirty the judged tree:
+
+```bash
+cd assay
+mkdir -p .assay
+if ./run-gate.py self-qualification >.assay/self-qualification-gate.log 2>&1; then
+  cat .assay/self-qualification-gate.log
+else
+  status=$?
+  cat .assay/self-qualification-gate.log
+  exit "$status"
+fi
+```
+
+The gate writes `.assay/verdict-self-qualification.json` and
+`.assay/progress-self-qualification.jsonl`. The gate itself runs the selected
+worktree's installed CLI against the report before printing
+`ASSAY_SELF_QUALIFICATION_VERIFIED=1`. To inspect the artifact again from the
+Assay checkout, run:
+
+```bash
+PYTHONPATH=src python -m assay.cli verify .assay/verdict-self-qualification.json
+```
+
+The recheck validates artifact consistency; the registered gate result and its
+exact commit/tree markers remain the qualification evidence. Preserve the
+report and captured log with those markers after the gate completes. For why
+this work is separate from the ordinary release lane, see the
+[B105 design](DESIGN-GUIDE.md#full-source-self-qualification-b105).
 
 **Forward note.** Long asynchronous lanes (mutation campaigns, fuzzing) are
 planned as ordinary assay lanes with large budgets, triggered remotely and

@@ -700,6 +700,7 @@ def test_wave1_new_anchors_are_present_and_resolve():
         "branch-coverage-is-judged-whenever-the-artifact-reports-it-a-258",
         "require_branch-governs-absence-never-presence-a-259",
         "snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a",
+        "full-source-self-qualification-b105",
     ):
         assert expected in anchors, f"missing DESIGN-GUIDE anchor: {expected}"
         assert expected in _readme_design_guide_links(), (

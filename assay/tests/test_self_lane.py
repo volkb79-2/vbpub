@@ -1,10 +1,9 @@
 """assay's own ``assay.toml`` loads under the loader assay ships.
 
-This is O2's negative made mechanical. The P01 pre-flight found that the
-package's first draft required the five ``judge`` fields unconditionally while
-its own work item required an R0-only lane that omits them — *the deliverable
-was a lane its own loader had to reject*. A-048 closed that, and this module is
-what stops it coming back.
+This is O2's negative made mechanical. The ordinary release lane remains
+R0-only; B105 adds a separate full-source R0-R3 qualification lane. This
+module keeps both lane declarations loadable and checks that their distinct
+roles do not drift.
 
 It also cross-checks the two files that have to agree about assay's own gate:
 ``assay.toml`` (WHAT) and ``nyxloom-trove/nyxloom.toml`` (WHERE). Reading the
@@ -25,6 +24,8 @@ from assay.config import load_lane_file
 SELF_LANE_FILE = PROJECT_ROOT / "assay.toml"
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
 GATE_ID = "tester-unified"
+QUALIFICATION_ID = "self-qualification"
+RUN_GATE_TOML = PROJECT_ROOT / "run-gate.toml"
 
 
 def test_assays_own_lane_file_loads():
@@ -32,13 +33,12 @@ def test_assays_own_lane_file_loads():
 
     assert lane_file.schema_version == 2
     assert lane_file.project_root == PROJECT_ROOT
-    assert list(lane_file.lanes) == [GATE_ID]
+    assert list(lane_file.lanes) == [GATE_ID, QUALIFICATION_ID]
 
 
-def test_assays_own_lane_is_r0_only_with_no_judge_table():
-    # A-046 / nyxloom.toml's own note: assay has no changed-line coverage, no
-    # canary and no mutation yet, so declaring R1/R2/R3 here would be the
-    # lane-table-implies-capability failure committed in assay's own config.
+def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
+    # A-046/A-133 still govern the ordinary release gate. B105's new lane is
+    # the explicit place where self-qualification policy is declared.
     lane = load_lane_file(SELF_LANE_FILE).lane(GATE_ID)
 
     assert lane.scope == "S1"
@@ -81,4 +81,68 @@ def test_assay_lanes_lists_assays_own_lane(monkeypatch):
     assert code == 0
     assert err.getvalue() == ""
     assert GATE_ID in out.getvalue()
+    assert QUALIFICATION_ID in out.getvalue()
     assert "judge=none" in out.getvalue()
+
+
+def test_self_qualification_is_full_source_r0_through_r3():
+    lane_file = load_lane_file(SELF_LANE_FILE)
+    lane = lane_file.lane(QUALIFICATION_ID)
+    assert lane.scope == "S1"
+    assert lane.rigor == ("R0", "R1", "R2", "R3")
+    assert lane.enforcement == "gate"
+    assert lane.judge is not None
+    assert lane.judge.mode == "whole_target"
+    assert lane.judge.require_branch is True
+    assert lane.judge.fail_under == 100.0
+    assert lane.judge.mutation is not None
+    assert lane.judge.mutation.jobs == 1
+    assert lane.judge.mutation.max_mutants == 10000
+    assert lane.judge.mutation.shard_index is None
+    assert lane.judge.mutation.shard_count is None
+    assert lane.judge.mutation.budget_per_candidate == "auto"
+    assert lane.judge.mutation.liveness == "true"
+    assert lane.judge.canary is not None
+    assert lane.judge.canary.mechanism == "import-break"
+
+    declared = set(lane.judge.targets or ())
+    discovered = {
+        path.relative_to(PROJECT_ROOT).as_posix()
+        for path in (PROJECT_ROOT / "src" / "assay").rglob("*.py")
+        if path.is_file()
+    }
+    assert declared == discovered
+    assert tuple(lane.judge.targets or ()) == tuple(sorted(declared))
+
+
+def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
+    run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))
+    lane = run_gate["lanes"][QUALIFICATION_ID]
+    assert lane["kind"] == "command"
+    assert lane["environment"] == "tester-unified"
+    assert lane["clean_tree"] is True
+    assert "self-qualification-gate.sh" in lane["argv"][1]
+    assert lane["resources"]["cpus"] == "3"
+    assert lane["artifacts"] == [
+        ".assay/verdict-self-qualification.json",
+        ".assay/progress-self-qualification.jsonl",
+    ]
+
+    script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "--resume" in script
+    assert "--progress .assay/progress-self-qualification.jsonl" in script
+    assert '"$assay_bin" verify .assay/verdict-self-qualification.json' in script
+    assert "ASSAY_SELF_QUALIFICATION_VERIFIED=1" in script
+
+
+def test_self_qualification_gate_budget_matches_nyxloom_timeout():
+    gate = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))["gates"][
+        QUALIFICATION_ID
+    ]
+    run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"][
+        QUALIFICATION_ID
+    ]
+    assert gate["timeout_seconds"] == 96 * 60 * 60
+    assert run_gate["budget"] == "96h"

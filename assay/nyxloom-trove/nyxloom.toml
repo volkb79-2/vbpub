@@ -4,21 +4,13 @@
 # gate that already exists, and a package cannot bootstrap the gate that judges
 # it (open item A-O01, closed here).
 #
-# NOTE ON WHAT THIS GATE CLAIMS. `asserts` below is ["tests-pass"] and nothing
-# more, PERMANENTLY (A-133) -- not pending a future upgrade. assay's whole
-# subject matter is changed-line coverage, canaries and mutation applied to
-# OTHER projects' diffs; declaring `changed-line-coverage`/`canary-verified`/
-# `mutation` here would claim assay mechanically applies THAT rigor to its OWN
-# diff, which it does not and structurally cannot without a judge configured
-# against assay's own source -- exactly the lane-table-implies-capability
-# failure the project exists to remove, committed in assay's own config. P14's
-# self-hosting proof (below) changes HOW this gate runs (the built WHEEL now
-# genuinely executes assay's own tests, not a source-tree shortcut) without
-# changing WHAT it claims: still R0 only (A-046's own "a lane file declares
-# WHAT EXISTS" principle, unchanged by this package). An earlier version of
-# this note said "P11 upgrades this declaration when the capability is real" --
-# P11 was valid-mutant construction and never touched this file; that note was
-# simply stale, not a promise P11 kept. See docs/DESIGN-GUIDE.md 12.
+# NOTE ON WHAT THE ORDINARY RELEASE GATE CLAIMS. `tester-unified` below remains
+# the R0-only self-hosted release lane (A-133, superseded only by B105/A-462's
+# separate qualification gate). `self-qualification` is a separately invoked
+# full-source R0-R3 gate; it does not silently add mutation cost to releases.
+# P14's self-hosting proof still establishes that the ordinary release gate
+# runs the built wheel's own tests rather than importing a source-tree shortcut.
+# See docs/DESIGN-GUIDE.md §9.
 
 [project]
 id = "assay"
@@ -192,6 +184,16 @@ argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {wor
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 3600
+environment = "tester-unified"
+
+[gates.self-qualification]
+# B105's deliberately invoked full-source R0-R3 campaign is separate from the
+# ordinary R0 release gate above. run-gate places it in tester-unified and the
+# inner driver verifies the exact verdict before reporting success.
+argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} self-qualification"]
+phase = "implementation"
+asserts = ["tests-pass"]
+timeout_seconds = 345600
 environment = "tester-unified"
 
 [mutexes.merge-lane]
