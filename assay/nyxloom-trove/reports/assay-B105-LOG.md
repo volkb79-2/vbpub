@@ -163,3 +163,16 @@ review, and serial merge remain open.
   run-gate invocation/output is `/tmp/b105-self-qualification-preflight-f23.log`.
   The final full qualification gate will repeat this preflight on its own
   exact source commit before starting native R2.
+
+### Final candidate plan — 2026-09-26
+
+- On clean source commit `1ee6832e14d0a98d4a8da12c9f0d962977ea08d4`,
+  `assay plan self-qualification --file assay.toml` returned `status=ok`,
+  `candidate_count=3760`, `jobs=1`, and `shard=null`. The operator counts are
+  `compare-swap=2169`, `boolop-swap=958`, `bool-const-flip=498`, and
+  `falsy-swap=135`; all planned candidates are below the configured
+  `max_mutants=10000` ceiling. The planner estimated 225,600 serial seconds
+  (about 62h40m) using the current automatic per-candidate estimate. This is a
+  forecast, not a lane deadline or evidence of elapsed campaign time; the
+  self-qualification lane has an unbounded campaign budget and the full gate
+  will verify the actual complete candidate inventory.
