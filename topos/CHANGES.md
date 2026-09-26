@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.4.1] - 2026-09-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=d22feaab860607938505380ef9ddacb521307e66 -->
+
+### Testing
+- test(topos): synchronize broker history boundary test (8823bfea)
+
 ## [0.4.0] - 2026-09-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=a2def16c934a888245a0d088ca9e44ddcf31792e -->
