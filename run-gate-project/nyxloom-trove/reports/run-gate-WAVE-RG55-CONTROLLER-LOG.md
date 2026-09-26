@@ -4285,3 +4285,25 @@ container `run-gate-rg55-p1-r2-isolated-r2-1072906-1790370942` running under
 `dev-gates.slice` at `NanoCpus=3000000000`, with progress active and launch PSI
 `full avg10=0.01`; no HEAD or judged worktree mutation occurred. The resumed
 campaign is the authoritative attempt pending its final verdict.
+
+### RW-337 — 2026-09-26 00:19:39Z — P1 R2 completed with liveness budget failures; P6 placement blocker exposed
+
+The resumed P1 R2 run on exact tree
+`429c076369b20587e395739892b3e1b715cd3482` completed at 21:56:38Z with
+`BUDGET_EXCEEDED/CANDIDATE_HUNG` (exit 4): 121 candidates, 114 killed, 7
+hung, 0 survived, 0 crashed, 0 budget-exceeded. The seven hung candidates are
+all in `lib/targets.py`; the receipt measured 395.4 seconds of memory-full
+stall and 836 MiB peak. This is not release evidence and must be rejudged or
+otherwise explained without treating host contention as product behavior.
+
+The Sol continuation of P6 round 3 is recorded in
+`cgprofile-P6-FOLLOWUPS-REVIEW-round4.md` and committed as `ca8fccc7`; it is
+`REJECT`. Blind live probes found B1 (single-session status omitted the
+contract timestamp), B3 (watch certified a failed SIGKILL as `killed`), and
+B2 (the private-PID daemon's host PID writes to `cgroup.procs` fail with
+`ESRCH`, leaving the placed leaf empty while reporting success). The reviewer
+committed the bounded B1/B3 fail-closed repair `9c0a6e39`, but explicitly left
+B2 as the critical placement-design blocker. No P6 merge, release, or mutation
+campaign is authorized until placement is either safely implemented while
+preserving D-15 private namespaces or the contract is changed by a recorded
+product ruling.
