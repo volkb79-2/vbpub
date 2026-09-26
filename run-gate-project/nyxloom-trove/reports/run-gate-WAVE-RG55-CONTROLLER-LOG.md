@@ -4407,3 +4407,31 @@ so this lane did not supply live-daemon or DAMON evidence. Together with the
 R0/R1 and R2 receipts recorded above, this clears P1's exact-tree mutation and
 registered-lane gates for the fresh final review; the already-provisionally-
 merged daemon still needs full-gate verification before release.
+
+### RW-344 — 2026-09-26 23:42:10Z — P1 final review active; P6 evidence gap filed upstream
+
+A fresh P1 reviewer is running in persistent command session `19740`, thread
+`01a0e018-a3bb-7662-9c0e-1633b7b3f54b`, rooted at the isolated candidate
+worktree. Its saved turn metadata independently confirms model `gpt-6-sol`,
+effort `xhigh`, and the expected worktree. An earlier fresh attempt ended
+after emitting only its route-check message and made no repository call; it
+produced no review record and did not change the candidate. The current review
+must cover `<f0fccaf6>...1080ac2f`, reconcile rounds 1–3, and complete the
+P1 handoff's live probes before acceptance.
+
+The P6 exact-tree campaign `6540f87761a66ff933c8bb45f81d8ac9117f407b`
+remains nonpassing (`BUDGET_EXCEEDED/CANDIDATE_HUNG`). The earlier `b3df5602`
+campaign killed the same candidate with a named test witness; the trees differ
+by two added P6 tests, so this is not a controlled replay and does not prove
+host pressure caused the later hang. Assay backlog B107 was filed on main at
+`4241cdc1` and qualified at `659a92a5`, preserving that uncertainty and
+requiring time-aligned candidate resource evidence; neither campaign is
+reclassified.
+
+P3 static closeout check: `run-gate-project/run-gate.footprint.json` is
+tracked; SPEC-V8 Appendix D.6 is present; RG-55 is marked FIXED and RG-56 / RG-57
+are filed (RG-56 remains OPEN, RG-57 is FIXED). The final RG-55 report does not
+yet exist and the adoption brief's ⟨P3⟩ fields remain unfilled until live probes
+and DAMON overhead are measured. At this check, the exact external container
+`run-gate-assay-selfhosted-1372147-14760-1790465048` was active for Assay B105;
+it is outside this wave and remains untouched.
