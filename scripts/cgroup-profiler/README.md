@@ -132,7 +132,10 @@ else) talks to over a Unix socket instead of spawning a collector per lane.
 It keeps PID/cgroup namespaces private and receives a read-only host `/proc`
 view plus an explicitly writable host cgroup-v2 view for opt-in P6 placement.
 `CgroupWriteGuard` limits cgroup writes to the placement whitelist; the
-one-shot helper keeps its cgroup view read-only. It is
+daemon uses the read-only host system bus only for systemd's narrow
+`AttachProcessesToUnit` PID move when private PID translation makes a direct
+`cgroup.procs` write impossible, and verifies the result through `/hostproc`.
+The one-shot helper keeps its cgroup view read-only. It is
 `scripts/cgroup-profiler/`'s own **standalone ciu root** —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
 
@@ -271,7 +274,10 @@ The daemon's version response is contract major 1:
 - **Private namespaces, explicit host views.** The daemon and its helper
   keep PID and cgroup namespaces private. Host `/proc` is explicitly bound
   read-only; the daemon's host cgroup-v2 bind is writable only because
-  opt-in placement creates `rg-*` leaves and moves lane pids. The daemon's
+  opt-in placement creates `rg-*` leaves and moves lane pids. A private-PID
+  fallback asks host systemd over the explicitly mounted read-only system bus
+  to attach the verified PID to that leaf; the daemon never joins a host
+  namespace. The daemon's
   D-25 write guard limits those cgroup writes to the documented whitelist;
   DAMON retains its separately mounted sysfs write surface. `ciu up` is the
   managed lifecycle; there is no host-namespace fallback launcher.

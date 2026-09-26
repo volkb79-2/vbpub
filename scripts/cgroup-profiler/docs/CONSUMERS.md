@@ -54,7 +54,11 @@ The shipped stack supplies host observation with private PID/cgroup
 namespaces: host `/proc` is bind-mounted read-only at `/hostproc`, host
 cgroup v2 is mounted at `/sys/fs/cgroup` for observation and guarded P6
 placement writes, and `CGPROFILE_PROC_ROOT=/hostproc` selects the host proc
-view. Placement's D-25 whitelist is the cgroup write boundary. Do not set host
+view. The daemon also receives the host system bus read-only at
+`/run/dbus/system_bus_socket`; it uses only systemd's
+`AttachProcessesToUnit` method when a host PID cannot be written directly
+from the private PID namespace, then verifies membership through `/hostproc`.
+Placement's D-25 whitelist is the cgroup write boundary. Do not set host
 namespace modes. On startup `serve` verifies that PID 1 in that proc view
 belongs to a PID namespace distinct from the daemon's and refuses if either
 view is missing. Container targets arrive as full Docker IDs; token-scoped

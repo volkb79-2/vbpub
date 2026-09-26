@@ -23,8 +23,10 @@ are all about what is written WHERE:
 from __future__ import annotations
 
 import json
+import errno
 import os
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -569,6 +571,78 @@ class TestMigration:
         plc = _placement(_fake_cgroup_root(tmp_path, gates=False))
         plc.apply([101])
         assert plc.migrate([101]) == 0
+
+    def test_private_pid_namespace_uses_systemd_attach_and_verifies_membership(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        attached: List[Any] = []
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target.endswith("cgroup.procs"):
+                    raise OSError(errno.ESRCH, "pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+            request=placement.PlacementRequest(),
+            systemd_attach=lambda unit, subcgroup, pid: attached.append(
+                (unit, subcgroup, pid)
+            ) is None,
+            pid_exists=lambda _pid: True,
+            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
+        )
+        plc.apply([101])
+
+        assert attached == [("dev-gates.slice", LEAF_NAME, 101)]
+        assert plc.error is None
+        assert plc.block()["pids_moved"] == 1
+
+    def test_failed_systemd_attach_abandons_empty_leaf(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target.endswith("cgroup.procs"):
+                    raise OSError(errno.ESRCH, "pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+            request=placement.PlacementRequest(),
+            systemd_attach=lambda _unit, _subcgroup, _pid: False,
+            pid_exists=lambda _pid: True,
+        )
+        plc.apply([101])
+
+        assert plc.leaf_cgroup is None
+        assert plc.error == placement.write_failed(
+            f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs"
+        )
+        assert not _leaf(root).exists()
+
+
+def test_systemd_attach_uses_the_narrow_manager_method(monkeypatch):
+    calls: List[Any] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setenv("CGPROFILE_BUSCTL", "busctl-test")
+    assert placement._systemd_attach_process(
+        "dev-gates.slice", LEAF_NAME, 4242, run=fake_run
+    ) is True
+    assert calls == [(
+        [
+            "busctl-test", "--system", "call", "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+            "AttachProcessesToUnit", "ssau", "dev-gates.slice", LEAF_NAME,
+            "1", "4242",
+        ],
+        {"check": False, "capture_output": True, "text": True, "timeout": 5.0},
+    )]
 
 
 class TestRelease:

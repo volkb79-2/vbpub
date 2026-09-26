@@ -40,6 +40,14 @@ RUN apt-get update \
 
 FROM python:3.14-slim
 
+# `busctl` is the stdlib-free transport for the one host-systemd placement
+# operation.  The daemon uses only AttachProcessesToUnit over the explicitly
+# mounted system bus; it does not run systemd as PID 1 and never joins a host
+# namespace.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends systemd \
+    && rm -rf /var/lib/apt/lists/*
+
 ARG CGPROFILE_VERSION=1.1.0
 ARG GIT_REVISION=unknown
 

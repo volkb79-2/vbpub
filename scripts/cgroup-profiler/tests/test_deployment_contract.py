@@ -23,6 +23,12 @@ def test_daemon_keeps_namespaces_private_and_mount_modes_explicit():
         "source: /sys/fs/cgroup\n        target: /sys/fs/cgroup\n"
         "        read_only: false"
     ) in compose
+    assert (
+        "source: /run/dbus/system_bus_socket\n"
+        "        target: /run/dbus/system_bus_socket\n"
+        "        read_only: true"
+    ) in compose
+    assert "AttachProcessesToUnit" in compose
     assert "lib.placement.CgroupWriteGuard" in compose
     assert "--cgroupns=host" not in gate_script
     assert "--pid=host" not in gate_script

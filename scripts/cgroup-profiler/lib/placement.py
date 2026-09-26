@@ -6,10 +6,12 @@ into a long-lived devcontainer) and a **bare-host** lane have neither: their
 cgroup is shared with the IDE, the agents and the caller, so ``memory.peak``,
 ``memory.pressure`` and ``io.stat`` are somebody else's numbers and the
 lane's declared ``resources.memory`` is advisory. D-20's answer is that the
-daemon — the one process that runs ``--pid=host --cgroupns=host`` against the
-host's cgroupfs and already resolves the lane's pid subtree every discovery
-tick — creates a leaf ``<gates slice>/rg-<token>/``, moves the lane's pids
-into it, applies the caps and reads them back.
+private-namespace daemon creates a leaf ``<gates slice>/rg-<token>/``, moves
+the lane's pids into it, applies the caps and reads them back. A direct
+``cgroup.procs`` write is used when the PID is visible; when the host PID is
+not addressable from the daemon's private PID namespace, host systemd's
+``AttachProcessesToUnit`` D-Bus method performs the exact move into the
+already-created subcgroup. The daemon never joins a host namespace.
 
 **Why a sibling leaf under the gates slice and never a child of the
 container's own scope** (D-20): enabling a controller inside the container's
@@ -52,12 +54,57 @@ every other reader in this package takes.
 
 from __future__ import annotations
 
+import errno
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
 from . import util
+
+
+def _systemd_attach_process(
+    gates_unit: str,
+    subcgroup: str,
+    pid: int,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> bool:
+    """Ask host systemd to move one host PID into ``subcgroup``.
+
+    A daemon with private PID and cgroup namespaces cannot write a host PID
+    into ``cgroup.procs``: the kernel translates that PID through the writer's
+    namespace and returns ``ESRCH``.  The systemd manager is already the host
+    cgroup authority; its D-Bus method performs the same move in the host PID
+    namespace without relaxing D-15.  The daemon receives no Docker socket and
+    never joins a host namespace.
+    """
+    busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
+    try:
+        completed = run(
+            [
+                busctl,
+                "--system",
+                "call",
+                "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1",
+                "org.freedesktop.systemd1.Manager",
+                "AttachProcessesToUnit",
+                "ssau",
+                gates_unit,
+                subcgroup,
+                "1",
+                str(pid),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+    except OSError:
+        return False
+    return completed.returncode == 0
 
 #: §8.3: the leaf's name is ``rg-`` plus the lane's token.
 LEAF_PREFIX = "rg-"
@@ -298,6 +345,10 @@ class LanePlacement:
         log: Optional[Callable[[str], None]] = None,
         sleep: Callable[[float], None] = time.sleep,
         rmdir: Callable[[str], None] = os.rmdir,
+        proc_root: Optional[str] = None,
+        systemd_attach: Optional[Callable[[str, str, int], bool]] = None,
+        pid_cgroup: Optional[Callable[[int], Optional[str]]] = None,
+        pid_exists: Optional[Callable[[int], bool]] = None,
     ) -> None:
         self.cgroup_root = cgroup_root
         self.gates_cgroup = gates_cgroup
@@ -307,6 +358,10 @@ class LanePlacement:
         self._on_write = on_write
         self._log = log
         self._sleep = sleep
+        self.proc_root = proc_root or os.environ.get("CGPROFILE_PROC_ROOT", "/proc")
+        self._systemd_attach = systemd_attach or _systemd_attach_process
+        self._pid_cgroup = pid_cgroup or self._default_pid_cgroup
+        self._pid_exists = pid_exists or self._default_pid_exists
         # A cgroup directory is kernfs: `rmdir` on it succeeds even though it
         # "contains" the controller's interface files, which the kernel
         # created and no process may unlink. A fake cgroupfs in a tmp
@@ -326,6 +381,21 @@ class LanePlacement:
         self.error: Optional[str] = None
         self.moved: Set[int] = set()
         self.released = False
+
+    def _default_pid_cgroup(self, pid: int) -> Optional[str]:
+        # Imported lazily: targets imports the access layer, while placement
+        # is itself wired into serve's target-resolution path.
+        from . import targets
+
+        return targets.cgroup_of_pid(pid, self.cgroup_root, self.proc_root)
+
+    def _default_pid_exists(self, pid: int) -> bool:
+        return os.path.exists(os.path.join(self.proc_root, str(pid)))
+
+    @property
+    def gates_unit(self) -> str:
+        """The systemd unit owning ``gates_cgroup`` (e.g. dev-gates.slice)."""
+        return os.path.basename(self.gates_cgroup.rstrip("/"))
 
     # -- geometry ---------------------------------------------------------
 
@@ -437,6 +507,11 @@ class LanePlacement:
             self.applied[name] = util.read_int(target)
 
         self.migrate(pids)
+        if self.error is not None and not self.moved:
+            # A leaf with no successfully migrated PID is not a placement;
+            # abandon it rather than expose caps and an empty kill target as
+            # if the lane had been contained.
+            self._abandon(leaf_abs)
 
     def _delegate_controllers(self, gates_abs: str) -> None:
         """RW-35(a)'s single non-leaf write, and only when it is needed."""
@@ -479,15 +554,41 @@ class LanePlacement:
             return 0
         procs = os.path.join(leaf_abs, PROCS)
         moved = 0
+        enforcement_failed = False
         for pid in pids:
             if pid in self.moved:
                 continue
             try:
                 self._write(procs, str(pid))
-            except OSError:
-                continue
+            except OSError as exc:
+                # A private PID namespace makes a host-visible PID
+                # unaddressable from this writer and the kernel reports
+                # ESRCH. Ask host systemd to perform the same move in its
+                # host PID namespace, then verify through the explicit host
+                # proc view. Other failures retain the existing vanished-pid
+                # tolerance; they cannot silently certify placement.
+                if exc.errno != errno.ESRCH or not self._pid_exists(pid):
+                    continue
+                if not self._systemd_attach(self.gates_unit, self.leaf_name, pid):
+                    enforcement_failed = True
+                    if self._log is not None:
+                        self._log(
+                            f"placement: systemd could not attach pid {pid} "
+                            f"to {self.gates_unit}/{self.leaf_name}"
+                        )
+                    continue
+                if self._pid_cgroup(pid) != self.leaf_cgroup:
+                    enforcement_failed = True
+                    if self._log is not None:
+                        self._log(
+                            f"placement: systemd attach of pid {pid} was not "
+                            f"visible in {self.leaf_cgroup}"
+                        )
+                    continue
             self.moved.add(pid)
             moved += 1
+        if enforcement_failed and self.error is None:
+            self.error = write_failed(self._relative(procs))
         return moved
 
     # -- §8.4: what the leaf says -----------------------------------------

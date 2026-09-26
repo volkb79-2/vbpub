@@ -113,6 +113,14 @@ services:
         read_only: false
         bind:
           create_host_path: false
+      # Private PID namespaces make a host PID unaddressable to a direct
+      # cgroup.procs write.  Placement therefore asks host systemd's narrow
+      # AttachProcessesToUnit method to perform that one move; the daemon
+      # still never joins a host namespace or receives the Docker socket.
+      - type: bind
+        source: /run/dbus/system_bus_socket
+        target: /run/dbus/system_bus_socket
+        read_only: true
       - type: bind
         source: /sys/kernel/mm/damon
         target: /sys/kernel/mm/damon
