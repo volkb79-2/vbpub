@@ -2922,15 +2922,11 @@ def _execute_mutation_jobs(
                 run = results[position]
                 if run is None:
                     continue
-                if equivalence_artifact is None:
-                    outcome_bucket = _classify_mutant_result(run.result)
-                else:
-                    assert baseline_equivalence is not None
-                    outcome_bucket = _classify_mutant_result_with_equivalence(
-                        run.result,
-                        equivalence_bytes=run.equivalence_bytes,
-                        baseline_equivalence=baseline_equivalence,
-                    )
+                # The same classifier decides whether a witness is reusable
+                # and which terminal bucket this complete campaign records.
+                # Keeping one path prevents replay and verdict policy from
+                # drifting on equivalence or kill-signal rules.
+                outcome_bucket = _classified_bucket(run)
                 if write_progress is not None:
                     write_progress(
                         {
@@ -3023,27 +3019,11 @@ def _execute_mutation_jobs(
             continue
         run = results[position]
         assert run is not None
-        if equivalence_artifact is None:
-            # O8's own inertness: the UNDECLARED lane takes the EXISTING
-            # path, unchanged -- never a new path that happens to agree.
-            buckets[_classify_mutant_result(run.result)].append(
-                _outcome_of(job, execution=run.execution)
-            )
-            continue
-        assert baseline_equivalence is not None  # refused above otherwise
-        bucket = _classify_mutant_result_with_equivalence(
-            run.result,
-            equivalence_bytes=run.equivalence_bytes,
-            baseline_equivalence=baseline_equivalence,
-        )
+        # `_classified_bucket` preserves O8's exact legacy classifier when
+        # no equivalence artifact is declared, and applies the declared
+        # artifact/signal rules on the extended path.
+        bucket = _classified_bucket(run)
         kill_signal = run.kill_signal if bucket == "killed" else None
-        if bucket == "killed" and kill_signal_artifact is not None and kill_signal is None:
-            # §3.6's own kill-signal rule: `kill_attribution` derives to
-            # `declared` from `kill_signal_artifact`'s own presence, and the
-            # model then requires a signal on EVERY killed entry -- so a
-            # mutant that would land here with no signal file did not meet
-            # the lane's own declared contract, and is `crashed` instead.
-            bucket = "crashed"
         buckets[bucket].append(
             _outcome_of(job, kill_signal=kill_signal, execution=run.execution)
         )

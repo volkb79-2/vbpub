@@ -595,7 +595,7 @@ def test_normal_completion_really_kills_a_real_descendant(
     def still_running(pid: int) -> bool:
         try:
             stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return False
         # A zombie has exited and cannot consume CPU or block the gate. Its
         # parent is the test process's init/subreaper, not this runner.

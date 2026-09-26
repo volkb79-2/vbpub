@@ -244,6 +244,35 @@ def test_direct_r0_plan_refusal_emits_a_complete_verdict(git_repo: GitRepo):
     assert verdict.claims[0].reason_code is ReasonCode.BAD_LANE_CONFIG
 
 
+def test_direct_r0_execution_refusal_without_result_emits_a_complete_verdict(
+    git_repo: GitRepo, monkeypatch
+):
+    git_repo.write("README.md", "committed\n")
+    commit = git_repo.commit_all("seed direct execution refusal")
+    failure = AssayError(
+        "execution plan refused before it returned a result",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.EXEC_FAILED,
+    )
+
+    def refuse_before_result(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(runner, "execute_plan", refuse_before_result)
+    verdict = runner.run_lane(
+        make_lane(argv=("check",)),
+        commit=commit,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="7.1.0",
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.EXEC_FAILED
+    assert verdict.claims[0].detail == str(failure)
+
+
 def test_snapshot_preparation_oserror_becomes_a_named_refusal(
     git_repo: GitRepo, monkeypatch
 ):
@@ -447,10 +476,21 @@ def test_snapshot_unit_refuses_a_symlink_as_its_declared_cwd(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("tracked_name", "kill_signal_artifact"),
+    (
+        "tracked_name",
+        "kill_signal_artifact",
+        "wants_coverage",
+        "equivalence_artifact",
+    ),
     [
-        ("tracked-report.json", None),
-        ("tracked-signal.json", "tracked-signal.json"),
+        ("tracked-report.json", None, True, "new-equivalence.json"),
+        (
+            "tracked-signal.json",
+            "tracked-signal.json",
+            True,
+            "new-equivalence.json",
+        ),
+        ("tracked-report.json", None, False, None),
     ],
 )
 def test_tracked_mutation_artifact_refusal_closes_every_live_reservation(
@@ -459,6 +499,8 @@ def test_tracked_mutation_artifact_refusal_closes_every_live_reservation(
     monkeypatch,
     tracked_name: str,
     kill_signal_artifact: str | None,
+    wants_coverage: bool,
+    equivalence_artifact: str | None,
 ):
     git_repo.write("src/mod.py", "value = True\n")
     git_repo.write("tracked-report.json", "{}\n")
@@ -492,16 +534,20 @@ def test_tracked_mutation_artifact_refusal_closes_every_live_reservation(
                     plan=make_plan(make_lane()),
                     snapshot=snapshot,
                     deadline=make_deadline(),
-                    wants_coverage=True,
-                    coverage_artifact="new-coverage.json",
-                    coverage_format="coverage-py-json",
+                    wants_coverage=wants_coverage,
+                    coverage_artifact=(
+                        "new-coverage.json" if wants_coverage else None
+                    ),
+                    coverage_format=(
+                        "coverage-py-json" if wants_coverage else None
+                    ),
                     coverage_producer=None,
                     process_runner=lambda *_a, **_k: pytest.fail(
                         "tracked artifacts must refuse before execution"
                     ),
                     clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
                     create_missing_parents=True,
-                    equivalence_artifact="new-equivalence.json",
+                    equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,
                     mutation_artifact=(
                         "tracked-report.json"
@@ -511,16 +557,21 @@ def test_tracked_mutation_artifact_refusal_closes_every_live_reservation(
                 )
 
     assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
-    assert len(reservations) == 3
+    expected_reservations = 3 if wants_coverage else 1
+    assert len(reservations) == expected_reservations
     assert all(item.closed for item in reservations)
-    if kill_signal_artifact is None:
+    if kill_signal_artifact is not None:
+        # The tracked kill signal is checked only after every output
+        # destination has been reserved and armed.
+        assert all(item.armed for item in reservations)
+    elif wants_coverage:
         # The tracked mutation report is rejected immediately after its
         # reservation is created, before that destination is armed.
         assert [item.armed for item in reservations] == [True, True, False]
     else:
-        # The tracked kill signal is checked only after every output
-        # destination has been reserved and armed.
-        assert all(item.armed for item in reservations)
+        # With no coverage or equivalence output, only the report reservation
+        # exists and it is rejected before arming.
+        assert [item.armed for item in reservations] == [False]
 
 
 def test_mutation_report_reservation_read_error_is_retained(
@@ -578,11 +629,32 @@ def test_mutation_report_reservation_read_error_is_retained(
     assert reservation.closed
 
 
+def test_non_utf8_ingested_mutation_report_is_a_named_artifact_refusal():
+    lane = make_lane()
+
+    with pytest.raises(AssayError, match="mutation report is not valid UTF-8") as caught:
+        runner._ingest_r2_report(
+            b"\xff",
+            lane=lane,
+            relocated_lane=lane,
+            plan=make_plan(lane),
+            snapshot=None,
+            prepared=None,
+            deadline=make_deadline(),
+            added=None,
+            project_prefix=PurePosixPath("."),
+        )
+
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+@pytest.mark.parametrize("has_diagnostics", [True, False])
 def test_whole_target_r2_refusal_names_the_lane_and_resolution_step(
-    git_repo: GitRepo,
+    git_repo: GitRepo, has_diagnostics: bool
 ):
     head, lane = _seed_r2_lane(git_repo, targets=("README.md",), argv=("check",))
-    diagnostics = StringIO()
+    diagnostics = StringIO() if has_diagnostics else None
 
     verdict = runner.run_lane(
         lane,
@@ -600,9 +672,10 @@ def test_whole_target_r2_refusal_names_the_lane_and_resolution_step(
     assert verdict.outcome is Outcome.ERROR
     assert verdict.claims[-1].reason_code is ReasonCode.BAD_LANE_CONFIG
     assert "outside judge.source_roots" in (verdict.claims[-1].detail or "")
-    assert "in lane 'package', resolving R2 whole-target mutation targets" in (
-        diagnostics.getvalue()
-    )
+    if diagnostics is not None:
+        assert "in lane 'package', resolving R2 whole-target mutation targets" in (
+            diagnostics.getvalue()
+        )
 
 
 @pytest.mark.parametrize(
@@ -657,8 +730,9 @@ def test_reuse_execution_reports_the_loaded_prior_campaign_state(
         assert message in diagnostics.getvalue()
 
 
+@pytest.mark.parametrize("has_diagnostics", [True, False])
 def test_reuse_execution_refuses_witness_replay_when_snapshot_pytest_config_is_parallel(
-    git_repo: GitRepo, monkeypatch
+    git_repo: GitRepo, monkeypatch, has_diagnostics: bool
 ):
     from assay import reuse
 
@@ -677,7 +751,7 @@ def test_reuse_execution_refuses_witness_replay_when_snapshot_pytest_config_is_p
         "run_mutation",
         lambda **_kwargs: runner.mutation.UNSUPPORTED,
     )
-    diagnostics = StringIO()
+    diagnostics = StringIO() if has_diagnostics else None
 
     verdict = runner.run_lane(
         lane,
@@ -694,7 +768,8 @@ def test_reuse_execution_refuses_witness_replay_when_snapshot_pytest_config_is_p
     )
 
     assert verdict.claims[-1].reason_code is ReasonCode.MUTATION_UNSUPPORTED
-    assert "witness replay is unsupported" in diagnostics.getvalue()
+    if diagnostics is not None:
+        assert "witness replay is unsupported" in diagnostics.getvalue()
 
 
 def test_reuse_source_read_refusal_is_rendered_as_a_complete_verdict(
