@@ -10765,7 +10765,11 @@ campaign must remain explicitly incomplete.
 `0a38e7d8ab99ea0483119223cf9b8e38184e85124ca37f631ee264fed7a135d1`
 (`lib/liveness.py:530`, `IsNot->Is`; source and mutated-file hashes are
 identical across these records) was classified differently in two full
-campaigns. On tree `b3df5602ad748997bd58cb383f89a8d957aa8f2a`, it was
+campaigns. This is not a controlled replay: between the judged trees, the
+production source was unchanged but two P6 tests were added (one placement
+refusal and one unreadable-PID-identity oracle), and the report/log were
+updated. That limits what can be inferred from the cross-run difference. On
+tree `b3df5602ad748997bd58cb383f89a8d957aa8f2a`, it was
 `killed` after 69.49 seconds and 675 completed tests, with the specific
 witness `tests/test_liveness.py::TestStateMachine::test_partial_stream_bytes_cannot_keep_a_silent_lane_alive`.
 On tree `6540f87761a66ff933c8bb45f81d8ac9117f407b`, it was `hung` after
