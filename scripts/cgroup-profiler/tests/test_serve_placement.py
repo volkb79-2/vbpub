@@ -872,6 +872,17 @@ class TestLeafReadingsAndKill:
         assert plc.kill() is False
         assert "cgroup.kill" in logged[-1]
 
+    def test_a_cgroup_kill_write_error_without_log_sink_is_false(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root)
+        plc.apply([101])
+
+        def fail_write(_path: str, _value: str) -> None:
+            raise OSError(1, "operation not permitted")
+
+        plc._write = fail_write
+        assert plc.kill() is False
+
 
 # ── §8.3 through the daemon: start / status / watch / stop ──────────────
 
