@@ -4325,3 +4325,18 @@ socket, or broadening the D-25 write whitelist. P6's Docker image therefore
 supplies `busctl` and its compose stack mounts only the host system bus socket
 read-only. The contract/design/README/consumer docs and focused oracles are
 updated together on the P6 repair branch.
+
+### RW-339 — 2026-09-26 18:16:08Z — P6 exact-tree R2 completed; two oracle repairs required
+
+The replacement P6 mutation campaign on quiet tree `b3df5602` completed at
+`2026-09-26T05:53:00.824604+00:00`: 312/312 candidates accounted for, 300
+killed, 12 survived, and zero equivalent, hung, crashed, or
+budget-exceeded. The separately read verdict is `FAIL/MUTANTS_SURVIVED`, exit
+1, after 13,518.851 seconds. Survivor triage accepts ten as contract
+equivalences and identifies two real oracle gaps: the non-ESRCH private-PID
+placement bridge guard and fail-closed PID identity on an `OSError`. Focused
+behavioral tests cover both in P6 repair commit `6540f877` on
+`rg55-followups-cgprofile-final`; the b3df5602 mutation receipt is diagnostic
+only, and fresh final short gates plus one replacement R2 are required before
+P6 release. P1's fresh Sol reviewer is concurrently running its own final
+gates; do not launch the P6 gate container until that gate slot is free.
