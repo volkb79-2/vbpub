@@ -4,7 +4,7 @@ id: nyxloom-P111-cli-extended-audit
 project: nyxloom
 title: "Audit and canonically document the primary Nyxloom CLI before cli-extended adoption"
 tier: frontier-review
-input_revision: "456164d528b11adea23b8812094bb510d4d5cfb4"
+input_revision: "dfee5e5878c853cb1d7322c1582ee877be520ed2"
 depends_on: []
 session: fresh
 source: {kind: user, ref: null}
