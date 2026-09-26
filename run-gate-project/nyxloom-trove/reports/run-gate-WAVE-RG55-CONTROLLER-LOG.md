@@ -4340,3 +4340,15 @@ behavioral tests cover both in P6 repair commit `6540f877` on
 only, and fresh final short gates plus one replacement R2 are required before
 P6 release. P1's fresh Sol reviewer is concurrently running its own final
 gates; do not launch the P6 gate container until that gate slot is free.
+
+### RW-340 — 2026-09-26 18:22:23Z — P6 replacement R2 launched asynchronously
+
+After the P6 test-only repair, the controller created a quiet detached
+worktree at `6540f87761a66ff933c8bb45f81d8ac9117f407b2` and launched the
+registered `r2` lane under a `setsid` owner PID `1190416`. The exact container
+is `run-gate-vbpub-r2-1190416-1790446819`; the 90-second acceptance check
+found it `running` in `dev-gates.slice` with `NanoCpus=3000000000`. Its
+progress stream is in the baseline pytest phase, with no verdict yet. The
+previous P6 campaign's measured rate gives an estimate of roughly 3h45–4h;
+the owner and container are left untouched between 25-minute-or-longer
+observations. P1's repaired R2 remains the other mutation lane.
