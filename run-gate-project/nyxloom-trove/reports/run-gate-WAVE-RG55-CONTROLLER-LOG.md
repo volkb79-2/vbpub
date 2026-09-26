@@ -4435,3 +4435,18 @@ yet exist and the adoption brief's ⟨P3⟩ fields remain unfilled until live pr
 and DAMON overhead are measured. At this check, the exact external container
 `run-gate-assay-selfhosted-1372147-14760-1790465048` was active for Assay B105;
 it is outside this wave and remains untouched.
+
+### RW-345 — 2026-09-26 23:46:32Z — host cgroup mount repair matched checked-in policy
+
+The read-only `host-escape` inspection runs `mdt doctor` as its preflight. It
+found the host cgroup2 mount missing `nsdelegate`, `memory_recursiveprot`, and
+`memory_hugetlb_accounting`, then restored those flags through the existing
+`CGROUP2_FLAGS=fix` policy. The same behavior is present in the checked-in
+`modern-debian-tools-python-debug/host-setup/scripts/mdt-dev-governance-reconcile.sh`;
+no additional host-setup code change is needed. The host reports
+`dev-gates.slice` loaded with `CPUQuotaPerSecUSec=5s`. The host
+`/run/cgprofile/ctl.sock` and cockpit-visible `/run/cgprofile/ctl.sock` are
+currently absent because the daemon is down and the devcontainer has no
+socket mount. Do not touch `/workspaces/dstdns`; reassess the socket carrier
+after the main daemon is up and use an explicitly mounted reviewer-owned probe
+client if feasible.
