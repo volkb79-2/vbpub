@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [7.1.1] - 2026-09-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=94009fbba09c798d8759dce5c4039db2ddb2b196 -->
+
+### Documentation
+- docs(assay): correct Wave C closeout date (4b3ff6e2)
+- docs(assay): close Wave C release records (35540ab6)
+
 ## [7.1.0] - 2026-09-25
 <!-- cmru: generated -->
 <!-- cmru: source-end=e5e9b95c5ac8be3452c93f1066f9436347f862fd -->
