@@ -207,6 +207,10 @@ project-local copy with a 21-day window. Shared target state is written to
 project-local window applies because that project redeclares the target. A project-level
 `age_window_days` by itself does not change shared root targets.
 
+A release timestamp exactly at the age cutoff is eligible; a timestamp later
+than the cutoff is too new. This boundary rule also applies to literal rolling
+OCI tags.
+
 For `cmru versions init`, package names and ranges come from the project's declared discovery
 scope. `scope = "shipped"` is the default: it includes `requirements.in`, Python
 `project.dependencies`, the Python extras listed in the project's `pypi_extras`, npm

@@ -28,6 +28,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Testing
 - Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
+- Cover inclusive rolling-OCI age cutoffs, rolling-result override metadata, and the no-warning return contract.
 - Cover discovery-scope choices, rolling-tag digest changes, Docker attestation indexes, and loadable `.go` consumer examples.
 
 <!-- cmru: release history -->

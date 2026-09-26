@@ -4,12 +4,69 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [7.1.0] - 2026-09-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=e5e9b95c5ac8be3452c93f1066f9436347f862fd -->
+
 ### Added
+- feat(assay): add provenance-safe selective mutation reuse (d43167c6)
+- feat(assay): add bounded live gate report (0624ab95)
+
+### Fixed
+- fix(assay): preserve legacy Topos release smoke (7d45deaa)
+- fix(assay): report progress for nested gate runs (11ff984f)
+- fix(assay): name shard-scoped rejudge refusal (045dac4c)
+
+### Changed
+- merge: current main into B106 P5 worktree (bf2e5ab2)
+- perf(assay): bound mutation liveness monitor state (09d1f38d)
+- merge: current main into Wave C P2 worktree (f7895bd2)
+- Merge branch 'main' into assay-b080-js-default-arg (c5a13a4a)
+- Preserve Wave C refusal evidence and doc anchors (a0daf185)
+- Fix Wave C refusal diagnostics and classification (e7c5dbe4)
+- Merge current main into Wave C P1 (40bd4906)
+- Fix statement-less JavaScript default-arg coverage (86c16f85)
+- Record Wave C P0 tester-unified gate evidence (24fad0c2)
+
+### Documentation
+- docs(assay): record Wave C P5 gate pass (b5014bc3)
+- docs(assay): record stale-base P5 gate stop (a0e2fe23)
+- docs(assay): record B106 v13 reuse contract (3f117b27)
+- docs(assay): record Wave C P4 gate result (dc7c5cbe)
+- docs(assay): carve Wave C P4 report command (63d618ac)
+- docs(assay): record Wave C P3 gate evidence (5c83bf92)
+- docs(assay): record P2 final gate evidence (587c4a57)
+- docs(assay): tighten B106 verdict and replay contract (247cb72a)
+- docs(assay): approve B106 provenance-safe reuse as P5 (8d79a48a)
+- docs(assay): reconcile Wave C gate evidence (b42156a4)
+- docs(assay): record Wave C P1 review and gate (e6c7685a)
+- docs(assay): file selective mutation rerun use case (0777a571)
+- docs(assay): record Wave C P1 review (b925d203)
+- docs(assay): correct resolved B028 cross-reference (c0ce884f)
+- docs(assay): carve B080 default-arg classification (b13707ad)
+- docs(assay): correct Wave C review chronology (26ec6b39)
+- docs(assay): close v7 release records and log Wave C findings (36723684)
+- docs(assay): Wave C handoff -- fix-verification corrections (9dcb7a3e)
+- docs(assay): Wave C handoff for a third-party controller (B080, refusals, liveness, B100) (ab66c149)
+- docs(assay): close B101 release records (a3e0dcce)
+
+### Testing
+- test(assay): repair v13 self-hosted gate fixtures (c28fbbb9)
+- test(assay): preserve verdict successors through v13 (222c8cb8)
+- test(assay): align historical gate check with schema v13 (8aa1d61d)
+- test(assay): preserve qualification diagnostic stub (f21f9629)
+- test(assay): align rejudge message assertions (9595548e)
+- test(assay): guard all Wave C documentation anchors (5ba8e0a5)
+- test(assay): close Wave C P1 adversarial case (e29c1fb0)
+
+### Added (hand-written release detail)
 - feat(assay): add provenance-safe selective native R2 reruns using current
   pytest kill-witness replay, with bounded v13 candidate inventory and a
   full-suite fallback for uncertain cases (B106)
 
-### Fixed
+### Fixed (hand-written release detail)
 - fix(assay): classify istanbul `default-arg` signature lines from the
   enclosing function's call count (`fnMap`/`f`) when an arm of that same
   branch is attributed to the node's physical line, preserving its branch arcs
@@ -29,19 +86,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   ownership failures, and classify unknown/stale `--rejudge` ids as
   `BAD_LANE_CONFIG` while preserving corrupt-store errors (B081/B094)
 
-### Documentation
+### Documentation (hand-written release detail)
 - docs(assay): explain Git ownership refusals, rejudge input classification,
   and the consumer remedies (B081/B094)
 - docs(assay): document selective R2 reuse, v12 cold starts, and supported
   JavaScript R2 ingestion (B106)
 
-### Testing
+### Testing (hand-written release detail)
 - test(assay): drive unknown, stale, valid, and corrupt `--rejudge` state
   through the CLI and `assay verify`; guard the attestation-timeout
   infrastructure forward (B094/B025)
 - test(assay): verify B106 identity inventories and current pytest witness
   replay, including fallback to a full run (B106)
-<!-- cmru: release history -->
 
 ## [7.0.0] - 2026-09-23
 <!-- cmru: generated -->

@@ -726,8 +726,9 @@ A target's exact `version` override MUST carry a non-empty `reason`. If its vers
 than the age cutoff in any configured source, it MUST carry a future ISO-date `expires`; CMRU
 refuses an expired override. Otherwise CMRU selects the highest SemVer-compatible, age-eligible
 version. The cutoff is `resolve time - age_window_days`, and releases exactly at the cutoff are
-eligible. When an age-window refusal is determined by Go `.info` commit time or publisher-created
-OCI time, the refusal diagnostic MUST include the corresponding weaker-evidence warning.
+eligible for every source family, including literal rolling OCI tags. When an age-window refusal
+is determined by Go `.info` commit time or publisher-created OCI time, the refusal diagnostic MUST
+include the corresponding weaker-evidence warning.
 
 Root targets and their `resolved` state belong to `cmru.orchestration.toml` and use the root age
 window. A project target declaration or overlay is project-local: it uses that project's

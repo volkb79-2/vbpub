@@ -106,7 +106,8 @@ project manifests using the configurable discovery scope: shipped dependencies b
 including explicitly selected Python extras, or all supported manifest groups when opted in.
 `resolve` is the explicit write step for resolved state and native lock or
 constraint outputs; `check` queries registries and reports the current recorded and eligible
-versions without writing. Go `.info` times are VCS commit times, and OCI image-created timestamps
+versions without writing. A release timestamp exactly at the age cutoff is eligible; only later
+timestamps are refused. Go `.info` times are VCS commit times, and OCI image-created timestamps
 are publisher supplied; CMRU calls both out in warnings and the report. For multi-platform OCI
 indexes, known Docker attestation manifests are excluded from runtime age calculation. Go targets
 also check a constrained pseudo-version and use

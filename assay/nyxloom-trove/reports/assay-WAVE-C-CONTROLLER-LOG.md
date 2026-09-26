@@ -1,6 +1,7 @@
 # Assay Wave C controller log
 
-**Status:** IN PROGRESS. The source handoff is
+**Status:** COMPLETE. Wave C shipped as Assay 7.1.0 on 2026-09-25; B105 is
+the agreed next package before M7. The source handoff is
 [`WAVE-PROMPT-2026-09-23-wave-c-refusals-js-liveness.md`](../WAVE-PROMPT-2026-09-23-wave-c-refusals-js-liveness.md).
 
 ## Checkout and baseline
@@ -422,3 +423,76 @@ native R2 mutation over the full source, R3 canary qualification, and a
 verifier-accepted report produced from the final B105 tree. The report, not a
 review, is the required evidence. See the P5 report for the recommended
 separate named gate and acceptance details.
+
+## Release and final closeout — 2026-09-26
+
+The single Wave C release is complete. The release used `origin/main` at P5
+source tip `e5e9b95c5ac8be3452c93f1066f9436347f862fd` for its dry run and
+transaction; the shared primary checkout had concurrent RG-55 commits and was
+not used as the release base. CMRU selected the minor release `assay-v7.1.0`.
+Its immutable candidate/tag commit is `f8999975bdc54c0ac8e0a8cb2a6ff9e3e5c1ae4f`,
+whose parent is that exact P5 source tip.
+
+The release's registered `tester-unified` gate passed on the tagged candidate
+with all 13 expected `ASSAY_GATE_PHASE` markers,
+`ASSAY_GATE_CONTAINER_EXIT=0`, and `ASSAY_REGISTERED_GATE_COMPLETE=1`. It ran
+for 1,428.8 seconds in container
+`run-gate-assay-selfhosted-996702-27557-1790368267`, capped at 3 CPUs under
+`dev-gates.slice`. The captured 6,723-byte gate output is preserved at
+[`assay-WAVE-C-release-gate-2026-09-25-f8999975.log`](assay-WAVE-C-release-gate-2026-09-25-f8999975.log),
+SHA-256 `93b7ba458db216fe5c758ff4b37128711ca6128f4bb0032e805be9ad5228d04a`.
+The outer CMRU transcript is preserved byte-for-byte in
+[`assay-WAVE-C-release-transaction-2026-09-25-f8999975.log.gz`](assay-WAVE-C-release-transaction-2026-09-25-f8999975.log.gz):
+its 5,911-byte raw SHA-256 is
+`67aa265637a5655c596ecf9fb8a7837129c0f0b5c52c2057f2d3cfaf01afaf12`, and the
+gzip artifact SHA-256 is `2aa0fcc6e572b461da9817fac7126b8332847b803b246be02664ccbae935bab9`;
+the publication step output is at
+[`assay-WAVE-C-release-publish-2026-09-25-f8999975.log`](assay-WAVE-C-release-publish-2026-09-25-f8999975.log),
+SHA-256 `1b6d9fac7d1c70a812842fa162d435a89368d078149f4f840e63cedaf4133912`.
+
+CMRU's outer transaction reported `CMRU_RELEASE_EXIT=1` because a concurrent
+push advanced `origin/main` before its final promotion; the candidate was
+retained, not rebased. Tagging and publication had already succeeded. Recovery
+merge `ecaa74b7772e3ee69a621a71157ab13cf4d55120` has parents
+`af1aca25d6a384790736ade6114cec290a7d0525` and the exact tagged candidate
+`f8999975...`; `f8999975` is an ancestor of `origin/main`. This keeps the
+published, gated source tree intact while including it on current main.
+
+GitHub release [assay-v7.1.0](https://github.com/volkb79-2/vbpub/releases/tag/assay-v7.1.0)
+contains the wheel, wheel sidecar, pyz, pyz sidecar, release manifest, and
+manifest sidecar. The three sidecars verified successfully. SHA-256 values:
+
+- `assay-7.1.0.pyz`: `08ec434abc7495db7153abd7801ff2083af825d704f1800e2018c90546d3ab3c`
+- `assay-7.1.0-py3-none-any.whl`: `4a1cf23a970919bbf0c916ca91170a22d48d47976438e227c965100973191493`
+- `release-manifest.json`: `23a949101d83eacb1e0de7651343e115a421ebd4c6cdae2cf3ee26e63f69dca7`
+
+The released wheel is installed in `/home/vscode/.venv`; `pip show assay`
+reports version `7.1.0`, and the installed CLI reports `assay 7.1.0`.
+
+The dstdns inbox notification was written according to its then-current
+`.assay-inbox/CONTRACT.md`, with the pyz sidecar digest and the landed
+B080/B089 items; its notes also cover B106 selective reuse. Its SHA-256 is
+`4c46ef6ce096d75e8b16f019b56350c915481e6095d5301cc444b06b22e0b46e`; no
+dstdns tracked source was changed. RG-55 received the release/version update
+in thread `01a0984e-414f-7b32-80ee-932767086470`; its response confirmed the
+release does not alter the active source-backed P1 campaign. No RG-55 worktree
+or branch was changed.
+
+The operator-approved notice about the unrelated stale CMRU candidate at
+`0950fcea` could not be delivered to thread
+`01a0d02b-2c7a-7683-8355-1340ec6a9aab`: messaging refused because that thread
+already had an active writer. Its worktree was left untouched. That older
+candidate's mutation campaign ended with three survivors; the controller's
+later update identifies a separate current run based on `ecaa74b7`.
+
+After the release, the hand-written notes that CMRU leaves under `[Unreleased]`
+were moved into the generated `7.1.0` section of [`CHANGES.md`](../../CHANGES.md),
+and `[Unreleased]` is empty. This final commit contains the documentation plus
+the captured tester-unified gate, CMRU transaction, and publication logs. It
+does not change the released artifact or its tagged source. No new test suite
+or gate was run for this docs-only closeout.
+
+B105 remains the agreed next package after Wave C and before M7. The ordinary
+Wave C release lane is R0-only; B105 must independently qualify all production
+`src/assay` source at R0–R3 and retain an `assay verify`-accepted report for
+its exact final tree. Reviews do not replace that measurement.
