@@ -195,3 +195,45 @@ review, and serial merge remain open.
   forecast, not a lane deadline or evidence of elapsed campaign time; the
   self-qualification lane has an unbounded campaign budget and the full gate
   will verify the actual complete candidate inventory.
+
+### Stopped full attempt on e79eb8f5 — 2026-09-26
+
+- The controller's full `self-qualification` run used source commit
+  `e79eb8f507d2060ff1429d1ea13ed3fe671f21da` (tree
+  `a43d50644256f78c610dd14ced0a4b3a4e85ac29`) in the CIU worktree
+  `assay-b105-self-qualification`. The repeated R0/R1 preflight passed and
+  `assay verify` accepted its report. The native campaign plan contained
+  3,760 candidates; the progress stream recorded 39 candidate events before
+  the controller deliberately stopped the run after 38 candidate completions
+  to investigate evidence-integrity defects. `assay analyze progress`
+  confirmed the captured stream belongs to e79 and records the 3,760-candidate
+  campaign. This did not complete R2, run R3, or produce final accepted
+  qualification evidence.
+- The detached gate's actual exit was 143. Its run-gate log is
+  `/tmp/b105-self-qualification-e79.log`; the detailed run-gate evidence is
+  `/tmp/run-gate/run-gate-vbpub-b105-ciu-root-20260926-self-qualification-903325-1790419726.log`.
+  The reported 987 MiB peak and 20-second memory-full stall are measurements
+  from the stopped run, not test criteria or a verdict.
+
+### Controller evidence-integrity remediation — 2026-09-26
+
+- A GPT-6-Sol xhigh review found that mutant pytest sessions could replace the
+  retained preflight coverage artifact and that the outer gate did not bind a
+  passing verdict to the captured source and lane. The full mutation lane now
+  receives no B105 coverage-export variables. Each preflight gets a persistent
+  reserved attempt directory; its raw coverage filename includes the exact
+  source commit and tree, timestamp-only repeats preserve the first raw report,
+  and changed evidence cannot replace it. This keeps corrected commits and
+  retries separate.
+- The external checker now validates the expected commit/tree, lane, declared
+  rigor, PASS outcome and claims, producer exit, Assay version, and wheel
+  digest. The controller runs it from the private exact-OID source clone, and
+  the final guard checks HEAD, its tree, and a clean worktree.
+- The positive report fixtures pass Assay's verifier for both R0/R1 and
+  R0-R3; the nonzero-producer test starts from a verifier-accepted PASS report.
+  Focused checks passed: `python -m pytest tests/test_self_lane.py
+  tests/test_b105_report_check.py -q` (24 passed), `git diff --check`, shell
+  syntax, and TOML parsing. A fresh GPT-6-Sol xhigh follow-up found no
+  actionable findings. It noted that the private-clone invocation and final
+  worktree guard are currently covered by source assertions; the registered
+  non-R2 gates remain pending. No final B105 pass is claimed.

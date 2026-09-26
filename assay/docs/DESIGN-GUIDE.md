@@ -1971,9 +1971,14 @@ gate runs it first and verifies its report; if R0 or R1 fails, the controller
 stops before launching the long mutation campaign. Operators can also invoke
 the preflight directly while bringing coverage to its required floor. The
 gate copies coverage.py's raw JSON arcs out of the disposable baseline
-snapshot into `.assay/coverage-self-qualification-preflight-snapshot.json`, so
+snapshot into `.assay/coverage-self-qualification-preflight-snapshots/`, so
 each unvisited branch has a reviewable source/destination arc rather than only
-a line-level summary.
+a line-level summary. Each attempt gets a reserved directory that remains in
+place across retries; its filename carries the captured source commit and tree.
+A corrected commit gets a separate archive, and a repeated attempt cannot
+replace evidence with different coverage data. Equivalence for one attempt
+ignores only coverage.py's generated timestamp. The full mutation lane does
+not export per-mutant coverage to this archive directory.
 
 Coverage.py's default exclusions are too broad for this claim: they silently
 remove Protocol method bodies and `TYPE_CHECKING` blocks from the denominator.

@@ -25,11 +25,18 @@ cd "$project"
 mkdir -p .assay
 source_commit="$(git rev-parse HEAD)"
 source_tree="$(git rev-parse 'HEAD^{tree}')"
+[[ "$(git rev-parse "${source_commit}^{tree}")" == "$source_tree" ]] \
+  || die "captured source commit does not resolve to the captured tree"
 ensure_source_unchanged() {
+  local worktree_status
   [[ "$(git rev-parse HEAD)" == "$source_commit" ]] \
     || die "HEAD changed during B105 qualification"
   [[ "$(git rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
     || die "source tree changed during B105 qualification"
+  worktree_status="$(git status --porcelain --untracked-files=all)" \
+    || die "cannot inspect worktree changes during B105 qualification"
+  [[ -z "$worktree_status" ]] \
+    || die "worktree files changed during B105 qualification"
 }
 
 echo "B105_SOURCE_COMMIT=$source_commit"
@@ -141,17 +148,36 @@ assert pytest.__version__ and coverage.__version__
 print(f"B105_TEST_CLOSURE=pytest-{pytest.__version__},coverage-{coverage.__version__}")
 PYEOF
 
+wheel_digest="$(sha256sum "$wheel" | cut -d' ' -f1)"
+
 export PATH="$scratch/run-venv/bin:$PATH"
 assay_bin="$scratch/run-venv/bin/assay"
 
 run_and_verify_lane() {
-  local lane="$1" run_status=0
+  local lane="$1" run_status=0 expected_rigor coverage_archive_root coverage_archive_attempt
   local verdict_path=".assay/verdict-$lane.json"
   local progress_path=".assay/progress-$lane.jsonl"
   local state_path=".assay/mutation-state-$lane"
 
-  export ASSAY_B105_COVERAGE_SOURCE=".assay/coverage-$lane.json"
-  export ASSAY_B105_COVERAGE_ARCHIVE="$project/.assay/coverage-$lane-snapshot.json"
+  case "$lane" in
+    self-qualification-preflight)
+      expected_rigor="R0,R1"
+      export ASSAY_B105_COVERAGE_SOURCE=".assay/coverage-$lane.json"
+      coverage_archive_root="$project/.assay/coverage-self-qualification-preflight-snapshots"
+      mkdir -p "$coverage_archive_root"
+      coverage_archive_attempt="$(mktemp -d "$coverage_archive_root/attempt.XXXXXXXX")"
+      export ASSAY_B105_COVERAGE_ARCHIVE_DIR="$coverage_archive_attempt"
+      export ASSAY_B105_SOURCE_COMMIT="$source_commit"
+      export ASSAY_B105_SOURCE_TREE="$source_tree"
+      echo "B105_COVERAGE_ARCHIVE_DIR=$coverage_archive_attempt"
+      echo "B105_COVERAGE_ARCHIVE=$coverage_archive_attempt/coverage-self-qualification-preflight-snapshot-$source_commit-$source_tree.json"
+      ;;
+    self-qualification)
+      expected_rigor="R0,R1,R2,R3"
+      unset ASSAY_B105_COVERAGE_SOURCE ASSAY_B105_COVERAGE_ARCHIVE_DIR \
+        ASSAY_B105_SOURCE_COMMIT ASSAY_B105_SOURCE_TREE
+      ;;
+  esac
 
   echo "B105_PHASE=assay-run-$lane"
   if "$assay_bin" run "$lane" --file assay.toml \
@@ -167,6 +193,22 @@ run_and_verify_lane() {
 
   echo "B105_PHASE=assay-verify-$lane"
   "$assay_bin" verify "$verdict_path" || return 2
+  if [[ $run_status -eq 0 ]]; then
+    echo "B105_PHASE=verify-source-bound-report-$lane"
+    "$scratch/run-venv/bin/python" \
+      "$scratch/source/assay/tools/b105_report_check.py" \
+      --report "$verdict_path" \
+      --repo-root "$scratch/source" \
+      --expected-commit "$source_commit" \
+      --expected-tree "$source_tree" \
+      --expected-lane "$lane" \
+      --expected-rigor "$expected_rigor" \
+      --expected-version "$version" \
+      --expected-wheel-sha256 "$wheel_digest" \
+      --producer-exit "$run_status" || return 2
+  else
+    return "$run_status"
+  fi
   [[ $run_status -eq 0 ]] || return "$run_status"
   echo "B105_VERIFIED_LANE=$lane"
 }
@@ -195,25 +237,6 @@ else
 fi
 
 run_and_verify_lane self-qualification
-
-# Independently bind the emitted judge provenance to the wheel bytes that this
-# gate built and installed. A matching version string alone is not provenance.
-wheel_digest="$(sha256sum "$wheel" | cut -d' ' -f1)"
-"$scratch/run-venv/bin/python" - \
-  .assay/verdict-self-qualification.json "$version" "$wheel_digest" <<'PYEOF'
-import json
-import sys
-
-path, expected_version, expected_digest = sys.argv[1:]
-document = json.load(open(path, encoding="utf-8"))
-identity = document.get("judge_provenance")
-assert isinstance(identity, dict), "verdict has no judge_provenance"
-assert identity.get("artifact") == "wheel", identity
-assert identity.get("digest_algorithm") == "sha256", identity
-assert identity.get("digest") == expected_digest, identity
-assert identity.get("version") == expected_version, identity
-assert document.get("assay_version") == expected_version, document.get("assay_version")
-PYEOF
 
 ensure_source_unchanged
 

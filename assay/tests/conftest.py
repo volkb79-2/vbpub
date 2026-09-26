@@ -57,27 +57,48 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Copy B105's raw coverage JSON out of its disposable snapshot.
+    """Retain preflight coverage JSON without replacing different evidence.
 
     The preflight's verifier report carries summary lines, while this artifact
     retains the exact coverage.py arcs needed to review each missing branch.
-    Both paths are supplied explicitly by the registered gate; ordinary test
-    runs leave both variables unset and do nothing here.
+    The registered preflight supplies these values; ordinary and full mutation
+    lane runs leave them unset. Repeated equivalent baseline sessions
+    are harmless, but different coverage evidence may never replace the report.
+    Coverage.py's generated timestamp is ignored for equivalence; the original
+    raw report remains retained.
     """
     del session, exitstatus
     source_name = os.environ.get("ASSAY_B105_COVERAGE_SOURCE")
-    archive_name = os.environ.get("ASSAY_B105_COVERAGE_ARCHIVE")
-    if source_name is None and archive_name is None:
+    archive_dir_name = os.environ.get("ASSAY_B105_COVERAGE_ARCHIVE_DIR")
+    source_commit = os.environ.get("ASSAY_B105_SOURCE_COMMIT")
+    source_tree = os.environ.get("ASSAY_B105_SOURCE_TREE")
+    identity = (archive_dir_name, source_commit, source_tree)
+    if source_name is None and all(value is None for value in identity):
         return
-    if source_name is None or archive_name is None:
-        raise RuntimeError("B105 coverage export requires both explicit paths")
+    if source_name is None or any(value is None for value in identity):
+        raise RuntimeError(
+            "B105 coverage export requires the source path, attempt directory, "
+            "and source commit/tree"
+        )
 
     source = Path(source_name)
-    archive = Path(archive_name)
+    archive_dir = Path(archive_dir_name)
     if source.is_absolute() or ".." in source.parts:
         raise RuntimeError("B105 coverage source must stay within the snapshot")
-    if not archive.is_absolute():
-        raise RuntimeError("B105 coverage archive path must be absolute")
+    if not archive_dir.is_absolute():
+        raise RuntimeError("B105 coverage archive directory must be absolute")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_commit):
+        raise RuntimeError("B105 source commit must be a full Git object id")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_tree):
+        raise RuntimeError("B105 source tree must be a full Git object id")
+    if not re.fullmatch(r"attempt\.[A-Za-z0-9]{8}", archive_dir.name):
+        raise RuntimeError(
+            "B105 coverage archive directory must be a unique attempt directory"
+        )
+    archive = archive_dir / (
+        "coverage-self-qualification-preflight-snapshot-"
+        f"{source_commit}-{source_tree}.json"
+    )
 
     source_info = source.lstat()
     if not stat.S_ISREG(source_info.st_mode):
@@ -94,13 +115,51 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         raise RuntimeError(f"B105 coverage exclusion check failed: {exc}") from exc
     if source.resolve() == archive.resolve(strict=False):
         raise RuntimeError("B105 coverage source and archive path must differ")
-    if not archive.parent.is_dir() or archive.parent.is_symlink():
-        raise RuntimeError(f"B105 coverage archive directory is not a real directory: {archive.parent}")
+    if not archive_dir.is_dir() or archive_dir.is_symlink():
+        raise RuntimeError(
+            f"B105 coverage archive directory is not a real directory: {archive_dir}"
+        )
 
     temporary = archive.with_name(f".{archive.name}.{os.getpid()}.tmp")
-    with source.open("rb") as input_stream, temporary.open("xb") as output_stream:
-        shutil.copyfileobj(input_stream, output_stream)
-    os.replace(temporary, archive)
+    try:
+        with source.open("rb") as input_stream, temporary.open(
+            "xb"
+        ) as output_stream:
+            shutil.copyfileobj(input_stream, output_stream)
+        try:
+            os.link(temporary, archive)
+        except FileExistsError:
+            try:
+                archive_info = archive.lstat()
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "B105 coverage archive disappeared during creation"
+                ) from exc
+            if not stat.S_ISREG(archive_info.st_mode):
+                raise RuntimeError(
+                    f"B105 coverage archive is not a regular file: {archive}"
+                )
+            if not _same_coverage_evidence(temporary, archive):
+                raise RuntimeError(
+                    "refusing to overwrite retained B105 baseline coverage "
+                    "with different coverage evidence"
+                )
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _same_coverage_evidence(left: Path, right: Path) -> bool:
+    """Compare coverage records while excluding coverage.py's run timestamp."""
+    try:
+        left_document = json.loads(left.read_text(encoding="utf-8"))
+        right_document = json.loads(right.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    for document in (left_document, right_document):
+        metadata = document.get("meta") if isinstance(document, dict) else None
+        if isinstance(metadata, dict):
+            metadata.pop("timestamp", None)
+    return left_document == right_document
 
 
 def _validate_b105_exclusion_inventory(coverage_document, exclusion_map) -> None:

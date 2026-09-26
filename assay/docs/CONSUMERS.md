@@ -101,9 +101,16 @@ fi
 
 The gate writes `.assay/verdict-self-qualification.json` and
 `.assay/progress-self-qualification.jsonl`, plus
-`.assay/coverage-self-qualification-snapshot.json` with the raw coverage.py
-JSON from the exact baseline snapshot. The gate itself runs the selected
-worktree's installed CLI against the report before printing
+`.assay/coverage-self-qualification-preflight-snapshots/` with one reserved
+`attempt.<id>/` directory per preflight attempt. Its raw coverage.py JSON
+filename includes the captured source commit and tree, so a corrected commit
+gets a separate archive and cannot reuse an earlier baseline's evidence. The
+attempt directory remains in place to prevent a retry from reusing its name.
+The full mutation lane does not write candidate coverage into this archive
+directory.
+The gate itself runs the selected worktree's installed CLI against each report
+and independently checks its expected commit, lane, rigor, PASS outcome,
+producer exit, and wheel provenance before printing
 `ASSAY_SELF_QUALIFICATION_VERIFIED=1`. To inspect the artifact again from the
 Assay checkout, run:
 

@@ -146,10 +146,9 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     assert lane["artifacts"] == [
         ".assay/verdict-self-qualification.json",
         ".assay/progress-self-qualification.jsonl",
-        ".assay/coverage-self-qualification-snapshot.json",
         ".assay/verdict-self-qualification-preflight.json",
         ".assay/progress-self-qualification-preflight.jsonl",
-        ".assay/coverage-self-qualification-preflight-snapshot.json",
+        ".assay/coverage-self-qualification-preflight-snapshots",
     ]
 
     preflight = run_gate["lanes"][PREFLIGHT_ID]
@@ -161,7 +160,7 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     assert preflight["artifacts"] == [
         ".assay/verdict-self-qualification-preflight.json",
         ".assay/progress-self-qualification-preflight.jsonl",
-        ".assay/coverage-self-qualification-preflight-snapshot.json",
+        ".assay/coverage-self-qualification-preflight-snapshots",
     ]
 
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(
@@ -172,9 +171,16 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     assert "git clone --no-local --no-checkout" in script
     assert "--require-hashes" in script
     assert "--require-judge-provenance" in script
-    assert 'identity.get("digest") == expected_digest' in script
     assert 'export ASSAY_B105_COVERAGE_SOURCE=".assay/coverage-$lane.json"' in script
-    assert 'export ASSAY_B105_COVERAGE_ARCHIVE="$project/.assay/coverage-$lane-snapshot.json"' in script
+    assert 'coverage_archive_root="$project/.assay/coverage-self-qualification-preflight-snapshots"' in script
+    assert 'export ASSAY_B105_COVERAGE_ARCHIVE_DIR="$coverage_archive_attempt"' in script
+    assert 'coverage_archive_attempt="$(mktemp -d "$coverage_archive_root/attempt.XXXXXXXX")"' in script
+    assert "B105_COVERAGE_ARCHIVE=$coverage_archive_attempt/coverage-self-qualification-preflight-snapshot-$source_commit-$source_tree.json" in script
+    assert "unset ASSAY_B105_COVERAGE_SOURCE ASSAY_B105_COVERAGE_ARCHIVE_DIR" in script
+    assert 'git status --porcelain --untracked-files=all' in script
+    assert '"$scratch/source/assay/tools/b105_report_check.py"' in script
+    assert '--repo-root "$scratch/source"' in script
+    assert "tools/b105_report_check.py" in script
     assert '"$assay_bin" verify "$verdict_path"' in script
     assert "run_and_verify_lane self-qualification-preflight" in script
     assert "B105_STOPPED_BEFORE_R2=preflight-failed" in script
@@ -223,8 +229,14 @@ def test_preflight_measures_the_same_complete_source_inventory_before_r2():
     assert preflight.isolation == qualification.isolation
     assert preflight.judge.mutation is None
     assert preflight.judge.canary is None
-    assert "ASSAY_B105_COVERAGE_SOURCE" in preflight.env_passthrough
-    assert "ASSAY_B105_COVERAGE_ARCHIVE" in preflight.env_passthrough
+    b105_coverage_env = {
+        "ASSAY_B105_COVERAGE_SOURCE",
+        "ASSAY_B105_COVERAGE_ARCHIVE_DIR",
+        "ASSAY_B105_SOURCE_COMMIT",
+        "ASSAY_B105_SOURCE_TREE",
+    }
+    assert b105_coverage_env.isdisjoint(qualification.env_passthrough)
+    assert b105_coverage_env.issubset(preflight.env_passthrough)
 
 
 def test_b105_coverage_export_requires_explicit_paths_and_archives_raw_json(
@@ -239,22 +251,94 @@ def test_b105_coverage_export_requires_explicit_paths_and_archives_raw_json(
         )
     )
     coverage_document = {
+        "meta": {"timestamp": "2026-09-26T10:00:00.000000"},
         "files": {
             path: {"excluded_lines": entry["lines"]}
             for path, entry in exclusion_map["files"].items()
-        }
+        },
+        "totals": {"covered_lines": 17},
     }
     source.write_text(json.dumps(coverage_document), encoding="utf-8")
-    archive_dir = tmp_path / "worktree" / ".assay"
-    archive_dir.mkdir(parents=True)
-    archive = archive_dir / "coverage.json"
+    archive_root = tmp_path / "worktree" / ".assay" / "coverage-snapshots"
+    first_attempt = archive_root / "attempt.ABCDEFGH"
+    first_attempt.mkdir(parents=True)
+    first_archive = first_attempt / (
+        "coverage-self-qualification-preflight-snapshot-"
+        f"{'a' * 40}-{'b' * 40}.json"
+    )
 
     monkeypatch.chdir(snapshot)
     monkeypatch.setenv("ASSAY_B105_COVERAGE_SOURCE", ".assay/coverage.json")
-    monkeypatch.setenv("ASSAY_B105_COVERAGE_ARCHIVE", str(archive))
+    monkeypatch.setenv("ASSAY_B105_COVERAGE_ARCHIVE_DIR", str(first_attempt))
+    monkeypatch.setenv("ASSAY_B105_SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setenv("ASSAY_B105_SOURCE_TREE", "b" * 40)
     archive_b105_coverage(session=None, exitstatus=0)
 
-    assert archive.read_bytes() == source.read_bytes()
+    assert first_archive.read_bytes() == source.read_bytes()
+    retained = first_archive.read_bytes()
+    coverage_document["meta"]["timestamp"] = "2026-09-26T10:01:00.000000"
+    source.write_text(json.dumps(coverage_document), encoding="utf-8")
+    archive_b105_coverage(session=None, exitstatus=0)
+    assert first_archive.read_bytes() == retained
+
+    second_attempt = archive_root / "attempt.IJKLMNOP"
+    second_attempt.mkdir()
+    second_archive = second_attempt / (
+        "coverage-self-qualification-preflight-snapshot-"
+        f"{'c' * 40}-{'d' * 40}.json"
+    )
+    monkeypatch.setenv("ASSAY_B105_COVERAGE_ARCHIVE_DIR", str(second_attempt))
+    monkeypatch.setenv("ASSAY_B105_SOURCE_COMMIT", "c" * 40)
+    monkeypatch.setenv("ASSAY_B105_SOURCE_TREE", "d" * 40)
+    coverage_document["totals"] = {"covered_lines": 18}
+    source.write_text(json.dumps(coverage_document), encoding="utf-8")
+    archive_b105_coverage(session=None, exitstatus=0)
+
+    assert second_archive.read_bytes() == source.read_bytes()
+    assert first_archive.read_bytes() == retained
+
+
+def test_b105_coverage_export_refuses_to_replace_different_coverage_evidence(
+    tmp_path, monkeypatch
+):
+    snapshot = tmp_path / "snapshot"
+    source = snapshot / ".assay" / "coverage.json"
+    source.parent.mkdir(parents=True)
+    exclusion_map = json.loads(
+        (PROJECT_ROOT / "tests/fixtures/b105-coverage-exclusions.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    coverage_document = {
+        "meta": {"timestamp": "2026-09-26T10:00:00.000000"},
+        "files": {
+            path: {"excluded_lines": entry["lines"]}
+            for path, entry in exclusion_map["files"].items()
+        },
+        "totals": {"covered_lines": 17},
+    }
+    source.write_text(json.dumps(coverage_document), encoding="utf-8")
+    archive_dir = tmp_path / "worktree" / ".assay" / "coverage-snapshots" / "attempt.ABCDEFGH"
+    archive_dir.mkdir(parents=True)
+    archive = archive_dir / (
+        "coverage-self-qualification-preflight-snapshot-"
+        f"{'a' * 40}-{'b' * 40}.json"
+    )
+
+    monkeypatch.chdir(snapshot)
+    monkeypatch.setenv("ASSAY_B105_COVERAGE_SOURCE", ".assay/coverage.json")
+    monkeypatch.setenv("ASSAY_B105_COVERAGE_ARCHIVE_DIR", str(archive_dir))
+    monkeypatch.setenv("ASSAY_B105_SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setenv("ASSAY_B105_SOURCE_TREE", "b" * 40)
+    archive_b105_coverage(session=None, exitstatus=0)
+    retained = archive.read_bytes()
+
+    coverage_document["totals"] = {"covered_lines": 18}
+    source.write_text(json.dumps(coverage_document), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="different coverage evidence"):
+        archive_b105_coverage(session=None, exitstatus=0)
+
+    assert archive.read_bytes() == retained
 
 
 def test_b105_coverage_export_refuses_a_symlinked_source(tmp_path, monkeypatch):
@@ -263,11 +347,13 @@ def test_b105_coverage_export_refuses_a_symlinked_source(tmp_path, monkeypatch):
     target = tmp_path / "coverage.json"
     target.write_text("{}", encoding="utf-8")
     (snapshot / "coverage.json").symlink_to(target)
-    archive = tmp_path / "worktree" / ".assay" / "coverage.json"
-    archive.parent.mkdir(parents=True)
+    archive_dir = tmp_path / "worktree" / ".assay" / "coverage-snapshots" / "attempt.ABCDEFGH"
+    archive_dir.mkdir(parents=True)
 
     monkeypatch.chdir(snapshot)
     monkeypatch.setenv("ASSAY_B105_COVERAGE_SOURCE", "coverage.json")
-    monkeypatch.setenv("ASSAY_B105_COVERAGE_ARCHIVE", str(archive))
+    monkeypatch.setenv("ASSAY_B105_COVERAGE_ARCHIVE_DIR", str(archive_dir))
+    monkeypatch.setenv("ASSAY_B105_SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setenv("ASSAY_B105_SOURCE_TREE", "b" * 40)
     with pytest.raises(RuntimeError, match="not a regular file"):
         archive_b105_coverage(session=None, exitstatus=0)

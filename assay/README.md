@@ -958,8 +958,12 @@ you're changing assay itself:
 - `./run-gate.py tester-unified` is the ordinary R0 release gate. The
   separately invoked `./run-gate.py self-qualification` runs full-source
   R0-R3 qualification in `tester-unified`, writes its verdict, progress, and
-  raw baseline coverage arcs,
-  and verifies the verdict before success. Before starting mutation, it runs
+  raw baseline coverage arcs in
+  `.assay/coverage-self-qualification-preflight-snapshots/`, keyed by source
+  commit and tree under a separately reserved directory for each attempt, and verifies
+  each report against the captured source and lane before success. The full
+  mutation lane cannot overwrite the preflight coverage artifact. Before
+  starting mutation, it runs
   the same full-source R0/R1 check as
   `./run-gate.py self-qualification-preflight`; that preflight stops on a red
   baseline or coverage floor. Both lanes build the selected commit as a
