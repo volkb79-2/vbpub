@@ -4,6 +4,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.9.0] - 2026-09-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=cd9f35482becb1c18a514fde3322b941e50ff6c1 -->
+
+### Added
+- feat(tools): relocate jsonl-metrics.py from dstdns, resolve pack.py score xfails (5600a1b4)
+- feat(tools): relocate pack.py orientation-pack builder from dstdns (7e2aedff)
+
+### Changed
+- Make lifecycle rejection tests deterministic (c9d38a12)
+- Cover empty question prose separators (e82cf460)
+- Cover remaining question correlation branches (97907871)
+- Cover remaining extraction adapter branches (c44f8aec)
+- Close extraction review coverage gaps (bb473c75)
+- Improve session extraction and preserve Codex Q&A (ce292bc8)
+- doc(nyxloom): add session-extract.md (22850997)
+- E-019/NL-22: correct overclaimed Bash description fill-rate (100% -> 70.6%) (f10a9ada)
+- E-018/E-019: recon-agent orientation packs + tool-intent visibility (NL-21, NL-22) (c32c3c6f)
+- pack.py: document score's methodology limitations; note worktree-local out-dir direction; jsonl-metrics curve --raw (67aa8794)
+
+### Documentation
+- docs(backlog): NL-19/NL-20 -- pack.py CLI integration decision, session-introspection design doc tracking (d7795dba)
+
 ## [0.8.0] - 2026-09-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=cd8cbe873dab9b71dd950bf46348cccb13e662fa -->
