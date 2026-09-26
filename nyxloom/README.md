@@ -110,12 +110,13 @@ the two places they buy quality: carve and review.
 
 ### Session-log extraction
 
-The `extract` family reads raw Claude Code, Codex, and opencode session logs
-without an LLM call. `extract` produces a compact resumable brief;
-`extract-lossless` preserves all prose and thinking blocks;
-`extract-sessions` discovers related sessions; and `extract-report` reports
-cost/timeline data. The `SESSION_LOG` argument accepts either a full path or a
-session ID when nyxloom can resolve exactly one matching file/store. Codex
+`extract` and `extract-lossless` read Claude Code, Codex, Reasonix, and
+opencode session logs without an LLM call. `extract` produces a compact
+resumable brief; `extract-lossless` preserves the adapter's prose and available
+thinking blocks. `extract-sessions` discovers Claude Code, Codex, and opencode
+families; `extract-report` reports cost/timeline data for those formats. The
+`SESSION_LOG` argument accepts either a full path or a session ID when nyxloom
+can resolve exactly one matching file/store. Codex
 rollout lookup follows `CODEX_HOME` (default `~/.codex`) and checks local
 `~/.codex*` profiles for duplicate UUIDs; a repeated UUID fails with all
 candidate paths so the intended rollout can be selected explicitly.
@@ -125,6 +126,28 @@ record repeat that identity. An existing rollout path is opened for append,
 not assigned a replacement ID, so live shared `sessions` symlinks can merge
 streams. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--2026-09-12--session-log-location-presentation-and-live-following)
 for the source-level verification and process-inspection method.
+
+Bare `extract` uses the `operator-review` profile: a concise review of the
+newest adapter-reported epoch (Claude Code `/clear` boundaries), anchored by
+up to five classifier-detected assistant checkpoints, with a 10,000-word cap.
+`--profile all` walks every epoch the
+adapter can identify and keeps ordinary session prose without checkpoint,
+word, time, or compaction stops. API transport errors, tool calls, thinking,
+and compaction internals remain controlled by separate options.
+Checkpoints are selection anchors, not semantic boundaries at which it is
+safe to compact. Use `--epochs N|A:B|all`, `--max-compactions N`, or
+`--max-time-minutes N` to shape a bounded review. See the
+[selection and rendering rationale](docs/DESIGN-GUIDE.md#session-extraction-selection-and-boundaries)
+and [worked operator examples](docs/CONSUMERS.md#extract-a-session-log).
+Every Codex interactive question is rendered with an `INTERVIEW:` marker and
+its offered choices, including prompts that have no assistant-prose copy.
+Structured replies use `OPERATOR:` and retain both selected choices and
+free-text answers, even when the user replies after later session activity.
+See the [Q&A design](docs/DESIGN-GUIDE.md#codex-question-replies).
+Saved extracts carry source cursors for `--since-file`; Codex prompts in
+ordinal-less rollouts use a `response_item-<position>` cursor while legacy
+event cursors keep their numeric form. See the
+[worked resume examples](docs/CONSUMERS.md#extract-a-session-log).
 
 For example, when a session was created in a separate Codex home, pass the
 same home while locating it, or pass the full rollout path if the UUID is
@@ -136,9 +159,11 @@ CODEX_HOME="$HOME/.codex2" nyxloom extract \
 ```
 
 For humans, `extract --render-markdown` renders the selected brief. For
-copy-pasteable markdown, `extract` and `extract-lossless` support
-`--highlight`, which preserves the source characters. Both extraction modes
-also support `--follow`/`-f` for incremental live output, with optional
+copy-pasteable markdown, `--highlight` colors Markdown source while preserving
+its characters. Rendering mode and ANSI color are independent: a terminal gets
+highlighting by default, `--color` forces it for a pipe, and `--no-color` keeps
+the chosen rendering mode without ANSI. Both extraction modes also support
+`--follow`/`-f` for incremental live output, with optional
 attention reasons `interview_pending`, `checkpoint_detected`, and `long_block`
 delivered through a terminal bell, an operator hook, or a registered project’s
 notify channel. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--2026-09-12--session-log-location-presentation-and-live-following)

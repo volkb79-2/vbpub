@@ -26,7 +26,8 @@ adapter's own opaque marker token bounding the gap ("...raw log continues
 after marker <marker>") -- the SAME token --since/--until already resolve
 against, so it generalizes across all four adapters for free: a Claude
 Code marker is a uuid (or a `lineN` fallback) grep-able in the JSONL, a
-Codex marker is an ordinal (or an index fallback) likewise grep-able, a
+Codex marker is an ordinal (or a legacy numeric / `response_item-<position>`
+fallback) likewise grep-able, a
 Reasonix marker is a `lineN` position in its JSONL, and an opencode marker
 is a message-table row id queryable against its SQLite store. Nothing new
 to build per-adapter -- this reuses the exact identifier
@@ -47,10 +48,10 @@ the actual decision-relevant distinction (README's own "structured-Q&A-
 preserving" framing: an operator's real input is the highest-signal content
 in a session). So OPERATOR_TEXT gets a bare `OPERATOR: ` prefix directly on
 the text; every other kind renders as plain, unprefixed text. Checkpoint-vs-not
-and per-event timestamps are dropped from text mode entirely (they were never
-load-bearing for a human/LLM reading the rendered brief) but remain full-
-fidelity fields in JSON mode, which is for a second-stage tool, not a paste
-target -- terseness there would cost correctness for no reader benefit.
+Checkpoint scores remain JSON/debug metadata. Text mode optionally places
+source timestamps inline before, after, both, or neither; the default CLI
+policy is pre-event timestamps, while the lower-level renderer can omit them.
+The placement does not change which content selection keeps.
 
 **QA_PAIR is deliberately EXCLUDED from that blanket prefix** (corrected
 2026-09-10, later the same day, against a real rendered session): when
@@ -69,13 +70,13 @@ Optional `block_render` param (2026-09-12): a per-block text->text hook
 applied to each kept event's OWN PROSE only, before blocks are joined. This
 is where `extract --render-markdown` (render_markdown.py, via `rich`) and
 `extract --highlight` (highlight.py, via `pygments`) plug in, and it is
-deliberately narrow: the `---` separators, the bracketed gap/stop-reason
-notes this module authors itself, the ledger line, and the trailing
-`<!-- nyxloom-extract: ... -->` footer are NOT passed through it. Running
+    deliberately narrow: the `---` separators, the bracketed gap/stop-reason
+    notes this module authors itself, the ledger line, and positioned
+    `<!-- nyxloom-extract: ... -->` cursor comments are NOT passed through it. Running
 the whole rendered output through a markdown renderer instead would mangle
 exactly that scaffolding -- a `---` line is a horizontal rule, an HTML
-comment vanishes -- and the footer is machine-read by read_since_marker(),
-so it must survive byte-exact. Neither dependency is imported here; the
+    comment vanishes -- and the cursor is machine-read by read_since_marker(),
+    so it must survive byte-exact. Neither dependency is imported here; the
 caller passes a callable.
 
 Optional `ledger` param (E-012, `ledger.py`): a dict keyed by boundary
@@ -92,24 +93,31 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from datetime import datetime, timezone
+from urllib.parse import quote
 
 from .events import EventKind, NormalizedEvent
 from .ledger import Ledger
 
-MARKER_FOOTER_RE = re.compile(r"^<!-- nyxloom-extract: format=(\S+) marker=(\S+) -->$", re.MULTILINE)
+MARKER_FOOTER_RE = re.compile(
+    r"^<!-- nyxloom-extract: format=(\S+) marker=(\S+)(?P<attrs>(?:\s+[^>]*?)?) -->$",
+    re.MULTILINE,
+)
 
 # select.py's meta["walk_stopped_because"] values -> the reader-facing
 # explanation of why selection stopped before reaching the real start of
 # the session. Keep in sync with select.py's own set of stop reasons.
 _STOP_REASON_TEXT = {
-    "max_words": "word budget reached (--max-words / a profile's max_words)",
-    "max_checkpoints": "checkpoint target reached (--checkpoints / max_checkpoints)",
+    "max_words": "word budget reached (--max-words)",
+    "max_checkpoints": "checkpoint target reached (--max-checkpoints)",
+    "max_compactions": "compaction limit reached (--max-compactions)",
+    "max_time_minutes": "time window reached (--max-time-minutes)",
 }
 
 # Kinds whose text IS the operator's own words -- see the module docstring
 # above for why this is the one distinction worth keeping inline in text
-# mode, and why QA_PAIR is deliberately NOT here (its own OPERATOR: label(s)
-# are already embedded in the text by claude_code.py's _format_qa_pairs).
+# mode, and why QA_PAIR is deliberately NOT here (its INTERVIEW: and, when
+# present, OPERATOR: labels are already embedded in its text).
 _USER_AUTHORED = (EventKind.OPERATOR_TEXT,)
 
 # Kinds a `ledger` dict (E-012, ledger.py) is keyed by -- the same boundary
@@ -168,7 +176,24 @@ def separator(insert_blank_lines: int, inline_text: str | None = None) -> str:
     return f"{pad}{marker}{pad}"
 
 
-def render_event_block(ev: NormalizedEvent, block_render: Callable[[str], str] | None = None) -> str:
+def _format_timestamp(raw: str, timestamp_format: str) -> str | None:
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime(timestamp_format)
+
+
+def render_event_block(
+    ev: NormalizedEvent,
+    block_render: Callable[[str], str] | None = None,
+    show_timestamps: str = "none",
+    timestamp_format: str = "[%H:%M:%S]",
+) -> str:
     """One kept event's own rendered text block -- the `OPERATOR: ` prefix
     rule (see the module docstring for why that one label, and why QA_PAIR is
     excluded from it) plus the optional per-block render hook, applied to the
@@ -176,7 +201,29 @@ def render_event_block(ev: NormalizedEvent, block_render: Callable[[str], str] |
     stream and a one-shot render can't drift on either decision."""
     text = block_render(ev.text) if block_render is not None else ev.text
     prefix = "OPERATOR: " if ev.kind in _USER_AUTHORED else ""
-    return f"{prefix}{text}"
+    timestamp = _format_timestamp(ev.timestamp, timestamp_format)
+    if timestamp is None or show_timestamps == "none":
+        return f"{prefix}{text}"
+    if show_timestamps in ("pre", "both"):
+        return f"{prefix}{timestamp} {text}" if show_timestamps == "pre" else f"{prefix}{timestamp} {text} {timestamp}"
+    return f"{prefix}{text} {timestamp}"
+
+
+def _metadata_comment(
+    fmt: str, marker: str, metadata: dict[str, str] | None = None,
+    metadata_position: str = "both",
+) -> str:
+    attrs = ""
+    if metadata:
+        pairs = [
+            ("source", metadata.get("path", "")),
+            ("name", metadata.get("name", "")),
+            ("bytes", metadata.get("bytes", "")),
+            ("created", metadata.get("created", "unavailable")),
+        ]
+        attrs = " " + " ".join(f"{key}={quote(value, safe='/._-:TZ') or '-'}" for key, value in pairs)
+    attrs += f" placement={metadata_position}"
+    return f"<!-- nyxloom-extract: format={fmt} marker={marker}{attrs} -->"
 
 
 def render_text(
@@ -189,6 +236,10 @@ def render_text(
     insert_blank_lines: int = 1,
     gap_marker_mode: str = "full",
     block_render: Callable[[str], str] | None = None,
+    show_timestamps: str = "none",
+    timestamp_format: str = "[%H:%M:%S]",
+    metadata_position: str = "both",
+    source_metadata: dict[str, str] | None = None,
 ) -> str:
     plain_sep = separator(insert_blank_lines)
     parts: list[str] = []
@@ -212,8 +263,13 @@ def render_text(
             if show_gap_marker:
                 note = note[:-1] + f"; raw log continues before marker {events[0].marker}]"
             _add(note)
+    last_epoch: str | None = None
     for ev in events:
-        _add(render_event_block(ev, block_render))
+        epoch = ev.meta.get("epoch")
+        if epoch is not None and epoch != last_epoch and int(ev.meta.get("epoch_count", "1")) > 1:
+            _add(f"[epoch {epoch}/{ev.meta.get('epoch_count', '1')}]")
+            last_epoch = epoch
+        _add(render_event_block(ev, block_render, show_timestamps, timestamp_format))
         if ledger is not None and ev.kind in _LEDGER_BOUNDARY_KINDS:
             entry = ledger.get(ev.marker)
             if entry and not entry.is_empty():
@@ -233,10 +289,18 @@ def render_text(
     body += "\n"
     if last_marker is None:
         return body
-    return body + f"\n<!-- nyxloom-extract: format={fmt} marker={last_marker} -->\n"
+    marker = _metadata_comment(fmt, last_marker, source_metadata, metadata_position)
+    if metadata_position in ("pre", "both"):
+        body = marker + "\n" + body
+    if metadata_position in ("post", "both"):
+        body += f"\n{marker}\n"
+    return body
 
 
-def render_json(events: list[NormalizedEvent], checkpoint_threshold: float, fmt: str, last_marker: str | None) -> str:
+def render_json(
+    events: list[NormalizedEvent], checkpoint_threshold: float, fmt: str,
+    last_marker: str | None, source_metadata: dict[str, str] | None = None,
+) -> str:
     payload = {
         "format": fmt,
         "stop_reason": events[0].meta.get("walk_stopped_because") if events else None,
@@ -250,9 +314,11 @@ def render_json(events: list[NormalizedEvent], checkpoint_threshold: float, fmt:
                 "marker": ev.marker,
                 "text": ev.text,
                 "gap_after": int(ev.meta["gap_after"]) if ev.meta.get("gap_after") else 0,
+                "epoch": int(ev.meta["epoch"]) if ev.meta.get("epoch") else None,
             }
             for ev in events
         ],
         "last_marker": last_marker,
+        "source": source_metadata,
     }
     return json.dumps(payload, indent=2)

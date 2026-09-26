@@ -129,7 +129,7 @@ def test_compacted_marker_falls_back_to_placeholder_when_message_is_empty(tmp_pa
     assert lifecycle.is_real_lifecycle is True
     assert lifecycle.compact_trigger is None  # Codex's own record carries no trigger/pre/post/duration
     assert lifecycle.compact_pre_tokens is None
-    assert lifecycle.text_preview == "[compacted]"
+    assert lifecycle.text_preview == "[compaction summary omitted]"
 
 
 def test_api_call_rows_fold_into_the_block_opened_by_the_nearest_preceding_boundary(tmp_path):
@@ -195,6 +195,63 @@ def test_old_generation_shape_is_supported(tmp_path):
     lifecycle = rows[3]
     assert lifecycle.text_preview == "[context_compacted]"
     assert lifecycle.compact_trigger is None
+
+
+def test_legacy_token_count_marker_is_not_shifted_by_response_item_records(tmp_path):
+    lines = [
+        {"type": "session_meta", "payload": {"session_id": "legacy", "cli_version": "0.146.0"}},
+        {"type": "event_msg", "timestamp": "t0", "payload": {
+            "type": "user_message", "message": "hello"}},
+        {"type": "response_item", "timestamp": "t1", "payload": {
+            "type": "custom_tool_call", "name": "exec", "input": {"description": "run a check"}}},
+        {"type": "event_msg", "timestamp": "t2", "payload": {
+            "type": "token_count", "info": {"last_token_usage": {
+                "input_tokens": 12, "output_tokens": 3,
+            }}}},
+    ]
+    fp = tmp_path / "legacy-no-ordinals.jsonl"
+    fp.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+    rows = stats.build_call_rows(fp, fmt="codex")
+
+    user_row = next(row for row in rows if row.kind == "operator")
+    token_row = next(row for row in rows if row.kind == "api_call")
+    assert user_row.marker == "0"
+    assert token_row.marker == "1"
+
+
+def test_question_response_item_fallback_marker_is_sorted_without_integer_coercion(tmp_path):
+    question = "Which profile should be the default?"
+    call_id = "old-question"
+    reply = "<send_user_message_question_reply>" + json.dumps([{
+        "question": question,
+        "answer": "All",
+        "questionItemId": json.dumps(["request_user_input_async", call_id, 0]),
+    }]) + "</send_user_message_question_reply>"
+    records = [
+        {"type": "response_item", "timestamp": "t0", "payload": {
+            "type": "function_call", "name": "request_user_input_async", "call_id": call_id,
+            "arguments": json.dumps({"questions": [{
+                "title": "Profile", "question": question, "options": ["Review", "All"],
+            }]}),
+        }},
+        {"type": "event_msg", "timestamp": "t1", "payload": {
+            "type": "user_message", "message": reply,
+        }},
+        {"type": "event_msg", "timestamp": "t2", "payload": {
+            "type": "token_count", "info": {"last_token_usage": {
+                "input_tokens": 12, "output_tokens": 3,
+            }},
+        }},
+    ]
+    fp = tmp_path / "legacy-question-no-ordinals.jsonl"
+    fp.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+    rows = stats.build_call_rows(fp, fmt="codex")
+
+    assert [row.kind for row in rows] == ["qa", "qa", "api_call"]
+    assert rows[0].marker == "response_item-0"
+    assert rows[0].text_preview.startswith("INTERVIEW: Profile")
 
 
 def test_degenerate_all_zero_token_count_defaults_safely(tmp_path):

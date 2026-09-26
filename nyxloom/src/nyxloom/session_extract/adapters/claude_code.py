@@ -605,8 +605,10 @@ def parse_record(
             # the first place -- only the trigger/token metadata that flag
             # has no reason to gate, a strict improvement over the old bare
             # "[compact boundary]" text either way.
-            events.append(NormalizedEvent(
-                seq, uuid, ts, EventKind.LIFECYCLE_MARKER, _compaction_boundary_label(rec)))
+            event = NormalizedEvent(
+                seq, uuid, ts, EventKind.LIFECYCLE_MARKER, _compaction_boundary_label(rec))
+            event.meta["boundary_type"] = "compaction"
+            events.append(event)
         return events
 
     if rtype == "assistant":
@@ -650,6 +652,17 @@ def parse_record(
                 text = block.get("text", "")
                 if text:
                     events.append(NormalizedEvent(seq, uuid, ts, EventKind.ASSISTANT_TEXT, text))
+            elif btype == "tool_use" and config.show_tool_calls:
+                name = str(block.get("name") or "unknown")
+                intent = ""
+                if config.show_tool_call_intent:
+                    tool_input = block.get("input")
+                    if isinstance(tool_input, dict):
+                        raw_intent = tool_input.get("description") or tool_input.get("intent")
+                        if isinstance(raw_intent, str):
+                            intent = " ".join(raw_intent.split())[:240]
+                label = f"[tool call: {name}]" + (f" {intent}" if intent else "")
+                events.append(NormalizedEvent(seq, uuid, ts, EventKind.TOOL_CALL, label))
             elif btype == "thinking" and config.include_thinking:
                 text = block.get("thinking", "")
                 if text:
@@ -658,7 +671,9 @@ def parse_record(
 
     if rtype == "user":
         if rec.get("isCompactSummary"):
-            events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, "[compact summary]"))
+            event = NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, "[compact summary]")
+            event.meta["boundary_type"] = "compaction_summary"
+            events.append(event)
             return events
 
         if rec.get("interruptedMessageId"):
@@ -725,7 +740,9 @@ def parse_record(
                 label = "[compaction: steered dispatched]"
             else:
                 label = f"[/{cmd}]" + (f" {cleaned}" if cleaned else "")
-            events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, label))
+            event = NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, label)
+            event.meta["boundary_type"] = "clear" if cmd == "clear" else "compact_command"
+            events.append(event)
             return events
         if not cleaned:
             return events
@@ -777,21 +794,21 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                     questions = block.get("input", {}).get("questions")
                     askuserquestion_inputs[tid] = questions if isinstance(questions, list) else []
 
+    since_idx = None
     if config.since_marker is not None:
-        idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.since_marker), None)
-        if idx is None:
+        since_idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.since_marker), None)
+        if since_idx is None:
             raise ValueError(
                 f"--since marker {config.since_marker!r} not found as a uuid in {path}"
             )
-        indexed = [(i, r) for i, r in indexed if i > idx]
 
+    until_idx = None
     if config.until_marker is not None:
-        idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.until_marker), None)
-        if idx is None:
+        until_idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.until_marker), None)
+        if until_idx is None:
             raise ValueError(
                 f"--until marker {config.until_marker!r} not found as a uuid in {path}"
             )
-        indexed = [(i, r) for i, r in indexed if i <= idx]
 
     # isSidechain targeting is auto-detected from the file's OWN content, not
     # a CLI flag (an earlier --include-sidechain flag was removed 2026-09-11,
@@ -820,7 +837,17 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
         has_primary_thread=has_primary_thread, askuserquestion_inputs=askuserquestion_inputs
     )
     events: list[NormalizedEvent] = []
-    for seq, (abs_i, rec) in enumerate(indexed):
-        events += parse_record(rec, seq, f"line{abs_i}", config, state)
+    epoch = 1
+    for abs_i, rec in indexed:
+        record_events = parse_record(rec, abs_i, f"line{abs_i}", config, state)
+        if any(event.meta.get("boundary_type") == "clear" for event in record_events):
+            epoch += 1
+        for event in record_events:
+            event.meta["epoch"] = str(epoch)
+        if since_idx is not None and abs_i <= since_idx:
+            continue
+        if until_idx is not None and abs_i > until_idx:
+            continue
+        events.extend(record_events)
 
     return events
