@@ -26,7 +26,9 @@ def test_daemon_keeps_namespaces_private_and_mount_modes_explicit():
     assert (
         "source: /run/dbus/system_bus_socket\n"
         "        target: /run/dbus/system_bus_socket\n"
-        "        read_only: true"
+        "        read_only: true\n"
+        "        bind:\n"
+        "          create_host_path: false"
     ) in compose
     assert "AttachProcessesToUnit" in compose
     assert "lib.placement.CgroupWriteGuard" in compose

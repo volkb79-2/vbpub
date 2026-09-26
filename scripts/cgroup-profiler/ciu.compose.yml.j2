@@ -121,6 +121,8 @@ services:
         source: /run/dbus/system_bus_socket
         target: /run/dbus/system_bus_socket
         read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: /sys/kernel/mm/damon
         target: /sys/kernel/mm/damon
