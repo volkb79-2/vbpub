@@ -4352,3 +4352,44 @@ progress stream is in the baseline pytest phase, with no verdict yet. The
 previous P6 campaign's measured rate gives an estimate of roughly 3h45–4h;
 the owner and container are left untouched between 25-minute-or-longer
 observations. P1's repaired R2 remains the other mutation lane.
+
+### RW-341 — 2026-09-26 23:06:22Z — P1 R2 passed; P6 replacement R2 did not qualify
+
+The separately read P1 verdict on commit `1080ac2f068732dcd490bcc2c5cefe56db8ec805`
+is `PASS`, exit 0: 125/125 candidates killed, no survivors, hung candidates,
+or budget-exceeded candidates. This is valid exact-tree R2 evidence for that
+tree. The previous Sol reviewer process ended at the account usage limit
+before writing a final review report; rounds 1–3 do not cover the repair
+commits `429c0763`, `0a2e0cd8`, and `1080ac2f`, so a fresh final review and
+registered short gates remain necessary.
+
+P6's replacement R2 on `6540f87761a66ff933c8bb45f81d8ac9117f407b` ended
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4, with 312/312 candidates accounted
+for (301 killed, 10 survived, one hung). The ten survivors match prior
+contract-equivalence dispositions; the two real gaps were killed. Candidate
+`0a38e7d8…` at `lib/liveness.py:530` was classified hung after 138.953 seconds
+and 675 completed tests. Its run profile also records 135.1 seconds of
+memory-full stall, but does not preserve the active pytest node or establish
+causation. P6 mutation evidence is not passing; preserve the candidate state
+and investigate the hang on the reconciled final tree.
+
+At the next launch check, host memory PSI was `full avg10=10.50`, above the
+RG-55 launch limit of 5. The subsequent P1 r0-r1 launcher's own preflight
+observed `full avg10=0.0`, `avg60=0.4%`; its placement probe verified the
+loaded `dev-gates.slice`, and its exact test container ran with
+`NanoCpus=3000000000`. Do not generalize the earlier high reading to later
+launches; use each launcher's current preflight.
+
+### RW-342 — 2026-09-26 23:13:09Z — P1 r0-r1 passed on 1080ac2f
+
+The registered lane started at `2026-09-26T23:09:07Z` and recorded PASS at
+`2026-09-26T23:10:47Z` (100.26 seconds, exit 0) on clean commit
+`1080ac2f068732dcd490bcc2c5cefe56db8ec805`. The exact test container
+`cgprofile-gate-1356625-1790464149` ran under `dev-gates.slice`; the launcher
+verified `NanoCpus=3000000000`. The suite reports 1,398 passed and 4 warnings.
+Coverage reports 5,026 statements and 1,738 branches with 100% on both.
+Profiling used the basic `rusage-maxrss` fallback because the daemon was not
+running; peak was at the 38,469,632-byte floor. The separately read
+`.run-gate/history.json` records this lane PASS, `dirty=false`, and revision
+46. P1 R3 is now running at commit `1080ac2f`; its detached owner is recorded
+in `/tmp/rg55-p1-r3-1080.pid`.
