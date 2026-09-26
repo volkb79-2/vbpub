@@ -705,12 +705,23 @@ def test_real_subprocess_normal_completion_captures_real_output(
     the real stdout FILE back (not a fake), decoded as text.
     """
     clock = _FakeClock()
+
+    def completed_real_child(argv: tuple[str, ...], **kwargs: object) -> subprocess.Popen[str]:
+        # Let the tiny real child finish before the monitor starts advancing
+        # virtual time. A fake sleep cannot yield to the OS scheduler, so
+        # polling a still-running real process with this clock made the test
+        # depend on which process the host happened to schedule first.
+        proc = subprocess.Popen(argv, **kwargs)
+        proc.wait()
+        return proc
+
     events_dir = tmp_path / "candidates"
     runner = liveness.LivenessRunner(
         events_dir=events_dir,
         expect_next_event_within_s=15.0,
         monotonic=clock.now,
         sleep=clock.advance,
+        popen=completed_real_child,
     )
     cwd = tmp_path / "cand"
     cwd.mkdir()

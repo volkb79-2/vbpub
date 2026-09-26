@@ -198,6 +198,16 @@ asserts = ["tests-pass"]
 timeout_seconds = 7776000
 environment = "tester-unified"
 
+[gates.self-qualification-preflight]
+# R0/R1-only diagnosis of the exact source inventory and branch floor. The
+# full B105 gate runs this first and does not begin native mutation if the
+# baseline suite or whole-source coverage is red.
+argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} self-qualification-preflight"]
+phase = "implementation"
+asserts = ["tests-pass"]
+timeout_seconds = 3600
+environment = "tester-unified"
+
 [mutexes.merge-lane]
 scope = "project"
 capacity = 1

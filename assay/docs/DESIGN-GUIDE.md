@@ -1940,10 +1940,14 @@ a full-source mutation campaign. `assay.toml` names every production Python
 file under `src/assay` literally, applies whole-target line and branch coverage
 with a 100% floor, runs all four native Python mutation operators unsharded
 and serially, and performs an import-break canary. A drift test fails if a new
-production file is absent from that declaration. Its pytest command imports
-`src/assay` from the isolated baseline or mutant snapshot, rather than from the
-editable package in the invoking worktree; otherwise coverage could be empty
-and mutants would not be the code the suite loaded. The lane requests full
+production file is absent from that declaration. Its gate builds the selected
+commit as a wheel from a private exact-OID clone using the committed
+hash-locked offline build closure. The installed wheel provides the outer
+Assay CLI and child `assay` commands with real `judge_provenance`; the pytest
+command separately imports `src/assay` from the isolated baseline or mutant
+snapshot, rather than from the wheel in the invoking worktree. Otherwise
+coverage could be empty and mutants would not be the code the suite loaded.
+The lane requests full
 snapshot history because the suite reads pinned older commits. Snapshot refs
 and tags are intentionally not copied, so the two tests that audit real release
 tags are explicitly deselected in this lane and remain exercised by the
@@ -1960,6 +1964,12 @@ The Nyxloom controller's 90-day timeout is a failure-only supervisor limit; if
 it interrupts a campaign, the task is incomplete and its persisted state is
 resumable, never a qualification pass. This is a deliberate, expensive
 maintenance gate, not the default release cadence.
+
+The registered `self-qualification-preflight` lane runs the same R0 test
+command and whole-source R1 coverage declaration without R2 or R3. The full
+gate runs it first and verifies its report; if R0 or R1 fails, the controller
+stops before launching the long mutation campaign. Operators can also invoke
+the preflight directly while bringing coverage to its required floor.
 
 ```bash
 cd assay

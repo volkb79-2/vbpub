@@ -958,7 +958,12 @@ you're changing assay itself:
 - `./run-gate.py tester-unified` is the ordinary R0 release gate. The
   separately invoked `./run-gate.py self-qualification` runs full-source
   R0-R3 qualification in `tester-unified`, writes its verdict and progress,
-  and verifies the verdict before success. It judges code imported from each
+  and verifies the verdict before success. Before starting mutation, it runs
+  the same full-source R0/R1 check as
+  `./run-gate.py self-qualification-preflight`; that preflight stops on a red
+  baseline or coverage floor. Both lanes build the selected commit as a
+  wheel, while each qualification snapshot imports its own source tree. The
+  full lane judges code imported from each
   isolated snapshot; two tag-ref audit tests remain in the ordinary release
   gate because snapshots do not carry refs. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)

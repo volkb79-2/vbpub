@@ -177,3 +177,95 @@ liveness = true
 mechanism = "import-break"
 target = "src/assay/cli.py"
 budget_per_attempt = "30m"
+
+# B105: R0/R1 coverage preflight, also used by the full qualification gate.
+[lanes.self-qualification-preflight]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = [
+  "python", "-m", "pytest", "tests", "-q",
+  "--ignore=tests/test_self_hosting.py",
+  "--deselect=tests/test_runner_snapshot_selection.py::test_every_release_since_wi1_landed_carries_wi4s_policy_record",
+  "--deselect=tests/test_runner_snapshot_selection.py::test_wi1s_own_landing_commit_is_the_state_the_embargo_forbids",
+  "--override-ini=pythonpath=src",
+  "--cov=src/assay", "--cov-branch",
+  "--cov-report=json:.assay/coverage-self-qualification-preflight.json",
+]
+env = {}
+env_passthrough = ["PATH"]
+budget = "60m"
+allow_argv_append = false
+
+[lanes.self-qualification-preflight.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+snapshot_history = "full"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.self-qualification-preflight.judge]
+language = "python"
+source_roots = ["src/assay"]
+mode = "whole_target"
+targets = [
+  "src/assay/__init__.py",
+  "src/assay/adapters/__init__.py",
+  "src/assay/adapters/base.py",
+  "src/assay/adapters/go.py",
+  "src/assay/adapters/go_modfile.py",
+  "src/assay/adapters/go_stmtpos.py",
+  "src/assay/adapters/javascript.py",
+  "src/assay/adapters/python.py",
+  "src/assay/adapters/sql.py",
+  "src/assay/adapters/sql_lex.py",
+  "src/assay/adjudication.py",
+  "src/assay/analysis.py",
+  "src/assay/attestation.py",
+  "src/assay/canary.py",
+  "src/assay/candidate_identity.py",
+  "src/assay/cli.py",
+  "src/assay/config.py",
+  "src/assay/coverage.py",
+  "src/assay/coverage_parsers/__init__.py",
+  "src/assay/coverage_parsers/cobertura.py",
+  "src/assay/coverage_parsers/coverage_istanbul_json.py",
+  "src/assay/coverage_parsers/coverage_py_json.py",
+  "src/assay/coverage_parsers/go_cover.py",
+  "src/assay/coverage_parsers/lcov.py",
+  "src/assay/coverage_parsers/model.py",
+  "src/assay/diff.py",
+  "src/assay/errors.py",
+  "src/assay/evaluate.py",
+  "src/assay/git.py",
+  "src/assay/isolation.py",
+  "src/assay/liveness.py",
+  "src/assay/measurability.py",
+  "src/assay/mutation.py",
+  "src/assay/mutation_parsers/__init__.py",
+  "src/assay/mutation_parsers/model.py",
+  "src/assay/mutation_parsers/mutation_report_json.py",
+  "src/assay/mutation_witness.py",
+  "src/assay/output.py",
+  "src/assay/provenance.py",
+  "src/assay/registry.py",
+  "src/assay/result_reports/__init__.py",
+  "src/assay/result_reports/model.py",
+  "src/assay/result_reports/vitest_json.py",
+  "src/assay/reuse.py",
+  "src/assay/runner.py",
+  "src/assay/safeio.py",
+  "src/assay/statement_attribution.py",
+  "src/assay/verdict.py",
+  "src/assay/verify.py",
+  "src/assay/vocabulary.py",
+]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+
+[lanes.self-qualification-preflight.judge.coverage]
+format = "coverage-py-json"
+artifact = ".assay/coverage-self-qualification-preflight.json"

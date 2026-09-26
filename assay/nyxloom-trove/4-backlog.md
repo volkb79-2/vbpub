@@ -10697,6 +10697,10 @@ report; code review alone is not evidence of qualification.
       passes `assay verify`, is retained with its source revision and gate log,
       and is produced inside `tester-unified`; this is required before M7
       starts.
+- [ ] A registered R0/R1 preflight uses the same full source inventory and
+      branch floor. The full gate verifies this preflight before starting R2,
+      so a red baseline or coverage report cannot trigger the long mutation
+      campaign.
 - [ ] The long R2 campaign uses the estate's `--resume --progress` contract
       and remains independent of host load or scheduling. B106 selective reuse
       may reduce later reruns only when current evidence proves each reused

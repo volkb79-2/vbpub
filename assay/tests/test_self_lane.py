@@ -25,6 +25,7 @@ SELF_LANE_FILE = PROJECT_ROOT / "assay.toml"
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
 GATE_ID = "tester-unified"
 QUALIFICATION_ID = "self-qualification"
+PREFLIGHT_ID = "self-qualification-preflight"
 RUN_GATE_TOML = PROJECT_ROOT / "run-gate.toml"
 
 
@@ -33,7 +34,7 @@ def test_assays_own_lane_file_loads():
 
     assert lane_file.schema_version == 2
     assert lane_file.project_root == PROJECT_ROOT
-    assert list(lane_file.lanes) == [GATE_ID, QUALIFICATION_ID]
+    assert list(lane_file.lanes) == [GATE_ID, QUALIFICATION_ID, PREFLIGHT_ID]
 
 
 def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
@@ -82,6 +83,7 @@ def test_assay_lanes_lists_assays_own_lane(monkeypatch):
     assert err.getvalue() == ""
     assert GATE_ID in out.getvalue()
     assert QUALIFICATION_ID in out.getvalue()
+    assert PREFLIGHT_ID in out.getvalue()
     assert "judge=none" in out.getvalue()
 
 
@@ -141,14 +143,34 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     assert lane["artifacts"] == [
         ".assay/verdict-self-qualification.json",
         ".assay/progress-self-qualification.jsonl",
+        ".assay/verdict-self-qualification-preflight.json",
+        ".assay/progress-self-qualification-preflight.jsonl",
+    ]
+
+    preflight = run_gate["lanes"][PREFLIGHT_ID]
+    assert preflight["kind"] == "command"
+    assert preflight["environment"] == "tester-unified"
+    assert preflight["clean_tree"] is True
+    assert preflight["budget"] == "60m"
+    assert PREFLIGHT_ID in preflight["argv"][-1]
+    assert preflight["artifacts"] == [
+        ".assay/verdict-self-qualification-preflight.json",
+        ".assay/progress-self-qualification-preflight.jsonl",
     ]
 
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(
         encoding="utf-8"
     )
     assert "--resume" in script
-    assert "--progress .assay/progress-self-qualification.jsonl" in script
-    assert '"$assay_bin" verify .assay/verdict-self-qualification.json' in script
+    assert 'local progress_path=".assay/progress-$lane.jsonl"' in script
+    assert "git clone --no-local --no-checkout" in script
+    assert "--require-hashes" in script
+    assert "--require-judge-provenance" in script
+    assert 'identity.get("digest") == expected_digest' in script
+    assert '"$assay_bin" verify "$verdict_path"' in script
+    assert "run_and_verify_lane self-qualification-preflight" in script
+    assert "B105_STOPPED_BEFORE_R2=preflight-failed" in script
+    assert "ensure_source_unchanged" in script
     assert "ASSAY_SELF_QUALIFICATION_VERIFIED=1" in script
 
 
@@ -161,3 +183,35 @@ def test_self_qualification_gate_budget_matches_nyxloom_timeout():
     ]
     assert gate["timeout_seconds"] == 90 * 24 * 60 * 60
     assert run_gate["budget"] == "2160h"
+
+    preflight_gate = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))[
+        "gates"
+    ][PREFLIGHT_ID]
+    preflight_run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))[
+        "lanes"
+    ][PREFLIGHT_ID]
+    assert preflight_gate["timeout_seconds"] == 3600
+    assert preflight_run_gate["budget"] == "60m"
+
+
+def test_preflight_measures_the_same_complete_source_inventory_before_r2():
+    lane_file = load_lane_file(SELF_LANE_FILE)
+    qualification = lane_file.lane(QUALIFICATION_ID)
+    preflight = lane_file.lane(PREFLIGHT_ID)
+
+    assert preflight.rigor == ("R0", "R1")
+    assert preflight.judge is not None
+    assert qualification.judge is not None
+    assert preflight.judge.mode == "whole_target"
+    assert preflight.judge.fail_under == qualification.judge.fail_under == 100.0
+    assert preflight.judge.require_branch is True
+    assert preflight.judge.targets == qualification.judge.targets
+    assert tuple(
+        argument.replace(
+            "self-qualification-preflight", "self-qualification"
+        )
+        for argument in preflight.argv
+    ) == qualification.argv
+    assert preflight.isolation == qualification.isolation
+    assert preflight.judge.mutation is None
+    assert preflight.judge.canary is None

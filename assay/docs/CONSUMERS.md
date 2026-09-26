@@ -44,7 +44,7 @@ Stated as MEASURED rather than as intended, because the two have differed:
 | `cmru` | internal source mode: its run-gate lanes install the selected worktree's `assay/`; the mutation evidence records version and source commit |
 | `nyxloom` | internal source mode: its run-gate lanes install the selected worktree's `assay/` and record runtime provenance |
 | `dstdns` | vendored pinned zipapp, `tools/assay/assay-6.4.0.pyz`, with a `[lanes.*.pins.assay]` sha256 block per lane |
-| `assay` itself | the ordinary release gate builds its own wheel in-repo and installs it into a clean venv; B105's separate self-qualification gate installs the selected source editably so all R0-R3 tiers measure that exact tree |
+| `assay` itself | the ordinary release gate builds its own wheel in-repo and installs it into a clean venv; B105 builds a wheel from a private exact-OID clone with the committed hash-locked offline build closure, then runs the CLI from that wheel while R0-R3 pytest snapshots import their own `src/` trees |
 
 Thus internal consumers resolve assay from the selected worktree, while
 external consumers still vendor a pinned, sha256-verified `.pyz`. Nothing is
@@ -71,6 +71,18 @@ of the ordinary checkout-based release gate.
 When Nyxloom launches the gate, its 90-day watchdog can only fail an
 unfinished campaign; it cannot accept a partial report. Saved mutation state
 can be resumed by invoking the gate again.
+
+Before starting R2, the full gate runs the registered R0/R1 coverage
+preflight against the same commit. To run that check by itself while preparing
+the 100% whole-source coverage floor:
+
+```bash
+cd assay
+./run-gate.py self-qualification-preflight
+```
+
+A red preflight is a verified failure report and stops the full gate before
+mutation begins.
 
 From a clean Assay worktree, capture the gate output under `.assay/` so it does
 not dirty the judged tree:

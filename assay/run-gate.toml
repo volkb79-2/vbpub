@@ -33,11 +33,25 @@ budget = "60m"
 [lanes.self-qualification]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}"]
+argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification"]
 clean_tree = true
 budget = "2160h"
 resources = { cpus = "3", memory = "2g", memory_swap = "8g" }
 artifacts = [
   ".assay/verdict-self-qualification.json",
   ".assay/progress-self-qualification.jsonl",
+  ".assay/verdict-self-qualification-preflight.json",
+  ".assay/progress-self-qualification-preflight.jsonl",
+]
+
+[lanes.self-qualification-preflight]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification-preflight"]
+clean_tree = true
+budget = "60m"
+resources = { cpus = "3", memory = "2g", memory_swap = "8g" }
+artifacts = [
+  ".assay/verdict-self-qualification-preflight.json",
+  ".assay/progress-self-qualification-preflight.jsonl",
 ]
