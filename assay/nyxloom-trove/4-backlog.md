@@ -108,6 +108,7 @@ items:
   - {id: B104, title: "test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness FAILS on unmodified main: the normalized verdict differs from the frozen v6 witness, and the verdict schema has moved on to v11 since (B070) -- cause unexamined (witness staleness vs. dstdns pin drift vs. a real regression); also names the hazard that a Docker-reaching test runs by default in the local suite when a socket is present", type: bugfix, component: gate}
   - {id: B105, title: "Add retained full-source R0-R3 self-qualification evidence for Assay itself before M7; the Wave C release gate remains R0-only", type: bugfix, component: gate, context_estimate: large}
   - {id: B106, title: "Incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence", type: feature, component: mutation, context_estimate: large}
+  - {id: B107, title: "Deterministic mutation-campaign analysis and automatic post-lane closeout", type: feature, component: evidence, context_estimate: large}
 ---
 
 # assay — backlog
@@ -158,6 +159,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Filed after the 2026-09-23 triage**
 - B106 — provenance-safe selective mutation reruns across source/test changes — OPEN (filed 2026-09-25 from CMRU's 494-candidate mutation campaign)
+- B107 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
 
 **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
 - B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
@@ -10829,3 +10831,94 @@ RW-339/RW-341 and
 Session 17–18. Exact candidate state is under
 `.worktrees/rg55-p6-r2-final/scripts/cgroup-profiler/.assay/`; preserve both
 campaign trees and do not relabel the `hung` result as equivalent.
+
+## B107 — deterministic mutation-campaign analysis and automatic post-lane closeout
+
+**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns).**
+
+**Observed need:** operators repeatedly call Assay and then write one-off
+Python/LLM analysis to answer basic campaign questions: how many candidates
+were planned, completed, and left pending; how outcomes divide among
+`killed`, `survived`, `equivalent`, `crashed`, `hung`, and
+`budget_exceeded`; which survivors and adverse outcomes need attention; how
+appended/resumed runs relate; where coverage is missing; and how long the
+remaining work may take. Examples include the 494-candidate CMRU campaign
+that filed B106, Assay's long B105 self-qualification, and RG-55,
+CLI-extended, Netcup, and PWMCP campaign reviews. Those investigations each
+needed ad hoc parsing or interpretation of evidence that Assay already
+produced.
+
+B100 provides a bounded live gate snapshot, and `assay analyze progress`
+segments progress streams and reports event facts. Neither provides a
+campaign-level, outcome-oriented closeout that combines the current plan,
+progress, verdict, and available coverage evidence. The result is a second
+tool call or custom parser after the lane, often followed by another LLM
+interpretation step.
+
+### Desired behavior
+
+- Add a deterministic `assay analyze` campaign summary that consumes
+  an explicitly named lane at an expected commit plus explicitly named
+  progress/verdict/coverage evidence, and emits both machine-readable JSON
+  and concise text. It derives the current plan from the lane declaration
+  rather than assuming a plan artifact exists. It reports planned, completed,
+  pending, resumed, rejudged, and (for B106) freshly replayed versus fully
+  executed candidates without double-counting appended runs. It lists
+  candidate IDs, source locations, operators, and outcome buckets for
+  survivors and adverse outcomes, rather than only totals. Candidate detail
+  is filterable and bounded; any truncation reports the full matching count
+  and a way to retrieve the remaining records.
+- Summarize terminal verdict status and reason, rigor, coverage floors and
+  uncovered source locations/arcs when present, campaign start/end and
+  elapsed time, and the named evidence artifacts with their identities. A
+  progress stream is never a verdict: incomplete or absent terminal evidence
+  remains incomplete, and only the verifier-accepted verdict plus actual
+  command exit can establish the gate result.
+- Report observed candidate durations and a clearly conditional remaining-time
+  estimate only when the sample is sufficient. Show the sample count and
+  measurement window; identify exclusions such as budget-exceeded, hung, or
+  interrupted candidates. Estimates are operator information only: host load,
+  elapsed time, candidate rate, and ETA must never change candidate selection,
+  verdict classification, or gate outcome; analysis introduces no
+  time-based acceptance threshold.
+- After a registered `kind = "assay"` lane, `run-gate` automatically invokes
+  this analysis inside the gate using its already-known lane, expected
+  commit, verdict, progress, and log paths, then retains the summary with the
+  gate evidence. A command lane that wraps Assay may opt in only by explicitly
+  declaring its analysis inputs; neither Assay nor `run-gate` guesses artifact
+  paths. Analysis failure is surfaced and cannot overwrite, mask, or promote
+  the original lane's exit or verdict.
+- Invalid, malformed, stale, truncated, or mismatched inputs are identified
+  by their actual condition; missing evidence is never displayed as zero
+  work, zero failures, or a complete campaign. The report stays bounded and
+  preserves separate run identities instead of folding retry history into a
+  misleading aggregate.
+
+### Acceptance
+
+- [ ] Fixtures cover a fresh campaign, appended `--resume` runs, a
+      `--rejudge` run, B106 reuse/replay, and an interrupted campaign. The
+      summary's per-run and current-plan counts match the authoritative plan,
+      progress events, and verdict with no duplicate candidate accounting.
+- [ ] Fixtures cover every canonical mutation outcome bucket, with exact
+      candidate IDs, paths, operators, and outcome attribution for survivors,
+      equivalents, hangs, crashes, and budget exhaustion. Missing, malformed,
+      stale-commit, wrong-lane, truncated, or verdict/progress-disagreeing
+      evidence never yields a complete or zero-failure summary.
+- [ ] A variable-duration fixture proves the estimate is explicitly
+      sample-qualified and diagnostic only; changing host-load metadata or
+      elapsed-time inputs cannot change the selected candidates or gate
+      outcome. A bounded candidate listing exposes its matching total and
+      never silently truncates survivor/adverse-outcome detail.
+- [ ] Coverage summary identifies exact missing lines/branch arcs from the
+      supplied coverage artifact and distinguishes a missing artifact from a
+      genuinely complete zero-gap measurement.
+- [ ] A registered assay lane run through `run-gate` automatically retains
+      the machine-readable and text closeout in tester-unified gate evidence.
+      A command lane without explicit analysis declarations does not guess;
+      a closeout failure preserves the original command status and verdict.
+- [ ] README explains the analysis surface, DESIGN-GUIDE records its identity,
+      failure, and estimate rules, and CONSUMERS.md includes pasteable direct
+      and run-gate workflows. `run-gate-project/SPEC.md` documents the
+      automatic post-lane integration and its opt-in boundary for wrapped
+      Assay commands.
