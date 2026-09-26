@@ -109,6 +109,7 @@ items:
   - {id: B105, title: "Add retained full-source R0-R3 self-qualification evidence for Assay itself before M7; the Wave C release gate remains R0-only", type: bugfix, component: gate, context_estimate: large}
   - {id: B106, title: "Incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence", type: feature, component: mutation, context_estimate: large}
   - {id: B107, title: "Deterministic mutation-campaign analysis and automatic post-lane closeout", type: feature, component: evidence, context_estimate: large}
+  - {id: B108, title: "B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes", type: feature, component: mutation, context_estimate: large}
 ---
 
 # assay — backlog
@@ -160,6 +161,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 **Filed after the 2026-09-23 triage**
 - B106 — provenance-safe selective mutation reruns across source/test changes — OPEN (filed 2026-09-25 from CMRU's 494-candidate mutation campaign)
 - B107 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
+- B108 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
 
 **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
 - B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
@@ -10922,3 +10924,82 @@ interpretation step.
       and run-gate workflows. `run-gate-project/SPEC.md` documents the
       automatic post-lane integration and its opt-in boundary for wrapped
       Assay commands.
+
+## B108 — B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes
+
+**Status: OPEN (filed 2026-09-26 at operator request).**
+
+**Observed limit:** B106 safely handles a changed tree by running the current
+baseline and rediscovering the current candidate set, then replaying an
+eligible prior killed candidate's current failure witness. Prior survivors
+and uncertain or changed candidates run the full current suite. Its candidate
+identity includes the candidate file's full source digest, byte span, and
+mutated-file digest. This is safe but conservative: changing a comment or an
+independent function in the same file invalidates every candidate identity in
+that file, even when the mutation site and the code/tests relevant to a prior
+kill did not change. When a source fix targets a survivor, the campaign should
+fully rejudge that survivor without automatically paying for full-suite runs
+of every previously killed, behaviorally independent candidate.
+
+### Desired behavior
+
+- Add an explicitly selected, opt-in reuse policy that can carry forward a
+  prior `killed` result when Assay has deterministic evidence that the
+  candidate's mutation semantics and its relevant judging dependency closure
+  are unchanged. Keep B106's current witness-replay/full-run policy available
+  as the conservative mode and fallback.
+- Separate stable candidate-site identity from whole-file byte identity. A
+  language adapter may use a semantic site fingerprint and unambiguous
+  structural anchor so unrelated comments, formatting, or edits elsewhere in
+  the file do not automatically invalidate a candidate. If the mutation site
+  moved ambiguously or its before/after transformation changed, it is not the
+  same candidate and must be rediscovered and judged normally.
+- Decide carry-forward per candidate, not per repository commit. Its proof
+  covers the mutation site and required program context, the prior failing
+  test node and its fixtures/plugins/conftest, relevant imports/helpers and
+  generated or installed dependencies, plus the lane command, configuration,
+  environment, and tool/runtime identities that can affect the result.
+  Record the prior verdict digest, current commit, candidate identity,
+  dependency-proof method/version, and the compared closure identities for
+  every carried outcome.
+- Always run the current R0 baseline and rediscover the complete current
+  candidate inventory. Previously surviving candidates still receive a full
+  current-suite run so a source/test fix can kill them. A prior kill whose
+  relevant closure changed is replayed using B106's current-witness path or
+  gets a full run. Unknown, dynamic, incomplete, or unsupported dependency
+  information never counts as proof of no impact and falls back to the
+  conservative policy.
+- A completed verdict is gate-acceptable only when every candidate in the
+  current inventory has exactly one outcome that is either freshly executed,
+  freshly witness-replayed under B106, or carried forward with a verifier-
+  accepted impact proof. Preserve provenance and disposition visibly; do not
+  relabel a carried result as freshly executed.
+
+### Acceptance
+
+- [ ] A changed-tree fixture fixes selected prior survivors. The fixed/new
+      survivors run fully; previously killed candidates outside the changed
+      dependency closures are carried forward under the opt-in policy, with
+      per-candidate proof, while the default B106 mode continues to replay
+      eligible kills.
+- [ ] Paired positive/negative fixtures show that a comment or independent
+      function edit can preserve identity only when the semantic site anchor
+      and impact proof remain unambiguous, while edits to a shared helper,
+      prior failing test, fixture, plugin/conftest, lane argv/env/config, or
+      relevant dependency invalidate the affected proof and trigger replay or
+      a full run.
+- [ ] Fixtures for dynamic imports, reflection, monkeypatching, unresolved
+      dependencies, and ambiguous site movement prove that missing impact
+      evidence always falls back; no unknown is interpreted as unchanged.
+- [ ] `assay verify` rejects carried-forward records with missing, stale,
+      mismatched, duplicated, or incomplete provenance and accepts a complete
+      mixed campaign only when current inventory coverage is exhaustive and
+      disjoint.
+- [ ] Before any verdict-schema or closed-vocabulary change, obtain the
+      operator-requested GPT-6-Luna xhigh design recommendation and independent
+      review. If v13 cannot express the required per-candidate proof, record
+      the needed schema contract before implementation.
+- [ ] README explains the opt-in and its limits, DESIGN-GUIDE specifies the
+      dependency-proof model and conservative fallback, and CONSUMERS.md gives
+      a pasteable survivor-fix workflow and explains which outcomes were
+      carried forward versus rerun.
