@@ -1365,3 +1365,15 @@ canaries. The old R2 at `aae66356` is not current-tree evidence. Current-tree
 R2 and the full gate remain intentionally pending for provisional code review
 and remain mandatory before release. No provisional merge or release is
 approved by this BLOCKED verdict.
+
+### 2026-09-26 18:12:40Z — exact-tree R2 triage
+
+The replacement R2 on quiet tree `b3df5602` ended at
+`2026-09-26T05:53:00.824604+00:00` with 312/312 candidates accounted for:
+300 killed, 12 survived, zero equivalent/hung/crashed/budget-exceeded,
+`FAIL/MUTANTS_SURVIVED`, exit 1. The survivor table and equivalence proofs
+are in the REPORT. Two survivors are real oracle gaps: the private-PID
+placement bridge's non-ESRCH guard (`placement.py:570`) and the fail-closed
+PID identity exception (`serve.py:1296`). Focused regression tests were
+added for both; no production behavior was changed. The new test tree must
+be rejudged, and the b3df5602 receipt is diagnostic only.

@@ -1521,3 +1521,40 @@ measurement also remains a wave close-out requirement. BRIEF-11 carries the
 sequenced controller continuation; no claim is made here that final gates,
 review, replacement R2, full gate, daemon release, or DAMON measurement have
 completed.
+
+## Session 17 — 2026-09-26 18:12:40Z — exact-tree R2 survivor triage
+
+The replacement P6 campaign completed on quiet tree `b3df5602` at
+`2026-09-26T05:53:00.824604+00:00`. The separately read verdict is
+`FAIL/MUTANTS_SURVIVED`, exit 1: all **312/312** candidates were accounted
+for, with **300 killed, 12 survived, and zero equivalent, hung, crashed, or
+budget-exceeded** candidates. The run took 13,518.851 seconds. This is a
+substantive, budget-clean mutation result; the two test additions below
+change the judged tree, so this receipt is diagnostic for the repair tree and
+must not be reused as final R2 evidence.
+
+| Candidate | Site and mutation | Disposition |
+|---|---|---|
+| `e97fb0fd6648a7768ec59c7fbc61e947883d3b4fd70a295eb34b971f7b0272c2` | `liveness.py:121`, `Policy` `frozen=True` → `False` | EQUIVALENT: production callers read policy fields; no shipped caller mutates this internal value object. |
+| `b9c49c2973542ee65515a36805c692aa18f37d791c873878ffdca4e7be8423fe` | `liveness.py:236`, `StreamSample` `frozen=True` → `False` | EQUIVALENT: the stream sample is an internal read result and no shipped caller mutates it. |
+| `9f2ab1a82576630d27c97a925682b1c8e1cb135f544c016a4a65fb221fb0715c` | `liveness.py:301`, `>` → `>=` on the one-time head scan | EQUIVALENT: at exactly the tail size, the optional head read duplicates the same complete bytes already read as the tail; the head can only recover a cadence hint and cannot change the parsed tail event. |
+| `bbe2efa6c96cc7bfaeba0f61aaccf57b17b331908a67d2b09085ffa60f453a77` | `liveness.py:379`, `or` → `and` in the CPU-counter guard | EQUIVALENT under the helper contract: `metrics._proc_cpu_usec()` returns both counters or `(None, None)` atomically, so the two guards select the same records. |
+| `e1d57cd7f790f17ac515b4242ddb6ca5595764353a787d15db94a5e06a404109` | `liveness.py:521`, window length `> 1` → `>= 1` | EQUIVALENT under the non-negative window domain: after the current sample is appended, its timestamp is never less than `sample.mono - CPU_WINDOW_SECONDS`; the sole entry cannot be popped by the mutated guard. |
+| `1665debd58e9a3d86db0a0e9a21d469190ea7f988b0d0e529512d0f88d874da6` | `placement.py:170`, `PlacementRequest` `frozen=True` → `False` | EQUIVALENT: the request is an internal parsed value and shipped placement code never mutates it. |
+| `a48b42fa3ade3648e007b53eddc3d1947135ca72d947bcbae9f44101e71c215f` | `placement.py:570`, `or` → `and` in the ESRCH bridge guard | REAL oracle gap. A non-ESRCH write failure with a still-existing PID must not be sent to host systemd. Covered by `TestMigration::test_non_esrch_write_failure_is_not_sent_to_systemd`. |
+| `fc393c785eb77d16571363d0a72135836123e71206fd8483fb6705984bfc924e` | `placement.py:617`, `return False` → `return True` for an absent leaf | EQUIVALENT at the contract boundary: the kill operation is only invoked for a placed leaf; all shipped callers establish that precondition. |
+| `691d3071874a3c13a50fd1d7aba7b9c5683bc828a5e2b89943005f58909d26aa` | `placement.py:688`, empty `[]` → `None` | EQUIVALENT: every caller immediately uses the result in a falsiness guard before iteration. |
+| `d4e41ae1604355d46edf686946caad0ba664cab41970e82d226b6eaad7045861` | `serve.py:1141`, `dt > 0` → `dt >= 0` | EQUIVALENT: `events.Detector.observe()` itself returns no events for `dt <= 0` and has no work before that guard. |
+| `5952bc6759426c20a90d70da611bb855c4ddf88c9d43622a3f81af74710ef07e` | `serve.py:1243`, unplaced `memory_high_applied=False` → `True` | EQUIVALENT: the unplaced branch supplies no leaf PSI (`None`), so the liveness contract cannot produce a `throttled` verdict from that flag. |
+| `bb24318cd061fe6a2dded6d94ce89409606a69eb2328d62866b93a79f2559622` | `serve.py:1296`, unreadable PID identity `False` → `True` | REAL safety oracle gap. An `OSError` from host/local `/proc` identity comparison must refuse signalling. Covered by `TestKillTargets::test_unreadable_pid_identity_is_not_addressable`. |
+
+Focused tests for the two real gaps pass:
+
+```
+2 passed in 0.07s
+```
+
+The repair branch is now dirty only in those two test files. Commit the
+scoped oracle fixes, then run the exact-tree short gates and one fresh full
+R2; the final mutation verdict must be read separately and must replace this
+diagnostic receipt before release.

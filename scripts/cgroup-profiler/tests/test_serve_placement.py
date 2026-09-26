@@ -598,6 +598,31 @@ class TestMigration:
         assert plc.error is None
         assert plc.block()["pids_moved"] == 1
 
+    def test_non_esrch_write_failure_is_not_sent_to_systemd(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        attached: List[Any] = []
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target.endswith("cgroup.procs"):
+                    raise OSError(errno.EPERM, "write refused", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+            request=placement.PlacementRequest(),
+            systemd_attach=lambda unit, subcgroup, pid: attached.append(
+                (unit, subcgroup, pid)
+            ) or True,
+            pid_exists=lambda _pid: True,
+            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
+        )
+        plc.apply([101])
+
+        assert attached == []
+        assert plc.block()["pids_moved"] == 0
+
     def test_failed_systemd_attach_abandons_empty_leaf(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         logged: List[str] = []
