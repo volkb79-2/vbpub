@@ -34,22 +34,32 @@ wrong by construction.)
   (and fails) while your work is uncommitted. That is the gate failing closed,
   not a coverage failure; say so explicitly rather than presenting it as green.
 
-## Frozen files — read, NEVER modify
+## Protected files — require explicit package-scoped ownership
 
-`pyproject.toml`, `tests/conftest.py`, `schemas/`, `docs/`, and
+`tests/conftest.py`, `schemas/`, and
 `src/nyxloom/{__init__,types,paths,storage,config,leases}.py`, plus every
-file owned by another package. Your module's stub DOCSTRING is the normative
-interface: implement beneath it, keep the docstring and all public
-signatures EXACTLY as written. If a frozen file or the contract seems wrong,
-insufficient, or impossible: STOP — do not improvise, do not work around —
-write `BLOCKED: <reason>` in your REPORT and final message, and exit.
+file owned by another active package, are protected. `docs/` and
+`pyproject.toml` are not globally protected: a package may change a document
+or packaging file only when that exact path is listed in its `scope.touch`.
+This removes the blanket freeze; it does not grant a package general ownership
+of either tree or file.
+
+Every package may edit only files explicitly listed in its `scope.touch`.
+Listing a path there does not transfer ownership of a file owned by another
+active package and does not override this protected-file rule or an explicit
+`scope.forbid`. A protected-file change requires a bounded contract amendment
+that names the exact path and explains why the package acceptance needs it.
+Until that ownership is granted, do not edit or work around the constraint;
+write `BLOCKED: <reason>` in the REPORT and final message, and stop dependent
+work. Your module's stub DOCSTRING is the normative interface: implement
+beneath it, keep the docstring and all public signatures EXACTLY as written.
 
 ### Core-redesign wave exception (CR-00 through CR-16)
 
 The operator-approved core-redesign program in
-`reports/CORE-REDESIGN-IMPLEMENTATION-PLAN-2026-08-02-AMENDMENT.md` supersedes
-the frozen-file list only for a package whose explicit contract names one of
-those files. This is a package-scoped ownership grant, not a general unfreeze:
+`reports/CORE-REDESIGN-IMPLEMENTATION-PLAN-2026-08-02-AMENDMENT.md` grants
+package-scoped exceptions to the protected-file rule only when that package's
+explicit contract names the exact file. This is not general ownership:
 
 - CR-01 may change the declared document/lint surfaces it audits.
 - CR-03 and CR-07 may change `types.py` and their explicitly named schemas.
@@ -59,11 +69,11 @@ those files. This is a package-scoped ownership grant, not a general unfreeze:
   contract names the exact file and explains why the package acceptance cannot
   be met without it.
 
-Files owned by another active package remain frozen. An agent that discovers a
-new frozen-file need must request a bounded contract amendment; it must not
-infer ownership from this exception. Existing live state and nonterminal tasks
-must be preserved through backup plus versioned upcasting. No CR package is
-authorized to delete or silently reset live state.
+Files owned by another active package remain protected. An agent that
+discovers a new protected-file need must request a bounded contract amendment;
+it must not infer ownership from this exception. Existing live state and
+nonterminal tasks must be preserved through backup plus versioned upcasting.
+No CR package is authorized to delete or silently reset live state.
 
 ## Cross-package dependencies
 

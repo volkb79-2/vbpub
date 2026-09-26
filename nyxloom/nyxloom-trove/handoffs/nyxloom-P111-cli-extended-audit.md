@@ -69,9 +69,11 @@ cli-extended migration.
 
 The package is explicitly allowed to update README.md,
 docs/CLI-REFERENCE.md, docs/DESIGN-GUIDE.md, docs/CONSUMERS.md, and the
-decisions/report files named in scope.touch. This is a package-scoped amendment
-to the frozen-file rule in nyxloom-trove/STANDING.md; this P111 audit has no
-other frozen-file ownership.
+decisions/report files named in scope.touch. In the input revision,
+nyxloom-trove/STANDING.md no longer globally freezes docs/ or pyproject.toml;
+each still requires exact package-scoped ownership in scope.touch. Protected
+core, schema, shared-fixture, and other-package files retain their bounded
+amendment rule. This audit's scope remains limited to the paths listed above.
 
 ## Approved operator decisions
 
@@ -90,10 +92,11 @@ Treat these as fixed inputs; do not ask the operator to decide them again.
 5. This audit and canonical reference come first. A separate implementation
    handoff follows after the operator reviews the audit and resolves any new
    public grammar decisions.
-6. The operator authorized the follow-up implementation handoff to name
-   pyproject.toml as a bounded frozen-file exception for bundling cli_extended
-   into the Nyxloom wheel. No general STANDING.md policy change is included in
-   this CLI audit; report any broader freeze-policy recommendation separately.
+6. The operator authorized the follow-up implementation handoff to include
+   pyproject.toml in scope.touch for bundling cli_extended into the Nyxloom
+   wheel. The removal of the blanket docs/ and pyproject.toml freeze is already
+   part of this handoff's input revision; it grants no ownership beyond each
+   package's exact scope.touch.
 
 ## Context to read first
 
@@ -104,7 +107,7 @@ worktree root. Other paths are relative to the Nyxloom project root.
    implementation packet, section 3b test-oracle rules, real-gate rule,
    mechanical BLOCKED rule, product-decision rule, and two-step
    input_revision rule.
-2. nyxloom-trove/STANDING.md, especially Frozen files and Core-redesign
+2. nyxloom-trove/STANDING.md, especially Protected files and Core-redesign
    wave exception, and nyxloom-trove/DOCTRINE.md, especially structlog
    reserved-key rules. Apply only the explicit package-scoped ownership grant
    listed above.
