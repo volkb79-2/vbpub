@@ -1,7 +1,8 @@
 # B105 self qualification — implementation log
 
 **Status:** ACTIVE. The package is implementing the B105 backlog acceptance
-recorded at `4-backlog.md:10653` against main `456164d528b11adea23b8812094bb510d4d5cfb4`.
+recorded at `4-backlog.md:10653` on current main
+`94009fbba09c798d8759dce5c4039db2ddb2b196`.
 
 ## Baseline and worktree
 
@@ -20,6 +21,10 @@ recorded at `4-backlog.md:10653` against main `456164d528b11adea23b8812094bb510d
   Reachable Git objects have since been repacked into the clone's own object
   store, and the external alternate was removed. Its eventual branch can be
   fetched into the primary repository for serial merge.
+- The CIU worktree was first created at `456164d5`; before final qualification,
+  the branch was rebased onto current `origin/main` `94009fbb` (a CMRU
+  release-input documentation change) with no conflicts. The final source
+  qualification therefore includes the latest main history.
 
 ## Planned construction
 
@@ -47,7 +52,7 @@ verification, review, and merge results will be appended below as they occur.
 ### Initial implementation — 2026-09-26
 
 - Added `self-qualification` as a second `assay.toml` lane while retaining
-  `tester-unified` as R0-only. Its R1 declaration literally names the 52
+  `tester-unified` as R0-only. Its R1 declaration literally names the 50
   production Python files under `src/assay`; the self-lane test compares that
   list with the live source inventory.
 - Registered `./run-gate.py self-qualification` as a tester-unified command.
@@ -82,9 +87,10 @@ verification, review, and merge results will be appended below as they occur.
   `456164d5` then passed, so the tester-unified container will not depend on
   mounting `/workspaces/vbpub/.git/objects` from outside the selected clone.
 
-The candidate-count and shard checks completed before the first gate attempt.
-R1's 100% measurement, the full R0-R3 run, retained report/log, and serial
-merge remain open.
+The initial candidate-count and shard checks completed before the first gate
+attempt. The rebased `f23bc6b1` preflight now establishes the 100% whole-source
+R0/R1 result. The final full R0-R3 run, retained report/log, backlog closeout,
+review, and serial merge remain open.
 
 ### Gate attempt 1 — 2026-09-26
 
@@ -123,3 +129,37 @@ merge remain open.
   The outer controller watchdog and run-gate advisory budget were also widened
   together to 90 days. Assay's lane budget remains `unbounded`; reaching the
   controller watchdog is an incomplete gate, never an R2 pass.
+
+### Gate attempt 3 — 2026-09-26
+
+- The R0/R1 preflight on `f1850f21` completed the suite in 8m27s but correctly
+  failed at R0: the real-descendant cleanup test read `/proc/<pid>/stat` after
+  the child had exited, and the file read raised `ProcessLookupError` between
+  the path lookup and read. The same report identified six uncovered
+  executable lines and seven missing branch arcs; coverage was not yet
+  release-acceptable. Its artifacts remain in `.assay/` for commit `f1850f21`.
+- The cleanup probe now treats both `FileNotFoundError` and
+  `ProcessLookupError` as an already-exited child. Added boundary cases for
+  the uncovered runner paths, and routed normal mutation outcome recording
+  through the same classifier used for witness eligibility so equivalence and
+  kill-signal rules have one implementation. A focused debug run passed 48
+  tests. The branch was then rebased onto current main before the next gate.
+
+### Gate attempt 4 — 2026-09-26
+
+- The registered `self-qualification-preflight` lane passed in
+  `tester-unified` on source commit `f23bc6b19716f360ecd2145eddb05f683fa30ff5`
+  (tree `c21be711556c34b4f217de0317df59f2cb85847c`); the gate's `assay verify`
+  step accepted its R0/R1 verdict. Its exact whole-target inventory is 50
+  source files, matching all 50 production Python files under `src/assay`.
+  Coverage was 13,175/13,175 executable statements and 5,892/5,892 branch
+  arcs, with no missing lines or branches. Thirteen explicitly marked
+  non-executable lines remain excluded as recorded by the raw coverage
+  report; no source file was omitted. The baseline completed in 8m26s.
+- Retained preflight outputs are under the worktree's ignored
+  `assay/.assay/`: `verdict-self-qualification-preflight.json`,
+  `progress-self-qualification-preflight.jsonl`, and
+  `coverage-self-qualification-preflight-snapshot.json`. The complete
+  run-gate invocation/output is `/tmp/b105-self-qualification-preflight-f23.log`.
+  The final full qualification gate will repeat this preflight on its own
+  exact source commit before starting native R2.
