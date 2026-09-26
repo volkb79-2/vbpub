@@ -2878,11 +2878,9 @@ def _execute_mutation_jobs(
             attempt_name="full",
         )
         assert full is not None
-        if _classified_bucket(full) != "killed" and full.execution.witness is not None:
-            full = _dataclass_replace(
-                full,
-                execution=MutationExecution(mode="full"),
-            )
+        # `_run_attempt` attaches a full witness only when the completed
+        # attempt classifies as killed, so a non-killed full attempt cannot
+        # carry one to strip here.
         return _dataclass_replace(
             full,
             elapsed_seconds=max(0.0, time.monotonic() - started_total),

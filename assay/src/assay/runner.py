@@ -3703,6 +3703,7 @@ def _run_prepared_lane(
     # value, never two independently-typed-out paths that could drift.
     liveness_candidates_dir: Path | None = None
     baseline_plan = plan
+    reuse_sequential_supported: bool | None = None
     if liveness_injected:
         liveness_baseline_events_path = (
             liveness_dir
@@ -3725,6 +3726,17 @@ def _run_prepared_lane(
             ),
         )
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
+        if reuse_source is not None:
+            from .mutation_witness import supports_sequential_pytest
+
+            # Inspect the same committed snapshot whose baseline is about
+            # to run. The invoking worktree can contain allowed dirty
+            # paths, so it cannot be the source of pytest configuration.
+            reuse_sequential_supported = supports_sequential_pytest(
+                plan.argv_effective,
+                cwd=resolve_run_cwd(baseline_snapshot.project_root, plan),
+                env=plan.env_effective,
+            )
         if progress_stream is not None:
             progress_stream.emit(
                 {
@@ -4342,8 +4354,12 @@ def _run_prepared_lane(
                     discarded=len(ingested_r2.discarded),
                 )
                 claims += (r2_claim,)
-                if r2_claim.mutation is not None:
-                    judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
+                # `ingested_r2.mutation` is always a concrete `Mutation`:
+                # ingest either returns the complete normalized payload or
+                # raises a typed refusal above. Unlike native R2's
+                # `UNSUPPORTED` capability marker, this branch has no
+                # payload-free success shape.
+                judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
             ended = iso_utc(clock())
         else:
             assert targets is not None
@@ -4414,14 +4430,10 @@ def _run_prepared_lane(
                 candidate_process_runner = process_runner
             reuse_witnesses: dict[str, tuple[str, str]] = {}
             if reuse_source is not None:
-                from .mutation_witness import supports_sequential_pytest
                 from .reuse import eligible_witnesses
 
-                sequential_supported = supports_sequential_pytest(
-                    plan.argv_effective,
-                    env=plan.env_effective,
-                )
-                if sequential_supported:
+                assert reuse_sequential_supported is not None
+                if reuse_sequential_supported:
                     reuse_witnesses = eligible_witnesses(
                         reuse_source,
                         sequential_pytest_supported=True,
@@ -4549,37 +4561,24 @@ def _run_prepared_lane(
             else:
                 r2_claim = mutation.build_mutation_claim(result, mutation_result)
                 claims += (r2_claim,)
-                if r2_claim.mutation is not None:
-                    # The EXECUTED shard, from the `--shard` CLI argument
-                    # (this function's own parameter) -- not the lane's
-                    # declared config, which selects nothing and would let a
-                    # verdict claim a shard identity it never enforced.
-                    judgment_r2 = _build_judgment_r2(
-                        lane,
-                        shard_index=shard_index,
-                        shard_count=shard_count,
-                        # (B091/D-23) `run_mutation` is the one place the
-                        # derived number was actually computed, against the
-                        # measured baseline; read back here (via the CLAIM's
-                        # own `Mutation`, already narrowed non-`None` by the
-                        # `if` above -- unlike `mutation_result`, whose
-                        # static type also admits `"UNSUPPORTED"`) rather
-                        # than recomputed, exactly the reason the field's own
-                        # docstring gives.
-                        budget_per_candidate_derived_s=(
-                            r2_claim.mutation.budget_per_candidate_derived_s
-                        ),
-                        # (B091/RW-36) Straight from THIS function's own
-                        # local variables, not read back off `Mutation` --
-                        # unlike `budget_per_candidate_derived_s`, nothing
-                        # about liveness is computed inside `run_mutation`;
-                        # `inject_liveness_plugin` already decided all three
-                        # before `run_mutation` was even called, so there is
-                        # no second derivation here to drift from the first.
-                        liveness_active=liveness_injected,
-                        liveness_reason=liveness_reason,
-                        liveness_plugin=liveness_plugin_path,
-                    )
+                # R2 is attempted on this path even when the adapter reports
+                # UNSUPPORTED and the claim therefore has no mutation payload.
+                # Verdict verification still needs the policy that governed
+                # that attempt; only a payload can carry a baseline-derived
+                # per-candidate budget.
+                judgment_r2 = _build_judgment_r2(
+                    lane,
+                    shard_index=shard_index,
+                    shard_count=shard_count,
+                    budget_per_candidate_derived_s=(
+                        r2_claim.mutation.budget_per_candidate_derived_s
+                        if r2_claim.mutation is not None
+                        else None
+                    ),
+                    liveness_active=liveness_injected,
+                    liveness_reason=liveness_reason,
+                    liveness_plugin=liveness_plugin_path,
+                )
         ended = iso_utc(clock())
 
     judgment_r3: JudgmentR3 | None = None

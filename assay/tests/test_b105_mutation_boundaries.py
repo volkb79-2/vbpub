@@ -15,7 +15,8 @@ import pytest
 from assay import mutation
 from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 from assay.adapters.python import PythonAdapter
-from assay.errors import AssayError, Outcome
+from assay import runner
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import MutationDiscoveryError, MutationStateError
 from assay.verdict import Mutation
 
@@ -343,6 +344,137 @@ def test_run_mutation_validates_candidate_bounds_and_resume_inputs(
 ):
     with pytest.raises(ValueError, match=message):
         mutation.run_mutation(**_run_mutation_args(**overrides))
+
+
+@pytest.mark.parametrize("count", [0, mutation.MAX_SHARD_COUNT + 1])
+def test_mutation_shards_refuse_counts_outside_the_declared_range(count):
+    with pytest.raises(ValueError, match="shard count must be in"):
+        mutation.select_mutation_shard((), index=0, count=count)
+
+
+@pytest.mark.parametrize("key", ["/outside/mod.py", "../outside/mod.py"])
+def test_report_paths_refuse_absolute_and_parent_relative_keys(tmp_path, key):
+    report = SimpleNamespace(sources={key: object()})
+    with pytest.raises(AssayError, match="keys must be relative") as caught:
+        mutation._resolve_report_paths(
+            report,
+            run_cwd=tmp_path / "repo" / "app",
+            repo_top=tmp_path / "repo",
+            source_root_paths=(tmp_path / "repo" / "app" / "src",),
+        )
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_report_path_outside_repository_is_refused_even_under_a_source_root(
+    tmp_path,
+):
+    repo_top = tmp_path / "repo"
+    run_cwd = repo_top / "app"
+    outside_sources = tmp_path / "external-sources"
+    run_cwd.mkdir(parents=True)
+    outside_sources.mkdir()
+    (run_cwd / "redirect.py").symlink_to(outside_sources / "mod.py")
+    report = SimpleNamespace(sources={"redirect.py": object()})
+
+    with pytest.raises(AssayError, match="resolves outside the snapshot repository") as caught:
+        mutation._resolve_report_paths(
+            report,
+            run_cwd=run_cwd,
+            repo_top=repo_top,
+            source_root_paths=(outside_sources,),
+        )
+
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_mutation_worker_propagates_non_timeout_post_execution_git_failure(
+    git_repo: GitRepo, tmp_path, monkeypatch
+):
+    job = _job()
+    git_repo.write(job.path, job.original_text)
+    git_repo.commit_all("seed mutation worker")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    failure = AssayError(
+        "post-run Git inspection failed",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.GIT_FAILED,
+    )
+    monkeypatch.setattr(
+        mutation,
+        "_snapshot_left_dirt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    plan = make_plan(make_lane(argv=("check",)))
+
+    with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
+        with pytest.raises(AssayError) as caught:
+            mutation._execute_mutation_jobs(
+                job_list=(job,),
+                deadline=make_deadline(),
+                jobs=1,
+                prepared=prepared,
+                plan=plan,
+                process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+                    list(argv), returncode=0, stdout="", stderr=""
+                ),
+                clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
+                write_progress=None,
+                execute_plan=runner.execute_plan,
+                resolve_run_cwd=lambda root, _plan: root,
+                total=1,
+                candidate_count=1,
+            )
+
+    assert caught.value is failure
+
+
+def test_mutation_worker_keeps_the_first_fatal_error_when_another_worker_fails(
+):
+    errors = [
+        AssayError(
+            f"worker {index} failed",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.GIT_FAILED,
+        )
+        for index in range(2)
+    ]
+
+    class Future:
+        def __init__(self, error):
+            self.error = error
+
+        def result(self):
+            raise self.error
+
+    class Executor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, _function, position):
+            return Future(errors[position])
+
+    with pytest.raises(AssayError) as caught:
+        mutation._execute_mutation_jobs(
+            job_list=(_job(), _job()),
+            deadline=make_deadline(),
+            jobs=2,
+            prepared=None,
+            plan=make_plan(make_lane(argv=("check",))),
+            process_runner=lambda *_args, **_kwargs: None,
+            clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
+            executor_factory=lambda _jobs: Executor(),
+            write_progress=None,
+            execute_plan=lambda *_args, **_kwargs: None,
+            resolve_run_cwd=lambda root, _plan: root,
+            total=2,
+            candidate_count=2,
+        )
+
+    assert caught.value is errors[0]
 
 
 def test_run_mutation_returns_unsupported_before_using_the_snapshot():

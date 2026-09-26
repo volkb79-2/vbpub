@@ -845,6 +845,23 @@ def test_the_real_report_carries_forty_genuine_compile_errors():
     assert document["framework"]["version"] == "10.0.0"
 
 
+def test_duplicate_ingested_mutant_identity_is_a_typed_artifact_refusal(
+    git_repo: GitRepo, tmp_path: Path
+):
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    key = _one_measured_key(document)
+    duplicate = dict(document["files"][key]["mutants"][0])
+    document["files"][key]["mutants"].append(duplicate)
+
+    claim = _refused(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert claim.mutation is None
+    assert "same mutant identity twice" in (claim.detail or "").lower()
+
+
 def test_every_discarded_mutant_reaches_the_wire_with_its_full_identity(
     discarding,
 ):

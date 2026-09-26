@@ -25,7 +25,6 @@ the older convention every test in this module used through P16 — now trips
 from __future__ import annotations
 
 import contextlib
-import argparse
 import io
 import json
 import sys

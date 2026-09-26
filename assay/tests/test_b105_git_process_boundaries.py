@@ -695,6 +695,22 @@ def test_p22_stream_pack_cleans_both_children_when_the_relay_fails(monkeypatch):
     assert consumer.stdin.closed
 
 
+def test_p22_stream_pack_closes_an_open_producer_stdin_when_dup_fails(monkeypatch):
+    producer, _consumer, _spawned, _killed, _writes, _pumps = (
+        _stub_p22_pack_pipeline(monkeypatch)
+    )
+    monkeypatch.setattr(
+        git.os,
+        "dup",
+        lambda _fd: (_ for _ in ()).throw(OSError("cannot duplicate producer pipe")),
+    )
+
+    with pytest.raises(OSError, match="cannot duplicate producer pipe"):
+        _stream_pack(monkeypatch)
+
+    assert producer.stdin.closed
+
+
 def test_p22_init_private_surfaces_git_init_failure_and_captures_stderr(monkeypatch):
     process = _FakeP22Process(500)
     process.returncode = 1
