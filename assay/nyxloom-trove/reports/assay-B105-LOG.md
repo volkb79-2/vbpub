@@ -15,8 +15,8 @@ recorded at `4-backlog.md:10653` on current main
   left that RG-55 checkout and record untouched.
 - A temporary clone at `/tmp/vbpub-b105-ciu-root-20260926` isolates CIU's
   instance registry. CIU created logical worktree and branch
-  `assay-b105-self-qualification` there, pinned to the exact main SHA above.
-  Its worktree is
+  `assay-b105-self-qualification` there at then-current `main`
+  `456164d528b11adea23b8812094bb510d4d5cfb4`. Its worktree is
   `/tmp/vbpub-b105-ciu-root-20260926/.worktrees/assay-b105-self-qualification`.
   Reachable Git objects have since been repacked into the clone's own object
   store, and the external alternate was removed. Its eventual branch can be
@@ -132,6 +132,25 @@ review, and serial merge remain open.
 
 ### Gate attempt 3 — 2026-09-26
 
+- An earlier full-lane attempt on source commit
+  `a7542820e2a19cbf4065bc02825d03e1f3583300` (tree
+  `338a9b5cc9707f67b02fb323ee9d53a2f4153bc2`) completed its baseline in
+  10m12s: 5,065 passed, 21 skipped, and 3 failed. The command imported Assay
+  from the mounted source tree rather than a built wheel, so the R0 tests that
+  require wheel provenance failed. R1 also refused `EXCLUDED_LINES` at
+  12,257/13,174 executable statements and 5,215/5,910 branch arcs, with 66
+  excluded lines, 917 missing statements, and 695 missing arcs. R2 was
+  `COMMAND_FAILED` for missing `judge_provenance`; no candidate campaign ran,
+  and R3 was inconclusive.
+- The B105 driver now builds the selected exact-OID source as a wheel in a
+  private clone, installs it into the run venv, requires wheel provenance, and
+  keeps R0/R1 preflight ahead of R2. This failed attempt remains under
+  `.assay/verdict-self-qualification.json`,
+  `.assay/progress-self-qualification.jsonl`, and
+  `/tmp/run-gate/run-gate-vbpub-b105-ciu-root-20260926-self-qualification-201605-1790392180.log`.
+
+### Gate attempt 4 — 2026-09-26
+
 - The R0/R1 preflight on `f1850f21` completed the suite in 8m27s but correctly
   failed at R0: the real-descendant cleanup test read `/proc/<pid>/stat` after
   the child had exited, and the file read raised `ProcessLookupError` between
@@ -145,7 +164,7 @@ review, and serial merge remain open.
   kill-signal rules have one implementation. A focused debug run passed 48
   tests. The branch was then rebased onto current main before the next gate.
 
-### Gate attempt 4 — 2026-09-26
+### Gate attempt 5 — 2026-09-26
 
 - The registered `self-qualification-preflight` lane passed in
   `tester-unified` on source commit `f23bc6b19716f360ecd2145eddb05f683fa30ff5`
