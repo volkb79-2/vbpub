@@ -260,14 +260,7 @@ def run_project_step(
         "CMRU_WORKSPACE_ID", "CMRU_WORKSPACE_PATH", "CMRU_SOURCE_GIT_ROOT",
         "CMRU_RELEASE_BRANCH", "CMRU_RELEASE_BASE",
     )
-    has_transaction_context = bool(
-        os.environ.get(transaction.CHILD_ENV) == "1"
-        and os.environ.get("CMRU_WORKSPACE_PATH")
-        and os.environ.get("CMRU_SOURCE_GIT_ROOT")
-        and os.environ.get(transaction.BRANCH_ENV)
-    )
-    if has_transaction_context:
-        has_transaction_context = transaction.is_transaction_child(repo_root)
+    has_transaction_context = transaction.is_transaction_child(repo_root)
     ambient_context = {key: os.environ.get(key) for key in context_keys}
     if not has_transaction_context:
         # A direct caller may have sourced a sibling's shell exports. Those
@@ -445,17 +438,21 @@ def load_config(
     # drives. In a transaction child, keep loading the authoritative central
     # document, but remap each project document into the isolated source
     # worktree before constructing executable commands.
-    child_workspace = os.environ.get("CMRU_WORKSPACE_PATH")
-    child_source_root = os.environ.get("CMRU_SOURCE_GIT_ROOT")
     child_context_valid = False
-    child_branch = os.environ.get(transaction.BRANCH_ENV)
-    if (
-        os.environ.get(transaction.CHILD_ENV) == "1"
-        and child_workspace and child_source_root and child_branch
-    ):
-        candidate_root = Path(child_workspace).expanduser().resolve()
+    if os.environ.get(transaction.CHILD_ENV) == "1":
+        child_workspace = os.environ.get("CMRU_WORKSPACE_PATH")
+        # The shared validator owns completeness and identity checks. The
+        # orchestration root is only a placeholder when workspace is absent;
+        # validation refuses incomplete context before comparing the path.
+        candidate_root = (
+            Path(child_workspace).expanduser().resolve()
+            if child_workspace
+            else orchestration_root
+        )
         child_context_valid = transaction.is_transaction_child(candidate_root)
     if child_context_valid:
+        child_workspace = os.environ["CMRU_WORKSPACE_PATH"]
+        child_source_root = os.environ["CMRU_SOURCE_GIT_ROOT"]
         execution_root = Path(child_workspace).expanduser().resolve()
         source_git_root = Path(child_source_root).expanduser().resolve()
     else:

@@ -187,6 +187,72 @@ def test_spec_builtin_help_and_version_grammar_matches_library_help():
         assert f"{entrypoint} version" in generated_help
 
 
+def _registered_parsers(registry):
+    yield registry.parser
+    yield from registry.command_parsers.values()
+    for child in registry.delegates.values():
+        yield from _registered_parsers(child)
+
+
+def _check_behavior_labels(registry, *, path=""):
+    """Check help metadata against the semantic category in the CLI spec."""
+    catalog = registry.parser.catalog
+    if catalog is None:
+        return
+    mutating_groups = {
+        "MODIFICATION", "MIXED OPERATIONS", "MAINTENANCE", "AUTHENTICATION / SETUP",
+    }
+    for verb in catalog.verbs:
+        surface = f"{path} {verb.name}".strip()
+        expected = verb.group in mutating_groups
+        assert verb.mutating is expected, (
+            f"{surface}: group {verb.group!r} and mutating help metadata disagree"
+        )
+        child = registry.delegates.get(verb.name)
+        if child is None:
+            continue
+        if child.parser.catalog is None:
+            # Single-command delegates surface their behavior in their own help.
+            text = child.parser.format_help()
+            assert ("Behavior: mutating" in text) is expected, surface
+        else:
+            _check_behavior_labels(child, path=surface)
+
+
+def test_registered_boolean_flags_default_off_and_help_marks_mutating_verbs():
+    registries = (
+        (build_cmru_cli(), "cmru"),
+        (build_agent_cli(), "cmru-agent"),
+        (build_controller_cli(), "cmru-controller"),
+        (handlers_cli(), "python -m cmru.handlers"),
+    )
+    for registry, prefix in registries:
+        _check_behavior_labels(registry, path=prefix)
+        for parser in _registered_parsers(registry):
+            for action in parser._actions:
+                if isinstance(action, argparse._StoreTrueAction):
+                    assert action.default is not True, (
+                        f"{prefix} {parser.prog}: {action.option_strings} defaults on"
+                    )
+
+    # These are single-command delegates and therefore have no HelpCatalog;
+    # cli-extended renders their behavior cue in the generated parser help.
+    for registry, expected_mutating in (
+        (bundle_cli(), True),
+        (runner_cli(), True),
+    ):
+        help_text = registry.parser.format_help()
+        assert ("Behavior: mutating" in help_text) is expected_mutating
+
+    # The top-level delegate parsers are dispatch shells. Their common options
+    # are not accepted by the child CLI and must not appear as false grammar.
+    cmru = build_cmru_cli()
+    for name in cmru.delegates:
+        parser = cmru.command_parsers[name]
+        assert "--json" not in _option_strings(parser), name
+        assert "--progress" not in _option_strings(parser), name
+
+
 def test_semantic_audit_covers_every_inventory_surface_and_option():
     rows = _marked_table(
         "<!-- cmru-cli-semantic-audit:start -->",

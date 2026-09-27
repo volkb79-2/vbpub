@@ -254,6 +254,29 @@ def test_registry_single_command_configure_and_runtime_progress_variants():
     assert runtime.progress(mode=None).mode.value == "plain"
 
 
+def test_single_command_help_renders_registered_behavior_and_confirmation_details():
+    registry = CliRegistry(
+        IDENTITY,
+        prog="release-tool",
+        description="A release operator.",
+        single_command=True,
+    )
+    registry.register(VerbSpec(
+        "release",
+        description="Release one project.",
+        mutating=True,
+        include_confirmation=False,
+        examples=("release-tool --dry-run",),
+        handler=lambda *_: 0,
+    ))
+    help_text = registry.build().parser.format_help()
+
+    assert "A release operator." in help_text
+    assert "Behavior: mutating." in help_text
+    assert "release-tool --dry-run" in help_text
+    assert "Mutating actions require confirmation" not in help_text
+
+
 def test_multiverb_confirmation_option_is_only_on_the_mutating_verb():
     registry = CliRegistry(IDENTITY, prog="tool", description="test")
     registry.register(

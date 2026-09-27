@@ -379,6 +379,52 @@ def test_runner_plan_omits_unconfigured_environment_details():
     assert plan == ["Would run declared step build from /project"]
 
 
+@pytest.mark.parametrize(
+    "prefix, variables",
+    [("IMAGE_", []), (None, ["TAG"])],
+)
+def test_runner_plan_only_reports_bake_args_when_prefix_and_variables_are_set(
+    prefix, variables,
+):
+    step = runner.StepConfig(
+        name="build", commands=[], bake_set_prefix=prefix,
+        bake_set_vars=variables, no_cache_env=None, clean_dirs=[],
+        required_env=[], login=None, step_env={}, env_command=None,
+    )
+
+    assert not any(
+        "May append build arguments" in line
+        for line in runner.render_step_plan(step, Path("/project"))
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [None, "bad command", {"cwd": "."}, {"argv": ["make"]}],
+)
+def test_runner_plan_rejects_each_incomplete_command_shape(command):
+    step = runner.StepConfig(
+        name="build", commands=[command], bake_set_prefix=None,
+        bake_set_vars=[], no_cache_env=None, clean_dirs=[], required_env=[],
+        login=None, step_env={}, env_command=None,
+    )
+
+    with pytest.raises(ValueError, match="contains an invalid command"):
+        runner.render_step_plan(step, Path("/project"))
+
+
+def test_runner_plan_uses_fallback_label_for_an_empty_command_label():
+    step = runner.StepConfig(
+        name="build", commands=[{"label": "", "argv": ["make"], "cwd": "."}],
+        bake_set_prefix=None, bake_set_vars=[], no_cache_env=None,
+        clean_dirs=[], required_env=[], login=None, step_env={}, env_command=None,
+    )
+
+    plan = runner.render_step_plan(step, Path("/project"))
+
+    assert any(line.startswith("command: cwd=/project; argv=make") for line in plan)
+
+
 def test_cleanup_declined_confirmation_keeps_the_previewed_target_untouched(
     monkeypatch, tmp_path, capsys,
 ):

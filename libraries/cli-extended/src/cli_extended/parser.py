@@ -389,7 +389,13 @@ class VerbSpec:
     def command_description(self) -> str:
         """Return command help including attributes and pasteable examples."""
 
-        sections = [self.description]
+        return "\n\n".join((self.description, *self.command_details))
+
+    @property
+    def command_details(self) -> tuple[str, ...]:
+        """Return behavior and example sections shared by generated help."""
+
+        sections = []
         labels = self.behavior_labels
         if labels:
             sections.append("Behavior: " + "; ".join(labels) + ".")
@@ -401,7 +407,7 @@ class VerbSpec:
             sections.append(
                 "Examples:\n" + "\n".join(f"  {item}" for item in self.examples)
             )
-        return "\n\n".join(sections)
+        return tuple(sections)
 
 
 def _common_option_specs(
@@ -1314,9 +1320,16 @@ class CliRegistry:
                 getting_started=self.getting_started,
                 verbs=self._verbs,
             )
+        parser_description = self.description
+        if self.single_command:
+            command_details = self._verbs[0].command_details
+            if command_details:
+                parser_description = "\n\n".join(
+                    (self.description, *command_details)
+                )
         parser = ExtendedArgumentParser(
             prog=self.prog,
-            description=self.description,
+            description=parser_description,
             formatter_class=WideRawDescriptionHelpFormatter,
             identity=self.identity,
             catalog=catalog,
