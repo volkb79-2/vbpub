@@ -13,7 +13,7 @@ from cmru import cli as cmru_cli
 
 def _args(**kwargs):
     values = dict(plan="plan", landscape="land", consul_addr=None, token=None,
-                  generation_base=3, dry_run=False, to_tag=None, generation=None)
+                  generation_base=3, dry_run=False, generation=None)
     values.update(kwargs)
     return SimpleNamespace(**values)
 
@@ -70,7 +70,7 @@ def test_status_catalog_success_and_backend_failure_without_plan(monkeypatch, ca
     assert "HTTP 503" in capsys.readouterr().out
 
 
-def test_rollback_forwards_tag_generation_and_reports_failure(monkeypatch, tmp_path, capsys):
+def test_rollback_uses_plan_release_coordinate_and_generation(monkeypatch, tmp_path, capsys):
     plan = tmp_path / "plan.toml"; plan.write_text("plan")
     loaded = SimpleNamespace(landscape="land")
     monkeypatch.setattr("cmru.controller.planner.load_plan", lambda path: loaded)
@@ -78,8 +78,8 @@ def test_rollback_forwards_tag_generation_and_reports_failure(monkeypatch, tmp_p
     class Engine:
         def rollback(self, plan, **kwargs): calls.append((plan, kwargs))
     monkeypatch.setattr(cli, "_build_engine", lambda *args: Engine())
-    assert cli.cmd_rollback(_args(plan=str(plan), to_tag="demo-v1", generation=9)) == 0
-    assert calls[0][1] == {"to_tag": "demo-v1", "generation": 9}
+    assert cli.cmd_rollback(_args(plan=str(plan), generation=9)) == 0
+    assert calls[0][1] == {"generation": 9}
     class Broken:
         def rollback(self, *args, **kwargs): raise RuntimeError("rollback failed")
     monkeypatch.setattr(cli, "_build_engine", lambda *args: Broken())

@@ -180,16 +180,14 @@ class RolloutEngine:
     def rollback(
         self,
         plan: LandscapePlan,
-        to_tag: Optional[str] = None,
-        to_url: Optional[str] = None,
-        to_sha256: Optional[str] = None,
         generation: Optional[int] = None,
     ) -> None:
         """Emit a new desired generation with action=rollback for all nodes in the plan.
 
         Never mutates git tags / existing desired generations — always writes a NEW
-        generation with action='rollback'.  The to_* args specify the target release;
-        if absent the first wave's release values are used (placeholder).
+        generation with action='rollback'. The plan's first-wave tag, manifest URL,
+        and digest stay together as one release identity; rollback cannot override
+        only one member of that coordinate.
         """
         if generation is not None and generation < 1:
             raise ValueError("rollback generation must be a positive integer")
@@ -200,11 +198,11 @@ class RolloutEngine:
         for step in plan.steps:
             all_nodes.update(step.nodes)
 
-        # Use the plan's release for rollback target (caller provides --to override)
+        # Keep the immutable release coordinate from the plan intact.
         first_step = plan.steps[0]
-        rollback_tag = to_tag or first_step.release_tag
-        rollback_url = to_url or first_step.manifest_url
-        rollback_sha256 = to_sha256 or first_step.manifest_sha256
+        rollback_tag = first_step.release_tag
+        rollback_url = first_step.manifest_url
+        rollback_sha256 = first_step.manifest_sha256
 
         rollback_step = PlanStep(
             plan_id=plan.plan_id,

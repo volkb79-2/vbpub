@@ -209,7 +209,7 @@ class TestTesterGateContracts:
 
 class TestCliExecutionContracts:
     def _args(self, **overrides):
-        values = dict(plan=None, landscape=None, to_tag=None, generation=None,
+        values = dict(plan=None, landscape=None, generation=None,
                       scope="user", node_id=None, token=None, minisign_pubkey=None,
                       release_root=None, consul_addr=None, dry_run=False,
                       log_level="INFO")
@@ -249,7 +249,7 @@ profiles = []
         assert cli.cmd_publish(self._args(plan=str(plan))) == 0
         assert cli.cmd_approve(self._args(plan="p")) == 0
         assert cli.cmd_hold(self._args(plan="p")) == 0
-        assert cli.cmd_rollback(self._args(plan=str(plan), to_tag="old", generation=8)) == 0
+        assert cli.cmd_rollback(self._args(plan=str(plan), generation=8)) == 0
         assert cli.cmd_status(self._args(plan=str(plan))) == 0
         assert events[:3] == ["publish", ("approve", "p"), ("hold", "p")]
         assert '"ok": true' in capsys.readouterr().out

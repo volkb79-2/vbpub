@@ -50,6 +50,11 @@ the top-level catalog; it is distinct from each verb's `description`.
 It also checks duplicate command names and catalog/parser consistency. The
 consumer should not separately hand-maintain a command list, parser map, and
 help list.
+Long options must be supplied exactly as declared: the registry disables
+argparse's prefix abbreviations at the root and verb parsers. Set
+`allow_abbrev=True` on `CliRegistry` only if partial spellings are an intentional
+public contract; doing so can make a future option rename ambiguous or revive a
+retired prefix accidentally.
 
 The library derives usage syntax from declared positionals and option
 requirements. Leave `VerbSpec.synopsis` unset for this derived grammar; use an

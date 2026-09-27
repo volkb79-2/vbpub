@@ -67,11 +67,15 @@ def test_runner_aggregate_log_does_not_duplicate_local_log(tmp_path, monkeypatch
 def test_transaction_digest_tree_is_sorted_and_content_authenticated(tmp_path):
     (tmp_path / "z").write_text("z")
     (tmp_path / "a").write_text("a")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "b").write_text("b")
     entries = transaction._digest_tree(tmp_path)
-    assert [entry["path"] for entry in entries] == ["a", "z"]
+    assert [entry["path"] for entry in entries] == ["a", "nested/b", "z"]
     assert entries[0]["bytes"] == "1"
     assert entries[0]["sha256"] == hashlib.sha256(b"a").hexdigest()
-    assert entries[1]["sha256"] == hashlib.sha256(b"z").hexdigest()
+    assert entries[1]["sha256"] == hashlib.sha256(b"b").hexdigest()
+    assert entries[2]["sha256"] == hashlib.sha256(b"z").hexdigest()
 
     (tmp_path / "a").write_text("b")
     changed = transaction._digest_tree(tmp_path)

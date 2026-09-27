@@ -84,12 +84,12 @@ def test_rollout_approval_and_hold_poll_until_external_release(monkeypatch):
     engine._check_hold("plan")
 
 
-def test_rollout_dry_run_and_rollback_target_override_do_not_write_backend():
+def test_rollout_dry_run_rollback_uses_plan_coordinate_without_backend_writes():
     backend = Backend()
     engine = RolloutEngine(backend, "prod", dry_run=True)
     plan = LandscapePlan("plan", "prod", [step(nodes=["a", "b"])])
     engine.publish(plan)
-    engine.rollback(plan, to_tag="old-v2", generation=99)
+    engine.rollback(plan, generation=99)
     assert not any("/nodes/" in key for key, _ in backend.puts)
 
 

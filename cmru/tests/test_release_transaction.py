@@ -2293,6 +2293,39 @@ def test_retain_successful_build_outputs_copies_commit_addressed_record(tmp_path
     assert manifest["source_tree_changes"] == [" M alpha/generated.txt"]
     assert (main_project / "logs" / output_id / "cmru" / "run-tests.log").read_text() == "passed\n"
     assert (main_project / "artifacts" / output_id / "dist" / "alpha.whl").read_bytes() == b"wheel bytes"
+    with pytest.raises(RuntimeError, match="source tree changes; only a clean source tree"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+
+    # A clean record can be explicitly modeled to check the remaining
+    # manifest and artifact-integrity refusal paths below.
+    manifest["publication"] = "eligible"
+    manifest["source_tree_changes"] = []
+    (main_project / "artifacts" / output_id / "build.json").write_text(
+        json.dumps(manifest), encoding="utf-8",
+    )
+    validated = transaction.validate_retained_build_output(project, "alpha", output_id)
+    assert validated["manifest"] == manifest
+    manifest_path = main_project / "artifacts" / output_id / "build.json"
+    manifest["source_commit_date"] = "1970-01-02T00:00:00+00:00"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="source date does not match"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+    manifest["source_commit_date"] = "1970-01-01T00:00:00+00:00"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (main_project / "artifacts" / output_id / "dist" / "alpha.whl").write_bytes(b"tampered")
+    with pytest.raises(RuntimeError, match="retained artifact bytes differ"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+    (main_project / "artifacts" / output_id / "dist" / "alpha.whl").write_bytes(b"wheel bytes")
+    manifest["unexpected"] = "ignored?"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="does not authorize publication"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+    manifest.pop("unexpected")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (main_project / "artifacts" / output_id / "dist" / "extra.whl").write_bytes(b"extra")
+    with pytest.raises(RuntimeError, match="retained artifact bytes differ"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+    (main_project / "artifacts" / output_id / "dist" / "extra.whl").unlink()
     # Retention copied before worktree removal; a caller-side retention failure
     # can therefore still be debugged from the original source tree.
     assert (child_project / "dist" / "alpha.whl").exists()

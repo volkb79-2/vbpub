@@ -6,8 +6,10 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -236,6 +238,9 @@ def run_project_step(
     step_name: str,
     repo_root: Path,
     log_dir: Path,
+    *,
+    protected_env: Optional[Mapping[str, str]] = None,
+    project_root_override: Optional[Path] = None,
 ) -> None:
     """Route a project step through the unified runner contract (S3).
 
@@ -246,9 +251,13 @@ def run_project_step(
     # load_config. Derive the execution root again from the selected repository
     # snapshot so the same contract always targets the child worktree, never the
     # caller checkout.
-    if not project.cwd:
+    if project_root_override is None and not project.cwd:
         raise RuntimeError(f"{project.name}: derived project working directory is absent")
-    project_root = resolve_cwd(repo_root, project.cwd)
+    project_root = (
+        Path(project_root_override).resolve()
+        if project_root_override is not None
+        else resolve_cwd(repo_root, project.cwd)
+    )
     step = (project.runner_steps or {}).get(step_name)
     if step is None:
         raise RuntimeError(f"{project.name}: required declared step {step_name!r} is absent")
@@ -269,21 +278,28 @@ def run_project_step(
         for key in context_keys:
             os.environ.pop(key, None)
     try:
-        execute_step(
-            step,
-            project_root,
-            stable_log_root,
-            extra_env={
-                **dict(project.env),
+        with tempfile.TemporaryDirectory(prefix="cmru-runtime-") as launcher_root:
+            launcher_dir = Path(launcher_root)
+            launcher = _create_bound_cmru_launcher(launcher_dir)
+            internal_env = {
+                "CMRU_BIN": str(launcher),
                 "CMRU_RUNTIME_KIND": getattr(project, "runtime_kind", "none"),
                 **{
                     key: os.environ[key]
                     for key in context_keys
                     if os.environ.get(key)
                 },
-            },
-            build_metadata=project.build_metadata,
-        )
+                **dict(protected_env or {}),
+            }
+            execute_step(
+                step,
+                project_root,
+                stable_log_root,
+                extra_env=dict(project.env),
+                protected_env=internal_env,
+                path_prefixes=(launcher_dir,),
+                build_metadata=project.build_metadata,
+            )
     finally:
         if not has_transaction_context:
             for key, value in ambient_context.items():
@@ -291,6 +307,44 @@ def run_project_step(
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+
+def _create_bound_cmru_launcher(directory: Path) -> Path:
+    """Create and verify a `cmru` command bound to this running module/interpreter."""
+    from cmru.cli_support import cmru_version
+
+    launcher = directory / "cmru"
+    module_root = Path(__file__).resolve().parent.parent
+    program = (
+        "import sys; "
+        f"sys.path.insert(0, {str(module_root)!r}); "
+        "from cmru.cli import main; "
+        "raise SystemExit(main())"
+    )
+    launcher.write_text(
+        "#!/bin/sh\n"
+        f"exec {shlex.quote(sys.executable)} -c {shlex.quote(program)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o700)
+
+    path_value = os.pathsep.join((str(directory), os.environ.get("PATH", "")))
+    resolved = shutil.which("cmru", path=path_value)
+    if resolved is None or Path(resolved).resolve() != launcher.resolve():
+        raise RuntimeError("CMRU runtime binding failed: project PATH does not resolve to this launcher")
+
+    result = subprocess.run(
+        [str(launcher), "version"], capture_output=True, text=True, check=False,
+        env={**os.environ, "PATH": path_value},
+    )
+    expected = f"cmru {cmru_version()}"
+    if result.returncode != 0 or result.stdout.strip() != expected or result.stderr:
+        raise RuntimeError(
+            "CMRU runtime binding failed identity verification before project command: "
+            f"expected {expected!r}, got stdout={result.stdout.strip()!r}, "
+            f"stderr={result.stderr.strip()!r}, exit={result.returncode}"
+        )
+    return launcher
 
 
 def resolve_repo_root(config_path: Path, raw_value: str) -> Path:
@@ -2266,13 +2320,47 @@ def _dispatch(args, runtime):
         apply_release_env(github_config, env_config)
         ordered = _ordered_configs(configs, project_order)
         names = _select_projects(cfg_path, vargs.target, configs, project_order)
-        if verb == "publish" and not vargs.dry_run:
+        build_output_id = getattr(vargs, "build_output", None) if verb == "publish" else None
+        if build_output_id and not transaction.is_build_output_id(build_output_id):
+            _usage_error(
+                "publish --build-output must use the exact ID printed by cmru build "
+                "(<UTC timestamp>_<40-character commit SHA>)"
+            )
+        if build_output_id and len(names) != 1:
+            _usage_error("publish --build-output requires exactly one selected project")
+        if verb == "publish" and not vargs.dry_run and not build_output_id:
             require_project_publish_credentials(configs, names)
         step = "build" if verb == "build" else "push"
         transaction_child = transaction.is_transaction_child(repo_root)
 
         if vargs.dry_run:
             log_info(f"[DRY RUN] Would run {step} for: {', '.join(names)}")
+            build_records = {}
+            if build_output_id:
+                for name in names:
+                    project = configs[name]
+                    build_records[name] = transaction.validate_retained_build_output(
+                        project, name, build_output_id,
+                    )
+                    manifest = build_records[name]["manifest"]
+                    log_info(
+                        f"[DRY RUN] {name}: publish build {build_output_id} "
+                        f"from {manifest['source_commit']} via "
+                        f"{build_records[name]['artifact_root']}"
+                    )
+                    log_info(
+                        f"[DRY RUN] {name}: push receives protected "
+                        "CMRU_BUILD_OUTPUT_ROOT, CMRU_BUILD_OUTPUT_ID, "
+                        "CMRU_BUILD_OUTPUT_PROJECT, CMRU_BUILD_SOURCE_COMMIT, "
+                        "and CMRU_BUILD_SOURCE_DATE"
+                    )
+                    for artifact in manifest["artifacts"]:
+                        for item in artifact["files"]:
+                            log_info(
+                                f"[DRY RUN] {name}: verified "
+                                f"{artifact['directory']}/{item['path']} "
+                                f"sha256={item['sha256']} bytes={item['bytes']}"
+                            )
             from cmru.runner import render_step_plan
             for name in names:
                 project = configs[name]
@@ -2372,6 +2460,20 @@ def _dispatch(args, runtime):
                     output_id = retained[0].name
                     config_hint = f" --config {shlex.quote(str(cfg_path))}"
                     for name in names:
+                        try:
+                            transaction.validate_retained_build_output(
+                                configs[name], name, output_id,
+                            )
+                        except (OSError, RuntimeError, ValueError) as exc:
+                            log_warn(
+                                f"{name}: retained build output is not eligible for publication: {exc}"
+                            )
+                        else:
+                            log_info(
+                                f"{name}: publish these exact retained bytes with: "
+                                f"cmru publish {shlex.quote(name)}{config_hint} "
+                                f"--build-output {output_id}"
+                            )
                         log_info(
                             f"{name}: remove this local record only when no longer needed:\n"
                             f"  cmru cleanup{config_hint} {name} "
@@ -2383,6 +2485,46 @@ def _dispatch(args, runtime):
                 _sys.exit(1)
         if verb == "build":
             _run_isolated_build_projects(repo_root, configs, names)
+        elif build_output_id:
+            build_records = {
+                name: transaction.validate_retained_build_output(
+                    configs[name], name, build_output_id,
+                )
+                for name in names
+            }
+            missing_push = [
+                name for name in names
+                if "push" not in (configs[name].runner_steps or {})
+            ]
+            if missing_push:
+                _usage_error(
+                    "build-output publication requires each selected project's declared push step; "
+                    f"missing for: {', '.join(missing_push)}"
+                )
+            require_project_publish_credentials(configs, names)
+            groups = transaction.project_git_family_groups(
+                repo_root, [configs[name] for name in names]
+            )
+            for family_root, members in groups.items():
+                family_names = [getattr(project, "name") for project in members]
+                family_configs = _configs_for_git_family(configs, family_names, family_root)
+                for name in family_names:
+                    project = family_configs[name]
+                    record = build_records[name]
+                    manifest = record["manifest"]
+                    apply_project_release_env(github_config, env_config, project)
+                    run_project_step(
+                        project, "push", family_root, family_root / "logs",
+                        protected_env={
+                            "CMRU_BUILD_OUTPUT_ROOT": str(record["artifact_root"]),
+                            "CMRU_BUILD_OUTPUT_ID": build_output_id,
+                            "CMRU_BUILD_OUTPUT_PROJECT": name,
+                            "CMRU_BUILD_SOURCE_COMMIT": manifest["source_commit"],
+                            "CMRU_BUILD_SOURCE_DATE": manifest["source_commit_date"],
+                        },
+                    )
+            log_info(f"cmru publish complete from retained build output {build_output_id}")
+            return
         else:
             groups = transaction.project_git_family_groups(
                 repo_root, [configs[name] for name in names]
@@ -3134,8 +3276,12 @@ def _build_cli():
     registry.register(VerbSpec("dependencies", description="Show and preflight the project dependency graph; --write updates its generated block.", group=VerbGroup.MIXED.value, options=dependency_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     common_target = (target,)
     build_options = (config_opt, OptionSpec(("--dry-run",), "show the selected step commands without executing them", parser_kwargs={"action": "store_true", "default": False}), *detail_opts)
-    for name in ("build", "publish"):
-        registry.register(VerbSpec(name, description="Run the isolated build step." if name == "build" else "Run the project publish step.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=build_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
+    registry.register(VerbSpec("build", description="Run the isolated build step.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=build_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
+    publish_options = (
+        OptionSpec(("--build-output",), "publish the verified retained build ID printed by cmru build", metavar="ID", parser_kwargs={"default": None}),
+        *build_options,
+    )
+    registry.register(VerbSpec("publish", description="Run the project publish step, optionally from a verified retained build.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=publish_options, mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     registry.register(VerbSpec("changelog", description="Backfill history for an already-published tagged release.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=(OptionSpec(("--backfill-tag",), "tag to backfill; repeat once per selected project", metavar="TAG", parser_kwargs={"action": "append", "required": True}), config_opt, OptionSpec(("--dry-run",), "show the generated changelog entries without writing them", parser_kwargs={"action": "store_true", "default": False})), mutating=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     release_options = (
         OptionSpec(("--minor",), "bump minor versions", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="version-override"),
@@ -3204,4 +3350,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit("Use the installed 'cmru' command; python -m cmru.cli is not supported.")

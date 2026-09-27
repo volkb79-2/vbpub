@@ -715,6 +715,6 @@ def test_run_project_step_preserves_owned_child_context(monkeypatch, tmp_path):
     monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
     monkeypatch.setattr(transaction, "is_transaction_child", lambda _path: True)
     seen = []
-    monkeypatch.setattr(cli, "execute_step", lambda *args, **kwargs: seen.append(kwargs["extra_env"]))
+    monkeypatch.setattr(cli, "execute_step", lambda *args, **kwargs: seen.append(kwargs))
     cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
-    assert seen[0]["CMRU_WORKSPACE_PATH"] == str(tmp_path)
+    assert seen[0]["protected_env"]["CMRU_WORKSPACE_PATH"] == str(tmp_path)

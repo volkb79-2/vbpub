@@ -68,3 +68,28 @@ def test_build_cleanup_failure_reports_retained_outputs_and_does_not_hide_error(
     assert "outputs were retained but worktree cleanup failed" in output
     assert "busy worktree" in output
     assert str(workspace.path) in output
+
+
+def test_dirty_retained_build_does_not_suggest_publication(monkeypatch, tmp_path, capsys):
+    _prepare_build(monkeypatch, tmp_path)
+    retained = [
+        tmp_path / "demo" / "logs" / "build-id",
+        tmp_path / "demo" / "artifacts" / "build-id",
+    ]
+    monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
+    monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *_args: None)
+    monkeypatch.setattr(
+        cli.transaction,
+        "validate_retained_build_output",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError(
+            "demo: retained build output has source tree changes; only a clean source tree can be published"
+        )),
+    )
+
+    assert cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")]) == 0
+    output = capsys.readouterr()
+    combined = output.out + output.err
+    assert "not eligible for publication" in combined
+    assert "source tree changes" in combined
+    assert "publish these exact retained bytes" not in combined

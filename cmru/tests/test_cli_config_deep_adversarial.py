@@ -134,7 +134,7 @@ class _Engine:
 def _args(**overrides):
     values = {"plan": "plan.toml", "landscape": "prod", "consul_addr": None,
               "token": None, "generation_base": 3, "dry_run": True,
-              "to_tag": "demo-v1", "generation": 9}
+              "generation": 9}
     values.update(overrides)
     return SimpleNamespace(**values)
 
@@ -194,5 +194,8 @@ def test_controller_parser_exposes_all_global_and_subcommand_contracts():
     parser = controller_cli._build_parser()
     args = parser.parse_args(["--landscape", "prod", "publish", "--plan", "p.toml", "--generation-base", "7", "--dry-run"])
     assert args.verb == "publish" and args.generation_base == 7 and args.dry_run is True
-    args = parser.parse_args(["rollback", "--plan", "p.toml", "--to", "v1", "--generation", "4"])
-    assert args.to_tag == "v1" and args.generation == 4
+    args = parser.parse_args(["rollback", "--plan", "p.toml", "--generation", "4"])
+    assert args.generation == 4
+    from cli_extended import UsageError
+    with pytest.raises(UsageError, match="unrecognized arguments: --to v1"):
+        parser.parse_args(["rollback", "--plan", "p.toml", "--to", "v1"])

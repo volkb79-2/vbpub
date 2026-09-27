@@ -38,12 +38,11 @@ The script prints the manual virtual-environment install commands after it produ
 the wheel; once installed, all subsequent builds use the `cmru` console script.
 
 The wheel installs the operator commands `cmru`, `cmru-agent`, and
-`cmru-controller`. It also carries CMRU's registered command modules and the
-`cli-extended` and `worktree` libraries they use. Module invocations are
-component, bootstrap, or interpreter-pinned diagnostic interfaces. Where a
-matching installed verb exists, both paths use its registered grammar; a
-component-only module exposes its own component grammar without adding a root
-verb. See the
+`cmru-controller`. It also carries the supported `python -m cmru.handlers`
+project-step and bootstrap CLI, the `cmru.bundle` and `cmru.runner` Python libraries, and the
+`cli-extended` and `worktree` libraries they use. Use installed console scripts
+for operator commands; the retired module CLI aliases for bundle, runner, and
+the operator scripts refuse and direct callers to the supported interface. See the
 [design rationale](docs/DESIGN-GUIDE.md#one-declared-cli-grammar) and the
 [consumer adoption guide](docs/CONSUMERS.md#using-the-wheel-and-component-interfaces).
 
@@ -69,7 +68,11 @@ declare the CIU roots it needs. CMRU never infers this from Docker or Compose
 commands and refuses a missing or unknown value. The workspace identity is
 passed to steps as `CMRU_WORKSPACE_ID`, together with the workspace path and
 source Git root, so runtime evidence can be tied to the exact candidate.
-The rationale is in [the design guide's Git-family and runtime sections](docs/DESIGN-GUIDE.md#git-family-is-separate-from-cmru-root),
+When a project step invokes `cmru`, CMRU supplies a temporary launcher bound to
+the same runtime that started the transaction, puts it first in `PATH`, and
+verifies its identity before the step starts. Project environment setup cannot
+silently redirect nested CMRU commands to another installed wheel.
+The rationale is in the [runtime-bound project command design](docs/DESIGN-GUIDE.md#project-commands-use-the-transactions-cmru-runtime),
 and the complete config pair is in [CONSUMERS.md](docs/CONSUMERS.md#1-the-two-files).
 
 ## Verbs
@@ -95,7 +98,8 @@ cmru tool-deps --refresh <provider-project>  # deliberate external/copy artifact
 cmru versions init [all|P[,P...]] [--dry-run]    # derive registry targets from manifests
 cmru versions resolve [all|P[,P...]] [--dry-run] # resolve eligible versions and write native artifacts
 cmru versions check [all|P[,P...]] [--json]      # read-only comparison with fresh registry state
-cmru publish <name>               # low-level caller-worktree push step
+cmru publish <name>               # caller-worktree push step
+cmru publish <name> --build-output ID  # publish exact retained build bytes
 cmru resolve <name>               # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d --dry-run  # preview age-based remote cleanup
 cmru cleanup --remove-assets 30d --yes      # apply the reviewed cleanup actions
@@ -110,8 +114,8 @@ cmru --help                       # generated verb catalog; use `cmru help <verb
 ```
 
 These are representative operator workflows. The complete registered grammar,
-including `cmru-agent`, `cmru-controller`, nested handler verbs, module
-adapters, every option, and the required semantic review table, is maintained
+including `cmru-agent`, `cmru-controller`, nested handler verbs, the supported
+handlers module adapter, every option, and the required semantic review table, is maintained
 in the [canonical CLI spec](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
 
 `cleanup` applies the configured remote asset policy: GitHub Release records and their
@@ -156,9 +160,20 @@ from the exact gated candidate commit, then fast-forwards `origin/main` from tha
 A concurrent remote update fails closed and leaves the candidate branch/worktree for diagnosis;
 CMRU never rebases a candidate after building its public artifact. See
 [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
-`build` is local-consumption/diagnostic only; do not chain it to `publish` expecting its
-retained artifact record to be published. The safe end-to-end verb is `release`; the deliberate
-design question is tracked in [KI-10](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--cmru-build-artifacts-cannot-safely-feed-cmru-publish--open-decision-required).
+`build` creates an isolated, commit-addressed local output record. To publish those exact bytes,
+use the ID printed by `cmru build` with `cmru publish <project> --build-output ID`. CMRU
+revalidates the manifest and every artifact digest before invoking that project's declared
+`push` step. Built-in wheel and tarball handlers consume the retained files; a custom publisher
+must read `CMRU_BUILD_OUTPUT_ROOT` and must not create or move Git refs when this option is used.
+Publication is refused if prepare or build left any tracked or untracked source-tree changes in
+the retained record; ignore expected untracked generated output paths such as `dist/` in the
+project's `.gitignore`, without hiding source paths. Ignore rules do not hide modified tracked
+files.
+Built-in publishers require the existing versioned release/tag to identify the recorded source
+commit and require the existing `-latest` release/tag; they update release assets in place and
+create no Git refs or release records. Generated sidecars and `latest.json` use temporary copies,
+so the retained inventory remains reusable. This does not promote a source branch. `release`
+remains the source-first tag/build/publish/promote workflow. See the [KI-10 decision](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--publish-retained-build-output-by-id--shipped).
 After the transaction, CMRU reports whether caller `main` was synchronized. A dirty caller
 checkout—including ignored files or directories—is left untouched before any rebase attempt,
 including when `--allow-uncommitted` was used; see the [caller-main cleanup guidance](docs/RELEASE-TRANSACTIONS.md#caller-main-cleanup)
@@ -298,12 +313,16 @@ When selected products live in independent Git repositories, CMRU runs one isola
 per Git family. Each repository gets its own lock, branch, workspace identity, and promotion
 result; the coordinated release is ordered but cannot be one atomic cross-repository commit.
 
-`cmru build` uses the same remote snapshot and transaction mechanics but stops before every
-release action. On success it copies project logs to
+`cmru build` uses the same remote snapshot and transaction mechanics but stops before source
+release actions. On success it copies project logs to
 `<project>/logs/<commit-date>_<full-commit>/` and declared artifact directories to
 `<project>/artifacts/<commit-date>_<full-commit>/`, writes `build.json` with a SHA-256
-inventory and a `publication: forbidden` marker, then removes the worktree. These records are
-gitignored local consumption outputs, not release candidates and not inputs to `cmru publish`.
+inventory, then removes the worktree. These gitignored records can be consumed locally or sent
+through `cmru publish --build-output ID` after CMRU rechecks their manifest and bytes. That
+publication requires existing GitHub Release/tag targets; a stable version tag must resolve to
+the build's recorded source commit. CMRU updates release assets without creating or moving Git
+refs or promoting a source branch. It does not change the retained record while generating
+publication metadata.
 If the build or retention fails, CMRU keeps the exact
 `cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree and prints its
 path. Run `cmru worktrees` to discover retained build/release worktrees, then use
@@ -406,18 +425,15 @@ fits the work:
 |---|---|---|
 | Release, inspect, or maintain a product | `cmru` and its registered verbs | Canonical operator workflow |
 | Register/build/publish an artifact handler from a project step | `python -m cmru.handlers …` | Explicit project-step adapter; also used by the fresh-checkout wheel bootstrap |
-| Preview or reproduce one declared step | `python -m cmru.runner …` or `cmru run-step …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
-| Build a configured stack archive directly | `python -m cmru.bundle --config bundle.toml` | Standalone bundle component; its config is specified in [S9 of the CMRU spec](docs/SPEC.md), and the library entrypoint is `cmru.bundle.run_bundle` |
+| Preview or reproduce one declared step | `cmru run-step …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
 | Compose step or bundle behavior in Python | `cmru.runner.run_step` or `cmru.bundle.run_bundle` | Supported library entrypoints used by estate consumers |
 | Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |
-| Debug a chosen installed/source interpreter | `python -m cmru.cli`, `python -m cmru.agent.cli`, or `python -m cmru.controller.cli` | Alternate launchers for the same operator grammars, not extra commands |
 
 `cmru.bundle` builds an archive from its dedicated bundle TOML configuration;
-the deterministic format is `xztar` as specified in S9. It is not a top-level
-`cmru bundle` verb. A project that needs
-the reusable operation can invoke the module or import `run_bundle`; a root
-verb should be added only when a concrete operator workflow needs one. The
-`python -m cmru.runner` and installed `cmru run-step` share their registered grammar.
+the deterministic format is `xztar` as specified in S9. It is a Python library,
+not a module CLI or top-level `cmru bundle` verb. A project that needs the
+reusable operation imports `run_bundle`; a root verb should be added only when a
+concrete operator workflow needs one. `cmru run-step` is the single-step CLI.
 The standalone generated `get.py` remains intentionally independent and uses
 `argparse` because adopters run it without a CMRU installation. The
 [consumer guide](docs/CONSUMERS.md#using-the-wheel-and-component-interfaces)

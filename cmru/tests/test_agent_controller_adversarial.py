@@ -31,7 +31,7 @@ def _args(**kw):
     values = dict(
         scope="user", node_id=None, landscape=None, token=None,
         minisign_pubkey=None, release_root=None, consul_addr=None,
-        plan=None, to_tag=None, generation=None, dry_run=False,
+        plan=None, generation=None, dry_run=False,
         log_level="INFO",
     )
     values.update(kw)
@@ -431,5 +431,8 @@ class TestRemainingPublicPaths:
         assert cli.cmd_status(_args(landscape="l")) == 0
         assert "Registered" in capsys.readouterr().out
         from cmru.controller.cli import _build_parser
-        parsed = _build_parser().parse_args(["rollback", "--plan", "p", "--to", "old", "--generation", "8", "--dry-run"])
-        assert parsed.to_tag == "old" and parsed.generation == 8
+        parsed = _build_parser().parse_args(["rollback", "--plan", "p", "--generation", "8", "--dry-run"])
+        assert parsed.generation == 8
+        from cli_extended import UsageError
+        with pytest.raises(UsageError, match="unrecognized arguments: --to old"):
+            _build_parser().parse_args(["rollback", "--plan", "p", "--to", "old"])

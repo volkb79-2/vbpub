@@ -477,7 +477,7 @@ def test_release_log_failure_never_deletes_a_preexisting_artifact_record(tmp_pat
         transaction.remove_workspace(workspace)
 
 
-def test_bundle_config_and_cli_fail_or_report_at_the_public_boundary(tmp_path, capsys, monkeypatch):
+def test_bundle_config_and_library_fail_at_the_public_boundary(tmp_path):
     config_path = tmp_path / "bundle.toml"
     config_path.write_text("placeholder", encoding="utf-8")
     base = {
@@ -485,10 +485,38 @@ def test_bundle_config_and_cli_fail_or_report_at_the_public_boundary(tmp_path, c
         "archive": {"name_template": "bundle-{version}.tar.gz", "version_env": "VERSION"},
         "copy": {"files": [], "dirs": []},
     }
-    with patch.object(bundle, "load_toml", return_value={**base, "wheel": None}):
+    with patch.object(bundle, "load_toml", return_value=base):
         parsed = bundle.parse_config(config_path)
     assert parsed.wheel_enabled is False
     assert parsed.wheel_python_bin == "python3"
+    with patch.object(bundle, "load_toml", return_value={**base, "typo": "ignored"}):
+        with pytest.raises(ValueError, match="unknown bundle config key.*typo"):
+            bundle.parse_config(config_path)
+    with patch.object(bundle, "load_toml", return_value={**base, "wheel": {"enabled": "false"}}):
+        with pytest.raises(ValueError, match="wheel.enabled must be true or false"):
+            bundle.parse_config(config_path)
+    with patch.object(bundle, "load_toml", return_value={**base, "wheel": {"enabeld": True}}):
+        with pytest.raises(ValueError, match="unknown wheel key.*enabeld"):
+            bundle.parse_config(config_path)
+    with patch.object(bundle, "load_toml", return_value={**base, "archive": {**base["archive"], "formt": "zip"}}):
+        with pytest.raises(ValueError, match="unknown archive key.*formt"):
+            bundle.parse_config(config_path)
+    with patch.object(bundle, "load_toml", return_value={**base, "archive": {**base["archive"], "format": 3}}):
+        with pytest.raises(ValueError, match="archive.format must be a non-empty string"):
+            bundle.parse_config(config_path)
+    for template in ("bundle.tar.gz", "bundle-{name}-{version}.tar.gz", "bundle-{version!r}.tar.gz", "dir/{version}.tar.gz"):
+        with patch.object(bundle, "load_toml", return_value={
+            **base,
+            "archive": {**base["archive"], "name_template": template},
+        }):
+            with pytest.raises(ValueError, match="archive.name_template"):
+                bundle.parse_config(config_path)
+    with patch.object(bundle, "load_toml", return_value={**base, "copy": {"files": [1], "dirs": []}}):
+        with pytest.raises(ValueError, match="copy.files must be an array of non-empty strings"):
+            bundle.parse_config(config_path)
+    with patch.object(bundle, "load_toml", return_value={**base, "copy": {"filez": [], "dirs": []}}):
+        with pytest.raises(ValueError, match="unknown copy key.*filez"):
+            bundle.parse_config(config_path)
     with patch.object(bundle, "load_toml", return_value={"project_root": ".", "archive": {"name_template": "x"}, "copy": {}}):
         with pytest.raises(ValueError, match="name_template"):
             bundle.parse_config(config_path)
@@ -499,9 +527,21 @@ def test_bundle_config_and_cli_fail_or_report_at_the_public_boundary(tmp_path, c
     }):
         with pytest.raises(ValueError, match=r"\[copy\]"):
             bundle.parse_config(config_path)
-    with patch.object(bundle, "run_bundle", return_value=tmp_path / "dist" / "bundle.tar.gz"):
-        bundle.main(["--config", str(config_path)])
-    assert "Done:" in capsys.readouterr().out
+
+
+def test_bundle_archive_version_cannot_escape_dist_dir(tmp_path, monkeypatch):
+    config_path = tmp_path / "bundle.toml"
+    config_path.write_text("placeholder", encoding="utf-8")
+    raw = {
+        "project_root": ".",
+        "archive": {"name_template": "bundle-{version}.tar.gz", "version_env": "VERSION"},
+        "copy": {},
+    }
+    with patch.object(bundle, "load_toml", return_value=raw):
+        config = bundle.parse_config(config_path)
+    monkeypatch.setenv("VERSION", "../outside")
+    with pytest.raises(ValueError, match="single filename"):
+        bundle.create_archive(config)
 
 
 def test_handlers_and_tester_gate_reject_or_report_boundary_conditions(tmp_path, monkeypatch, capsys):

@@ -87,15 +87,14 @@ def test_agent_cli_main_dispatch_fallback_is_explicit(monkeypatch, capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
-def test_agent_cli_module_guard_executes_status_entrypoint(monkeypatch, capsys):
-    monkeypatch.setattr("cmru.agent.state.read_node_id", lambda scope: None)
-    monkeypatch.setattr("cmru.agent.state.read_observed", lambda scope: None)
-    monkeypatch.setattr("cmru.agent.state.read_current_generation", lambda scope: None)
+def test_agent_cli_module_guard_refuses_removed_alias(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cmru-agent", "status"])
     with pytest.raises(SystemExit) as error:
         runpy.run_path(str(Path(agent_cli.__file__)), run_name="__main__")
-    assert error.value.code == 0
-    assert "observed:           (none)" in capsys.readouterr().out
+    assert str(error.value) == (
+        "Use the installed 'cmru-agent' command; its module alias is not supported."
+    )
+    assert capsys.readouterr().out == ""
 
 
 def test_ghcr_request_http_error_and_repository_failure_are_explicit(monkeypatch):

@@ -99,6 +99,12 @@ flags. Prefer deriving usage from structured argument/option declarations; an
 overridden synopsis is exceptional and must remain consistent with parser
 validation.
 
+Long options require their complete spelling. `CliRegistry` disables argparse's
+prefix abbreviation by default on the root parser and every verb parser, so a
+retired spelling such as `--to` cannot be accepted accidentally as an alias for
+`--token`. A consumer may opt in with `CliRegistry(..., allow_abbrev=True)` only
+when prefix matching is an intentional part of its public grammar and is tested.
+
 An error before a known verb can be identified prints the top-level help. A
 parser must not let argument ordering hide a more useful command-local error;
 for example, `tool extract` should explain that its session log is missing and
@@ -187,6 +193,8 @@ argparse constraints, and help-group placement. Do not repeat the verb list in
 a parser, handler map, and handwritten usage block when a registry can derive
 those surfaces. Custom parser callbacks are an escape hatch for genuinely
 nested or conditional argument structures.
+`CliRegistry` also configures exact option matching across the root and child
+parsers; `allow_abbrev=True` is an explicit, exceptional opt-in.
 
 ## 4. Getting Started and examples
 

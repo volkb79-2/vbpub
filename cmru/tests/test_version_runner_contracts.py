@@ -141,7 +141,7 @@ def test_runner_parser_main_propagates_explicit_presentation_flags(monkeypatch, 
         lambda _path: (tmp_path, {"demo": SimpleNamespace(project_root=tmp_path)}, ["demo"], ["demo"], [], "project-first", {}, None, None, None),
     )
     monkeypatch.setattr("cmru.config.load_forge_config", lambda _path: SimpleNamespace(orchestration=None))
-    runner.main(["--config", str(config), "--step", "tests", "--show-run-details", "--log-append"])
+    runner.runner_cli().run(argv=["--config", str(config), "--step", "tests", "--show-run-details", "--log-append"])
     assert seen[0][1] == "tests"
     assert runner.os.environ["CMRU_SHOW_RUN_DETAILS"] == "1"
     assert runner.os.environ["CMRU_LOG_APPEND"] == "1"
@@ -176,15 +176,17 @@ def test_runner_step_uses_nearest_central_config_for_project_path(monkeypatch, t
     monkeypatch.setattr("cmru.cli.apply_project_release_env", lambda *args: None)
     executed = []
     monkeypatch.setattr(
-        runner, "execute_step",
+        "cmru.cli.execute_step",
         lambda selected, root, log_dir, **kwargs: executed.append(
-            (selected, root, kwargs["extra_env"])
+            (selected, root, kwargs["extra_env"], kwargs["protected_env"])
         ),
     )
 
     runner.run_step(project_config, "build")
 
-    assert executed == [(step, project_root, project.env)]
+    assert executed[0][:3] == (step, project_root, project.env)
+    assert executed[0][3]["CMRU_RUNTIME_KIND"] == "none"
+    assert Path(executed[0][3]["CMRU_BIN"]).name == "cmru"
 
 
 def test_runner_step_refuses_central_config_without_exact_project_match(

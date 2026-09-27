@@ -15,11 +15,13 @@ environment; handlers do not read a convenience credentials file.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import glob
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -44,6 +46,92 @@ def _require_env(name: str) -> str:
 def _wheel_glob(prefix: str) -> str:
     """Default wheel glob for a project prefix (PEP 503 dist-name normalisation)."""
     return f"{prefix.replace('-', '_')}-*.whl"
+
+
+def _build_output_record(args: argparse.Namespace) -> Optional[dict]:
+    raw_root = os.environ.get("CMRU_BUILD_OUTPUT_ROOT")
+    if not raw_root:
+        return None
+    output_id = os.environ.get("CMRU_BUILD_OUTPUT_ID", "")
+    project_name = os.environ.get("CMRU_BUILD_OUTPUT_PROJECT", "")
+    if not output_id or not project_name:
+        raise RuntimeError("CMRU build-output context is incomplete")
+    artifact_root = Path(raw_root)
+    if artifact_root.name != output_id:
+        raise RuntimeError("CMRU_BUILD_OUTPUT_ROOT does not match CMRU_BUILD_OUTPUT_ID")
+    from cmru.transaction import validate_build_output_tree
+    record = validate_build_output_tree(artifact_root, project_name, output_id)
+    manifest = record["manifest"]
+    if os.environ.get("CMRU_BUILD_SOURCE_COMMIT") != manifest["source_commit"]:
+        raise RuntimeError("CMRU_BUILD_SOURCE_COMMIT does not match the retained build manifest")
+    if os.environ.get("CMRU_BUILD_SOURCE_DATE") != manifest["source_commit_date"]:
+        raise RuntimeError("CMRU_BUILD_SOURCE_DATE does not match the retained build manifest")
+    return record
+
+
+def _build_output_files(
+    args: argparse.Namespace, pattern: str, *, record: Optional[dict] = None,
+) -> list[Path]:
+    record = record if record is not None else _build_output_record(args)
+    if record is None:
+        raise RuntimeError("CMRU build-output context is not active")
+    relative_pattern = Path(pattern)
+    if relative_pattern.is_absolute() or ".." in relative_pattern.parts:
+        raise RuntimeError(f"build-output asset selector must stay inside its record: {pattern!r}")
+    raw_manifest = record["manifest"]
+    matches: list[Path] = []
+    for artifact in raw_manifest["artifacts"]:
+        directory = artifact["directory"]
+        for entry in artifact["files"]:
+            coordinate = Path(directory) / entry["path"]
+            selected = (
+                fnmatch.fnmatchcase(coordinate.as_posix(), pattern)
+                if "/" in pattern
+                else fnmatch.fnmatchcase(coordinate.name, pattern)
+            )
+            if selected:
+                matches.append(record["artifact_root"] / coordinate)
+    return sorted(matches)
+
+
+def _publish_versioned_artifacts(
+    gh: GitHubReleases,
+    *,
+    prefix: str,
+    version: str,
+    asset_path: Path,
+    notes: Optional[str],
+    extra_assets: Optional[list[Path]],
+    build_output: Optional[dict],
+) -> dict:
+    """Publish selected files, isolating retained records from publisher byproducts."""
+    if build_output is None:
+        return publish_versioned(
+            gh, prefix=prefix, version=version, asset_path=asset_path,
+            notes=notes, extra_assets=extra_assets, latest_pointer=True,
+        )
+
+    # The keystone writes checksum sidecars and latest.json beside its inputs.
+    # Stage exact copies so publishing cannot mutate the immutable build record
+    # or make its own digest inventory fail on a later retry.
+    with tempfile.TemporaryDirectory(prefix="cmru-build-publish-") as temporary:
+        staging = Path(temporary)
+        staged_asset = staging / "asset" / asset_path.name
+        staged_asset.parent.mkdir(parents=True)
+        shutil.copy2(asset_path, staged_asset)
+        staged_extras: list[Path] = []
+        for index, extra in enumerate(extra_assets or []):
+            staged_extra = staging / f"extra-{index}" / extra.name
+            staged_extra.parent.mkdir(parents=True)
+            shutil.copy2(extra, staged_extra)
+            staged_extras.append(staged_extra)
+
+        return publish_versioned(
+            gh, prefix=prefix, version=version, asset_path=staged_asset,
+            notes=notes, extra_assets=staged_extras or None, latest_pointer=True,
+            require_existing_targets=True, latest_pointer_recreate=False,
+            expected_tag_commit=build_output["manifest"]["source_commit"],
+        )
 
 
 # ─── wheel commands ───────────────────────────────────────────────────────────
@@ -232,7 +320,17 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     owner = _require_env("GITHUB_USERNAME")
     repo = _require_env("GITHUB_REPO")
 
-    wheel = find_built_wheel(cwd / "dist", args.glob or _wheel_glob(args.prefix))
+    pattern = args.glob or _wheel_glob(args.prefix)
+    build_output = _build_output_record(args)
+    if build_output is not None:
+        matches = _build_output_files(args, pattern, record=build_output)
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"expected one retained wheel matching {pattern!r}, found {len(matches)}"
+            )
+        wheel = matches[0]
+    else:
+        wheel = find_built_wheel(cwd / "dist", pattern)
     version = read_wheel_version(wheel)
     notes = (os.getenv(args.notes_env) if args.notes_env else None) or f"{args.prefix} {version}"
 
@@ -249,8 +347,11 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     # was never uploaded is worse than not publishing.
     extras: list[Path] = []
     for pattern in getattr(args, "extra_asset", None) or []:
-        matched = sorted(Path(item).resolve() for item in glob.glob(pattern))
-        files = [item for item in matched if item.is_file()]
+        if os.environ.get("CMRU_BUILD_OUTPUT_ROOT"):
+            files = _build_output_files(args, pattern, record=build_output)
+        else:
+            matched = sorted(Path(item).resolve() for item in glob.glob(pattern))
+            files = [item for item in matched if item.is_file()]
         if not files:
             raise SystemExit(
                 f"--extra-asset {pattern!r} matched no existing file"
@@ -258,9 +359,9 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
         extras.extend(files)
 
     gh = GitHubReleases(owner, repo, token)
-    result = publish_versioned(
+    result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=wheel,
-        notes=notes, extra_assets=extras or None, latest_pointer=True,
+        notes=notes, extra_assets=extras or None, build_output=build_output,
     )
     print(f"[INFO] Published {args.prefix} {version}")
     for item in extras:
@@ -294,20 +395,37 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
     token = _require_env("GITHUB_PUSH_PAT")
     owner = _require_env("GITHUB_USERNAME")
     repo = _require_env("GITHUB_REPO")
+    build_output = _build_output_record(args)
 
-    if args.version_file:
+    if args.version_file and build_output is not None:
+        matches = _build_output_files(args, args.version_file, record=build_output)
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"expected one retained version file {args.version_file!r}, found {len(matches)}"
+            )
+        version_path = matches[0]
+        version = version_path.read_text(encoding="utf-8").strip()
+    elif args.version_file:
         version_path = cwd / args.version_file
         version = version_path.read_text(encoding="utf-8").strip()
     else:
         version = _require_env(args.version_env)
 
-    art = find_artifact(cwd / "dist", args.glob)
+    if build_output is not None:
+        matches = _build_output_files(args, args.glob, record=build_output)
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"expected one retained tarball matching {args.glob!r}, found {len(matches)}"
+            )
+        art = matches[0]
+    else:
+        art = find_artifact(cwd / "dist", args.glob)
     notes = (os.getenv(args.notes_env) if args.notes_env else None) or None
 
     gh = GitHubReleases(owner, repo, token)
-    result = publish_versioned(
+    result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=art,
-        notes=notes, latest_pointer=True,
+        notes=notes, extra_assets=None, build_output=build_output,
     )
     print(f"[INFO] Published {args.prefix} {version}")
     print(result)

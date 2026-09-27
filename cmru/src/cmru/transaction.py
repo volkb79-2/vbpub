@@ -25,7 +25,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
 
@@ -786,7 +786,218 @@ def _digest_tree(path: Path) -> list[dict[str, str]]:
     return entries
 
 
+def _safe_digest_tree(path: Path, *, exclude_root: frozenset[str] = frozenset()) -> list[dict[str, str]]:
+    """Inventory regular files without following any symlink or special path."""
+    if path.is_symlink() or not path.is_dir():
+        raise RuntimeError(f"build output path is missing or unsafe: {path}")
+    entries: list[dict[str, str]] = []
+    for item in sorted(path.rglob("*")):
+        if item.is_symlink():
+            raise RuntimeError(f"build output contains a symlink: {item}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise RuntimeError(f"build output contains a non-regular path: {item}")
+        relative = item.relative_to(path).as_posix()
+        if "/" not in relative and relative in exclude_root:
+            continue
+        entries.append({
+            "path": relative,
+            "sha256": _sha256_file(item),
+            "bytes": str(item.stat().st_size),
+        })
+    return entries
+
+
+def validate_build_output_tree(
+    artifact_root: Path, project_name: str, output_id: str,
+) -> dict[str, Any]:
+    """Validate one retained artifact directory against its immutable build manifest.
+
+    This shared validator is used by `cmru publish` and the built-in publisher
+    adapters, so the path and digest rules have one implementation.
+    """
+    if not is_build_output_id(output_id):
+        raise RuntimeError(f"invalid retained build output ID: {output_id!r}")
+    if artifact_root.name != output_id or artifact_root.is_symlink() or not artifact_root.is_dir():
+        raise RuntimeError(f"{project_name}: retained build output is missing or unsafe: {artifact_root}")
+    manifest_path = artifact_root / "build.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise RuntimeError(f"{project_name}: retained build manifest is missing or unsafe: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"{project_name}: invalid retained build manifest: {manifest_path}") from exc
+    if not isinstance(manifest, dict) or (
+        set(manifest) != {
+            "schema_version", "kind", "publication", "project", "build_id",
+            "source_commit", "source_commit_date", "source_tree_changes", "logs", "artifacts",
+        }
+        or manifest.get("schema_version") != 1
+        or manifest.get("kind") != "cmru-local-build"
+        or manifest.get("publication") not in {"eligible", "forbidden"}
+        or manifest.get("project") != project_name
+        or manifest.get("build_id") != output_id
+    ):
+        raise RuntimeError(
+            f"{project_name}: retained build manifest does not authorize publication: {manifest_path}"
+        )
+    source_commit = manifest.get("source_commit")
+    if (
+        not isinstance(source_commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source_commit)
+        or not output_id.endswith("_" + source_commit)
+    ):
+        raise RuntimeError(f"{project_name}: build manifest source commit does not match {output_id}")
+    raw_source_date = manifest.get("source_commit_date")
+    if not isinstance(raw_source_date, str) or not raw_source_date:
+        raise RuntimeError(f"{project_name}: build manifest has no source commit date")
+    try:
+        source_date = datetime.fromisoformat(raw_source_date)
+    except ValueError as exc:
+        raise RuntimeError(f"{project_name}: build manifest source commit date is invalid") from exc
+    if (
+        source_date.tzinfo is None
+        or source_date.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        != output_id.split("_", 1)[0]
+    ):
+        raise RuntimeError(f"{project_name}: build manifest source date does not match {output_id}")
+    if not isinstance(manifest.get("source_tree_changes"), list) or any(
+        not isinstance(item, str) for item in manifest["source_tree_changes"]
+    ):
+        raise RuntimeError(f"{project_name}: build manifest source tree changes are invalid")
+    if manifest["source_tree_changes"]:
+        raise RuntimeError(
+            f"{project_name}: retained build output has source tree changes; "
+            "only a clean source tree can be published"
+        )
+    if manifest["publication"] != "eligible":
+        raise RuntimeError(
+            f"{project_name}: retained build manifest does not authorize publication: {manifest_path}"
+        )
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise RuntimeError(f"{project_name}: build manifest has no publishable artifacts")
+    expected: dict[str, tuple[str, int]] = {}
+    artifact_dirs: list[Path] = []
+    seen_dirs: set[str] = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or set(artifact) != {"directory", "files"}:
+            raise RuntimeError(f"{project_name}: malformed artifact inventory in build manifest")
+        directory = artifact["directory"]
+        files = artifact["files"]
+        directory_path = PurePosixPath(directory) if isinstance(directory, str) else PurePosixPath("/")
+        if (
+            not isinstance(directory, str)
+            or not directory
+            or "\\" in directory
+            or directory_path.is_absolute()
+            or len(directory_path.parts) != 1
+            or directory_path.as_posix() != directory
+            or directory in {".", "..", "build.json"}
+            or directory in seen_dirs
+            or not isinstance(files, list)
+            or not files
+        ):
+            raise RuntimeError(f"{project_name}: malformed artifact directory in build manifest")
+        seen_dirs.add(directory)
+        artifact_dir = artifact_root / directory
+        if artifact_dir.is_symlink() or not artifact_dir.is_dir():
+            raise RuntimeError(f"{project_name}: declared artifact directory is missing or unsafe: {artifact_dir}")
+        artifact_dirs.append(artifact_dir)
+        for entry in files:
+            if not isinstance(entry, dict) or set(entry) != {"path", "sha256", "bytes"}:
+                raise RuntimeError(f"{project_name}: malformed file inventory in build manifest")
+            relative = entry["path"]
+            digest = entry["sha256"]
+            byte_count = entry["bytes"]
+            relative_path = PurePosixPath(relative) if isinstance(relative, str) else PurePosixPath("/")
+            if (
+                not isinstance(relative, str)
+                or not relative
+                or "\\" in relative
+                or relative_path.is_absolute()
+                or relative_path.as_posix() != relative
+                or not relative_path.parts
+                or ".." in relative_path.parts
+                or "." in relative_path.parts
+                or not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or not isinstance(byte_count, str)
+                or not byte_count.isdecimal()
+                or str(int(byte_count)) != byte_count
+            ):
+                raise RuntimeError(f"{project_name}: unsafe file coordinate in build manifest")
+            coordinate = f"{directory}/{relative_path.as_posix()}"
+            if coordinate in expected:
+                raise RuntimeError(f"{project_name}: duplicate file coordinate in build manifest: {coordinate}")
+            expected[coordinate] = (digest, int(byte_count))
+
+    actual = _safe_digest_tree(artifact_root, exclude_root=frozenset({"build.json"}))
+    actual_map = {
+        item["path"]: (item["sha256"], int(item["bytes"]))
+        for item in actual
+    }
+    if actual_map != expected:
+        missing = sorted(set(expected) - set(actual_map))
+        extra = sorted(set(actual_map) - set(expected))
+        changed = sorted(
+            path for path in set(actual_map) & set(expected)
+            if actual_map[path] != expected[path]
+        )
+        raise RuntimeError(
+            f"{project_name}: retained artifact bytes differ from build.json "
+            f"(missing={missing}, extra={extra}, changed={changed})"
+        )
+    return {"manifest": manifest, "artifact_root": artifact_root, "artifact_dirs": artifact_dirs}
+
+
+def validate_retained_build_output(
+    project: object, project_name: str, output_id: str,
+) -> dict[str, Any]:
+    """Validate the complete project build record before any publisher runs."""
+    raw_root = getattr(project, "project_root", None)
+    if raw_root is None:
+        raise RuntimeError(f"{project_name}: cannot resolve a retained build output without project_root")
+    main_project_root = Path(raw_root)
+    if main_project_root.is_symlink() or not main_project_root.is_dir():
+        raise RuntimeError(f"{project_name}: project root is missing or unsafe: {main_project_root}")
+    main_project_root = main_project_root.resolve()
+    artifact_root = main_project_root / "artifacts" / output_id
+    logs_root = main_project_root / "logs" / output_id
+    _assert_no_symlink_components(main_project_root, artifact_root, project_name)
+    _assert_no_symlink_components(main_project_root, logs_root, project_name)
+    result = validate_build_output_tree(artifact_root, project_name, output_id)
+    if logs_root.is_symlink() or not logs_root.is_dir():
+        raise RuntimeError(f"{project_name}: retained build logs are missing or unsafe: {logs_root}")
+    recorded_logs = result["manifest"].get("logs")
+    actual_logs = _safe_digest_tree(logs_root)
+    if not isinstance(recorded_logs, list) or actual_logs != recorded_logs:
+        raise RuntimeError(f"{project_name}: retained build logs differ from build.json: {logs_root}")
+    declared = tuple(getattr(project, "artifact_dirs", ()) or ())
+    expected_dirs = {Path(item).name for item in declared}
+    actual_dirs = {path.name for path in result["artifact_dirs"]}
+    if not declared or expected_dirs != actual_dirs:
+        raise RuntimeError(
+            f"{project_name}: current artifact_dirs do not match retained build output "
+            f"(declared={sorted(expected_dirs)}, retained={sorted(actual_dirs)})"
+        )
+    return {**result, "logs_root": logs_root}
+
+
 _BUILD_OUTPUT_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z_[0-9a-f]{40}$")
+
+
+def is_build_output_id(value: str) -> bool:
+    """Return whether a value is the exact public ID format emitted by build."""
+    if not isinstance(value, str) or _BUILD_OUTPUT_ID_RE.fullmatch(value) is None:
+        return False
+    try:
+        datetime.strptime(value.split("_", 1)[0], "%Y%m%dT%H%M%SZ")
+    except ValueError:
+        return False
+    return True
 
 
 def build_output_id(workspace: ReleaseWorkspace) -> tuple[str, str, str]:
@@ -906,8 +1117,10 @@ def retain_successful_build_outputs(
     consumed locally.  After a successful child build this function copies the
     declared artifact directories and project-local logs into immutable,
     commit-addressed records, then lets the caller remove the isolated worktree.
-    It never treats those records as publishable release candidates: ``build.json``
-    says so explicitly and records any tracked source changes left by ``prepare``.
+    A record can feed explicit artifact-only publication only when the recorded
+    source tree is clean and its complete digest inventory revalidates; it is
+    not a source release candidate. The manifest records tracked and untracked
+    source changes left by ``prepare`` or later build steps.
 
     Every destination is first staged and validated.  Existing coordinates are a
     hard error; overwriting an earlier build would make its provenance mutable.
@@ -965,7 +1178,7 @@ def retain_successful_build_outputs(
                 if target.exists():
                     raise RuntimeError(f"{name}: artifact directory name collision: {target.name}")
                 shutil.copytree(source, target, symlinks=True)
-                files = _digest_tree(target)
+                files = _safe_digest_tree(target)
                 if not files:
                     raise RuntimeError(f"{name}: declared artifact directory is empty: {source}")
                 copied_artifacts.append({"directory": target.name, "files": files})
@@ -973,13 +1186,13 @@ def retain_successful_build_outputs(
             manifest = {
                 "schema_version": 1,
                 "kind": "cmru-local-build",
-                "publication": "forbidden",
+                "publication": "eligible" if not source_changes else "forbidden",
                 "project": name,
                 "build_id": output_id,
                 "source_commit": source_commit,
                 "source_commit_date": source_date,
                 "source_tree_changes": source_changes,
-                "logs": _digest_tree(staged_logs),
+                "logs": _safe_digest_tree(staged_logs),
                 "artifacts": copied_artifacts,
             }
             (staged_artifacts / "build.json").write_text(
@@ -1029,7 +1242,7 @@ def delete_retained_build_output(
     dry_run: bool,
 ) -> list[Path]:
     """Delete one verified local build record, never a glob or age range."""
-    if not _BUILD_OUTPUT_ID_RE.fullmatch(output_id):
+    if not is_build_output_id(output_id):
         raise RuntimeError(
             "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
             "coordinate printed by cmru build"
@@ -1059,7 +1272,7 @@ def delete_retained_build_output(
     if not isinstance(manifest, dict) or (
         manifest.get("schema_version") != 1
         or manifest.get("kind") != "cmru-local-build"
-        or manifest.get("publication") != "forbidden"
+        or manifest.get("publication") not in {"forbidden", "eligible"}
         or manifest.get("project") != project_name
         or manifest.get("build_id") != output_id
     ):

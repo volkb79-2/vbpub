@@ -6,11 +6,9 @@ import re
 from pathlib import Path
 
 from cmru.agent.cli import _build_cli as build_agent_cli
-from cmru.bundle import bundle_cli
 from cmru.cli import _build_cli as build_cmru_cli
 from cmru.controller.cli import _build_cli as build_controller_cli
 from cmru.handlers import handlers_cli
-from cmru.runner import runner_cli
 
 
 SPEC = Path(__file__).parents[1] / "docs" / "SPEC.md"
@@ -116,31 +114,31 @@ def test_spec_cli_inventory_matches_registered_surfaces_and_options():
         family: set(flags.split("; "))
         for family, flags in common_rows
     }
-    assert set(common) == {"CMRU and CMRU module adapters", "cmru-agent", "cmru-controller"}
-    cmru_flags = common["CMRU and CMRU module adapters"]
+    assert set(common) == {"cmru and handlers module adapter", "cmru-agent", "cmru-controller"}
+    cmru_flags = common["cmru and handlers module adapter"]
     agent_flags = common["cmru-agent"]
     controller_flags = common["cmru-controller"]
 
     actual = {}
     for registry, prefix, family in (
-        (build_cmru_cli(), "cmru", "CMRU and CMRU module adapters"),
+        (build_cmru_cli(), "cmru", "cmru and handlers module adapter"),
         (build_agent_cli(), "cmru-agent", "cmru-agent"),
         (build_controller_cli(), "cmru-controller", "cmru-controller"),
     ):
+        assert registry.parser.allow_abbrev is False, prefix
         groups = dict(_registered_surface_groups(registry, prefix))
         for surface, parser in _registered_surfaces(registry, prefix):
+            assert parser.allow_abbrev is False, surface
             actual[surface] = (family, parser, groups[surface])
 
-    # These are executable module-only adapters in addition to the installed
-    # console scripts. Their actual registries are the source of their grammar.
-    for registry, prefix in (
-        (bundle_cli(), "python -m cmru.bundle"),
-        (runner_cli(), "python -m cmru.runner"),
-        (handlers_cli(), "python -m cmru.handlers"),
-    ):
+    # This is the one supported component module CLI: active project-step and
+    # first-wheel bootstrap contracts use it.
+    for registry, prefix in ((handlers_cli(), "python -m cmru.handlers"),):
+        assert registry.parser.allow_abbrev is False, prefix
         groups = dict(_registered_surface_groups(registry, prefix))
         for surface, parser in _registered_surfaces(registry, prefix):
-            actual[surface] = ("CMRU and CMRU module adapters", parser, groups[surface])
+            assert parser.allow_abbrev is False, surface
+            actual[surface] = ("cmru and handlers module adapter", parser, groups[surface])
 
     inventory = _inventory()
     assert set(inventory) == set(actual), (
@@ -235,15 +233,6 @@ def test_registered_boolean_flags_default_off_and_help_marks_mutating_verbs():
                         f"{prefix} {parser.prog}: {action.option_strings} defaults on"
                     )
 
-    # These are single-command delegates and therefore have no HelpCatalog;
-    # cli-extended renders their behavior cue in the generated parser help.
-    for registry, expected_mutating in (
-        (bundle_cli(), True),
-        (runner_cli(), True),
-    ):
-        help_text = registry.parser.format_help()
-        assert ("Behavior: mutating" in help_text) is expected_mutating
-
     # The top-level delegate parsers are dispatch shells. Their common options
     # are not accepted by the child CLI and must not appear as false grammar.
     cmru = build_cmru_cli()
@@ -282,8 +271,8 @@ def test_semantic_audit_covers_every_inventory_surface_and_option():
         family_audit = next(
             semantic
             for surfaces, semantic, _result in rows
-            if (family == "CMRU and CMRU module adapters" and surfaces == "CMRU common controls")
-            or (family != "CMRU and CMRU module adapters" and surfaces == "Agent/controller common controls")
+            if (family == "cmru and handlers module adapter" and surfaces == "CMRU common controls")
+            or (family != "cmru and handlers module adapter" and surfaces == "Agent/controller common controls")
         )
         assert set(flags.split("; ")) <= set(re.findall(r"--[A-Za-z0-9_-]+", family_audit)), family
 

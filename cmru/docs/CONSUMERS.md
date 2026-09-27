@@ -181,31 +181,26 @@ python3 -m venv .venv-cmru
 .venv-cmru/bin/cmru --help
 ```
 
-Use the installed console scripts for operator workflows. Use a module command
-when a project contract needs a component or a developer wants to bind a
-diagnostic invocation to a specific interpreter. Each module uses a registered
-`cli-extended` grammar; where a matching installed verb exists, the module and
-verb share its implementation:
+Use installed console scripts for operator workflows. `python -m cmru.handlers`
+is the supported component CLI because project contracts and the first-wheel
+bootstrap need it. `cmru.bundle` and `cmru.runner` are library modules; they do
+not expose module commands. The `cmru.cli`, `cmru.agent.cli`, and
+`cmru.controller.cli` module aliases are retired. Use `cmru run-step` for
+direct single-step CLI work, and use the documented Python functions to compose
+bundle or runner behavior:
 
 ```sh
-# Preview one configured build step without running it.
-.venv-cmru/bin/python -m cmru.runner --config ./cmru.toml --step build --dry-run
-
-# Preview the bundle build described by bundle.toml (S9.4a).
-# See S9 in docs/SPEC.md for the complete bundle configuration contract.
-.venv-cmru/bin/python -m cmru.bundle --config ./bundle.toml --dry-run
+# Preview one configured project step without running it.
+.venv-cmru/bin/cmru run-step --config ./cmru.toml --step build --dry-run
 
 # Show the inputs to a declared wheel handler without launching its build.
 .venv-cmru/bin/python -m cmru.handlers wheel-build --cwd . --dry-run
 ```
 
-`cmru.runner` reads the same project configuration and step declaration used
-by CMRU orchestration; it does not define a second step format. `cmru.bundle`
-reads its dedicated bundle TOML. For Python code that composes these
-capabilities, the supported library entrypoints are shown below. The bundle
-parser currently does not reject every typoed key or value type; use the exact
-S9 fields and see KI-33 in the
-[known-issues backlog](../KNOWN_ISSUES_TODO_BACKLOG.md):
+`cmru run-step` reads the same project configuration and step declaration used
+by CMRU orchestration; it does not define a second step format. The bundle
+library reads its dedicated bundle TOML. Its loader rejects unknown keys and
+wrong TOML value types at each table boundary; see S9.4a in the spec.
 
 ```python
 from pathlib import Path
@@ -215,24 +210,22 @@ from cmru.runner import run_step
 
 # These calls execute configured work. run_step may remove declared clean
 # directories and runs the step commands; run_bundle removes dist_dir first.
-# Use the CLI --dry-run forms above when you need to inspect effects first.
+# Use cmru run-step --dry-run when you need to inspect project step effects.
 run_step(Path("cmru.toml"), "build")
 archive = run_bundle(Path("bundle.toml"))
 ```
 
 Prefer the declared project-step commands or these documented entrypoints over
-copying CMRU implementation code. Do not import private helpers as an API. The
-module launchers `python -m cmru.cli`, `python -m cmru.agent.cli`, and
-`python -m cmru.controller.cli` run the same operator grammars as their
-installed scripts and are useful for interpreter-pinned debugging; they do not
-add command verbs. Use the console scripts for normal operation.
+copying CMRU implementation code. Do not import private helpers as an API. For
+operator commands, use the installed `cmru`, `cmru-agent`, or `cmru-controller`
+script. The bundle module is a library, and the runner module's supported CLI
+is `cmru run-step`.
 
 A real `wheel-build` handler invocation requires a Git worktree and a configured
 `CMRU_WHEEL_BUILDER_IMAGE`; the dry-run example only displays accepted inputs.
 See the wheel-build contract in [the CMRU spec](SPEC.md).
-The `cmru.bundle` help description currently calls every configured archive
-deterministic, though S9 guarantees the normalized writer for `xztar`; KI-34
-tracks correcting that description.
+The bundle contract guarantees normalized deterministic output for `xztar`;
+other supported archive formats use the platform archive writer.
 
 The CMRU wheel also bundles `worktree`, the shared stable API for generic Git
 workspace identity, records, leases, and lifecycle operations. It is an
@@ -243,11 +236,11 @@ release and transaction policy. Follow the separate
 [worktree consumer guide](../../libraries/worktree/CONSUMERS.md) for its
 pasteable examples and complete contract.
 
-Until KI-11 is resolved, a project step that invokes CMRU must use an
-environment where the intended wheel is installed and verify that the selected
-interpreter resolves the expected CMRU version. An unqualified `cmru` found
-through ambient `PATH` can be a different installation from the one running
-the surrounding transaction; see KI-11 in the
+A project command that invokes `cmru` uses the runtime launcher created for the
+transaction. CMRU prepends it to the project command's `PATH`, protects the
+binding from project environment overrides, and verifies that it reports the
+same CMRU version as the transaction before launching the command. A mismatched
+runtime fails before the project command starts; see KI-11 in the
 [known-issues backlog](../KNOWN_ISSUES_TODO_BACKLOG.md).
 
 ## Running configured steps and previewing cleanup
@@ -492,9 +485,35 @@ selection is dispatched as one transaction per Git family. Each repository there
 own lock, candidate branch, workspace identity, and promotion result; cross-repository release
 is coordinated in order but is not one atomic Git commit.
 
-`cmru build X` is the local-inspection sibling: it runs prepare/gate/build in a
-retained `cmru-build-…` worktree and **never publishes** (KI-10). Do not expect
-`cmru build` then `cmru publish` to ship the reviewed artifact — use `cmru release` for that.
+`cmru build X` runs prepare/gate/build in a retained `cmru-build-…` worktree
+and records its outputs with a source identity and SHA-256 inventory. To publish
+those exact retained bytes, use the ID printed by `cmru build`:
+
+```sh
+cmru build example-wheel
+cmru publish example-wheel --build-output <ID-from-build-result>
+```
+
+The build worktree must have a clean recorded source tree after prepare and
+build. Put expected untracked generated outputs such as `dist/` in the project's
+`.gitignore`; do not ignore source paths to hide edits. Ignore rules do not hide
+changes to tracked files, so a build that modifies tracked files remains
+ineligible. CMRU keeps a dirty build record for inspection but refuses to
+publish it, including with `--dry-run`.
+
+Before pushing, CMRU verifies the retained manifest and the exact set, size, and
+digest of every file. Built-in wheel and tarball handlers consume those
+inventoried files. They require the existing versioned GitHub Release and tag;
+for a stable version, the tag must resolve to the retained source commit. They
+also require the existing `-latest` Release and tag, which are updated in place
+without deleting or recreating the tag. CMRU creates no Git refs or Release
+records. A custom `push` step must publish files under
+`CMRU_BUILD_OUTPUT_ROOT`, must not rebuild from the caller checkout, and must
+not create or move Git refs or promote a source branch. Generated checksum and
+latest-pointer files use temporary copies so the retained build record stays
+valid for another publish. `--dry-run` checks local evidence and renders the
+step but does not query remote tag availability. Use `cmru release` for the
+source-first tag/build/publish/promote workflow.
 
 After a release transaction, CMRU also cleans up the caller's local `main` when it can. If
 that checkout is dirty, including with tracked or untracked files, ignored files, or ignored
@@ -552,13 +571,10 @@ only its declared outputs; CMRU refuses any other write.
   checks the plan against `origin` (the baseline tag must be pushed, under the same name, at the
   same commit) and refuses otherwise with a named remedy. Let cmru create every tag.
 
-- **Pin the cmru you run, and prove it matches the engine** (KI-11). A project step whose `argv`
-  begins `cmru …` resolves through the worker's `PATH`, which can be an *older installed wheel*
-  than the source engine driving the transaction. Until KI-11 is resolved, install the last
-  verified cmru wheel into the gate environment before an estate release and treat a
-  source-vs-installed version mismatch as a preflight failure. The recommended fix is a
-  transaction-owned CMRU launcher prepended to project `PATH`, with identity verification and
-  no ambient-PATH fallback; this remains an open implementation decision.
+- **Project CMRU commands bind to the active runtime** (KI-11). When a project step invokes
+  `cmru`, CMRU places a transaction-owned launcher first in `PATH`, protects that binding from
+  project overrides, and verifies the invoked runtime identity before running the command. A
+  failed or mismatched identity stops the step before its command starts.
 
 - **GHCR package visibility is a one-time UI step** (KI-01). For an OCI product, the first push
   cannot set the package public via any API (a platform limitation); cmru logs a one-time `WARN`
@@ -580,8 +596,10 @@ Adopt with these boundaries in mind — each is a deliberate, fail-closed gap, t
 - **Durable post-tag publish resume** does not exist: `--resume` can continue a retained
   *pre-tag* worktree only after corrections are committed there; prepare and the required gate
   rerun, and the corrected candidate commit is what ships. It is not a post-tag retry (KI-06).
-- **`release --from-candidate`** (promote a separately-built, remotely-evidenced artifact) is
-  deliberately postponed; a local `build.json` explicitly forbids publication (KI-10).
+- **`release --from-candidate`** (create and promote a Git source release from a separately
+  retained candidate) is not the artifact-publishing interface. Use `cmru publish --build-output
+  ID` to send retained local build bytes to existing release/tag targets without creating or
+  moving Git refs or promoting a branch.
 
 ---
 

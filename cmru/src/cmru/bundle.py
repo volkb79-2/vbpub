@@ -20,18 +20,14 @@ from __future__ import annotations
 
 import io
 import os
-import shlex
 import shutil
 import stat
 import subprocess
 import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from string import Formatter
 from typing import List, Optional, Sequence
-
-from cli_extended import CliRegistry, OptionSpec, VerbGroup, VerbSpec
-
-from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 import tomllib
 
@@ -261,54 +257,106 @@ def resolve_path(base: Path, raw: str) -> Path:
     return (base / path).resolve()
 
 
+def _reject_unknown_keys(table: dict, allowed: set[str], where: str) -> None:
+    unknown = sorted(set(table) - allowed)
+    if unknown:
+        raise ValueError(f"unknown {where} key(s): {', '.join(unknown)}")
+
+
+def _string_value(table: dict, key: str, where: str, *, default: Optional[str] = None) -> str:
+    value = table.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{where}.{key} must be a non-empty string")
+    return value.strip()
+
+
+def _string_list_value(table: dict, key: str, where: str) -> list[str]:
+    value = table.get(key, [])
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise ValueError(f"{where}.{key} must be an array of non-empty strings")
+    return [item.strip() for item in value]
+
+
+def _validate_archive_template(template: str) -> None:
+    """Require one plain version field in a filename-only template."""
+    try:
+        parsed = list(Formatter().parse(template))
+    except ValueError as exc:
+        raise ValueError("archive.name_template must contain exactly one {version} field") from exc
+    fields = [
+        (field, format_spec, conversion)
+        for _, field, format_spec, conversion in parsed
+        if field is not None
+    ]
+    if (
+        fields != [("version", "", None)]
+        or "/" in template
+        or "\\" in template
+    ):
+        raise ValueError(
+            "archive.name_template must be a filename containing exactly one plain {version} field"
+        )
+
+
 def parse_config(config_path: Path) -> BundleConfig:
     config = load_toml(config_path)
-    project_root_raw = config.get("project_root")
-    if not project_root_raw:
-        raise ValueError("project_root is required in bundle config")
-    project_root = resolve_path(config_path.parent, str(project_root_raw))
+    _reject_unknown_keys(
+        config,
+        {"project_root", "dist_dir", "bundle_dir", "client_dir", "wheel", "archive", "copy"},
+        "bundle config",
+    )
+    project_root_raw = _string_value(config, "project_root", "bundle config")
+    project_root = resolve_path(config_path.parent, project_root_raw)
 
-    dist_dir = resolve_path(project_root, str(config.get("dist_dir") or "dist"))
-    bundle_dir = resolve_path(dist_dir, str(config.get("bundle_dir") or "bundle"))
-    client_dir = resolve_path(dist_dir, str(config.get("client_dir") or "client"))
+    dist_dir = resolve_path(project_root, _string_value(config, "dist_dir", "bundle config", default="dist"))
+    bundle_dir = resolve_path(dist_dir, _string_value(config, "bundle_dir", "bundle config", default="bundle"))
+    client_dir = resolve_path(dist_dir, _string_value(config, "client_dir", "bundle config", default="client"))
 
     wheel = config.get("wheel", {})
-    if wheel is None:
-        wheel = {}
     if not isinstance(wheel, dict):
         raise ValueError("[wheel] must be a table")
-    wheel_enabled = bool(wheel.get("enabled", False))
-    wheel_python_bin = str(wheel.get("python_bin") or "python3")
+    _reject_unknown_keys(wheel, {"enabled", "python_bin", "project_root", "find_links"}, "wheel")
+    wheel_enabled = wheel.get("enabled", False)
+    if not isinstance(wheel_enabled, bool):
+        raise ValueError("wheel.enabled must be true or false")
+    wheel_python_bin = _string_value(wheel, "python_bin", "wheel", default="python3")
     wheel_project_root_raw = wheel.get("project_root")
-    if wheel_project_root_raw:
-        wheel_project_root = resolve_path(config_path.parent, str(wheel_project_root_raw))
-    else:
-        wheel_project_root = project_root
+    if wheel_project_root_raw is not None and (
+        not isinstance(wheel_project_root_raw, str) or not wheel_project_root_raw.strip()
+    ):
+        raise ValueError("wheel.project_root must be a non-empty string when present")
+    wheel_project_root = resolve_path(
+        config_path.parent, wheel_project_root_raw.strip()
+    ) if isinstance(wheel_project_root_raw, str) else project_root
     wheel_find_links_raw = wheel.get("find_links")
-    if wheel_find_links_raw:
-        wheel_find_links = resolve_path(config_path.parent, str(wheel_find_links_raw))
-    else:
-        wheel_find_links = None
+    if wheel_find_links_raw is not None and (
+        not isinstance(wheel_find_links_raw, str) or not wheel_find_links_raw.strip()
+    ):
+        raise ValueError("wheel.find_links must be a non-empty string when present")
+    wheel_find_links = resolve_path(
+        config_path.parent, wheel_find_links_raw.strip()
+    ) if isinstance(wheel_find_links_raw, str) else None
 
     archive = config.get("archive")
-    if not archive or not isinstance(archive, dict):
+    if not isinstance(archive, dict):
         raise ValueError("[archive] section is required in bundle config")
-    archive_template = str(archive.get("name_template") or "").strip()
-    archive_version_env = str(archive.get("version_env") or "").strip()
-    if not archive_template or not archive_version_env:
-        raise ValueError("[archive].name_template and [archive].version_env are required")
+    _reject_unknown_keys(archive, {"name_template", "version_env", "format"}, "archive")
+    archive_template = _string_value(archive, "name_template", "archive")
+    _validate_archive_template(archive_template)
+    archive_version_env = _string_value(archive, "version_env", "archive")
     _valid_formats = {"tar", "gztar", "bztar", "xztar", "zip"}
-    archive_format = str(archive.get("format") or "gztar")
+    archive_format = _string_value(archive, "format", "archive", default="gztar")
     if archive_format not in _valid_formats:
         raise ValueError(f"[archive].format must be one of {sorted(_valid_formats)}, got {archive_format!r}")
 
     copy = config.get("copy")
-    if not copy or not isinstance(copy, dict):
+    if not isinstance(copy, dict):
         raise ValueError("[copy] section is required in bundle config")
-    copy_files = copy.get("files") or []
-    copy_dirs = copy.get("dirs") or []
-    if not isinstance(copy_files, list) or not isinstance(copy_dirs, list):
-        raise ValueError("copy.files and copy.dirs must be lists")
+    _reject_unknown_keys(copy, {"files", "dirs"}, "copy")
+    copy_files = _string_list_value(copy, "files", "copy")
+    copy_dirs = _string_list_value(copy, "dirs", "copy")
 
     return BundleConfig(
         project_root=project_root,
@@ -322,8 +370,8 @@ def parse_config(config_path: Path) -> BundleConfig:
         archive_template=archive_template,
         archive_version_env=archive_version_env,
         archive_format=archive_format,
-        copy_files=[str(item) for item in copy_files],
-        copy_dirs=[str(item) for item in copy_dirs],
+        copy_files=copy_files,
+        copy_dirs=copy_dirs,
     )
 
 
@@ -382,6 +430,14 @@ def create_archive(config: BundleConfig) -> Path:
         )
 
     tarball_name = config.archive_template.format(version=version_value)
+    if (
+        not tarball_name
+        or tarball_name in {".", ".."}
+        or "/" in tarball_name
+        or "\\" in tarball_name
+        or Path(tarball_name).is_absolute()
+    ):
+        raise ValueError("archive name after version substitution must be a single filename")
     tarball_path = config.dist_dir / tarball_name
 
     log_info(f"Creating archive {tarball_path}")
@@ -415,69 +471,7 @@ def run_bundle(config_path: Path) -> Path:
     return create_archive(config)
 
 
-def bundle_cli():
-    registry = CliRegistry(
-        cmru_identity(command="cmru bundle", long_name="CMRU stack bundle builder"),
-        prog="cmru.bundle",
-        description="Build a deterministic stack bundle from its TOML configuration.",
-        single_command=True,
-        global_options=cmru_presentation_options(),
-        logging_logger="cmru",
-    )
-    registry.register(VerbSpec(
-        "bundle",
-        description="Build a stack bundle from TOML config.",
-        group=VerbGroup.MODIFICATION.value,
-        options=(OptionSpec(
-            ("--config",), "path to the bundle TOML config", metavar="FILE",
-            parser_kwargs={"required": True},
-        ), OptionSpec(
-            ("--dry-run",), "show bundle outputs and commands without changing files",
-            parser_kwargs={"action": "store_true", "default": False},
-        )),
-        mutating=True,
-        include_confirmation=False,
-        include_json=False,
-        include_progress=False,
-        handler=_run_bundle_cli,
-    ))
-    return registry.build()
-
-
-def _run_bundle_cli(args, _runtime) -> int:
-    if args.dry_run:
-        config = parse_config(Path(args.config).expanduser().resolve())
-        version = os.getenv(config.archive_version_env) if config.archive_version_env else None
-        if not version:
-            raise RuntimeError(
-                f"{config.archive_version_env} must be set for archive naming"
-            )
-        archive = config.dist_dir / config.archive_template.format(version=version)
-        for source in [*config.copy_files, *config.copy_dirs]:
-            path = resolve_path(config.project_root, source)
-            if not path.exists():
-                raise FileNotFoundError(f"Bundle source not found: {path}")
-        if config.dist_dir.exists():
-            print(f"[DRY RUN] Would remove existing dist tree {config.dist_dir}")
-        if config.wheel_enabled:
-            argv = [config.wheel_python_bin, "-m", "pip", "wheel", ".", "-w", str(config.client_dir)]
-            if config.wheel_find_links is not None:
-                argv.extend(["--find-links", str(config.wheel_find_links)])
-            print(f"[DRY RUN] Would run {shlex.join(argv)} in {config.wheel_project_root}")
-        for source in config.copy_files:
-            print(f"[DRY RUN] Would copy {resolve_path(config.project_root, source)}")
-        for source in config.copy_dirs:
-            print(f"[DRY RUN] Would copy tree {resolve_path(config.project_root, source)}")
-        print(f"[DRY RUN] Would create archive {archive}")
-        return 0
-    archive = run_bundle(Path(args.config).expanduser().resolve())
-    log_info(f"Done: {archive}")
-    return 0
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    return bundle_cli().run(argv=argv)
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(
+        "cmru.bundle is a Python library, not a command; call run_bundle(config_path)."
+    )

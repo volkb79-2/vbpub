@@ -480,7 +480,7 @@ def test_agent_and_controller_version_flags(monkeypatch, capsys):
         assert captured.out == f"{entrypoint} 2.0.2\n"
         assert captured.err == ""
 
-def test_module_console_dispatch_accepts_top_level_version():
+def test_removed_module_console_dispatch_alias_refuses_version():
     project_dir = Path(__file__).resolve().parents[1]
     library_sources = project_dir.parent / "libraries"
     python_path = os.pathsep.join((
@@ -495,10 +495,11 @@ def test_module_console_dispatch_accepts_top_level_version():
         text=True,
         check=False,
     )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.startswith("cmru ")
-    assert proc.stdout.endswith("\n")
-    assert proc.stderr == ""
+    assert proc.returncode == 1
+    assert proc.stdout == ""
+    assert proc.stderr == (
+        "Use the installed 'cmru' command; python -m cmru.cli is not supported.\n"
+    )
 
 
 def test_worktrees_is_config_free_read_only_discovery(tmp_path, monkeypatch):

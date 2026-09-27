@@ -13,6 +13,7 @@ subparsers, argument groups, choices, and `Namespace` values while adding the
 repository rules that argparse does not provide:
 
 - no implicit `-h` option;
+- exact long-option spellings, with prefix abbreviation disabled by default;
 - the product identity on help and diagnostics;
 - complete command help after a known-verb parse error; and
 - side-effect-free `help`, `version`, and bare invocation paths.
@@ -107,7 +108,10 @@ The consumer still decides the public vocabulary, behavior labels, examples,
 argument constraints, and mutation policy. A registry is a source of truth for
 the interface, not a source of domain truth. `configure(parser)` remains an
 escape hatch for unusual nested parser structures rather than the default
-place for every argument.
+place for every argument. `CliRegistry(..., allow_abbrev=True)` is available
+only for a CLI that deliberately makes partial option spellings part of its
+contract; exact matching avoids silently accepting a retired option as the
+prefix of a different one.
 
 The black-box contract helper checks observable behavior, not just parser
 construction. It rejects the undocumented short `-h` spelling by default,

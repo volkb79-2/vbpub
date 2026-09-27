@@ -140,12 +140,22 @@ safe behavior remains: a clean checkout may fast-forward its local `main`, while
 local `main` is left untouched rather than force-moved. A false cleanup result is reported on
 the success, plan-refusal, and child-failure paths, so no path claims that the caller was synced.
 
-`cmru build` uses the same fetched snapshot but stops before every release action. A successful
+`cmru build` uses the same fetched snapshot but stops before source release actions. A successful
 build copies logs into `<project>/logs/<commit-date>_<full-commit>/` and declared artifact
 directories into `<project>/artifacts/<commit-date>_<full-commit>/`, writes a `build.json`
-SHA-256 inventory marked `publication: forbidden`, then removes its
-`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree. It is local consumption evidence, not a candidate that `publish` may consume. A build
-or retention failure keeps that worktree and prints its path; `cmru worktrees` discovers it and
+SHA-256 inventory, then removes its
+`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree. `cmru publish --build-output ID`
+revalidates the record and publishes those exact retained bytes through the declared push step;
+it refuses any record with tracked or untracked source-tree changes, including during dry-run. A
+project must ignore expected untracked generated build outputs while leaving source paths visible
+to Git; ignore rules do not hide modified tracked files.
+It does not rebuild, create Release records/Git refs, or promote a source branch. Built-in
+publishers require existing versioned and `<prefix>-latest` Release/tag targets, verify that a
+stable version tag points at the recorded source commit, and update assets in place. Generated
+sidecars and `latest.json` use temporary copies, so the retained record stays valid. A custom
+publisher must consume files beneath `CMRU_BUILD_OUTPUT_ROOT` and must not create or move Git
+refs. A build or retention failure keeps that
+worktree and prints its path; `cmru worktrees` discovers it and
 `cmru cleanup --discard-build-worktree <path> --yes` removes it after inspection. Rebuilding the
 same commit requires explicit deletion of the existing output record with
 `cmru cleanup <name> --delete-build-output <id> --yes`.
@@ -337,8 +347,9 @@ List every tracked output in `release.commit_generated`; cmru rejects an
 undeclared write. A prepare step that derives a version writes it to
 `<project>/cmru.vars`, and the project declares `version.strategy =
 "external:VAR"`. cmru then creates the annotated tag after the prepared source
-is gated and integrated. Projects do not create release tags through a build
-script or an implicit GitHub Release API side effect.
+is gated and integrated. The source-first release transaction creates its tag
+explicitly before publication. The retained-build publication path only updates
+existing Release/tag targets and refuses a missing target.
 
 OCI projects must not push while gathering generated provenance. Build privately
 first, commit/promote declared provenance, then run the separate registry push.

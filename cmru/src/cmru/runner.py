@@ -438,6 +438,8 @@ def execute_step(
     log_dir: Path,
     *,
     extra_env: Optional[Mapping[str, str]] = None,
+    protected_env: Optional[Mapping[str, str]] = None,
+    path_prefixes: Optional[Iterable[Path]] = None,
     build_metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
     """Execute a pre-parsed StepConfig. Called by both run_step() and the orchestrator.
@@ -452,7 +454,10 @@ def execute_step(
     try:
         if build_metadata:
             compute_build_date({"build_metadata": build_metadata}, project_root)
-        _execute_step(step, project_root, log_dir, extra_env=extra_env)
+        _execute_step(
+            step, project_root, log_dir, extra_env=extra_env,
+            protected_env=protected_env, path_prefixes=path_prefixes,
+        )
     finally:
         os.environ.clear()
         os.environ.update(original_environment)
@@ -464,6 +469,8 @@ def _execute_step(
     log_dir: Path,
     *,
     extra_env: Optional[Mapping[str, str]] = None,
+    protected_env: Optional[Mapping[str, str]] = None,
+    path_prefixes: Optional[Iterable[Path]] = None,
 ) -> None:
     """Implementation for :func:`execute_step` inside its scoped environment."""
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -481,7 +488,12 @@ def _execute_step(
             continue
         os.environ[key] = str(value)
 
+    _prepend_path_entries(path_prefixes)
     apply_env_command(step.env_command, project_root)
+    _prepend_path_entries(path_prefixes)
+    if protected_env:
+        for key, value in protected_env.items():
+            os.environ[key] = str(value)
     ensure_required_env(step.required_env)
     maybe_login_multi(step.login, step.registries)
 
@@ -557,6 +569,17 @@ def _execute_step(
             aggregate_handle.close()
 
 
+def _prepend_path_entries(entries: Optional[Iterable[Path]]) -> None:
+    """Place framework-owned executables before project and ambient PATH entries."""
+    if not entries:
+        return
+    prefixes = [str(path) for path in entries]
+    current = os.environ.get("PATH", "")
+    parts = [part for part in current.split(os.pathsep) if part]
+    remainder = [part for part in parts if part not in prefixes]
+    os.environ["PATH"] = os.pathsep.join([*prefixes, *remainder])
+
+
 def run_step(project_config_path: Path, step_name: str) -> None:
     """Run one named step from the strict project-local ``cmru.toml``.
 
@@ -593,12 +616,10 @@ def run_step(project_config_path: Path, step_name: str) -> None:
     if step is None:
         raise ValueError(f"Step '{step_name}' is not declared in {project_config_path}")
     project_root = project.project_root or repo_root
-    execute_step(
-        step,
-        project_root,
-        project_root / "logs" / "cmru",
-        extra_env=project.env,
-        build_metadata=project.build_metadata,
+    from cmru.cli import run_project_step
+    run_project_step(
+        project, step_name, repo_root, project_root / "logs" / "cmru",
+        project_root_override=project_root,
     )
 
 
@@ -635,10 +656,6 @@ def runner_cli():
         handler=_run_step_cli,
     ))
     return registry.build()
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    return runner_cli().run(argv=argv)
 
 
 def _run_step_cli(args, _runtime) -> int:
@@ -696,4 +713,4 @@ def _run_step_cli(args, _runtime) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit("Use the installed 'cmru run-step' command; cmru.runner is not a CLI.")

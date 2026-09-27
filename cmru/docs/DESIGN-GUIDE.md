@@ -85,6 +85,40 @@ not hidden subcommands of `cmru`. The [canonical CLI grammar and semantic
 audit](SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit) inventories their complete option surfaces
 and is updated with every product grammar change.
 
+### Project commands use the transaction's CMRU runtime
+
+A project step that invokes `cmru` must run the same CMRU code that started the
+transaction. Resolving through ambient `PATH` could select an older installed
+wheel and run a different command contract inside a current source checkout.
+Before each step, CMRU creates a temporary launcher using its current Python
+interpreter and module root, puts that launcher first in `PATH`, and checks its
+reported version against the active runtime. The `CMRU_BIN` and `PATH` binding
+is reapplied after project environment setup, so a project setting cannot
+silently redirect a nested gate. A mismatch fails before the step command
+starts. This keeps project contracts portable and avoids requiring each
+consumer to know whether CMRU came from a wheel or source checkout (KI-11).
+
+### Retained build publication names the artifact input explicitly
+
+`cmru build` retains a local build with its source identity and complete digest
+inventory. `cmru publish --build-output ID` validates that record and gives the
+declared push step the retained files explicitly; ordinary `publish` continues
+to use the caller checkout. CMRU does not infer the intended artifact from a
+`dist/` directory or silently couple every build to publication. Built-in
+publishers require existing versioned and `-latest` Release/tag targets; a
+stable version tag must identify the retained source commit. They update
+Release metadata and assets without creating or moving Git refs. Temporary
+copies hold generated sidecars and `latest.json`, leaving the retained record
+unchanged. Custom push steps must consume the protected
+`CMRU_BUILD_OUTPUT_ROOT` input and must not create or move Git refs or promote a
+source branch. Publication refuses a retained record with any tracked or
+untracked source-tree changes: otherwise the artifact could contain edits that
+the recorded source commit and release tag do not identify. Consumers should
+ignore expected, untracked generated build outputs, while keeping source paths
+visible to Git status. Ignore rules do not hide changes to tracked files.
+`cmru release` owns the separate source-first flow.
+See [KI-10](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--publish-retained-build-output-by-id--shipped).
+
 `cmru run` keeps orchestration's configured `default_steps` when no explicit
 step flag is supplied; help names that policy because a default may include
 publishing. Its dry-run resolves the same target, steps, and configured order,
@@ -102,48 +136,31 @@ installs it into a fresh venv without system packages, and renders/compiles a
 project installer from outside the checkout. That catches both omitted package
 data and a missing bundled `cli-extended` import.
 
-### Module commands and library APIs are explicit interfaces
+### Operator commands, adapters, and libraries have separate jobs
 
-The installed console scripts are the canonical operator launchers. The wheel
-also contains module entrypoints for use cases that benefit from an explicit
-Python interpreter or a component-level command. They all build their grammar
-from `cli-extended`; a module adapter must not maintain a parallel parser.
+Installed console scripts and their registered verbs are the operator
+interface: `cmru`, `cmru-agent`, and `cmru-controller`. They use
+`cli-extended` to define grammar, options, help, and dispatch. CMRU does not
+maintain parallel hand-written parsers for those commands.
 
-Each supported module or bundled library has a specific job:
+`python -m cmru.handlers` is the one supported component CLI. Project step
+contracts use it to invoke registered artifact handlers, and
+`build-initial-standalone.sh` needs it to build the first wheel before the
+installed `cmru` command exists. `python -m cmru.bundle`, `python -m
+cmru.runner`, and module aliases for the three operator scripts are retired;
+they now refuse with a pointer to the supported command or library API.
 
-- `python -m cmru.handlers` is used by project step contracts and by
-  `build-initial-standalone.sh`. The bootstrap must build the wheel before an
-  installed `cmru` script exists, so this module route is part of the build
-  contract rather than an accidental alias.
-- `python -m cmru.bundle` exposes the bundle builder directly; its deterministic
-  format is `xztar` as specified in S9.
-  The `cmru.bundle.run_bundle` library function is consumed by PWMCP. The module
-  command remains useful for projects that want the builder without writing a
-  wrapper; CMRU does not add a root `cmru bundle` verb until that is a real
-  operator workflow.
-- `python -m cmru.runner` executes one declared project step for diagnosis and
-  shares its registry and implementation with `cmru run-step`. MDT also uses
-  the `cmru.runner.run_step` Python API. It is not a second step configuration
-  language.
-- `python -m cmru.cli`, `python -m cmru.agent.cli`, and
-  `python -m cmru.controller.cli` invoke the same registered CLIs as the
-  console scripts. They are for source or wheel debugging under a deliberately
-  selected interpreter; operators should use the installed console commands.
+The reusable `cmru.bundle.run_bundle` and `cmru.runner.run_step` functions
+remain supported Python APIs. PWMCP consumes the bundle API, and MDT consumes
+the runner API. Use `cmru run-step` for a direct operator invocation. CMRU does
+not add a root `cmru bundle` verb until a concrete operator workflow needs one.
+The standalone generated `get.py` remains an independent product and keeps its
+own `argparse` parser because adopters use it without installing CMRU.
 
 `worktree` is a bundled shared library, not another CMRU CLI. It owns neutral
 Git workspace identity, records, leases, and lifecycle primitives; CMRU owns
 release and transaction policy. Its separate consumer guide is the canonical
 place for those APIs and examples.
-
-Low usage by itself is not a reason to delete a module interface. Reviewers
-should ask what caller contract it serves, whether it exposes a capability
-without a useful alternative, and whether the wheel, spec, examples, and
-behavioral tests keep it supportable. Retire old aliases when they only preserve
-a spelling and add no caller value. Keep reusable Python APIs separate from
-their CLI adapters: removing a launcher must not silently break a documented
-library import. The standalone generated `get.py` is a separate product: it
-must remain usable without CMRU installed and therefore keeps its own
-`argparse` parser.
 
 ## Remote cleanup and local transaction abandonment
 

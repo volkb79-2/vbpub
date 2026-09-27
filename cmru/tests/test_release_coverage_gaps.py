@@ -446,16 +446,16 @@ def test_runner_context_branches_and_exactly_one_guard(monkeypatch, tmp_path):
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
     monkeypatch.setattr("cmru.config.load_forge_config", lambda _path: SimpleNamespace(orchestration=None))
     monkeypatch.setattr(runner, "run_step", lambda *_args: None)
-    runner.main(["--step", "build"])
+    runner.runner_cli().run(argv=["--step", "build"])
     many = _loaded({"demo": object(), "other": object()}, ["demo", "other"])
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: many)
-    assert runner.main(["all", "--step", "build"]) == 2
+    assert runner.runner_cli().run(argv=["all", "--step", "build"]) == 2
     cfg = tmp_path / "cmru.orchestration.toml"
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: one)
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
-    runner.main(["--step", "build"])
-    assert runner.main(["missing", "--step", "build"]) == 2
+    runner.runner_cli().run(argv=["--step", "build"])
+    assert runner.runner_cli().run(argv=["missing", "--step", "build"]) == 2
 
 
 def test_standards_reports_explicit_tester_resources():
@@ -528,7 +528,7 @@ def test_scaffold_collect_plan_refuses_invalid_adoption_inputs(monkeypatch, tmp_
             scaffold.collect_plan(options, tmp_path)
 
 
-def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path):
+def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
     (tmp_path / "child").mkdir()
     answers = iter(["child", "child", "Child", "python", "wheel", "yes"])
@@ -537,9 +537,22 @@ def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path):
         {"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path,
     )
     files = scaffold.build_files(plan, tmp_path)
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="bad", stderr="standards"))
-    with pytest.raises(SystemExit):
+
+    def failing_standards_run(**kwargs):
+        assert kwargs["argv"][0] == "--config"
+        kwargs["stdout"].write("bad")
+        kwargs["stderr"].write("standards")
+        return 1
+
+    monkeypatch.setattr(
+        standards,
+        "standards_cli",
+        lambda: SimpleNamespace(run=failing_standards_run),
+    )
+    with pytest.raises(SystemExit) as error:
         scaffold.validate(files, tmp_path)
+    assert error.value.code == 2
+    assert "generated contracts fail `cmru standards`" in capsys.readouterr().err
 
     outside = tmp_path.parent / "outside-project"
     outside.mkdir(exist_ok=True)

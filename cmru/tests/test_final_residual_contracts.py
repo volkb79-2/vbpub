@@ -35,7 +35,7 @@ def test_bundle_parse_config_requires_archive_and_copy_tables(tmp_path):
     with pytest.raises(ValueError, match="archive"):
         bundle.parse_config(path)
     path.write_text("project_root='.'\n[archive]\nname_template='x-{version}'\nversion_env='V'\n[copy]\nfiles='bad'\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="must be lists"):
+    with pytest.raises(ValueError, match="must be an array of non-empty strings"):
         bundle.parse_config(path)
 
 

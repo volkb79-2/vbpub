@@ -250,68 +250,71 @@ must provide equivalent consumer-verifiable evidence itself.
 `bake_set_vars`, `no_cache_env`, and argv-valued `env_command`. There is no shell-string
 environment loader and no alias for the removed names. `quiet` is mandatory on every step.
 
-### KI-10 — `cmru build` artifacts cannot safely feed `cmru publish` — *open; decision required*
-**Evidence:** `cmru build` creates an isolated `cmru-build-<id>` worktree, runs its
-prepare/gate/build phases there, and on success copies logs and declared artifact directories
-into commit-addressed, gitignored local records under `<project>/logs/` and
-`<project>/artifacts/`. The `build.json` inventory binds their source SHA, digest inventory,
-and any tracked prepared-tree changes and explicitly says `publication: forbidden`. CMRU then
-removes the successful worktree; a failed child or output-retention failure retains it for
-debugging. `cmru publish`, by contrast, runs the project's declared `push` step in the caller
-checkout and is deliberately unaware of those local records. Consequently the seemingly natural
-sequence `cmru build --project X` then `cmru publish --project X` still does **not** publish the
-reviewed build; it finds no declared push input or can publish a different caller-side artifact.
+### KI-10 — publish retained build output by ID — *shipped*
 
-**Current safe workflow:** use `cmru release`, whose one source-first transaction
-performs gate → tag policy → build → push in one worktree. `cmru build` is a
-local-consumption/inspection verb, not a pre-publication staging verb.
+**Decision:** the operator may publish the exact bytes produced by `cmru build`.
+`cmru publish PROJECT --build-output ID` selects the retained build record,
+revalidates its manifest and complete artifact inventory, then runs the project's
+declared `push` step with protected `CMRU_BUILD_OUTPUT_ROOT`,
+`CMRU_BUILD_OUTPUT_ID`, and source identity environment. It does not rebuild.
+Built-in wheel and tarball handlers select files from the retained inventory;
+a custom publisher must read from `CMRU_BUILD_OUTPUT_ROOT` and must not rebuild
+from the caller checkout. The user supplies publication credentials as usual.
 
-**`--from-candidate` is deliberately postponed.** It would be a release-verb addition for a
-different use case, not an alias for `--resume`: a durable, deliberate promotion boundary after
-an immutable commit has been built and gated, while offsite fuzzing/mutation evidence, review,
-or an approval may take hours or days. `--resume <worktree>` instead continues one retained
-pre-tag source transaction after immediate investigation; a manual worktree edit invalidates its
-old gate evidence and it is not a durable post-tag publication retry (KI-06). Holding such a
-mutable worktree while waiting for a remote result is not a candidate protocol.
+This publishes retained artifact bytes without promoting a source branch. The
+built-in wheel and tarball handlers require the versioned GitHub Release and
+its Git tag to exist already; for a versioned artifact the tag must resolve to
+the record's exact source commit. They also require the project's existing
+`<prefix>-latest` release and tag, then update its release assets without
+deleting or recreating the tag. The command creates no Git refs or GitHub
+Release records. `cmru release` remains the source-first tag/build/publish/
+promote workflow. A custom publisher must consume the retained record and must
+not create or move Git refs or promote a source branch. `release --from-candidate`
+and durable post-tag retry remain separate, unimplemented workflows;
+`--build-output` does not claim their source promotion or recovery semantics.
 
-**What a future candidate must prove:** a persisted immutable record must bind the exact source
-SHA and resolved version/tag intent, artifact digests, declared gate verdict, pinned build
-toolchain/image, remote-job request and returned evidence/attestation, and idempotent remote
-publication state. Promotion must revalidate every identity before minting/pushing the tag and
-publishing the recorded artifacts. A normal local `build.json` cannot qualify: it explicitly
-forbids publication and may truthfully record uncommitted deterministic `prepare` outputs.
+Built-in handlers copy selected inventoried files to a temporary publish area
+before generating checksum sidecars or `latest.json`; the immutable retained
+record remains valid and can be published again. Dry-run validates local
+evidence but does not query remote release or tag availability.
 
-**Decision for now:** keep `publish` as a low-level caller-worktree command and retain this
-non-composability. Do not add `publish --worktree`, `release --from-candidate`, or a convenience
-alias until a concrete remote-qualification release policy requires it. At that point design
-`release --from-candidate <id>` as a full immutable promotion state machine, not a generic
-retry. Copying `dist/` back merely to make the command chain work would defeat the isolation rule.
+The build record must refuse publication if any inventoried path is unsafe,
+missing, changed, has a different size/digest, or if the record contains an
+unexpected file. It must also refuse publication when `source_tree_changes` is
+non-empty; projects should ignore expected untracked build outputs so they are
+not mistaken for source edits. Ignore rules do not hide modifications to tracked
+files. `--dry-run` validates the selected record, shows its exact
+source and artifact digests, and displays the declared push commands without
+requiring credentials or executing them. `cmru cleanup --delete-build-output`
+continues to remove a retained record explicitly.
 
-### KI-11 — Project commands can invoke a different CMRU than the transaction engine — *open; strict runtime binding required*
+**Files:** `src/cmru/transaction.py`, `src/cmru/handlers.py`,
+`src/cmru/release.py`, `src/cmru/cli.py`, `src/cmru/runner.py`, tests,
+`README.md`, `docs/SPEC.md`, `docs/RELEASE-TRANSACTIONS.md`,
+`docs/DESIGN-GUIDE.md`, and `docs/CONSUMERS.md`.
+
+### KI-11 — project commands can invoke a different CMRU than the transaction engine — *shipped*
+
 **Evidence:** an estate checkout can run a source-tree CMRU engine, including
-inside its isolated release/build worktree. Several portable project contracts nevertheless use
-an argv beginning `cmru tester-gate` (CIU, MDT, TLS-edge, Nyxloom, Topos, PWMCP). That resolves
-through the worker's ambient `PATH`, which can be an older installed wheel. On 2026-08-12 the
-source engine reported `3.0.1.dev4+g128a3da5` while `/home/vscode/.local/bin/cmru` was installed
-as `2.0.1`; the latter does not even expose the current `cmru version` verb. A release can thus
-orchestrate with one CMRU contract but run its tester boundary with another.
+inside its isolated release/build worktree. Portable project contracts often
+use an argv beginning `cmru tester-gate`; ambient `PATH` could resolve an older
+installed wheel. In the 2026-08-12 incident the source engine was
+`3.0.1.dev4+g128a3da5` while `/home/vscode/.local/bin/cmru` was `2.0.1` and did
+not expose the current `cmru version` verb.
 
-**Impact:** it invalidates the intended one-framework version boundary and makes a project gate's
-behaviour depend on ambient devcontainer state. Referencing a repository-local source launcher
-would make standalone consumers depend on this monorepo, so it is not a valid fix.
+**Resolution:** before running project commands, CMRU creates a launcher bound
+to the exact Python executable and installed/source module root that started
+the current transaction. It prepends the launcher directory to project `PATH`,
+sets protected `CMRU_BIN`, and reapplies both after project environment setup
+and `env_command`. The launcher is resolved and its `version` output compared
+to the active runtime identity. Missing or mismatched identity fails before the
+project command starts; CMRU does not fall back to ambient `PATH`. The same
+binding is used by direct `cmru run-step`.
 
-**Recommended design:** the transaction runtime creates or selects a portable CMRU launcher
-bound to the exact interpreter/module executing the transaction, prepends that launcher's
-directory to each project command's `PATH`, and verifies the resolved command identity before
-launching a gate. A missing or mismatched identity must fail before container launch; there is
-no ambient-PATH fallback. The binding must work both for an installed third-party CMRU wheel
-and for the vbpub source wrapper without adding a sourceable config alias or a hidden default.
-The CLI semantic review records this as an open KI-11 implementation decision, not as a shipped
-guarantee.
-
-**Immediate operational rule:** until KI-11 is resolved, install the last verified released CMRU
-wheel into the gate environment before an estate release and treat a source-versus-installed
-version mismatch as a release preflight failure. Do not paper over it by editing each consumer.
+This keeps portable project contracts independent of the CMRU source checkout
+while making nested CMRU calls part of the transaction's runtime boundary.
+Behavioral tests cover an ambient fake executable and attempts by step
+configuration to replace the protected binding.
 
 ### KI-02 — CMRU OCI repack is disabled pending production equivalence — *fail-closed*
 **Status:** guarded; do not enable for production releases.
@@ -1305,54 +1308,28 @@ Add a regression oracle that distinguishes one correct project-root remap
 from zero or two prefixes, and pin both the default relative-config path and
 the supported absolute-config route before changing the remapper.
 
-### KI-32 — controller rollback tag can disagree with its manifest identity
+### KI-32 — controller rollback tag can disagree with its manifest identity — *resolved*
 
-**Status:** OPEN 2026-09-25; found during the canonical CLI semantic audit.
+**Decision:** keep controller rollback and remove `--to`. Rollback always uses
+the first wave's complete release coordinate from the plan: tag, manifest URL,
+and SHA-256 digest. A tag-only override could select a different artifact while
+keeping the plan's URL and digest. `--generation` remains available to choose a
+positive generation number. The canonical grammar and semantic result are in
+[`docs/SPEC.md` S-CLI.9](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
 
-`cmru-controller rollback --plan PLAN --to TAG` overrides the first wave's
-release tag but retains that wave's manifest URL and SHA-256 digest. The command
-can therefore publish a desired release whose visible tag does not identify
-the artifact selected by the URL and digest. The current dry-run prints all
-three values, which makes the mismatch inspectable but does not establish that
-they identify one artifact.
+### KI-33 — bundle config silently accepts unknown keys and coerces values — *resolved*
 
-**Recommendation:** remove `--to` until CMRU can resolve the tag to a verified
-immutable artifact coordinate, or replace it with an option set that requires
-and validates the full tag, manifest URL, and digest tuple. Decide whether the
-rollback verb should remain available while that contract is unresolved.
-Record the chosen behavior in `docs/SPEC.md` and add a behavioral oracle that
-rejects mismatched release identity before any Consul write.
+`cmru.bundle.run_bundle()` now rejects unknown keys at the root and in
+`[wheel]`, `[archive]`, and `[copy]`. It checks booleans, strings, and arrays
+against their declared TOML types rather than coercing values. Invalid
+configuration fails before planning or mutating output. Tests cover unknown
+keys, malformed values, and valid omitted defaults. The full contract is in
+[`docs/SPEC.md` S9.4a](docs/SPEC.md#s9--reproducibility).
 
-### KI-33 — bundle config silently accepts unknown keys and coerces values
+### KI-34 — bundle help overstates determinism for non-xztar formats — *superseded*
 
-**Status:** OPEN 2026-09-25; found while documenting the `cmru.bundle` module
-contract during the canonical CLI and component-interface review.
-
-`cmru.bundle.parse_config()` reads known fields with `dict.get()` but does not
-reject unknown keys at the root or inside `[wheel]`, `[archive]`, or `[copy]`.
-It also converts some values with `bool()` and `str()` instead of validating
-their TOML types. For example, a quoted `enabled = "false"` is truthy, while a
-misspelled optional path key can be ignored and leave its default in effect.
-That turns a typo into a plausible but unintended bundle plan.
-
-**Recommendation:** make the config schema closed at every table boundary and
-validate TOML value types before resolving paths or planning effects. Keep only
-the documented defaults in S9.4a. Add loader oracles for unknown root/nested
-keys, wrong scalar and array types, and valid omitted-default cases; the
-`--dry-run` path must refuse invalid configuration before reporting a plan.
-
-### KI-34 — bundle help overstates determinism for non-xztar formats
-
-**Status:** OPEN 2026-09-25; found while checking `cmru.bundle --help` against
-the documented output contract.
-
-`bundle_cli()` describes the command as building a deterministic bundle, but
-`[archive].format` accepts `tar`, `gztar`, `bztar`, and `zip` as well as `xztar`.
-S9.4 specifies the normalized deterministic writer only for `xztar`; the other
-formats use `shutil.make_archive()`.
-
-**Recommendation:** describe the command as building a configured stack bundle
-and state that deterministic normalized output is guaranteed for `xztar`, or
-change validation/implementation so every advertised format has an explicit
-determinism guarantee. Keep the semantic result table synchronized with the
-chosen behavior.
+The `python -m cmru.bundle` CLI was removed because it had no distinct operator
+workflow; `cmru.bundle` remains a library. The public bundle contract states
+that the normalized deterministic writer is guaranteed for `xztar`, while the
+other accepted archive formats use the platform archive writer. There is no
+bundle CLI help surface left to overstate this guarantee.

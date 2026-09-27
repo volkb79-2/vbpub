@@ -9,6 +9,8 @@ the overall CLI description and aligned verb summaries, parser registration,
 common options, clean cancellation/errors, confirmation
 prompts, output streams, redaction, and progress presentation. It has no
 runtime dependencies.
+Registered CLIs require exact option spellings by default; long-option prefix
+abbreviations are disabled for both the root command and its verbs.
 
 ## Adopt it
 

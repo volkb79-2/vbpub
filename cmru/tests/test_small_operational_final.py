@@ -70,11 +70,13 @@ def test_selfupdate_replaces_stale_link_atomically_in_dry_run(tmp_path):
     assert not stale.exists()
 
 
-def test_controller_cli_module_entrypoint_exposes_help():
+def test_controller_cli_module_entrypoint_refuses_removed_alias():
     with patch("sys.argv", ["cmru-controller", "--help"]):
         with pytest.raises(SystemExit) as raised:
             runpy.run_path(__import__("cmru.controller.cli", fromlist=["__file__"]).__file__, run_name="__main__")
-    assert raised.value.code == 0
+    assert str(raised.value) == (
+        "Use the installed 'cmru-controller' command; its module alias is not supported."
+    )
 
 
 def test_adapter_loader_reports_unloadable_spec(tmp_path):

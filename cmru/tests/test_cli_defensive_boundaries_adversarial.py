@@ -44,9 +44,11 @@ def test_source_tree_version_returns_none_for_non_checkout_path(monkeypatch, tmp
     assert cli._source_tree_version() is None
 
 
-def test_cli_module_guard_runs_main_for_help(monkeypatch, capsys):
+def test_cli_module_guard_refuses_removed_module_alias(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cmru", "--help"])
     with pytest.raises(SystemExit) as raised:
         runpy.run_path(str(cli.__file__), run_name="__main__")
-    assert raised.value.code == 0
-    assert "Configurable Multi Release Utility" in capsys.readouterr().out
+    assert str(raised.value) == (
+        "Use the installed 'cmru' command; python -m cmru.cli is not supported."
+    )
+    assert capsys.readouterr().out == ""

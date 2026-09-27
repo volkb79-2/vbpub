@@ -114,11 +114,14 @@ def test_state_identity_absence_and_manifest_image_shape_are_explicit(monkeypatc
         manifest._validate_images([], "demo")
 
 
-def test_controller_cli_module_guard_executes_parser(monkeypatch, capsys):
+def test_controller_cli_module_guard_refuses_removed_alias(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cmru-controller", "--help"])
     with pytest.raises(SystemExit) as error:
         runpy.run_path(str(Path(controller_cli.__file__)), run_name="__main__")
-    assert error.value.code == 0 and "publish" in capsys.readouterr().out
+    assert str(error.value) == (
+        "Use the installed 'cmru-controller' command; its module alias is not supported."
+    )
+    assert capsys.readouterr().out == ""
 
 
 def test_github_host_resolve_latest_without_sha_url_does_not_fetch(monkeypatch):

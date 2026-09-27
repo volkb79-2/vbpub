@@ -52,6 +52,7 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     monkeypatch.setattr(cli.transaction, "run_child", lambda w, args, **kwargs: calls.append((w, args, kwargs)) or 0)
     retained = [tmp_path / "demo" / "artifacts" / "build-1"]
     monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
+    monkeypatch.setattr(cli.transaction, "validate_retained_build_output", lambda *_args: {"manifest": {"publication": "eligible"}})
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda w: calls.append(("removed", w)))
     exc = cli.main(["build", "--config", str(tmp_path / "cmru.toml"), "demo"])
     assert exc == 0
@@ -59,7 +60,9 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     assert calls[0][2] == {"verb": "build", "project_names": ["demo"]}
     assert overlays == [[tmp_path / "demo" / "cmru.toml"]]
     assert calls[-1] == ("removed", workspace)
-    assert "--delete-build-output build-1 --yes" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "cmru publish demo" in output
+    assert "--delete-build-output build-1 --yes" in output
 
 
 def test_isolated_build_requires_declared_artifact_step_and_orders_prepare_gate_build(monkeypatch, tmp_path):

@@ -817,6 +817,7 @@ class ExtendedArgumentParser(argparse.ArgumentParser):
     def add_subparsers(self, **kwargs: Any) -> Any:
         def parser_factory(*args: Any, **sub_kwargs: Any) -> ExtendedArgumentParser:
             sub_kwargs.setdefault("identity", self.identity)
+            sub_kwargs.setdefault("allow_abbrev", self.allow_abbrev)
             return type(self)(*args, **sub_kwargs)
 
         kwargs.setdefault("parser_class", parser_factory)
@@ -1214,6 +1215,7 @@ class CliRegistry:
         single_command: bool = False,
         logging_logger: str | None = None,
         no_args_action: bool = False,
+        allow_abbrev: bool = False,
     ) -> None:
         self.identity = identity
         self.prog = prog
@@ -1223,6 +1225,7 @@ class CliRegistry:
         self.single_command = single_command
         self.logging_logger = logging_logger or identity.command_name
         self.no_args_action = no_args_action
+        self.allow_abbrev = allow_abbrev
         self._verbs: list[VerbSpec] = []
 
     @property
@@ -1334,6 +1337,7 @@ class CliRegistry:
             identity=self.identity,
             catalog=catalog,
             top_level=not self.single_command,
+            allow_abbrev=self.allow_abbrev,
         )
         add_common_options(
             parser,

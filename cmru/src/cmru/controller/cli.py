@@ -180,7 +180,6 @@ def cmd_rollback(args) -> int:
     try:
         engine.rollback(
             plan,
-            to_tag=getattr(args, "to_tag", None),
             generation=getattr(args, "generation", None),
         )
     except Exception as exc:
@@ -234,7 +233,6 @@ def _build_cli():
         )),
         ("rollback", "Write a new rollback desired generation.", cmd_rollback, (
             OptionSpec(("--plan",), "path to plan TOML file", metavar="PLAN_TOML", parser_kwargs={"required": True}),
-            OptionSpec(("--to",), "release tag to roll back to", metavar="TAG", parser_kwargs={"dest": "to_tag", "default": None}),
             OptionSpec(("--generation",), "positive rollback generation number", metavar="N", parser_kwargs={"type": _positive_generation, "default": None}),
         )),
     )
@@ -264,4 +262,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit("Use the installed 'cmru-controller' command; its module alias is not supported.")

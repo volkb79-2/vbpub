@@ -1,12 +1,14 @@
 """Behavioral checks for cli-extended adapters and real mutation previews."""
 from __future__ import annotations
 
+import runpy
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from cmru import bundle, changelog, cli, dependencies, getpy, handlers, runner
+from cmru import changelog, cli, dependencies, getpy, handlers, runner
 from cmru import scaffold, standards, tester_gate, tool_deps, transaction
 
 
@@ -305,68 +307,22 @@ def test_tool_dependency_refresh_dry_run_does_not_write_pin_files(monkeypatch, t
     assert "requires --refresh" in capsys.readouterr().err
 
 
-def test_bundle_dry_run_validates_and_lists_operations_without_running_them(
-    monkeypatch, tmp_path, capsys,
-):
-    root = tmp_path / "project"
-    root.mkdir()
-    (root / "README.md").write_text("docs\n", encoding="utf-8")
-    (root / "assets").mkdir()
-    (root / "dist").mkdir()
-    config = bundle.BundleConfig(
-        project_root=root, wheel_project_root=root / "client", dist_dir=root / "dist",
-        bundle_dir=root / "dist" / "bundle", client_dir=root / "dist" / "client",
-        wheel_enabled=True, wheel_python_bin="python3", wheel_find_links=root / "wheels",
-        archive_template="demo-{version}.tar.xz", archive_version_env="VERSION",
-        archive_format="xztar", copy_files=["README.md"], copy_dirs=["assets"],
-    )
-    monkeypatch.setattr(bundle, "parse_config", lambda _path: config)
-    monkeypatch.setattr(bundle, "run_bundle", lambda *_: pytest.fail("bundle dry-run executed build"))
-    monkeypatch.setenv("VERSION", "2.3.4")
-
-    assert bundle.main(["--config", str(root / "bundle.toml"), "--dry-run"]) == 0
-    output = capsys.readouterr().out
-    assert "Would remove existing dist tree" in output
-    assert "--find-links" in output
-    assert "Would copy" in output and "Would copy tree" in output
-    assert "demo-2.3.4.tar.xz" in output
-
-    monkeypatch.delenv("VERSION")
-    with pytest.raises(RuntimeError, match="VERSION must be set"):
-        bundle.main(["--config", str(root / "bundle.toml"), "--dry-run"])
-    monkeypatch.setenv("VERSION", "2.3.4")
-    missing = bundle.BundleConfig(
-        **{**vars(config), "copy_files": ["missing.txt"]},
-    )
-    monkeypatch.setattr(bundle, "parse_config", lambda _path: missing)
-    with pytest.raises(FileNotFoundError, match="Bundle source not found"):
-        bundle.main(["--config", str(root / "bundle.toml"), "--dry-run"])
-
-
-@pytest.mark.parametrize("wheel_enabled", [False, True])
-def test_bundle_dry_run_without_existing_outputs_or_optional_wheel_settings(
-    monkeypatch, tmp_path, capsys, wheel_enabled,
-):
-    root = tmp_path / "project"
-    root.mkdir()
-    config = bundle.BundleConfig(
-        project_root=root, wheel_project_root=root, dist_dir=root / "dist",
-        bundle_dir=root / "dist" / "bundle", client_dir=root / "dist" / "client",
-        wheel_enabled=wheel_enabled, wheel_python_bin="python3", wheel_find_links=None,
-        archive_template="demo-{version}.tar.xz", archive_version_env="VERSION",
-        archive_format="xztar", copy_files=[], copy_dirs=[],
-    )
-    monkeypatch.setattr(bundle, "parse_config", lambda _path: config)
-    monkeypatch.setattr(bundle, "run_bundle", lambda *_: pytest.fail("bundle dry-run executed build"))
-    monkeypatch.setenv("VERSION", "2.3.4")
-
-    assert bundle.main(["--config", str(root / "bundle.toml"), "--dry-run"]) == 0
-    output = capsys.readouterr().out
-    assert "Would remove existing dist tree" not in output
-    assert ("Would run python3 -m pip wheel" in output) is wheel_enabled
-    assert "--find-links" not in output
-    assert "Would create archive" in output
-    assert not config.dist_dir.exists()
+@pytest.mark.parametrize(
+    ("module", "message"),
+    [
+        ("cmru.bundle", "Python library, not a command"),
+        ("cmru.runner", "Use the installed 'cmru run-step' command"),
+        ("cmru.cli", "Use the installed 'cmru' command"),
+        ("cmru.agent.cli", "Use the installed 'cmru-agent' command"),
+        ("cmru.controller.cli", "Use the installed 'cmru-controller' command"),
+    ],
+)
+def test_removed_module_cli_aliases_fail_with_the_canonical_interface(module, message):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with pytest.raises(SystemExit) as error:
+            runpy.run_module(module, run_name="__main__")
+    assert message in str(error.value)
 
 
 def test_project_handler_dry_run_uses_registered_cli_and_skips_handler(
@@ -411,14 +367,14 @@ def test_runner_step_dry_run_uses_shared_renderer_without_invoking_step(
     monkeypatch.setattr(cli, "load_config", lambda _path: (tmp_path, {"demo": project}, ["demo"]))
     monkeypatch.setattr(runner, "run_step", lambda *_: pytest.fail("dry-run invoked run_step"))
 
-    assert runner.main(["demo", "--step", "build", "--dry-run", "--config", "x"]) == 0
+    assert runner.runner_cli().run(argv=["demo", "--step", "build", "--dry-run", "--config", "x"]) == 0
     output = capsys.readouterr().out
     assert "Would remove" in output
     assert "Would resolve dynamic environment" in output
     assert "Would log in to configured registry" in output
     assert "Would run declared step build" in output
 
-    assert runner.main(["demo", "--step", "missing", "--dry-run", "--config", "x"]) == 2
+    assert runner.runner_cli().run(argv=["demo", "--step", "missing", "--dry-run", "--config", "x"]) == 2
     assert "step 'missing' is not declared" in capsys.readouterr().err
     malformed = _step()
     malformed.commands[:] = [{}]
@@ -818,7 +774,7 @@ def test_controller_generation_and_rollout_dry_run_boundaries(monkeypatch, tmp_p
     engine.hold("plan")
     engine.release_hold("plan")
     engine._write_plan_status("plan", "complete", None)
-    engine.rollback(plan, to_tag="demo-v0", generation=9)
+    engine.rollback(plan, generation=9)
     with pytest.raises(ValueError, match="rollback generation must be a positive integer"):
         engine.rollback(plan, generation=0)
 
@@ -829,7 +785,7 @@ def test_controller_generation_and_rollout_dry_run_boundaries(monkeypatch, tmp_p
     assert "Would write desired state gen=203" in messages
     assert "Would approve plan" in messages and "Would hold plan" in messages
     assert "Would release hold" in messages and "Would write plan plan status=complete" in messages
-    assert "tag=demo-v0" in messages and "digest=" + "a" * 64 in messages
+    assert "tag=demo-v1" in messages and "digest=" + "a" * 64 in messages
 
     plan_path = tmp_path / "plan.toml"
     plan_path.write_text("placeholder", encoding="utf-8")

@@ -13,7 +13,7 @@ from cmru.controller import cli as controller_cli
 
 def _args(**kwargs):
     values = dict(plan="plan", landscape="land", consul_addr=None, token=None,
-                  generation_base=1, dry_run=False, to_tag=None, generation=None)
+                  generation_base=1, dry_run=False, generation=None)
     values.update(kwargs)
     return SimpleNamespace(**values)
 
