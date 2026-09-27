@@ -25,7 +25,7 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--maxfail
 # uses the nearest release tag, fail-fast candidates, and a bounded timeout.
 # Source-checkout tests import CMRU's sibling shared libraries explicitly.
 env = { PYTHONPATH = "src:../libraries/cli-extended/src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
-env_passthrough = []
+env_passthrough = ["PATH"]
 budget = "20m"
 allow_argv_append = false
 
