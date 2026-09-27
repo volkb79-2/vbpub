@@ -1886,8 +1886,12 @@ action, reviewed like any other source change before it is committed.
 
 CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
 the full CMRU test suite. R1 judges the `coverage.json` artifact against
-`base = "main"`, requires 100% line and branch coverage, and forbids excluded
-source. R3 runs an import-break canary against `src/cmru/config.py`.
+the latest ancestor CMRU release tag (currently `cmru-v5.4.1`), requires 100%
+line and branch coverage, and forbids excluded source. Advance this pinned R1
+base to the new release tag during each CMRU release. `main` is not a stable
+post-merge baseline: Assay's merge-base can resolve it to the tested commit,
+leaving no changed lines to measure. R3 runs an import-break canary against
+`src/cmru/config.py`.
 `--maxfail=1` is inert on the passing baseline, so it does not shorten a green
 full-suite run.
 
@@ -1895,7 +1899,7 @@ The release `gate` supplies R2 separately through `run-gate.toml`'s
 `mutation` lane. A release candidate is already at `origin/main`; using
 `main` as Assay's mutation base would leave no changed-source candidates and
 correctly produce `NO_MUTANTS`. The dedicated lane resolves the nearest
-ancestor `cmru-v*` tag and mutates CMRU source changed since that release tag,
+ancestor `cmru-v*` tag dynamically and mutates CMRU source changed since that release tag,
 with a serial campaign, a 120-second per-candidate timeout, `--maxfail=1`,
 `--resume`, and a progress stream. An empty source diff writes explicit
 skipped evidence.
