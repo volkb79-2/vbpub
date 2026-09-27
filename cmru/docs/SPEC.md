@@ -95,6 +95,8 @@ entrypoints. Root help is the registered verb catalog; `cmru help VERB` and `cmr
 remaining argv to the registered child CLI rather than parse it a second time. An accepted
 option MUST affect the behavior named by its help, and unsupported options MUST fail with
 status 2. The long `--help` spelling is the shared interface; there is no `-h` alias.
+Invoking a registered command group without a child verb prints that group's registered
+catalog and exits successfully; unknown verbs and malformed arguments fail with status 2.
 `cmru main(argv)` MUST return the dispatched status for embedding, with console scripts
 propagating it as the process exit status.
 

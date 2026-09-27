@@ -2689,9 +2689,10 @@ def test_versions_main_reports_text_and_maps_domain_failures(monkeypatch, capsys
     monkeypatch.setattr(versions, "load_forge_config", lambda _path: forge)
     monkeypatch.setattr(versions, "_selected_projects", lambda *_args: ["demo"])
     monkeypatch.setattr(versions, "_resolve_all_for_command", lambda *_args, **_kwargs: ({}, {"demo": {}}, {"demo": {}}))
-    with pytest.raises(SystemExit) as missing_action:
-        versions.main([])
-    assert missing_action.value.code == 2
+    assert versions.main([]) == 0
+    overview = capsys.readouterr().out
+    assert "Usage: cmru versions <verb> [options]" in overview
+    assert "check" in overview and "resolve" in overview
     assert versions.main(["check"]) == 0
     assert "No version targets" in capsys.readouterr().out
     monkeypatch.setattr(versions, "_recorded_versions", lambda *_args: [{"z": 1, "a": 2}])
