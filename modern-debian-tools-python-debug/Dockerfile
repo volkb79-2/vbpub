@@ -133,6 +133,13 @@ RUN set -euo pipefail; \
         useradd -m -s /bin/bash -u 1000 -g 1000 vscode; \
     fi
 
+# Release worktrees may be checked out under umask 077. These copied build
+# inputs contain public package metadata and must remain readable in the
+# unprivileged vscode install layers below.
+RUN set -euo pipefail; \
+    chmod -R a+rX /tmp/pip /tmp/requirements; \
+    chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py
+
 # Core system packages
 RUN set -euo pipefail; \
     if [ -f /etc/apt/sources.list.d/yarn.list ]; then \
