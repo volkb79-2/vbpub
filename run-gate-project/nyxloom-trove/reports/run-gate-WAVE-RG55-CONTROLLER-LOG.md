@@ -4450,3 +4450,37 @@ currently absent because the daemon is down and the devcontainer has no
 socket mount. Do not touch `/workspaces/dstdns`; reassess the socket carrier
 after the main daemon is up and use an explicitly mounted reviewer-owned probe
 client if feasible.
+
+### RW-346 — 2026-09-27 02:43:04Z — P1 final review conditional; exact-tree R2 resumed in a mapped worktree
+
+The caller verified the fresh review session's saved invocation metadata as
+`gpt-6-sol` / `xhigh`; the reviewer was not required to self-attest. Round 4,
+recorded at `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round4.md`
+on `9933efb1`, is `ACCEPT-conditional`. It repaired malformed proc-stat PID
+identity and explicit-null DAMON selection (`248a29ba`, `cc7e1910`), and
+records reviewer-owned daemon/helper probes. R2 on old tip `1080ac2f` is not
+evidence for those repairs. The first fresh R2 attempt used a sibling
+worktree outside this nested checkout's configured bind-mount and failed
+before mutation with a missing in-container path; no candidate ran. That
+attempt is not evidence and its container was not retained by Docker.
+
+A second detached worktree was placed beneath the configured mounted clone at
+`.worktrees/rg55-p1-r2-isolated/.worktrees/rg55-p1-r2-final-20260927`, exact
+code tree `cc7e191074a94c53e92023ec4feb75fdf753bae4`. The registered `r2`
+lane is active in container
+`run-gate-rg55-p1-r2-isolated-r2-1595444-1790476701` (launcher PID 1595444),
+`dev-gates.slice`, `NanoCpus=3000000000`. The 90-second health check saw the
+baseline finish at 94 seconds and candidate 1/125 killed at 107 seconds; the
+tree remains quiet. The prior 125-candidate P1 R2 used 6,255 active seconds,
+so the rough comparable runtime is about 1h45. Do not inspect progress again
+before the 25-minute observation interval unless an expected failure signal
+appears. A full release gate and P1 release remain pending.
+
+P6 is not resolved by increasing the lane-wide budget: its prior exact-tree
+R2 ended on one `CANDIDATE_HUNG`, and ordinary resume retains that terminal
+record. The registered run-gate assay argv supplies `--resume`, progress, and
+state-dir but has no supported `--rejudge-outcome` forwarding. Keep B107's
+resource-causality question open; do not reinterpret the result or hand-edit
+assay state. P3 remains open: no host singleton/socket is running or mounted
+in this cockpit, and round-4 live probes could not allocate DAMON (`EINVAL`),
+so live DAMON behavior and measured overhead are not yet established.
