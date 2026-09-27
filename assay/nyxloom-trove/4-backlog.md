@@ -11043,6 +11043,23 @@ complete verdict that `assay verify` must accept. The attempt's partial
 progress and state are recorded in
 [`assay-B105-LOG.md`](reports/assay-B105-LOG.md).
 
+**Capacity scenario, not a forecast:** if the opening 7/15 survivor split and
+560.3-second candidate mean held, full-suite survivors alone would consume
+about 273 worker-hours, even if cold-killed candidates took zero time. Three
+perfectly balanced workers would still need about 91 hours. With one hour
+reserved for gate overhead, the scenario needs about 40 fully effective
+workers to fit 8 hours or 55 to fit the 6-hour target, before headroom. The
+prefix is not representative and its all-candidate mean is not a measured
+survivor mean; the bounded pilot must replace this scenario with measured
+survivor duration, early-kill rate, and real worker capacity. It does show why
+cold kills alone cannot be assumed to make three workers sufficient.
+
+The repository has Buildkite trigger/collector scripts, but its integration
+guide records no live Buildkite build or artifact download, and this host has
+no installed or active Buildkite agent. Remote worker capacity is therefore
+unmeasured; do not count Buildkite parallelism until agents are enrolled and a
+live acceptance proves artifact transfer.
+
 The self-qualification claim remains full-source R0–R3 on one exact revision.
 It may change how R2 proves a candidate killed, but it may not silently run a
 smaller source target, drop tests for survivors, report an incomplete campaign

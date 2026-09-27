@@ -295,3 +295,27 @@ review, and serial merge remain open.
 - No tester-unified gate has run for this controller update. `git diff
   --check` is the only check so far; B105 remains unqualified and no full R2
   attempt is authorized until B110's pilot and runtime plan fit the ceiling.
+
+### R0/R1 controller verification on 2026-09-27
+
+- After the preceding note, `./run-gate.py tester-unified` passed on commit
+  `b152ea3a848c26d17228aee737326eeaeb623895` (tree
+  `a72a1113f3ebd2388d113a369b2979307f2a6a18`). The Assay R0 lane passed in
+  573.17 seconds. The outer tester-unified qualification also passed its
+  independent self-hosting witness, Topos and CMRU qualification phases, and
+  pyflakes check. The gate emitted `ASSAY_GATE_CONTAINER_EXIT=0` and
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`.
+- `./run-gate.py self-qualification-preflight` then passed R0/R1 on the same
+  exact commit/tree; its report passed both `assay verify` and B105's
+  source-bound report check. The coverage-instrumented baseline command took
+  548.35 seconds. Run-gate measured a 738 MiB peak (612 MiB p90), 0.89 average
+  CPU cores, and a 2.3-second memory-full stall under its explicit 2 GiB
+  container cap, plus 8 GiB combined memory-plus-swap ceiling and 3 CPUs.
+  Retained branch-arc evidence is under
+  `.assay/coverage-self-qualification-preflight-snapshots/attempt.F8xNz2ul/`.
+- Run-gate warned that the host profiler daemon was unavailable and the
+  private cgroup namespace did not expose a host slice memory ceiling; it
+  applied the configured per-container memory cap and `dev-gates.slice`
+  placement. These were non-R2 runs. The stopped multi-day R2 campaign was not
+  restarted; B105 remains unqualified pending B110 implementation, pilot, and
+  a complete verifier-accepted R0–R3 report.
