@@ -30,12 +30,17 @@ class RegistryError(RuntimeError):
     """A registry request or its age evidence could not be trusted."""
 
 
+class RegistryNotFoundError(RegistryError):
+    """A registry explicitly returned HTTP 404 for a requested resource."""
+
+
 @dataclass(frozen=True)
 class Candidate:
     version: str
     released_at: datetime
     age_source: str
     tag: str | None = None
+    digest: str | None = None
 
 
 def _iso_datetime(value: object, where: str) -> datetime:
@@ -74,12 +79,57 @@ def _auth_headers(source: Mapping[str, str]) -> dict[str, str]:
     return {}
 
 
+class _RegistryRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow secure registry redirects without forwarding credentials cross-origin."""
+
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int]:
+        try:
+            parts = urllib.parse.urlsplit(url)
+        except ValueError as exc:
+            raise RegistryError(f"refusing registry redirect with an invalid URL: {url}") from exc
+        if "#" in url:
+            raise RegistryError(f"refusing registry URL with a fragment: {url}")
+        if parts.scheme.lower() != "https" or not parts.hostname:
+            raise RegistryError(f"refusing unsafe non-HTTPS registry redirect to {url}")
+        if parts.username is not None or parts.password is not None:
+            raise RegistryError(f"refusing registry redirect with embedded credentials: {url}")
+        try:
+            port = parts.port
+        except ValueError as exc:
+            raise RegistryError(f"refusing registry redirect with an invalid port: {url}") from exc
+        if parts.netloc.endswith(":"):
+            raise RegistryError(f"refusing registry redirect with an invalid port: {url}")
+        if port is None:
+            port = 443
+        elif not 1 <= port <= 65535:
+            raise RegistryError(f"refusing registry redirect with an invalid port: {url}")
+        return parts.scheme.lower(), parts.hostname.lower(), port
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        source_origin = self._origin(req.full_url)
+        destination_origin = self._origin(newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and source_origin != destination_origin:
+            for request_headers in (redirected.headers, redirected.unredirected_hdrs):
+                for name in tuple(request_headers):
+                    if name.casefold() == "authorization":
+                        del request_headers[name]
+        return redirected
+
+
+def _urlopen(request: urllib.request.Request, *, timeout: int):
+    """Open a registry request with the CMRU redirect credential policy."""
+    opener = urllib.request.build_opener(_RegistryRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
 def _request(url: str, headers: Mapping[str, str] | None = None) -> tuple[bytes, dict[str, str]]:
     request_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     request_headers.update(headers or {})
     request = urllib.request.Request(url, headers=request_headers)
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        with _urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             body = response.read(MAX_METADATA_BYTES + 1)
             if len(body) > MAX_METADATA_BYTES:
                 raise RegistryError(f"registry response exceeds {MAX_METADATA_BYTES} bytes: {url}")
@@ -88,7 +138,8 @@ def _request(url: str, headers: Mapping[str, str] | None = None) -> tuple[bytes,
         body = exc.read(MAX_METADATA_BYTES + 1) if exc.fp else b""
         excerpt = body[:500].decode("utf-8", errors="replace").replace("\n", " ")
         detail = f": {excerpt}" if excerpt else ""
-        raise RegistryError(f"registry returned HTTP {exc.code} for {url}{detail}") from exc
+        error_type = RegistryNotFoundError if exc.code == 404 else RegistryError
+        raise error_type(f"registry returned HTTP {exc.code} for {url}{detail}") from exc
     except urllib.error.URLError as exc:
         raise RegistryError(f"could not reach registry {url}: {exc.reason}") from exc
     except TimeoutError as exc:
@@ -236,8 +287,7 @@ def pypi_candidates(source: Mapping[str, str], constraint: str = "*") -> dict[st
     result: dict[str, Candidate] = {}
     for version, files in payload["releases"].items():
         if (
-            not isinstance(version, str) or not _semver_key(version)
-            or not version_satisfies(version, constraint)
+            not isinstance(version, str) or not version_satisfies(version, constraint)
         ):
             continue
         if not isinstance(files, list) or not files:
@@ -271,8 +321,7 @@ def npm_candidates(source: Mapping[str, str], constraint: str = "*") -> dict[str
     result: dict[str, Candidate] = {}
     for version in payload["versions"]:
         if (
-            not isinstance(version, str) or not _semver_key(version)
-            or not version_satisfies(version, constraint)
+            not isinstance(version, str) or not version_satisfies(version, constraint)
         ):
             continue
         version_record = payload["versions"][version]
@@ -307,6 +356,52 @@ def _go_info(proxy: str, module: str, version: str, source: Mapping[str, str]) -
     )
 
 
+_GO_PSEUDO_VERSION = re.compile(
+    r"^v\d+\.\d+\.\d+-(?:[0-9A-Za-z.-]*\.)?\d{14}-[0-9a-f]{12}$"
+)
+
+
+def _go_pseudo_versions_in_constraint(constraint: str) -> set[str]:
+    """Return published Go pseudo-versions that can seed a constrained search.
+
+    The proxy's @v/list intentionally omits pseudo-versions. A go.mod-derived
+    lower bound is nevertheless an exact, already-known candidate and can be
+    checked through its .info endpoint.
+    """
+    found: set[str] = set()
+    for part in constraint.split(","):
+        match = _COMPARATOR.fullmatch(part.strip())
+        if not match:
+            continue
+        operator = match.group(1) or "=="
+        version = match.group(2).strip()
+        if (
+            operator in {"==", ">", ">="}
+            and _GO_PSEUDO_VERSION.fullmatch(version)
+        ):
+            found.add(version)
+    return found
+
+
+def _go_latest(proxy: str, module: str, source: Mapping[str, str]) -> Candidate:
+    escaped_module = "/".join(_go_escape(part) for part in module.split("/"))
+    url = f"{proxy.rstrip('/')}/{escaped_module}/@latest"
+    payload, _headers = _json(url, _auth_headers(source))
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("Version"), str)
+        or not payload["Version"].startswith("v")
+        or _semver_key(payload["Version"]) is None
+    ):
+        raise RegistryError(f"Go proxy returned invalid latest-version metadata for {module}")
+    version = payload["Version"]
+    return Candidate(
+        version=version,
+        released_at=_iso_datetime(payload.get("Time"), f"Go module {module}@{version}"),
+        age_source="go-proxy-info-vcs-commit-time",
+    )
+
+
 def go_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Candidate]:
     module = source["module"]
     proxy = source["proxy"].rstrip("/")
@@ -317,22 +412,57 @@ def go_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Candi
         listed = body.decode("utf-8", errors="strict").splitlines()
     except UnicodeDecodeError as exc:
         raise RegistryError(f"Go proxy returned invalid UTF-8 for {module} version list") from exc
-    versions = sorted(
-        {line.strip() for line in listed if line.strip()},
-        key=lambda v: _semver_key(v) or (-1,), reverse=True,
-    )
-    versions = [v for v in versions if version_satisfies(v, constraint)]
-    if len(versions) > MAX_REGISTRY_ITEMS:
+    listed_versions = {
+        line.strip() for line in listed if line.strip()
+    }
+    versions = [v for v in listed_versions if version_satisfies(v, constraint)]
+    pseudo_seeds = _go_pseudo_versions_in_constraint(constraint) - listed_versions
+    if len(versions) + len(pseudo_seeds) > MAX_REGISTRY_ITEMS:
         raise RegistryError(f"Go proxy listed more than {MAX_REGISTRY_ITEMS} candidates for {module}")
     result: dict[str, Candidate] = {}
+    candidates_to_check = [*versions, *sorted(pseudo_seeds)]
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(_go_info, proxy, module, version, source): version
-            for version in versions
+            for version in candidates_to_check
         }
         for future in as_completed(futures):
-            candidate = future.result()
-            result[normalized_version(candidate.version)] = candidate
+            version = futures[future]
+            try:
+                candidate = future.result()
+            except RegistryNotFoundError:
+                if version in pseudo_seeds:
+                    # Constraint bounds are useful seeds only when the proxy
+                    # actually publishes that pseudo-version. Other failures
+                    # remain hard errors; a listed version missing its .info
+                    # is inconsistent proxy metadata.
+                    continue
+                raise
+            if version_satisfies(candidate.version, constraint):
+                result[normalized_version(candidate.version)] = candidate
+
+    # The Go proxy protocol excludes pseudo-versions from @v/list. Match the
+    # Go command's fallback and consult @latest only when the constraint has no
+    # listed candidate. Seeded pseudo-versions still let an existing go.mod
+    # baseline participate when the proxy has no @latest endpoint.
+    if not versions:
+        try:
+            latest = _go_latest(proxy, module, source)
+        except RegistryNotFoundError:
+            if not result:
+                raise RegistryError(
+                    f"Go proxy returned no listed versions and does not provide @latest for {module}"
+                )
+        else:
+            if version_satisfies(latest.version, constraint):
+                key = normalized_version(latest.version)
+                existing = result.get(key)
+                if existing is None:
+                    result[key] = latest
+                elif latest.released_at != existing.released_at:
+                    raise RegistryError(
+                        f"Go proxy returned inconsistent timestamps for {module}@{latest.version}"
+                    )
     return result
 
 
@@ -361,7 +491,7 @@ class _OCIClient:
             request_headers.update(_auth_headers(self.source))
         request = urllib.request.Request(url, headers=request_headers)
         try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            with _urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                 body = response.read(MAX_METADATA_BYTES + 1)
                 if len(body) > MAX_METADATA_BYTES:
                     raise RegistryError(f"registry response exceeds {MAX_METADATA_BYTES} bytes: {url}")
@@ -372,26 +502,28 @@ class _OCIClient:
                 body = exc.read(MAX_METADATA_BYTES + 1) if exc.fp else b""
                 excerpt = body[:500].decode("utf-8", errors="replace").replace("\n", " ")
                 detail = f": {excerpt}" if excerpt else ""
-                raise RegistryError(f"OCI registry returned HTTP {exc.code} for {url}{detail}") from exc
+                error_type = RegistryNotFoundError if exc.code == 404 else RegistryError
+                raise error_type(f"OCI registry returned HTTP {exc.code} for {url}{detail}") from exc
         except urllib.error.URLError as exc:
             raise RegistryError(f"could not reach OCI registry {url}: {exc.reason}") from exc
         except TimeoutError as exc:
             raise RegistryError(f"OCI registry request timed out: {url}") from exc
         except OSError as exc:
             raise RegistryError(f"OCI registry request failed for {url}: {exc}") from exc
-        realm = urllib.parse.urlsplit(challenge["realm"])
-        if (
-            realm.scheme != "https" or not realm.netloc
-            or realm.username is not None or realm.password is not None
-            or realm.fragment
-        ):
-            raise RegistryError(f"OCI registry provided an unsafe bearer-token realm for {url}")
+        realm_url = challenge["realm"]
+        try:
+            _RegistryRedirectHandler._origin(realm_url)
+        except RegistryError as exc:
+            raise RegistryError(f"OCI registry provided an unsafe bearer-token realm for {url}") from exc
+        realm = urllib.parse.urlsplit(realm_url)
         if self.source.get("username_env"):
-            registry_host = urllib.parse.urlsplit(self.registry).netloc.lower()
+            registry_origin = _RegistryRedirectHandler._origin(self.registry)
             allowed_external_realms = (
-                {"auth.docker.io"} if registry_host == "registry-1.docker.io" else set()
+                {("https", "auth.docker.io", 443)}
+                if registry_origin == ("https", "registry-1.docker.io", 443) else set()
             )
-            if realm.netloc.lower() != registry_host and realm.netloc.lower() not in allowed_external_realms:
+            realm_origin = _RegistryRedirectHandler._origin(realm_url)
+            if realm_origin != registry_origin and realm_origin not in allowed_external_realms:
                 raise RegistryError(
                     f"OCI registry credential realm {realm.netloc!r} is outside the configured registry"
                 )
@@ -423,6 +555,7 @@ class _OCIClient:
         tags: list[str] = []
         url = f"{self.registry}/v2/{self.repository}/tags/list?n=1000"
         expected = urllib.parse.urlsplit(url)
+        expected_origin = _RegistryRedirectHandler._origin(url)
         page_count = 0
         while url:
             page_count += 1
@@ -430,9 +563,9 @@ class _OCIClient:
                 raise RegistryError(f"OCI tag listing exceeded 100 pages for {self.repository}")
             payload, headers = self._json(url, {"Accept": "application/json"})
             page = payload.get("tags")
-            if page is not None and (not isinstance(page, list) or not all(isinstance(t, str) for t in page)):
+            if not isinstance(page, list) or not all(isinstance(t, str) for t in page):
                 raise RegistryError(f"OCI registry returned an invalid tag list for {self.repository}")
-            tags.extend(page or [])
+            tags.extend(page)
             if len(tags) > MAX_REGISTRY_ITEMS:
                 raise RegistryError(f"OCI registry listed more than {MAX_REGISTRY_ITEMS} tags for {self.repository}")
             link = headers.get("link", "")
@@ -440,11 +573,15 @@ class _OCIClient:
             if next_match:
                 next_url = urllib.parse.urljoin(url, next_match.group(1))
                 parsed = urllib.parse.urlsplit(next_url)
-                if (
-                    parsed.scheme != "https" or parsed.netloc.lower() != expected.netloc.lower()
-                    or parsed.username is not None or parsed.password is not None
-                    or parsed.fragment or parsed.path != expected.path
-                ):
+                try:
+                    next_origin = _RegistryRedirectHandler._origin(next_url)
+                except RegistryError as exc:
+                    raise RegistryError(
+                        f"OCI registry returned an unsafe pagination link for {self.repository}"
+                    ) from exc
+                # _origin rejects any literal fragment marker, including an empty
+                # fragment. Keep this comparison focused on origin and endpoint path.
+                if next_origin != expected_origin or parsed.path != expected.path:
                     raise RegistryError(
                         f"OCI registry returned an unsafe pagination link for {self.repository}"
                     )
@@ -455,7 +592,7 @@ class _OCIClient:
             raise RegistryError(f"OCI registry returned no tags for {self.repository}")
         return tags
 
-    def tag_timestamp(self, tag: str) -> tuple[datetime, str]:
+    def tag_evidence(self, tag: str) -> tuple[datetime, str, str]:
         accept = ", ".join((
             "application/vnd.oci.image.index.v1+json",
             "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -464,18 +601,28 @@ class _OCIClient:
         ))
         url = f"{self.registry}/v2/{self.repository}/manifests/{urllib.parse.quote(tag, safe='._+-') }"
         manifest, headers = self._json(url, {"Accept": accept})
+        digest = headers.get("docker-content-digest", "")
         last_modified = headers.get("last-modified")
         if last_modified:
-            return _iso_datetime(last_modified, f"OCI registry tag {tag}"), "oci-registry-last-modified"
+            return _iso_datetime(last_modified, f"OCI registry tag {tag}"), "oci-registry-last-modified", digest
         manifests = manifest.get("manifests")
-        if isinstance(manifests, list) and manifests:
+        if manifests is not None and not isinstance(manifests, list):
+            raise RegistryError(f"OCI image index for {tag} has an invalid platform manifest list")
+        if manifests:
             if len(manifests) > 128:
                 raise RegistryError(f"OCI image index for {tag} has more than 128 platform manifests")
-            dates: list[datetime] = []
-            age_sources: list[str] = []
             for descriptor in manifests:
                 if not isinstance(descriptor, dict) or not isinstance(descriptor.get("digest"), str):
                     raise RegistryError(f"OCI image index for {tag} has an invalid platform descriptor")
+            image_manifests = [
+                descriptor for descriptor in manifests
+                if not _is_docker_attestation_descriptor(descriptor)
+            ]
+            if not image_manifests:
+                raise RegistryError(f"OCI image index for {tag} has no runnable image manifests")
+            dates: list[datetime] = []
+            age_sources: list[str] = []
+            for descriptor in image_manifests:
                 child_url = f"{self.registry}/v2/{self.repository}/manifests/{urllib.parse.quote(descriptor['digest'], safe=':._+-')}"
                 child, child_headers = self._json(child_url, {"Accept": accept})
                 child_last_modified = child_headers.get("last-modified")
@@ -498,14 +645,14 @@ class _OCIClient:
                         raise RegistryError(f"OCI image config for {tag} is invalid JSON") from exc
                     if isinstance(child_config_doc, dict):
                         child_date = child_config_doc.get("created")
-                        if isinstance(child_date, str) and child_date:
+                        if isinstance(child_date, str) and child_date.strip():
                             dates.append(_iso_datetime(child_date, f"OCI image {tag}"))
                             age_sources.append("oci-image-created-fallback")
             if dates:
-                if len(dates) != len(manifests):
+                if len(dates) != len(image_manifests):
                     index_created = self._created_time(manifest)
                     if index_created:
-                        return max([index_created, *dates]), "oci-image-created-fallback"
+                        return max([index_created, *dates]), "oci-image-created-fallback", digest
                     raise RegistryError(
                         f"OCI image index for {tag} has platform manifests without a usable timestamp"
                     )
@@ -516,10 +663,10 @@ class _OCIClient:
                     "oci-image-created-fallback"
                     if "oci-image-created-fallback" in age_sources
                     else "oci-registry-last-modified"
-                )
+                ), digest
         created = self._created_time(manifest)
         if created:
-            return created, "oci-image-created-fallback"
+            return created, "oci-image-created-fallback", digest
         config = manifest.get("config")
         if isinstance(config, dict) and isinstance(config.get("digest"), str):
             blob_url = f"{self.registry}/v2/{self.repository}/blobs/{urllib.parse.quote(config['digest'], safe=':._+-')}"
@@ -530,26 +677,43 @@ class _OCIClient:
                 raise RegistryError(f"OCI image config for {tag} is invalid JSON") from exc
             if isinstance(config_doc, dict):
                 value = config_doc.get("created")
-                if isinstance(value, str) and value:
-                    return _iso_datetime(value, f"OCI image {tag}"), "oci-image-created-fallback"
+                if isinstance(value, str) and value.strip():
+                    return _iso_datetime(value, f"OCI image {tag}"), "oci-image-created-fallback", digest
         raise RegistryError(
             f"OCI tag {tag!r} has neither a registry Last-Modified timestamp nor an "
             "org.opencontainers.image.created/config created timestamp"
         )
 
+    def tag_timestamp(self, tag: str) -> tuple[datetime, str]:
+        """Read age metadata for a SemVer tag without requiring digest state."""
+        stamp, age_source, _digest = self.tag_evidence(tag)
+        return stamp, age_source
+
     @staticmethod
     def _created_time(manifest: Mapping[str, object]) -> datetime | None:
         annotations = manifest.get("annotations")
-        if isinstance(annotations, dict):
-            value = annotations.get("org.opencontainers.image.created")
-            if isinstance(value, str) and value:
-                return _iso_datetime(value, "OCI image annotation")
+        if not isinstance(annotations, dict):
+            return None
+        value = annotations.get("org.opencontainers.image.created")
+        if isinstance(value, str) and value.strip():
+            return _iso_datetime(value, "OCI image annotation")
         return None
+
+
+def _is_docker_attestation_descriptor(descriptor: Mapping[str, object]) -> bool:
+    """Attestations share OCI indexes with runnable images but are not runtime variants."""
+    annotations = descriptor.get("annotations")
+    return (
+        isinstance(annotations, dict)
+        and annotations.get("vnd.docker.reference.type") == "attestation-manifest"
+    )
 
 
 def _oci_identity(image: str) -> tuple[str, str]:
     registry, separator, repository = image.partition("/")
-    if not separator or not repository:
+    if not separator:
+        raise RegistryError("OCI image must include registry host and repository")
+    if not repository:
         raise RegistryError("OCI image must include registry host and repository")
     if registry in {"docker.io", "index.docker.io"}:
         registry = "registry-1.docker.io"
@@ -570,7 +734,7 @@ def oci_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Cand
         if not match:
             continue
         version = match.group("version")
-        if _semver_key(version) is None or not version_satisfies(version, constraint):
+        if not version_satisfies(version, constraint):
             continue
         matched.append((tag, version))
     if not matched:
@@ -585,9 +749,31 @@ def oci_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Cand
             key = normalized_version(version)
             previous = result.get(key)
             candidate = Candidate(version=version, released_at=stamp, age_source=age_source, tag=tag)
-            if previous is None or candidate.released_at > previous.released_at:
+            if previous is None:
                 result[key] = candidate
+            else:
+                result[key] = max(
+                    (previous, candidate),
+                    key=lambda item: (
+                        item.released_at,
+                        item.tag if item.tag is not None else "",
+                        item.age_source,
+                    ),
+                )
     return result
+
+
+def oci_rolling_candidate(source: Mapping[str, str]) -> Candidate:
+    """Resolve one literal OCI tag with timestamp and immutable digest evidence."""
+    registry, repository = _oci_identity(source["image"])
+    client = _OCIClient(registry, repository, source)
+    tag = source["tag"]
+    stamp, age_source, digest = client.tag_evidence(tag)
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise RegistryError(
+            f"OCI registry tag {tag!r} has no valid Docker-Content-Digest sha256 evidence"
+        )
+    return Candidate(version=tag, released_at=stamp, age_source=age_source, tag=tag, digest=digest)
 
 
 def candidates(source_type: str, source: Mapping[str, str], constraint: str) -> dict[str, Candidate]:

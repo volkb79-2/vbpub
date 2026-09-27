@@ -20,6 +20,7 @@ fixture would never surface.
 from __future__ import annotations
 
 import json
+import io
 import shutil
 from pathlib import Path
 from types import MappingProxyType
@@ -27,6 +28,7 @@ from types import MappingProxyType
 import pytest
 
 from assay.adapters.javascript import JavaScriptAdapter
+from assay.cli import main
 from assay.coverage import load_coverage_profile
 from assay.diff import AddedLines
 from assay.errors import Outcome, ReasonCode
@@ -339,3 +341,159 @@ def test_capabilities_reach_the_evaluation_as_unavailable(repo: Path):
     assert result.branch_capability == "unavailable"
     assert result.branches_covered == 0
     assert result.branches_total == 0
+
+
+def _default_arg_lane(git_repo, *, judged, calls, default_hits, mode="changed_lines"):
+    """Real CLI, snapshot paths and committed diff; the command writes the
+    committed ChartCard specimen. This tests assay, without a Node toolchain.
+    """
+    from test_coverage_istanbul_default_arg_signature import specimen
+
+    source = "// padding\n" * 33 + (
+        "export function ChartCard({ title = 'Card' }: Props) {\n"
+        "  return title\n}\n"
+    )
+    git_repo.write(".gitignore", "coverage-final.json\n")
+    git_repo.write("src/ChartCard.tsx", source if not judged else "// padding\n" * 33)
+    git_repo.write("src/app.ts", "export const one = 1\n")
+    base = git_repo.commit_all("base")
+    if judged:
+        git_repo.write("src/ChartCard.tsx", source)
+    else:
+        git_repo.write("src/app.ts", "export const one = 2\n")
+    git_repo.commit_all("change judged source")
+    record = specimen()
+    key = "$PWD/src/ChartCard.tsx"
+    record["path"] = key
+    record["f"]["0"] = calls
+    record["b"]["0"] = [default_hits]
+    app_key = "$PWD/src/app.ts"
+    app = {
+        "path": app_key,
+        "statementMap": {"0": {"start": {"line": 1}, "end": {"line": 1}}},
+        "s": {"0": 1},
+        "branchMap": {"0": {"type": "if", "line": 1,
+                               "locations": [{"start": {"line": 1}}]}},
+        "b": {"0": [1]},
+    }
+    document = json.dumps({key: record, app_key: app})
+    command = f"cat > coverage-final.json <<EOF\n{document}\nEOF"
+    selection = ('targets = ["src/ChartCard.tsx", "src/app.ts"]'
+                 if mode == "whole_target" else f'base = "{base}"')
+    path = git_repo.write("assay.toml", f'''schema_version = 2
+[lanes.ui]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", {json.dumps(command)}]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+[lanes.ui.isolation]
+snapshot_selection = "repository"
+[lanes.ui.judge]
+language = "javascript"
+source_roots = ["src"]
+mode = "{mode}"
+fail_under = 100.0
+require_branch = true
+allow_excluded = false
+coverage = {{format = "coverage-istanbul-json", artifact = "coverage-final.json", producer = "istanbul"}}
+{selection}
+''')
+    git_repo.commit_all("declare lane")
+    out, err = io.StringIO(), io.StringIO()
+    code = main(["run", "ui", "--file", str(path), "--verdict-json", "-"],
+                stdout=out, stderr=err)
+    assert out.getvalue(), err.getvalue()
+    return code, json.loads(out.getvalue()), err.getvalue()
+
+
+@pytest.mark.parametrize("calls,default_hits,pct", [(9, 9, 100.0), (9, 0, 50.0), (0, 0, 0.0)])
+def test_default_argument_signature_is_judged_with_its_branch_through_cli(
+    git_repo, calls, default_hits, pct
+):
+    """Previously this judged file refused, even if another line in it was
+    changed. Now the 1 executable signature line and its 1 arc are both counted.
+    A zero default count is an uncovered branch, independent of function calls.
+    """
+    code, verdict, err = _default_arg_lane(
+        git_repo, judged=True, calls=calls, default_hits=default_hits
+    )
+    assert code == (0 if default_hits else 1), err
+    assert verdict["outcome"] == ("PASS" if default_hits else "FAIL")
+    r1 = verdict["claims"][1]
+    coverage = r1["coverage"]
+    assert coverage["covered"] == int(calls > 0)
+    assert coverage["executable"] == 1
+    assert coverage["branches_covered"] == int(default_hits > 0)
+    assert coverage["branches_total"] == 1
+    assert coverage["pct"] == pct
+    assert coverage["branch_capability"] == "reported"
+    assert "contradicts itself" not in err
+    assert "UNREADABLE_ARTIFACT" not in err
+    if not default_hits:
+        assert r1["reason_code"] == ("UNCOVERED_BRANCHES" if calls else "UNCOVERED_LINES")
+
+
+@pytest.mark.parametrize("calls,default_hits", [(9, 9), (9, 0), (0, 0)])
+def test_default_argument_bystander_keeps_previously_passing_numbers_through_cli(
+    git_repo, calls, default_hits
+):
+    """Before B080 this lane already passed at 1/1 lines and 1/1 branches:
+    the ChartCard default was dropped/named outside the diff. Its newly
+    classified line and preserved arc still contribute nothing to this diff.
+    """
+    code, verdict, err = _default_arg_lane(
+        git_repo, judged=False, calls=calls, default_hits=default_hits
+    )
+    assert code == 0, err
+    assert verdict["outcome"] == "PASS"
+    coverage = verdict["claims"][1]["coverage"]
+    assert (coverage["covered"], coverage["executable"]) == (1, 1)
+    assert (coverage["branches_covered"], coverage["branches_total"]) == (1, 1)
+    assert coverage["pct"] == 100.0
+    assert "contradicts itself" not in err
+
+
+def test_whole_target_now_counts_the_previously_refused_signature_through_cli(git_repo):
+    code, verdict, err = _default_arg_lane(
+        git_repo, judged=False, calls=9, default_hits=9, mode="whole_target"
+    )
+    assert code == 0, err
+    coverage = verdict["claims"][1]["coverage"]
+    assert (coverage["covered"], coverage["executable"]) == (2, 2)
+    assert (coverage["branches_covered"], coverage["branches_total"]) == (2, 2)
+    assert coverage["pct"] == 100.0
+    assert "contradicts itself" not in err
+
+
+def test_multiline_default_without_matching_arc_preserves_prior_zero_over_zero(tmp_path):
+    """A-459's hostile combined-axis regression: node 34, arm/statement 35,
+    function body 36. The old parser already passed a diff touching only 34
+    at 0/0. Broad function-based recovery would change that count to 1/1;
+    the operator chose to leave this signature gap unchanged in B080.
+    """
+    from test_coverage_istanbul_default_arg_signature import multiline_specimen
+
+    source = tmp_path / "src" / "ChartCard.tsx"
+    source.parent.mkdir()
+    source.write_text("// padding\n" * 33 + "export function ChartCard({ title =\n"
+                      "  (() => { return 'title'; })()\n}) {}\n", encoding="utf-8")
+    profile = load_coverage_profile(
+        json.dumps({str(source): multiline_specimen()}),
+        declared_format="coverage-istanbul-json", producer="istanbul",
+    )
+    result = evaluate_coverage(
+        added=AddedLines(by_file=MappingProxyType({"src/ChartCard.tsx": frozenset({34})})),
+        profile=profile, adapter=JavaScriptAdapter(), repo_top=tmp_path,
+        project_root=tmp_path, source_root_paths=(source.parent,),
+        fail_under=100.0, allow_excluded=False,
+        read_source_text=lambda path: (tmp_path / path).read_text(encoding="utf-8"),
+    )
+    assert result.outcome is Outcome.PASS
+    assert (result.covered, result.executable) == (0, 0)
+    assert (result.branches_covered, result.branches_total) == (0, 0)
+    assert result.branch_capability == "reported"
+    assert result.pct == 100.0

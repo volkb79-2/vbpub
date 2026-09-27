@@ -38,10 +38,12 @@ backlog-entry lint rule stays silent.
 
 ## Extract a session log
 
-The `extract` family consumes a raw session-log file written by Claude Code,
-Codex, or opencode. It is separate from nyxloom's registered-project
-commands: `SESSION_LOG` means that file (or a bare session ID), not a
-registered project ID.
+`extract` and `extract-lossless` consume session logs from Claude Code, Codex,
+Reasonix, and opencode. `extract-sessions` discovers Claude Code, Codex, and
+opencode families; `extract-report` supports those same three formats. These
+verbs are separate from nyxloom's registered-project commands:
+`SESSION_LOG` means a session file/store or bare session ID, not a registered
+project ID.
 
 Start with a normal compact brief:
 
@@ -49,9 +51,69 @@ Start with a normal compact brief:
 nyxloom extract /path/to/session.jsonl
 ```
 
+The default `operator-review` profile selects the newest epoch reported by
+the source adapter, keeps up to five assistant checkpoints, and stops at
+10,000 words. Checkpoints are classifier-scored prose anchors, not safe
+compaction boundaries. Claude Code exposes `/clear` epochs; Codex begins a
+new rollout after `/clear`, while OpenCode and Reasonix currently expose a
+single epoch. To prepare a broad fresh-agent resume with all prose across
+available epochs, use `all`:
+
+```bash
+nyxloom extract /path/to/session.jsonl --profile all > full-prose.md
+```
+
+The `all` profile removes checkpoint, word, time, and compaction stops. It
+includes short operator, Q&A, and assistant prose. API transport errors,
+thinking content, tool calls, and compaction prompts/summaries remain
+controlled by separate options. A detailed Claude Code or Codex inspection
+can include short tool labels and any explicit description/intent field the
+source provides, without printing tool
+inputs or results:
+
+```bash
+nyxloom extract /path/to/session.jsonl --profile all \
+  --show-tool-calls --show-tool-call-intent > full-with-tool-labels.md
+```
+
+Codex interactive prompts and replies remain readable in the result. Every
+question and its options appear at the prompt's source position, including an
+unanswered prompt or one Codex did not copy into assistant prose. Structured
+answers appear with the question they answer, even after other session
+activity. For example:
+
+```text
+INTERVIEW: Which implementation approach should we use?
+- Keep the current worktree
+- Create a new worktree
+
+OPERATOR: Keep the current worktree
+
+INTERVIEW: What should change if the current branch is stale?
+
+OPERATOR: Reconcile it with main, preserving the current configuration.
+```
+
+The question and offered choices come from Codex's UI request record. The
+structured answer is linked using that record's question ID; free text is not
+rejected for failing to match an option. An ordinary chat response remains
+operator prose without an inferred question link. See the
+[design rationale](DESIGN-GUIDE.md#codex-question-replies).
+
+For a specific span, `--epochs` selects a `/clear` epoch or inclusive range;
+`--max-compactions` and `--max-time-minutes` add backward-walk stops. A
+checkpoint count is an extraction budget, not a semantic compaction point.
+
+```bash
+nyxloom extract /path/to/session.jsonl --epochs 2 --max-compactions 1
+nyxloom extract /path/to/session.jsonl --epochs 1:2 --max-time-minutes 180
+```
+
 If you only have the session ID, pass it directly. Resolution succeeds only
 when nyxloom finds exactly one match; otherwise the error lists what must be
-disambiguated:
+disambiguated. To select an adapter explicitly, `--format` accepts
+`claude-code`, `codex`, `opencode`, or `reasonix`; omit it for content-based
+detection:
 
 ```bash
 nyxloom extract 019f0890-43a2-75c2-9143-3f8d10ad4484
@@ -94,13 +156,90 @@ and select the row explicitly:
 nyxloom extract /path/to/opencode.db --opencode-session ses_04bd4e9b4ffeBJm48T6v130DS6
 ```
 
+If only the opencode ID is available, pass it as the positional session
+reference; nyxloom searches its configured/default stores and resolves it when
+there is exactly one match. The explicit flag remains useful with a database
+path containing multiple sessions.
+
 Choose the output mode for the job at hand. `--render-markdown` is for
-reading; `--highlight` is for copying markdown source while retaining every
-`#`, `**`, backtick, and dash:
+reading and consumes Markdown markers. `--highlight` colors Markdown source
+while retaining every `#`, `**`, backtick, and dash. A terminal gets
+highlighting by default unless `NO_COLOR` is set; `--color` forces ANSI for
+piped output, and `--no-color` disables ANSI without changing the render mode:
 
 ```bash
 nyxloom extract /path/to/session.jsonl --render-markdown --no-color
 nyxloom extract-lossless /path/to/session.jsonl --highlight --no-color
+```
+
+The text brief defaults to `[HH:mm:ss]` timestamps before each event, with
+source metadata and the machine-readable cursor marker at both ends. Source
+creation time is reported as unavailable when the filesystem exposes no
+creation timestamp. Change timestamp placement/format and metadata placement
+independently:
+
+`--show-timestamps` accepts `pre` (default, before the prose), `post` (after
+the prose), `both`, or `none`. `--extract-metadata` accepts `pre`, `post`, or
+`both` (default). `--gap-marker` accepts `full`, `inline` (default), `inline2`,
+`inline-short`, or `none`; `--blank-lines` defaults to `0`.
+
+```bash
+nyxloom extract /path/to/session.jsonl --show-timestamps both \
+  --timestamp-format '%Y-%m-%d %H:%M' --extract-metadata pre
+nyxloom extract /path/to/session.jsonl --show-timestamps none --extract-metadata post
+```
+
+`--follow` uses the same timestamp format and appends an updated post cursor
+comment after each emitted event so the saved stream can still be passed to
+`--since-file`. With a live stream, choose `post` or `both`; `pre` alone is
+refused because its cursor would go stale as the file grows.
+
+The cursor comment includes a source marker, for example
+`<!-- nyxloom-extract: format=codex marker=166 -->`. Copy the value after
+`marker=` for a raw cursor range. `--until` includes its marker. For normal
+snapshot chaining, save the prior output and let `--since-file` read it.
+
+Treat the marker as opaque: ordinal-less Codex rollouts use a namespaced
+`response_item-<position>` cursor for surfaced UI prompts, while their legacy
+event cursors retain numeric values.
+
+```bash
+nyxloom extract /path/to/session.jsonl > snapshot.md
+# After more activity is written to the same source log:
+nyxloom extract /path/to/session.jsonl --since-file snapshot.md > delta.md
+# Or pin an exact historical span using marker values from that source:
+nyxloom extract /path/to/session.jsonl --since 166 --until 240 > span.md
+# Older ordinal-less Codex rollouts can use a UI-prompt cursor directly:
+nyxloom extract /path/to/rollout.jsonl --since response_item-23 > delta.md
+```
+
+`extract-debug` takes the same profile and selection/rendering flags as
+`extract`, then compares that result with the lossless source view. Use it
+when a specific message appears inside an inline gap:
+
+```bash
+nyxloom extract-debug /path/to/session.jsonl --profile all --no-color | less
+```
+
+`extract-report` has three text shapes: `report-sheet` (default) is the
+compact overview, `report-detailed` is a readable one-row-per-call table, and
+`csv` is for spreadsheet/script ingestion. JSON is available for the two
+report shapes. The old `--detailed` spelling selects CSV.
+
+```bash
+nyxloom extract-report /path/to/session.jsonl --type report-detailed
+nyxloom extract-report /path/to/session.jsonl --type csv > calls.csv
+```
+
+Discover sessions under tool-specific environment roots. Directory scanning
+recurses by default (`--recurse true` is explicit); `--recurse false` limits
+it to direct children.
+
+```bash
+nyxloom extract-sessions codex
+CODEX_HOME="$HOME/.codex2" nyxloom extract-sessions codex
+nyxloom extract-sessions "$HOME/.codex2/sessions" --recurse false
+nyxloom extract-sessions opencode
 ```
 
 Follow a live session after the initial one-shot result. The two verbs keep

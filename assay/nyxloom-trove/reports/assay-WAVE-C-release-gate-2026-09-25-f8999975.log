@@ -1,0 +1,75 @@
+[cmru] 2026-09-25T20:31:06Z step=run-tests project_root=/workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay
+[cmru] command label='assay: registered self-hosted gate' argv=['bash', 'tools/tester-unified-gate.sh', '..']
+ASSAY_GATE_CONTAINER=run-gate-assay-selfhosted-996702-27557-1790368267
+Looking in links: /workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-wheelhouse
+Processing ./workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-wheelhouse/setuptools-84.0.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-requirements.txt (line 1))
+Processing ./workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-wheelhouse/wheel-0.47.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-requirements.txt (line 2))
+Processing ./workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-wheelhouse/setuptools_scm-10.0.5-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-requirements.txt (line 3))
+Processing ./workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-wheelhouse/packaging-26.3-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-requirements.txt (line 4))
+Processing ./workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-wheelhouse/vcs_versioning-2.2.4-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/build-requirements.txt (line 5))
+Installing collected packages: setuptools, packaging, wheel, vcs-versioning, setuptools-scm
+
+Successfully installed packaging-26.3 setuptools-84.0.0 setuptools-scm-10.0.5 vcs-versioning-2.2.4 wheel-0.47.0
+Processing ./tmp/tmp.OfvzbKitHG/clone/assay
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: assay
+  Building wheel for assay (pyproject.toml): started
+  Building wheel for assay (pyproject.toml): finished with status 'done'
+  Created wheel for assay: filename=assay-7.0.1.dev103+gf8999975-py3-none-any.whl size=733441 sha256=60c2df6b0485ec47bff67b482570d062150804d61cd3f8ffb4130457cf3cd7db
+  Stored in directory: /tmp/pip-ephem-wheel-cache-0001jze4/wheels/81/fe/40/a83061a2f2c524c6b8662a7d2adcbdaf4e6ed16270ca2dcf04
+Successfully built assay
+Processing ./tmp/tmp.OfvzbKitHG/dist/assay-7.0.1.dev103+gf8999975-py3-none-any.whl
+Installing collected packages: assay
+Successfully installed assay-7.0.1.dev103+gf8999975
+ASSAY_GATE_PHASE=wheel-installed
+.........................                                                [100%]
+25 passed, 16 deselected in 2.43s
+ASSAY_GATE_PHASE=attestation-hardened
+.............                                                            [100%]
+13 passed, 31 deselected in 38.19s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+.................                                                        [100%]
+17 passed in 0.30s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6-v12 hard-cut guard passed for 54 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-v12-hard-cut-verified
+...                                                                      [100%]
+3 passed in 0.30s
+ASSAY_GATE_PHASE=verdict-v13-p25-successors-verified
+...........                                                              [100%]
+11 passed in 0.22s
+.........................                                                [100%]
+25 passed in 25.60s
+ASSAY_GATE_PHASE=verdict-v13-successors-verified
+tester-unified: PASS (exit 0)
+  commit: f8999975bdc54c0ac8e0a8cb2a6ff9e3e5c1ae4f
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+input_oid=d2ad506a66d8f2a43170bce8ebf6c034d724fae3
+qualification_baseline_oid=1bea2767444c4839da1b7c5d9f03e0e5869a7e59
+head_oid=5e007b1d427194a80a308aabc9280e158de3f52a
+outcome=PASS exit_code=0
+claim[R0]=status=PASS
+claim[R1]=status=PASS
+claim[R2]=status=PASS
+claim[R3]=status=PASS
+r2_killed_identity={"candidate_id": "f3aa41b57933ebbab1ed3b91375144cea7fcfd59f6ab9574e0f4f3cc9dae9662", "description": "Eq->NotEq", "end_byte": 52, "execution": {"mode": "full"}, "lineno": 2, "mutated_file_sha256": "14244b6ae5ed73ba8e96f9542b797914292985a4978979ab932cf619cee42b04", "operator": "python:compare-swap", "path": "cmru/src/cmru/_b006a_probe.py", "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2", "source_sha256": "f17810a5722931d8eec10afe6b5a4dcabd342eadccaead04eda03738b74ef09a", "start_byte": 50}
+r3_canary={"attempts": [{"control_outcome": "PASS", "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file", "disposition": "attempted", "expected_reason_code": "UNCOVERED_LINES", "observed_reason_code": "UNCOVERED_LINES", "target": "src/cmru/_b006a_probe.py", "transformed_outcome": "FAIL"}], "mechanism": "uncovered-line"}
+snapshot_policy={"selection": "repository-minus-unsafe-symlinks", "unsafe_symlink_omissions": ["topos/tests/fixtures/inspect_files/_danger/passwd_link", "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape", "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"]}
+omission_probe={"omitted_absent": [true, true, true], "cmru_root_present": true, "topos_ordinary_present": true, "status_clean": true}
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+.......                                                                  [100%]
+7 passed in 19.35s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+Looking in links: /workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/lint-wheelhouse
+Processing ./gate/distribution/lint-wheelhouse/pyflakes-3.4.0-py2.py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay/gate/distribution/lint-requirements.txt (line 1))
+Installing collected packages: pyflakes
+Successfully installed pyflakes-3.4.0
+ASSAY_GATE_PHASE=pyflakes-clean
+ASSAY_GATE_CONTAINER_EXIT=0
+ASSAY_REGISTERED_GATE_COMPLETE=1

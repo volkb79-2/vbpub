@@ -382,6 +382,23 @@ judged until it is declared — the honest failure direction, since an
 undeclared file is visibly missing from `targets`, where an unmeasured file
 under directory expansion was invisibly present.
 
+### An unbounded R2 baseline remains caller-watched (A-457)
+
+For a native R2 lane with `budget = "unbounded"`, the pre-sweep baseline
+still runs with `timeout=None`. `budget_per_candidate` bounds one mutant
+command; the first baseline may also pay cold-cache, fixture-setup, and
+first-run compilation costs that later mutant invocations do not. Reusing its
+bound for that startup work can stop a healthy lane. Assay does not add a
+`budget_per_baseline` key or give `budget` a second meaning. The caller owns
+stall detection, consistent with the rest of the unbounded-lane policy.
+
+With `--progress`, the baseline's `command_running` heartbeat is the signal
+for that external watch. The heartbeat is observability only: it neither
+sets a timeout nor changes the verdict, and `assay verify` does not read it.
+The real-run test pins `timeout=None` for the baseline and the declared bound
+for each mutant. README describes the feature; [CONSUMERS](CONSUMERS.md#budget--unbounded-the-recommended-shape-for-a-long-mutation-lane-b067)
+shows the invocation.
+
 ## 6. The verdict contract
 
 **Three channels, none duplicating another's authority.** The **exit code is
@@ -995,6 +1012,47 @@ Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
 
+### Selective reuse replays a current failure witness (B106)
+
+`--resume` and `--reuse-from` answer different questions. Resume may reuse a
+completed outcome only when its judge identity still matches, including the
+current command and judging tree. A test-only fix changes that identity, so
+ordinary resume correctly re-executes the campaign. `--reuse-from` handles the
+costly case where source and tests changed: it uses a prior result only to
+choose a test node worth replaying, never to carry an old kill into the new
+verdict.
+
+The prior artifact must be a current-verifier-accepted v13, complete,
+unsharded native campaign. Each candidate ID commits to the canonical path,
+operator, source-file digest, byte span, and full mutated-file digest. On the
+new run Assay passes the current R0 baseline first, rediscovers the complete
+candidate inventory from the current snapshot, and runs the current pytest
+command with full collection and ordering. For an unchanged candidate whose
+prior outcome was killed and recorded a call-phase failure witness, Assay may
+stop that current run after the same node fails in the call phase. The current
+receipt must show the node occurred exactly once, no earlier or auxiliary
+failure, pytest session status 1, and child status 1. That fresh result is the
+current kill evidence; the prior verdict digest and node ID explain why that
+point was tried.
+
+Any uncertainty gets a new full-suite process and a freshly materialized
+candidate snapshot: missing or repeated node, setup/teardown failure, changed
+candidate ID, malformed receipt, unsupported command, xdist, custom loop,
+untrusted lifecycle hook, or mismatched status. Survivors, crashes, hangs,
+timeouts, equivalents, and candidates absent from the prior plan always run
+fully. The v12 exception reads only a bounded JSON envelope and its version;
+it is a cold start, and v12 remains rejected by `assay verify`.
+
+The narrower alternatives fail in opposite ways. Reusing a kill because
+mutated bytes match ignores the new tests and command. Deselecting all tests
+after the prior witness changes collection seen by session fixtures and
+plugins. Instead, the current suite is fully collected and ordered, and only
+its ordinary sequential runner stops after a verified current failure. The
+feature initially supports a direct `pytest` executable or `python -m pytest`;
+other launchers keep the full-run path. Shards are refused with this option so
+one artifact cannot imply a complete campaign from a selected slice. See the
+[worked consumer example](CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
+
 ### Rejudge help follows the canonical vocabulary (B096)
 
 `assay.verdict.MUTATION_BUCKETS` is the one owner of mutation outcome bucket
@@ -1005,6 +1063,35 @@ runtime while remaining absent from the operator-facing help. The CLI-only
 separately as an alias for canonical `crashed`; it must never become a verdict
 or resume-state bucket. The parser and runtime therefore share the canonical
 source without making the alias look like a second canonical outcome.
+
+**(B094/A-458) An unknown or stale `--rejudge` id is bad input, not corrupt
+state.** Candidate IDs are checked against the current selected candidates
+before resume records are loaded. The current set exists only after the lane
+baseline has passed and mutation discovery has run, so the CLI cannot use the
+early `--rejudge` syntax preflight for this check. The check raises
+`ERROR`/`BAD_LANE_CONFIG` through the existing whole-lane refusal, which puts
+the same pair on every declared rigor level and is accepted by `assay verify`.
+That choice deliberately discards any already-measured R0 or R1 result: an
+R2-only `BAD_LANE_CONFIG` beside a passing baseline is not an accepted
+post-baseline terminal. Extending `verify.py`'s accepted reason set would be a
+verification-policy change; this package keeps the existing verifier
+contract. Actual unreadable or corrupt records still report
+`ERROR`/`UNREADABLE_ARTIFACT`, and a valid id still drops and re-executes
+only its matching record.
+
+### Git dubious ownership and safe directory (B081)
+
+Git's dubious-ownership fatal line is retained as evidence, but its following
+`safe.directory` instruction is removed from assay's refusal. The child
+environment replaces ambient Git configuration, sets
+`GIT_CONFIG_NOSYSTEM=1`, and points `GIT_CONFIG_GLOBAL` at `/dev/null` (A-173),
+so Git cannot read the configuration that command would write. The diagnostic
+names the ownership mismatch and directs the operator to run assay as the
+repository owner or fix the tree's ownership/uid mapping. It does not disable
+Git's ownership protection with a command-line exception. As with B068, this
+probe runs only after bootstrap fails; the linked-worktree diagnostic keeps
+precedence, healthy resolution never consults it, and other Git failures pass
+through unchanged. See the [consumer remedy](CONSUMERS.md#b081-ownership-remedy).
 
 ### Filtered native-R2 judge identity (B092)
 
@@ -2005,11 +2092,60 @@ while its own never-taken `return` inside it has count 0, so a go-cover-style
 
 This does **not** mean every line is classified, and A-342's original wording
 saying so was corrected by its own round-1 review: a line no statement extent
-covers at all — a function signature line and a function-level closing brace
-under the babel instrumenter, a comment under any of them — stays unclassified
-and takes rule 4, exactly as an untracked line does for every other format
-here. Measured: 23 such non-comment lines in the committed istanbul fixture,
+covers at all, with no supported default-argument node — a plain function
+signature or function-level closing brace under the babel instrumenter, a
+comment under any of them — stays unclassified and takes rule 4. Measured:
+23 such non-comment lines in the original committed istanbul fixture,
 against 29 statement start lines and 54 lines classified after expansion.
+
+### Default-argument signature lines (B080, A-456)
+
+For an arc-bearing producer, a `default-arg` node on a statement-less line
+supplies additional classification evidence **only when an arm of that same
+branch is attributed to the node's physical line** (operator ruling A-459).
+Attribution uses the existing per-arm location/fallback rule; an arc from
+another branch does not qualify it. The parser maps a qualifying `loc.start`
+to the unique function satisfying `fnMap.decl.start <= node < fnMap.loc.start`,
+comparing `(line, column)` positions. The body starts at `loc.start`; matching
+inside the body misses the parameters, and line-only matching is ambiguous
+for three of the six measured consumer sites. The exact function's `f[id]`
+classifies the node line: positive is executed, zero is missing. Statements
+retain priority; multiple nodes on one otherwise unclassified line combine
+by maximum function count. `fnMap` and `f` stay unread when no such node needs
+classification, including when the node has no matching arm. Missing,
+malformed, or ambiguous required metadata refuses
+`ERROR/UNREADABLE_ARTIFACT`.
+
+The default's `b[id]` count measures how often the default applied. A function
+called with an explicit value has an executed signature and an uncovered
+default branch, so that count cannot substitute for `f[id]`. The arcs are
+preserved. Merely relaxing the model invariant was rejected because the
+evaluator only tallies arcs on classified lines. B′ (drop only zero-count
+defaults) and D (drop every statement-less default) lose measurable branch
+coverage and were rejected. B054's braceless-`if` isolation remains unchanged,
+including zero-count branches; the independent missing-line/nonzero-arc
+invariant still holds. The evaluator and model need no changes.
+
+**Known gap and rejected broader alternative (A-459).** If the node starts on
+line 34 but its default expression's arm starts on line 35, no matching arc
+exists and line 34 stays unclassified. Existing arc aggregation and B054
+disposition remain unchanged. In the hostile regression, line 35 also has a
+statement (a return inside an immediately invoked arrow used as the default),
+so a diff touching only 34 already passed at 0/0. The broader A-456 rule
+classifies 34 from function calls even without a matching arc, changing that
+PASS to 1/1. It can measure additional multiline default signatures, but changes
+previously-PASS numbers. The operator chose the narrower rule on 2026-09-24
+to retain compatibility. This is a documented classification gap; no branch
+count is invented or moved onto the signature line.
+
+The measured consumer artifact gains six executable lines: ChartCard 54→55,
+DataTable 105→108, StatCard 1→2, StatTile 37→38. A changed-lines lane judging
+one of these files previously refused, even when its edited lines lay away
+from the default; an out-of-diff file contributes no lines or arcs to that
+lane's number. Thus previously-PASS numbers do not change. Previously-refused
+whole-target lanes can now judge these lines and their preserved arcs. The
+ChartCard coordinates and counts are retained in the committed
+`coverage-istanbul-json.default-arg-signature.json` fixture.
 
 **Format is one axis; PRODUCER TRUSTWORTHINESS turns out to be a third one
 (A-346).** Two producers of `coverage-istanbul-json` disagree not only about
@@ -3136,6 +3272,53 @@ did.
 
 
 ## Review evidence analysis
+
+### Bounded live gate snapshot (B100)
+
+`assay analyze report` takes one read-only snapshot of the explicit
+`--verdict`, `--progress`, and `--log` inputs for each named lane. The caller
+supplies the full expected commit. A verifier-valid verdict with that commit
+sets the lane status: `PASS` with exit 0 is `pass`; any other valid terminal
+verdict is `fail`. A verdict's referenced evidence paths are listed as labels
+and are never opened implicitly.
+
+With no verdict, a progress file can say `running` only when its latest event
+has a parseable timestamp no more than 120 seconds old and is not terminal.
+That boundary is twice the shipped 60-second heartbeat period. A stale stream,
+an absent timestamp, a terminal event without a verdict, or malformed complete
+record is `evidence_error`. One malformed final JSONL fragment without a
+newline is ignored as an interrupted append. A stale but otherwise valid
+optional progress file remains visible and does not overturn a valid verdict.
+
+The command does not poll or sleep. JSON output follows
+`schemas/analysis-report.schema.json`; text starts with one status line per
+sorted lane. Every supplied regular file is fully hashed and its byte count
+and resolved path are retained. Logs contribute only matching diagnostic
+lines from their last 64 KiB; even a `PASS`, `FAIL`, or `ERROR` line cannot
+create or repair a verdict. Error records are limited by `--max-errors` (0–10,
+default 5) and each displayed record is capped at 512 characters. Truncation
+and the full log fingerprint let a controller decide whether to inspect the
+artifact separately.
+
+The exit code is 0 when all lanes pass, 1 when at least one lane fails and
+none has an evidence error, 2 when any lane has an evidence error, and 3 when
+running is the highest-priority status present (including a mix of passing and
+running lanes). Mixed results use `evidence_error > fail > running > pass`.
+A missing path is not evidence of a
+running job, and a child log is never promoted to a status source. These rules
+keep one controller call useful without introducing a watcher, a log parser
+that guesses tool semantics, or another durable report artifact.
+
+Use this after the gate has returned or while it is running; the command
+returns immediately either way:
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze report --expected-commit "$REVIEW_HEAD" \
+  --verdict r2 "$WORKTREE/.assay/verdict-r2.json" \
+  --progress r2 "$WORKTREE/.assay/progress-r2.jsonl" \
+  --log r2 "$GATE_LOG" --format json
+```
 
 P4 and P5 run-gate reviews repeatedly needed the same operations: archive logs,
 check exact Git identities, read the job's exit separately from the launching

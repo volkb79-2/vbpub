@@ -101,12 +101,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # added no field that a P25 R0,R2 lane emits.
 # B101 (the v12 isolation/dirty provenance cut) advances it a SEVENTH time, to
 # W8's `p25-*-v12-template.json` pair, by the identical rule. The two W8
-# templates are W7's own pair with `schema_version` 11 -> 12 and the P3
-# marker absent from native P25 output: v12
-# reshapes `judgment.r2.discarded`, which is FORBIDDEN under `producer =
-# "native"`, and every P25 lane is native -- so the cut adds no field a P25
-# R0,R2 lane emits either. W6 stays frozen and unedited beside the rest.
-_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W8" / "expected"
+# templates are W7's own pair with `schema_version` 11 -> 12. P25 emits no
+# R2 mutation payload, so the v12 discarded-mutants reshaping adds no field to
+# its complete R0/R1 artifacts. W6, W7 and W8 stay frozen beside the rest.
+# Wave C (the v13 B106 provenance cut) advances the P25 pair to W9. These
+# P25 lanes declare R0/R1 only, so their completed artifacts carry no native
+# mutation payload; W9 changes only the schema version. W8 stays frozen and
+# the registered gate probes every W8 document at the v13 hard cut.
+_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W9" / "expected"
 _QUALIFICATION_MANIFEST = (
     _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P25" / "qualification-manifest.json"
 )
@@ -592,9 +594,25 @@ def _expected_comparator(spec: ScenarioSpec) -> dict[str, Any] | None:
     }
 
 
-def _invoke(assay_executable: Path, repo: Path, artifact_path: Path) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+def _invoke(
+    assay_executable: Path,
+    repo: Path,
+    artifact_path: Path,
+    *,
+    record_progress: bool = True,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    argv = [str(assay_executable), "run", "topos-qualification"]
+    if record_progress:
+        argv.extend(
+            [
+                "--resume",
+                "--progress",
+                ".assay/progress-topos-qualification.jsonl",
+            ]
+        )
+    argv.extend(["--verdict-json", str(artifact_path)])
     proc = _run(
-        [str(assay_executable), "run", "topos-qualification", "--verdict-json", str(artifact_path)],
+        argv,
         cwd=repo,
         check=False,
     )
@@ -766,7 +784,16 @@ def run_scenario(
         lane_schema_version=_lane_schema_version_for(assay_version),
     )
     artifact_path = scratch / spec.name / "verdict.json"
-    proc, artifact = _invoke(assay_executable, repo, artifact_path)
+    # The pinned 1.2.5 release is a historical compatibility probe whose CLI
+    # predates --resume/--progress. Current judge invocations keep the required
+    # append-only progress stream; the release smoke must exercise its original
+    # argument contract.
+    proc, artifact = _invoke(
+        assay_executable,
+        repo,
+        artifact_path,
+        record_progress=assay_version != RELEASE_VERSION,
+    )
 
     if artifact.get("commit") != head_oid:
         raise _scenario_failure(
@@ -934,8 +961,8 @@ def normalize_artifact(
 ) -> dict[str, Any]:
     """Replace only runtime identities whose real value is checked separately."""
     normalized = copy.deepcopy(dict(document))
-    if normalized.get("schema_version") != 12:
-        raise QualificationError("artifact schema_version is not the current v12 contract")
+    if normalized.get("schema_version") != 13:
+        raise QualificationError("artifact schema_version is not the current v13 contract")
     if normalized.get("assay_version") != assay_version:
         raise QualificationError("artifact assay_version is not the installed version")
     _check_judge_provenance(normalized, assay_version=assay_version)
@@ -991,8 +1018,8 @@ def compare_complete_artifact(
         pytest_log=pytest_log,
     )
     expected = json.loads(template.read_text(encoding="utf-8"))
-    if expected.get("schema_version") != 12:
-        raise QualificationError("locked template is not a v12 successor")
+    if expected.get("schema_version") != 13:
+        raise QualificationError("locked template is not a v13 successor")
     if normalized != expected:
         differing = sorted(
             key
@@ -1000,7 +1027,7 @@ def compare_complete_artifact(
             if normalized.get(key) != expected.get(key)
         )
         raise QualificationError(
-            "the complete v4 artifact differs from the locked hand template "
+            "the complete v13 artifact differs from the locked hand template "
             f"(differing fields: {differing})"
         )
 
@@ -1257,7 +1284,7 @@ def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Pa
         pytest_log=pytest_log,
     )
     expected = json.loads(
-        (_EXPECTED_ROOT / "p25-missing-v12-template.json").read_text(encoding="utf-8")
+        (_EXPECTED_ROOT / "p25-missing-v13-template.json").read_text(encoding="utf-8")
     )
     differing = sorted(key for key in set(normalized) | set(expected) if normalized.get(key) != expected.get(key))
     if not differing:
@@ -1294,7 +1321,7 @@ def _check_universal_pass_mutation(missing_result: ScenarioResult) -> None:
     try:
         compare_complete_artifact(
             actual=forged,
-            template=_EXPECTED_ROOT / "p25-missing-v12-template.json",
+            template=_EXPECTED_ROOT / "p25-missing-v13-template.json",
             assay_version=forged["assay_version"],
             base_oid=missing_result.base_oid,
             head_oid=missing_result.head_oid,
@@ -1342,8 +1369,8 @@ def qualify(
     primary = results[PRIMARY.name]
     missing = results[MISSING.name]
     for result, template_name in (
-        (primary, "p25-pass-v12-template.json"),
-        (missing, "p25-missing-v12-template.json"),
+        (primary, "p25-pass-v13-template.json"),
+        (missing, "p25-missing-v13-template.json"),
     ):
         # The version and the witness/log paths come from the committed plan
         # (the owner this scenario was run with, and the deterministic scratch

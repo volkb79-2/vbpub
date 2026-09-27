@@ -22,15 +22,19 @@ EXTERNAL_DOC_ARTIFACTS = (
     Path("docs/plan-cmru-release-modes.md"),
     Path("run-gate-project/CONSUMERS.md"),
 )
+ESTATE_CONFIG_FIXTURES = (
+    Path("topos/cmru.toml"),
+    Path("nyxloom/cmru.toml"),
+)
 
 
 def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path) -> Path:
-    """Copy CMRU, its root fixtures, and the shared worktree library.
+    """Copy CMRU and the external files its full test suite reads.
 
-    The project tests deliberately exercise source-checkout imports for CMRU's
-    shared libraries. A disposable fixture that copies only ``cmru/`` makes its
-    known-good control fail before the intended mutation/canary is applied,
-    which turns every later result into false evidence.
+    The project tests exercise source-checkout imports for CMRU's shared
+    libraries. Estate configs are also read by adoption contract tests, so both
+    the libraries and configs must be present in the known-good control and
+    every mutated candidate.
     """
     for name in ROOT_CMRU_ARTIFACTS:
         artifact = repo_root / name
@@ -55,6 +59,14 @@ def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path
         destination = workspace / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(library_source, destination, symlinks=True)
+
+    for relative in ESTATE_CONFIG_FIXTURES:
+        artifact = repo_root / relative
+        if not artifact.is_file() or artifact.is_symlink():
+            raise ValueError(f"required estate config is not a real file: {artifact}")
+        destination = workspace / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact, destination)
 
     copied = workspace / project_root.name
     shutil.copytree(project_root, copied, symlinks=True)

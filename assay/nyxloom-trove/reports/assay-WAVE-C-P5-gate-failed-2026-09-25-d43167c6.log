@@ -1,0 +1,43 @@
+run-gate: rev 46 | lane tester-unified | env built-in 'bare-host'
+run-gate: budget 60m (advisory)
+run-gate: host memory PSI full avg10=0.0% avg60=0.05%
+ASSAY_GATE_CONTAINER=run-gate-assay-selfhosted-397279-21079-1790344007
+Looking in links: /workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-wheelhouse
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-wheelhouse/setuptools-84.0.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-requirements.txt (line 1))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-wheelhouse/wheel-0.47.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-requirements.txt (line 2))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-wheelhouse/setuptools_scm-10.0.5-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-requirements.txt (line 3))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-wheelhouse/packaging-26.3-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-requirements.txt (line 4))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-wheelhouse/vcs_versioning-2.2.4-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p5-b106-selective-reuse/assay/gate/distribution/build-requirements.txt (line 5))
+Installing collected packages: setuptools, packaging, wheel, vcs-versioning, setuptools-scm
+
+Successfully installed packaging-26.3 setuptools-84.0.0 setuptools-scm-10.0.5 vcs-versioning-2.2.4 wheel-0.47.0
+Processing ./tmp/tmp.7apo9iamkJ/clone/assay
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: assay
+  Building wheel for assay (pyproject.toml): started
+  Building wheel for assay (pyproject.toml): finished with status 'done'
+  Created wheel for assay: filename=assay-7.0.1.dev83+gd43167c6-py3-none-any.whl size=733431 sha256=7b1935a494a1b2a1eecc527d3150c06be2a621feb2ce14b851ad00c8427c991a
+  Stored in directory: /tmp/pip-ephem-wheel-cache-b7d_jxwq/wheels/fd/6b/8a/879655f4ee3e21e323e34adf709ca9346e3fcda226968b04d9
+Successfully built assay
+Processing ./tmp/tmp.7apo9iamkJ/dist/assay-7.0.1.dev83+gd43167c6-py3-none-any.whl
+Installing collected packages: assay
+Successfully installed assay-7.0.1.dev83+gd43167c6
+ASSAY_GATE_PHASE=wheel-installed
+.........................                                                [100%]
+25 passed, 16 deselected in 1.62s
+ASSAY_GATE_PHASE=attestation-hardened
+.............                                                            [100%]
+13 passed, 31 deselected in 29.74s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+.................                                                        [100%]
+17 passed in 0.22s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+Traceback (most recent call last):
+  File "<stdin>", line 16, in <module>
+AssertionError: ('W1', 'ca1-r3-no-base-v6-template.json', ["schema_version 6 is not this verifier's version 13: a verdict artifact is rejected, never upgraded in place -- re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 13"])
+ASSAY_GATE_CONTAINER_EXIT=1
+run-gate: WARNING profiling: 'cgprofile-host-daemon' not running (start it: cd scripts/cgroup-profiler && ciu up) — coarse rusage sampling only
+run-gate: footprint tester-unified: peak 36 MiB, p90 -, 0.00 cores avg, - s stalled on memory (full); history median peak - (0 runs) [source: rusage-maxrss] (peak <= floor)
+run-gate: lane 'tester-unified' exit 1
+GATE_EXIT=1

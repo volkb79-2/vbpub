@@ -65,6 +65,10 @@ artifact_dirs = ["dist"]
 [versions]
 age_window_days = 21 # project policy for its local copy of pypi.requests
 
+[versions.discovery]
+scope = "shipped" # this is the default; set to "all" to include test/build groups
+pypi_extras = []   # list only Python extras this product ships
+
 [versions.targets."pypi.requests"]
 mode = "single"
 constraint = ">=2.31.0,<3.0.0"
@@ -72,6 +76,25 @@ constraint = ">=2.31.0,<3.0.0"
 [versions.targets."pypi.requests".pypi]
 name = "requests"
 registry = "https://pypi.org"
+
+# Optional: age-check a non-SemVer image tag and record its registry digest.
+[versions.targets."oci.node"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.node".oci]
+image = "docker.io/library/node"
+tag = "26-slim"
+selection = "rolling"
+
+# Go module target example for a project with a Go helper or submodule.
+[versions.targets."go.golang.org.x.text"]
+mode = "single"
+constraint = ">=0.20.0,<1.0.0"
+
+[versions.targets."go.golang.org.x.text".go]
+module = "golang.org/x/text"
+proxy = "https://proxy.golang.org"
 
 # Add only outputs the release gate actually writes; these are retained separately
 # from publishable artifacts and bound to the gated commit.
@@ -139,6 +162,9 @@ ghcr_delete_packages = []
 
 [versions]
 age_window_days = 14
+
+[versions.discovery]
+scope = "shipped"
 
 [versions.targets."pypi.requests"]
 mode = "single"
@@ -271,6 +297,20 @@ cmru cleanup example-wheel --delete-build-output <commit-date>_<commit> --dry-ru
 cmru cleanup example-wheel --delete-build-output <commit-date>_<commit> --yes
 ```
 
+The project example also declares a Go module target. Its project needs a module file such as:
+
+```go
+module example.com/example-wheel
+
+go 1.22
+```
+
+The Go resolver reads `.info` commit times from the module proxy and warns that this timestamp
+is the upstream VCS commit time rather than the proxy publication time. The warning also appears
+when this evidence causes an age-window refusal. Rolling OCI checks ignore
+Docker attestation descriptors marked `vnd.docker.reference.type = "attestation-manifest"`,
+then require usable age evidence for every runnable platform in the image index.
+
 `cmru.toml` is one grammar for every verb (`S-CLI`/`S2`, KI-03/KI-05). Unknown fields, a
 committed `[github].token`, retired central `[projects]`/`[registry]` tables, or an omitted
 required field are **rejected with exit 2**, not ignored. Validate before you rely on anything:
@@ -287,7 +327,27 @@ project-local copy with a 21-day window. Shared target state is written to
 project-local window applies because that project redeclares the target. A project-level
 `age_window_days` by itself does not change shared root targets.
 
-For `cmru versions init`, package names and ranges come from the project's normal manifests.
+A release timestamp exactly at the age cutoff is eligible; a timestamp later
+than the cutoff is too new. This boundary rule also applies to literal rolling
+OCI tags.
+
+For `cmru versions init`, package names and ranges come from the project's declared discovery
+scope. `scope = "shipped"` is the default: it includes `requirements.in`, Python
+`project.dependencies`, the Python extras listed in the project's `pypi_extras`, npm
+`dependencies`/`optionalDependencies`/`peerDependencies`, and Go `go.mod` requirements. Add
+project-relative `.in` or `.txt` paths to `requirements_files` when a shipped install uses a
+different requirements manifest. Project-specific manifest paths and extra lists belong in the
+project's `cmru.toml`; the root may set only the shared `scope` default.
+
+To include test and build declarations too, set `scope = "all"` in that project's
+`[versions.discovery]`. This also reads all Python optional extras and PEP 735 dependency groups,
+`build-system.requires`, conventional root `requirements*.in`/`requirements*.txt` files and
+files below `requirements/`, and npm `devDependencies`. Go module requirements are included in
+both scopes because `go.mod` does not distinguish runtime and test-only modules reliably. `all`
+means all supported declarations in these manifests; it does not cover apt packages, GitHub
+release assets, dynamic installer scripts, or image tags that cannot be represented by CMRU's
+version grammar. Unsupported syntax is still reported by `init`.
+
 For example, `example-wheel/requirements.in` can contain:
 
 ```requirements
@@ -304,12 +364,16 @@ cmru versions resolve all
 cmru versions check all --json
 ```
 
-`init` derives targets from `requirements.in`, `pyproject.toml` project dependencies,
+`init` derives targets from the selected requirements files, `pyproject.toml` dependencies,
 `package.json` dependency tables, and `go.mod` require entries. Go entries marked `// indirect`
 are included because they are explicit module graph requirements too. CMRU reports manifest
 entries whose syntax, shape, or source cannot be resolved (including Python environment markers)
-instead of silently treating them as managed. OCI image targets are declared explicitly; an OCI `tag` template contains exactly one
-`{version}` placeholder and keeps any suffix or prefix literal (for example, `v{version}-alpine`).
+instead of silently treating them as managed. OCI image targets are declared explicitly; by
+default an OCI `tag` template contains exactly one `{version}` placeholder and keeps any suffix
+or prefix literal (for example, `v{version}-alpine`). `selection = "semver"` is the default.
+For rolling or codename tags, use `selection = "rolling"` with the literal tag. Rolling selection requires `constraint = "*"` and
+a single OCI source; CMRU records the registry manifest digest and reports a refresh when that
+digest changes. SemVer selection remains the default.
 
 Source tables use the closed family values `.pypi`, `.npm`, `.go`, and `.oci`. PyPI/npm tables
 use `name` and `registry`; Go tables use `module` and `proxy`; OCI tables use a fully-qualified
@@ -320,7 +384,8 @@ version shared by multiple sources. The constraint is a comma-separated SemVer-c
 
 For a private source, add either `token_env` or the pair `username_env` and `password_env` to that
 source table. These values name environment variables; the credentials themselves stay outside
-the config. CMRU exits 3 when a named variable is unset or empty. `cmru versions init` uses the
+the config. Registry and Go proxy URLs must use HTTPS and must not include credentials, a query, or a
+fragment. CMRU exits 3 when a named variable is unset or empty. `cmru versions init` uses the
 public default registries and does not infer private credentials.
 
 Release timestamp evidence depends on the source. PyPI uses release-file upload time; npm uses
@@ -329,14 +394,26 @@ commit time rather than proxy publication time; CMRU prints a warning whenever i
 evidence. OCI uses registry HTTP `Last-Modified` when available; otherwise it uses the
 publisher-supplied `org.opencontainers.image.created` manifest annotation or image-config
 `created` time. CMRU warns when it uses this fallback and records the chosen timestamp and its
-`age_source` with each result so the source of age evidence is reviewable. An image-created time
-is not registry publication time. Missing or malformed timestamps fail closed.
+`age_source` with each result so the source of age evidence is reviewable. If a fresh fallback
+timestamp causes an age-window refusal, that refusal includes the same warning. An image-created
+time is not registry publication time. Missing or malformed timestamps fail closed.
+
+Registry clients follow HTTPS redirects, including redirects to signed blob storage. They retain
+`Authorization` only when the redirect stays on the same HTTPS origin (same scheme, host, and
+port). CMRU strips it when the origin changes and refuses HTTP downgrades or redirect URLs with
+embedded credentials or fragments. If a redirected host requires credentials, configure that
+host's canonical HTTPS endpoint in the source table.
 
 `resolve` writes a dated `constraints/constraints-YYYYMMDD.txt` plus the stable
 `constraints/constraints.txt` for PyPI targets in Python projects; set `PIP_CONSTRAINT` or pass
 `-c` to consume it. npm targets update direct package versions, overrides, and the lockfile with
 scripts disabled. When an override or looser per-target cutoff needs a package-specific age
-exception, npm 11.5.0 or newer is required. Go targets update `go.mod`/`go.sum`. OCI targets
+exception, npm 11.5.0 or newer is required. Go targets update `go.mod`/`go.sum`; in active Go
+workspace mode, the Go tool may also update `go.work`/`go.work.sum`. CMRU snapshots those files
+before `go get` and restores them if a later writer fails. For pseudo-versions, CMRU checks a
+version named by the target constraint and uses the proxy's `@latest` fallback when no listed
+version matches. If the proxy reports different commit times for the same version through `.info`
+and `@latest`, CMRU refuses the result. OCI targets
 write a dated and stable JSON record at `versions/oci-images-YYYYMMDD.json` and
 `versions/oci-images.json`; each record has
 `schema_version`, `generated_by`, `resolved_at`, and a `targets` mapping containing image, chosen
@@ -411,15 +488,24 @@ pytest command:
 
 The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0
-(full tests), R1 (100% line and branch coverage), R2 (native mutation), and
-R3 (import-break canary). R2 enables liveness monitoring, and a mutant stops
-after its first failed test (`--maxfail=1`); passing full-suite runs still
-execute every test. Every assay invocation resumes and writes
-`.assay/progress-cmru.jsonl`; the verdict is `.assay/verdict-cmru.json`.
-`gate` first runs the KI-26 installed-wheel acceptance lane, which builds the
-wheel, installs it into a fresh isolated venv, and invokes `cmru get-py` outside
-the source checkout. It then runs CMRU's release-specific coverage, mutation,
-canary, and real-enrollment evidence lanes.
+(full tests), R1 (100% line and branch coverage), and R3 (import-break
+canary). It omits native Assay R2 because a post-merge release candidate is
+already at `origin/main`, so the configured `main` base would produce no
+mutation candidates. The `gate` lane supplies R2 through its separate
+changed-source mutation campaign, based on the nearest ancestor `cmru-v*` tag;
+when that source diff is empty, it records a skipped result instead of claiming
+mutants ran. The serial R2 campaign caps each candidate at 120 seconds, stops
+after its first failed test (`--maxfail=1`), and resumes from its progress
+file; passing full-suite runs still execute every test. Every Assay invocation
+resumes and writes
+`.assay/progress-cmru.jsonl`; its verdict is `.assay/verdict-cmru.json`.
+The disposable controls include the Topos and nyxloom CMRU manifests consumed
+by CMRU's estate-adoption test, so the full suite remains runnable in each
+baseline and mutant copy.
+`gate` also runs CMRU's total-coverage, cause-sensitive canary, and
+real-enrollment evidence lanes. It starts with the KI-26 installed-wheel
+acceptance lane, which builds the wheel, installs it into a fresh isolated venv,
+and invokes `cmru get-py` outside the source checkout.
 
 ---
 
@@ -430,6 +516,11 @@ cmru status                       # what would release, and at what version bump
 cmru release <name>     # one source-first transaction: gate → tag → build → publish → promote
 cmru release                      # changed projects, one transaction per Git family (S-CLI.5a)
 ```
+
+CMRU resolves the selected project's release config from the transaction's
+isolated source snapshot. A central orchestration file inside that snapshot
+already points to snapshot paths; an external central file maps its registered
+project paths from the source Git root.
 
 `cmru release` never publishes from your working tree (`S-CLI.5`). It fetches `origin/main`,
 refuses local-only `main` commits the snapshot would omit, and creates a temporary worktree at

@@ -12,12 +12,18 @@ filed_date: "2026-09-22"
 
 ## Observed mechanism
 
+Before the 2026-09-25 session-extraction surface work,
 `session_extract`'s `EventKind` docstring (`session_extract/events.py`)
-states plainly: "Adapters never emit a kind for tool_use/tool_result content
+stated plainly: "Adapters never emit a kind for tool_use/tool_result content
 that isn't one of the above ... that's the noise this whole tool exists to
-discard." Every dropped run of tool activity collapses into a bare
-`"[gap: N records omitted]"` count (`session_extract/render.py`), with no
-attempt to characterize what happened.
+discard." Tool calls were then represented only by dropped-record gap counts.
+
+Current behavior has a separate, opt-in path: `--show-tool-calls` emits a
+short tool-name label for Claude Code and Codex, while
+`--show-tool-call-intent` adds a source-provided `description` or `intent`
+field when available. Raw tool inputs and results remain hidden. These labels
+are standalone kept events, so they reduce the anonymous gap size; they are
+not aggregated into the gap marker itself.
 
 That's correct for most tool types, but not all: Claude Code's own Bash-tool
 schema carries a natural-language `description` param ("Clear, concise
@@ -40,20 +46,24 @@ path today, but proof the pattern is already trusted here for another agent.
 
 ## Proposed contract
 
-Extend `session_extract` selection to optionally KEEP a Bash/Task tool_use's
-own `description` as a new lightweight `EventKind` (e.g. `TOOL_INTENT`)
-instead of folding it into the anonymous gap count -- one short string per
-call, not the full tool_use/tool_result payload. A rendered gap could then
-read "[gap: 20 records omitted -- intents: Verify test-runner lane collects
-tests/config; Confirm O2 coverage and size delta; ...]" instead of a bare
-count. Read/Edit/Write/Grep/Glob have no free-text intent field today and
-would still collapse to a bare count.
+Remaining design question: should the standalone opt-in tool labels stay the
+only representation, or should intent strings be summarized alongside a gap
+without becoming standalone transcript events? If gap aggregation proceeds,
+keep it opt-in and bounded: one short source `description` per Bash/Task call,
+never the full `tool_use`/`tool_result` payload. A rendered gap could read
+`[gap: 20 records omitted -- intents: Verify test-runner lane collects
+tests/config; Confirm O2 coverage and size delta; ...]`. Read/Edit/Write/Grep/
+Glob have no free-text intent field today and would still contribute only to
+the gap count.
 
 ## Behavioral oracles this would need
 
 - Render one of this project's own real long Bash-heavy gap segments both
   ways (bare count vs. intents-attached) and compare legibility -- cheap,
   concrete oracle named in E-019.
+- Compare the existing standalone `--show-tool-calls --show-tool-call-intent`
+  view with any proposed gap-attached form; do not ship both by default or
+  silently duplicate an intent.
 - A controlled wrong implementation: including the full tool_use `input`
   (e.g. the whole shell command, not just `description`) instead of the
   short intent string -- must be rejected as reintroducing the bloat the

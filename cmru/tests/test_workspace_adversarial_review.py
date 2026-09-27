@@ -387,6 +387,31 @@ def test_load_config_remaps_child_scope_and_refuses_bad_scope(monkeypatch, tmp_p
         cli.load_config(orchestration_path, validate_dependencies=False)
 
 
+def test_load_config_uses_project_paths_already_loaded_from_child(monkeypatch, tmp_path):
+    source = tmp_path / "source"
+    child = source / ".worktrees" / "release-candidate"
+    child_config = child / "demo" / "cmru.toml"
+    child_config.parent.mkdir(parents=True)
+    child_config.write_text(_project_document())
+    orchestration_path = child / "cmru.orchestration.toml"
+    monkeypatch.setattr(
+        cli, "load_forge_config", lambda _path: _child_forge(child, child_config)
+    )
+    monkeypatch.setattr(
+        transaction, "is_transaction_child", lambda path: Path(path) == child.resolve()
+    )
+    monkeypatch.setenv(transaction.CHILD_ENV, "1")
+    monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
+    monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-demo")
+    monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "demo")
+
+    loaded = cli.load_config(orchestration_path, validate_dependencies=False)
+
+    assert loaded[0] == child
+    assert loaded[1]["demo"].project_root == child / "demo"
+
+
 @pytest.mark.parametrize(
     "missing_key",
     ["CMRU_WORKSPACE_PATH", "CMRU_SOURCE_GIT_ROOT", transaction.BRANCH_ENV],

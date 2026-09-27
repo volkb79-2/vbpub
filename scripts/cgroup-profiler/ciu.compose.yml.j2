@@ -1,7 +1,7 @@
 # cgprofile — the RG-55 profiling daemon. Rendered by ciu from
 # ciu.defaults.toml.j2 (+ optional ciu.toml.j2 overrides). See that file
 # for the field docs; RG55-INTERFACE-CONTRACT.md §1/§5 for the contract
-# this container's shape (privileged/pid/cgroupns/network) exists to keep.
+# this container's shape (private namespaces, explicit mounts, network) keeps.
 #
 # ONE service, ONE host singleton (ciu.global.defaults.toml.j2's own
 # comment on `deploy.environment_tag = "host"`) — container_name below
@@ -40,21 +40,13 @@ services:
       - "--max-sessions"
       - "{{ cgprofile.daemon.max_sessions }}"
 
-    # ── RG55-INTERFACE-CONTRACT.md §5: the daemon's whole safety envelope ──
-    # `serve` refuses `--cap` structurally and never instantiates TempCaps
-    # (lib/serve.py's own module docstring + C5's cmd_serve); these three
-    # flags are what give it the HOST cgroup v2 view and DAMON sysfs it
-    # needs to read (never write, except its own kdamonds and session dir —
-    # WRITABLE_ROOTS, C4) in order to profile containers it does not own:
+    # ── RG55-INTERFACE-CONTRACT.md §5: the daemon's safety envelope ──────
+    # Namespaces stay private. The host observations the sampler needs are
+    # explicit mounts: proc and cgroup v2 read-only. Privilege is retained
+    # for the kernel DAMON sysfs interface; serve still refuses --cap and
+    # confines its writes to session storage and DAMON's own kdamonds.
     privileged: true
-    pid: "host"
-    # Compose Specification key is `cgroup` (singular) with values
-    # "host"/"private" — NOT `cgroupns`, which docker compose's own schema
-    # validator refuses outright ("additional properties 'cgroupns' not
-    # allowed", verified live 2026-09-12 against docker compose v2.40.3).
-    # `docker run --cgroupns=host` is the CLI flag name; this is the
-    # differently-named compose-file equivalent of it.
-    cgroup: "host"
+    cgroup: "private"
     # No docker socket, no network at all (§5: "no docker socket inside the
     # daemon — that is why targets are `containerid:` and the consumer
     # resolves ids"; ctl talks to it via `docker exec`, never a published
@@ -62,6 +54,8 @@ services:
     # absent, unlike every other ciu stack in this estate.
     network_mode: "none"
     restart: unless-stopped
+    environment:
+      CGPROFILE_PROC_ROOT: /hostproc
 
     # AUTHORED here, not left to governance (C7): the daemon lives in the
     # INTERACTIVE tier, not the `dev-background.slice` tier gate runs (the
@@ -78,6 +72,23 @@ services:
 
     volumes:
       - cgprofile-sessions:/var/lib/cgprofile
+      - type: bind
+        source: /proc
+        target: /hostproc
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /sys/fs/cgroup
+        target: /sys/fs/cgroup
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /sys/kernel/mm/damon
+        target: /sys/kernel/mm/damon
+        bind:
+          create_host_path: false
 
 volumes:
   # `ciu down` PRESERVES this (S6.4) — a daemon restart must not lose every

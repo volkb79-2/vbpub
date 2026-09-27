@@ -248,6 +248,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
@@ -737,19 +738,102 @@ def _resolve_session_log(args) -> tuple[Path, str | None] | None:
 
 
 def _block_render_for(args):
-    """The per-block prose render hook --render-markdown/--highlight ask for
-    (render.py's `block_render`), or None for today's plain text. Neither
-    library is imported unless its flag was actually passed."""
-    use_color = sys.stdout.isatty() if args.color is None else args.color
+    """Build the prose renderer from independent render and color settings.
+
+    Markdown source is highlighted for terminal output by default; pipes stay
+    plain unless --color is explicit. --render-markdown consumes markdown
+    syntax while honoring the same color decision.
+    """
+    use_color = _color_enabled(args)
     if getattr(args, "render_markdown", False):
         from .session_extract.render_markdown import render_markdown
 
         return lambda text: render_markdown(text, color=use_color)
-    if args.highlight:
+    if getattr(args, "highlight", False) or use_color:
         from .session_extract.highlight import highlight_markdown
 
         return lambda text: highlight_markdown(text, color=use_color)
     return None
+
+
+def _color_enabled(args) -> bool:
+    explicit = getattr(args, "color", None)
+    if explicit is not None:
+        return explicit
+    return sys.stdout.isatty() and "NO_COLOR" not in os.environ
+
+
+def _source_metadata(path: Path, fmt: str | None = None) -> dict[str, str]:
+    source_path = path
+    if fmt == "opencode" and path.is_dir():
+        from .session_extract.adapters import opencode
+
+        database = opencode._db_path(path)
+        if database is not None:
+            source_path = database
+    stat = source_path.stat()
+    birth = getattr(stat, "st_birthtime", None)
+    created = (
+        datetime.fromtimestamp(birth, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        if birth is not None else "unavailable"
+    )
+    return {
+        "name": source_path.name,
+        "path": str(source_path.absolute()),
+        "bytes": str(stat.st_size),
+        "created": created,
+    }
+
+
+def _extract_config_from_args(args, *, since_marker=None, json_output: bool | None = None):
+    from .session_extract import ExtractConfig
+    from .session_extract.config import DEFAULT_PROFILE, PROFILES
+
+    profile_name = getattr(args, "profile", None) or DEFAULT_PROFILE
+    base = PROFILES[profile_name]
+    get = lambda name, default=None: getattr(args, name, default)
+    max_checkpoints = get("max_checkpoints")
+    if max_checkpoints is None:
+        max_checkpoints = get("checkpoints")
+    answer_length = get("answer_length")
+    if answer_length is None:
+        answer_length = get("long_threshold")
+    max_compactions = get("max_compactions")
+    if max_compactions is None:
+        max_compactions = get("max_lifecycle_markers")
+    blank_lines = get("blank_lines")
+    if blank_lines is None:
+        blank_lines = get("insert_blank_lines")
+    as_json = get("json", False) if json_output is None else json_output
+    return ExtractConfig(
+        max_checkpoints=max_checkpoints if max_checkpoints is not None else base.max_checkpoints,
+        long_comment_chars=answer_length if answer_length is not None else base.long_comment_chars,
+        max_words=get("max_words") if get("max_words") is not None else base.max_words,
+        include_thinking=get("include_thinking", False),
+        since_marker=since_marker,
+        until_marker=get("until"),
+        max_compactions=max_compactions if max_compactions is not None else base.max_compactions,
+        max_time_minutes=(
+            get("max_time_minutes") if get("max_time_minutes") is not None else base.max_time_minutes
+        ),
+        epochs=get("epochs") if get("epochs") is not None else base.epochs,
+        output_format="json" if as_json else "text",
+        hide_api_errors=not get("show_api_errors", False),
+        min_gap_to_annotate=(
+            get("min_gap_records") if get("min_gap_records") is not None else base.min_gap_to_annotate
+        ),
+        gap_note_show_marker=get("show_gap_source", False),
+        insert_blank_lines=blank_lines if blank_lines is not None else base.insert_blank_lines,
+        gap_marker_mode=get("gap_marker") if get("gap_marker") is not None else base.gap_marker_mode,
+        strip_stale_wakeups=get("strip_stale_wakeups", False),
+        redact_patterns=tuple(get("redact_pattern") or ()),
+        hide_compaction_content=not get("show_compaction_content", False),
+        show_tool_calls=get("show_tool_calls", False),
+        show_tool_call_intent=get("show_tool_call_intent", False),
+        show_timestamps=get("show_timestamps") or "pre",
+        timestamp_format=get("timestamp_format") or "[%H:%M:%S]",
+        extract_metadata=get("extract_metadata") or "both",
+    )
 
 
 #: --follow-only flags, by the attribute argparse stores them under, with the
@@ -767,14 +851,13 @@ _FOLLOW_ONLY_FLAGS = (
 def _validate_render_and_follow_flags(args) -> str | None:
     """Every cross-flag rule shared by extract and extract-lossless; returns
     the error message, or None when the combination is coherent."""
-    if getattr(args, "render_markdown", False) and args.highlight:
+    if getattr(args, "render_markdown", False) and getattr(args, "highlight", False):
         return ("--render-markdown and --highlight are opposite goals (render markdown vs. "
                 "colorize it while keeping every markup character) -- pick one")
-    if args.color is not None and not (getattr(args, "render_markdown", False) or args.highlight):
-        modes = "--render-markdown/--highlight" if hasattr(args, "render_markdown") else "--highlight"
-        return f"--color/--no-color only apply to {modes}"
+    if getattr(args, "show_tool_call_intent", False) and not getattr(args, "show_tool_calls", False):
+        return "--show-tool-call-intent requires --show-tool-calls"
 
-    if not args.follow:
+    if not getattr(args, "follow", False):
         for attr, unset, flag in _FOLLOW_ONLY_FLAGS:
             if getattr(args, attr, unset) != unset:
                 return f"{flag} only has an effect with --follow"
@@ -789,6 +872,13 @@ def _validate_render_and_follow_flags(args) -> str | None:
     if args.until:
         return ("--until pins the far end of a FIXED span; --follow has no end to pin -- "
                 "they are contradictory")
+    if getattr(args, "epochs", None) is not None:
+        return "--epochs selects a fixed session span and cannot be combined with --follow"
+    if getattr(args, "max_time_minutes", None) not in (None, -1):
+        return "--max-time-minutes is a fixed-span stop condition and cannot be combined with --follow"
+    if getattr(args, "extract_metadata", None) == "pre":
+        return ("--extract-metadata pre cannot keep the cursor current in a growing --follow stream; "
+                "use post or both")
     if getattr(args, "task", None) is not None or getattr(args, "task_file", None) is not None:
         return ("--task/--task-file append a banner AFTER the finished brief, which --follow "
                 "never reaches -- they are contradictory")
@@ -867,7 +957,7 @@ def _follow_anchor(path: Path, fmt: str, session_id: str | None):
 
 
 def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anchor,
-                 block_render, lossless_mode: bool) -> int:
+                 block_render, lossless_mode: bool, source_metadata=None) -> int:
     """Phase 2: hand off to session_extract/follow.py and tail until Ctrl-C."""
     from .session_extract import follow as follow_mod
     from .session_extract.adapters import claude_code as claude_code_adapter
@@ -918,17 +1008,19 @@ def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anch
         follow_config=follow_config, out=sys.stdout, lossless_mode=lossless_mode,
         block_render=block_render,
         insert_blank_lines=config.insert_blank_lines,
+        source_metadata=source_metadata,
     )
     return follower.run_forever()
 
 
 def cmd_extract(args) -> int:
-    """extract <path> [--opencode-session ID] [--format FMT] [--json] [--profile NAME]
-    [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
-    [--max-lifecycle-markers N]
+    """extract <session-ref> [--format FMT] [--json] [--profile NAME]
+    [--max-checkpoints N] [--answer-length N] [--max-words N]
+    [--max-compactions N] [--max-time-minutes N] [--epochs N|A:B|all]
     [--since MARKER | --since-file PATH] [--until MARKER] [--ledger]
-    [--show-api-errors] [--show-compaction-content] [--insert-blank-lines N] [--gap-marker MODE]
-    [--min-gap-records N] [--show-gap-source] [--render-markdown] [--color | --no-color]
+    [--show-tool-calls] [--show-tool-call-intent] [--gap-marker MODE]
+    [--blank-lines N] [--show-timestamps MODE] [--timestamp-format FMT]
+    [--extract-metadata MODE] [--render-markdown | --highlight] [--color | --no-color]
     [--strip-stale-wakeups] [--redact-pattern REGEX] [--task TEXT | --task-file PATH]
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
@@ -942,13 +1034,14 @@ def cmd_extract(args) -> int:
     (split off 2026-09-11, operator direction) because none of this
     command's selection-aggressiveness flags below ever applied there.
 
-    --profile picks a named PROFILES preset (session_extract/config.py) for
-    the selection-aggressiveness knobs. --max-words (target length) is a
-    deliberately SEPARATE axis, not part of a profile's identity -- a
-    profile only supplies its own sensible default for it; pass --max-words
-    to override that default regardless of --profile. Any other individual
-    flag, if also passed, likewise overrides just that one knob from the
-    chosen profile.
+    --profile selects an extraction use case. operator-review is the default
+    concise review of recent work; all removes word/checkpoint/time/compaction
+    stops and keeps ordinary prompt, Q&A, and assistant prose across all
+    epochs. API errors, thinking, tool calls, and compaction internals remain
+    controlled by separate options. Explicit values override
+    profile values. Checkpoints are classifier-scored assistant messages, not
+    semantic boundaries. /clear starts a new epoch; outside the all profile,
+    only the newest epoch is selected. Use --epochs N, A:B, or all to choose.
 
     Targeting a specific agent's own conversation (e.g. a dispatched Claude
     Code Agent-tool subagent, or an opencode session forked from a parent)
@@ -961,13 +1054,15 @@ def cmd_extract(args) -> int:
     see that adapter's module docstring); this command's own surface never
     needs adapter-specific vocabulary for it.
 
-    --since-file is the delta-extraction UX: point it at a PRIOR run's saved
-    output (text or json) and this run picks up exactly where that one left
-    off, reading back the (format, marker) that run embedded in its own
-    output rather than requiring you to hunt down or hand-copy a raw marker
-    string. It also cross-checks the resolved format against --format/the
-    auto-detected one, since a marker from one adapter is meaningless fed
-    into another. Mutually exclusive with --since (enforced by argparse).
+    --since-file reads the last nyxloom marker from a PRIOR run's saved
+    output (text or JSON) and uses it as the lower cursor. Save the first
+    snapshot with `nyxloom extract log.jsonl > snapshot.md`; after the log
+    grows, run `nyxloom extract log.jsonl --since-file snapshot.md > delta.md`.
+    This emits only events after the marker; it does not merge the old
+    snapshot into delta.md. Keep both files, or concatenate them yourself
+    when a cumulative transcript is wanted. The cursor is the source end
+    marker, even when some source records were intentionally filtered. The
+    source format is checked because markers are adapter-specific.
 
     --until bounds the walk's far (older) end at a given marker (inclusive)
     -- symmetric with --since, mainly for pinning a run to a fixed
@@ -981,14 +1076,14 @@ def cmd_extract(args) -> int:
     package. Claude Code only today (errors on any other format); --json
     errors too (no JSON equivalent yet).
 
-    --insert-blank-lines/--gap-marker/--min-gap-records/--show-gap-source
-    (2026-09-11, operator direction) control ONLY the text-mode rendering of
+    --blank-lines/--gap-marker/--min-gap-records/--show-gap-source control
+    ONLY the text-mode rendering of
     the "---" block separator and the gap_after annotation (select.py's own
     "N raw records were dropped here" fact) -- all four error combined with
     --json rather than silently having no effect, since JSON output already
-    reports the true gap count as a typed field regardless. Defaults
-    reproduce this package's long-standing output byte-for-byte; see each
-    flag's own --help text for the full value space (config.py's
+    reports the true gap count as a typed field regardless. Defaults use
+    inline gaps and zero blank lines; see each flag's own --help text for the
+    full value space (config.py's
     insert_blank_lines/gap_marker_mode comments have the complete picture).
 
     --render-markdown (2026-09-12) is for READING the brief rather than
@@ -999,11 +1094,13 @@ def cmd_extract(args) -> int:
     terminal -- `--highlight` covers that case instead (pygments, every
     character left in place). The two are mutually exclusive. Only kept
     blocks' own prose is affected: the `---` separators, the bracketed gap/
-    stop-reason notes, the ledger line and the trailing `<!-- nyxloom-extract:
-    ... -->` footer are never passed through a renderer (the footer is
+    stop-reason notes, the ledger line and positioned `<!-- nyxloom-extract:
+    ... -->` cursor comments are never passed through a renderer (they are
     machine-read by --since-file and must stay byte-exact).
-    --color/--no-color override the isatty() default, exactly as on
-    extract-debug, and error if no render mode is active.
+    --color/--no-color controls ANSI color independently from rendering. On
+    a terminal, --highlight colors markdown source by default; piped output is
+    plain unless --color is explicit. --render-markdown consumes markup;
+    --highlight preserves every markup character while adding color.
 
     --strip-stale-wakeups/--redact-pattern/--task/--task-file (2026-09-11,
     operator direction, "handoff to a fresh agent" -- see
@@ -1017,8 +1114,7 @@ def cmd_extract(args) -> int:
     """
     from pathlib import Path
 
-    from .session_extract import ExtractConfig, extract
-    from .session_extract.config import PROFILES
+    from .session_extract import extract
     from .session_extract.events import EventKind
 
     if args.follow and args.strip_stale_wakeups:
@@ -1047,8 +1143,8 @@ def cmd_extract(args) -> int:
 
     if args.json:
         text_only = []
-        if args.insert_blank_lines is not None:
-            text_only.append("--insert-blank-lines")
+        if args.blank_lines is not None:
+            text_only.append("--blank-lines")
         if args.gap_marker is not None:
             text_only.append("--gap-marker")
         if args.min_gap_records is not None:
@@ -1063,6 +1159,14 @@ def cmd_extract(args) -> int:
             text_only.append("--render-markdown")
         if args.highlight:
             text_only.append("--highlight")
+        if args.show_timestamps is not None:
+            text_only.append("--show-timestamps")
+        if args.timestamp_format is not None:
+            text_only.append("--timestamp-format")
+        if args.extract_metadata is not None:
+            text_only.append("--extract-metadata")
+        if args.color is not None:
+            text_only.append("--color/--no-color")
         if text_only:
             print(f"error: {', '.join(text_only)} only affect(s) text-mode rendering -- has no "
                   f"effect combined with --json", file=sys.stderr)
@@ -1082,35 +1186,7 @@ def cmd_extract(args) -> int:
                 print(f"error: --redact-pattern {pattern!r}: invalid regex: {e}", file=sys.stderr)
                 return 1
 
-    # --profile supplies defaults for the selection-aggressiveness knobs
-    # (and its own default target length); any of --checkpoints/
-    # --long-threshold/--max-words/--max-lifecycle-markers, if ALSO passed,
-    # overrides that one knob -- target length is always independently
-    # settable, never locked to whichever profile was chosen.
-    base = PROFILES[args.profile] if args.profile else ExtractConfig()
-    config = ExtractConfig(
-        max_checkpoints=args.checkpoints if args.checkpoints is not None else base.max_checkpoints,
-        long_comment_chars=args.long_threshold if args.long_threshold is not None else base.long_comment_chars,
-        max_words=args.max_words if args.max_words is not None else base.max_words,
-        include_thinking=args.include_thinking,
-        since_marker=since_marker,
-        until_marker=args.until,
-        max_lifecycle_markers=(
-            args.max_lifecycle_markers if args.max_lifecycle_markers is not None
-            else base.max_lifecycle_markers
-        ),
-        output_format="json" if args.json else "text",
-        hide_api_errors=not args.show_api_errors,
-        min_gap_to_annotate=args.min_gap_records if args.min_gap_records is not None else base.min_gap_to_annotate,
-        gap_note_show_marker=args.show_gap_source,
-        insert_blank_lines=(
-            args.insert_blank_lines if args.insert_blank_lines is not None else base.insert_blank_lines
-        ),
-        gap_marker_mode=args.gap_marker if args.gap_marker is not None else base.gap_marker_mode,
-        strip_stale_wakeups=args.strip_stale_wakeups,
-        redact_patterns=tuple(args.redact_pattern) if args.redact_pattern else (),
-        hide_compaction_content=not args.show_compaction_content,
-    )
+    config = _extract_config_from_args(args, since_marker=since_marker)
     follow_fmt = None
     anchor = None
     if args.follow:
@@ -1126,6 +1202,10 @@ def cmd_extract(args) -> int:
         anchor = _follow_anchor(path, follow_fmt, follow_session)
 
     result = extract(path, config, fmt=args.format, session_id=session_id)
+    if config.show_tool_calls and result.format not in ("claude-code", "codex"):
+        print(f"error: --show-tool-calls is not supported for {result.format!r}; supported formats: claude-code, codex",
+              file=sys.stderr)
+        return 1
 
     if args.ledger:
         if args.json:
@@ -1145,6 +1225,7 @@ def cmd_extract(args) -> int:
 
     block_render = _block_render_for(args)
     result._block_render = block_render
+    result._source_metadata = _source_metadata(path, result.format)
 
     if result.stale_wakeups_stripped:
         print(f"nyxloom extract: stripped {result.stale_wakeups_stripped} stale-wakeup "
@@ -1174,7 +1255,7 @@ def cmd_extract(args) -> int:
     if args.follow:
         return _run_follow(
             args, path, follow_fmt, config, result.session_id, anchor, block_render,
-            lossless_mode=False,
+            lossless_mode=False, source_metadata=result._source_metadata,
         )
     return 0
 
@@ -1197,8 +1278,8 @@ def cmd_extract_lossless(args) -> int:
 
     Was `extract --lossless` until 2026-09-11 (operator direction): split
     into its own verb because NONE of extract's selection-aggressiveness
-    flags (--profile/--checkpoints/--long-threshold/--max-words/
-    --include-thinking/--max-lifecycle-markers/--json/--ledger/
+    flags (--profile/--max-checkpoints/--answer-length/--max-words/
+    --include-thinking/--max-compactions/--json/--ledger/
     --show-api-errors) ever applied in lossless mode -- sharing one verb
     made every one of them a silently-ignored trap. See `extract-debug` to
     compare this dump against what `extract` would actually keep from it.
@@ -1295,9 +1376,7 @@ def cmd_extract_lossless(args) -> int:
 
 
 def cmd_extract_debug(args) -> int:
-    """extract-debug <path> [--opencode-session ID] [--format FMT] [--profile NAME]
-    [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
-    [--max-lifecycle-markers N] [--show-api-errors] [--color | --no-color]
+    """extract-debug mirrors extract's selection and rendering options.
 
     A colored diff between `extract-lossless`'s full lossless base and what
     `extract` -- called with these SAME flags -- would actually keep: white
@@ -1305,15 +1384,15 @@ def cmd_extract_debug(args) -> int:
     note), cyan = a nyxloom-authored note (gap/stop-reason) with no
     lossless counterpart, green = an E-012 ledger line. See
     session_extract/debug_diff.py's module docstring for the full color-
-    scheme rationale. Always compares the FULL session (--since/--until/
-    --json don't apply here -- this verb only makes sense against the
-    complete lossless base). --color/--no-color override the isatty()
-    auto-detection (color off when piped to a file by default).
+    scheme rationale. Content selection, bounds, timestamps, gap markers,
+    metadata, tool-call visibility, and markdown rendering use extract's
+    shared configuration. The diff's own annotation colors are controlled
+    by --color/--no-color and stdout/NO_COLOR policy.
     """
-    from .session_extract import ExtractConfig, extract, lossless
+    from .session_extract import extract, lossless
     from .session_extract.adapters import detect
-    from .session_extract.config import PROFILES
     from .session_extract.debug_diff import render_debug
+    from .session_extract.events import EventKind
 
     resolved = _resolve_session_log(args)
     if resolved is None:
@@ -1321,12 +1400,34 @@ def cmd_extract_debug(args) -> int:
     path, session_id = resolved
     fmt = args.format or detect(path).name
 
+    flag_error = _validate_render_and_follow_flags(args)
+    if flag_error is not None:
+        print(f"error: {flag_error}", file=sys.stderr)
+        return 1
+
+    since_marker, err = _resolve_since_marker(args, fmt)
+    if err is not None:
+        return err
+    config = _extract_config_from_args(args, since_marker=since_marker, json_output=False)
+    if config.show_tool_calls and fmt not in ("claude-code", "codex"):
+        print(f"error: --show-tool-calls is not supported for {fmt!r}; supported formats: claude-code, codex",
+              file=sys.stderr)
+        return 1
+
     if fmt == "claude-code":
-        lossless_text = lossless.dump_claude_code(path)
+        lossless_text = lossless.dump_claude_code(
+            path, since_marker=since_marker, until_marker=args.until,
+            show_tool_calls=config.show_tool_calls,
+            show_tool_call_intent=config.show_tool_call_intent,
+        )
     elif fmt == "codex":
-        lossless_text = lossless.dump_codex(path)
+        lossless_text = lossless.dump_codex(
+            path, since_marker=since_marker, until_marker=args.until,
+            show_tool_calls=config.show_tool_calls,
+            show_tool_call_intent=config.show_tool_call_intent,
+        )
     elif fmt == "reasonix":
-        lossless_text = lossless.dump_reasonix(path)
+        lossless_text = lossless.dump_reasonix(path, since_marker=since_marker, until_marker=args.until)
     elif fmt == "opencode":
         from .session_extract.adapters import opencode as opencode_adapter
 
@@ -1342,35 +1443,38 @@ def cmd_extract_debug(args) -> int:
                 print(f"error: {path} holds {len(sessions)} opencode sessions; pass "
                       f"--opencode-session (e.g. {sessions[0]!r})", file=sys.stderr)
                 return 1
-        lossless_text = lossless.dump_opencode(path, resolved_session)
+        lossless_text = lossless.dump_opencode(
+            path, resolved_session, since_marker=since_marker, until_marker=args.until,
+        )
     else:
         print(f"error: extract-debug does not support {fmt!r} -- see session_extract/lossless.py's "
               f"module docstring for what's implemented", file=sys.stderr)
         return 1
 
-    base = PROFILES[args.profile] if args.profile else ExtractConfig()
-    config = ExtractConfig(
-        max_checkpoints=args.checkpoints if args.checkpoints is not None else base.max_checkpoints,
-        long_comment_chars=args.long_threshold if args.long_threshold is not None else base.long_comment_chars,
-        max_words=args.max_words if args.max_words is not None else base.max_words,
-        include_thinking=args.include_thinking,
-        max_lifecycle_markers=(
-            args.max_lifecycle_markers if args.max_lifecycle_markers is not None
-            else base.max_lifecycle_markers
-        ),
-        hide_api_errors=not args.show_api_errors,
-        hide_compaction_content=not args.show_compaction_content,
-    )
     result = extract(path, config, fmt=fmt, session_id=session_id)
-    use_color = sys.stdout.isatty() if args.color is None else args.color
+    result._source_metadata = _source_metadata(path, result.format)
+    result._block_render = _block_render_for(args)
+    if args.ledger:
+        if result.format != "claude-code":
+            print(f"error: --ledger does not support {result.format!r} yet", file=sys.stderr)
+            return 1
+        from .session_extract import ledger as ledger_mod
+
+        boundary_markers = {
+            ev.marker for ev in result.events
+            if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.LIFECYCLE_MARKER)
+        }
+        result._ledger = ledger_mod.build_ledger(path, result.format, boundary_markers)
+    use_color = _color_enabled(args)
     print(render_debug(
-        lossless_text, result.render(), use_color, config=config, fmt=fmt, all_events=result.all_events,
+        lossless_text, result.render(), use_color, config=config, fmt=fmt,
+        all_events=result.all_events, block_render=result._block_render,
     ))
     return 0
 
 
 def cmd_extract_report(args) -> int:
-    """extract-report <path> [--format FMT] [--opencode-session ID] [--detailed] [--json]
+    """extract-report <path> [--type report-sheet|report-detailed|csv] [--json]
 
     Cost/timeline analysis on top of session_extract -- V9 in
     nyxloom/docs/design-context-lifecycle-experiments.md. Renamed from
@@ -1382,10 +1486,10 @@ def cmd_extract_report(args) -> int:
     session (Claude Code/Codex are one-file-one-session, so it's unused there). To
     find out WHICH sessions/sub-agents exist before targeting one, see
     `extract-sessions` -- a different question (discovery vs. reporting on
-    a session you've already identified). Default output is the condensed,
-    one-page-per-session block view; --detailed switches to one row per
-    real API call (CSV); --json dumps the detailed rows as JSON instead of
-    CSV.
+    a session you've already identified). report-sheet is the condensed
+    operator overview. report-detailed shows one human-readable row per API
+    call. csv writes the detailed per-call data for spreadsheet/import use.
+    --json emits the selected report shape as JSON.
     """
     from .session_extract import stats
 
@@ -1400,29 +1504,38 @@ def cmd_extract_report(args) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    if args.detailed:
+    if args.detailed and args.report_type not in (None, "csv"):
+        print("error: --detailed is a legacy alias for --type csv and cannot be combined with another --type",
+              file=sys.stderr)
+        return 1
+    report_type = args.report_type or ("csv" if args.detailed else "report-sheet")
+    if report_type == "csv" and args.json:
+        print("error: --type csv selects CSV output and cannot be combined with --json", file=sys.stderr)
+        return 1
+    if report_type == "report-sheet":
+        blocks = stats.build_blocks(rows)
         if args.json:
             import dataclasses
             import json as jsonlib
 
-            print(jsonlib.dumps([dataclasses.asdict(r) for r in rows], indent=2))
+            print(jsonlib.dumps([dataclasses.asdict(b) for b in blocks], indent=2))
         else:
-            print(stats.render_detailed_csv(rows), end="")
+            print(stats.render_condensed(blocks), end="")
         return 0
-
-    blocks = stats.build_blocks(rows)
     if args.json:
         import dataclasses
         import json as jsonlib
 
-        print(jsonlib.dumps([dataclasses.asdict(b) for b in blocks], indent=2))
+        print(jsonlib.dumps([dataclasses.asdict(r) for r in rows], indent=2))
+    elif report_type == "csv":
+        print(stats.render_detailed_csv(rows), end="")
     else:
-        print(stats.render_condensed(blocks), end="")
+        print(stats.render_detailed_text(rows), end="")
     return 0
 
 
 def cmd_extract_sessions(args) -> int:
-    """extract-sessions <path> [--format FMT] [--json]
+    """extract-sessions <claude|codex|opencode|path> [--recurse [true|false]] [--json]
 
     Discovery, not reporting: lists which sessions/sub-agents EXIST and how
     they relate (parent, depth, a human label), for when you don't yet know
@@ -1440,13 +1553,34 @@ def cmd_extract_sessions(args) -> int:
     """
     from .session_extract import sessions
 
-    resolved = _resolve_session_log(args)
-    if resolved is None:
-        return 1
-    path, _session_id = resolved
+    hint = args.path.lower()
+    inferred = {"claude": "claude-code", "codex": "codex", "opencode": "opencode"}.get(hint)
+    if inferred is not None:
+        if args.format is not None and args.format != inferred:
+            print(f"error: {args.path!r} selects {inferred!r}, conflicting with --format={args.format!r}",
+                  file=sys.stderr)
+            return 1
+        args.format = inferred
+        if inferred == "claude-code":
+            root = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser()
+            path = root / "projects"
+        elif inferred == "codex":
+            root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+            path = root / "sessions"
+        else:
+            if os.environ.get("OPENCODE_DB"):
+                path = Path(os.environ["OPENCODE_DB"]).expanduser()
+            else:
+                data_home = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))).expanduser()
+                path = data_home / "opencode" / "opencode.db"
+    else:
+        resolved = _resolve_session_log(args)
+        if resolved is None:
+            return 1
+        path, _session_id = resolved
 
     try:
-        nodes = sessions.list_agents(path, fmt=args.format)
+        nodes = sessions.list_agents(path, fmt=args.format, recurse=args.recurse == "true")
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -3017,23 +3151,19 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
         "(see 'stop conditions' below). See session_extract/config.py's ExtractConfig and "
         "classifier.py for the underlying knobs.")
     selection_group.add_argument("--profile", choices=sorted(PROFILES),
-                                  help="Named preset for the selection-aggressiveness knobs "
-                                       "(--long-threshold here, --checkpoints/"
-                                       "--max-lifecycle-markers under 'stop conditions' below) "
-                                       "-- see session_extract/config.py's PROFILES. --max-words "
-                                       "is a SEPARATE axis: a profile only supplies its own "
-                                       "sensible default for it, still freely overridden by "
-                                       "--max-words. Any individual flag, if also passed, "
-                                       "overrides that one knob from the chosen profile.")
-    selection_group.add_argument("--long-threshold", type=int, default=None,
-                                  help="Char threshold for keeping a non-checkpoint comment "
-                                       "(default 180, or the --profile's value); a 'concrete-"
-                                       "finding' comment survives regardless of length -- "
-                                       "meaning classifier.has_finding_signal() matches it "
-                                       "(reports a bug, a fix, or a concrete decision, as "
-                                       "opposed to plain narration like 'Now let's fix the "
-                                       "detection'; see session_extract/classifier.py for the "
-                                       "exact patterns)")
+                                  help="Use case: operator-review (default: newest reported epoch, "
+                                       "5 assistant-message checkpoints, 180-character answer "
+                                       "length, 10000 words) or all (ordinary prompt, Q&A, and "
+                                       "assistant prose across all reported epochs; no word/"
+                                       "checkpoint/time/compaction stop). API errors, thinking, "
+                                       "tool calls, and compaction content have separate flags. "
+                                       "Explicit flags override profile values.")
+    selection_group.add_argument("--answer-length", "--long-threshold", dest="answer_length",
+                                  type=int, default=None,
+                                  help="Keep a non-checkpoint assistant message when it is "
+                                       "longer than this many characters (default 180; concrete "
+                                       "findings survive at any length). Checkpoints are selected "
+                                       "separately.")
     selection_group.add_argument("--include-thinking", action="store_true",
                                   help="Also emit assistant thinking/reasoning content where "
                                        "the adapter can recover it")
@@ -3044,45 +3174,59 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                        "length-filtered, since they're a fact about the "
                                        "harness's API connection, not about session content.")
     selection_group.add_argument("--show-compaction-content", action="store_true",
-                                  help="Keep an operator-issued /compact <prompt> dispatch's "
-                                       "own argument text in full. Off by default -- it's "
-                                       "hinted as '[compaction: steered dispatched]' instead, "
-                                       "since the prompt almost always just re-quotes a "
-                                       "compaction prompt the model already produced as "
-                                       "ordinary (kept-in-full) assistant prose moments "
-                                       "earlier. Does not affect the resulting compact_boundary "
-                                       "marker, which always shows the enriched "
-                                       "steered/automatic + token-count hint.")
+                                  help="Include source compaction summaries and /compact prompt "
+                                       "payloads. Hidden by default; all-profile still extracts "
+                                       "ordinary prompts and progress prose without these "
+                                       "compaction internals.")
+    selection_group.add_argument("--show-tool-calls", action="store_true",
+                                  help="Include tool-call labels for Claude Code and Codex; tool "
+                                       "inputs and results remain omitted")
+    selection_group.add_argument("--show-tool-call-intent", action="store_true",
+                                  help="Add a short explicit description/intent field to visible "
+                                       "tool-call labels; requires --show-tool-calls")
 
     stop_group = extract_parser.add_argument_group(
         "stop conditions (whichever hits first)",
-        "The backward walk (select.py) halts the instant ANY ONE of these three trips, scanning "
-        "from the newest event backward toward the start of the log. Each accepts -1 to mean "
-        "this condition alone never trips (the other two, or reaching the true start of the "
-        "log, still bound the walk).")
-    stop_group.add_argument("--checkpoints", type=int, default=None,
-                             help="How many recent checkpoints to anchor on (default 5, or the "
-                                  "--profile's value)")
+        "The backward selection walk stops when any enabled limit is reached. A checkpoint is "
+        "a classifier-scored assistant prose message used as an anchor, not a semantic boundary "
+        "or known-safe compaction point. -1 disables a numeric stop condition.")
+    stop_group.add_argument("--max-checkpoints", "--checkpoints", dest="max_checkpoints",
+                             type=int, default=None,
+                             help="Maximum recent classifier-detected assistant-message anchors "
+                                  "(operator-review default 5; -1 disables this stop condition)")
     stop_group.add_argument("--max-words", type=int, default=None,
                              help="Hard output word budget -- target length, independent of "
                                   "--profile (default 10000, or the --profile's own default if "
                                   "--profile is set and this isn't)")
-    stop_group.add_argument("--max-lifecycle-markers", type=int, default=None,
-                             help="How many real compaction/[/compact]/[/clear] boundaries the "
-                                  "walk may pass before stopping at one (default 0, or the "
-                                  "--profile's value -- stop at the first)")
+    stop_group.add_argument("--max-compactions", "--max-lifecycle-markers",
+                             dest="max_compactions", type=int, default=None,
+                             help="How many actual compaction boundaries the walk may cross "
+                                  "before stopping at the next; default -1 ignores compactions. "
+                                  "/clear is an epoch boundary and is not counted")
+    stop_group.add_argument("--max-time-minutes", type=int, default=None,
+                             help="Stop walking before events older than this many minutes from "
+                                  "the newest source timestamp; default -1 ignores time")
+    stop_group.add_argument("--epochs", metavar="N|A:B|all",
+                             help="Select 1-based source epochs. Claude Code /clear records "
+                                  "create epochs; Codex clears start a new rollout, while "
+                                  "OpenCode/Reasonix currently expose one epoch. Default is "
+                                  "the newest reported epoch; all-profile selects every "
+                                  "reported epoch. A:B is inclusive")
 
     since_group = extract_parser.add_mutually_exclusive_group()
     since_group.add_argument("--since",
                               help="Resume marker from a prior run's last_marker -- only "
                                    "events after it are considered. The marker is an opaque, "
                                    "adapter-specific token (a Claude Code record uuid, a Codex "
-                                   "ordinal, a Reasonix line<N> marker, or an opencode "
+                                   "ordinal or response_item-<position> fallback, a Reasonix "
+                                   "line<N> marker, or an opencode "
                                    "message-table row id) -- not a "
-                                   "timestamp. Copy it from the trailing HTML comment a prior "
+                                   "timestamp. Copy it from a nyxloom HTML comment in the prior "
                                    "run's own output ends with: `<!-- nyxloom-extract: "
                                    "format=... marker=... -->`. In practice --since-file below "
-                                   "is almost always easier than hand-copying this")
+                                   "is almost always easier than hand-copying this. Example: "
+                                   "for `<!-- nyxloom-extract: format=codex marker=166 -->`, "
+                                   "pass `--since 166`")
     since_group.add_argument("--since-file",
                               help="Path to a prior extract run's saved output (text or json); "
                                    "its embedded marker is read back and used as --since, so you "
@@ -3098,7 +3242,9 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                       "source), for pinning a run to a fixed historical span, "
                                       "e.g. `--since M1 --until M2` reproduces the exact same "
                                       "extraction on every run instead of drifting as the "
-                                      "session grows")
+                                      "session grows. Example: `--since 166 --until 240` uses "
+                                      "source markers copied from nyxloom-extract comments; "
+                                      "the until marker is included")
     render_group = extract_parser.add_argument_group(
         "rendering",
         "Text-mode output shape only -- JSON output is unaffected, always reporting "
@@ -3109,22 +3255,21 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                     "branches/tests line after each kept boundary (E-012, "
                                     "session_extract/ledger.py). Claude Code only -- errors on "
                                     "any other format")
-    render_group.add_argument("--insert-blank-lines", type=int, default=None,
+    render_group.add_argument("--blank-lines", "--insert-blank-lines", dest="blank_lines",
+                               type=int, default=None,
                                help="Blank lines padded around each '---' block separator "
-                                    "(default 1, this package's long-standing behavior). 1 = "
-                                    "one blank line each side (today's default: "
-                                    "'block\\n\\n---\\n\\nblock'). 0 = tight, --- on its own "
-                                    "line, no blank line ('block\\n---\\nblock'). -1 = fused, "
+                                    "(default 0). 0 = tight, --- on its own line. 1 = one blank "
+                                    "line each side. -1 = fused, "
                                     "--- shares the end of the preceding block's own last line "
                                     "('block ---\\nblock'). N>1 = N blank lines each side, a "
                                     "plain generalization of 1")
     render_group.add_argument("--gap-marker",
                                choices=["full", "inline", "inline2", "inline-short", "none"],
                                default=None,
-                               help="How a dropped-content gap is surfaced (default 'full', "
-                                    "this package's long-standing behavior). 'full': its own "
-                                    "standalone block, '[gap: N records omitted]', separated "
-                                    "like any other block (today's default). 'inline': same "
+                               help="How a dropped-content gap is surfaced (default 'inline'). "
+                                  "'full': its own "
+                                  "standalone block, '[gap: N records omitted]', separated "
+                                  "like any other block. 'inline': same "
                                     "text, folded into the separator instead of its own block "
                                     "-- '--- [gap: N records omitted] ---'. 'inline2': terser "
                                     "count, '--- ... Nx ... ---'. 'inline-short': no count at "
@@ -3152,13 +3297,24 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                     "kept blocks' prose only; separators, gap/stop-reason notes "
                                     "and the trailing marker comment are untouched")
     render_group.add_argument("--highlight", action="store_true", help=_HIGHLIGHT_HELP)
+    render_group.add_argument("--show-timestamps", choices=["pre", "post", "both", "none"],
+                               default=None,
+                               help="Place the source event timestamp before/after each prose "
+                                    "block (default pre). The source has one timestamp per event, "
+                                    "so pre/post/both change placement, not the recorded time")
+    render_group.add_argument("--timestamp-format", default=None,
+                               help="Python strftime format for timestamps (default '[%%H:%%M:%%S]')")
+    render_group.add_argument("--extract-metadata", choices=["pre", "post", "both"],
+                               default=None,
+                               help="Place source path/name/size/creation metadata and the "
+                                    "machine-readable cursor marker before, after, or both "
+                                    "(default both); --since-file reads any placement")
     color_group = extract_parser.add_mutually_exclusive_group()
     color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
-                              help="Force ANSI color for --render-markdown/--highlight even when "
-                                   "stdout isn't a terminal (default: color iff stdout is a tty)")
+                              help="Force ANSI color/highlighting even when stdout isn't a "
+                                   "terminal (default: color on a tty unless NO_COLOR is set)")
     color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
-                              help="Disable ANSI color for --render-markdown/--highlight even "
-                                   "when stdout is a terminal")
+                              help="Disable ANSI styling while preserving the chosen rendering mode")
     _add_follow_flags(extract_parser)
 
     handoff_group = extract_parser.add_argument_group(
@@ -3252,22 +3408,61 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     extract_debug_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
                                        help="Force the adapter instead of auto-detecting from the path")
     extract_debug_parser.add_argument("--profile", choices=sorted(PROFILES),
-                                       help="Same meaning as extract's --profile -- run this "
-                                            "profile and show exactly what it drops")
-    extract_debug_parser.add_argument("--checkpoints", type=int, default=None,
-                                       help="Same as extract's --checkpoints")
-    extract_debug_parser.add_argument("--long-threshold", type=int, default=None,
-                                       help="Same as extract's --long-threshold")
+                                       help="Same use-case profile as extract; default "
+                                            "operator-review. Selection and formatting flags "
+                                            "have the same meaning as extract.")
+    extract_debug_parser.add_argument("--max-checkpoints", "--checkpoints", dest="max_checkpoints",
+                                       type=int, default=None, help="Same as extract's --max-checkpoints")
+    extract_debug_parser.add_argument("--answer-length", "--long-threshold", dest="answer_length",
+                                       type=int, default=None, help="Same as extract's --answer-length")
     extract_debug_parser.add_argument("--max-words", type=int, default=None,
                                        help="Same as extract's --max-words")
     extract_debug_parser.add_argument("--include-thinking", action="store_true",
                                        help="Same as extract's --include-thinking")
-    extract_debug_parser.add_argument("--max-lifecycle-markers", type=int, default=None,
-                                       help="Same as extract's --max-lifecycle-markers")
+    extract_debug_parser.add_argument("--max-compactions", "--max-lifecycle-markers",
+                                       dest="max_compactions", type=int, default=None,
+                                       help="Same as extract's --max-compactions")
+    extract_debug_parser.add_argument("--max-time-minutes", type=int, default=None,
+                                       help="Same as extract's --max-time-minutes")
+    extract_debug_parser.add_argument("--epochs", metavar="N|A:B|all",
+                                       help="Same as extract's --epochs")
     extract_debug_parser.add_argument("--show-api-errors", action="store_true",
                                        help="Same as extract's --show-api-errors")
     extract_debug_parser.add_argument("--show-compaction-content", action="store_true",
                                        help="Same as extract's --show-compaction-content")
+    extract_debug_parser.add_argument("--show-tool-calls", action="store_true",
+                                       help="Same as extract's --show-tool-calls")
+    extract_debug_parser.add_argument("--show-tool-call-intent", action="store_true",
+                                       help="Same as extract's --show-tool-call-intent")
+    debug_since_group = extract_debug_parser.add_mutually_exclusive_group()
+    debug_since_group.add_argument("--since", help="Same marker semantics as extract's --since")
+    debug_since_group.add_argument("--since-file", help="Same snapshot-cursor semantics as extract")
+    extract_debug_parser.add_argument("--until", help="Same inclusive upper marker as extract")
+    extract_debug_parser.add_argument("--min-gap-records", type=int, default=None,
+                                       help="Same as extract's --min-gap-records")
+    extract_debug_parser.add_argument("--gap-marker",
+                                       choices=["full", "inline", "inline2", "inline-short", "none"],
+                                       default=None, help="Same as extract's --gap-marker")
+    extract_debug_parser.add_argument("--show-gap-source", action="store_true",
+                                       help="Same as extract's --show-gap-source")
+    extract_debug_parser.add_argument("--blank-lines", "--insert-blank-lines", dest="blank_lines",
+                                       type=int, default=None, help="Same as extract's --blank-lines")
+    extract_debug_parser.add_argument("--show-timestamps", choices=["pre", "post", "both", "none"],
+                                       default=None, help="Same as extract's --show-timestamps")
+    extract_debug_parser.add_argument("--timestamp-format", default=None,
+                                       help="Same as extract's --timestamp-format")
+    extract_debug_parser.add_argument("--extract-metadata", choices=["pre", "post", "both"],
+                                       default=None, help="Same as extract's --extract-metadata")
+    extract_debug_parser.add_argument("--render-markdown", action="store_true",
+                                       help="Same rendered-prose mode as extract")
+    extract_debug_parser.add_argument("--highlight", action="store_true",
+                                       help="Same source-highlighting mode as extract")
+    extract_debug_parser.add_argument("--strip-stale-wakeups", action="store_true",
+                                       help="Same as extract's --strip-stale-wakeups")
+    extract_debug_parser.add_argument("--redact-pattern", action="append", default=None,
+                                       help="Same as extract's repeatable --redact-pattern")
+    extract_debug_parser.add_argument("--ledger", action="store_true",
+                                       help="Same as extract's --ledger")
     debug_color_group = extract_debug_parser.add_mutually_exclusive_group()
     debug_color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
                                     help="Force ANSI color even when stdout isn't a terminal")
@@ -3283,9 +3478,14 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                         help=_OPENCODE_SESSION_HELP)
     extract_report_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
                                         help="Force the adapter instead of auto-detecting from the path")
+    extract_report_parser.add_argument("--type", dest="report_type",
+                                        choices=["report-sheet", "report-detailed", "csv"],
+                                        default=None,
+                                        help="Output shape (default report-sheet): compact "
+                                             "operator overview, readable per-call rows, or CSV "
+                                             "per-call data for spreadsheet/import use")
     extract_report_parser.add_argument("--detailed", action="store_true",
-                                        help="One row per real API call instead of the condensed "
-                                             "one-page block view")
+                                        help="Legacy alias for --type csv")
     extract_report_parser.add_argument("--json", action="store_true",
                                         help="JSON instead of CSV/text")
 
@@ -3296,8 +3496,13 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
         "extract-sessions",
         help="List a project/store's sessions and sub-agents, with lineage")
     extract_sessions_parser.add_argument(
-        "path", metavar="SESSION_LOG_OR_DIR",
-        help="Either a single SESSION_LOG (see extract's --help for that meaning; its "
+        "path", metavar="TOOL_OR_SESSIONS_PATH",
+        help="A tool name (claude, codex, opencode) to use its environment-aware "
+             "default storage path, or a SESSION_LOG/directory path. Claude uses "
+             "CLAUDE_CONFIG_DIR/projects, Codex uses CODEX_HOME/sessions, and "
+             "OpenCode uses OPENCODE_DB or its XDG database path. A session-log path "
+             "shows its whole family; a directory lists discovered families. "
+             "Either a single SESSION_LOG (see extract's --help for that meaning; its "
              "whole family -- sub-agents included -- is shown either way, whether you "
              "point at the top-level session or one specific sub-agent's own file) OR "
              "a DIRECTORY holding MANY sessions: a Claude Code project directory "
@@ -3309,6 +3514,10 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
              "records do not establish parent/child lineage")
     extract_sessions_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
                                           help="Force the adapter instead of auto-detecting from the path")
+    extract_sessions_parser.add_argument("--recurse", nargs="?", const="true",
+                                          choices=["true", "false"], default="true",
+                                          help="Search below the given directory (default true; "
+                                               "bare --recurse also means true)")
     extract_sessions_parser.add_argument("--json", action="store_true",
                                           help="JSON list instead of an indented tree")
 

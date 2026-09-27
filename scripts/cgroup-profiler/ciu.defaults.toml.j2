@@ -3,12 +3,11 @@
 # ==========================================================================
 #
 # One service, `daemon`: `cgprofile serve` as PID 1 inside
-# `cgprofile-host-daemon` (RG55-INTERFACE-CONTRACT.md §1.8). It is
-# `--privileged --pid=host --cgroupns=host --network=none` — a HOST
-# SINGLETON (see ciu.global.defaults.toml.j2's own comment on
-# `deploy.environment_tag = "host"`), never a per-instance/per-worktree
-# stack. `ciu up` from this directory (or `tools/daemon-run.sh` if ciu
-# refuses one of these three flags — see the P1 REPORT for which, if any).
+# `cgprofile-host-daemon` (RG55-INTERFACE-CONTRACT.md §1.8). It uses private
+# PID/cgroup namespaces and explicit read-only host proc/cgroup mounts, with
+# a separate DAMON sysfs mount — a HOST SINGLETON (see
+# ciu.global.defaults.toml.j2's comment on `deploy.environment_tag = "host"`),
+# never a per-instance/per-worktree stack. `ciu up` from this directory.
 
 [cgprofile]
 # The image this stack deploys. `local` for dev (`build-push.py --build`

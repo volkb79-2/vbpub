@@ -197,6 +197,125 @@ class TestSmallHelpers:
 # ── _predigest_specs ─────────────────────────────────────────────────────
 
 class TestPredigestSpecs:
+    def _configure_helper_pid(
+        self, monkeypatch, tmp_path: Path, *,
+        cgroup_text: Optional[str] = "0::/worker.scope\n",
+        same_namespace: bool = True, host_view: bool = False, process_exists: bool = True,
+    ):
+        proc_root = tmp_path / "proc"
+        pid_namespace = tmp_path / "pid-ns"
+        cgroup_namespace = tmp_path / "cgroup-ns"
+        pid_namespace.touch()
+        cgroup_namespace.touch()
+        process_dir = proc_root / "4242"
+        if process_exists:
+            process_dir.mkdir(parents=True)
+            namespace_dir = process_dir / "ns"
+            namespace_dir.mkdir()
+            (namespace_dir / "pid").symlink_to(pid_namespace)
+            (namespace_dir / "cgroup").symlink_to(cgroup_namespace)
+            (process_dir / "status").write_text("Name:\tworker\nNSpid:\t4242\n")
+            (process_dir / "stat").write_text(_fake_proc_stat(98765))
+            if cgroup_text is not None:
+                (process_dir / "cgroup").write_text(cgroup_text)
+        monkeypatch.setattr(access, "PROC_ROOT", str(proc_root))
+        monkeypatch.setattr(access, "have_host_cgroup_view", lambda: host_view)
+        monkeypatch.setattr(
+            access, "same_cgroup_namespace", lambda pid, root: same_namespace,
+        )
+        cgroup_namespace_inode = cgroup_namespace.stat().st_ino
+        monkeypatch.setattr(
+            access, "local_namespace_inode",
+            lambda name: cgroup_namespace_inode if name == "cgroup" else None,
+        )
+        monkeypatch.setattr(access, "self_container_id", lambda: "a" * 64)
+
+    def _helper_identity_option(self, tmp_path: Path) -> str:
+        pid_namespace_inode = (tmp_path / "pid-ns").stat().st_ino
+        cgroup_namespace_inode = (tmp_path / "cgroup-ns").stat().st_ino
+        return f"_cgprofile_pid={pid_namespace_inode}:4242:98765:{cgroup_namespace_inode}"
+
+    def test_helper_self_resolves_to_the_invoking_container_id(self, monkeypatch):
+        monkeypatch.setattr(access, "self_container_id", lambda: "a" * 64)
+
+        out = cg._predigest_specs(["self@follow"], resolve_self=True)
+
+        assert out == [f"containerid:{'a' * 64}@follow=1,as=self"]
+
+    def test_helper_self_preserves_an_explicit_label(self, monkeypatch):
+        monkeypatch.setattr(access, "self_container_id", lambda: "a" * 64)
+
+        out = cg._predigest_specs(["self@as=caller"], resolve_self=True)
+
+        assert out == [f"containerid:{'a' * 64}@as=caller"]
+
+    def test_helper_self_refuses_when_the_callers_container_id_is_unknown(
+        self, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(access, "self_container_id", lambda: None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cg._predigest_specs(["self"], resolve_self=True)
+
+        assert exc_info.value.code == 2
+        assert "Docker inspect could not establish it" in capsys.readouterr().err
+
+    def test_helper_pid_resolves_through_caller_container_and_relative_cgroup(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        self._configure_helper_pid(monkeypatch, tmp_path)
+
+        out = cg._predigest_specs(["pid:4242@follow"], resolve_self=True)
+
+        assert out == [
+            f"containerid:{'a' * 64}@subpath=/worker.scope,{self._helper_identity_option(tmp_path)},"
+            "follow=1,as=pid-4242"
+        ]
+
+    def test_helper_pid_preserves_an_explicit_label(self, monkeypatch, tmp_path: Path):
+        self._configure_helper_pid(monkeypatch, tmp_path)
+
+        out = cg._predigest_specs(["pid:4242@as=worker"], resolve_self=True)
+
+        assert out == [
+            f"containerid:{'a' * 64}@subpath=/worker.scope,{self._helper_identity_option(tmp_path)},as=worker"
+        ]
+
+    def test_helper_pid_can_target_the_callers_container_root(self, monkeypatch, tmp_path: Path):
+        self._configure_helper_pid(monkeypatch, tmp_path, cgroup_text="0::/\n")
+
+        out = cg._predigest_specs(["pid:4242"], resolve_self=True)
+
+        assert out == [
+            f"containerid:{'a' * 64}@subpath=/,{self._helper_identity_option(tmp_path)},as=pid-4242"
+        ]
+
+    @pytest.mark.parametrize(
+        ("spec", "config", "message"),
+        [
+            ("pid:bad", {}, "needs a number"),
+            ("pid:0", {}, "positive process id"),
+            ("pid:4242", {"host_view": True}, "private cgroup view"),
+            ("pid:4242", {"process_exists": False}, "not visible"),
+            ("pid:4242", {"same_namespace": False}, "different cgroup namespace"),
+            ("pid:4242", {"cgroup_text": "1:name=systemd:/x\\n"}, "no absolute unified"),
+            ("pid:4242", {"cgroup_text": "0::relative/path\\n"}, "no absolute unified"),
+            ("pid:4242", {"cgroup_text": None}, "no absolute unified"),
+            ("pid:4242", {"cgroup_text": "0::/../outside\\n"}, "unsafe cgroup path"),
+            ("pid:4242@subpath=/override", {}, "reserved for the helper"),
+        ],
+    )
+    def test_helper_pid_refuses_unverifiable_mappings(
+        self, monkeypatch, tmp_path: Path, capsys, spec, config, message,
+    ):
+        self._configure_helper_pid(monkeypatch, tmp_path, **config)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cg._predigest_specs([spec], resolve_self=True)
+
+        assert exc_info.value.code == 2
+        assert message in capsys.readouterr().err
+
     def test_container_spec_resolves_to_containerid(self, monkeypatch):
         monkeypatch.setattr(targets_mod, "resolve_container", lambda ref: ("a" * 64, "my-app"))
         out = cg._predigest_specs(["container:my-app"])
@@ -772,6 +891,11 @@ def make_collect_args(run_dir: Path, **overrides) -> argparse.Namespace:
     return ns
 
 
+def _fake_proc_stat(start_ticks: int, pid: int = 4242) -> str:
+    fields = ["S", *(["0"] * 18), str(start_ticks)]
+    return f"{pid} (worker (fixture)) {' '.join(fields)}\n"
+
+
 class TestCmdCollect:
     def test_no_target_resolved_is_an_error(self, collect_env, tmp_path: Path):
         args = make_collect_args(tmp_path / "run-empty", target=[], observe=[])
@@ -948,7 +1072,7 @@ class TestCmdCollect:
     def test_pid_targets_are_sampled_and_empty_proc_data_is_filtered(self, collect_env, tmp_path: Path, monkeypatch):
         run_dir = tmp_path / "run-pid"
 
-        def fake_cgroup_of_pid(pid, root=access.CGROUP_ROOT):
+        def fake_cgroup_of_pid(pid, root=access.CGROUP_ROOT, proc_root=access.PROC_ROOT):
             return "/dev.slice/dev-background.slice"
 
         monkeypatch.setattr(targets_mod, "cgroup_of_pid", fake_cgroup_of_pid)
@@ -1051,7 +1175,7 @@ class TestCmdCollect:
         monkeypatch.setattr(damon_lib, "DamonSession", FakeDamonSession)
         monkeypatch.setattr(
             targets_mod, "cgroup_of_pid",
-            lambda pid, root=access.CGROUP_ROOT: "/dev.slice/dev-background.slice",
+            lambda pid, root=access.CGROUP_ROOT, proc_root=access.PROC_ROOT: "/dev.slice/dev-background.slice",
         )
         monkeypatch.setattr(targets_mod.util, "read_text", lambda p: "fakeproc")
         monkeypatch.setattr(metrics_lib, "sample_proc", lambda pid, proc_root="/proc": {})
@@ -1122,6 +1246,10 @@ class TestLaunchHelper:
             return FakePopen(command)
 
         monkeypatch.setattr(cg.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(
+            access, "_docker",
+            lambda *a, **k: subprocess.CompletedProcess(a, returncode=1),
+        )
         run_path = str(tmp_path / "run-1")
         child = cg._launch_helper(run_path, ["--run-dir", run_path], None)
         assert isinstance(child, FakePopen)
@@ -1133,8 +1261,179 @@ class TestLaunchHelper:
         # docker_args() (--privileged, the bind mounts, etc.) sit between the
         # binary and the plain-python3 collector invocation.
         assert "--privileged" in command
+        assert "--cpus=3" in command
+        assert "--cgroupns=host" not in command
+        assert "--pid=host" not in command
+        assert "--cgroupns=private" in command
         assert "--cgroup-parent=dev-interactive.slice" in command
         assert "starting helper container" in capsys.readouterr().err
+
+    def test_helper_is_named_and_updated_to_the_cpu_cap(self, monkeypatch, tmp_path: Path):
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
+            out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        captured = {}
+        child = FakePopen(exit_code=None)
+        monkeypatch.setattr(cg.subprocess, "Popen", lambda command, **kwargs: captured.update(command=command) or child)
+
+        def fake_docker(*args, **kwargs):
+            captured["update"] = args
+            captured["timeout"] = kwargs["timeout"]
+            return access.subprocess.CompletedProcess(args=["docker", *args], returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(access, "_docker", fake_docker)
+        run_path = str(tmp_path / "run-named-helper")
+        result = cg._launch_helper(run_path, ["--run-dir", run_path], None)
+
+        assert result is child
+        command = captured["command"]
+        assert "--name" in command
+        assert command[command.index("--name") + 1].startswith("cgprofile-helper-")
+        assert captured["update"] == ("update", "--cpus=3", command[command.index("--name") + 1])
+        assert captured["timeout"] == 2
+
+    def test_helper_that_exits_after_failed_update_is_not_treated_as_cap_failure(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
+            out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        child = FakePopen(exit_code=None)
+        monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
+
+        def failed_update(*args, **kwargs):
+            child.returncode = 0
+            return access.subprocess.CompletedProcess(
+                args=["docker", *args], returncode=1, stdout="", stderr="already exited",
+            )
+
+        monkeypatch.setattr(access, "_docker", failed_update)
+        result = cg._launch_helper(str(tmp_path / "run-exits-during-update"), ["--run-dir", "x"], None)
+
+        assert result is child
+        assert child.terminated is False
+
+    def test_helper_returned_when_it_finishes_at_retry_deadline(self, monkeypatch, tmp_path: Path):
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
+            out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        child = FakePopen(exit_code=None)
+        monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
+        monkeypatch.setattr(
+            access, "_docker",
+            lambda *a, **k: access.subprocess.CompletedProcess(
+                args=["docker", *a], returncode=1, stdout="", stderr="not found",
+            ),
+        )
+        sleeps = []
+
+        def finish_on_final_retry(_seconds):
+            sleeps.append(None)
+            if len(sleeps) == 5:
+                child.returncode = 0
+
+        monkeypatch.setattr(cg.time, "sleep", finish_on_final_retry)
+        result = cg._launch_helper(str(tmp_path / "run-finishes-at-deadline"), ["--run-dir", "x"], None)
+
+        assert result is child
+        assert child.terminated is False
+
+    def test_helper_cap_refusal_kills_child_if_termination_times_out(self, monkeypatch, tmp_path: Path):
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
+            out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+
+        class ChildThatIgnoresTerminate(FakePopen):
+            def wait(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("cgprofile-helper", timeout)
+                return 0
+
+        child = ChildThatIgnoresTerminate(exit_code=None)
+        monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
+        monkeypatch.setattr(
+            access, "_docker",
+            lambda *a, **k: access.subprocess.CompletedProcess(
+                args=["docker", *a], returncode=1, stdout="", stderr="not found",
+            ),
+        )
+        sleeps = []
+
+        def keep_running(_seconds):
+            sleeps.append(None)
+
+        monkeypatch.setattr(cg.time, "sleep", keep_running)
+        with pytest.raises(SystemExit) as exc_info:
+            cg._launch_helper(str(tmp_path / "run-cap-kill"), ["--run-dir", "x"], None)
+
+        assert exc_info.value.code == 2
+        assert child.terminated is True
+        assert child.killed is True
+
+    def test_helper_refuses_if_running_container_cannot_be_capped(self, monkeypatch, tmp_path: Path):
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
+            out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        child = FakePopen(exit_code=None)
+        monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
+        calls = []
+
+        def failed_update(*args, **kwargs):
+            calls.append(args)
+            return access.subprocess.CompletedProcess(
+                args=["docker", *args], returncode=1, stdout="", stderr="container not found",
+            )
+
+        monkeypatch.setattr(access, "_docker", failed_update)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cg._launch_helper(str(tmp_path / "run-cap-refusal"), ["--run-dir", "x"], None)
+
+        assert exc_info.value.code == 2
+        assert child.terminated is True
+        assert calls[-1][0:2] == ("rm", "--force")
+        assert calls[-1][2].startswith("cgprofile-helper-")
+
+    def test_helper_refuses_when_cap_update_transport_raises(self, monkeypatch, tmp_path: Path):
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
+            out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        child = FakePopen(exit_code=None)
+        monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
+
+        def fail_update(*args, **kwargs):
+            raise OSError("docker unavailable")
+
+        monkeypatch.setattr(access, "_docker", fail_update)
+        with pytest.raises(SystemExit) as exc_info:
+            cg._launch_helper(str(tmp_path / "run-cap-transport"), ["--run-dir", "x"], None)
+
+        assert exc_info.value.code == 2
+        assert child.terminated is True
 
     def test_cgroup_parent_argument_is_threaded_to_build_helper_spec(self, monkeypatch, tmp_path: Path):
         spec = access.HelperSpec(
@@ -1150,6 +1449,11 @@ class TestLaunchHelper:
         monkeypatch.setattr(access, "build_helper_spec", fake_build_helper_spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
         monkeypatch.setattr(cg.subprocess, "Popen", lambda command, **k: FakePopen(command))
+        monkeypatch.setattr(
+            access,
+            "_docker",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args, 0),
+        )
         run_path = str(tmp_path / "run-2")
         cg._launch_helper(run_path, ["--run-dir", run_path], None, cgroup_parent="my-explicit.slice")
         assert captured["cgroup_parent"] == "my-explicit.slice"
@@ -1237,6 +1541,24 @@ class TestStartRun:
         )
         with pytest.raises(SystemExit):
             cg._start_run(args)
+
+    def test_empty_resolved_label_is_an_error_before_creating_the_run_dir(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        monkeypatch.setattr(access, "choose_mode", lambda requested: "direct")
+        monkeypatch.setattr(targets_mod, "resolve_label", lambda selector: [])
+        args = argparse.Namespace(
+            target=["label:app=missing"], observe=[], out_dir=str(tmp_path / "runs"),
+            run_id=None, mode="auto", hot_interval=0.25, idle_interval=2.0,
+            discovery_interval=2.0, max_depth=4, duration=None,
+            follow_children=False, damon=False, cap=[], helper_image=None,
+            start_timeout=5.0,
+        )
+
+        with pytest.raises(SystemExit):
+            cg._start_run(args)
+
+        assert not (tmp_path / "runs").exists()
 
     def test_direct_mode_spawns_a_local_subprocess(self, monkeypatch, tmp_path: Path):
         holder: Dict[str, str] = {}
@@ -1777,19 +2099,30 @@ class TestCmdTargets:
         monkeypatch.setattr(access, "build_helper_spec", fake_build_helper_spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
         captured = {}
+        child = FakePopen(exit_code=3)
 
-        def fake_run(command, check=False):
+        def fake_popen(command, **kwargs):
             captured["command"] = command
-            return subprocess.CompletedProcess(command, returncode=3)
+            captured["kwargs"] = kwargs
+            return child
 
-        monkeypatch.setattr(cg.subprocess, "run", fake_run)
+        monkeypatch.setattr(cg.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(
+            access, "_docker",
+            lambda *a, **k: subprocess.CompletedProcess(a, returncode=1),
+        )
         result = cg.cmd_targets(targets_args(
             mode="helper", target=["cgroup:/dev.slice"], helper_cgroup_parent="dev-interactive.slice",
         ))
         assert result == 3
+        assert captured["kwargs"] == {"stdout": None, "stderr": None}
         assert "--target" in captured["command"]
         assert "targets" in captured["command"]
         assert "--cgroup-parent=dev-interactive.slice" in captured["command"]
+        assert "--name" in captured["command"]
+        assert captured["command"][captured["command"].index("--name") + 1].startswith(
+            "cgprofile-targets-"
+        )
         assert captured_spec_call["cgroup_parent"] == "dev-interactive.slice"
         # RW-3 regression guard: the helper spec's *output* mount must be
         # DEFAULT_OUT (cgprofile.py's runs/ dir), not HERE (the repo dir
@@ -1800,6 +2133,36 @@ class TestCmdTargets:
         assert captured_spec_call["repo"] == cg.HERE
         assert captured_spec_call["out"] == cg.DEFAULT_OUT
         assert captured_spec_call["out"] != cg.HERE
+
+    def test_helper_mode_applies_live_cpu_cap_to_named_probe(self, monkeypatch):
+        monkeypatch.setattr(access, "choose_mode", lambda requested: "helper")
+        monkeypatch.setattr(targets_mod, "docker_bin", lambda: None)
+        spec = access.HelperSpec(
+            image="img:local", repo_host_path="/h/repo", repo_mount_path=cg.HERE,
+            out_host_path="/h/out", out_mount_path=cg.HERE,
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        child = FakePopen(exit_code=None)
+        captured = {}
+
+        def fake_popen(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return child
+
+        monkeypatch.setattr(cg.subprocess, "Popen", fake_popen)
+
+        def fake_docker(*args, timeout=30):
+            captured["docker"] = args
+            captured["timeout"] = timeout
+            return subprocess.CompletedProcess(args, returncode=0)
+
+        monkeypatch.setattr(access, "_docker", fake_docker)
+        assert cg.cmd_targets(targets_args(mode="helper")) == 0
+        name = captured["command"][captured["command"].index("--name") + 1]
+        assert captured["docker"] == ("update", "--cpus=3", name)
+        assert captured["timeout"] == 2
 
 
 # ── cmd_doctor ───────────────────────────────────────────────────────────
@@ -2106,10 +2469,22 @@ class TestCmdServe:
             cg.cmd_serve(args)
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
-        assert "--privileged" in err and "--cgroupns=host" in err and "--pid=host" in err
+        assert "bind-mounted" in err and "keep the cgroup namespace private" in err
+
+    def test_refuses_without_a_host_proc_view(self, monkeypatch, capsys):
+        monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        monkeypatch.setattr(access, "have_host_proc_view", lambda proc: False)
+        args = cg.build_parser().parse_args(["serve"])
+        with pytest.raises(SystemExit) as exc_info:
+            cg.cmd_serve(args)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "host /proc tree explicitly bind-mounted read-only" in err
+        assert "Keep the PID namespace private" in err
 
     def test_constructs_the_server_and_serves_forever(self, monkeypatch, tmp_path):
         monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        monkeypatch.setattr(access, "have_host_proc_view", lambda proc: True)
         captured: Dict[str, Any] = {}
 
         class FakeServer:
@@ -2140,6 +2515,7 @@ class TestCmdServe:
 
     def test_empty_observe_slices_is_the_empty_tuple(self, monkeypatch, tmp_path):
         monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        monkeypatch.setattr(access, "have_host_proc_view", lambda proc: True)
         captured: Dict[str, Any] = {}
 
         class FakeServer:

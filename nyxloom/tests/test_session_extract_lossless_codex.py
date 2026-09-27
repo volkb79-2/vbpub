@@ -168,3 +168,58 @@ def test_skips_blank_and_malformed_lines(tmp_path):
     )
     out = lossless.dump_codex(fp)
     assert "survives" in out
+
+
+def test_question_calls_and_replies_are_marked_and_prose_copies_are_deduplicated(tmp_path):
+    question = "Which profile should be the default?"
+    call_id = "lossless-question"
+    call = {
+        "timestamp": "t0", "ordinal": 10, "type": "response_item", "payload": {
+            "type": "function_call", "name": "request_user_input_async", "call_id": call_id,
+            "arguments": json.dumps({"questions": [{
+                "title": "Profile", "question": question, "options": ["Review", "All"],
+            }]}),
+        },
+    }
+    copy = {
+        "timestamp": "t1", "ordinal": 11, "type": "event_msg", "payload": {
+            "type": "item_completed", "item": {
+                "type": "AgentMessage", "content": [{"type": "Text", "text": (
+                    f"{question}\n- Review\n- All"
+                )}],
+            },
+        },
+    }
+    reply = "<send_user_message_question_reply>" + json.dumps([{
+        "question": question,
+        "answer": "All",
+        "questionItemId": json.dumps(["request_user_input_async", call_id, 0]),
+    }]) + "</send_user_message_question_reply>"
+    answer = {
+        "timestamp": "t2", "ordinal": 12, "type": "event_msg", "payload": {
+            "type": "item_completed", "item": {
+                "type": "UserMessage", "content": [{"type": "text", "text": reply}],
+            },
+        },
+    }
+    fp = tmp_path / "rollout-question.jsonl"
+    fp.write_text("\n".join(json.dumps(record) for record in (call, copy, answer)) + "\n")
+
+    full = lossless.dump_codex(fp)
+    assert "===[10 | t0 | INTERVIEW]===" in full
+    assert "===[12 | t2 | QA_PAIR]===" in full
+    assert full.count(f"INTERVIEW: Profile\n{question}\n- Review\n- All") == 2
+    assert "| ASSISTANT]===" not in full
+    assert "<send_user_message_question_reply>" not in full
+    assert "OPERATOR: All" in full
+
+    # The call is outside the resumed span, while both its prose copy and
+    # delayed answer remain visible. The copy is labeled as the prompt for
+    # this span, and its choices are still attached to the answer.
+    suffix = lossless.dump_codex(fp, since_marker="10")
+    assert "===[10 | t0 | INTERVIEW]===" not in suffix
+    assert "===[11 | t1 | INTERVIEW]===" in suffix
+    assert "===[12 | t2 | QA_PAIR]===" in suffix
+    assert "OPERATOR: All" in suffix
+    assert "- Review\n- All\n\nOPERATOR: All" in suffix
+    assert "| ASSISTANT]===" not in suffix

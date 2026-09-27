@@ -28,27 +28,20 @@ cheap, and it is the weakest. A change set here reached a passing suite at 100%
 statement *and* branch coverage while the campaign found **six surviving
 mutants** — one in the single line deciding whether a pinned version was stale.
 
+From the repository root, run the project lane:
+
 ```bash
-cd <repo root>
-export CMRU_WHEEL_BUILDER_IMAGE=wheel-builder:local \
-       CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
-       CMRU_TESTER_MEMORY=3g CMRU_TESTER_MEMORY_SWAP=16g CMRU_TESTER_CPUS=1.5 \
-       CMRU_TESTER_CGROUP_PROBE_IMAGE=debian:trixie-slim
-cmru tester-gate --cwd cmru -- /bin/sh -ec 'cd .. && /opt/tester-venv/bin/python -m pip install \
-  --no-deps --no-build-isolation --editable assay && cd cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python \
-  tools/mutation_campaign.py --assay-source ../assay --repo-root .. \
-  --project-root . --base origin/main --max-mutants 10000 \
-  --evidence .assay/mutation-cmru.json --require-candidates \
-  -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch \
-     --cov-fail-under=100 --cov-report=json:coverage.json' > /tmp/mut.log 2>&1
-echo "MUTATION_EXIT=$?"
+./run-gate.py mutation
 ```
 
-It is slow — a container start plus a full pytest run per candidate — so run it
-detached. **Read `.assay/mutation-cmru.json` rather than reasoning about a
-survivor:** it names every mutant, its operator, and its exact `Op->Op`
-description (`GtE->Gt`, `Lt->LtE`), which usually makes the cause obvious in
-seconds.
+The lane runs the campaign in `tester-unified`, with a 120-second timeout for
+each candidate. A timeout is recorded as a killed mutant so an infinite-loop
+mutation cannot hold the lane indefinitely. The runner updates
+`.assay/mutation-cmru.json` and appends per-candidate events to
+`.assay/progress-mutation-cmru.jsonl`; another run resumes from completed killed
+results and retries survivors or interrupted candidates. **Read the evidence
+file rather than reasoning about a survivor:** it records each mutation's path,
+operator, exact `Op->Op` description, outcome, and termination reason.
 
 ## 2. You cannot dry-run your own unreleased changes
 

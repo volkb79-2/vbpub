@@ -29,10 +29,27 @@ is a read-only, cgroup-namespaced view of its own subtree; `dev.slice`,
 `wings.slice` and everything else simply do not exist there. Shuttling
 individual file reads across a container boundary cannot sustain a 250 ms
 cadence, so instead the profiler **re-executes its entire self** inside a
-privileged helper container (`--privileged --user 0:0 --cgroupns=host
---pid=host`) with the repo and the output directory bind-mounted. Sampling code
-is then byte-identical in both modes, and `access.py` is the only module that
-knows the difference.
+privileged helper container with private PID/cgroup namespaces, the repo and
+output directory bind-mounted, and explicit read-only host `/proc` and cgroup
+mounts. Host process data is read from `/hostproc` through
+`CGPROFILE_PROC_ROOT`; the host cgroup tree is mounted at
+`/sys/fs/cgroup`. Sampling code is then byte-identical in both modes, and
+`access.py` owns the proc-root selection. A helper's private PID namespace
+cannot match host PIDs against `cgroup.procs` (the kernel translates
+invisible host tasks to PID `0`), so the Docker-aware caller resolves
+container names, labels, and `self` to immutable container IDs before
+re-exec. `self` therefore continues to mean the invoking container rather
+than the short-lived helper. The ID is located in the read-only host cgroup
+tree; it is never inferred from a namespace-relative `/proc/<pid>/cgroup`
+string.
+
+Before starting a helper, `access.py` launches a bounded placement probe under
+the injected interactive slice, after checking that it matches the cockpit's
+actual Docker parent. The probe uses the local `tester-unified:local` image by
+default (or `CGPROFILE_PLACEMENT_PROBE_IMAGE`), queries host systemd over a
+read-only DBus mount, and confirms both the probe and requested slices are
+loaded, non-transient units with instantiated cgroups. Only then is the
+privileged collector launched under the requested parent.
 
 **Bind sources are host paths.** A path handed to the Docker daemon is resolved
 on the host, not inside this container, so `/workspaces/vbpub` must be
@@ -65,9 +82,8 @@ than a huge negative spike. Nothing downstream may reintroduce that spike.
   scipy/numpy underneath. Do not hand-roll any of that.
 
 **A third mode, RG-55: the always-on daemon.** `cgprofile serve` is a
-privileged, long-lived process (`--privileged --pid=host --cgroupns=host`,
-never `--cgroupns=host --user 0:0` re-executed per invocation the way the
-helper container above is) that run-gate talks to over a Unix socket
+privileged, long-lived process with private PID/cgroup namespaces and
+explicit read-only host proc/cgroup mounts, that run-gate talks to over a Unix socket
 per lane instead of spawning a collector each time —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract, and it is STILL
 collector-tier: `lib/serve.py` never imports pandas, even for `ctl report`
@@ -596,9 +612,11 @@ cgprofile ctl     <version|start|status|host|stop|report|gc>    RG-55 socket cli
 
 ### 4.13 `subtree.py` (RG-55 C2) — token → pid-subtree resolver
 
-`SubtreeResolver(cgroup_abs_path, token, proc_root)`: `cgroup.procs` gives
-every pid directly in the target cgroup; a pid belongs to the profiled
-lane iff `/proc/<pid>/environ` (NUL-separated, `errors="replace"`) carries
+`SubtreeResolver(cgroup, cgroup_root, token, proc_root)`: direct target-cgroup
+PIDs come from `cgroup.procs`, or from host `/proc/<pid>/cgroup` resolution
+when a private PID namespace renders those entries as zero. A pid belongs to
+the profiled lane iff it is directly in the target cgroup and
+`/proc/<pid>/environ` (NUL-separated, `errors="replace"`) carries
 `RUN_GATE_PROFILE_SESSION=<token>`, plus every descendant of such a pid
 (walked via `/proc/<pid>/task/*/children` when the kernel exposes it, else
 a ppid map built from `/proc/*/stat`, parsed past the last `)` since a
@@ -706,9 +724,6 @@ number.
 - cgroup v2 at `/sys/fs/cgroup`, mounted **without `memory_recursiveprot`**.
 - Devcontainer runs in `dev-interactive.slice`; gates run in
   `dev-background.slice` (`$CGROUP_PARENT_DEV_BACKGROUND`).
-- Helper container verified working:
-  `docker run --rm -i --privileged --user 0:0 --cgroupns=host --pid=host …`
-  gives rw host cgroupfs, host `/proc`, and writable DAMON sysfs.
 - Workspace bind: host `/home/vb/volkb79-2/vbpub` → `/workspaces/vbpub`.
 - Python 3.14.6 in both the devcontainer and the helper image. The
   devcontainer's own interpreter is itself a venv (`/home/vscode/.venv`), so

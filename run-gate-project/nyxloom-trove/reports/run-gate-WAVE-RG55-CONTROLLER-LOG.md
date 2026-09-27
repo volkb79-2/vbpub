@@ -3848,3 +3848,639 @@ the helper's own visible PID membership in the mounted cgroup tree and local
 `/proc/self/cgroup`, then normalize each observed process path against that
 derived root. Reject missing/ambiguous membership or an absent resolved
 cgroup; do not use a host cgroup namespace to avoid the translation.
+
+### RW-312 — 2026-09-24 00:49:07Z — scope token roots to the selected cgroup
+
+The private-PID fix must preserve §2.2's attribution boundary: resolve the
+positive PIDs directly in the selected target cgroup (using the explicit host
+proc view when `cgroup.procs` exposes only zero), then match the exact token
+among those PIDs. Do not search all host processes for token roots. Their
+descendants remain attributed if they later move to another cgroup. A target
+of `/` means processes directly in the hierarchy root, not every descendant.
+This also avoids resolving the no-token PID list a second time on token-backed
+session startup. P1 source and regression tests now encode this ruling; fresh
+registered gates are still required after the edits.
+
+### RW-313 — 2026-09-24 00:49:07Z — distinct gate worktrees may run concurrently
+
+The operator clarified that independent CIU worktrees may host concurrent gate
+containers; the other controller's local one-at-a-time scheduling choice is
+not a host-wide exclusion rule. Each container still needs its own unique
+exact name, read-only source bind, verified loaded `dev-gates.slice` parent,
+and immediate 3-CPU cap. Worktree isolation separates source/evidence, not host
+resources; keep the two-mutation-lane ceiling and the memory-PSI admission
+guard (`full avg10` must be at most 5 before launching work). The Wave C
+`run-gate-assay-selfhosted-1477047-21288-1790210014` and P1
+`cgprofile-gate-1478779-1790210092` containers did overlap; P1's exact-tree
+`r0-r1` completed cleanly with 1,324 tests and 100% statement/branch coverage
+in 72.891 seconds. The P1 tree changed afterward under RW-312, so this result
+is historical, not final evidence. Earlier this session I also mistakenly
+launched a local targeted pytest when memory PSI full avg10 was 6.97; collection
+stopped because the devcontainer lacked `numpy`, and no test body ran. I will
+not launch further validation until the admission threshold is met.
+
+The P1-local RW-310/RW-311 were renumbered RW-312/RW-313 because canonical
+main already assigns RW-310/RW-311 to cockpit/BuildKit and release-identity
+rulings. The P1 meanings are preserved above.
+
+### RW-310 — 2026-09-24 06:04:07Z — record current cockpit source and BuildKit socket remediation
+
+The operator confirms the running devcontainer is based on
+`/workspaces/dstdns/.devcontainer/devcontainer.json`. This is context only:
+the controller must not inspect or modify `/workspaces/dstdns`; all durable
+host-setup changes belong upstream in
+`modern-debian-tools-python-debug/host-setup`.
+
+The rootless BuildKit socket was inaccessible because it was created as
+`1000:1000` mode `0660`, while the cockpit has the Docker group GID but not
+GID 1000. The live host was corrected to use a sticky shared runtime directory
+and a post-start socket `chgrp docker`/`chmod 0660`; no service restart was
+performed. Matching upstream source is committed on
+`rg55-buildkit-socket-gid` at `7f0f46f3`; its registered `smoke` lane passed
+(`85 passed, 6 skipped`, exit 0). This branch remains unmerged and requires
+independent review; the smoke result is not release evidence. No file under
+`/workspaces/dstdns` was read or changed.
+
+### RW-311 — 2026-09-24 06:14:06Z — bind daemon version identity to CMRU's release tag
+
+RW-307's version-identity question is resolved: CMRU is the authoritative
+source of the OCI release coordinate, so the built CLI and daemon self-report
+must both use that same coordinate. In the P6 worktree, commit `dfef6bad`
+reads the `cgprofile-v<version>` tag at `HEAD`, validates it, passes the exact
+value through the build to `CGPROFILE_VERSION`, and uses that embedded value
+for both CLI and daemon identity. Untagged local builds identify as
+`0.0.0-dev`; an explicitly present but empty/malformed version now refuses
+rather than silently falling back. The README, DESIGN-GUIDE, and CONSUMERS
+examples were updated with the behavior and release flow.
+
+The controller verified CMRU's order locally: project gates run before tag
+creation, then the release tag is created/pushed before build and publish. A
+read-only CMRU status against the P6 worktree reports no existing cgprofile
+tag, so P1's first release must keep the settled explicit `--set-version
+1.0.0` rather than accepting the SCM first-release default `0.1.0`. Focused
+version/build/CLI tests pass (`26 passed`); registered P6 `r0-r1` is running
+on the clean `dfef6bad` tree, and `r3`, P6 R2, independent review, and release
+remain outstanding.
+
+### RW-318 — 2026-09-24 07:26:57Z — disqualify the legacy P1 gate receipt
+
+The nested `r0-r1` invocation on stale candidate
+`9b70a46e902b5ea63ea9de699165593ddae8bd54` reported exit 0, 1,202 tests
+passed and 100% line/branch coverage (history duration 69.198 s). The exact
+test container `bold_dewdney` was in `dev-background.slice`, not the required
+loaded `dev-gates.slice`; inspection showed the gate's placement probe used
+`--cgroupns=host`. I applied `docker update --cpus=3` and verified
+`NanoCpus=3000000000`, then stopped that exact container. This receipt is
+therefore NOT accepted as RG-55 shipping evidence despite the test/coverage
+PASS. The P1-private-ns branch carries the corrected named-container launcher
+and private-namespace probe; its reconciled exact-tree gate is still required.
+No unrelated container was stopped.
+
+### RW-319 — 2026-09-24 07:41:38Z — permit a third mutation lane under verified gate capacity
+
+The operator supersedes the earlier hard two-lane ceiling. The host's
+`dev-gates.slice` is verified loaded with `CPUQuotaPerSecUSec=5s` (five CPU
+equivalents); allow up to **three** concurrent mutation containers estate-wide.
+This is permission to use the bounded capacity, not a claim that three
+three-CPU containers can receive five CPUs simultaneously: CPU scheduling and
+contention are expected, allowed conditions. Each lane gets a unique exact
+container name, the declared and verified `dev-gates.slice` parent, and an
+immediate verified `docker update --cpus=3`. Check memory PSI before launch and
+do not launch while `full avg10 > 5`.
+
+Functional outcomes and mutation classifications must be deterministic and
+agnostic to scheduler contention. Time/budget controls exist only for safety
+and resumability; timeout, interruption, pressure, or an unjudged candidate is
+incomplete/infrastructure evidence, never a product verdict. Do not change
+test semantics or classify a candidate from elapsed wall time. The controller
+must update review/dispatch packets that still encode the former two-lane cap.
+
+### RW-320 — 2026-09-25 02:49:51Z — P1 R2 survivors require behavioral oracles
+
+The exact registered P1 R2 on `51198f2e4759acbd69dfd770b843cdf20b1d6ed0`
+finished at `2026-09-24T09:19:52.297677Z`: 81/81 candidates executed, 71
+killed, 10 survived, and zero equivalent, budget-exceeded, crashed, or hung.
+The ten survivors at `access.py:390`, `targets.py:262-267`, and
+`version.py:52,57,60` are behavioral-oracle gaps, not accepted equivalents.
+The P1 worktree now contains focused tests for diagnostic flush-before-start,
+nonpositive-PID refusal, both missing namespace mapping facts, malformed
+prefix refusal, subprocess option semantics, and both diagnostic fallback
+paths. The focused 235-test suite passed. These edits plus this ruling/report
+change the tree, so the `51198f2e` mutation records are not release evidence
+for the next candidate. Commit all repair and record changes before starting
+the next registered R2; then keep that exact tree quiet through R2 and final
+short gates. The mechanical outcome for `51198f2e` remains
+`FAIL/MUTANTS_SURVIVED`.
+
+### RW-321 — 2026-09-25 03:06:05Z — reconcile P1 to current main before long mutation
+
+Before launching its next long R2, the P1 worktree was found behind `main`
+(`b52dc9f8` versus `7f465669`). The intervening main diff was read and
+contained only the 61-line assay backlog entry in
+`assay/nyxloom-trove/4-backlog.md`; no P1 implementation code changed.
+Current main was merged cleanly into the P1 branch as `a3b4dc1c`, ensuring
+the source-backed gate picks up main's current assay tree. All short-gate and
+mutation evidence must now match the post-reconciliation commit; rerun both
+short gates before starting the new R2. This reconciles an already-settled
+candidate with main and does not reopen the P1 design decisions.
+
+### RW-322 — 2026-09-25 10:30:44Z — P1 R2 terminal is incomplete; reconcile before new evidence
+
+The detached registered P1 R2 on quiet tree
+`1908316b227df8a2b8fd259969725b4c7a9f1b27` ran in
+`run-gate-vbpub-r2-3690082-1790305991` from
+`2026-09-25T03:13:17.949231Z` to `2026-09-25T04:27:11.853270Z`. All 81
+candidates are accounted for: 80 killed, one `hung`, and zero survivors,
+equivalents, per-candidate budget excesses, or crashes. The separate verdict
+is `BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4; do not call it a PASS or a
+mutant survival. Candidate 40 (`7692929c11d002ae02db963540fb42e06618318c814e1e99e71fed42894eea9c`,
+`lib/targets.py:191`, `Eq->NotEq`) reported 1,321 completed tests but has no
+kill proof in the retained candidate-state/progress artifacts. RW-319 binds:
+do not explain this as scheduler contention or let elapsed time decide
+product behavior. Diagnose it from a fresh, exact-tree run.
+
+The campaign's judged tree predates current-main Assay Wave C P2/P3. P1 has
+now reconciled current `main` as `007b208859b99d380b87a9d4ea3479bdbfc8d5b6`;
+the old mutation record is inapplicable. Fresh P1 `r0-r1`/`r3` and the
+required fresh Sol xhigh review are next. Under the operator's provisional
+merge workflow, after those short gates and review pass, merge P1 to unblock
+P6, then launch the new R2 and full gate in an isolated CIU worktree. Any
+repair is backported and its affected evidence rerun.
+
+### RW-323 — 2026-09-25 10:43:38Z — require P1 container caps before execution
+
+P1's fresh R3 on `d94c58b9` rejected all seven canaries, but live inspection
+of its exact container `run-gate-vbpub-r3-4169091-1790332576` showed
+`NanoCpus=0`. The attempted exact-name `docker update --cpus=3` found that
+the short-lived container had already exited. Treat that green functional
+result as non-qualifying gate evidence: it does not prove the required cap.
+The P1 `r2` and `r3` lane configs now declare `resources.cpus = "3"`, making
+Docker apply `--cpus 3` before the command starts; the refreshed live gate
+must verify `NanoCpus=3000000000`. This avoids a post-launch race for the
+11-second canary lane while preserving the same 3-CPU ceiling required by
+RW-319. Because this config/report/log commit changes the tree, refresh both
+P1 short-gate receipts on its exact commit before review. The prior R2
+candidate-hung result remains incomplete under RW-322 and is not changed by
+this ruling.
+
+### RW-324 — 2026-09-25 11:34:01Z — resume P1 after interrupted Sol review
+
+The controller resumed from clean P1 worktree `rg55-p1-private-ns` at
+`f76f1f0154615547d8828a15e28f93a597915009`; main is
+`031c37ddc615545aa819e722e160c877d84157ea`. This candidate includes the
+interrupted Sol review's two committed follow-ups (`e93a40fc` runtime project
+metadata in the image, `f76f1f01` corrected shared-cgroup attribution), but no
+round-3 report or verdict exists. These commits invalidate the earlier
+`ec288209` short-gate receipts, and main's Assay B100 merge requires current-
+main reconciliation before new registered evidence.
+
+The interrupted live review observed that helper-mode `pid:N` is translated
+to a container-id/subpath spec, which may lose the PID identity that enables
+per-process sampling and DAMON attribution. Treat this as an unresolved
+behavioral defect until an oracle proves the original `pid:N` identity is
+preserved across the private namespaces, or the target is rejected explicitly
+before sampling; silently broadening it to the whole container is forbidden.
+The next order is: reconcile P1 with current main; implement and test this
+bounded behavior; refresh exact-tip `r0-r1` and `r3` evidence with the live
+3-CPU/cgroup-parent checks; then continue the unfinished third Sol review
+round using rounds 1-2 and the interrupted findings. No P1 merge or release
+is implied by this ruling. The old P1 R2 at `1908316b` remains
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, not a pass; run the replacement in an
+isolated quiet CIU worktree after provisional integration, per RW-296.
+
+Safety note: the interrupted reviewer disconnected and removed
+`cgroup-profiler-1299a7-network` while `dstdns-devcontainer-vb` was attached
+to it. The devcontainer remains running with its other networks. The
+controller will not recreate the network or alter any pre-existing
+container/network attachment without an operator-directed, provenance-backed
+recovery; future live probes may mutate only uniquely named resources created
+by that probe, and must leave shared cockpit containers untouched. No file
+under `/workspaces/dstdns` was read or changed. No gate or mutation process is
+currently running; host memory `full avg10=0.00`, and host systemd confirms
+the `dev-gates.slice` unit is loaded with `CPUQuotaPerSecUSec=5s`.
+
+### RW-325 — 2026-09-25 12:10:10Z — P1 R0/R1 requires resolver test completion
+
+P1's fresh `r0-r1` on quiet tree
+`8df969674b343da17305a85a8e0b466d257f8f27` launched in a gate container
+under the loaded `dev-gates.slice`; live inspection confirmed
+`NanoCpus=3000000000`. The lane exited 2 because the coverage threshold is
+100%: the new `lib/targets.py` resolver remained at 96% line coverage, with
+uncovered branches in malformed/missing proc facts and identity-match refusal
+paths. The focused 220-test local suite passed but does not satisfy the
+changed-line line-and-branch bar. The next commit must add behavioral oracles
+for every changed branch; rerun exact-tip `r0-r1` and `r3` after that commit.
+No merge or Sol review is authorized by the failed gate. The contract mirror
+remains byte-identical.
+
+### RW-326 — 2026-09-25 12:30:19Z — detached CIU campaign identity is intentionally refused
+
+The reported `ciu worktree` refusal is not a new CIU behavior or a controller
+mutation. `.worktrees/rg55-p6-r2-ciu` is Git-detached at
+`aae66356bf3a65ef8b3ba7fa04a8042f2feee55c`, while its generated
+`ciu.worktree-instance.json` still claims branch `rg55-p6-r2-ciu`. CIU's
+`list_instance_records` cross-checks the recorded branch against Git and
+refuses a contradictory family identity by design. The checkout was detached
+to honor assay's exact-tree resume identity. Leave both checkout and generated
+record untouched; create the next CIU gate worktree from an isolated local
+clone with its own Git family. No CIU implementation or Docker network action
+is authorized by this ruling.
+
+### RW-327 — 2026-09-25 12:30:19Z — P1 helper-PID coverage repair is test-only
+
+Test-only commit `d201537328ba8574968e8e1e9ff1ab8ad931f1f5` adds deterministic
+oracles for missing/malformed proc facts, each PID/cgroup identity filter,
+PID reuse, ambiguous/absent matches, reserved-option misuse, and the
+caller-to-helper target conversion. Its load-niced focused run passed 260
+tests; branch-aware coverage measured `lib/targets.py` at 441/441 lines and
+220/220 branches, and all changed helper-PID lines/branches in `cgprofile.py`
+were covered. No implementation changed. The focused local run is not an
+authoritative package gate; after this ruling is committed, rerun P1 `r0-r1`
+and `r3` on the final exact tip with loaded-slice and 3-CPU evidence. The old
+R2 remains `BUDGET_EXCEEDED/CANDIDATE_HUNG` per RW-322.
+
+### RW-328 — 2026-09-25 12:35:52Z — P1 short gates pass; record before final rerun
+
+Fresh short gates passed on clean exact code tree
+`43daf53e09f15227cacdcd80156dcdecc7cc19a6`: R0/R1 exit 0 in 75.396 s
+with 5,021/5,021 statements and 1,732/1,732 branches covered; R3 exit 0 in
+11.132 s with all seven canaries rejected and none surviving. The R0/R1
+test container `cgprofile-gate-279657-1790339528` and R3 container
+`run-gate-vbpub-r3-284762-1790339665` both reported the loaded
+`dev-gates.slice` parent and `NanoCpus=3000000000`. The tree was clean and
+unchanged throughout; the daemon itself was down, so run-gate reported coarse
+rusage profiling for these gates. This log/report/handoff update changes HEAD;
+repeat both short gates on the resulting final P1 tip before Sol review. These
+receipts do not change the old R2 terminal or substitute for fresh live
+review probes.
+
+### RW-329 — 2026-09-25 16:10:42Z — P1 reconciled current main; provisional review may precede R2
+
+Shared `main` advanced to `e5e9b95c5ac8be3452c93f1066f9436347f862fd`
+after the P1 private-namespace candidate was prepared. A read-only path
+comparison showed the intervening main changes did not modify
+`scripts/cgroup-profiler/` or `run-gate-project/` implementation paths. The
+clean P1 branch was reconciled with `git merge --no-ff main`, producing
+`d108ebb2a014ac204d6c50a3b82d65471e8ada7d`; its merge base is now the exact
+current main tip. On this clean tree, `r0-r1` passed 1,377 tests in 94.06 s
+with 5,021/5,021 statements and 1,732/1,732 branches, and `r3` passed with
+all seven canaries rejected and zero survivors. Run-gate history independently
+records PASS/exit 0 for both lanes on that hash. The R0/R1 container was
+`cgprofile-gate-572739-1790352189`; R3 was
+`run-gate-vbpub-r3-577036-1790352338`. Both used loaded `dev-gates.slice`
+with `NanoCpus=3000000000`; the daemon was down and R0/R1 used coarse rusage.
+
+The old R2 on `51198f2e` remains FAIL with ten real oracle gaps, repaired in
+the current candidate, but no replacement R2/full gate is complete for this
+tree. Per the operator's workflow change, a fresh Sol ACCEPT plus the short
+gates permits a **provisional merge** so other RG-55 work can proceed. This
+does not permit release or shipment. Launch the replacement R2 and full gate
+in an attached, separate CIU worktree after provisional merge; keep its HEAD
+quiet, and backport/rejudge any fixes. The updated Sol packet distinguishes
+review acceptance from mutation/release evidence. The R2 and full-gate status
+remain open until their exact-tree records are read separately.
+
+### RW-330 — 2026-09-25 16:57:50Z — P1 accepted and provisionally merged; R2/full gate remain release blockers
+
+The fresh final reviewer was launched with `CODEX_HOME=/home/vscode/.codex2`,
+`--model gpt-6-sol`, and `model_reasoning_effort="xhigh"`. The persisted
+Codex `turn_context` independently records `model=gpt-6-sol`, `effort=xhigh`,
+and the P1 worktree cwd. Review round 3 ACCEPT is committed at
+`b0544d50a5b3151bc218236a411d9d38e31a8791`; report:
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round3.md`.
+It found B1: explicit empty/whitespace `CGPROFILE_VERSION` had collapsed into
+the absent-value development default. Fix `158488ccbae418bba6b4022e8c9295742a6f9885`
+now validates any present value, with four build/publish regression cases.
+
+Exact short-gate evidence is clean: R0/R1 and R3 passed on code tip
+`158488cc` (1,381 tests; all seven canaries rejected), and both lanes were
+then independently rerun on the report-only tip `b0544d50`. The final R3
+container was `run-gate-vbpub-r3-656577-1790355222`, under loaded
+`dev-gates.slice` with a 3-CPU cap. The clean branch was provisionally
+merged with `--no-ff` as `d5d53afc8f72c50c01ade684dd84bfeee2f946ac`;
+its tree is identical to the reviewed/gated `b0544d50` tree.
+
+This merge is not release evidence. No replacement P1 R2 or full gate has
+passed; the older R2 records remain invalid for this tree. Run them in a new,
+isolated CIU clone/worktree because the root CIU family still has the stale
+P6 identity described in RW-326. Keep the attached campaign HEAD quiet and
+use the pre-merge `origin/main` base `e5e9b95c5ac8be3452c93f1066f9436347f862fd`
+to measure the P1 delta; after resolving the base once, do not change it.
+The current R2 config uses `base = "origin/main"`, `jobs = 2`, and a
+4-hour resumable campaign. Any fix must be backported and judged on the
+resulting exact tree before release.
+
+The review's live ephemeral/shared/helper probes succeeded for memory
+sampling, HTML report creation, and private-namespace helper-PID identity.
+The host kernel rejected DAMON `kdamond_commit` with `EINVAL`; no live DAMON
+series or overhead measurement was obtained. Record this as an open P3
+close-out item, not as passed DAMON evidence. The final host daemon must still
+be brought up and verified through CIU after release.
+
+P2's old detached retry instruction is obsolete: current `main` already
+contains the run-gate 23.7.0 integration (`a921100d`). Two attempted
+background wrappers for the old `186461de` checkout produced no exit marker,
+no new history entry, and no changed Assay progress timestamp; no new P2
+mutation run occurred. Do not resume that stale tree with today's `main` ref.
+
+The host `host-escape systemctl show dev-gates.slice` check confirmed
+`LoadState=loaded` and `/dev.slice/dev-gates.slice`. `host-escape` also
+reported restoring the expected cgroup2 mount options; no tracked host-setup
+source was changed.
+
+### RW-331 — 2026-09-25 17:08:09Z — isolated P1 R2 family prepared; preserve shared jobs and network state
+
+To bypass RW-326 without touching its contradictory detached P6 checkout, an
+isolated local clone was created at
+`.worktrees/rg55-p1-r2-isolated`; its managed CIU worktree
+`.worktrees/rg55-p1-r2-isolated/.worktrees/rg55-p1-r2-isolated` is attached,
+clean, and at `f0fccaf6368c18d32c401574b2819075986249b6`. In the isolated
+clone only, `refs/remotes/origin/main` is pinned to the exact pre-wave base
+`e5e9b95c5ac8be3452c93f1066f9436347f862fd`; do not fetch/advance that ref.
+The candidate branch must remain quiet after its final tip is selected.
+
+CIU's `worktree create` also created the unique network
+`rg55-p1-r2-isolated-2be782-network` and attached the existing shared
+`dstdns-devcontainer-vb` cockpit container to it. This side effect was not
+visible in the command help; leave that attachment and network untouched.
+No file under `/workspaces/dstdns` was read or changed, and no prior network
+or container was detached, removed, or rewritten.
+
+At 17:06Z, read-only inspection found two unrelated campaign containers in
+the loaded `dev-gates.slice`: CMRU mutation
+`run-gate-vbpub-mutation-439942-1790345741` and assay
+`run-gate-vbpub-assay-224793-1790338344`. Both reported `NanoCpus=0`; the
+slice quota is 5 CPUs and host memory PSI `full avg10` was 0.33. The
+controller did not mutate either container. The two available agents were
+asked to identify ownership and apply the exact-name 3-CPU cap. One mutation
+lane is active; starting P1 R2 would be the second mutation lane and remain
+within the current three-lane estate limit. Recheck slice/PSI immediately
+before launch and verify P1's exact container cap after launch.
+
+### RW-332 — 2026-09-25 17:29:55Z — P1 R2 progressing; P6 current-main gates green, review still pending
+
+P1 R2 started at 17:16:39Z on quiet tree
+`450fe53d0baca81ec5d32432c6c47117862fa992`, with the isolated clone's
+`origin/main` fixed at `e5e9b95c5ac8be3452c93f1066f9436347f862fd`. The
+90-second check found the exact container
+`run-gate-rg55-p1-r2-isolated-r2-693694-1790356599` running under
+`dev-gates.slice` with `NanoCpus=3000000000`. Assay had recorded its baseline
+and candidate 0 as killed (1/121); host memory PSI `full avg10=1.25`, below
+the launch ceiling. The plan's 10-hour estimate is the 600-second-per-mutant
+worst case; the closest previous P1 run judged 81 candidates in 74 minutes.
+The last startup progress event was at 17:18:19Z; next check is no earlier
+than 17:43:19Z, unless an expected early completion or error appears.
+
+P6 branch `rg55-followups-cgprofile-final` reconciled current `main` in
+`41c6fba6d712fbf70d4d11ba5f37cb22a919b733`. The merge retained main's RW-312
+and RW-313 once, P6's RW-314..RW-317, and main's RW-318..RW-331. Its exact
+R0/R1 run passed in 140.682 s (exit 0): 1,651 tests; 5,994/5,994 statements
+and 2,056/2,056 branches. Container `cgprofile-gate-704906-1790357010`
+reported loaded `dev-gates.slice` and `NanoCpus=3000000000`; the daemon was
+down, so sampling was coarse `rusage-maxrss`. Exact-tree R3 also passed in
+13.994 s (exit 0), rejecting all seven canaries. Its creation argv included
+`--cpus 3`, but the container exited before a follow-up `docker inspect`; a
+fresh short R3 with a live cap observation is required before provisional
+merge.
+
+P6 has no current-tree R2 evidence. Its older `aae66356` run remains
+`BUDGET_EXCEEDED/LANE_TIMEOUT` (362 candidates: 312 killed, 12 survived, 38
+budget-exceeded); that result and its survivor repairs are documented in the
+P6 REPORT but do not qualify the reconciled tree. Per RW-296, the short gates
+plus fresh Sol xhigh review may authorize provisional integration only; P6
+R2 and the full gate remain mandatory before release. For the post-merge P6
+R2 clone, resolve `origin/main` to the exact P1 baseline (current main before
+P6 integration), not the stale repository remote-tracking ref at `e5e9b95c`;
+record the resolved base from the run verdict. The P3 DAMON live-series and
+overhead measurement remains open from RW-330.
+
+### RW-335 — 2026-09-25 21:11:56Z — install and verify the authored D-29 daemon slice
+
+The host check for P6's required daemon containment reported
+`cgprofile.slice` as `LoadState=loaded` but with empty `FragmentPath` and
+`ControlGroup`, plus unlimited `MemoryMax` and `TasksMax`. This is the
+systemd auto-vivified, unbounded placeholder explicitly covered by D-29; it
+cannot qualify the P6 live review or daemon deployment.
+
+The P6 candidate already contains the authored
+`scripts/cgroup-profiler/infra/cgprofile.slice` unit. The controller will
+install that exact file at `/etc/systemd/system/cgprofile.slice`, reload
+systemd, and verify the loaded fragment, control group, and bounded resource
+properties through `host-escape`. This is the documented operator deployment
+step, not a source repair and not a change under `/workspaces/dstdns`.
+P1's exact-tree R2 campaign remains untouched while this host prerequisite is
+established.
+
+### RW-336 — 2026-09-25 21:17:50Z — resume P1 R2 after externally terminated attempt
+
+The P1 R2 attempt on exact tree `429c076369b20587e395739892b3e1b715cd3482`
+was terminated with exit 143 at candidate 85/121. The run-gate receipt records
+no OOM kill and no verdict for that attempt; its existing verdict remained the
+earlier diagnostic tree's result, so the interrupted attempt is not mutation
+evidence. Its progress stream is resumable and was left intact.
+
+After a fresh PSI check (`memory full avg10=0.05`), the controller resumed the
+same exact tree with `./run-gate.py r2`. The 90-second acceptance check found
+container `run-gate-rg55-p1-r2-isolated-r2-1072906-1790370942` running under
+`dev-gates.slice` at `NanoCpus=3000000000`, with progress active and launch PSI
+`full avg10=0.01`; no HEAD or judged worktree mutation occurred. The resumed
+campaign is the authoritative attempt pending its final verdict.
+
+### RW-337 — 2026-09-26 00:19:39Z — P1 R2 completed with liveness budget failures; P6 placement blocker exposed
+
+The resumed P1 R2 run on exact tree
+`429c076369b20587e395739892b3e1b715cd3482` completed at 21:56:38Z with
+`BUDGET_EXCEEDED/CANDIDATE_HUNG` (exit 4): 121 candidates, 114 killed, 7
+hung, 0 survived, 0 crashed, 0 budget-exceeded. The seven hung candidates are
+all in `lib/targets.py`; the receipt measured 395.4 seconds of memory-full
+stall and 836 MiB peak. This is not release evidence and must be rejudged or
+otherwise explained without treating host contention as product behavior.
+
+The Sol continuation of P6 round 3 is recorded in
+`cgprofile-P6-FOLLOWUPS-REVIEW-round4.md` and committed as `ca8fccc7`; it is
+`REJECT`. Blind live probes found B1 (single-session status omitted the
+contract timestamp), B3 (watch certified a failed SIGKILL as `killed`), and
+B2 (the private-PID daemon's host PID writes to `cgroup.procs` fail with
+`ESRCH`, leaving the placed leaf empty while reporting success). The reviewer
+committed the bounded B1/B3 fail-closed repair `9c0a6e39`, but explicitly left
+B2 as the critical placement-design blocker. No P6 merge, release, or mutation
+campaign is authorized until placement is either safely implemented while
+preserving D-15 private namespaces or the contract is changed by a recorded
+product ruling.
+
+### RW-338 — 2026-09-26 00:24:01Z — namespace-safe P6 placement bridge selected
+
+The controller selects the D-15-compliant repair for P6 B2: retain private
+PID, cgroup, and network namespaces; keep the existing guarded cgroupfs leaf
+creation/cap/kill writes; and, only when a direct leaf `cgroup.procs` write
+returns `ESRCH`, call host systemd's `AttachProcessesToUnit` over the daemon's
+explicit read-only system-bus socket mount. The call names only the verified
+gates slice, the session's `rg-<token>` subcgroup, and one resolved host PID.
+The daemon then verifies that PID's host-proc cgroup path equals the leaf.
+
+An attach failure or failed read-back is a placement refusal, never a success
+with an empty leaf. This uses systemd as the host PID-namespace authority
+without putting any RG-55 container in a host namespace, adding a Docker
+socket, or broadening the D-25 write whitelist. P6's Docker image therefore
+supplies `busctl` and its compose stack mounts only the host system bus socket
+read-only. The contract/design/README/consumer docs and focused oracles are
+updated together on the P6 repair branch.
+
+### RW-339 — 2026-09-26 18:16:08Z — P6 exact-tree R2 completed; two oracle repairs required
+
+The replacement P6 mutation campaign on quiet tree `b3df5602` completed at
+`2026-09-26T05:53:00.824604+00:00`: 312/312 candidates accounted for, 300
+killed, 12 survived, and zero equivalent, hung, crashed, or
+budget-exceeded. The separately read verdict is `FAIL/MUTANTS_SURVIVED`, exit
+1, after 13,518.851 seconds. Survivor triage accepts ten as contract
+equivalences and identifies two real oracle gaps: the non-ESRCH private-PID
+placement bridge guard and fail-closed PID identity on an `OSError`. Focused
+behavioral tests cover both in P6 repair commit `6540f877` on
+`rg55-followups-cgprofile-final`; the b3df5602 mutation receipt is diagnostic
+only, and fresh final short gates plus one replacement R2 are required before
+P6 release. P1's fresh Sol reviewer is concurrently running its own final
+gates; do not launch the P6 gate container until that gate slot is free.
+
+### RW-340 — 2026-09-26 18:22:23Z — P6 replacement R2 launched asynchronously
+
+After the P6 test-only repair, the controller created a quiet detached
+worktree at `6540f87761a66ff933c8bb45f81d8ac9117f407b2` and launched the
+registered `r2` lane under a `setsid` owner PID `1190416`. The exact container
+is `run-gate-vbpub-r2-1190416-1790446819`; the 90-second acceptance check
+found it `running` in `dev-gates.slice` with `NanoCpus=3000000000`. Its
+progress stream is in the baseline pytest phase, with no verdict yet. The
+previous P6 campaign's measured rate gives an estimate of roughly 3h45–4h;
+the owner and container are left untouched between 25-minute-or-longer
+observations. P1's repaired R2 remains the other mutation lane.
+
+### RW-341 — 2026-09-26 23:06:22Z — P1 R2 passed; P6 replacement R2 did not qualify
+
+The separately read P1 verdict on commit `1080ac2f068732dcd490bcc2c5cefe56db8ec805`
+is `PASS`, exit 0: 125/125 candidates killed, no survivors, hung candidates,
+or budget-exceeded candidates. This is valid exact-tree R2 evidence for that
+tree. The previous Sol reviewer process ended at the account usage limit
+before writing a final review report; rounds 1–3 do not cover the repair
+commits `429c0763`, `0a2e0cd8`, and `1080ac2f`, so a fresh final review and
+registered short gates remain necessary.
+
+P6's replacement R2 on `6540f87761a66ff933c8bb45f81d8ac9117f407b` ended
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4, with 312/312 candidates accounted
+for (301 killed, 10 survived, one hung). The ten survivors match prior
+contract-equivalence dispositions; the two real gaps were killed. Candidate
+`0a38e7d8…` at `lib/liveness.py:530` was classified hung after 138.953 seconds
+and 675 completed tests. Its run profile also records 135.1 seconds of
+memory-full stall, but does not preserve the active pytest node or establish
+causation. P6 mutation evidence is not passing; preserve the candidate state
+and investigate the hang on the reconciled final tree.
+
+At the next launch check, host memory PSI was `full avg10=10.50`, above the
+RG-55 launch limit of 5. The subsequent P1 r0-r1 launcher's own preflight
+observed `full avg10=0.0`, `avg60=0.4%`; its placement probe verified the
+loaded `dev-gates.slice`, and its exact test container ran with
+`NanoCpus=3000000000`. Do not generalize the earlier high reading to later
+launches; use each launcher's current preflight.
+
+### RW-342 — 2026-09-26 23:13:09Z — P1 r0-r1 passed on 1080ac2f
+
+The registered lane started at `2026-09-26T23:09:07Z` and recorded PASS at
+`2026-09-26T23:10:47Z` (100.26 seconds, exit 0) on clean commit
+`1080ac2f068732dcd490bcc2c5cefe56db8ec805`. The exact test container
+`cgprofile-gate-1356625-1790464149` ran under `dev-gates.slice`; the launcher
+verified `NanoCpus=3000000000`. The suite reports 1,398 passed and 4 warnings.
+Coverage reports 5,026 statements and 1,738 branches with 100% on both.
+Profiling used the basic `rusage-maxrss` fallback because the daemon was not
+running; peak was at the 38,469,632-byte floor. The separately read
+`.run-gate/history.json` records this lane PASS, `dirty=false`, and revision
+46. P1 R3 is now running at commit `1080ac2f`; its detached owner is recorded
+in `/tmp/rg55-p1-r3-1080.pid`.
+
+### RW-343 — 2026-09-26 23:20:36Z — P1 r3 passed on 1080ac2f
+
+The registered `r3` lane completed at `2026-09-26T23:12:23Z` on clean
+commit `1080ac2f068732dcd490bcc2c5cefe56db8ec805`; its separately read
+`.run-gate/history.json` receipt records PASS, exit 0, `dirty=false`, and
+revision 46. Seven canaries were rejected and zero survived. Launch PSI was
+`memory full avg10=0.03%`; the exact invocation declared
+`--cgroup-parent dev-gates.slice` and `--cpus 3`, and used unique container
+`run-gate-rg55-p1-r2-isolated-r3-1360087-1790464331`. The daemon was down,
+so this lane did not supply live-daemon or DAMON evidence. Together with the
+R0/R1 and R2 receipts recorded above, this clears P1's exact-tree mutation and
+registered-lane gates for the fresh final review; the already-provisionally-
+merged daemon still needs full-gate verification before release.
+
+### RW-344 — 2026-09-26 23:42:10Z — P1 final review active; P6 evidence gap filed upstream
+
+A fresh P1 reviewer is running in persistent command session `19740`, thread
+`01a0e018-a3bb-7662-9c0e-1633b7b3f54b`, rooted at the isolated candidate
+worktree. Its saved turn metadata independently confirms model `gpt-6-sol`,
+effort `xhigh`, and the expected worktree. An earlier fresh attempt ended
+after emitting only its route-check message and made no repository call; it
+produced no review record and did not change the candidate. The current review
+must cover `<f0fccaf6>...1080ac2f`, reconcile rounds 1–3, and complete the
+P1 handoff's live probes before acceptance.
+
+The P6 exact-tree campaign `6540f87761a66ff933c8bb45f81d8ac9117f407b`
+remains nonpassing (`BUDGET_EXCEEDED/CANDIDATE_HUNG`). The earlier `b3df5602`
+campaign killed the same candidate with a named test witness; the trees differ
+by two added P6 tests, so this is not a controlled replay and does not prove
+host pressure caused the later hang. Assay backlog B107 was filed on main at
+`4241cdc1` and qualified at `659a92a5`, preserving that uncertainty and
+requiring time-aligned candidate resource evidence; neither campaign is
+reclassified.
+
+P3 static closeout check: `run-gate-project/run-gate.footprint.json` is
+tracked; SPEC-V8 Appendix D.6 is present; RG-55 is marked FIXED and RG-56 / RG-57
+are filed (RG-56 remains OPEN, RG-57 is FIXED). The final RG-55 report does not
+yet exist and the adoption brief's ⟨P3⟩ fields remain unfilled until live probes
+and DAMON overhead are measured. At this check, the exact external container
+`run-gate-assay-selfhosted-1372147-14760-1790465048` was active for Assay B105;
+it is outside this wave and remains untouched.
+
+### RW-345 — 2026-09-26 23:46:32Z — host cgroup mount repair matched checked-in policy
+
+The read-only `host-escape` inspection runs `mdt doctor` as its preflight. It
+found the host cgroup2 mount missing `nsdelegate`, `memory_recursiveprot`, and
+`memory_hugetlb_accounting`, then restored those flags through the existing
+`CGROUP2_FLAGS=fix` policy. The same behavior is present in the checked-in
+`modern-debian-tools-python-debug/host-setup/scripts/mdt-dev-governance-reconcile.sh`;
+no additional host-setup code change is needed. The host reports
+`dev-gates.slice` loaded with `CPUQuotaPerSecUSec=5s`. The host
+`/run/cgprofile/ctl.sock` and cockpit-visible `/run/cgprofile/ctl.sock` are
+currently absent because the daemon is down and the devcontainer has no
+socket mount. Do not touch `/workspaces/dstdns`; reassess the socket carrier
+after the main daemon is up and use an explicitly mounted reviewer-owned probe
+client if feasible.
+
+### RW-346 — 2026-09-27 02:43:04Z — P1 final review conditional; exact-tree R2 resumed in a mapped worktree
+
+The caller verified the fresh review session's saved invocation metadata as
+`gpt-6-sol` / `xhigh`; the reviewer was not required to self-attest. Round 4,
+recorded at `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round4.md`
+on `9933efb1`, is `ACCEPT-conditional`. It repaired malformed proc-stat PID
+identity and explicit-null DAMON selection (`248a29ba`, `cc7e1910`), and
+records reviewer-owned daemon/helper probes. R2 on old tip `1080ac2f` is not
+evidence for those repairs. The first fresh R2 attempt used a sibling
+worktree outside this nested checkout's configured bind-mount and failed
+before mutation with a missing in-container path; no candidate ran. That
+attempt is not evidence and its container was not retained by Docker.
+
+A second detached worktree was placed beneath the configured mounted clone at
+`.worktrees/rg55-p1-r2-isolated/.worktrees/rg55-p1-r2-final-20260927`, exact
+code tree `cc7e191074a94c53e92023ec4feb75fdf753bae4`. The registered `r2`
+lane is active in container
+`run-gate-rg55-p1-r2-isolated-r2-1595444-1790476701` (launcher PID 1595444),
+`dev-gates.slice`, `NanoCpus=3000000000`. The 90-second health check saw the
+baseline finish at 94 seconds and candidate 1/125 killed at 107 seconds; the
+tree remains quiet. The prior 125-candidate P1 R2 used 6,255 active seconds,
+so the rough comparable runtime is about 1h45. Do not inspect progress again
+before the 25-minute observation interval unless an expected failure signal
+appears. A full release gate and P1 release remain pending.
+
+P6 is not resolved by increasing the lane-wide budget: its prior exact-tree
+R2 ended on one `CANDIDATE_HUNG`, and ordinary resume retains that terminal
+record. The registered run-gate assay argv supplies `--resume`, progress, and
+state-dir but has no supported `--rejudge-outcome` forwarding. Keep B107's
+resource-causality question open; do not reinterpret the result or hand-edit
+assay state. P3 remains open: no host singleton/socket is running or mounted
+in this cockpit, and round-4 live probes could not allocate DAMON (`EINVAL`),
+so live DAMON behavior and measured overhead are not yet established.

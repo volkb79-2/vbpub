@@ -59,7 +59,9 @@ class SessionNode:
     last_ts: str | None = None
 
 
-def list_agents(path: Path, fmt: str | None = None) -> list[SessionNode]:
+def list_agents(
+    path: Path, fmt: str | None = None, recurse: bool = True,
+) -> list[SessionNode]:
     """path may be a single session-log FILE (the normal case, dispatched
     to the detected/forced adapter's own list_agents -- see each adapter's
     module docstring) OR a DIRECTORY holding MANY top-level sessions --
@@ -86,7 +88,7 @@ def list_agents(path: Path, fmt: str | None = None) -> list[SessionNode]:
         if fmt in (None, "opencode") and opencode_adapter._db_path(path) is not None:
             return opencode_adapter.list_agents(path)
         if fmt in (None, "claude-code", "codex"):
-            return _list_agents_in_directory(path, fmt)
+            return _list_agents_in_directory(path, fmt, recurse=recurse)
         raise ValueError(f"extract-sessions does not support {fmt!r} for a directory")
 
     adapter = get_adapter(fmt) if fmt else detect(path)
@@ -95,13 +97,18 @@ def list_agents(path: Path, fmt: str | None = None) -> list[SessionNode]:
     return adapter.list_agents(path)
 
 
-def _list_agents_in_directory(path: Path, fmt: str | None) -> list[SessionNode]:
+def _list_agents_in_directory(
+    path: Path, fmt: str | None, *, recurse: bool = True,
+) -> list[SessionNode]:
     from .adapters import claude_code, codex
 
     nodes: list[SessionNode] = []
 
     if fmt in (None, "claude-code"):
-        for f in sorted(path.glob("*.jsonl")):
+        files = path.rglob("*.jsonl") if recurse else path.glob("*.jsonl")
+        for f in sorted(files):
+            if f.parent.name == "subagents":
+                continue
             if claude_code.sniff(f):
                 nodes.extend(claude_code.list_agents(f))
 
@@ -113,7 +120,8 @@ def _list_agents_in_directory(path: Path, fmt: str | None) -> list[SessionNode]:
         # once per already-seen root (not once per file) avoids re-
         # deriving (and re-printing) the same family N times.
         seen_roots: set[str] = set()
-        for f in sorted(path.glob("**/rollout-*.jsonl")):
+        files = path.rglob("rollout-*.jsonl") if recurse else path.glob("rollout-*.jsonl")
+        for f in sorted(files):
             if not codex.sniff(f):
                 continue
             meta = codex._first_session_meta(f)
@@ -126,8 +134,8 @@ def _list_agents_in_directory(path: Path, fmt: str | None) -> list[SessionNode]:
     if not nodes:
         hint = _one_level_down_hint(path)
         raise ValueError(
-            f"{path} is a directory, but no Claude Code (*.jsonl directly in it) or "
-            f"Codex (rollout-*.jsonl anywhere under it) sessions were found"
+            f"{path} is a directory, but no Claude Code or Codex sessions were found "
+            f"(recursive search: {str(recurse).lower()})"
             + (f" -- did you mean one of its subdirectories, e.g. {hint}?" if hint else
                " -- pass a specific session-log file instead, or --format to force a reading")
         )

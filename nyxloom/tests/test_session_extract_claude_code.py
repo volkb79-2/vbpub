@@ -174,14 +174,7 @@ def test_until_marker_unknown_raises(tmp_path):
         claude_code.parse(fp, str(fp), ExtractConfig(until_marker="does-not-exist"))
 
 
-def test_end_to_end_extract_stops_at_lifecycle_boundary(tmp_path):
-    # In this fixture the compact_boundary (sys1) sits right before the very
-    # last event (a6). Selection walks backward from the newest event, hits
-    # the boundary almost immediately, and stops THERE -- content newer than
-    # the boundary (a6) survives, everything older (the whole earlier
-    # conversation, including the "Which host?" Q&A and the a5 checkpoint)
-    # is correctly excluded, since it belongs to what the boundary already
-    # summarized away.
+def test_default_extract_crosses_compaction_and_zero_limit_stops_at_it(tmp_path):
     fp = _write_fixture(tmp_path)
     result = extract(fp)
     assert result.format == "claude-code"
@@ -192,8 +185,12 @@ def test_end_to_end_extract_stops_at_lifecycle_boundary(tmp_path):
     # boundary]" label -- this fixture's compact_boundary record has no
     # compactMetadata at all, so trigger falls back to "unknown".
     assert "[compaction: unknown happened]" in text
-    assert "telegram alternative" not in text
-    assert "Which host?" not in text
+    assert "telegram alternative" in text
+    assert "Which host?" in text
+    bounded = extract(fp, ExtractConfig(max_compactions=0))
+    bounded_text = bounded.render()
+    assert "postdates the compact boundary" in bounded_text
+    assert "telegram alternative" not in bounded_text
     # last_marker reflects the true end of the FULL parse, not just what survived selection
     assert result.last_marker == "a6"
 

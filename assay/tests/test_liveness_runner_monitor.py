@@ -300,6 +300,65 @@ def test_cpu_growth_floor_is_inclusive_at_the_exact_boundary(tmp_path: Path) -> 
     assert proc.waited
 
 
+def test_cpu_sample_history_matches_full_reverse_scan_over_long_virtual_run() -> None:
+    """B095: trimming keeps the exact newest sample at the window edge.
+
+    This drives 20,000 virtual polls, including missing `/proc` readings,
+    irregular intervals, and CPU deltas on both sides of the growth floor.
+    Each classification is compared with the old unbounded reverse-list
+    search; the deque stays bounded by the 30s window and 250ms minimum step.
+    """
+    window_s = 30.0
+    history = liveness._CpuSampleHistory(window_s)
+    full_history: list[tuple[float, float]] = []
+    now = 0.0
+    previous_size = 0
+    max_retained = 0
+
+    for index in range(20_000):
+        now += 0.25 + (0.25 if index % 11 == 0 else 0.0)
+        if index % 97 == 0:
+            # `/proc` failures contribute no sample, and therefore cannot
+            # become evidence that the process stopped using CPU.
+            cpu_now = None
+            cpu_growing = True
+            assert len(history._samples) == previous_size
+        else:
+            # Repeated and varying readings exercise the exact >= 1.0 floor.
+            cpu_now = float((index * 7) % 41) / 4.0
+            full_history.append((now, cpu_now))
+            baseline = next(
+                (
+                    sample_cpu
+                    for sample_t, sample_cpu in reversed(full_history)
+                    if now - sample_t >= window_s
+                ),
+                None,
+            )
+            actual_baseline = history.add(now, cpu_now)
+            assert actual_baseline == baseline
+            expected_cpu_growing = (
+                True
+                if baseline is None
+                else (cpu_now - baseline) >= liveness._HUNG_CPU_GROWTH_FLOOR_S
+            )
+            cpu_growing = (
+                True
+                if actual_baseline is None
+                else (cpu_now - actual_baseline) >= liveness._HUNG_CPU_GROWTH_FLOOR_S
+            )
+            assert cpu_growing is expected_cpu_growing
+            assert len(history._samples) <= 121
+            previous_size = len(history._samples)
+            max_retained = max(max_retained, previous_size)
+
+        if cpu_now is None:
+            assert cpu_growing is True
+
+    assert len(full_history) > 19_000
+    assert max_retained <= 121
+
+
 # --------------------------------------------------------------------------
 # /proc failure -> "still growing", never hung on missing data (RW-33)
 # --------------------------------------------------------------------------

@@ -8,9 +8,9 @@
 # UNLIKE pwmcp, environment_tag is the FIXED LITERAL "host", never
 # "$INSTANCE_ID" — this is a DELIBERATE host singleton, not a per-worktree
 # instance: exactly ONE cgprofile daemon may ever run on a given host (it
-# owns the whole host's DAMON facility and cgroup v2 view via
-# --cgroupns=host, RG55-INTERFACE-CONTRACT.md §5) — a second one started
-# from a second worktree must COLLIDE on the same container name
+# observes the host's proc/cgroup trees through explicit mounts and owns the
+# DAMON admin interface, RG55-INTERFACE-CONTRACT.md §5) — a second one
+# started from a second worktree must COLLIDE on the same container name
 # (cgprofile-host-daemon) and refuse to start twice, not spin up a sibling.
 # CIU-104 (the cross-checkout name-collision bug fixed by moving OTHER
 # projects onto `environment_tag = "$INSTANCE_ID"`, nyxloom-worktree-cli-rule

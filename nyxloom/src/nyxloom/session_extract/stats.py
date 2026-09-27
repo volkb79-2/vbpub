@@ -296,25 +296,42 @@ def _simulate_profile(events: list[NormalizedEvent], config: ExtractConfig) -> d
     this analysis feature. Kept logic must track select.select() exactly;
     if that function's windowing rules change, this needs the same change.
     """
+    from . import _select_epochs
+
+    events = _select_epochs(events, config.epochs)
     running: dict[str, int] = {}
     checkpoints_found = 0
     word_count = 0
-    markers_passed = 0
+    compactions_passed = 0
 
     for ev in reversed(events):
         if ev.kind is EventKind.LIFECYCLE_MARKER:
+            word_count += len(ev.text.split())
             running[ev.marker] = word_count
-            may_pass = config.max_lifecycle_markers == -1 or markers_passed < config.max_lifecycle_markers
-            if not may_pass:
+            boundary_type = ev.meta.get("boundary_type")
+            is_compaction = boundary_type == "compaction" or (
+                boundary_type is None
+                and ev.text.startswith((
+                    "[compacted]", "[context_compacted]", "[compaction:", "[compact boundary]",
+                ))
+            )
+            if is_compaction:
+                may_pass = config.max_compactions == -1 or compactions_passed < config.max_compactions
+                if not may_pass:
+                    break
+                compactions_passed += 1
+            if config.max_words != -1 and word_count > config.max_words:
                 break
-            markers_passed += 1
             continue
 
-        if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR):
+        if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.TOOL_CALL):
             word_count += len(ev.text.split())
             running[ev.marker] = word_count
 
         elif ev.kind in (EventKind.ASSISTANT_TEXT, EventKind.THINKING):
+            if (config.hide_api_errors and ev.kind is EventKind.ASSISTANT_TEXT
+                    and classifier.is_api_error(ev.text)):
+                continue
             is_checkpoint = (
                 ev.kind is EventKind.ASSISTANT_TEXT
                 and (ev.checkpoint_score or 0.0) >= config.checkpoint_score_threshold
@@ -323,13 +340,13 @@ def _simulate_profile(events: list[NormalizedEvent], config: ExtractConfig) -> d
                 checkpoints_found += 1
                 word_count += len(ev.text.split())
                 running[ev.marker] = word_count
-                if checkpoints_found >= config.max_checkpoints:
+                if config.max_checkpoints != -1 and checkpoints_found >= config.max_checkpoints:
                     break
             elif len(ev.text) > config.long_comment_chars or classifier.has_finding_signal(ev.text):
                 word_count += len(ev.text.split())
                 running[ev.marker] = word_count
 
-        if word_count > config.max_words:
+        if config.max_words != -1 and word_count > config.max_words:
             break
 
     return running
@@ -425,13 +442,14 @@ def _build_call_rows_claude_code(path: Path, session_id: str | None) -> list[Cal
 
 def _codex_raw_scan(path: Path) -> list[dict]:
     """Mirrors adapters/codex.py's own top-level-type filter (`event_msg`,
-    `compacted`) -- NOT every raw JSONL record the way
+    `compacted`, and `response_item`) -- NOT every raw JSONL record the way
     `_claude_code_raw_scan` is (response_item/turn_context/world_state/
     session_meta are excluded, exactly as codex.py's own `parse()` excludes
-    them before it enumerates for its ordinal fallback). Kept in that same
-    {event_msg, compacted} universe so a `str(rec.get("ordinal", i))`-style
-    marker computed here lands on the EXACT same record codex.py's `parse()`
-    would number it as -- diverging from that filter would silently
+    them before it enumerates for its ordinal fallback; response_item is
+    included because tool-call visibility parses that layer). Kept in that
+    same universe and `_fallback_markers()` policy so a marker computed here
+    lands on the EXACT same record codex.py's `parse()` would number it as --
+    diverging from that filter would silently
     misattribute every token_count row to the wrong nearby turn, not just
     miss a few.
     """
@@ -447,7 +465,7 @@ def _codex_raw_scan(path: Path) -> list[dict]:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if obj.get("type") in _TOP_LEVEL_TYPES:
+            if isinstance(obj, dict) and obj.get("type") in _TOP_LEVEL_TYPES:
                 raw.append(obj)
     return raw
 
@@ -469,8 +487,9 @@ def _codex_session_model(path: Path) -> str | None:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if obj.get("type") == "turn_context":
-                model = (obj.get("payload") or {}).get("model")
+            if isinstance(obj, dict) and obj.get("type") == "turn_context":
+                payload = obj.get("payload")
+                model = payload.get("model") if isinstance(payload, dict) else None
                 if model:
                     return model
     return None
@@ -555,24 +574,34 @@ def _build_call_rows_codex(path: Path, session_id: str | None) -> list[CallRow]:
     # Merge every kept NormalizedEvent with every token_count raw record
     # (which never coincides with an existing marker -- token_count carries
     # no text, so codex.parse() never emits an event for it; the check
-    # below is defensive, not load-bearing), sorted by the shared
-    # ordinal/absolute-index marker space both sides come from. The marker
+    # below is defensive, not load-bearing), sorted by the shared raw-record
+    # positions both sides come from. The marker
     # string is computed ONCE here and carried through the tuple -- NOT
     # recomputed in the row-building loop below, which has no access to
     # `i` (the raw_records enumeration index) and would otherwise need an
     # arbitrary, WRONG default (an earlier version of this function
     # defaulted to the literal string "0", silently mislabeling every
     # token_count row lacking a real `ordinal` field with the same marker).
-    items: list[tuple[int, str, object]] = [(int(ev.marker), ev.marker, ev) for ev in events]
+    fallback_markers = codex_adapter._fallback_markers(raw_records)
+    marker_positions: dict[str, int] = {}
+    for i, rec in enumerate(raw_records):
+        marker_positions.setdefault(str(rec.get("ordinal", fallback_markers[i])), i)
+    # Markers are opaque cursor tokens, not necessarily numbers: a surfaced
+    # response_item without an ordinal uses a namespaced fallback such as
+    # ``response_item-3``. Sort by each record's position in the shared raw
+    # scan instead of coercing every marker to int.
+    items: list[tuple[int, str, object]] = [
+        (marker_positions[ev.marker], ev.marker, ev) for ev in events
+    ]
     for i, rec in enumerate(raw_records):
         if rec.get("type") != "event_msg":
             continue
         if (rec.get("payload") or {}).get("type") != "token_count":
             continue
-        marker = str(rec.get("ordinal", i))
+        marker = str(rec.get("ordinal", fallback_markers[i]))
         if marker in events_by_marker:
             continue
-        items.append((int(marker), marker, rec))
+        items.append((i, marker, rec))
     items.sort(key=lambda t: t[0])
 
     rows: list[CallRow] = []
@@ -1002,6 +1031,28 @@ def render_detailed_csv(rows: list[CallRow]) -> str:
             for p in profile_names
         ])
     return out.getvalue()
+
+
+def render_detailed_text(rows: list[CallRow]) -> str:
+    """Human-readable one-row-per-call report; use render_detailed_csv for
+    spreadsheet/import workflows where stable columns matter more than width.
+    """
+    headers = ("#", "TIME", "KIND", "DURATION", "IN", "CACHE_W", "CACHE_R", "OUT", "COST", "MODEL", "TOOLS", "TEXT")
+    table_rows = []
+    for index, row in enumerate(rows, 1):
+        table_rows.append((
+            str(index), _fmt_time(row.timestamp), row.kind,
+            _fmt_elapsed(row.elapsed_since_prev_s),
+            str(row.input_tokens), str(row.cache_creation_tokens), str(row.cache_read_tokens),
+            str(row.output_tokens), f"{row.cost_usd:.6f}" if row.cost_usd is not None else "",
+            (row.model or "")[:24], ",".join(row.tools_called)[:24], row.text_preview.replace("\n", " ")[:72],
+        ))
+    widths = [max(len(header), *(len(row[i]) for row in table_rows)) if table_rows else len(header)
+              for i, header in enumerate(headers)]
+    lines = ["  ".join(header.ljust(widths[i]) for i, header in enumerate(headers)),
+             "  ".join("-" * width for width in widths)]
+    lines.extend("  ".join(value.ljust(widths[i]) for i, value in enumerate(row)) for row in table_rows)
+    return "\n".join(lines) + "\n"
 
 
 _TABLE_WIDTH = 115

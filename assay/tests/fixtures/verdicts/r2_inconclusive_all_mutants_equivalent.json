@@ -1,5 +1,5 @@
 {
- "schema_version": 12,
+ "schema_version": 13,
  "assay_version": "0.1.0",
  "lane": "package",
  "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -78,10 +78,19 @@
       "end_byte": 238,
       "replacement_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       "operator": "sql:drop-check",
-      "description": "drop CHECK (status IN ('new', 'done'))"
+      "description": "drop CHECK (status IN ('new', 'done'))",
+      "candidate_id": "a5f7ab74c46dad0f734d9ecabfd378833d9a2e00a4f805e6e2c3eea2de2f83d8",
+      "source_sha256": "4e245bedabee8341bd78cd2e562ca4e4d3b622964e06eadb29ce4a3487ae6aff",
+      "mutated_file_sha256": "b22a3a7a633ab47e66b4cf50cd341944ebe99422f692a52a67c99bbf16e5b98b",
+      "execution": {
+       "mode": "full"
+      }
      }
     ],
-    "hung": []
+    "hung": [],
+    "candidate_ids": [
+     "a5f7ab74c46dad0f734d9ecabfd378833d9a2e00a4f805e6e2c3eea2de2f83d8"
+    ]
    }
   }
  ],

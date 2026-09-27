@@ -1,0 +1,76 @@
+run-gate: rev 46 | lane tester-unified | env built-in 'bare-host'
+run-gate: budget 60m (advisory)
+run-gate: host memory PSI full avg10=0.0% avg60=0.01%
+ASSAY_GATE_CONTAINER=run-gate-assay-selfhosted-4171085-30356-1790332674
+Looking in links: /workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-wheelhouse
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-wheelhouse/setuptools-84.0.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-requirements.txt (line 1))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-wheelhouse/wheel-0.47.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-requirements.txt (line 2))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-wheelhouse/setuptools_scm-10.0.5-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-requirements.txt (line 3))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-wheelhouse/packaging-26.3-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-requirements.txt (line 4))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-wheelhouse/vcs_versioning-2.2.4-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/build-requirements.txt (line 5))
+Installing collected packages: setuptools, packaging, wheel, vcs-versioning, setuptools-scm
+
+Successfully installed packaging-26.3 setuptools-84.0.0 setuptools-scm-10.0.5 vcs-versioning-2.2.4 wheel-0.47.0
+Processing ./tmp/tmp.qH8oSiOThi/clone/assay
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: assay
+  Building wheel for assay (pyproject.toml): started
+  Building wheel for assay (pyproject.toml): finished with status 'done'
+  Created wheel for assay: filename=assay-7.0.1.dev75+g7859057f-py3-none-any.whl size=716547 sha256=8aeb5e1765d036a051853d067640bfc5ab68e007e5e6e51f33774a0dbe0b90dc
+  Stored in directory: /tmp/pip-ephem-wheel-cache-aqqv_tcs/wheels/ae/51/06/ef90d147b2f00a1181963be57a4e229702b596a5108c95dcae
+Successfully built assay
+Processing ./tmp/tmp.qH8oSiOThi/dist/assay-7.0.1.dev75+g7859057f-py3-none-any.whl
+Installing collected packages: assay
+Successfully installed assay-7.0.1.dev75+g7859057f
+ASSAY_GATE_PHASE=wheel-installed
+.........................                                                [100%]
+25 passed, 16 deselected in 1.79s
+ASSAY_GATE_PHASE=attestation-hardened
+.............                                                            [100%]
+13 passed, 31 deselected in 27.19s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+.................                                                        [100%]
+17 passed in 0.22s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6/v7/v8/v9/v10 hard-cut guard passed for 34 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-v10-hard-cut-verified
+........................................................................ [ 64%]
+.......................................                                  [100%]
+111 passed in 0.63s
+ASSAY_GATE_PHASE=verdict-v12-successors-verified
+tester-unified: PASS (exit 0)
+  commit: 7859057f802640e905497f0132cc802212e07c41
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+input_oid=d2ad506a66d8f2a43170bce8ebf6c034d724fae3
+qualification_baseline_oid=1bea2767444c4839da1b7c5d9f03e0e5869a7e59
+head_oid=5e007b1d427194a80a308aabc9280e158de3f52a
+outcome=PASS exit_code=0
+claim[R0]=status=PASS
+claim[R1]=status=PASS
+claim[R2]=status=PASS
+claim[R3]=status=PASS
+r2_killed_identity={"description": "Eq->NotEq", "end_byte": 52, "lineno": 2, "operator": "python:compare-swap", "path": "cmru/src/cmru/_b006a_probe.py", "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2", "start_byte": 50}
+r3_canary={"attempts": [{"control_outcome": "PASS", "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file", "disposition": "attempted", "expected_reason_code": "UNCOVERED_LINES", "observed_reason_code": "UNCOVERED_LINES", "target": "src/cmru/_b006a_probe.py", "transformed_outcome": "FAIL"}], "mechanism": "uncovered-line"}
+snapshot_policy={"selection": "repository-minus-unsafe-symlinks", "unsafe_symlink_omissions": ["topos/tests/fixtures/inspect_files/_danger/passwd_link", "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape", "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"]}
+omission_probe={"omitted_absent": [true, true, true], "cmru_root_present": true, "topos_ordinary_present": true, "status_clean": true}
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+.......                                                                  [100%]
+7 passed in 13.31s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+Looking in links: /workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/lint-wheelhouse
+Processing ./gate/distribution/lint-wheelhouse/pyflakes-3.4.0-py2.py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-c-p4-b100-report/assay/gate/distribution/lint-requirements.txt (line 1))
+Installing collected packages: pyflakes
+Successfully installed pyflakes-3.4.0
+ASSAY_GATE_PHASE=pyflakes-clean
+ASSAY_GATE_CONTAINER_EXIT=0
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: WARNING profiling: 'cgprofile-host-daemon' not running (start it: cd scripts/cgroup-profiler && ciu up) — coarse rusage sampling only
+run-gate: footprint tester-unified: peak 36 MiB, p90 -, 0.00 cores avg, - s stalled on memory (full); history median peak - (0 runs) [source: rusage-maxrss] (peak <= floor)
+run-gate: lane 'tester-unified' exit 0
+GATE_EXIT=0

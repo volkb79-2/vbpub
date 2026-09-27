@@ -316,7 +316,7 @@ def build_inconclusive() -> Verdict:
                 status=Outcome.INCONCLUSIVE,
                 verified_by_assay=True,
                 reason_code=ReasonCode.NO_MUTANTS,
-                mutation=Mutation(candidate_count=0, total=0),
+                mutation=Mutation(candidate_count=0, total=0, candidate_ids=()),
             ),
         ),
     )

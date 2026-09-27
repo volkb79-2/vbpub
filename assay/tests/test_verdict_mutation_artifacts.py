@@ -46,7 +46,7 @@ import hashlib
 import json
 
 import pytest
-from conftest import mutation_verdict_fixture, why_invalid
+from conftest import native_mutation, native_outcome, mutation_verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
@@ -55,8 +55,6 @@ from assay.verdict import (
     Judgment,
     JudgmentR2,
     JudgmentResolved,
-    Mutation,
-    MutantOutcome,
     SnapshotPolicy,
     Verdict,
 )
@@ -116,16 +114,16 @@ def _validate(document: dict, validator: Draft202012Validator) -> None:
 
 
 def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=2,
         total=2,
         killed=(
-            MutantOutcome(
+            native_outcome(
                 path="pkg/checks.py", lineno=12, start_byte=100, end_byte=101,
                 replacement_sha256=SHA_LTE, operator="python:compare-swap",
                 description="Lt->LtE",
             ),
-            MutantOutcome(
+            native_outcome(
                 path="pkg/checks.py", lineno=18, start_byte=240, end_byte=243,
                 replacement_sha256=SHA_OR, operator="python:boolop-swap",
                 description="And->Or",
@@ -159,17 +157,17 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
 
 
 def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft202012Validator):
-    survivor = MutantOutcome(
+    survivor = native_outcome(
         path="pkg/checks.py", lineno=30, start_byte=300, end_byte=302,
         replacement_sha256=SHA_NE, operator="python:compare-swap",
         description="Eq->NotEq",
     )
-    killed = MutantOutcome(
+    killed = native_outcome(
         path="pkg/checks.py", lineno=14, start_byte=120, end_byte=121,
         replacement_sha256=SHA_LTE, operator="python:compare-swap",
         description="Lt->LtE",
     )
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=2, total=2, killed=(killed,), survived=(survivor,)
     )
     r2_claim = Claim(
@@ -200,7 +198,7 @@ def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft20201
 
 
 def test_no_mutants_matches_the_hand_written_fixture(validator: Draft202012Validator):
-    mutation = Mutation(candidate_count=0, total=0)
+    mutation = native_mutation(candidate_count=0, total=0)
     r2_claim = Claim(
         rigor="R2", source="computed", status=Outcome.INCONCLUSIVE,
         verified_by_assay=True, reason_code=ReasonCode.NO_MUTANTS, mutation=mutation,
@@ -229,16 +227,16 @@ def test_no_mutants_matches_the_hand_written_fixture(validator: Draft202012Valid
 
 
 def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012Validator):
-    stopped = MutantOutcome(
+    stopped = native_outcome(
         path="pkg/slow.py", lineno=9, start_byte=96, end_byte=99,
         replacement_sha256=SHA_OR, operator="python:boolop-swap", description="And->Or",
     )
-    killed = MutantOutcome(
+    killed = native_outcome(
         path="pkg/slow.py", lineno=5, start_byte=40, end_byte=41,
         replacement_sha256=SHA_LTE, operator="python:compare-swap",
         description="Lt->LtE",
     )
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=2, total=2, killed=(killed,), budget_exceeded=(stopped,)
     )
     r2_claim = Claim(
@@ -272,17 +270,17 @@ def test_a_crashed_mutant_matches_the_hand_written_fixture(validator: Draft20201
     """The FIRST of A-116's two distinct ERROR/EXEC_FAILED shapes: the
     baseline itself PASSED (an R2 mutation payload exists at all), but one
     attempted mutant's process crashed."""
-    crashed = MutantOutcome(
+    crashed = native_outcome(
         path="pkg/broken.py", lineno=4, start_byte=60, end_byte=64,
         replacement_sha256=SHA_FALSE, operator="python:bool-const-flip",
         description="True->False",
     )
-    killed = MutantOutcome(
+    killed = native_outcome(
         path="pkg/broken.py", lineno=2, start_byte=20, end_byte=21,
         replacement_sha256=SHA_LTE, operator="python:compare-swap",
         description="Lt->LtE",
     )
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=2, total=2, killed=(killed,), crashed=(crashed,)
     )
     r2_claim = Claim(
@@ -413,7 +411,7 @@ def test_a_mutation_payload_outside_the_r2_branch_is_rejected(validator: Draft20
 
 
 def test_the_model_refuses_a_mutation_payload_outside_r2():
-    mutation = Mutation(candidate_count=0, total=0)
+    mutation = native_mutation(candidate_count=0, total=0)
     with pytest.raises(ValueError, match="a mutation payload belongs to the R2 claim"):
         Claim(
             rigor="R1", source="computed", status=Outcome.PASS,
@@ -422,7 +420,7 @@ def test_the_model_refuses_a_mutation_payload_outside_r2():
 
 
 def test_the_model_refuses_a_mutation_payload_on_a_no_measurement_claim():
-    mutation = Mutation(candidate_count=0, total=0)
+    mutation = native_mutation(candidate_count=0, total=0)
     with pytest.raises(ValueError, match="NO_MEASUREMENT carries no mutation payload"):
         Claim(
             rigor="R2", source="computed", status=Outcome.NO_MEASUREMENT,
@@ -508,23 +506,23 @@ def _sha(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
-SQL_KILLED = MutantOutcome(
+SQL_KILLED = native_outcome(
     path="db/schema.sql", lineno=12, start_byte=200, end_byte=222,
     replacement_sha256=_sha("o9-sql-killed"), operator="sql:drop-not-null",
     description="NOT NULL -> NULL",
     kill_signal='ERROR:  null value in column "label" violates not-null constraint',
 )
-SQL_SURVIVED = MutantOutcome(
+SQL_SURVIVED = native_outcome(
     path="db/schema.sql", lineno=20, start_byte=300, end_byte=330,
     replacement_sha256=_sha("o9-sql-survived"), operator="sql:drop-check",
     description="CHECK (...) -> CHECK (true)",
 )
-SQL_CRASHED = MutantOutcome(
+SQL_CRASHED = native_outcome(
     path="db/schema.sql", lineno=30, start_byte=400, end_byte=440,
     replacement_sha256=_sha("o9-sql-crashed"), operator="sql:widen-check-in",
     description="widen the IN-list by one member",
 )
-SQL_EQUIVALENT = MutantOutcome(
+SQL_EQUIVALENT = native_outcome(
     path="db/schema.sql", lineno=40, start_byte=500, end_byte=530,
     replacement_sha256=_sha("o9-sql-equivalent"), operator="sql:weaken-delete-action",
     description="RESTRICT -> CASCADE",
@@ -559,7 +557,7 @@ def _valid_sql_verdict() -> Verdict:
     Constructing this at all (no exception) IS the model-valid half of O9;
     the two assertions below are the schema-valid and raw-verifier-clean
     halves."""
-    mutation = Mutation(
+    mutation = native_mutation(
         candidate_count=4,
         total=4,
         killed=(SQL_KILLED,),
@@ -619,13 +617,13 @@ def test_o9_negative_a_sql_killed_with_no_kill_signal_under_declared_attribution
     this (``kill_signal`` is per-bucket-legal, never per-bucket-required --
     A-182, no ``$data``); only the model and the raw verifier catch it,
     which is the whole point of this negative."""
-    unsignalled = MutantOutcome(
+    unsignalled = native_outcome(
         path=SQL_KILLED.path, lineno=SQL_KILLED.lineno,
         start_byte=SQL_KILLED.start_byte, end_byte=SQL_KILLED.end_byte,
         replacement_sha256=SQL_KILLED.replacement_sha256, operator=SQL_KILLED.operator,
         description=SQL_KILLED.description,
     )
-    mutation = Mutation(candidate_count=1, total=1, killed=(unsignalled,))
+    mutation = native_mutation(candidate_count=1, total=1, killed=(unsignalled,))
     with pytest.raises(ValueError, match="kill_attribution 'declared' but"):
         Verdict(
             **BASE,
@@ -662,7 +660,7 @@ def test_o9_negative_b_sql_equivalent_bucket_with_no_declared_equivalence_artifa
     (P33/V5-3 invariant 2). Declaring neither is legal; a lane with the
     bucket populated and no declared artifact would be claiming equivalence
     was proven by nothing."""
-    mutation = Mutation(candidate_count=1, total=1, equivalent=(SQL_EQUIVALENT,))
+    mutation = native_mutation(candidate_count=1, total=1, equivalent=(SQL_EQUIVALENT,))
     with pytest.raises(ValueError, match="declares no equivalence_artifact"):
         Verdict(
             **BASE,
@@ -725,7 +723,7 @@ def test_o9_negative_c_a_python_operator_declared_on_a_sql_lane(
                 Claim(
                     rigor="R2", source="computed", status=Outcome.ERROR,
                     verified_by_assay=True, reason_code=ReasonCode.EXEC_FAILED,
-                    mutation=Mutation(
+                    mutation=native_mutation(
                         candidate_count=4,
                         total=4,
                         killed=(SQL_KILLED,),

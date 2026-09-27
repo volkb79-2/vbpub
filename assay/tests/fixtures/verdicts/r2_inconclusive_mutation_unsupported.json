@@ -1,5 +1,5 @@
 {
-  "schema_version": 12,
+  "schema_version": 13,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "333333333333333333333333333333333333333e",
@@ -32,14 +32,18 @@
   "judgment": {
     "resolved": {
       "language": "python",
-      "source_roots": ["pkg"],
+      "source_roots": [
+        "pkg"
+      ],
       "base": "0000000000000000000000000000000000000a"
     },
     "r2": {
       "producer": "native",
       "jobs": 2,
       "max_mutants": 50,
-      "operators": ["python:compare-swap"],
+      "operators": [
+        "python:compare-swap"
+      ],
       "kill_attribution": "unattributed",
       "mode": "changed_lines"
     }

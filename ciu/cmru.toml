@@ -71,3 +71,58 @@ commands = [
   # ride along on every ciu release as its own asset.
   { label = "CIU: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "ciu", "--cwd", ".", "--notes-env", "CIU_RELEASE_NOTES", "--extra-asset", "get.py"], cwd = "." },
 ]
+
+[versions]
+
+[versions.discovery]
+pypi_extras = ["ssh", "schema", "registry"]
+
+[versions.targets]
+
+[versions.targets."pypi.jinja2"]
+mode = "single"
+constraint = ">=3.1.2"
+
+[versions.targets."pypi.jinja2".pypi]
+name = "jinja2"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pyyaml"]
+mode = "single"
+constraint = ">=6.0.1"
+
+[versions.targets."pypi.pyyaml".pypi]
+name = "pyyaml"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.tomli-w"]
+mode = "single"
+constraint = ">=1.0.0"
+
+[versions.targets."pypi.tomli-w".pypi]
+name = "tomli-w"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.paramiko"]
+mode = "single"
+constraint = ">=5.0"
+
+[versions.targets."pypi.paramiko".pypi]
+name = "paramiko"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.jsonschema"]
+mode = "single"
+constraint = ">=4.18"
+
+[versions.targets."pypi.jsonschema".pypi]
+name = "jsonschema"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pydantic"]
+mode = "single"
+constraint = ">=2"
+
+[versions.targets."pypi.pydantic".pypi]
+name = "pydantic"
+registry = "https://pypi.org"

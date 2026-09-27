@@ -435,14 +435,16 @@ def test_fake_approved_review_reaches_merge_ready(behavioral_project, tmp_state,
     assert len(approved) == 1
 
 
-def test_fake_rejected_review_reaches_review_rejected(behavioral_project, tmp_state, fake_cli):
+def test_fake_rejected_review_reaches_review_rejected(
+    behavioral_project, tmp_state, fake_cli, sync_dispatch
+):
     cfg = behavioral_project
     fake_cli.queue(TASK_ID, "implementer", _impl_commit_step())
     fake_cli.queue(TASK_ID, "review", _review_reject_step(cfg, TASK_ID, reason="scope drift"))
 
     d = daemon.Daemon({"demo": cfg.root})
     for _ in range(20):
-        _tick(d, "demo")
+        sync_dispatch(d, "demo")
         tsf = storage.load_state("demo", TASK_ID)
         if tsf and tsf.state in (TaskState.MERGE_READY, TaskState.REVIEW_REJECTED,
                                    TaskState.BLOCKED):
@@ -450,6 +452,7 @@ def test_fake_rejected_review_reaches_review_rejected(behavioral_project, tmp_st
 
     tsf = storage.load_state("demo", TASK_ID)
     assert tsf.state == TaskState.REVIEW_REJECTED
+    assert len(sync_dispatch.launched) >= 2, sync_dispatch.launched
 
     rejected = [e for e in storage.iter_events("demo")
                 if e.type is EventType.REVIEW_RECORDED
@@ -1002,7 +1005,9 @@ def test_scope_amendment_files_reach_review_independent_dispatch(
 # O2 seed lifecycle tests: the three REQUIRED invariants.
 # ===========================================================================
 
-def test_reject_loop_requeues_never_strands(behavioral_project, tmp_state, fake_cli):
+def test_reject_loop_requeues_never_strands(
+    behavioral_project, tmp_state, fake_cli, sync_dispatch
+):
     """Regression anchor for shipped bug (a): REVIEW_REJECTED had NO
     reconcile handler at all -- a rejected task was stranded FOREVER (zero
     further planned actions, requiring a manual operator re-queue).
@@ -1018,7 +1023,7 @@ def test_reject_loop_requeues_never_strands(behavioral_project, tmp_state, fake_
 
     d = daemon.Daemon({"demo": cfg.root})
     for _ in range(30):
-        _tick(d, "demo")
+        sync_dispatch(d, "demo")
         tsf = storage.load_state("demo", TASK_ID)
         impl_attempts = [a for a in tsf.attempts if a.role is Role.IMPLEMENTER]
         if len(impl_attempts) >= 2:
@@ -1038,6 +1043,7 @@ def test_reject_loop_requeues_never_strands(behavioral_project, tmp_state, fake_
         "before the fix, REVIEW_REJECTED had no handler and this would "
         "stay at 1 forever"
     )
+    assert len(sync_dispatch.launched) >= 3, sync_dispatch.launched
     assert not tick_errors, f"reconcile pass raised: {[e.payload for e in tick_errors]}"
     assert tsf.state not in (TaskState.REVIEW_REJECTED, TaskState.BLOCKED), (
         f"task must have progressed past the rejection, got {tsf.state}"
