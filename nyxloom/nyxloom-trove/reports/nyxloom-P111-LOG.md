@@ -7,13 +7,15 @@ Date: 2026-09-26
 Audit artifacts and safe probes are complete. The original exact
 `tester-unified` attempts were refused because the worktree was dirty. On
 2026-09-27, the operator authorized commits from the assigned worktree and
-removed the process blocker. The clean audit commit `ca0fe0751c5f27b4c88537986b50e99e1c5a5273`
-then passed the complete `tester-unified` lane. No parser, runtime, test,
+removed the process blocker. The clean audit commits
+`ca0fe0751c5f27b4c88537986b50e99e1c5a5273` and
+`1fcf5335dc885b507ff9199714d31bf1fa63675a` both passed the complete
+`tester-unified` lane. No parser, runtime, test,
 packaging, or cli-extended source was changed.
 
 The original dirty-tree refusals remain in P12 and P14 as historical evidence.
-They did not start a lane and are not a gate result. O6 is pending the final
-committed-revision run; do not report it green until every lane completes.
+They did not start a lane and are not a gate result. O6 passed on the final
+committed audit revision.
 
 ## Revision and scope
 
@@ -183,3 +185,29 @@ Assay emitted its advisory that it was imported from the selected worktree's
 editable source rather than an installed distribution; this follows the
 repository's in-repo Assay consumption policy and did not fail the lane. The
 full lane completed; no partial result is reported as green.
+
+## P16 - final exact-revision gate after D-016 field-set decision
+
+Before running, history showed no active lane; its only completed history entry
+was P15. The required command was rerun after the editable field set was added
+to D-016 and the canonical docs:
+
+```text
+./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-extended tester-unified
+```
+
+Result: **PASS, exit 0**, on clean commit
+`1fcf5335dc885b507ff9199714d31bf1fa63675a`. The only declared lane,
+`tester-unified`, completed. Assay claims were R0 PASS and R1 PASS; the R1
+coverage artifact reported 100.0% with 0 changed production lines considered.
+Pytest ran as
+`/opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-branch --cov-report=json:coverage.json`.
+The verdict is `nyxloom/.assay/verdict-tester-unified.json`. This is the final
+exact-revision gate for the completed audit package.
+
+## P17 - final local documentation-link check
+
+A local Markdown path/anchor scan over README, CLI reference, Design Guide,
+Consumers, decisions, both P111 reports, and the prerequisite prompt checked
+34 local links/anchors and found 0 missing targets. The scan ran after the
+D-015/D-016 documentation updates.

@@ -58,9 +58,9 @@ requires visible tool-call output.
 | O1 - canonical grammar reference | PASS | Parser/dispatch introspection and declaration-level tables in `docs/CLI-REFERENCE.md`; every positional and option alias/path is represented. |
 | O2 - behavioral audit | PASS WITH LIMITS | 94 invalid cases, 158 valid option probes, 45 leaf dispatch probes, placement/display/backlog-write probes, and inspected effect assertions. Remote/provider and live stateful effects are explicitly unverified, not certified. |
 | O3 - design review | PASS | Current behavior, concrete user journeys, overlap, risk, scope, migration, and compatibility are recorded for command-design proposals and NL-10/NL-13..NL-22. The operator resolved D-001..D-016 on 2026-09-27. No runtime choice was silently shipped. |
-| O4 - docs and package boundary | PASS | README links the canonical reference; Design Guide distinguishes current and target behavior; Consumers examples parse; 32 links/anchors resolve; the P111 handoff lint exits 0 `clean`; package inclusion gap and isolated-wheel oracle are documented. |
+| O4 - docs and package boundary | PASS | README links the canonical reference; Design Guide distinguishes current and target behavior; Consumers examples parse; 34 local links/anchors resolve; the P111 handoff lint exits 0 `clean`; package inclusion gap and isolated-wheel oracle are documented. |
 | O5 - no runtime migration | PASS WITH OPERATOR-APPROVED PROCESS DELTA | No parser, dispatch, runtime, test, packaging, or cli-extended source changed. The operator explicitly authorized changing `nyxloom-trove/STANDING.md` to allow commits from the assigned worktree and to permit exact-scope docs/packaging edits; this path was forbidden by the original P111 audit scope and is disclosed below. |
-| O6 - complete exact-revision gate | PASS | `tester-unified` completed on audit commit `ca0fe0751c5f27b4c88537986b50e99e1c5a5273`, exit 0. Its R0 test claim passed; R1 changed-line coverage passed at 100% with zero changed production lines considered because this package changed no source. |
+| O6 - complete exact-revision gate | PASS | The final audit revision `1fcf5335dc885b507ff9199714d31bf1fa63675a` completed `tester-unified`, exit 0. R0 passed; R1 passed at 100% with zero changed production lines considered because this package changed no source. |
 
 ### Gate result
 
@@ -103,6 +103,21 @@ in-repository consumption policy and did not fail the lane. The run-gate
 history recorded a clean tree, no OOM/limit-drift events, and a 938,237,952-byte
 peak. This was the only declared lane; it completed and is not reported as a
 partial result.
+
+After D-016's field set was recorded, the final audit revision was gated again:
+
+```text
+commit: 1fcf5335dc885b507ff9199714d31bf1fa63675a
+lane: tester-unified — PASS, exit 0
+R0: PASS (computed)
+R1 changed-line coverage: PASS, 100%; 0 changed production lines considered
+pytest: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-branch --cov-report=json:coverage.json
+Assay verdict: nyxloom/.assay/verdict-tester-unified.json
+```
+
+This is the final exact-revision run for the completed audit packet. The only
+declared lane completed; the coverage denominator was zero because the diff
+contains no production source changes.
 
 ## Decisions and backlog dispositions
 
