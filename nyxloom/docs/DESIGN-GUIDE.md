@@ -16,18 +16,85 @@ the broad lane now has a consistent minimum reach contract.
 Hypothesis remains appropriate for pure CLI and configuration invariants where
 input families are broad. Schemathesis is outside the CLI-only lane because
 Nyxloom does not expose an owned HTTP/OpenAPI contract there.
-## Top-level version compatibility
+## CLI identity, help, and bootstrap
 
-Nyxloom keeps the `version` command for its normal command grouping and adds
-`nyxloom --version` as an identity probe before command dispatch. Both use
-`nyxloom.__version__`; the legacy command prints the bare metadata value,
-while the top-level flag prints `nyxloom <version>` and exits 0.
-The early probe avoids importing command-specific state merely to identify the
-installed CLI and gives estate automation the same top-level contract as the
-other first-party tools.
-At every nested parser depth, help, usage, and configuration diagnostics begin
-with `NYXLOOM <version> — operator CLI` as line 1 before argparse usage text;
-normal command output is unchanged.
+The current primary CLI preserves both the version verb and the top-level
+--version flag. They use the installed Nyxloom distribution metadata, but
+their output differs: the flag prints nyxloom <version> and the verb prints
+only <version>. Both paths currently initialize logging before parsing.
+That initialization creates the state log directory and an empty
+nyxloom.jsonl, so help, version, bare invocation, and parser errors are not
+side-effect-free today. The earlier rationale that --version avoids
+command-specific state is no longer accurate.
+
+The approved cli-extended adoption direction requires one identity source and
+the same version line from both entry forms. It also requires help/version
+paths to avoid creating Nyxloom state. The implementation should classify
+display paths before side-effecting logging setup, then configure logging only
+when a command needs it. This is an adoption requirement, not shipped
+behavior.
+
+The existing version banner on nested argparse help remains useful context.
+The operator approved removing the undocumented short `-h` alias under the
+library's `--help` contract (D-001). The implementation must move help, `help
+<verb>`, usage errors, and the banner to the CLI registry so accepted syntax
+and generated help cannot diverge.
+
+## Approved CLI contract choices
+
+The operator approved D-001 through D-006 for the cli-extended adoption. The
+current parser still has the old behavior until implementation:
+
+- A command named `list` is read-only. `backlog list` will render the index
+  view from current entries in memory when `INDEX.md` is absent;
+  `backlog index` remains the explicit file writer. This keeps a useful first
+  read without hiding a repository write in a display command.
+- Accepted flags must have their advertised effect. Ignored doctor/resync
+  flags and findings suppressed by capability-map dry-run become clear
+  validation errors; lossless extraction stops accepting an option it always
+  refuses. Explicit dry-run and evidence-confidence safeguards stay intact.
+- An explicit project selector must resolve. Unknown IDs on status and doctor
+  become errors rather than empty or host-only output that could be mistaken
+  for a successful check. Events and finding-list keep their separate query
+  contracts.
+- The empty `gate` parser path is removed because project verification belongs
+  to each project's `run-gate.py`/Assay lane; Nyxloom has no gate action there.
+- `--debug` follows cli-extended's verbosity meaning. `--log-level` is
+  explicit, `NYXLOOM_LOG_LEVEL` remains its default source, and `--traceback`
+  preserves the old diagnostic behavior. Existing explicit operation/state
+  safeguards remain consent; the migration does not add a second generic
+  confirmation prompt.
+
+The approved command split follows the audience and data boundary while
+preserving one wheel: `nyxloom` handles project-local trove authoring;
+`nyxloom-harness` handles AI-harness files and session workflows; and
+`nyxloomctl` owns all local host-control, administration, and developer
+diagnostics. Trove authoring and harness use must continue to work with the
+daemon unavailable. The dashboard remains the existing HTTP/SSE client; remote
+`nyxloomctl` endpoints, credentials, and operations are future work (D-007/D-008).
+
+Lint follows the same data boundary. `nyxloom lint` is for the project the
+author is working in, discovered from the current directory; it must not
+require host registration. The existing no-argument scan across every
+registered project remains useful to an operator, so it moves to
+`nyxloomctl lint` (D-015). This preserves both journeys without making local
+authoring depend on the host registry.
+
+The service process gets a directly executable same-wheel `nyxloomd` command
+that the existing container supervisor can invoke (D-009). This is a process
+launcher for the current container deployment, not another human-facing CLI.
+The local human/operator daemon command moves to `nyxloomctl daemon`; its old
+`--foreground` option is removed because it had no effect (D-011). `cli-extended`
+gains a shared Questionary-backed prompt API behind an optional dependency
+extra (D-010), and Nyxloom exposes it through `nyxloom[interactive]` (D-012).
+Nyxloom still owns field meaning, schema validation, and file-write policy.
+The first workflow is managed backlog create/edit: keep scriptable
+`nyxloom backlog new TITLE`, add `new --interactive [TITLE]`, and add
+`backlog edit ENTRY_ID` (D-014/D-016). Editing preserves the Markdown body and
+does not expose status or merge-owned fields; the full candidate frontmatter
+must validate before any write. D-013 approves removing old host-control
+spellings from `nyxloom`; the adoption must publish a migration table to
+`nyxloomctl` and must not retain forwarding aliases in the authoring CLI.
 
 ## Session extraction selection and boundaries
 

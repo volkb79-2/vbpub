@@ -9,7 +9,8 @@ wrong by construction.)
 
 ## Environment
 
-- Work dir: `/workspaces/vbpub/nyxloom`. Never leave it.
+- Work dir: the assigned task worktree under `/workspaces/vbpub/.worktrees/<branch>`.
+  Do not make task edits in the shared `/workspaces/vbpub` main checkout.
 - Python (DIAGNOSTIC only): the interpreter on `PATH` (currently 3.14; PyYAML,
   jsonschema, hypothesis, pytest installed — install NOTHING). Corrected
   2026-08-02: this line named `/workspaces/vbpub/.venv/bin/python` at "3.13",
@@ -84,8 +85,10 @@ says so. Never import-and-hope; never reimplement another package's logic.
 
 ## Code and test rules
 
-- stdlib + PyYAML + jsonschema (+ hypothesis in tests) only. Type hints on
-  public functions. No dead code, no scaffolding, ASCII only.
+- Runtime and test dependencies must be declared in `pyproject.toml`; optional
+  UI libraries belong in an explicit extra. Do not install undeclared
+  dependencies manually. Type hints on public functions. No dead code, no
+  scaffolding, ASCII only.
 - Use conftest fixtures (`tmp_state`, `sample_project`, `make_handoff`).
   Local fixtures go in YOUR test file, never conftest.
 - No hollow tests: assert observable artifacts (files written, events
@@ -124,7 +127,11 @@ says so. Never import-and-hope; never reimplement another package's logic.
 
 ## Never
 
-Commit or run any git write command (worktree creation inside tests via the
-fixtures is fine); touch files you don't own; start long-lived daemons that
-outlive your tests; call external networks or AI services; edit this file
-or any handoff.
+Use Git writes only from the assigned task worktree and its feature branch.
+Commits there are allowed and expected when the declared gate requires a clean,
+committed tree for changed-line coverage. Do not stage, commit, reset, rebase,
+or amend from the shared main checkout. Keep the gate's `--worktree` target on
+the assigned task worktree. Also never touch files outside your declared
+ownership; start long-lived daemons that outlive your tests; call external
+networks or AI services; or edit this file or any handoff as an implementation
+agent.

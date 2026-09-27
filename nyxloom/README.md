@@ -33,11 +33,11 @@ side drifts, that test fails until the docs and the config agree again:
   `nyxloomd/docker-compose.yml`; live since 2026-07-21). The file-backed
   `events.jsonl`/statefile design in the table below is the ORIGINAL design;
   CR-04 removes the now-unused file backend and its selector entirely.
-- **Daemon mode: resident.** `nyxloomd` is a long-lived container service
-  (`restart: unless-stopped`), not the stateless cron-driven `nyxloom tick`
-  the table below describes — the 2026-07-15 amendment below built the
-  daemon from the start; `nyxloom tick --once` survives only as a degraded/
-  debug mode.
+- **Daemon mode: resident.** nyxloomd is a long-lived container service
+  (restart: unless-stopped), not the stateless cron-driven schedule the
+  table below describes — the 2026-07-15 amendment below built the daemon
+  from the start. The installed nyxloom tick remains a one-cycle
+  operator/debug command.
 - **Merge mode: guarded-automatic.** `nyxloom-trove/nyxloom.toml`
   `[policy].merge_mode` — a real `git merge --no-ff` via a scratch worktree,
   escalating to `NEEDS_OPERATOR` on a genuine conflict, never firing while a
@@ -66,7 +66,7 @@ side drifts, that test fails until the docs and the config agree again:
   daemon restarts, and leases stay flock-based. What residency buys now rather
   than at graduation: immediate exit collection, in-process scheduling, and a
   read-only HTTP/SSE surface serving the rendered dashboard and live log
-  tails. `nyxloom tick --once` is retained as the degraded/debug mode.
+  tails. The installed nyxloom tick remains a one-cycle operator/debug command.
   ARCHITECTURE §2's cron/timer scheduling and §9's graduation criteria are
   amended accordingly; ROADMAP M2 builds the daemon, M5's daemon item is moot.
 - 2026-07-15 · Implementation carved as file-disjoint packages
@@ -90,6 +90,36 @@ not a current claim.
 
 ## Components
 
+The installed primary nyxloom command exposes project registration,
+handoff linting, operator workflow/state controls, onboarding, backlog and
+finding management, route/model inspection, and mechanical session
+extraction. The complete current grammar and behavior inventory is the
+[canonical CLI reference](docs/CLI-REFERENCE.md); pasteable operator and
+adoption recipes are in [CONSUMERS.md](docs/CONSUMERS.md).
+
+These command families currently share one installed entrypoint. The CLI
+operates on local host/project state; the daemon's separate HTTP/SSE surface
+serves the dashboard, and Nyxloom does not currently ship a project-scoped
+consumer API/client.
+
+The approved target splits user-facing commands into three console scripts in
+the same Nyxloom wheel: `nyxloom` for local trove authoring, `nyxloom-harness`
+for AI-harness workflows such as session extraction, and `nyxloomctl` for all
+local host-control, administration, and developer diagnostics. Trove
+authoring and harness workflows remain usable while the daemon is unavailable;
+remote `nyxloomctl` operations are a separate follow-up design. The local
+daemon command moves to `nyxloomctl daemon`. A service-only `nyxloomd`
+executable will launch the existing daemon inside its current container.
+These entrypoints are approved but not yet implemented.
+
+Within that target, `nyxloom lint` checks the project at the current directory;
+the current all-registered-project scan moves to `nyxloomctl lint`. Managed
+backlog authoring gains `nyxloom backlog new --interactive [TITLE]` and
+`nyxloom backlog edit ENTRY_ID`. These interactive flows use the optional
+`nyxloom[interactive]` extra and validate the complete entry before writing.
+Until the adoption lands, use the currently shipped command grammar described
+in [the CLI reference](docs/CLI-REFERENCE.md).
+
 | Component | Responsibility | Uses AI? |
 | --- | --- | --- |
 | `nyxloom lint` | Frontmatter schema + carve-quality rules (SPEC §6); gates the carve commit. Also validates the managed per-entry backlog: entry frontmatter (BLG2) and the generated `backlog/INDEX.md` freshness (BLG3), when a project adopts `[backlog_entries]` | No |
@@ -99,7 +129,7 @@ not a current claim.
 | Attempt wrapper | Runs one CLI leg detached; tees log; writes typed receipt with exit code; holds/releases flock leases | Only the launched agent |
 | Route adapters | Per-CLI dispatch/resume/probe/usage-extraction templates, table-driven from `routes.toml` | No |
 | `nyxloom render` | Static HTML dashboard from files (tables, DAG, timeline, drill-down, cost) | No |
-| `nyxloom notify` / `decide` / `pause` / `doctor` / `status` | Operator surface; typed events; decision loop; emergency brake; drift audit | No |
+| `nyxloom decide` / `pause` / `doctor` / `status` | Operator surface; typed events; decision loop; emergency brake; drift audit. Notifications are emitted by reconciliation and optional extraction-follow alerts; there is no standalone notify verb. | No |
 | Frontier roles | Carve, review pass #2, merge, decision prep — unchanged from workflow v2 | Yes |
 
 The standing LLM controller session (Sonnet low + heartbeats) is **retired** at
@@ -189,6 +219,8 @@ verbatim and rejects `--redact-pattern`.
 
 ## Documents
 
+- [Primary CLI reference](docs/CLI-REFERENCE.md) — complete installed-command
+  grammar, behavior, side effects, and cli-extended adoption findings.
 - [Architecture](docs/ARCHITECTURE.md) — file layout, tick engine, wrapper,
   leases, routes, cost capture, dashboard, notifications/decision loop,
   daemon graduation criteria. (§1's storage claim is superseded — see
@@ -240,4 +272,4 @@ verb depth. The version is the existing metadata-backed `nyxloom.__version__`.
 The top-level `nyxloom --version` probe prints exactly one `nyxloom <version>`
 line on stdout, exits 0, and writes nothing to stderr. Normal command output
 is unchanged. The rationale is in the
-[design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility).
+[design guide](docs/DESIGN-GUIDE.md#cli-identity-help-and-bootstrap).

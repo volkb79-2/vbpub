@@ -4,6 +4,53 @@ Worked recipes for the per-entry backlog (`nyxloom-trove/backlog/`, one file
 per issue). Design authority (WHY it exists, rejected alternatives):
 [`backlog-entries-spec.md`](backlog-entries-spec.md).
 
+The [canonical CLI reference](CLI-REFERENCE.md) records every accepted
+command, positional, option, default, side effect, and current adoption
+finding. Recipes below use the grammar currently shipped by the primary
+nyxloom command.
+
+## Operator CLI quick path
+
+Register and inspect a project, lint a handoff, and review a state-repair
+plan:
+
+    project_id=my-project
+    project_root=/path/to/project
+    nyxloom --help
+    nyxloom project add "$project_id" "$project_root"
+    nyxloom project list
+    nyxloom lint "$project_root/nyxloom-trove/handoffs/P001.md"
+    nyxloom status --project-id "$project_id"
+    nyxloom doctor --project-id "$project_id"
+    nyxloom resync "$project_id"
+
+The last command is a dry-run. Add --apply only after reviewing the proposed
+state transitions. The lower-confidence content-merge channel requires both
+--apply and --apply-content-merges. Project-level resume separately dry-runs
+resync and refuses unresolved drift unless --force is supplied.
+
+Use discuss for a copyable discussion route and decide to write a response:
+
+Replace these example IDs and choice text with an existing open decision and
+one of its recorded options:
+
+    nyxloom discuss "$project_id" D-001
+    nyxloom decide "$project_id" D-001 --choose option-a --note "Reviewed"
+
+For managed backlog entries, `list` and `show` are read operations. The
+approved CLI target keeps `backlog list` read-only by rendering the current
+listing in memory if `INDEX.md` is absent. The shipped command has not changed
+yet and currently creates the missing index; use the explicit generator when
+you want a committed index:
+
+    nyxloom backlog index --project-id "$project_id"
+    nyxloom backlog list --project-id "$project_id"
+    nyxloom backlog show NL-001 --project-id "$project_id"
+
+The missing-index write is recorded in D-002 and approved for removal. See the
+[CLI reference](CLI-REFERENCE.md#command-and-action-inventory) for the current
+behavior and implementation status.
+
 ## Adopt in a project (paste-able)
 
 Add to `nyxloom-trove/nyxloom.toml`:
@@ -21,7 +68,9 @@ Then:
     nyxloom --version
 
 This prints `nyxloom <version>` on stdout and exits 0 without accessing the
-project registry.
+project registry. Current startup still creates the Nyxloom state log file
+before handling the version flag; cli-extended adoption will make help and
+version paths side-effect-free.
 
 ```bash
 nyxloom lint                 # BLG2/BLG3 now active (silent before adoption)
