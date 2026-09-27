@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from project_fixture import copy_project_fixture  # noqa: E402
 
 
-def test_disposable_project_fixture_copies_all_shared_source_libraries(tmp_path):
+def test_disposable_project_fixture_copies_shared_libraries_and_estate_configs(tmp_path):
     repo_root = tmp_path / "repo"
     project_root = repo_root / "cmru"
     workspace = tmp_path / "scratch"
@@ -21,6 +21,8 @@ def test_disposable_project_fixture_copies_all_shared_source_libraries(tmp_path)
         "docs/RELEASE-TOOLING.md",
         "docs/plan-cmru-release-modes.md",
         "run-gate-project/CONSUMERS.md",
+        "topos/cmru.toml",
+        "nyxloom/cmru.toml",
     ):
         path = repo_root / filename
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,3 +47,5 @@ def test_disposable_project_fixture_copies_all_shared_source_libraries(tmp_path)
     assert (copied_project / "src/cmru/__init__.py").is_file()
     assert (workspace / "libraries/cli-extended/src/cli_extended/__init__.py").is_file()
     assert (workspace / "libraries/worktree/src/worktree/__init__.py").is_file()
+    assert (workspace / "topos/cmru.toml").is_file()
+    assert (workspace / "nyxloom/cmru.toml").is_file()
