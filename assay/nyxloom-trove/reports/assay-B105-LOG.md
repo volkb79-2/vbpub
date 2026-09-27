@@ -248,3 +248,19 @@ review, and serial merge remain open.
   This attempt has no test result; its log is
   `/tmp/b105-tester-unified-d9873a24.log`. The same commit will be gated from
   a separate CIU worktree under the canonical workspace.
+
+### Stopped full attempt on 30eec294 — 2026-09-27
+
+- The registered gate ran on source commit `30eec29415cb0e28936edaa174becbcac164962c`
+  (tree `9347e3b3df2d5423456c88058572258b34a4d186`). Its R0/R1 preflight
+  passed and the controller entered native R2. The progress stream records
+  15 completed candidates out of 3,760 (8 killed, 7 survived), each after all
+  5,831 tests; the mean candidate duration was 560.3 seconds. The run therefore
+  had no final R2 verdict, did not run R3, and cannot be accepted as
+  self-qualification evidence.
+- The operator stopped container `b98696fe74ef` after the measured rate
+  projected several days, outside the agreed 6–8 hour ceiling. The detached
+  auto-remove container is no longer present; its complete progress stream and
+  per-candidate state records remain in the worktree's ignored `.assay/`
+  directory. B105 remains open pending a structural runtime rework; this
+  partial run is retained for diagnostics and resume-state validation only.
