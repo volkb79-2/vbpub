@@ -57,7 +57,7 @@ oracles:
     negative: "Any unapproved grammar/effect change, old alias that still dispatches, generic confirmation added on top of an existing safeguard, or mutation hidden behind a read-only command fails."
     gate: tester-unified
   - id: O4-boundaries-and-effects
-    observable: "Local authoring and harness commands run with no daemon available; local `nyxloomctl` operations remain local and do not silently become HTTP calls. Help/version are side-effect-free, and `nyxloom lint` and `nyxloomctl lint` perform their distinct approved scans."
+    observable: "Local authoring and harness commands run without daemon or host-registry availability; `nyxloom-harness` is a stable shell boundary for AI-harness skills, which need not import Nyxloom internals. Local `nyxloomctl` operations remain local and do not silently become HTTP calls. Help/version are side-effect-free, and `nyxloom lint` and `nyxloomctl lint` perform their distinct approved scans."
     negative: "A help/version path writes Nyxloom state, project authoring/session extraction requires host registration or a daemon, host-wide lint runs from `nyxloom lint`, or local admin needs a live daemon fails."
     gate: tester-unified
   - id: O5-backlog-wizard
@@ -198,7 +198,7 @@ Keep one Nyxloom distribution and install these four entrypoints:
 | Executable | Owner and scope |
 |---|---|
 | `nyxloom` | Local project authoring: `init`, `onboard`, project-local `lint`, and `backlog *`. It works from a project checkout without registry registration or daemon availability. |
-| `nyxloom-harness` | Every session/extraction path: `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`. It reads harness session files/stores and does not initialize Nyxloom host state. |
+| `nyxloom-harness` | Every session/extraction path: `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`. It is the stable shell boundary for AI-harness skills, reads explicit harness session files/stores, and does not initialize Nyxloom host state or require project registration. |
 | `nyxloomctl` | All local host-control, administration, operator, and developer diagnostics, including project registry, status/doctor, workflow/intake/finding actions, routes/models, auth, host-wide lint, migration, and the local `daemon` command. It performs local operations; remote/API transport is out of scope. |
 | `nyxloomd` | Direct service-manager process launcher for the existing daemon container. It is not a fourth human CLI and does not enter through a user-command parser. |
 
