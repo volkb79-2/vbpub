@@ -320,6 +320,50 @@ def test_abandon_requires_remote_candidate_to_be_known_ancestor(
     assert message in capsys.readouterr().out
 
 
+def test_abandon_parses_only_valid_remote_refs_and_accepts_unpromoted_candidate(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    _install_candidate_facts(monkeypatch, tmp_path, [candidate])
+
+    # A malformed ls-remote line is ignored, not treated as a remote branch.
+    _read_only_git(monkeypatch, heads="malformed remote-ref row\n")
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 0
+    assert "Candidate:" in capsys.readouterr().out
+
+    # Exercise each successful remote graph check and pin the subprocess
+    # boundary: all Git probes need captured text and explicit status handling.
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_: "b" * 40)
+    branch_refs = (
+        "a" * 40 + "\trefs/heads/" + candidate.branch + "\n"
+        + "c" * 40 + "\trefs/heads/main\n"
+    )
+    tag_refs = "d" * 40 + "\trefs/tags/alpha-v9\n"
+    responses = iter([
+        (0, branch_refs),  # candidate and main refs are parseable
+        (0, ""),           # candidate ref is an ancestor of the local branch
+        (1, ""),           # recorded progress is not yet on origin/main
+        (0, tag_refs),      # remote tags are readable
+        (0, ""),           # tag is reachable from the candidate
+        (1, ""),           # tag does not include the recorded base
+    ])
+    calls = []
+
+    def run(argv, **kwargs):
+        assert kwargs == {
+            "cwd": tmp_path, "capture_output": True, "text": True, "check": False,
+        }
+        calls.append(argv)
+        code, stdout = next(responses)
+        return subprocess.CompletedProcess(argv, code, stdout, "")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    assert _invoke_abandon(candidate, branch=candidate.branch) == 0
+    assert "Candidate:" in capsys.readouterr().out
+    assert len(calls) == 6
+
+
 def test_abandon_refuses_promoted_or_indeterminate_remote_main(monkeypatch, tmp_path, capsys):
     candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd", base="a" * 40)
     object.__setattr__(candidate.context, "base_commit", "b" * 40)

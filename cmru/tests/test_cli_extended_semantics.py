@@ -284,6 +284,32 @@ def test_bundle_dry_run_validates_and_lists_operations_without_running_them(
         bundle.main(["--config", str(root / "bundle.toml"), "--dry-run"])
 
 
+@pytest.mark.parametrize("wheel_enabled", [False, True])
+def test_bundle_dry_run_without_existing_outputs_or_optional_wheel_settings(
+    monkeypatch, tmp_path, capsys, wheel_enabled,
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    config = bundle.BundleConfig(
+        project_root=root, wheel_project_root=root, dist_dir=root / "dist",
+        bundle_dir=root / "dist" / "bundle", client_dir=root / "dist" / "client",
+        wheel_enabled=wheel_enabled, wheel_python_bin="python3", wheel_find_links=None,
+        archive_template="demo-{version}.tar.xz", archive_version_env="VERSION",
+        archive_format="xztar", copy_files=[], copy_dirs=[],
+    )
+    monkeypatch.setattr(bundle, "parse_config", lambda _path: config)
+    monkeypatch.setattr(bundle, "run_bundle", lambda *_: pytest.fail("bundle dry-run executed build"))
+    monkeypatch.setenv("VERSION", "2.3.4")
+
+    assert bundle.main(["--config", str(root / "bundle.toml"), "--dry-run"]) == 0
+    output = capsys.readouterr().out
+    assert "Would remove existing dist tree" not in output
+    assert ("Would run python3 -m pip wheel" in output) is wheel_enabled
+    assert "--find-links" not in output
+    assert "Would create archive" in output
+    assert not config.dist_dir.exists()
+
+
 def test_project_handler_dry_run_uses_registered_cli_and_skips_handler(
     monkeypatch, tmp_path, capsys,
 ):
@@ -339,6 +365,18 @@ def test_runner_step_dry_run_uses_shared_renderer_without_invoking_step(
     malformed.commands[:] = [{}]
     with pytest.raises(ValueError, match="contains an invalid command"):
         runner.render_step_plan(malformed, tmp_path / "demo")
+
+
+def test_runner_plan_omits_unconfigured_environment_details():
+    step = runner.StepConfig(
+        name="build", commands=[], bake_set_prefix=None, bake_set_vars=[],
+        no_cache_env=None, clean_dirs=[], required_env=[], login=None,
+        step_env={}, env_command=None,
+    )
+
+    plan = runner.render_step_plan(step, Path("/project"))
+
+    assert plan == ["Would run declared step build from /project"]
 
 
 def test_cleanup_declined_confirmation_keeps_the_previewed_target_untouched(
