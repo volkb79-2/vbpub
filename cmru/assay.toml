@@ -4,9 +4,11 @@
 # tester-gate wrapper. CLI implementation dependencies are sibling source
 # packages in this monorepo, so they are explicit import roots alongside CMRU.
 #
-# Assay owns R0/R1/R3 here. R2 lives in run-gate.toml's tag-based mutation
-# lane: a release candidate is already at origin/main, so an Assay mutation
-# base of main would find no changed source and refuse with NO_MUTANTS.
+# Assay owns R0/R1/R3 here. R1 uses the latest ancestor CMRU release tag as
+# its changed-line baseline; advance that pinned tag with each CMRU release.
+# R2 lives in run-gate.toml's tag-based mutation lane, which resolves that
+# nearest ancestor tag dynamically. `main` is unsuitable after merge because
+# Assay can resolve it to HEAD and correctly refuse an empty coverage delta.
 # The repository-minus-unsafe-symlinks selection is the
 # estate-approved monorepo boundary: it omits only the three tracked Topos
 # fixture links that cannot be materialised safely, while preserving every
@@ -43,7 +45,7 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "main"
+base = "cmru-v5.4.1"
 
 [lanes.cmru.judge.coverage]
 format = "coverage-py-json"

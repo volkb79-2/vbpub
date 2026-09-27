@@ -320,19 +320,21 @@ project-relative files/directories and the transaction refuses missing or symlin
 rather than guessing what the gate meant. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
 
-## Why CMRU splits R2 from its Assay lane
+## Why CMRU pins Assay R1 to a release tag and splits R2 out
 
-The release candidate is a snapshot of `origin/main`. CMRU's native Assay
-lane uses `main` as the changed-line base, which is useful for a branch review
-but produces no mutation candidates after the same source has merged. Assay
-correctly reports `NO_MUTANTS` for that release state. CMRU therefore assigns
-R0/R1/R3 to the source-backed Assay lane and R2 to the dedicated release
-mutation lane, which uses the nearest ancestor `cmru-v*` tag. This measures
-the changed CMRU source since its previous release. If that source diff is
-empty, the mutation lane writes its explicit skipped-evidence record. The
-serial campaign caps each candidate at 120 seconds, stops each failed
-candidate at its first failing test (`--maxfail=1`), and resumes from its
-progress stream.
+The release candidate is a snapshot of `origin/main`. Assay resolves a named
+base against the tested commit; once a branch is merged, `main` can resolve to
+the tested commit and leave R1 with no changed lines. CMRU therefore pins R1 to
+the latest ancestor release tag (`cmru-v5.4.1` in the current config), which
+keeps changed-line coverage meaningful after merge. Advance this pinned base
+with each CMRU release. R2 is a separate concern: the release candidate is
+already at `origin/main`, so using `main` as its mutation base would leave no
+mutation candidates. The dedicated mutation lane resolves the nearest
+ancestor `cmru-v*` tag dynamically and mutates CMRU source changed since that
+release. If that source diff is empty, the mutation lane writes its explicit
+skipped-evidence record. The serial campaign caps each candidate at 120
+seconds, stops each failed candidate at its first failing test (`--maxfail=1`),
+and resumes from its progress stream.
 
 The mutation and coverage-canary controls use the same disposable CMRU test
 closure. It includes the Topos and nyxloom CMRU manifests read by the estate
