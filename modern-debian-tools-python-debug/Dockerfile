@@ -583,7 +583,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     install_from_tar "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz" cdebug /tmp/cdebug-extract; \
     cdebug --version; \
     mandb -q; \
-    cp "${STAGE_DIR}/tool-versions.env" /tmp/ai-tool-versions.env; \
+    install -o vscode -g vscode -m 0644 "${STAGE_DIR}/tool-versions.env" /tmp/ai-tool-versions.env; \
     python3 /tmp/install_ai_cli_tools.py root; \
     rm -rf \
         /tmp/bat-extract \
