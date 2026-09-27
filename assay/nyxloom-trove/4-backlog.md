@@ -11060,6 +11060,18 @@ no installed or active Buildkite agent. Remote worker capacity is therefore
 unmeasured; do not count Buildkite parallelism until agents are enrolled and a
 live acceptance proves artifact transfer.
 
+**Required throughput, not a forecast:** reserve one hour of the six-hour
+target for preflight, R3, queueing, retries, aggregation, and evidence
+collection. The remaining five hours are 18,000 candidate-worker seconds.
+For 3,760 candidates, the average R2 cost must be below 4.8 seconds with one
+worker, 9.6 seconds with two, or 14.4 seconds with three. The existing
+560.3-second opening-prefix mean is ordered and non-representative, but these
+figures make the capacity gap concrete: cold kills alone cannot be assumed to
+fit while survivors still execute a several-minute suite. Measure and reduce
+the complete suite's cost per candidate or establish real additional CPU
+capacity under the same per-worker RAM limits. A shard count changes
+scheduling, not work.
+
 The self-qualification claim remains full-source R0–R3 on one exact revision.
 It may change how R2 proves a candidate killed, but it may not silently run a
 smaller source target, drop tests for survivors, report an incomplete campaign
@@ -11105,6 +11117,40 @@ because a shard or pipeline can be described.
   collection, hook set, or receipt cannot be proved, run the full suite or
   refuse the cold policy. Record the policy and effective command in resume
   identity and verifier-accepted evidence.
+- The v14 R2 evidence must make those runtime proofs reviewable and bind them
+  to the submitted candidate inventory. Record a versioned transform plus the
+  declared, transformed, and effective argv; the resolved snapshot cwd and
+  pytest configuration identity; coverage-baseline and mutation-only-baseline
+  collection manifests; and a hook fingerprint for each baseline. Record one
+  candidate execution-evidence item for every candidate ID, with the command
+  variant, runtime collection result/digest, and hook fingerprint. A
+  `witness-cold` kill additionally records the ordered started-test prefix and
+  the index of the failed call; collection/setup/teardown/session errors make
+  the candidate uncertain and disqualify the cold receipt. The verifier
+  requires the evidence IDs to equal the mutation bucket IDs exactly and
+  checks cold-policy, command, manifest, and receipt relationships. The
+  source-bound B105 report checker verifies the declared lane command and
+  transform against the exact source revision; a self-reported argv hash is
+  not source proof.
+- Keep the no-coverage command deliberately narrow to B105. The exact
+  `tests/conftest.py::pytest_sessionfinish` archive hook is permitted only
+  when the four `ASSAY_B105_*` archive variables are absent, as in the full
+  lane; otherwise it is unsupported. Every other non-builtin pytest hook is
+  ineligible unless separately proven safe. Do not change plugin hooks
+  implicitly and call matching node IDs proof of runtime equivalence. The
+  intentional pytest-cov removal must be represented in the versioned command
+  transform and hook allowlist; the no-cov baseline must pass, and candidate
+  hooks must match its reviewed fingerprint. Any candidate mismatch falls
+  back to the original declared command or remains incomplete.
+- Treat coverage-derived source/test slices as research, not as proof of a
+  candidate outcome. A full-suite baseline does not prove an omitted-test
+  subset has the same fixtures, globals, or ordering; a subset control still
+  cannot prove that a slice failure persists in the full declared suite. If a
+  slice is ever trialed, a slice failure must be rerun under the full declared
+  command before it can count as killed, and a slice pass must continue to the
+  full suite before it can count as survived. This does not reduce survivor
+  work, so prioritize profiling and speeding the complete suite or measuring
+  additional CPU capacity instead.
 - Keep R0 and R1 full: the baseline suite and whole-target line/branch
   coverage still run over the complete declared target. R2 skips repeated
   coverage measurement only after the separate uninstrumented baseline and
@@ -11170,6 +11216,13 @@ because a shard or pipeline can be described.
       non-builtin hook are proven safe for cold execution or refactored out of
       the R2 path. Unsupported pytest/plugin behavior refuses cold execution
       rather than weakening the proof.
+- [ ] The verifier and source-bound B105 checker bind the cold policy, exact
+      versioned argv transform, cwd/config, coverage and no-cov collection
+      manifests, hook fingerprints, per-candidate evidence set, and cold
+      started prefix. Candidate evidence IDs equal the candidate buckets;
+      a runtime collection or hook mismatch forces a full declared-command
+      retry or leaves that candidate incomplete. The archive-hook exception
+      is source-bound and only valid with all four archive variables absent.
 - [ ] Shard fixtures prove deterministic, disjoint, exhaustive candidate
       coverage and reject source/plan/tool mismatches. Consolidation produces
       a complete standard verdict that passes `assay verify`; stopping at the
@@ -11183,7 +11236,11 @@ because a shard or pipeline can be described.
 - [ ] A fixed, hash-selected pilot covers source files and mutation operators,
       completes within 90 minutes or is stopped by 2 hours, and records the
       real available worker profile, RAM ceiling, queue/aggregation overhead,
-      candidate outcome sample, and projection.
+      candidate outcome sample, per-candidate CPU/RAM and elapsed time, and a
+      stratified projection. Profile the complete suite's slow tests/fixtures
+      so any cost reduction keeps the full declared suite. For a 64-candidate
+      sample, include one candidate per candidate-bearing source file, all
+      four operators, then fill by the published hash rank.
       No full campaign starts without a measured plan targeting at most 6
       hours and fitting the approved RAM envelope; an 8-hour stop is
       incomplete, with no candidate classification derived from load or time.

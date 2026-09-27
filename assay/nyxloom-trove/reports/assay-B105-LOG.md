@@ -319,3 +319,31 @@ review, and serial merge remain open.
   placement. These were non-R2 runs. The stopped multi-day R2 campaign was not
   restarted; B105 remains unqualified pending B110 implementation, pilot, and
   a complete verifier-accepted R0–R3 report.
+
+### B110 structural runtime review — 2026-09-27
+
+- Rechecked container `b98696fe74ef`: it is absent from Docker, and the
+  retained attempt record above confirms it was stopped by the operator after
+  15/3,760 candidates. No B105 R2 gate is running now; unrelated active gate
+  containers were left untouched.
+- GPT-6-Sol xhigh's read-only plan review recommends implementing the
+  mutation-only command and opt-in cold-witness kills first, then reducing
+  full-suite candidate cost or proving external CPU capacity. Coverage-derived
+  test slices cannot be used as candidate outcomes: omitted tests may affect
+  fixtures/order, a passing full baseline does not prove a sliced baseline,
+  and even a passing slice control does not prove a slice failure will persist
+  in the declared full suite. A slice failure must rerun fully, and a slice
+  pass still requires the full suite, so this path does not save survivor work.
+- The review reserves one hour of the six-hour target for preflight, R3,
+  queueing, aggregation, and evidence. That leaves 18,000 worker-seconds for
+  3,760 candidates: required average R2 cost is under 4.8 seconds with one
+  worker, 9.6 seconds with two, or 14.4 seconds with three. These are required
+  rates, not forecasts. A fixed 64-ID pilot should be source/operator
+  stratified and record each candidate's CPU, RAM, and elapsed time, plus
+  full-suite slow-test timings, queue and consolidation cost, and headroom.
+  Local concurrency must remain within the aggregate 2 GiB RAM cap. No live
+  Buildkite workers or artifact-transfer acceptance exist, so remote capacity
+  remains uncounted.
+- Added A-464 and expanded B110's runtime evidence and pilot requirements.
+  This design update does not qualify B105 and no R2 attempt was started.
+  Review output: `/tmp/assay-b110-sol-plan.txt`.
