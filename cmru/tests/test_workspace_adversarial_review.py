@@ -373,7 +373,9 @@ def test_load_config_remaps_child_scope_and_refuses_bad_scope(monkeypatch, tmp_p
     monkeypatch.setenv(transaction.CHILD_ENV, "1")
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-demo")
     monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "demo")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda path: Path(path) == child.resolve())
     loaded = cli.load_config(orchestration_path, validate_dependencies=False)
     assert loaded[0] == child and loaded[1]["demo"].project_root == child / "demo"
 
@@ -395,9 +397,13 @@ def test_load_config_uses_project_paths_already_loaded_from_child(monkeypatch, t
     monkeypatch.setattr(
         cli, "load_forge_config", lambda _path: _child_forge(child, child_config)
     )
+    monkeypatch.setattr(
+        transaction, "is_transaction_child", lambda path: Path(path) == child.resolve()
+    )
     monkeypatch.setenv(transaction.CHILD_ENV, "1")
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-demo")
     monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "demo")
 
     loaded = cli.load_config(orchestration_path, validate_dependencies=False)
@@ -406,7 +412,11 @@ def test_load_config_uses_project_paths_already_loaded_from_child(monkeypatch, t
     assert loaded[1]["demo"].project_root == child / "demo"
 
 
-def test_load_config_requires_all_child_remapping_facts(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "missing_key",
+    ["CMRU_WORKSPACE_PATH", "CMRU_SOURCE_GIT_ROOT", transaction.BRANCH_ENV],
+)
+def test_load_config_refuses_incomplete_child_context(monkeypatch, tmp_path, missing_key):
     source = tmp_path / "source"
     source_config = source / "demo" / "cmru.toml"
     source_config.parent.mkdir(parents=True)
@@ -414,13 +424,14 @@ def test_load_config_requires_all_child_remapping_facts(monkeypatch, tmp_path):
     orchestration_path = source / "cmru.orchestration.toml"
     monkeypatch.setattr(cli, "load_forge_config", lambda _path: _child_forge(source, source_config))
 
-    # A partial child environment is not ownership evidence.  In particular,
-    # it must not attempt to turn a missing source root into ``Path(None)``.
     monkeypatch.setenv(transaction.CHILD_ENV, "1")
-    monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(tmp_path / "partial"))
-    monkeypatch.delenv("CMRU_SOURCE_GIT_ROOT", raising=False)
-    loaded = cli.load_config(orchestration_path, validate_dependencies=False)
-    assert loaded[0] == source and loaded[1]["demo"].project_root == source / "demo"
+    monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(tmp_path / "child"))
+    monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-demo")
+    monkeypatch.delenv(missing_key, raising=False)
+
+    with pytest.raises(RuntimeError, match="incomplete CMRU transaction child context"):
+        cli.load_config(orchestration_path, validate_dependencies=False)
 
 
 def test_load_config_transaction_scope_requires_child_ownership(monkeypatch, tmp_path):
@@ -458,8 +469,8 @@ def test_load_config_transaction_scope_requires_child_ownership(monkeypatch, tmp
 
     monkeypatch.setenv(transaction.CHILD_ENV, "1")
     monkeypatch.delenv("CMRU_TRANSACTION_PROJECTS", raising=False)
-    loaded = cli.load_config(orchestration_path, validate_dependencies=False)
-    assert set(loaded[1]) == {"demo", "other"}
+    with pytest.raises(RuntimeError, match="incomplete CMRU transaction child context"):
+        cli.load_config(orchestration_path, validate_dependencies=False)
 
 
 def test_resolve_invocation_context_keeps_project_git_scope(monkeypatch, tmp_path):
@@ -491,7 +502,9 @@ def test_load_config_refuses_missing_or_escaping_child_project(monkeypatch, tmp_
     monkeypatch.setenv(transaction.CHILD_ENV, "1")
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(child))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(source))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-demo")
     monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "demo")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda path: Path(path) == child.resolve())
     with pytest.raises(ValueError, match="missing from the isolated"):
         cli.load_config(orchestration_path, validate_dependencies=False)
 
@@ -543,7 +556,7 @@ def test_dispatch_independent_families_covers_refusal_launcher_and_child_failure
     groups = {tmp_path / "left": [left], tmp_path / "right": [right]}
     monkeypatch.setattr(transaction, "project_git_family_groups", lambda *_args: groups)
     config_path = tmp_path / "cmru.toml"
-    with pytest.raises(RuntimeError, match="resume/abandon"):
+    with pytest.raises(RuntimeError, match="resume must target"):
         cli._dispatch_independent_git_families(
             "release", ["--resume", "x"], config_path, tmp_path, configs,
             ["left", "right"], original_target=None,
@@ -629,13 +642,11 @@ def test_main_exits_with_independent_build_and_release_dispatch_status(monkeypat
     monkeypatch.setattr(cli, "load_config", lambda _path: _main_config_tuple(tmp_path))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_dispatch_independent_git_families", lambda *args, **kwargs: 17)
-    with pytest.raises(SystemExit) as build:
-        cli.main(["build", "demo", "--config", str(cfg)])
-    assert build.value.code == 17
+    build = cli.main(["build", "demo", "--config", str(cfg)])
+    assert build == 17
 
-    with pytest.raises(SystemExit) as release:
-        cli.main(["release", "demo", "--dry-run", "--config", str(cfg)])
-    assert release.value.code == 17
+    release = cli.main(["release", "demo", "--dry-run", "--config", str(cfg)])
+    assert release == 17
 
 
 def test_family_rebase_and_dirty_path_guards(monkeypatch, tmp_path):
@@ -692,6 +703,31 @@ def test_run_project_step_does_not_trust_partial_child_context(monkeypatch, tmp_
     assert "CMRU_WORKSPACE_PATH" not in seen[0]
 
 
+@pytest.mark.parametrize(
+    "missing_key",
+    ["CMRU_WORKSPACE_PATH", "CMRU_SOURCE_GIT_ROOT", transaction.BRANCH_ENV],
+)
+def test_run_project_step_refuses_incomplete_marked_child_context(
+    monkeypatch, tmp_path, missing_key,
+):
+    project = cli.ProjectConfig(
+        name="demo", env={}, steps={}, cwd="demo", project_root=tmp_path / "demo",
+        runner_steps={"build": object()},
+    )
+    (tmp_path / "demo").mkdir()
+    monkeypatch.setenv(transaction.CHILD_ENV, "1")
+    monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(tmp_path))
+    monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(tmp_path.parent))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-demo")
+    monkeypatch.delenv(missing_key, raising=False)
+    executed = []
+    monkeypatch.setattr(cli, "execute_step", lambda *args, **kwargs: executed.append(True))
+
+    with pytest.raises(RuntimeError, match="incomplete CMRU transaction child context"):
+        cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
+    assert executed == []
+
+
 def test_run_project_step_preserves_owned_child_context(monkeypatch, tmp_path):
     project = cli.ProjectConfig(
         name="demo", env={}, steps={}, cwd="demo", project_root=tmp_path / "demo",
@@ -700,7 +736,10 @@ def test_run_project_step_preserves_owned_child_context(monkeypatch, tmp_path):
     (tmp_path / "demo").mkdir()
     monkeypatch.setenv(transaction.CHILD_ENV, "1")
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(tmp_path))
+    monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(tmp_path.parent))
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda _path: True)
     seen = []
-    monkeypatch.setattr(cli, "execute_step", lambda *args, **kwargs: seen.append(kwargs["extra_env"]))
+    monkeypatch.setattr(cli, "execute_step", lambda *args, **kwargs: seen.append(kwargs))
     cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
-    assert seen[0]["CMRU_WORKSPACE_PATH"] == str(tmp_path)
+    assert seen[0]["protected_env"]["CMRU_WORKSPACE_PATH"] == str(tmp_path)

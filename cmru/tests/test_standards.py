@@ -74,9 +74,7 @@ def _config(tmp_path: Path) -> tuple[Path, Path]:
 
 def test_standards_reports_missing_project_marker(tmp_path):
     config, _project = _config(tmp_path)
-    with pytest.raises(SystemExit) as exc:
-        standards_main(["demo", "--config", str(config)])
-    assert exc.value.code == 2
+    assert standards_main(["demo", "--config", str(config)]) == 2
 
 
 def test_standards_update_only_touches_project_marker_and_rechecks(tmp_path):
@@ -96,10 +94,7 @@ def test_standards_rejects_noisy_default_step_output(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(SystemExit) as exc:
-        standards_main(["demo", "--config", str(config)])
-
-    assert exc.value.code == 2
+    assert standards_main(["demo", "--config", str(config)]) == 2
 
 
 def test_standards_requires_explicit_tester_gate_inputs(tmp_path):
@@ -113,10 +108,7 @@ def test_standards_requires_explicit_tester_gate_inputs(tmp_path):
     )
     project.write_text(contents, encoding="utf-8")
 
-    with pytest.raises(SystemExit) as exc:
-        standards_main(["demo", "--config", str(config)])
-
-    assert exc.value.code == 2
+    assert standards_main(["demo", "--config", str(config)]) == 2
 
 
 def test_standards_requires_dind_image_only_for_a_docker_enabled_gate(tmp_path):
@@ -128,10 +120,7 @@ def test_standards_requires_dind_image_only_for_a_docker_enabled_gate(tmp_path):
     )
     project.write_text(contents, encoding="utf-8")
 
-    with pytest.raises(SystemExit) as exc:
-        standards_main(["demo", "--config", str(config)])
-
-    assert exc.value.code == 2
+    assert standards_main(["demo", "--config", str(config)]) == 2
 
 
 def test_standards_requires_a_wheel_builder_image_for_wheel_build(tmp_path):
@@ -143,7 +132,4 @@ def test_standards_requires_a_wheel_builder_image_for_wheel_build(tmp_path):
     )
     project.write_text(contents, encoding="utf-8")
 
-    with pytest.raises(SystemExit) as exc:
-        standards_main(["demo", "--config", str(config)])
-
-    assert exc.value.code == 2
+    assert standards_main(["demo", "--config", str(config)]) == 2

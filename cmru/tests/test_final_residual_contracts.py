@@ -35,16 +35,17 @@ def test_bundle_parse_config_requires_archive_and_copy_tables(tmp_path):
     with pytest.raises(ValueError, match="archive"):
         bundle.parse_config(path)
     path.write_text("project_root='.'\n[archive]\nname_template='x-{version}'\nversion_env='V'\n[copy]\nfiles='bad'\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="must be lists"):
+    with pytest.raises(ValueError, match="must be an array of non-empty strings"):
         bundle.parse_config(path)
 
 
 def test_agent_cli_parser_requires_known_agent_verb_and_preserves_options():
     args = agent_cli._build_parser().parse_args(["--scope", "system", "once", "--release-root", "/srv/cmru"])
     assert args.verb == "once" and args.scope == "system" and args.release_root == "/srv/cmru"
-    with pytest.raises(SystemExit):
+    from cli_extended import UsageError
+    with pytest.raises(UsageError):
         agent_cli._build_parser().parse_args(["unknown"])
-    with pytest.raises(SystemExit):
+    with pytest.raises(UsageError):
         agent_cli._build_parser().parse_args([])
 
 

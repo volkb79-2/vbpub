@@ -161,6 +161,90 @@ def test_registry_and_option_group_validation_edges():
 
     assert CliFailure("expected refusal").show_help is False
 
+
+def test_registry_requires_exact_long_option_spellings_by_default():
+    registry = CliRegistry(IDENTITY, prog="tool", description="test")
+    registry.register(VerbSpec(
+        "one",
+        description="one",
+        options=(OptionSpec(("--token",), "token"),),
+        handler=lambda *_: 0,
+    ))
+    registered = registry.build()
+    parser = registered.parser
+    command_parser = registered.command_parsers["one"]
+
+    assert parser.allow_abbrev is False
+    assert command_parser.allow_abbrev is False
+    with pytest.raises(UsageError, match="unrecognized arguments"):
+        parser.parse_args(["one", "--tok", "secret"])
+
+
+def test_registry_can_explicitly_opt_into_argparse_option_abbreviations():
+    registry = CliRegistry(
+        IDENTITY, prog="tool", description="test", allow_abbrev=True
+    )
+    registry.register(VerbSpec(
+        "one",
+        description="one",
+        options=(OptionSpec(("--token",), "token"),),
+        handler=lambda *_: 0,
+    ))
+    registered = registry.build()
+    parser = registered.parser
+    command_parser = registered.command_parsers["one"]
+
+    assert parser.allow_abbrev is True
+    assert command_parser.allow_abbrev is True
+    assert parser.parse_args(["one", "--tok", "secret"]).token == "secret"
+
+
+def test_verb_cannot_define_both_handler_and_delegate():
+    child = CliRegistry(IDENTITY, prog="child", description="child CLI")
+    child.register(VerbSpec("run", description="run", handler=lambda *_: 0))
+
+    with pytest.raises(ValueError, match="both a handler and a delegated CLI"):
+        VerbSpec(
+            "delegate",
+            description="delegate work",
+            handler=lambda *_: 0,
+            delegate=child.build(),
+        )
+
+
+def test_hidden_global_options_are_omitted_from_generated_catalog():
+    registry = CliRegistry(
+        IDENTITY,
+        prog="tool",
+        description="test",
+        global_options=(OptionSpec(("--internal-token",), "internal", hidden=True),),
+    )
+    registry.register(VerbSpec("run", description="run", handler=lambda *_: 0))
+
+    markdown = registry.build().catalog.render_markdown()
+
+    assert "--internal-token" not in markdown
+
+
+def test_registry_rejects_partial_global_and_verb_option_overlap():
+    registry = CliRegistry(
+        IDENTITY,
+        prog="tool",
+        description="test",
+        global_options=(OptionSpec(("--shared", "--global-alias"), "global"),),
+    )
+    registry.register(VerbSpec(
+        "run",
+        description="run",
+        options=(OptionSpec(("--shared", "--verb-alias"), "verb"),),
+        handler=lambda *_: 0,
+    ))
+
+    with pytest.raises(ValueError, match="partially overlaps"):
+        registry.build()
+
+
+def test_registry_validates_mutually_exclusive_global_option_groups():
     base = {
         "group": "SOURCE",
         "mutually_exclusive_group": "source",
@@ -203,6 +287,20 @@ def test_registry_and_option_group_validation_edges():
         registry.register(VerbSpec("one", description="one", handler=lambda *_: 0))
         with pytest.raises(ValueError, match=expected):
             registry.build()
+
+
+@pytest.mark.parametrize(("code", "expected"), ((None, 0), ("stopped", 1)))
+def test_run_cli_converts_noninteger_system_exit_codes(code, expected):
+    stderr = io.StringIO()
+
+    def exit_with_code(_args, _runtime):
+        raise SystemExit(code)
+
+    app = _simple_cli(exit_with_code)
+
+    assert app.run(argv=["run"], stderr=stderr) == expected
+    if code is not None:
+        assert "stopped" in stderr.getvalue()
 
 
 def test_help_catalog_is_not_used_by_a_non_top_level_parser():
@@ -252,6 +350,29 @@ def test_registry_single_command_configure_and_runtime_progress_variants():
     assert runtime.progress(mode="plain").mode.value == "plain"
     assert runtime.progress(mode="rawjson").mode.value == "quiet"
     assert runtime.progress(mode=None).mode.value == "plain"
+
+
+def test_single_command_help_renders_registered_behavior_and_confirmation_details():
+    registry = CliRegistry(
+        IDENTITY,
+        prog="release-tool",
+        description="A release operator.",
+        single_command=True,
+    )
+    registry.register(VerbSpec(
+        "release",
+        description="Release one project.",
+        mutating=True,
+        include_confirmation=False,
+        examples=("release-tool --dry-run",),
+        handler=lambda *_: 0,
+    ))
+    help_text = registry.build().parser.format_help()
+
+    assert "A release operator." in help_text
+    assert "Behavior: mutating." in help_text
+    assert "release-tool --dry-run" in help_text
+    assert "Mutating actions require confirmation" not in help_text
 
 
 def test_multiverb_confirmation_option_is_only_on_the_mutating_verb():

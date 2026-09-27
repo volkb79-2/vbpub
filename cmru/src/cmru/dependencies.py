@@ -261,8 +261,16 @@ def render_comment_block(report: DependencyReport) -> str:
     )
 
 
-def write_comment_block(path: Path, report: DependencyReport) -> None:
-    """Replace or insert only the marked generated comment region."""
+def write_comment_block(
+    path: Path, report: DependencyReport, *, dry_run: bool = False,
+) -> bool:
+    """Replace or insert only the marked generated comment region.
+
+    With ``dry_run``, print the exact unified diff and leave the file untouched.
+    Return whether the rendered file differs from its current contents.
+    """
+    import difflib
+
     start = "# BEGIN CMRU GENERATED DEPENDENCY GRAPH"
     end = "# END CMRU GENERATED DEPENDENCY GRAPH"
     text = path.read_text(encoding="utf-8")
@@ -282,4 +290,13 @@ def write_comment_block(path: Path, report: DependencyReport) -> None:
         updated = text[:marker_index] + block + "\n" + text[marker_index:]
     if not updated.endswith("\n"):
         updated += "\n"
-    path.write_text(updated, encoding="utf-8")
+    if updated == text:
+        return False
+    if dry_run:
+        print("".join(difflib.unified_diff(
+            text.splitlines(keepends=True), updated.splitlines(keepends=True),
+            fromfile=str(path), tofile=f"{path} (planned)",
+        )), end="")
+    else:
+        path.write_text(updated, encoding="utf-8")
+    return True

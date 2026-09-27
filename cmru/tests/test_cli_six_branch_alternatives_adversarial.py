@@ -122,7 +122,8 @@ def test_status_without_project_delegates_all_ordered_projects(monkeypatch, tmp_
     monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     seen = []
     monkeypatch.setattr(version, "status_cmd", lambda *args, **kwargs: seen.append(args[1]))
-    cli.main(["status", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["status", "--config", str(tmp_path / "cmru.toml")])
     assert len(seen) == 1
     assert seen[0]["demo"].name == "demo"
     assert seen[0]["demo"].project_root == tmp_path
@@ -138,7 +139,8 @@ def test_release_dry_run_without_project_filters_detected_projects(monkeypatch, 
     monkeypatch.setattr(version, "detect_changed_projects", lambda *args, **kwargs: [("demo", "changed")])
     calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append(kwargs))
-    cli.main(["release", "--_transaction-child", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["release", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
     assert calls == [{"minor": False, "major": False, "set_version": None, "dry_run": True}]
 
 
@@ -150,5 +152,6 @@ def test_release_dry_run_project_filter_applies_to_detected_projects(monkeypatch
     monkeypatch.setattr(version, "detect_changed_projects", lambda *args, **kwargs: [("demo", "changed")])
     calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append(kwargs))
-    cli.main(["release", "--_transaction-child", "--dry-run", "demo", "--config", str(tmp_path / "cmru.toml")])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["release", "--dry-run", "demo", "--config", str(tmp_path / "cmru.toml")])
     assert "project_filter" not in calls[0]

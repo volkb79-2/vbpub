@@ -23,17 +23,6 @@ def test_run_cleanup_requires_repository_credential_for_explicit_ghcr_deletion(m
         cli.run_cleanup_verb(tmp_path, {"demo": project}, ["demo"], cleanup, github, cli.ReleaseEnvConfig({}, None), None, False)
 
 
-def test_orchestrate_remove_assets_dispatches_age_and_dry_run(monkeypatch, tmp_path):
-    project = cli.ProjectConfig("demo", {}, {})
-    config = (
-        tmp_path, {"demo": project}, ["demo"], ["demo"], [], "project-first", {},
-        cli.CleanupConfig([], [], [], []), cli.GitHubConfig("o", "r", "", "user"),
-        cli.ReleaseEnvConfig({}, None),
-    )
-    monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
-    monkeypatch.setattr(cli, "load_config", lambda _: config)
-    calls = []
-    monkeypatch.setattr(cli, "remove_assets", lambda *args: calls.append(args))
-    monkeypatch.setattr(cli.sys, "argv", ["cmru", "--remove-assets", "30d", "--dry-run"])
-    cli._orchestrate()
-    assert calls == [("30d", True, config[7], config[8], config[9])]
+def test_run_no_longer_accepts_remote_cleanup_mode(capsys):
+    assert cli.main(["run", "--remove-assets", "30d", "--dry-run"]) == 2
+    assert "unrecognized arguments" in capsys.readouterr().err

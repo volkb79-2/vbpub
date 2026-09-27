@@ -33,7 +33,13 @@ from cmru.config import (
     resolve_invocation_context,
 )
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
-from cmru.cli_support import CMRUArgumentParser, TargetSelectionError, select_target_names
+from cmru.cli_support import (
+    TargetSelectionError,
+    cmru_identity,
+    cmru_presentation_options,
+    select_target_names,
+)
+from cli_extended import ArgumentSpec, CliRegistry, OptionSpec, VerbGroup, VerbSpec
 from cmru.version_config import deep_merge_versions, parse_versions_section
 from cmru.version_registry import (
     Candidate,
@@ -2040,43 +2046,74 @@ def _run_resolve(
 
 
 def main(argv: list[str] | None = None) -> int:
-    headline = "Resolve declared package versions under a supply-chain age window."
-    parser = CMRUArgumentParser(prog="cmru versions", description=headline)
-    subparsers = parser.add_subparsers(dest="action", required=True, parser_class=CMRUArgumentParser)
+    return versions_cli().run(argv=argv)
+
+
+def versions_cli():
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru versions",
+        description="Resolve declared package versions under a supply-chain age window.",
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
+    )
     for action in ("init", "resolve", "check"):
-        command = subparsers.add_parser(action, prog=f"cmru versions {action}")
-        command.add_argument("target", nargs="?", help="all or one/more comma-separated project ids")
-        command.add_argument(
-            "--config",
-            help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
-        )
+        options = [OptionSpec(
+            ("--config",),
+            f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
+            metavar="FILE", parser_kwargs={"default": None},
+        )]
         if action in {"init", "resolve"}:
-            command.add_argument("--dry-run", action="store_true", help="show results without writing files")
-        if action == "check":
-            command.add_argument("--json", action="store_true", help="emit a machine-readable report")
-    args = parser.parse_args(argv)
+            options.append(OptionSpec(
+                ("--dry-run",), "show results without writing files",
+                parser_kwargs={"action": "store_true", "default": False},
+            ))
+        registry.register(VerbSpec(
+            action,
+            description={
+                "init": "Derive version targets from supported project manifests.",
+                "resolve": "Resolve declared versions and write their records and artifacts.",
+                "check": "Compare recorded and currently eligible versions without writing.",
+            }[action],
+            group=VerbGroup.EXPLORATION.value if action == "check" else VerbGroup.MODIFICATION.value,
+            mutating=action != "check",
+            include_confirmation=False,
+            arguments=(ArgumentSpec(
+                "target", "all or one/more comma-separated project ids",
+                parser_kwargs={"nargs": "?", "default": None},
+            ),),
+            options=tuple(options),
+            include_json=action == "check",
+            include_progress=False,
+            handler=_run_versions,
+        ))
+    return registry.build()
+
+
+def _run_versions(args, _runtime) -> int:
+    action = args.verb
     try:
         context_path = Path(args.config).expanduser() if args.config else None
         context = resolve_invocation_context(context_path)
         forge = load_forge_config(context.config_path)
         projects = _selected_projects(forge, context, args.target)
-        if args.action == "init":
-            for line in _versions_init(forge, projects, dry_run=args.dry_run):
+        if action == "init":
+            for line in _versions_init(forge, projects, dry_run=getattr(args, "dry_run", False)):
                 print(line)
             return 0
-        if args.action == "check":
+        if action == "check":
             now = datetime.now(timezone.utc).replace(microsecond=0)
             root_results, project_results, declarations = _resolve_all_for_command(
                 forge, projects, resolved_at=now,
             )
             _emit_age_evidence_warnings(root_results, project_results)
             records = _recorded_versions(forge, root_results, project_results, declarations)
-            if args.json:
+            if getattr(args, "json", False):
                 print(json.dumps({"schema_version": 1, "targets": records}, indent=2, sort_keys=True))
             else:
                 print(_render_report(records))
             return 0
-        for line in _run_resolve(forge, context, projects, dry_run=args.dry_run):
+        for line in _run_resolve(forge, context, projects, dry_run=getattr(args, "dry_run", False)):
             print(line)
         return 0
     except VersionsPrerequisiteError as exc:

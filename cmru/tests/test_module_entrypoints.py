@@ -7,7 +7,7 @@ import pytest
 from cmru import bundle, handlers, runner
 
 
-def test_bundle_module_entrypoint_builds_minimal_archive(tmp_path, monkeypatch):
+def test_bundle_library_builds_minimal_archive(tmp_path, monkeypatch):
     config = tmp_path / "bundle.toml"
     config.write_text(
         'project_root = "."\n'
@@ -27,18 +27,19 @@ def test_bundle_module_entrypoint_builds_minimal_archive(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("VERSION", "1.2.3")
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
-    monkeypatch.setattr("sys.argv", ["cmru.bundle", "--config", str(config)])
-    runpy.run_path(bundle.__file__, run_name="__main__")
+    archive = bundle.run_bundle(config)
+    assert archive == tmp_path / "dist" / "bundle-1.2.3.tar.xz"
     assert (tmp_path / "dist" / "bundle-1.2.3.tar.xz").is_file()
 
 
-def test_runner_module_entrypoint_reports_missing_project_config(tmp_path, monkeypatch):
+def test_runner_module_cli_alias_refuses_and_points_to_installed_verb(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "sys.argv",
         ["cmru.runner", "--config", str(tmp_path / "missing.toml"), "--step", "run"],
     )
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as raised:
         runpy.run_path(runner.__file__, run_name="__main__")
+    assert "cmru run-step" in str(raised.value.code)
 
 
 def test_handlers_module_entrypoint_refuses_unconfigured_wheel_builder(tmp_path, monkeypatch):

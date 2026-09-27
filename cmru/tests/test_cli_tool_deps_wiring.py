@@ -51,8 +51,9 @@ def _run_release(monkeypatch, tmp_path, extra_args, *, changed, alpha_tool_deps=
         calls.append((dict(scoped), set(configs), github_config, allow_stale))
 
     monkeypatch.setattr(cli, "_check_release_tool_dependencies", fake_check)
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
     cli.main(
-        ["release", "--_transaction-child", "--dry-run", "--config", str(config_path)] + extra_args
+        ["release", "--dry-run", "--config", str(config_path)] + extra_args
     )
     return calls
 
@@ -106,10 +107,10 @@ def test_a_blocking_tool_dependency_finding_refuses_the_release_cleanly(monkeypa
     marks = []
     monkeypatch.setattr(transaction, "mark_plan_refused", lambda *args: marks.append(args))
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--_transaction-child", "--config", str(config_path)])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    exc = cli.main(["release", "--config", str(config_path)])
 
-    assert exc.value.code != 0
+    assert exc != 0
     assert marks
     err = capsys.readouterr().err
     assert "beta@1.0.0 is stale" in err
@@ -187,6 +188,9 @@ def test_check_release_tool_dependencies_is_a_no_op_for_a_project_with_nothing_d
 
 def test_tool_deps_verb_dispatches_to_tool_deps_main(monkeypatch):
     calls = []
-    monkeypatch.setattr(tool_deps, "tool_deps_main", lambda rest: calls.append(rest))
-    cli.main(["tool-deps", "--json"])
-    assert calls == [["--json"]]
+    monkeypatch.setattr(
+        tool_deps, "_run_tool_deps",
+        lambda args, _runtime: calls.append((args.json, args.timeout)) or 7,
+    )
+    assert cli.main(["tool-deps", "--json"]) == 7
+    assert calls == [(True, tool_deps.DEFAULT_TIMEOUT)]

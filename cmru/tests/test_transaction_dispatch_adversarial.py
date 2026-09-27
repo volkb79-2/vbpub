@@ -16,7 +16,7 @@ def test_run_child_builds_isolated_launcher_command_and_propagates_status(monkey
         return SimpleNamespace(returncode=17)
     monkeypatch.setattr(transaction.subprocess, "run", run)
     assert transaction.run_child(workspace, ["demo"], verb="build") == 17
-    assert seen["argv"] == ["/opt/cmru", "build", "--_transaction-child", "demo"]
+    assert seen["argv"] == ["/opt/cmru", "build", "demo"]
     assert seen["kwargs"]["cwd"] == workspace.path
     assert seen["kwargs"]["env"][transaction.CHILD_ENV] == "1"
     assert seen["kwargs"]["env"][transaction.BRANCH_ENV] == workspace.branch

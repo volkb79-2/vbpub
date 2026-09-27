@@ -117,26 +117,12 @@ def configure(time_short: bool) -> None:
             setattr(sys, name, SeverityStream(stream, time_short=time_short, colour=colour))
 
 
-def consume_cli_flags(argv: list[str]) -> list[str]:
-    """Consume the one global presentation flag before verb-specific parsing.
+def enable_short_time_prefix() -> None:
+    """Enable timestamp prefixes and propagate the selected presentation to child CMRU processes."""
+    os.environ[_TIME_ENV] = "1"
+    configure(True)
 
-    Scanning stops at ``--`` so a project command can still receive a literal
-    argument with this spelling.  The environment propagation is intentional:
-    a release child is a new CMRU process and must retain the caller's explicit
-    presentation choice without a second, hidden argument path.
-    """
-    time_short = os.environ.get(_TIME_ENV) == "1"
-    result: list[str] = []
-    passthrough = False
-    for arg in argv:
-        if arg == "--":
-            passthrough = True
-            result.append(arg)
-        elif not passthrough and arg == "--log-prefix-time-short":
-            time_short = True
-        else:
-            result.append(arg)
-    if time_short:
-        os.environ[_TIME_ENV] = "1"
-    configure(time_short)
-    return result
+
+def configure_from_environment() -> None:
+    """Apply an inherited timestamp choice without inspecting command arguments."""
+    configure(os.environ.get(_TIME_ENV) == "1")

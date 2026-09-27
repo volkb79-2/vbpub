@@ -2,9 +2,9 @@
 """Generic execution engine for the strict project-local ``cmru.toml`` grammar."""
 from __future__ import annotations
 
-import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,6 +16,15 @@ from time import monotonic
 from typing import Iterable, Mapping, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cli_extended import (
+    ArgumentSpec,
+    CliFailure,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
 
@@ -55,6 +64,46 @@ def resolve_path(base: Path, raw: str) -> Path:
     if path.is_absolute():
         return path
     return (base / path).resolve()
+
+
+def render_step_plan(step: StepConfig, project_root: Path) -> list[str]:
+    """Describe a step's declared effects without running its helpers or commands.
+
+    Environment commands may compute values at runtime, so a dry-run names that
+    unresolved input instead of executing it and pretending to know its output.
+    The same formatter is used by run, run-step, build, and publish.
+    """
+    lines = [f"Would run declared step {step.name} from {project_root}"]
+    for relative in step.clean_dirs:
+        lines.append(f"Would remove {resolve_path(project_root, str(relative))}")
+    if step.env_command:
+        lines.append(
+            "Would resolve dynamic environment with: "
+            + shlex.join(step.env_command)
+            + " (not executed during dry-run)"
+        )
+    if step.required_env:
+        lines.append("Requires environment variables: " + ", ".join(step.required_env))
+    if step.login:
+        lines.append(f"Would log in to configured registry: {step.login.get('registry', '(configured)')}")
+    if step.bake_set_prefix and step.bake_set_vars:
+        lines.append(
+            "May append build arguments from environment variables: "
+            + ", ".join(step.bake_set_vars)
+        )
+    if step.no_cache_env:
+        lines.append(f"May append --no-cache when {step.no_cache_env}=1")
+    if step.step_env:
+        lines.append("Sets step environment keys: " + ", ".join(sorted(step.step_env)))
+    for command in step.commands:
+        if not isinstance(command, dict) or not command.get("argv") or not command.get("cwd"):
+            raise ValueError(f"Step '{step.name}' contains an invalid command")
+        cwd = resolve_path(project_root, str(command["cwd"]))
+        lines.append(
+            f"{command.get('label') or 'command'}: cwd={cwd}; "
+            f"argv={shlex.join([str(item) for item in command['argv']])}"
+        )
+    return lines
 
 
 def _git_out(start: Path, *args: str) -> Optional[str]:
@@ -389,6 +438,8 @@ def execute_step(
     log_dir: Path,
     *,
     extra_env: Optional[Mapping[str, str]] = None,
+    protected_env: Optional[Mapping[str, str]] = None,
+    path_prefixes: Optional[Iterable[Path]] = None,
     build_metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
     """Execute a pre-parsed StepConfig. Called by both run_step() and the orchestrator.
@@ -403,7 +454,10 @@ def execute_step(
     try:
         if build_metadata:
             compute_build_date({"build_metadata": build_metadata}, project_root)
-        _execute_step(step, project_root, log_dir, extra_env=extra_env)
+        _execute_step(
+            step, project_root, log_dir, extra_env=extra_env,
+            protected_env=protected_env, path_prefixes=path_prefixes,
+        )
     finally:
         os.environ.clear()
         os.environ.update(original_environment)
@@ -415,6 +469,8 @@ def _execute_step(
     log_dir: Path,
     *,
     extra_env: Optional[Mapping[str, str]] = None,
+    protected_env: Optional[Mapping[str, str]] = None,
+    path_prefixes: Optional[Iterable[Path]] = None,
 ) -> None:
     """Implementation for :func:`execute_step` inside its scoped environment."""
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -432,7 +488,12 @@ def _execute_step(
             continue
         os.environ[key] = str(value)
 
+    _prepend_path_entries(path_prefixes)
     apply_env_command(step.env_command, project_root)
+    _prepend_path_entries(path_prefixes)
+    if protected_env:
+        for key, value in protected_env.items():
+            os.environ[key] = str(value)
     ensure_required_env(step.required_env)
     maybe_login_multi(step.login, step.registries)
 
@@ -508,6 +569,17 @@ def _execute_step(
             aggregate_handle.close()
 
 
+def _prepend_path_entries(entries: Optional[Iterable[Path]]) -> None:
+    """Place framework-owned executables before project and ambient PATH entries."""
+    if not entries:
+        return
+    prefixes = [str(path) for path in entries]
+    current = os.environ.get("PATH", "")
+    parts = [part for part in current.split(os.pathsep) if part]
+    remainder = [part for part in parts if part not in prefixes]
+    os.environ["PATH"] = os.pathsep.join([*prefixes, *remainder])
+
+
 def run_step(project_config_path: Path, step_name: str) -> None:
     """Run one named step from the strict project-local ``cmru.toml``.
 
@@ -544,40 +616,49 @@ def run_step(project_config_path: Path, step_name: str) -> None:
     if step is None:
         raise ValueError(f"Step '{step_name}' is not declared in {project_config_path}")
     project_root = project.project_root or repo_root
-    execute_step(
-        step,
-        project_root,
-        project_root / "logs" / "cmru",
-        extra_env=project.env,
-        build_metadata=project.build_metadata,
+    from cmru.cli import run_project_step
+    run_project_step(
+        project, step_name, repo_root, project_root / "logs" / "cmru",
+        project_root_override=project_root,
     )
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    from cmru.cli_support import CMRUArgumentParser
-    parser = CMRUArgumentParser(
-        description=f"Run one named step from a project {PROJECT_CONFIG_FILENAME}"
+def runner_cli():
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru run-step",
+        description=f"Run one named step from a project {PROJECT_CONFIG_FILENAME}.",
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    parser.add_argument(
-        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
-        help="registered project target; omitted uses the current project",
-    )
-    parser.add_argument("--config", help=f"Path to project or orchestration config")
-    parser.add_argument("--step", required=True, help="Step name to execute")
-    parser.add_argument(
-        "--show-run-details", action="store_true",
-        help="Stream full subprocess output to this console",
-    )
-    parser.add_argument(
-        "--log-append", action="store_true",
-        help="Append a divider and retain the stable step log",
-    )
-    return parser
+    registry.register(VerbSpec(
+        "run-step",
+        description="Execute exactly one declared step for one selected project.",
+        group=VerbGroup.MODIFICATION.value,
+        mutating=True,
+        include_confirmation=False,
+        arguments=(ArgumentSpec(
+            "target", "registered project target; omitted uses the current project",
+            metavar="[all|PROJECT[,PROJECT...]]",
+            parser_kwargs={"nargs": "?", "default": None},
+        ),),
+        options=(
+            OptionSpec(("--config",), "path to project or orchestration config", metavar="FILE", parser_kwargs={"default": None}),
+            OptionSpec(("--step",), "step name to execute", metavar="NAME", parser_kwargs={"required": True}),
+            OptionSpec(("--show-run-details",), "stream full subprocess output to this console", parser_kwargs={"action": "store_true", "default": False}),
+            OptionSpec(("--log-append",), "append a divider and retain the stable step log", parser_kwargs={"action": "store_true", "default": False}),
+            OptionSpec(("--dry-run",), "show step commands and file cleanup without executing them", parser_kwargs={"action": "store_true", "default": False}),
+        ),
+        include_json=False,
+        include_progress=False,
+        handler=_run_step_cli,
+    ))
+    return registry.build()
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
+def _run_step_cli(args, _runtime) -> int:
     if args.show_run_details:
         os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
     if args.log_append:
@@ -606,9 +687,21 @@ def main(argv: Optional[list[str]] = None) -> None:
             estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
-        parser.error(str(exc))
+        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
     if len(names) != 1:
-        parser.error("run-step requires exactly one project target")
+        raise CliFailure("run-step requires exactly one project target", exit_code=2, show_help=True)
+    if args.dry_run:
+        project = projects[names[0]]
+        step = (project.runner_steps or {}).get(args.step)
+        if step is None:
+            raise CliFailure(
+                f"{names[0]}: step {args.step!r} is not declared",
+                exit_code=2, show_help=False,
+            )
+        project_root = project.project_root
+        for line in render_step_plan(step, project_root):
+            print(f"[DRY RUN] {names[0]}:{args.step}: {line}")
+        return 0
     forge = load_forge_config(config_path)
     project_path = (
         forge.orchestration.project_configs[names[0]]
@@ -616,7 +709,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         else config_path
     )
     run_step(project_path, args.step)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit("Use the installed 'cmru run-step' command; cmru.runner is not a CLI.")

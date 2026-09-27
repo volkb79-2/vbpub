@@ -38,9 +38,8 @@ def test_dependencies_error_report_exits_config_error_and_renders_cause(monkeypa
     )
     monkeypatch.setattr(cli, "_resolve_config", lambda _: config)
     monkeypatch.setattr(cli, "load_forge_config", lambda _: forge)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["dependencies", "--config", str(config)])
-    assert exc.value.code == exit_codes.CONFIG_ERROR
+    exc = cli.main(["dependencies", "--config", str(config)])
+    assert exc == exit_codes.CONFIG_ERROR
     output = capsys.readouterr().out
     assert "'demo' declares unknown dependency 'missing'" in output
 
@@ -54,7 +53,8 @@ def test_release_child_non_dry_run_with_no_changes_returns_without_release_calls
     monkeypatch.setattr(cli, "require_project_publish_credentials", lambda *_: None)
     monkeypatch.setattr(version, "detect_changed_projects", lambda *_, **__: [])
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("release")))
-    cli.main(["release", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["release", "--config", str(tmp_path / "cmru.toml")])
     output = capsys.readouterr().out
     assert "no changed projects detected" in output
     assert "Nothing to release (no changed projects)." in output
