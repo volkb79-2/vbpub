@@ -91,8 +91,10 @@ Nyxloom still owns field meaning, schema validation, and file-write policy.
 The first workflow is managed backlog create/edit: keep scriptable
 `nyxloom backlog new TITLE`, add `new --interactive [TITLE]`, and add
 `backlog edit ENTRY_ID` (D-014/D-016). Editing preserves the Markdown body and
-does not expose status or merge-owned fields; the full candidate frontmatter
-must validate before any write. D-013 approves removing old host-control
+uses the metadata fields already supported by `backlog new`. Fields outside
+that form remain untouched, including generated and transition-owned values;
+status and merge-owned fields stay with their transition functions. The full
+candidate frontmatter must validate before any write. D-013 approves removing old host-control
 spellings from `nyxloom`; the adoption must publish a migration table to
 `nyxloomctl` and must not retain forwarding aliases in the authoring CLI.
 

@@ -60,7 +60,7 @@ requires visible tool-call output.
 | O3 - design review | PASS | Current behavior, concrete user journeys, overlap, risk, scope, migration, and compatibility are recorded for command-design proposals and NL-10/NL-13..NL-22. The operator resolved D-001..D-016 on 2026-09-27. No runtime choice was silently shipped. |
 | O4 - docs and package boundary | PASS | README links the canonical reference; Design Guide distinguishes current and target behavior; Consumers examples parse; 32 links/anchors resolve; the P111 handoff lint exits 0 `clean`; package inclusion gap and isolated-wheel oracle are documented. |
 | O5 - no runtime migration | PASS WITH OPERATOR-APPROVED PROCESS DELTA | No parser, dispatch, runtime, test, packaging, or cli-extended source changed. The operator explicitly authorized changing `nyxloom-trove/STANDING.md` to allow commits from the assigned worktree and to permit exact-scope docs/packaging edits; this path was forbidden by the original P111 audit scope and is disclosed below. |
-| O6 - complete exact-revision gate | PENDING | The original dirty-tree attempts exited 2 before any lane started. The operator then authorized worktree commits; run the exact gate on the final committed audit package and record each lane's result. |
+| O6 - complete exact-revision gate | PASS | `tester-unified` completed on audit commit `ca0fe0751c5f27b4c88537986b50e99e1c5a5273`, exit 0. Its R0 test claim passed; R1 changed-line coverage passed at 100% with zero changed production lines considered because this package changed no source. |
 
 ### Gate result
 
@@ -82,9 +82,27 @@ Exit status: 2. No container or test lane started on those attempts; pass count
 was zero and they were not green. On 2026-09-27, the operator authorized
 commits from the assigned feature worktree and removal of the blanket
 documentation/packaging freeze. `STANDING.md` now permits that scoped workflow.
-O6 remains pending only until the exact final-revision gate completes; the
-historical refusal is retained as evidence and is not reported as a product
-failure.
+The historical refusals are retained as evidence and are not reported as a
+product failure.
+
+The required gate then completed on the clean committed audit revision:
+
+```text
+command: ./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-extended tester-unified
+commit: ca0fe0751c5f27b4c88537986b50e99e1c5a5273
+lane: tester-unified — PASS, exit 0 (145.366 seconds)
+R0: PASS (computed)
+R1 changed-line coverage: PASS, 100%; 0 changed production lines considered
+pytest: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-branch --cov-report=json:coverage.json
+Assay verdict: nyxloom/.assay/verdict-tester-unified.json
+```
+
+The Assay process emitted its advisory that it was loaded from the selected
+worktree's editable source instead of an installed distribution; this is the
+in-repository consumption policy and did not fail the lane. The run-gate
+history recorded a clean tree, no OOM/limit-drift events, and a 938,237,952-byte
+peak. This was the only declared lane; it completed and is not reported as a
+partial result.
 
 ## Decisions and backlog dispositions
 
@@ -189,7 +207,9 @@ lint on `nyxloom` and moves the existing all-registered-project no-argument
 scan to `nyxloomctl lint`. D-016 fixes the interactive backlog grammar as
 `nyxloom backlog new --interactive [TITLE]` and `nyxloom backlog edit
 ENTRY_ID`; the old noninteractive `new TITLE` path remains. When interactive
-creation omits TITLE, the prompt requests it. The editor preserves body text,
-validates the complete candidate before writing, and does not directly edit
-status or merge-owned fields. README, DESIGN-GUIDE, and the canonical CLI
+creation omits TITLE, the prompt requests it. Both flows use the metadata
+fields already accepted by `backlog new`; existing options seed interactive
+prompts. Other fields and the body remain preserved during edit. The complete
+candidate is schema-validated before writing, with status/merge-owned fields
+left to their transition helpers. README, DESIGN-GUIDE, and the canonical CLI
 reference now describe these approved target behaviors as unimplemented.

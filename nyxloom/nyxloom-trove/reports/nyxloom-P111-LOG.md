@@ -5,11 +5,11 @@ Date: 2026-09-26
 ## Result
 
 Audit artifacts and safe probes are complete. The original exact
-`tester-unified` attempt was refused because the worktree was dirty. On
+`tester-unified` attempts were refused because the worktree was dirty. On
 2026-09-27, the operator authorized commits from the assigned worktree and
-removed the process blocker; a complete gate on the final committed audit
-package remains to be recorded. No parser, runtime, test, packaging, or
-cli-extended source was changed.
+removed the process blocker. The clean audit commit `ca0fe0751c5f27b4c88537986b50e99e1c5a5273`
+then passed the complete `tester-unified` lane. No parser, runtime, test,
+packaging, or cli-extended source was changed.
 
 The original dirty-tree refusals remain in P12 and P14 as historical evidence.
 They did not start a lane and are not a gate result. O6 is pending the final
@@ -116,10 +116,8 @@ The initial history query found no active `tester-unified` run. The initial
 gate attempts were refused before container startup because the worktree was
 dirty. On 2026-09-27, the operator explicitly authorized feature-worktree
 commits and approved changing `nyxloom-trove/STANDING.md` to remove the
-no-commit restriction and blanket docs/packaging freeze. The final exact
-committed-revision gate result is pending and will be appended as P15 after
-the audit package is committed. The historical P12/P14 refusals are not green
-evidence.
+no-commit restriction and blanket docs/packaging freeze. The historical
+P12/P14 refusals are not green evidence.
 
 ## Operator review addendum - 2026-09-27
 
@@ -151,7 +149,37 @@ the current project locally, while `nyxloomctl lint` preserves the existing
 no-argument all-registered-project scan. The interactive backlog grammar is
 `nyxloom backlog new --interactive [TITLE]` and `nyxloom backlog edit
 ENTRY_ID`; omitted interactive TITLE is prompted, and noninteractive `new
-TITLE` remains available. The editor must preserve Markdown body text, validate
-the whole schema candidate before writing, and leave status/merge-owned fields
-to transition helpers. README, Design Guide, and CLI reference now record
-these as approved target behavior, not shipped runtime behavior.
+TITLE` remains available. Both flows use the metadata fields already supported
+by `backlog new`; current field options seed interactive prompts, and empty
+optional values clear the field. Creation keeps the current body-template or
+`--body-from` path. Editing preserves other metadata and Markdown body text,
+validates the whole schema candidate before writing, and leaves status/merge-
+owned fields to transition helpers. README, Design Guide, and CLI reference
+record these as approved target behavior, not shipped runtime behavior.
+
+## P15 - required exact-revision gate
+
+Immediately before starting, `./run-gate.py history tester-unified --worktree
+/workspaces/vbpub/.worktrees/nyxloom-cli-extended --json` exited 0 and showed
+no active run. It listed only the prior dirty-tree refusal. The gate command
+was then run from the Nyxloom project root:
+
+```text
+./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-extended tester-unified
+```
+
+Result: **PASS, exit 0**, on clean commit
+`ca0fe0751c5f27b4c88537986b50e99e1c5a5273`. The only declared lane,
+`tester-unified`, completed in 145.366 seconds. Assay claims were R0 PASS and
+R1 PASS. R1 reports 100.0% changed-line coverage with 0 changed production
+lines considered; this is not a coverage claim about the documentation-only
+diff. Pytest ran as
+`/opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-branch --cov-report=json:coverage.json`.
+The verdict is
+`nyxloom/.assay/verdict-tester-unified.json`; history marks the tree clean and
+records no OOM or limit-drift events. Peak memory was 938,237,952 bytes.
+
+Assay emitted its advisory that it was imported from the selected worktree's
+editable source rather than an installed distribution; this follows the
+repository's in-repo Assay consumption policy and did not fail the lane. The
+full lane completed; no partial result is reported as green.

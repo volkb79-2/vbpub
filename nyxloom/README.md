@@ -116,7 +116,9 @@ Within that target, `nyxloom lint` checks the project at the current directory;
 the current all-registered-project scan moves to `nyxloomctl lint`. Managed
 backlog authoring gains `nyxloom backlog new --interactive [TITLE]` and
 `nyxloom backlog edit ENTRY_ID`. These interactive flows use the optional
-`nyxloom[interactive]` extra and validate the complete entry before writing.
+`nyxloom[interactive]` extra, reuse `backlog new`'s metadata fields, and
+validate the complete entry before writing. Editing preserves other metadata
+and the existing body.
 Until the adoption lands, use the currently shipped command grammar described
 in [the CLI reference](docs/CLI-REFERENCE.md).
 

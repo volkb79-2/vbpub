@@ -113,8 +113,8 @@ grammar agree with this table.
 |---|---|
 | `nyxloom lint [HANDOFF_FILE ...]` | Local authoring lint. With no paths, discover the project containing the current directory and lint its configured handoffs; explicit paths remain supported. It does not scan the host registry. |
 | `nyxloomctl lint` | Preserve the current no-argument scan of handoffs for every registered project. It is host-wide and does not require the daemon to be running. |
-| `nyxloom backlog new --interactive [TITLE]` | Prompt for managed entry fields. TITLE is optional only with `--interactive`; when omitted, prompt for it, and when supplied, use it as the title prompt's initial value. Existing `nyxloom backlog new TITLE [options]` remains scriptable and noninteractive. |
-| `nyxloom backlog edit ENTRY_ID` | Load one managed entry and interactively edit its editable frontmatter fields. Preserve its Markdown body and status/merge-owned fields. Validate the complete candidate against the shipped schema before writing. |
+| `nyxloom backlog new --interactive [TITLE]` | Prompt for the same metadata fields already supported by `backlog new`: title, type, severity, priority, component, context_estimate, folds_into, provenance, filed_by, and spec_owner. TITLE is optional only with `--interactive`; when omitted, prompt for it, and when supplied, use it as the title prompt's initial value. Existing field options seed prompts; empty optional values clear the corresponding field. Keep the existing body template and `--body-from` behavior. Existing `nyxloom backlog new TITLE [options]` remains scriptable and noninteractive. |
+| `nyxloom backlog edit ENTRY_ID` | Load one managed entry and interactively edit that same metadata field set. Preserve every frontmatter field outside the form, including generated/transition-owned metadata, and preserve the Markdown body verbatim. Validate the complete candidate against the shipped schema before writing. |
 
 ## Command and action inventory
 
