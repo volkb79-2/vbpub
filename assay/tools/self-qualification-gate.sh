@@ -224,8 +224,8 @@ if [[ "$requested_lane" == "self-qualification-preflight" ]]; then
   exit 0
 fi
 
-# R1's whole-source coverage floor must pass before the multi-day mutation
-# sweep starts. The preflight and the full lane judge the same immutable
+# R1's whole-source coverage floor must pass before the R2 mutation campaign
+# starts. The preflight and the full lane judge the same immutable
 # worktree revision; if either R0 or R1 is red, preserve its verified report
 # and stop before R2.
 if run_and_verify_lane self-qualification-preflight; then

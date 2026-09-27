@@ -1938,10 +1938,10 @@ complete R0-R3 qualification is intended. It runs inside the same dedicated
 `tester-unified` image as the release lane and does not turn each release into
 a full-source mutation campaign. `assay.toml` names every production Python
 file under `src/assay` literally, applies whole-target line and branch coverage
-with a 100% floor, runs all four native Python mutation operators unsharded
-and serially, and performs an import-break canary. A drift test fails if a new
-production file is absent from that declaration. Its gate builds the selected
-commit as a wheel from a private exact-OID clone using the committed
+with a 100% floor, currently runs all four native Python mutation operators
+unsharded and serially, and performs an import-break canary. A drift test fails
+if a new production file is absent from that declaration. Its gate builds the
+selected commit as a wheel from a private exact-OID clone using the committed
 hash-locked offline build closure. The installed wheel provides the outer
 Assay CLI and child `assay` commands with real `judge_provenance`; the pytest
 command separately imports `src/assay` from the isolated baseline or mutant
@@ -1953,17 +1953,33 @@ and tags are intentionally not copied, so the two tests that audit real release
 tags are explicitly deselected in this lane and remain exercised by the
 ordinary release gate on the checkout's actual refs.
 
-The lane has no total campaign cutoff: candidate execution resumes from
-gitignored state, emits progress, and each candidate uses the explicitly
-declared baseline-derived liveness bound. Host scheduling can change elapsed
-time and may cause an explicit timeout outcome; a timeout cannot count as a
-kill or produce a pass. The gate records the exact source commit/tree, runs
-`assay verify` on the result, and prints a success marker only after both checks
-pass. Its report and captured gate log are retained with the source revision.
-The Nyxloom controller's 90-day timeout is a failure-only supervisor limit; if
-it interrupts a campaign, the task is incomplete and its persisted state is
-resumable, never a qualification pass. This is a deliberate, expensive
-maintenance gate, not the default release cadence.
+The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
+after a separately bounded 60-minute R0/R1 preflight. This interim budget
+resets on a new invocation; do not use resume/retry to bypass the overall
+ceiling. B110 must persist one campaign deadline before another full attempt.
+The in-container driver command is wrapped with a 7h30m timeout; its clock
+starts only after run-gate/container startup and stops before outer evidence
+collection. Nyxloom applies a separate 8-hour outer failsafe. Neither is the
+campaign-wide deadline B110 requires. Expiry is incomplete, never a candidate
+outcome or qualification pass. Candidate classification remains independent
+of host load and scheduling. The gate records the exact source commit/tree,
+runs `assay verify` on the result, and prints a success marker only after both
+checks pass. Its report and captured gate log are retained with the source
+revision.
+
+The latest full-source attempt completed only 15 of 3,760 candidates before
+it was stopped; an earlier attempt stopped after 38 completions. Neither
+provides B105 qualification. B110 requires a structural
+rework and a bounded pilot before another full attempt: target completion
+within 6 hours, never exceed the 8-hour watchdog, and do not increase the
+approved RAM envelope. The cold-witness and distributed-shard behaviors are
+not shipped merely by this timeout change. B110 proposes an opt-in cold-witness
+policy: one verified call-phase test failure is an existential kill witness,
+but all tests after that failure are unrun and may independently fail, hang,
+or crash. Survivors and uncertain executions still run the complete declared
+suite. Until B110 is implemented and its
+full verifier-accepted result exists, this separate lane has no qualification
+claim and is not part of the ordinary R0 release gate.
 
 The registered `self-qualification-preflight` lane runs the same R0 test
 command and whole-source R1 coverage declaration without R2 or R3. The full
@@ -1999,6 +2015,10 @@ source lines and branches.
 cd assay
 ./run-gate.py self-qualification
 ```
+
+The invocation is failure-bounded, but the current B105 campaign is not yet
+qualified: do not treat a timeout, partial report, or resumed partial attempt
+as a pass. B110 must first make the complete R0–R3 run fit the measured budget.
 
 The [consumer guide](CONSUMERS.md#assays-own-full-source-self-qualification-b105)
 shows how to preserve the log and inspect the report. Decision A-462 records

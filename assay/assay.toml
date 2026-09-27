@@ -90,7 +90,10 @@ argv = [
 ]
 env = {}
 env_passthrough = ["PATH"]
-budget = "unbounded"
+# Interim B110 guard: this per-invocation cap is failure-only, not a candidate
+# classification rule. A timeout is incomplete; B110 must persist one deadline
+# across retries before another full qualification attempt.
+budget = "5h"
 allow_argv_append = false
 
 [lanes.self-qualification.isolation]

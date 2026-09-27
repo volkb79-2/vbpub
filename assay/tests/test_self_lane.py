@@ -141,7 +141,17 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     assert lane["kind"] == "command"
     assert lane["environment"] == "tester-unified"
     assert lane["clean_tree"] is True
-    assert "self-qualification-gate.sh" in lane["argv"][1]
+    assert lane["argv"] == [
+        "timeout",
+        "--verbose",
+        "--signal=TERM",
+        "--kill-after=30s",
+        "7h30m",
+        "bash",
+        "{worktree}/assay/tools/self-qualification-gate.sh",
+        "{worktree}",
+        "self-qualification",
+    ]
     assert lane["resources"]["cpus"] == "3"
     assert lane["artifacts"] == [
         ".assay/verdict-self-qualification.json",
@@ -195,8 +205,14 @@ def test_self_qualification_gate_budget_matches_nyxloom_timeout():
     run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"][
         QUALIFICATION_ID
     ]
-    assert gate["timeout_seconds"] == 90 * 24 * 60 * 60
-    assert run_gate["budget"] == "2160h"
+    assert gate["timeout_seconds"] == 8 * 60 * 60
+    assert run_gate["budget"] == "8h"
+    assert run_gate["argv"][:5] == [
+        "timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "7h30m"
+    ]
+
+    assay_lane = load_lane_file(SELF_LANE_FILE).lane(QUALIFICATION_ID)
+    assert assay_lane.budget == "5h"
 
     preflight_gate = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))[
         "gates"

@@ -106,10 +106,12 @@ items:
   - {id: B102, title: "Repo-wide DIRTY_TREE refusal for snapshot lanes; declared dirty_ignore globs plus --allow-dirty override marked in the verdict", type: feature, component: isolation, context_estimate: medium}
   - {id: B103, title: "Execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL (stub -- design carved on unmerged branch assay-b099-p35-repair, ID collision with main B099/A-448 only -- A-449/A-450 exist only on the branch, not yet on main, see report)", type: feature, component: execution, context_estimate: large}
   - {id: B104, title: "test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness FAILS on unmodified main: the normalized verdict differs from the frozen v6 witness, and the verdict schema has moved on to v11 since (B070) -- cause unexamined (witness staleness vs. dstdns pin drift vs. a real regression); also names the hazard that a Docker-reaching test runs by default in the local suite when a socket is present", type: bugfix, component: gate}
-  - {id: B105, title: "Add retained full-source R0-R3 self-qualification evidence for Assay itself before M7; the Wave C release gate remains R0-only", type: bugfix, component: gate, context_estimate: large}
+  - {id: B105, title: "Add retained full-source R0-R3 self-qualification evidence for Assay itself before M7; complete within an 8-hour gate ceiling without increasing the approved RAM envelope", type: bugfix, component: gate, context_estimate: large}
   - {id: B106, title: "Incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence", type: feature, component: mutation, context_estimate: large}
-  - {id: B107, title: "Deterministic mutation-campaign analysis and automatic post-lane closeout", type: feature, component: evidence, context_estimate: large}
-  - {id: B108, title: "B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes", type: feature, component: mutation, context_estimate: large}
+  - {id: B107, title: "Mutation liveness needs time-aligned evidence to distinguish candidate hangs from host or cgroup resource stalls", type: feature, component: liveness, context_estimate: large}
+  - {id: B108, title: "Deterministic mutation-campaign analysis and automatic post-lane closeout", type: feature, component: evidence, context_estimate: large}
+  - {id: B109, title: "B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes", type: feature, component: mutation, context_estimate: large}
+  - {id: B110, title: "B105 R2 exceeds the operator runtime ceiling; reduce repeated test work and qualify bounded execution", type: feature, component: gate, context_estimate: large}
 ---
 
 # assay — backlog
@@ -156,12 +158,14 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
-- B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only)
+- B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling)
 
 **Filed after the 2026-09-23 triage**
 - B106 — provenance-safe selective mutation reruns across source/test changes — OPEN (filed 2026-09-25 from CMRU's 494-candidate mutation campaign)
-- B107 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
-- B108 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
+- B107 — time-aligned candidate liveness evidence to distinguish hangs from resource stalls — OPEN (filed 2026-09-26 from RG-55 P6 exact-tree R2 campaigns)
+- B108 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
+- B109 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
+- B110 — bounded B105 runtime without increasing the approved RAM envelope — OPEN (filed 2026-09-27 after stopping the 15/3,760-candidate self-qualification attempt)
 
 **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
 - B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
@@ -10654,24 +10658,26 @@ cross-repo-dependent, container-backed test to be in scope.
 - [x] the "Docker-reaching test runs by default in the local suite" hazard
       is documented; this closeout did not add an opt-in marker.
 
-## B105 — assay's own source has no full-source R2 lane, so its release carries no mutation evidence for assay itself
+## B105 — Assay's own source lacks a completed full-source mutation qualification
 
-**Status: OPEN — next package after the single Wave C release and required before M7 (operator agreement, 2026-09-25). The Wave C pre-release gate remains R0-only.**
+**Status: OPEN — the separate full-source R0–R3 self-qualification lane is present, but neither attempted campaign completed; a verifier-accepted full result is required before M7 (operator agreement, 2026-09-25).**
 
-**Evidence:** `assay/run-gate.toml` registers only `tester-unified`, and
-`assay.toml` declares that lane R0-only. The assay-v7.0.0 release controller
-record distinguishes the CIU lane's `INCONCLUSIVE/NO_MUTANTS`
+**Release evidence:** At assay-v7.0.0, `assay/run-gate.toml` registered only
+the R0 `tester-unified` lane. The release controller record distinguishes
+the CIU lane's `INCONCLUSIVE/NO_MUTANTS`
 (`CIU_GATE_EXIT=5`) from the CMRU campaign's no-candidate `RuntimeError`
 (`CMRU_MUTATION_EXIT=1`); neither result is a mutation pass. See
 [`assay-WAVE-B101-CONTROLLER-LOG.md`](reports/assay-WAVE-B101-CONTROLLER-LOG.md)
 "Release and final closeout".
 
 The Wave C release gate's PASS remains valid for its configured R0 acceptance
-suite; it does not imply R2 evidence for Assay's own source. B105 closes this
-gap after that release by adding a deliberately invoked self-qualification run
-through `tester-unified`, separate from the ordinary R0-only release lane. It
-must measure the exact final B105 source tree and retain the verifier-accepted
-report; code review alone is not evidence of qualification.
+suite; it does not imply R2 evidence for Assay's own source. B105 adds a
+deliberately invoked self-qualification run through `tester-unified`, separate
+from the ordinary R0-only release lane. That lane now exists, but the latest
+full attempt stopped after 15/3,760 candidates (an earlier attempt stopped
+after 38 completions). It must measure the exact final B105 source tree and
+retain the verifier-accepted report; code review and partial runs are not
+qualification evidence.
 
 ### B105 acceptance
 
@@ -10689,10 +10695,13 @@ report; code review alone is not evidence of qualification.
       snapshots do not carry refs/tags; the ordinary checkout-based R0 release
       gate continues to run those tests. A drift test pins these exclusions.
 - [ ] R2 runs native mutation over the full declared source target and
-      produces a complete, unsharded, verifier-accepted candidate inventory
-      and outcomes. No budget-limited, sentinel, partial, or no-candidate
-      result is described as an R2 pass. Surviving or equivalent mutants stay
-      visible and receive the disposition the configured contract requires.
+      produces a complete, verifier-accepted candidate inventory and outcomes.
+      Deterministic shards may execute the fixed inventory, but missing or
+      duplicate candidates are refused and final evidence is consolidated
+      into the ordinary complete verdict accepted by `assay verify`. No
+      budget-limited, sentinel, partial, or no-candidate result is described
+      as an R2 pass. Surviving or equivalent mutants stay visible and receive
+      the disposition the configured contract requires.
 - [ ] R3 executes the declared canary contract against the self-qualification
       source, with positive and negative controls proving the canary detects
       the intended change and the restoration.
@@ -10706,10 +10715,22 @@ report; code review alone is not evidence of qualification.
       so a red baseline or coverage report cannot trigger the long mutation
       campaign. It retains coverage.py's raw JSON arcs outside the temporary
       snapshot for exact branch-level review.
-- [ ] The long R2 campaign uses the estate's `--resume --progress` contract
-      and remains independent of host load or scheduling. B106 selective reuse
-      may reduce later reruns only when current evidence proves each reused
-      result; an uncertain candidate runs fully.
+- [ ] The full self-qualification gate targets completion within 6 hours and
+      has an 8-hour hard wall-clock ceiling covering preflight, R2, final
+      consolidation, verification, queueing, retries, and retained evidence.
+      Persist the campaign's start/deadline against its exact source, lane,
+      tool, and R2 plan identity before preflight or worker dispatch. `--resume`,
+      a replacement worker, or a Buildkite retry consumes the same remaining
+      time; none resets the campaign clock. Reaching the ceiling preserves
+      progress/state and reports an incomplete infrastructure run; it never
+      creates a candidate outcome or PASS. Candidate classification remains
+      independent of host load and scheduling. The R2 campaign uses the
+      estate's `--resume --progress` contract. B106 selective reuse may reduce
+      later reruns only when current evidence proves each reused result; an
+      uncertain candidate runs fully.
+- [ ] B110's structural runtime work is complete, reviewed, and shown to meet
+      this ceiling before B105's final qualification starts. A longer forecast
+      requires a changed test/execution plan, not a longer timeout.
 - [ ] README explains the self-qualification capability, DESIGN-GUIDE records
       why it is separate from the fast release lane, and CONSUMERS.md includes
       a pasteable invocation and report-verification example.
@@ -10834,7 +10855,7 @@ Session 17–18. Exact candidate state is under
 `.worktrees/rg55-p6-r2-final/scripts/cgroup-profiler/.assay/`; preserve both
 campaign trees and do not relabel the `hung` result as equivalent.
 
-## B107 — deterministic mutation-campaign analysis and automatic post-lane closeout
+## B108 — deterministic mutation-campaign analysis and automatic post-lane closeout
 
 **Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns).**
 
@@ -10925,7 +10946,7 @@ interpretation step.
       automatic post-lane integration and its opt-in boundary for wrapped
       Assay commands.
 
-## B108 — B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes
+## B109 — B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes
 
 **Status: OPEN (filed 2026-09-26 at operator request).**
 
@@ -11003,3 +11024,160 @@ of every previously killed, behaviorally independent candidate.
       dependency-proof model and conservative fallback, and CONSUMERS.md gives
       a pasteable survivor-fix workflow and explains which outcomes were
       carried forward versus rerun.
+
+## B110 — B105 R2 exceeds the operator runtime ceiling; reduce repeated test work and qualify bounded execution
+
+**Status: OPEN (filed 2026-09-27 after stopping B105's full R2 attempt at the operator's 6–8 hour ceiling).**
+
+**Observed:** the B105 gate entered R2 with 3,760 candidates and 5,831 tests
+per candidate. Its first 15 completed candidates took a mean of 560.3 seconds
+each (8 killed, 7 survived); this is only an ordered opening prefix, so its
+outcome mix is not a reliable sample of the full plan. A straight-line
+extrapolation is about 585 worker-hours, or 24.4 days on one worker and 8.1
+days on three ideal, perfectly balanced workers. These estimates are
+diagnostic, not a verdict or a promise. The recorded invocation uses one
+mutation job and repeats the coverage-instrumented test command for each
+candidate. Dividing candidate IDs into shards changes scheduling but does not
+remove that repeated work. A shard union by itself is also not the ordinary,
+complete verdict that `assay verify` must accept. The attempt's partial
+progress and state are recorded in
+[`assay-B105-LOG.md`](reports/assay-B105-LOG.md).
+
+The self-qualification claim remains full-source R0–R3 on one exact revision.
+It may change how R2 proves a candidate killed, but it may not silently run a
+smaller source target, drop tests for survivors, report an incomplete campaign
+as complete, or turn elapsed time or host load into a candidate outcome.
+The implementation must lower repeated work and keep the registered local
+worker cap at 2 GiB memory (with its existing 8 GiB combined memory-plus-swap
+limit); do not raise the local gate's admitted RAM budget or multiply local
+RAM with concurrent workers. More CPU is acceptable. Other hosts or Buildkite
+workers are options only when their real CPU and already-provisioned RAM
+capacity are measured and recorded per host; none is assumed to exist merely
+because a shard or pipeline can be described.
+
+### Desired behavior
+
+- Add an explicit cold-witness policy for native R2. A candidate may stop at
+  the first verified test-call failure and be reported as `killed` with a
+  distinct `witness-cold` execution record. The record must say that later
+  tests were not run: they could independently fail, hang, or crash, and this
+  outcome does not claim they were checked. This is an existential kill
+  witness, not a full-suite execution receipt. Survivors and uncertain or
+  unsupported executions run the full declared suite. The normal full-suite
+  policy remains the default outside the explicit opt-in. Use verdict v14's
+  reviewed hard-cut contract: `judgment.r2.cold_witness_kills` is explicit,
+  resume identity includes it, and the candidate execution mode is
+  `witness-cold` with exactly `{node_id, when: "call", outcome: "failed",
+  session_exit_status: 1, process_exit_status: 1}`; boolean values are not
+  integers for these exit fields. It is distinct from `witness-prefix`, carries
+  no prior-verdict identity, and needs no new lane key or reason code for this
+  first implementation.
+- Derive the mutation-only R2 command from the lane's declared command. Remove
+  only the three recognized B105 coverage options and add `-p
+  no:pytest_cov`; preserve test selection, order, working directory, and all
+  other arguments. Do not expose a free-form alternate selector that could
+  narrow the lane unnoticed. Permit only B105's exact
+  `--override-ini=pythonpath=src` after validating the snapshot config and
+  working directory; reject other or duplicate overrides and order-changing
+  or fail-fast options. The uninstrumented R2 baseline must pass, and ordered
+  runtime collection manifests (count, ordered node IDs, duplicates, and
+  canonical digest) must prove it selects the same tests as the coverage
+  baseline. Each candidate
+  must prove the same collection; a cold kill must also prove the actual
+  started-test prefix reached its witnessed call failure. If the argv shape,
+  collection, hook set, or receipt cannot be proved, run the full suite or
+  refuse the cold policy. Record the policy and effective command in resume
+  identity and verifier-accepted evidence.
+- Keep R0 and R1 full: the baseline suite and whole-target line/branch
+  coverage still run over the complete declared target. R2 skips repeated
+  coverage measurement only after the separate uninstrumented baseline and
+  collection-equivalence proof succeed. It never changes the inventory of
+  source files, candidates, or tests under consideration.
+- Permit deterministic candidate shards only over one immutable source,
+  lane, tool, and candidate-plan identity. Local workers stay inside the
+  existing 2 GiB per-gate cap and current local gate RAM budget. Additional
+  hosts may contribute only measured, already-provisioned capacity under each
+  host's own cgroup and RAM limits. Buildkite is optional and must have
+  configured agents, durable shard artifacts, and queue time included in the
+  overall budget before it is used.
+  Missing, duplicate, mismatched, or uncollected shards make the campaign
+  incomplete. Consolidation must rederive the full plan and produce one
+  ordinary complete verdict accepted by `assay verify`.
+- Persist one absolute campaign deadline before preflight/queueing, bound to
+  the exact source, lane, tool, and R2 plan. Resume, retry, Buildkite
+  reattachment, and worker replacement inherit that deadline instead of
+  receiving a fresh budget. State without a matching deadline cannot silently
+  start a new clock. The timer that runs inside the gate must stop the actual
+  campaign and allow its container/controller to collect logs and partial
+  state; run-gate's command-lane `budget` is advisory and is not sufficient as
+  the hard stop. Nyxloom's 8-hour timeout is only the outer failsafe.
+- Before another full campaign, run a fixed, hash-selected pilot stratified
+  across source files and mutation operators, capped at 90 minutes (absolute
+  stop at 2 hours). Measure early-witness rate, survivor time, per-worker
+  CPU/RAM, shard skew, and final consolidation cost. Use a clearly stated
+  confidence/sample limitation; do not extrapolate the first 15-candidate
+  prefix as representative. Start the full gate only when the
+  measured available capacity projects completion within 6 hours with
+  headroom. An 8-hour overall watchdog preserves state and produces an
+  incomplete infrastructure result, never a guessed candidate result or
+  PASS. ETA remains advisory and host load never changes classification.
+- If local CPU capacity cannot meet the target within the RAM ceiling, assess
+  existing remote workers and Buildkite against the same limits. If no
+  measured configuration fits, change the test/execution plan before another
+  full run; increasing the timeout is not a solution.
+
+### Acceptance
+
+- [ ] Verifier fixtures accept a valid cold call-failure receipt only for a
+      native `killed` candidate with the explicit cold policy enabled. Missing,
+      duplicate, malformed, mismatched, or non-call receipts; failures during
+      setup, collection, or teardown; and uncertain hooks cannot become a
+      cold kill. Survivors and uncertain cases execute the complete suite.
+- [ ] The v14 verifier requires the exact `witness-cold` mode and receipt,
+      rejects the mode when cold policy is false or absent, and rejects prior-
+      verdict/node fields on cold records. Resume/state identity changes when
+      the cold policy, effective command, transform version, or collection
+      manifest changes; exit fields reject booleans, and the receipt contains
+      exactly the five reviewed fields with no extra properties.
+- [ ] Adversarial fixtures prove the report labels unrun tests for cold kills
+      and does not claim full-suite execution; a later test that would hang or
+      crash remains undiscovered but does not erase the earlier verified kill
+      witness. The full-suite policy and all existing outcome rules remain
+      unchanged when cold mode is disabled.
+- [ ] The derived mutation command removes only the recognized coverage
+      options, adds only `-p no:pytest_cov`, and preserves every other
+      allowlisted argv element. Runtime collection manifests match in order
+      and content between the full-coverage baseline, uninstrumented R2
+      baseline, and every candidate; cold receipts bind to the actual started
+      prefix. The B105 `pytest_sessionfinish` archive hook and every other
+      non-builtin hook are proven safe for cold execution or refactored out of
+      the R2 path. Unsupported pytest/plugin behavior refuses cold execution
+      rather than weakening the proof.
+- [ ] Shard fixtures prove deterministic, disjoint, exhaustive candidate
+      coverage and reject source/plan/tool mismatches. Consolidation produces
+      a complete standard verdict that passes `assay verify`; stopping at the
+      watchdog retains resumable state but cannot pass the gate.
+- [ ] An injected-clock fixture proves that resumes, retries, queue delays,
+      and worker replacements consume one persisted absolute deadline; absent,
+      stale, or mismatched deadline evidence refuses the campaign rather than
+      granting a fresh 8-hour allowance. A live timeout stops the actual
+      in-gate command, collects its logs/state, and leaves no running gate
+      container behind.
+- [ ] A fixed, hash-selected pilot covers source files and mutation operators,
+      completes within 90 minutes or is stopped by 2 hours, and records the
+      real available worker profile, RAM ceiling, queue/aggregation overhead,
+      candidate outcome sample, and projection.
+      No full campaign starts without a measured plan targeting at most 6
+      hours and fitting the approved RAM envelope; an 8-hour stop is
+      incomplete, with no candidate classification derived from load or time.
+- [ ] If Buildkite or remote workers are used, an acceptance gate verifies
+      agent availability, cgroup placement, memory bounds, artifact durability,
+      exact shard identity, and complete collection before accepting the
+      consolidated verdict. The feature also works without Buildkite when the
+      local measured profile meets the same budget.
+- [ ] README explains cold-witness results and their omitted-test limitation,
+      DESIGN-GUIDE records why one verified failure is sufficient and how the
+      runtime budget works, and CONSUMERS.md gives a pasteable opt-in and
+      shows the difference between cold kills, fully executed survivors, and
+      an incomplete timeout. Any Buildkite workflow documents its required
+      agent and memory contract.

@@ -973,6 +973,19 @@ you're changing assay itself:
   gate because snapshots do not carry refs. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
+  The full-source attempt is currently unqualified: the latest run stopped at
+  15/3,760 candidates; an earlier attempt stopped after 38 completions. The
+  full R0–R3 Assay lane has a 5-hour per-invocation cap; reaching it is
+  incomplete. The in-container gate has a 7h30m timeout and Nyxloom has an
+  8-hour outer watchdog. Do not treat partial or timed-out state as a pass;
+  B110's structural rework and bounded pilot must land before another full
+  qualification attempt.
+
+  B110 also proposes an opt-in cold-witness policy, which is not shipped yet.
+  Under that policy, one verified test-call failure would be enough to classify
+  a candidate as killed; tests after the failure would be reported as unrun and
+  could independently fail, hang, or crash. Survivors and uncertain executions
+  would still run the full declared suite.
 
 ## Further reading
 

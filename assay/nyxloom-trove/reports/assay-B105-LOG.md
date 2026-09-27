@@ -264,3 +264,34 @@ review, and serial merge remain open.
   per-candidate state records remain in the worktree's ignored `.assay/`
   directory. B105 remains open pending a structural runtime rework; this
   partial run is retained for diagnostics and resume-state validation only.
+
+### Runtime cap and structural rework filed on 2026-09-27
+
+- Rebased the isolated B105 branch onto current local `main` at `f0bebc82`,
+  excluding the branch's unrelated CMRU release-input commit. This exposed an
+  ID collision: local main already uses B107 for time-aligned candidate
+  liveness evidence. The branch's campaign-analysis and optimized-B106 entries
+  are now B108 and B109; B110 records the B105 runtime rework.
+- Added an 8-hour outer Nyxloom watchdog, a 7h30m in-container command timeout,
+  and a 5-hour full R0–R3 Assay lane budget after the separately bounded
+  60-minute R0/R1 preflight. The registered run-gate container remains at
+  3 CPUs, 2 GiB memory, and an 8 GiB combined memory-plus-swap ceiling. These
+  limits only make a late run incomplete; they do not
+  classify candidates. The full lane has not been rerun with these limits.
+- B110 requires a measured pilot, an absolute campaign deadline that survives
+  resume/retry/shard replacement, a reduced mutation-only command with an
+  equivalent ordered test collection, opt-in `witness-cold` receipts for
+  verified call failures, and deterministic bounded shards with one final
+  verifier-accepted complete verdict. Survivors and uncertain executions
+  remain full-suite. The cold-kill report must disclose that tests after the
+  witnessed failure did not run and may independently hang, crash, or fail.
+- The v14 cold-witness contract and argv/collection-proof boundary were
+  previously reviewed by GPT-6-Luna xhigh; the runtime plan was reviewed by
+  GPT-6-Sol xhigh. Existing notes: `/tmp/b109-verdict-schema-luna.txt`,
+  `/tmp/b105-r2-command-design-luna.txt`, and
+  `/tmp/b105-runtime-rework-sol.txt`. No Buildkite agent or pipeline is
+  configured in this worktree's host environment, so remote fan-out remains
+  conditional on measured capacity.
+- No tester-unified gate has run for this controller update. `git diff
+  --check` is the only check so far; B105 remains unqualified and no full R2
+  attempt is authorized until B110's pilot and runtime plan fit the ceiling.

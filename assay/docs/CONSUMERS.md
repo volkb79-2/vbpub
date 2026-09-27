@@ -68,9 +68,28 @@ and R2 mutations apply to the snapshot being judged. It carries full commit
 history for tests that name older commits. Snapshot refs/tags are not copied;
 the two release-tag audit tests are explicitly deselected here and remain part
 of the ordinary checkout-based release gate.
-When Nyxloom launches the gate, its 90-day watchdog can only fail an
-unfinished campaign; it cannot accept a partial report. Saved mutation state
-can be resumed by invoking the gate again.
+The full R0–R3 Assay invocation has a 5-hour failure-only budget, following
+the separate 60-minute R0/R1 preflight. This interim budget resets on a new
+invocation, so do not use resume/retry to bypass the overall ceiling. B110
+must persist one campaign deadline before another full attempt. The 7h30m
+timeout starts only after run-gate/container startup and covers the in-container
+B105 driver command; it stops before outer evidence collection. Nyxloom's
+8-hour watchdog is a separate outer failsafe, not the campaign-wide deadline.
+Reaching any limit is incomplete, never a candidate outcome or qualification
+pass. The latest full-source attempt stopped after 15 of 3,760 candidates; an
+earlier attempt stopped after 38 completions. B105 currently has no
+qualification result. B110 requires a structural rework and bounded pilot
+before another full attempt; the target is 6 hours and the hard ceiling is 8
+hours, with no increase to the approved RAM envelope. Until that work and a
+verifier-accepted full report exist, do not interpret an invocation or a
+resumed partial report as qualification.
+
+B110 also proposes an opt-in cold-witness policy, which is not available yet.
+With that policy, a candidate would be called killed from one verified failure
+during a test call. Tests after that failure would not run and could
+independently fail, hang, or crash; the report must disclose this limitation.
+Survivors and uncertain executions would still run the complete declared test
+suite.
 
 Before starting R2, the full gate runs the registered R0/R1 coverage
 preflight against the same commit. To run that check by itself while preparing

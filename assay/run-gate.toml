@@ -33,9 +33,15 @@ budget = "60m"
 [lanes.self-qualification]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification"]
+argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "7h30m", "bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification"]
 clean_tree = true
-budget = "2160h"
+# The timeout starts when the in-container B105 driver starts; it does not
+# include run-gate/container startup or outer evidence collection. Nyxloom has
+# a separate 8-hour outer watchdog. The Assay lane has its own per-invocation
+# 5-hour budget after the separate 60-minute preflight; run-gate's `budget`
+# remains advisory for command lanes. B110 must persist one campaign deadline
+# across preflight, queueing, retries, execution, and evidence collection.
+budget = "8h"
 resources = { cpus = "3", memory = "2g", memory_swap = "8g" }
 artifacts = [
   ".assay/verdict-self-qualification.json",
