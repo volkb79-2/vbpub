@@ -227,6 +227,8 @@ def test_version_file_is_user_readable_and_cleaned_after_returning_to_root() -> 
         'install -o vscode -g vscode -m 0644 "${STAGE_DIR}/tool-versions.env" '
         "/tmp/ai-tool-versions.env;"
     ) in root_stage
+    assert "chmod -R a+rX /tmp/pip /tmp/requirements" in root_stage
+    assert "chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py" in root_stage
     assert "rm -f /tmp/ai-tool-versions.env" not in user_layer
     assert "rm -f /tmp/install_ai_cli_tools.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env" in root_layer
 
