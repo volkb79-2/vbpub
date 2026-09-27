@@ -68,6 +68,29 @@ def test_single_project_wizard_allows_same_folder_and_keeps_standalone_facts(mon
     assert "[github]" in content and 'artifacts = ["tarball"]' in content
 
 
+def test_single_project_wizard_resolves_relative_folder_inside_root(monkeypatch, git_repo):
+    project_root = git_repo / "project"
+    project_root.mkdir()
+    _feed_input(
+        monkeypatch,
+        ["acme", "repo", "user", "single", "project", "", "", "python", "wheel", "yes"],
+    )
+
+    plan = scaffold.collect_plan({}, git_repo)
+
+    assert plan["root"] == project_root
+    assert plan["projects"][0]["folder"] == project_root
+
+
+def test_single_project_wizard_refuses_missing_relative_folder(monkeypatch, git_repo, capsys):
+    _feed_input(monkeypatch, ["acme", "repo", "user", "single", "missing-project"])
+
+    with pytest.raises(SystemExit):
+        scaffold.collect_plan({}, git_repo)
+
+    assert "project folder is not an existing directory" in capsys.readouterr().err
+
+
 def test_wizard_refuses_existing_targets_before_writing(monkeypatch, git_repo, capsys):
     project = git_repo / "alpha"
     project.mkdir()

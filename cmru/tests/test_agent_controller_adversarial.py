@@ -345,7 +345,11 @@ class TestPlannerAndRolloutBoundaries:
 
     def test_rollout_dry_run_does_not_write_approval_or_hold(self):
         from cmru.controller.rollout import RolloutEngine
+        from cmru.controller.planner import load_plan_json
         b = StubRolloutBackend(); e = RolloutEngine(b, "l", dry_run=True)
+        plan = load_plan_json(json.dumps(self._valid()))
+        e.publish(plan)
+        assert e._wait_for_wave(plan.plan_id, plan.steps[0]) is True
         e.approve("p"); e.hold("p"); e.release_hold("p")
         assert not b.kv
 

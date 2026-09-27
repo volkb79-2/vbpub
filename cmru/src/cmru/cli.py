@@ -1321,13 +1321,15 @@ def _orchestrate(args=None) -> None:
         log_info("[DRY RUN] No project command was started.")
         return
 
+    if not steps:
+        log_info("Release manager complete")
+        return
+
     if "push" in steps:
         require_project_publish_credentials(configs, selected_names)
 
     log_dir = repo_root / "logs"
-
-    if steps:
-        resolve_versions_from_git(repo_root, configs)
+    resolve_versions_from_git(repo_root, configs)
 
     if execution_mode == "project-first":
         for project in selected:

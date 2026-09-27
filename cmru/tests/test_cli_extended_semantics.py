@@ -71,6 +71,65 @@ def test_run_dry_run_respects_step_first_project_order_and_rejects_bad_plans(
         cli.main(["run", "alpha", "--dry-run"])
 
 
+@pytest.mark.parametrize("mode", ["project-first", "step-first"])
+def test_run_with_no_configured_steps_performs_no_project_work(
+    monkeypatch, tmp_path, mode,
+):
+    project = SimpleNamespace(name="alpha", env={}, runner_steps={})
+    loaded = list(_loaded(tmp_path, {"alpha": project}, mode=mode))
+    loaded[4] = []
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _path: tuple(loaded))
+    monkeypatch.setattr(
+        cli, "resolve_versions_from_git",
+        lambda *_args: pytest.fail("empty run resolved project versions"),
+    )
+    monkeypatch.setattr(
+        cli, "apply_project_release_env",
+        lambda *_args: pytest.fail("empty run prepared a project environment"),
+    )
+    monkeypatch.setattr(
+        cli, "run_project_step",
+        lambda *_args: pytest.fail("empty run executed a project step"),
+    )
+
+    args = cli.build_arg_parser().parse_args([])
+    cli._orchestrate(args)
+
+
+def test_multi_project_single_git_family_uses_one_transaction_dispatch(
+    monkeypatch, tmp_path,
+):
+    projects = {name: SimpleNamespace(name=name) for name in ("alpha", "beta")}
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda _root, members: {tmp_path / "repo": list(members)},
+    )
+    monkeypatch.setattr(
+        cli, "_child_release_args",
+        lambda *_args, **_kwargs: pytest.fail("single-family dispatch spawned a child"),
+    )
+
+    assert cli._dispatch_independent_git_families(
+        "build", [], tmp_path / "cmru.toml", tmp_path, projects,
+        ["alpha", "beta"], original_target=None,
+    ) is None
+
+
+def test_dispatch_rejects_an_unregistered_verb_defensively(monkeypatch):
+    diagnostics = []
+    monkeypatch.setattr(cli, "write_config_diagnostic", diagnostics.append)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli._dispatch(
+            SimpleNamespace(verb="not-registered"),
+            SimpleNamespace(command_argv=[]),
+        )
+
+    assert excinfo.value.code == 2
+    assert diagnostics and "Unknown verb 'not-registered'" in diagnostics[0]
+
+
 def test_dependencies_write_dry_run_prints_diff_without_changing_config(
     monkeypatch, tmp_path, capsys,
 ):
