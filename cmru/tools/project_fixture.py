@@ -11,7 +11,10 @@ ROOT_CMRU_ARTIFACTS = (
     "cmru.orchestration.toml",
     "cmru.project.sample.toml",
 )
-SHARED_LIBRARY = Path("libraries/worktree")
+SHARED_LIBRARIES = (
+    Path("libraries/cli-extended"),
+    Path("libraries/worktree"),
+)
 EXTERNAL_DOC_ARTIFACTS = (
     Path("wheel-builder/Dockerfile"),
     Path("docs/ciu-vs-cmru.md"),
@@ -24,10 +27,10 @@ EXTERNAL_DOC_ARTIFACTS = (
 def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path) -> Path:
     """Copy CMRU, its root fixtures, and the shared worktree library.
 
-    The project tests deliberately exercise the source-checkout fallback for
-    ``libraries/worktree``.  A disposable fixture that copies only ``cmru/``
-    makes its known-good control fail before the intended mutation/canary is
-    applied, which turns every later result into false evidence.
+    The project tests deliberately exercise source-checkout imports for CMRU's
+    shared libraries. A disposable fixture that copies only ``cmru/`` makes its
+    known-good control fail before the intended mutation/canary is applied,
+    which turns every later result into false evidence.
     """
     for name in ROOT_CMRU_ARTIFACTS:
         artifact = repo_root / name
@@ -43,11 +46,15 @@ def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(artifact, destination)
 
-    library_source = repo_root / SHARED_LIBRARY
-    if not library_source.is_dir() or library_source.is_symlink():
-        raise ValueError(f"required shared worktree library is not a real directory: {library_source}")
-    (workspace / "libraries").mkdir()
-    shutil.copytree(library_source, workspace / SHARED_LIBRARY, symlinks=True)
+    for relative in SHARED_LIBRARIES:
+        library_source = repo_root / relative
+        if not library_source.is_dir() or library_source.is_symlink():
+            raise ValueError(
+                f"required shared CMRU library is not a real directory: {library_source}"
+            )
+        destination = workspace / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(library_source, destination, symlinks=True)
 
     copied = workspace / project_root.name
     shutil.copytree(project_root, copied, symlinks=True)
