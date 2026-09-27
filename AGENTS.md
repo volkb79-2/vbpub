@@ -31,6 +31,16 @@ and a **mechanical BLOCKED escape hatch** (escalation is trigger-based, not
 BLOCKED. The guide's frontmatter section makes the handoff nyxloom-compatible
 (schema-validated by `nyxloom lint`).
 
+## Model routing is the caller's responsibility
+
+When a task requires a particular model or reasoning effort, the caller must
+select that route in the invocation and verify it from the invocation or saved
+session metadata. Do not require the worker or reviewer to introspect hidden
+route metadata or block because that metadata is not exposed inside its prompt.
+The caller records the route evidence and corrects or relaunches a mismatched
+invocation before assigning repository work; an agent's self-report is not the
+route evidence.
+
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
 > **A default is legitimate only when it is a policy choice that is correct in
