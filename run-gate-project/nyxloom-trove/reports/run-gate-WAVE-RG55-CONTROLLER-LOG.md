@@ -4661,3 +4661,18 @@ The registered invocation launched on the prior integrated tree `52c4a978`;
 this controller has not yet read its terminal result. Do not inspect either
 long-running lane's progress again before its allowed expected-completion
 check.
+
+### RW-353 — 2026-09-28 04:20:53Z — P6 prior verdict passes the B106 source preflight
+
+Loaded the P6 `6540f877` verdict with the current Assay B106
+`load_reuse_source` path (including its v13 verifier). It is accepted as a
+complete, unsharded, native source with 312 candidate IDs: 301 killed, 10
+survived, and 1 hung. Exactly 300 killed outcomes have valid replay
+witnesses; the remaining kill has no usable witness and must run fully.
+Therefore B106 is a viable way to shorten P6's post-reconciliation R2, not
+an assumption that every previous kill can be reused. Before launch, reconcile
+the P1 source fix and current main, preserve this source artifact unchanged,
+then run `assay plan r2 --reuse-from <6540f877 verdict>` on the final candidate
+tree and verify each classification. Survivors, hung outcomes, changed/new
+candidate IDs, and all uncertain witness replays execute the full suite.
+Final R2 and full-gate evidence remain required for release.
