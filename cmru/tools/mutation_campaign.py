@@ -215,6 +215,7 @@ def _resume_results(
     head: str,
     project_prefix: Path,
     assay_source_commit: str,
+    assay_source_prefix: Path | None = None,
     test_argv: Sequence[str],
     jobs: Sequence[Any],
     max_mutants: int,
@@ -258,13 +259,25 @@ def _resume_results(
         )
     # Adding tests is monotonic: an old killed candidate still fails the larger
     # suite. Existing tests, test configuration, and product source must match.
+    previous_assay_source_commit = previous.get("assay_source_commit")
+    if previous_assay_source_commit != assay_source_commit:
+        assay_paths = (
+            [
+                (assay_source_prefix / "src").as_posix(),
+                (assay_source_prefix / "pyproject.toml").as_posix(),
+            ]
+            if assay_source_prefix is not None else []
+        )
+        if not assay_paths or _changed_since(
+            repo_root, previous_assay_source_commit, assay_source_commit, assay_paths,
+        ):
+            raise ValueError("mutation resume evidence predates an Assay source change")
     if (
         previous.get("base") != base
         or previous.get("candidate_count") != len(jobs)
         or previous.get("max_mutants") != max_mutants
         or previous.get("project_prefix") != (project_prefix.as_posix() or ".")
         or previous.get("operators") != list(OPERATORS)
-        or previous.get("assay_source_commit") != assay_source_commit
         or previous.get("test_argv") != list(test_argv)
     ):
         raise ValueError("mutation resume evidence does not match this campaign")
@@ -324,6 +337,10 @@ def run(argv: Sequence[str] | None = None) -> int:
         project_prefix = project_root.relative_to(repo_root)
     except ValueError as exc:
         raise ValueError("--project-root must be inside --repo-root") from exc
+    try:
+        assay_source_prefix = assay_source.relative_to(repo_root)
+    except ValueError:
+        assay_source_prefix = None
     if _campaign_tree_status(repo_root, project_prefix):
         raise ValueError("mutation campaign requires committed source, tests, and pytest configuration")
 
@@ -383,6 +400,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         head=head,
         project_prefix=project_prefix,
         assay_source_commit=assay_source_commit,
+        assay_source_prefix=assay_source_prefix,
         test_argv=test_argv,
         jobs=jobs,
         max_mutants=args.max_mutants,

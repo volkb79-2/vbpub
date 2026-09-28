@@ -345,3 +345,104 @@ def test_resume_accepts_only_strictly_additive_test_suites(tmp_path):
             max_mutants=1,
             timeout_seconds=120,
         )
+
+
+def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    (project / "src" / "cmru").mkdir(parents=True)
+    (project / "tests").mkdir()
+    (project / "src" / "cmru" / "thing.py").write_text("value = 1\n", encoding="utf-8")
+    (project / "tests" / "test_thing.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    assay = repo / "assay"
+    (assay / "src" / "assay").mkdir(parents=True)
+    (assay / "src" / "assay" / "__init__.py").write_text("__version__ = '1'\n", encoding="utf-8")
+    (assay / "pyproject.toml").write_text("[project]\nname = 'assay'\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "cmru", "assay"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+    previous_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    job = _job()
+    previous = {
+        "base": previous_head,
+        "head": previous_head,
+        "project_prefix": "cmru",
+        "assay_source_commit": previous_head,
+        "max_mutants": 1,
+        "operators": list(mutation_campaign.OPERATORS),
+        "test_argv": ["pytest", "tests"],
+        "timeout_seconds": 120,
+        "candidate_count": 1,
+        "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
+        "results": [{
+            "path": job.path,
+            "line": job.site.lineno,
+            "operator": job.site.operator,
+            "description": job.site.description,
+            "exit_code": 1,
+            "outcome": "killed",
+        }],
+    }
+    evidence = project / ".assay" / "mutation-cmru.json"
+    evidence.parent.mkdir()
+    evidence.write_text(json.dumps(previous), encoding="utf-8")
+
+    (project / "tests" / "test_more.py").write_text("def test_more(): assert True\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "cmru/tests"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "add tests"],
+        check=True,
+    )
+    additive_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+
+    resumed = mutation_campaign._resume_results(
+        evidence_path=evidence,
+        repo_root=repo,
+        resume=True,
+        base=previous_head,
+        head=additive_head,
+        project_prefix=Path("cmru"),
+        assay_source_commit=additive_head,
+        assay_source_prefix=Path("assay"),
+        test_argv=["pytest", "tests"],
+        jobs=[job],
+        max_mutants=1,
+        timeout_seconds=120,
+    )
+    assert resumed == [previous["results"][0]]
+
+    (assay / "src" / "assay" / "__init__.py").write_text("__version__ = '2'\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "assay/src"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "change assay"],
+        check=True,
+    )
+    changed_assay_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    with pytest.raises(ValueError, match="predates an Assay source change"):
+        mutation_campaign._resume_results(
+            evidence_path=evidence,
+            repo_root=repo,
+            resume=True,
+            base=previous_head,
+            head=changed_assay_head,
+            project_prefix=Path("cmru"),
+            assay_source_commit=changed_assay_head,
+            assay_source_prefix=Path("assay"),
+            test_argv=["pytest", "tests"],
+            jobs=[job],
+            max_mutants=1,
+            timeout_seconds=120,
+        )
