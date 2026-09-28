@@ -171,4 +171,23 @@ Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adop
 - An earlier focused probe accidentally used the main-checkout library path instead of the worktree sibling and failed collection on the missing `PromptCancelled` export. It made no code changes and is not evidence about the adoption worktree. The command above and the declared gate use `../libraries/cli-extended/src` from Nyxloom's project directory.
 - After removing the last duplicate `--ledger`/`--json` check from the handler and adding a registry-dispatch oracle for conflicting extraction options before source access, this preflight passed: `PYTHONPATH=src:../libraries/cli-extended/src /home/vscode/.venv/bin/python -m pytest -q -ra tests/test_cli_adoption.py tests/test_cli_extract.py tests/test_core_characterization.py::test_inventory_sizes_are_within_the_declared_tolerance tests/test_liveness_units.py`; exit 0. The updated handoff also passed local `nyxloom lint` with stdout `clean` and empty stderr before its service-reference amendment; rerun the handoff lint against the final text.
 
-The wheel and full gate evidence must be rebuilt against the next committed implementation revision; the previously recorded wheel predates these corrections.
+## Installed-wheel proof for implementation commit 72d60c87 — 2026-09-28
+
+- Build command: `/home/vscode/.venv/bin/python -m build --wheel --outdir /tmp/nyxloom-p112-wheel-72d60c87`; exit 0 using the isolated PEP 517 build environment.
+- Artifact: `/tmp/nyxloom-p112-wheel-72d60c87/nyxloom-0.8.1.dev498+g72d60c87-py3-none-any.whl`.
+- Installed with `/home/vscode/.venv/bin/python -m pip install --target /tmp/nyxloom-p112-installed-72d60c87 --no-deps <wheel>`; exit 0. From `/tmp`, `nyxloom.__file__` and `cli_extended.__file__` both resolve under that target.
+- Metadata lists exactly `nyxloom`, `nyxloom-harness`, `nyxloomctl`, and `nyxloomd` with targets `nyxloom.cli:main`, `nyxloom.cli_harness:main`, `nyxloom.cli_ctl:main`, and `nyxloom.daemon_entrypoint:main`.
+- Installed `nyxloom`, `nyxloom-harness`, and `nyxloomctl` each pass `--help` and `--version`; `nyxloom-harness extract --help` and `nyxloomctl doctor --help` pass. An in-process check confirms `questionary` is not imported and `/tmp/nyxloom-p112-wheel-state-72d60c87` is not created by these display paths.
+
+## Third tester-unified attempt — 2026-09-28
+
+Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adoption tester-unified` from `nyxloom/`.
+
+- Judged commit: `72d60c87ed09a3816dbc0a4d334abf029de7dbb8`.
+- `tester-unified`: `FAIL/COMMAND_FAILED`, exit 1 after 232 seconds. The baseline pytest command ran and reported one failure: `tests/test_planner_differential.py::test_legacy_baseline_is_the_committed_branch_point`.
+- The failure was caused by the prior command-path sweep changing one literal in `tests/legacy_planner.py`, a frozen historical copy whose oracle proves equivalence to the branch-point blob. Restored the old `nyxloom merge` literal in that fixture; production guidance and current tests continue to use `nyxloomctl`.
+- Focused proof after restoration: `PYTHONPATH=src:../libraries/cli-extended/src /home/vscode/.venv/bin/python -m pytest -q -ra tests/test_planner_differential.py::test_legacy_baseline_is_the_committed_branch_point`; exit 0.
+- R1 did not run because baseline pytest failed. Peak memory was 772 MiB, p90 747 MiB, and memory-full stalls totaled 32.3 seconds.
+- Progress was checked at about 90 seconds: the assay JSONL showed the baseline pytest lane active at 65 seconds. The earlier gate history showed 147- and 327-second runs; this attempt finished after 232 seconds.
+
+The frozen-baseline correction must be committed, then the installed wheel and full gate must be rebuilt/repeated against that exact implementation revision.
