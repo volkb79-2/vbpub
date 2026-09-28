@@ -28,7 +28,7 @@
 - **Spinning hangs cost three baselines each** (`budget_exceeded`, ≈1,518 s [M]).
 - **The heavy tests run last.** 113 tests of 0.5 s or more account for 72% of call time [M], and alphabetical file order runs them late.
 - **Some tests can never kill a mutant.** `tests/test_python_qualification.py` never executes snapshot source, yet costs ≈94 s per candidate [M].
-- **CPU sat idle.** The campaign used ≈0.85 of its 3 CPUs [M].
+- **CPU sat idle.** The preflight used 0.89 of its 3 CPUs on average [M] (a 0.83 reading is unverified).
 - **The structural finding: a passing native R2 contains only kills.** Native Python has no equivalence disposition and no `fail_under` (`mutation.py:3748-3769`, `config.py:3082-3106`, A-462). The opening prefix had 7/15 and 9/39 survivors, so the 585 hours was the price of a campaign that would have failed anyway.
 
 **The work done.** All of it is docs, committed in the separate clone `.worktrees/.assay-b105-ciu-root-20260926-30eec294-copy` on `assay-b105-evidence-integrity` (`a3b68800`, `3ee09b61`, `210d6130`, `5eb5768f`):
@@ -50,7 +50,7 @@ That is about 1.04 MB of plan, analysis, briefs and review summaries [M, `wc -c`
 | Package | What changes in assay | Existing-tool equivalent | Verdict |
 |---|---|---|---|
 | P3b cold witness | stop a candidate at its first verified test-call failure | pytest `-x`; PIT and Stryker stop at the first failure by default | Mechanism is standard. The receipt (a failed-call proof plus a prefix manifest digest) is assay's addition. |
-| P1 tiered order | heavy tests move to `tests/zz_slow/`; one declared order shared by R0/R1/R2 | PIT runs the fastest tests first, chosen per mutant | Assay needs one static order because per-candidate reordering changes what is proven (A-464, analysis §3) |
+| P1 tiered order | heavy tests move to `tests/zz_slow/`; one declared order shared by R0/R1/R2 | PIT runs the fastest tests first, chosen per mutant | Assay needs one static order because per-candidate reordering changes what is proven (analysis §8; A-470's prefix manifest) |
 | P4 work queue | 3 workers, no joined waves | every tool runs in parallel | Standard and small; fine to own |
 | P5 snapshots | cheaper fresh private repo per candidate | Cosmic Ray rewrites the file in place; mutmut switches mutants inside one process | Needed to keep per-candidate isolation (the stale-pyc false-kill hazard was reproduced) |
 | P0 / P2 / P7 | measured planner; loop guards in assay's source; pilot selection | mostly glue, plus fixes to assay's own code | Needed whatever the design |
@@ -88,14 +88,14 @@ That is about 1.04 MB of plan, analysis, briefs and review summaries [M, `wc -c`
 Ranked by expected value. None is ratified.
 
 1. **Use a tool's fast path in the survivor screen, where no claim is made.** Plan §9.1 runs the screen through the full qualifying attempt path. Every survivor therefore costs a whole declared suite (≈385 s after P1 [C]) on every re-screen iteration. B106 replays only kills, and the judge identity changes with each fix commit.
-   - **Proposal:** in the screen only, select the covering tests from the per-test coverage map that pilot phase B already builds (coverage.py `--cov-context=test`), or run mutmut as a scout.
+   - **Proposal:** in the screen only, select the covering tests from a per-test coverage map (coverage.py `--cov-context=test`). None is built today: P11's T4 probe describes one, and the pilot does not build it. This is new work: one context run per screen commit, used only as a screen hint and never bound into the judge identity. Or run mutmut as a scout.
    - **Errors land on the safe side** [I]:
      - a subset that kills implies the full suite kills, apart from order dependence (research R7 scanned for it);
      - a subset that misses a kill produces a false survivor, and triage finds it.
    - **Known gap:** assay's tests run a lot of assay in child processes that the coverage map does not see, because no `COVERAGE_PROCESS_START` is set. The map under-attributes those tests, which only raises the false-survivor rate.
    - **This is the largest saving available in the find-and-fix loop.** It does not touch the qualifying run.
-   - **Would need:** a plan §9.1 amendment and a small P7b/P8 extension. It is not a new claim, because the screen is already non-qualifying (A-474).
-2. **Front-load the packages that carry most of the saving:** P0, P1, P2, P3b (cold witness) and P4, then the pilot. P5, P6 and v14 are required for correctness and the claim. P9, P10b and P11 are conditional.
+   - **Would need:** a plan §9.1 amendment, a small P7b/P8 extension, and a coverage-context run in the P7b screen mode. It is not a new claim, because the screen is already non-qualifying (A-474).
+2. **Prioritize the packages that carry most of the saving:** P0, P1, P2, P4 and the v14 chain P10a→P3a→P3b (with P6 in its base). The pilot still needs P7, P7b and P8 (plan §8.1.4). P6 and v14 are required for the claim; P5 is a cost package (see S6). P9, P10b and P11 are conditional.
 3. **Defer P9 (distributed evidence) until remote capacity is measured.**
    - It has the heaviest brief after P3b (81 KB).
    - It is built for capacity the plan itself counts as zero.
@@ -128,7 +128,7 @@ Ranked by expected value. None is ratified.
 
 | Area | Before | After the plan | Better? |
 |---|---|---|---|
-| Qualifying run | ≈585 worker-h straight-line [C], and it fails on survivors | ≈9.4–11.4 s fixed per kill after P5, plus the prefix to the first failure. That is 3.3–4.7 h of the 5 h candidate budget on 3 workers before any prefix [C] | Much better, but **borderline** against 6 h. The pilot decides; P11 or measured remote capacity is a likely outcome |
+| Qualifying run | ≈585 worker-h straight-line [C], and it fails on survivors | ≈9.4–11.4 s fixed per kill after P5, plus the prefix to the first failure. That is 3.3–4.0 h of the 5 h candidate budget on 3 workers before any prefix [C] | Much better, but **borderline** against 6 h. The pilot decides; P11 or measured remote capacity is a likely outcome |
 | Survivors | full suite each | still a full suite each (≈385 s after P1), on every re-screen | **No**, unless A4 item 1 is adopted |
 | Hangs | 3 baselines each, can never pass | P2 guards turn them into fast kills | Yes |
 | Ledger audit | n/a | one full suite per entry, outside the 8 h window | **Moved, not removed** |
@@ -180,20 +180,22 @@ So a product can lower R2 effort in five ways. Its design decides most of them:
 
 ## B2. Guidelines, with assay's own evidence
 
+The guidelines are numbered TG1–TG12 (test-design guidelines) so they do not collide with P0's guard tests G1–G5.
+
 | # | Guideline | Lever | Assay evidence | Existing tool that enforces or measures it |
 |---|---|---|---|---|
-| G1 | **Functional core, imperative shell.** Put comparisons and boolean decisions in pure functions with direct, millisecond unit tests. Keep subprocesses, git, venvs and clocks in a thin shell. | `P_i` | 4,875 tests under 10 ms cost ≈4 s in total [M]. 162 s of heavy-test time executes snapshot `src/assay` through nested in-process runs [M]. A kill that only a nested run can make is expensive. | coverage.py contexts show which tests reach a line |
-| G2 | **Test locality.** Each module's fast tests live in a predictable place, so the killer for module M's mutants is near the front of the order. | `P_i`, P11, B109 | `verdict.py` and `verify.py` hold 950 of 3,760 candidates, and their `test_v*` files ran last alphabetically [M] | per-test coverage contexts; kill locality from cold-witness receipts (B4 item 1) |
-| G3 | **Inject time; never wait on it.** Pass a clock or window instead of sleeping on real time. | `P_i`, `F` | 91.0 s per suite run waits on real-time windows; two liveness tests alone cost 66.7 s [M]. Plan D5 makes the windows lane settings, but tests-only injection would be cheaper still. | `grep` for `time.sleep` / `monotonic` waits in tests; freezegun-style injection |
-| G4 | **A test of the source must execute the source.** Release and distribution tests that exercise an installed wheel belong in a separate lane. | `F` | 73.6 s on the unmutated PATH wheel and 13.8 s on a committed 1.2.5 wheel can never kill a mutant [M]. Plan D4(a) ignores the file. | a lane split (the `test_self_hosting.py` precedent) |
-| G5 | **Every loop over external input provably advances or raises.** | hangs | 4 of 39 e79 candidates spun at ≈1,518 s each, e.g. `adapters/go.py:292` [M]. Research R6 inventories the loops; plan D2 adds `errors.require_advance`. | an AST check for `while` loops without a progress guard (custom, small) |
-| G6 | **Declarative structure gets a reflective contract test.** Dataclass flags, enum tables and config key sets are checked by one test that asserts the declared contract. | survivors, `P_i` | 190 import-time candidates (5.1%), 189 of them bool-const-flip; 148 are dataclass `frozen`/`kw_only` flags, and 5 of the first 7 survivors were such flips [M]. One contract test kills them in milliseconds (plan D4(d)). Import-time mutants also defeat schemata and fork-server designs (analysis §3). | pytest; `dataclasses.fields()` introspection |
-| G7 | **State each boundary condition once.** Shared helpers for bounds and validation produce fewer candidates and fewer equivalents. When two guards check the same thing, mutating the redundant one is equivalent. | candidates, equivalents | [I] Not measured per site. Assay already does this in one important place: `verify.py` does not re-implement the schema rules. It rebuilds the `verdict.py` dataclass graph and reuses its construction-time checks (`verify.py:1-30`, A-056, A-129). That one decision keeps the 950 candidates in the two files from being a doubled set. | a review checklist; P10 ledger reasons naming the redundant guard |
-| G8 | **No unreachable defensive code:** make it reachable and tested, or delete it. | survivors, ledger | [I] Every survivor in a dead branch becomes a ledger entry with a fresh-session review and an audit run (plan D1). | coverage R1 already forces 100% line+branch; a survivor in a covered-but-inert branch is the signal |
-| G9 | **Order-independent tests with no shared state.** | enables tiering, P11 units, parallelism | Research R7 ran an order-dependence scan; tiering and P11 are sound only with it | pytest-randomly and pytest-xdist in ordinary CI detect order dependence cheaply |
-| G10 | **Cheap fixtures, scoped to the tests that need them.** | `F`, `P_i` | ≈71 s per suite run is non-call time: session and module fixtures, teardown [C]. The `standalone` fixture builds a wheel and a venv (`tests/conftest.py:1431-1499`). | pytest `--setup-show`, `--durations` with setup phases (P0 retains them) |
-| G11 | **The project boundary is the snapshot boundary.** Tests do not reach outside their project or into repository history. | `S` | Each candidate snapshots the **whole vbpub monorepo with full history**: ≈130 MB written, ≈490 GB over a campaign, ≈2–4 s [A]. Only the 32 tests in `test_python_qualification.py` need history (they pin a `topos` commit). `test_distribution_build_release.py` clones the snapshot twice per candidate [M]. | shallow snapshot (A-451) once P1 lands (plan §11 item 9) |
-| G12 | **Layered module dependencies (a DAG, no cycles).** | enables provable test selection (B109) | [I] A test whose dependency closure excludes module M cannot kill M's mutants, and a layered import graph makes that closure provable. A test that runs the CLI in a subprocess depends on everything. | import-linter contracts; Ekstazi-style file-dependency tracing (analysis §8) |
+| TG1 | **Functional core, imperative shell.** Put comparisons and boolean decisions in pure functions with direct, millisecond unit tests. Keep subprocesses, git, venvs and clocks in a thin shell. | `P_i` | 4,875 tests under 10 ms cost ≈4 s in total [M]. 162 s of heavy-test time executes snapshot `src/assay` through nested in-process runs [M]. A kill that only a nested run can make is expensive. | coverage.py contexts show which tests reach a line |
+| TG2 | **Test locality.** Each module's fast tests live in a predictable place, so the killer for module M's mutants is near the front of the order. | `P_i`, P11, B109 | `verdict.py` and `verify.py` hold 950 of 3,760 candidates, and their `test_v*` files ran last alphabetically [M] | per-test coverage contexts; kill locality from cold-witness receipts (B4 item 1) |
+| TG3 | **Inject time; never wait on it.** Pass a clock or window instead of sleeping on real time. | `P_i`, `F` | 91.0 s per suite run waits on real-time windows; two liveness tests alone cost 66.7 s [M]. Plan D5 makes the windows lane settings, but tests-only injection would be cheaper still. | `grep` for `time.sleep` / `monotonic` waits in tests; freezegun-style injection |
+| TG4 | **A test of the source must execute the source.** Release and distribution tests that exercise an installed wheel belong in a separate lane. | `F` | 73.6 s on the unmutated PATH wheel and 13.8 s on a committed 1.2.5 wheel can never kill a mutant [M]. Plan D4(a) ignores the file. | a lane split (the `test_self_hosting.py` precedent) |
+| TG5 | **Every loop over external input provably advances or raises.** | hangs | 4 of 39 e79 candidates spun at ≈1,518 s each, e.g. `adapters/go.py:292` [M]. Research R6 inventories the loops; plan D2 adds `errors.require_advance`. | an AST check for `while` loops without a progress guard (custom, small) |
+| TG6 | **Declarative structure gets a reflective contract test.** Dataclass flags, enum tables and config key sets are checked by one test that asserts the declared contract. | survivors, `P_i` | 190 import-time candidates (5.1%), 189 of them bool-const-flip; 148 are dataclass `frozen`/`kw_only` flags, and 5 of the first 7 survivors were such flips [M]. One contract test kills them in milliseconds (plan D4(d)). Import-time mutants also defeat schemata and fork-server designs (analysis §3). | pytest; `dataclasses.fields()` introspection |
+| TG7 | **State each boundary condition once.** Shared helpers for bounds and validation produce fewer candidates and fewer equivalents. When two guards check the same thing, mutating the redundant one is equivalent. | candidates, equivalents | [I] Not measured per site. Assay's verify.py is the counter-example by design: it reuses verdict.py's dataclasses only for schema conformance (verify.py:1-30, A-056, A-129), while its raw cross-checks and R1–R3 re-derivation deliberately restate producer rules (A-182), so 290 of its 327 candidates are twins (R11 §3). Within one trust side, R11 finds ≈111 removable guard candidates. | a review checklist; P10 ledger reasons naming the redundant guard |
+| TG8 | **No unreachable defensive code:** make it reachable and tested, or delete it. | survivors, ledger | [I] Every survivor in a dead branch becomes a ledger entry with a fresh-session review and an audit run (plan D1). | coverage R1 already forces 100% line+branch; a survivor in a covered-but-inert branch is the signal |
+| TG9 | **Order-independent tests with no shared state.** | enables tiering, P11 units, parallelism | Research R7 ran an order-dependence scan; tiering and P11 are sound only with it | pytest-randomly and pytest-xdist in ordinary CI detect order dependence cheaply |
+| TG10 | **Cheap fixtures, scoped to the tests that need them.** | `F`, `P_i` | ≈71 s per suite run is non-call time: session and module fixtures, teardown [C]. The `standalone` fixture builds a wheel and a venv (`tests/conftest.py:1431-1499`). | pytest `--setup-show`, `--durations` with setup phases (P0 retains them) |
+| TG11 | **The project boundary is the snapshot boundary.** Tests do not reach outside their project or into repository history. | `S` | Each candidate snapshots the **whole vbpub monorepo with full history**: ≈130 MB written, ≈490 GB over a campaign, ≈2–4 s [A]. Only the 32 tests in `test_python_qualification.py` need history (they pin a `topos` commit). `test_distribution_build_release.py` clones the snapshot twice per candidate [M]. | shallow snapshot (A-451) once P1 lands (plan §11 item 9) |
+| TG12 | **Layered module dependencies (a DAG, no cycles).** | enables provable test selection (B109) | [I] A test whose dependency closure excludes module M cannot kill M's mutants, and a layered import graph makes that closure provable. A test that runs the CLI in a subprocess depends on everything. | import-linter contracts; Ekstazi-style file-dependency tracing (analysis §8) |
 
 ## B3. The three factors asked about
 
@@ -208,15 +210,15 @@ Libraries used by the *tests* matter more to runtime than libraries in the produ
 1. **Isolation units (P11):** a unit is a test file. A 2,565-line `test_cli_run.py` that mixes millisecond tests with 30 s liveness waits makes a poor unit.
 2. **Reuse and fingerprints:** B109's dependency-aware reuse and P10's `scope_sha256` both invalidate on change within an enclosing scope, so large scopes invalidate more after an edit.
 3. **Import cost in subprocess tests:** every test that runs the `assay` CLI in a child imports the large modules (`runner.py` 6,554 lines, `verdict.py` 5,455, `mutation.py` 3,812, `config.py` 3,773 [M]). Lazy imports in the CLI entry could cut that. [I, unmeasured]
-4. **Readability of kill locality:** a 6.5k-line module has no single natural "its tests" file (G2).
+4. **Readability of kill locality:** a 6.5k-line module has no single natural "its tests" file (TG2).
 
 Splitting a big module is worth it when it creates a clear layer or unit, not for its own sake.
 
 **Boundaries.** This is the strongest lever. Four boundaries decide how much work R2 needs:
-- **Source vs. installed artifact (G4):** tests must execute what is mutated.
-- **Project vs. monorepo (G11):** the snapshot copies everything inside the git boundary.
-- **Module layers (G12):** they decide whether test selection can ever be proven safe.
-- **Pure core vs. shell (G1):** it decides whether kills are milliseconds or tens of seconds.
+- **Source vs. installed artifact (TG4):** tests must execute what is mutated.
+- **Project vs. monorepo (TG11):** the snapshot copies everything inside the git boundary.
+- **Module layers (TG12):** they decide whether test selection can ever be proven safe.
+- **Pure core vs. shell (TG1):** it decides whether kills are milliseconds or tens of seconds.
 
 ## B4. Room for improvement in assay
 
@@ -240,7 +242,7 @@ Splitting a big module is worth it when it creates a clear layer or unit, not fo
 
 **For assay's own codebase and environment (B105-relevant):**
 1. **After P1, move to a shallow snapshot (A-451)** and move the release-clone fixtures out of the self-qualification lanes. This is already an unowned follow-up in plan §11 item 9, and it is the cheapest `S` saving after P5.
-2. **A reflink-capable `TMPDIR` for tester-unified.** It turns ≈130 MB of copies per candidate into metadata operations. A-184 already allows it; it is an environment item.
+2. **A reflink-capable `TMPDIR` for tester-unified.** It turns ≈130 MB of copies per candidate into metadata operations. A-184 already allows it; it is an environment item. Only the pack copy benefits unless the optional C4 template copy is built; it needs a new LV on the production host (no loop file); pursue only if the pilot shows I/O matters (Part C, C3).
 3. **Split the mega test files along the tier line** (`test_cli_run.py`, `test_standalone.py`) so that the fast part stays in the early tier. This is a P1 detail.
 4. **Do not split `runner.py` or `verdict.py` as a standalone refactor now.** It pays only under P11 units or B109 dependency proofs. Decide after the pilot.
 
@@ -268,7 +270,7 @@ Their probes are in `b110/research/scripts/r10/` and `scripts/r11/`. The timings
 | 8% | 17.8 | Genuine nested pytest runs. These are intrinsic, but the same behavior is re-proven at 3–4 layers (canary, `run_lane`, CLI, wheel). |
 
 **Costs outside call time, which the plan does not see:**
-- **Assertion rewriting.** Every fresh snapshot recompiles and assertion-rewrites the ~245 *unchanged* test modules: ≈5.5 CPU-s per candidate [M]. That is most of the "fixed" ≈7.4 s collection constant, and **every kill pays it**. This is the largest lever on the qualifying run (RC4).
+- **Assertion rewriting.** Every fresh snapshot recompiles and assertion-rewrites the ~245 *unchanged* test modules: ≈5.5 CPU-s per collection, measured in the devcontainer [M]; ≈4–5 s of the gate's 7.4 s [I, needs the S3 probe]. That is most of the "fixed" ≈7.4 s collection constant, and **every kill pays it**. This is the largest lever on the qualifying run (RC4).
 - **The `git_repo` fixture** starts 6 git processes for each of ≥616 tests (≈18–49 s per run [C/A]).
 - **The `standalone` wheel fixture** is triggered early by a cheap FIFO test (`test_analysis.py:721`), so it lands in the fast tier.
 - **The zipapp fixture** does two full-history clone-and-build passes per candidate; the second exists only to prove byte-reproducibility, which the mutant cannot affect.
@@ -277,11 +279,11 @@ Their probes are in `b110/research/scripts/r10/` and `scripts/r11/`. The timings
 
 | RC | Fix | Kind | Saving |
 |---|---|---|---|
-| RC1/RC2 | Take **every** mutant-independent test out of the B105 lanes, not only `test_python_qualification.py`: gate-script, `pyproject.toml`, pyflakes and pip oracles, the standalone packaging negatives. Keep them in the release lane. | lane move | ≈94 s + ≈45–55 s per full run. It also closes a **false-kill channel**: 82 literal subprocess `timeout=` values in 19 test files can fail under load, and any non-zero exit is `killed` (`mutation.py:1683-1686`). |
+| RC1/RC2 | Take **every** mutant-independent test out of the B105 lanes, not only `test_python_qualification.py`: gate-script, `pyproject.toml`, pyflakes and pip oracles, the standalone packaging negatives. Keep them in the release lane. | lane move | ≈94 s + ≈45–55 s per full run. It also narrows a false-kill channel. R9 counts 82 literal subprocess `timeout=` values in 19 test files; any of them can fail under load, and any non-zero exit is `killed` (`mutation.py:1683-1686`). The moved files hold only a minority, so the rest still need their time dependence removed (nyxloom LESSONS L20). |
 | RC3 | Liveness windows (D5, decided). Heartbeat: shrink the floor in the test. | product seam / test | ≈43–45 s (D5; **not** ≈60 s as analysis §6 said) + ≈6.5 s |
-| RC4 | Reuse the baseline's rewritten **test** bytecode in each candidate (never `src` bytecode: the stale-pyc hazard), or run R2 with `--assert=plain` | product | **≈4–5 s on every candidate, kills included** [I]; needs a gate probe and a decision |
+| RC4 | Reuse the baseline's rewritten **test** bytecode in each candidate (never `src` bytecode: the stale-pyc hazard), or run R2 with `--assert=plain` | product | **≈4–5 s on every candidate, kills included** [I]; needs a gate probe and a decision. Carry-in touches A-472 ("no residue between siblings"), A-161 and P0 G2; `--assert=plain` changes A-470's R2 transform `assay-r2-pytest-nocov/1` (version bump). Caveats: pytest validates its rewrite cache by mtime and size only (every snapshot file has `_FIXED_MTIME`), and carried code objects keep the baseline snapshot's `co_filename` |
 | RC5 | A session template repository copied per test instead of 6 git processes | test | ≈15–40 s per run, mostly in the fast tier |
-| RC6 | Run the FIFO test without the wheel; move all `standalone` users together; drop the second zipapp build | test / lane move | −5–6 s from the fast tier; −12–15 s per run |
+| RC6 | Run the FIFO test without the wheel; move all `standalone` users together; move the second zipapp build (the byte-reproducibility check) to the release lane; without S1 this narrows R0 | test / lane move | −5–6 s from the fast tier; −12–15 s per run |
 | RC7 | One real-subprocess test per mechanism; fakes at the other layers (`run_lane(process_runner=…)`); `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` in toy lanes | test | ≈20–40 s; **only after kill-matrix evidence** shows which tests are sole killers |
 | RC8 | Session-cached source parse for the static sweeps | test | ≈4–5 s |
 
@@ -305,7 +307,7 @@ Their probes are in `b110/research/scripts/r10/` and `scripts/r11/`. The timings
 
 ## C3. "Every mutant copies the whole vbpub repo with full history. Do we need that? Why not the latest commit? tmpfs, eatmydata, copy-on-write?"
 
-**Full history: no.** Once `test_python_qualification.py` is ignored (A-468(a)), no collected test needs history, tags or old commits (R10 §1):
+**Full history: no** [I, pending S4's drift-proof preflight]. Once `test_python_qualification.py` is ignored (A-468(a)), no collected test needs history, tags or old commits (R10 §1):
 - Only 17 test functions (24 cases) use git on the real repository, and they need only HEAD.
 - The pinned `topos` commit was the whole reason for `snapshot_history = "full"` (`assay.toml:73-74`).
 - **"Just the latest commit" is shallow, which is already A-451's default.** B105 opted out only for those pinned tests.
@@ -326,7 +328,7 @@ Their probes are in `b110/research/scripts/r10/` and `scripts/r11/`. The timings
 
 | Option | Verdict |
 |---|---|
-| eatmydata / `core.fsync=none` | **Saves nothing.** strace: 0 fsync calls in the whole per-candidate snapshot path (git's default `core.fsync=committed,-loose-object` fsyncs packs only, and P22 creates none). The tests' own clones fsync 3×, ≈80 ms. |
+| eatmydata / `core.fsync=none` | **Saves nothing in the snapshot path** (0 fsyncs [M]); test-side, at most ≈0.16 s per candidate that runs the `built` clones [M]; pip/venv steps were not traced. strace: 0 fsync calls in the whole per-candidate snapshot path (git's default `core.fsync=committed,-loose-object` fsyncs packs only, and P22 creates none). The tests' own clones fsync 3×, ≈80 ms. |
 | tmpfs | Charged to the container's 2 GiB memory cgroup: ≈140–170 MiB per live snapshot today, ≈60 MiB at the shallow + `assay/`-only shape. It turns reclaimable page cache into swap-backed memory on a host already using 24 GiB of swap. Only at the small footprint, with the worker count checked. |
 | Reflink (XFS/btrfs) | The gate's `/tmp` is the overlay2 upper layer on host **ext4**, so there is no reflink. Needs a new volume on the production host. Only if the pilot shows I/O matters. |
 | overlayfs / fuse-overlayfs | Needs privileges the uid-1003 container lacks, and counts as the "tree reuse" A-472 forbids |
@@ -341,24 +343,24 @@ Their probes are in `b110/research/scripts/r10/` and `scripts/r11/`. The timings
 | + C1 refresh (P5) | 2.50 s |
 | Shallow | 1.60 s |
 | Shallow + refresh | 1.50 s |
-| **Shallow, `assay/`-only worktree** | **0.46 s** |
+| **Shallow + refresh, `assay/`-only worktree** (≈0.03 s more without the refresh, R10 §4) | **0.46 s** |
 
 Also: `build_release`'s clones take 2.55 s each from a full snapshot and 0.9 s from a shallow one.
 
-**Consequence for P5.** With shallow adopted, C2 (the incremental closure bound) is moot: the full walk is already 0.03 s. C1's net gain drops to ≈0.1 s, because the refresh is itself a full hash pass. The plan assumed 0.25–0.85 s. **Defer P5's C1/C2 and its ctime sweep.** Keep P0's guard tests. Fix the existing assume-unchanged hole on its own merits.
+**Consequence for P5.** With shallow adopted, C2 (the incremental closure bound) is moot: the full walk is already 0.03 s. C1's net gain drops to ≈0.1 s, because the refresh is itself a full hash pass. Research R2 estimated 0.25–0.85 s for C1, and the P5 brief 0.6–1.4 s for C1+C2; R10 measured C1 at 0.1–0.2 s (full) and ≈0.1 s (shallow). **Proposal (S6): defer P5's C1/C2 and its ctime sweep if the shallow snapshot (S4) is adopted.** Keep P0's guard tests. Fix the existing assume-unchanged hole on its own merits.
 
 ## C4. "Can assay itself be made DRY, putting code into its own managed libraries?"
 
 **Yes to DRY, and it needs no library** (R11):
-- **Internal consolidation** removes ≈395–528 of the 3,760 candidates (10.5–14%) with **no claim change and no new decision**. That is ≈27–37 min off each qualifying run on 3 workers [C]. The duplication is in repeated idioms, not copy-paste:
+- **Internal consolidation** removes ≈395–528 of the 3,760 candidates (10.5–14%) with **no claim change and no new decision**. That is ≈27–37 min off each qualifying run on 3 workers [C] (at ≈12.5 s per kill, R11 §5.1; less if C5's scenario holds). The duplication is in repeated idioms, not copy-paste:
   - 148 `frozen`/`kw_only` dataclass flags; one shared `@record` decorator plus a reflective test removes ≈144;
   - 122 typed-field checks ("int but not bool" and the like; ≈111 removable through guard helpers);
-  - the R1–R4 "judgment present iff attempted" rule, written four times in `verdict.py:4769-4910` (≈35);
+  - the R1–R4 "judgment present iff attempted" rule, written four times in `verdict.py:4769-4910` and `verify.py`'s `_raw_claim` (≈20 in verdict.py plus ≈15 in verify.py, R11 §6);
   - other repeated same-side decisions (≈100).
 - **Duplication that must stay.** 290 of `verify.py`'s 327 candidates re-check producer rules on purpose (A-129, A-182).
-- **A managed library moves candidates; it does not remove them.** It saves only if the library is requalified less often than assay. Over the last 12 releases, 821 candidates sat in files changed at most once (parsers, adapters), while `verdict`, `runner` and `mutation` changed in 5–8 of 12.
+- **A managed library moves candidates; it does not remove them.** It saves only if the library is requalified less often than assay. Over the last 12 releases, 821 candidates sat in files changed at most once (parsers, adapters), while `verdict`, `runner` and `mutation` changed in 6–8 of 12 (`verify.py` in 5).
 - **Claim consequence of a library:**
-  - Moving code out of `src/assay` narrows B105 silently, because `b105_report_check.py` checks only `src/assay`.
+  - Moving code out of `src/assay` narrows B105 silently, because the checked targets are pinned by `test_self_lane.py:128-135` and the checker binds only commit, tree, lane, version and wheel (`b105_report_check.py:14-104`), so imported code passes both (R11 §5.2).
   - The claim would have to become "assay source + a pinned, independently qualified library", bound by the library subtree's git tree hash and its own verified R0–R3 verdict.
   - Under A-005 (zero runtime dependencies), only vendoring into the build works with the pip-less zipapp install (A-402). It still needs new decisions: A-005's wording, A-462's scope, and checker binding.
 - **An estate-core library** exists only in small form, with assay as the *provider*: its bounded git runner and no-follow IO are stricter than the other tools'. Assay's share is ≤197 candidates, realistically 80–150.
@@ -371,23 +373,23 @@ Also: `build_release`'s clones take 2.55 s each from a full snapshot and 0.9 s f
 
 | Item | Before | After |
 |---|---|---|
-| Fixed cost per kill (after P5) | 9.4–11.4 s | minus ≈4–5 s (RC4), ≈1 s (shallow) and ≈1 s (`assay/`-only) → **≈3.5–6 s**, P5 no longer needed |
+| Fixed cost per kill (after P5) | 9.4–11.4 s | S ≈ 0.5 s (S4 + S5, R10) + C ≈ 2.9–4.9 s (RC4, [I], unprobed; the no-cov C is unmeasured) + O ≈ 0.5 s → **≈4–6 s**; P5 deferrable (S6) |
 | Inventory | 3,760 | −10.5–14% (C4) |
 | Survivor full run | ≈385 s after P1 | ≈200–275 s (RC1/2/5/6/7) |
 
-That moves the claim-preserving path from "borderline" (analysis §1.7) to comfortable, and makes the P11 isolation-unit fallback less likely. The pilot still decides.
+That moves the claim-preserving path from "borderline" (analysis §1.7) to comfortable if S3, S4 and S5 are all adopted, and makes the P11 isolation-unit fallback less likely. The pilot still decides.
 
 | # | Proposal | Needs |
 |---|---|---|
 | S1 | Require a same-commit release-gate pass in B105's definition of done and Qualifying GO, so lane moves transfer assurance | plan §1/§8.2 amendment; decision |
-| S2 | Extend A-468(a) to every mutant-independent test (RC1/RC2) | A-468 amendment; P1 brief |
-| S3 | Probe RC4 in the gate (cold vs. warm collection), then choose test-bytecode carry-in (never `src`) or `--assert=plain` | a gate probe; a decision (snapshot invariant or D6-style equivalence ruling) |
+| S2 | Extend A-468(a) to every mutant-independent test (RC1/RC2) | S1 first (or in the same change); A-468 amendment; P1 brief + fresh pre-dispatch review |
+| S3 | Probe RC4 in the gate (cold vs. warm collection), then choose test-bytecode carry-in (never `src`) or `--assert=plain` | a gate probe (cold vs. warm collection, plus a check that no test depends on `co_filename`/traceback paths); then either (a) carry-in: an A-472 amendment and an A-161 note, re-specifying P0 G2 to admit exactly the harvested test-pyc set, digest-bound and never `src`; or (b) `--assert=plain`: an A-470 amendment bumping the R2 transform version |
 | S4 | Shallow snapshot for both B105 lanes, right after P1 (plan §11 item 9 gets an owner) | decision note (A-451 default applies); `test_self_lane.py:102`; a drift-proof preflight |
 | S5 | `assay/`-only worktree as a new `snapshot_selection` value | decision amending A-161/A-269 §2; per-test outcome comparison in the pilot |
-| S6 | Defer P5 (C1/C2 + sweep); keep P0 G1–G5; decouple the assume-unchanged fix | plan §4 |
+| S6 | Once S4 is adopted, defer P5 (C1/C2 + sweep); keep P0's guard tests G1–G5; decouple the assume-unchanged fix | plan §1 and §8.1.4 (drop P5 from "P0–P8"), §2 item 3, §4 and §7; a D8/A-472 note; B116 status |
 | S7 | Test redesign RC5/RC6/RC8 now; RC7 after S8 | P1 scope |
-| S8 | Retain each candidate's failing node IDs (a kill matrix); today the liveness events that hold them are deleted | small P0/P3b extension |
+| S8 | Retain each candidate's failing node IDs (a kill matrix); today the liveness events that hold them are deleted | small P0/P3b extension, stored in a state-record or sidecar field outside the v14 wire (putting node IDs in the v14 `evidence` object would need an A-470 amendment: "An `evidence` object always has all six keys") |
 | S9 | DRY items R11 #1–#4 before the pilot | new small package |
 | S10 | Libraries (R11 #8/#9) only if the pilot still misses 6 h | A-005/A-462 decisions |
 
-**Order: structure first.** S2, S4, S7, S9, and the S3 probe belong with P0/P1, **before** the runner packages are sized, because they change the per-candidate cost the pilot measures.
+**Order: structure first.** S1 with S2, then S4, S7, S9 and the S3 probe, belong with P0/P1 (proposal; each needs the decision listed above), **before** the runner packages are sized, because they change the per-candidate cost the pilot measures.
