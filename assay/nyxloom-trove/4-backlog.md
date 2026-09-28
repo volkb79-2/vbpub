@@ -112,6 +112,17 @@ items:
   - {id: B108, title: "Deterministic mutation-campaign analysis and automatic post-lane closeout", type: feature, component: evidence, context_estimate: large}
   - {id: B109, title: "B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes", type: feature, component: mutation, context_estimate: large}
   - {id: B110, title: "B105 R2 exceeds the operator runtime ceiling; reduce repeated test work and qualify bounded execution", type: feature, component: gate, context_estimate: large}
+  - {id: B111, title: "B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test outer-events leak, B105 report-checker partial-scope refusal, snapshot guard tests", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B112, title: "B110 P1: B105 suite scope -- ignore test_python_qualification.py, drop --override-ini, tiered tests/zz_slow layout, dataclass contract test", type: feature, component: gate, context_estimate: medium}
+  - {id: B113, title: "B110 P2: loop-progress guards so single-operator mutants cannot spin or block scanners and pipe drains", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B114, title: "B110 P3: verdict v14 cold-witness kills with a proven no-coverage R2 command, manifests, hook/runtime fingerprints, liveness disclosure, and B105 report binding", type: feature, component: mutation, context_estimate: large}
+  - {id: B115, title: "B110 P4: bounded work-queue mutation executor with position-ordered progress", type: feature, component: mutation, context_estimate: medium}
+  - {id: B116, title: "B110 P5: cheaper fresh per-candidate snapshots (index refresh, incremental child-closure bound)", type: feature, component: isolation, context_estimate: medium}
+  - {id: B117, title: "B110 P6: one persisted campaign deadline and candidate process-group termination", type: feature, component: execution, context_estimate: medium}
+  - {id: B118, title: "B110 P7: non-qualifying pilot candidate selection and deterministic pilot selector", type: feature, component: cli, context_estimate: medium}
+  - {id: B119, title: "B110 P9: distributed/async mutation evidence -- identity-bound record import with conflict refusal, provisional/accepted status, resume consolidation", type: feature, component: mutation, context_estimate: large}
+  - {id: B120, title: "B110 P10: native Python equivalence ledger with stable site anchors and a same-commit ledger audit", type: feature, component: mutation, context_estimate: large}
+  - {id: B121, title: "B110 P11: isolation-unit execution model for R2 (decision-gated fallback)", type: feature, component: mutation, context_estimate: large}
 ---
 
 # assay — backlog
@@ -158,14 +169,28 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
-- B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling)
+- B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
-- B106 — provenance-safe selective mutation reruns across source/test changes — OPEN (filed 2026-09-25 from CMRU's 494-candidate mutation campaign)
+- B106 — provenance-safe selective mutation reruns across source/test changes — DONE (`assay-v7.1.0`, merge `e5e9b95c`, A-461; registered tester-unified PASS). Inert for B105 until B112 drops `--override-ini` and B114 removes pytest-cov from the R2 command.
 - B107 — time-aligned candidate liveness evidence to distinguish hangs from resource stalls — OPEN (filed 2026-09-26 from RG-55 P6 exact-tree R2 campaigns)
 - B108 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
 - B109 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
-- B110 — bounded B105 runtime without increasing the approved RAM envelope — OPEN (filed 2026-09-27 after stopping the 15/3,760-candidate self-qualification attempt)
+- B110 — bounded B105 runtime without increasing the approved RAM envelope — OPEN, split 2026-09-28 into B111–B121 (plan `reports/assay-B110-PLAN-2026-09-28.md`; analysis `reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`; decisions A-465–A-474). B110 keeps the pilot and go/no-go.
+
+**B110 split (filed 2026-09-28; briefs in `reports/b110/`; not yet dispatched)**
+- B111 — P0 measured plan estimate, resource/phase evidence, liveness-test leak, report-checker refusal, snapshot guards — OPEN
+- B112 — P1 B105 suite scope (ignore PATH-wheel file, drop override, `zz_slow` tier, dataclass contract) — OPEN (after B111's leak fix)
+- B113 — P2 loop-progress guards — OPEN
+- B114 — P3 verdict v14 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — OPEN (integration branch `assay-b110-v14`; after B120's anchor design)
+- B115 — P4 work-queue executor — OPEN
+- B116 — P5 snapshot index refresh + incremental closure bound — OPEN
+- B117 — P6 persisted campaign deadline + process-group termination — OPEN
+- B118 — P7 non-qualifying pilot selection — OPEN
+- B108 phase 1 — P8 deterministic campaign analysis core (run-gate closeout stays phase 2) — OPEN
+- B119 — P9 distributed/async evidence import and consolidation — OPEN (D7 reading awaits operator confirmation)
+- B120 — P10 native Python equivalence ledger + same-commit audit — OPEN (P10a design review first)
+- B121 — P11 isolation-unit execution model — OPEN, decision-gated (only after a pilot NO-GO and an operator decision)
 
 **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
 - B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
@@ -10694,6 +10719,15 @@ qualification evidence.
       It explicitly deselects only the two release-tag audit tests, because
       snapshots do not carry refs/tags; the ordinary checkout-based R0 release
       gate continues to run those tests. A drift test pins these exclusions.
+      **Amended 2026-09-28 (A-468):** both self-qualification lanes also
+      `--ignore=tests/test_python_qualification.py`. That file exercises only
+      the unmutated PATH wheel and the committed 1.2.5 release wheel, never
+      snapshot `src/assay`, so it cannot kill a mutant or add coverage. It
+      stays at its P33-locked path and the release lane keeps running it. The
+      lanes drop `--override-ini=pythonpath=src` and rely on the drift-pinned
+      `pyproject.toml` `pythonpath = ["src"]`. Heavy tests are collected last
+      from `tests/zz_slow/`. The drift test pins the exact `--ignore` and
+      `--deselect` sets.
 - [ ] R2 runs native mutation over the full declared source target and
       produces a complete, verifier-accepted candidate inventory and outcomes.
       Deterministic shards may execute the fixed inventory, but missing or
@@ -10701,7 +10735,10 @@ qualification evidence.
       into the ordinary complete verdict accepted by `assay verify`. No
       budget-limited, sentinel, partial, or no-candidate result is described
       as an R2 pass. Surviving or equivalent mutants stay visible and receive
-      the disposition the configured contract requires.
+      the disposition the configured contract requires. **Clarified
+      2026-09-28 (A-465):** the only native-Python disposition for an
+      unkillable mutant is an entry in the reviewed equivalence ledger (B120),
+      audited at the qualifying commit. Every other candidate must be killed.
 - [ ] R3 executes the declared canary contract against the self-qualification
       source, with positive and negative controls proving the canary detects
       the intended change and the restoration.
@@ -10737,7 +10774,7 @@ qualification evidence.
 
 ## B106 -- incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence
 
-**Status: OPEN (filed 2026-09-25 from CMRU's FEAT-03 review campaign).**
+**Status: DONE — shipped in `assay-v7.1.0` (merge `e5e9b95c`, A-461; registered `tester-unified` PASS recorded in `reports/assay-WAVE-C-P5-B106-REPORT.md`). Status line corrected 2026-09-28; it had still read OPEN. `--reuse-from` is inert for B105 until B112 drops `--override-ini` and B114 removes pytest-cov from the R2 command. (Filed 2026-09-25 from CMRU's FEAT-03 review campaign.)**
 
 **Observed use case:** CMRU's completed campaign at `e4f34c0c` ran 494
 candidates in 14,989.596 seconds (4h09m50s), killing 492 and leaving 2
@@ -10857,7 +10894,7 @@ campaign trees and do not relabel the `hung` result as equivalent.
 
 ## B108 — deterministic mutation-campaign analysis and automatic post-lane closeout
 
-**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns).**
+**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns). Phased 2026-09-28: phase 1 is the deterministic `assay analyze campaign` core that the B110 pilot and survivor screen need (brief `reports/b110/P8-campaign-analysis-core.md`). Phase 2 is the automatic run-gate post-lane closeout and its `run-gate-project/SPEC.md` integration, and stays open.**
 
 **Observed need:** operators repeatedly call Assay and then write one-off
 Python/LLM analysis to answer basic campaign questions: how many candidates
@@ -10948,7 +10985,7 @@ interpretation step.
 
 ## B109 — B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes
 
-**Status: OPEN (filed 2026-09-26 at operator request).**
+**Status: OPEN (filed 2026-09-26 at operator request). 2026-09-28: the stable site anchor B109 needs is designed first by B120/P10a (A-465), which uses it as the equivalence-ledger key. B109 must reuse that anchor rather than define a second one. Its dependency-proof design depends on whether B121 (isolation units) is adopted.**
 
 **Observed limit:** B106 safely handles a changed tree by running the current
 baseline and rediscovering the current candidate set, then replaying an
@@ -11027,7 +11064,7 @@ of every previously killed, behaviorally independent candidate.
 
 ## B110 — B105 R2 exceeds the operator runtime ceiling; reduce repeated test work and qualify bounded execution
 
-**Status: OPEN (filed 2026-09-27 after stopping B105's full R2 attempt at the operator's 6–8 hour ceiling).**
+**Status: OPEN (filed 2026-09-27 after stopping B105's full R2 attempt at the operator's 6–8 hour ceiling). Split 2026-09-28 into B111–B121 after an operator interview; see "B110 split" below. B110 itself keeps only the fixed pilot, the go/no-go decision, and the final qualifying runbook.**
 
 **Observed:** the B105 gate entered R2 with 3,760 candidates and 5,831 tests
 per candidate. Its first 15 completed candidates took a mean of 560.3 seconds
@@ -11255,3 +11292,231 @@ because a shard or pipeline can be described.
       shows the difference between cold kills, fully executed survivors, and
       an incomplete timeout. Any Buildkite workflow documents its required
       agent and memory contract.
+
+### B110 split (2026-09-28)
+
+An analysis-only session measured the retained evidence and ran an operator interview. Full report:
+`reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`; plan: `reports/assay-B110-PLAN-2026-09-28.md`;
+briefs: `reports/b110/`; decisions A-465–A-474.
+
+It established:
+- every killed candidate ran all 5,831 tests;
+- a passing native campaign contains only kills and ledger-audited equivalents, so survivor cost belongs to a non-qualifying screen/fix loop;
+- 97.8 worker-hours per campaign went to a test file that can never kill a mutant;
+- 14 single-operator mutants can spin or block scanner loops.
+
+The acceptance items above are now owned as follows:
+
+| B110 acceptance item | Owner |
+|---|---|
+| cold receipt / v14 verifier / labelled unrun tests / derived command / B105 binding | B114 |
+| shard fixtures, consolidation to one ordinary verdict | B119 (consolidation), B111 (report-checker refusals) |
+| injected-clock persisted deadline, live timeout leaves no container or process behind | B117 |
+| fixed hash-selected pilot and projection | B118 (tooling) + **B110 (the pilot run and go/no-go)** |
+| Buildkite/remote acceptance | B119 (worker runbook; capacity counts as zero until measured) |
+| docs | each package, in its own branch |
+
+**Superseded details in the text above:**
+- "Permit only B105's exact `--override-ini=pythonpath=src`" is superseded by A-468: the lanes drop the override.
+- "falls back to the original declared command" is refined by A-470: a completed, proof-matching no-cov run is the survivor's full run, and only a proof mismatch falls back to the declared command.
+- The first-draft scenario "snapshot + collection ≈ 3,760 × 6.5–8 s" is corrected to ≈ 9–13 s per kill; see the analysis report §6.
+
+**B110 acceptance (remaining after the split):**
+- [ ] B111–B118 and B108 phase 1 are merged, independently reviewed, and gated. B120's producer is also merged if the survivor screen leaves any equivalents.
+- [ ] The fixed pilot (plan §7) ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, within 90 minutes, stopped by 2 hours at the latest. `reports/assay-B110-PILOT-REPORT.md` records the cold-kill rate with its interval, the snapshot/collection/prefix distributions, survivor durations, per-worker and aggregate peak RSS, memory-full stall, a stratified p50/p90 projection with fixed overhead, shard skew, and consolidation cost.
+- [ ] The go/no-go (plan §8) is recorded. NO-GO leads to an operator decision among B121, measured remote capacity (B119), or a further test-plan change; never to a longer timeout.
+- [ ] The qualifying runbook (plan §9.3) is ready. The B105 lane's `jobs` is set from the pilot.
+
+## B111 — B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test leak, report-checker partial-scope refusal, snapshot guard tests
+
+**Status: OPEN (filed 2026-09-28; brief `reports/b110/P0-measurement-hygiene.md`).**
+
+**Observed:**
+- `assay plan` multiplies by a hard-coded 60 s (`cli.py:1786-1801`); CONSUMERS calls that an upper bound, but under `auto` it is a lower bound. The B105 plan said 62h40m against a measured ≈585 worker-hours.
+- Candidate events carry no CPU, RSS or phase timings, and setup/teardown durations are never forwarded.
+- `tests/test_liveness.py:581/601` write a `session_finish` into the outer candidate's events file, so any 30 s-silent test after them is marked `hung`.
+- `tools/b105_report_check.py` accepts a sharded or partial R2 inventory.
+- Disjoint-inode isolation (O2) is pinned only by an uncollected carve asset.
+
+**Acceptance:**
+- [ ] The brief's oracles pass.
+- [ ] `--baseline-from` estimates carry provenance.
+- [ ] Resource and phase evidence appears in candidate events and state records.
+- [ ] The leak is fixed, with a regression test.
+- [ ] The report checker refuses shard fields and partial inventories.
+- [ ] Guard tests G1–G5 pass on unchanged code.
+- [ ] Docs are synced.
+- [ ] tester-unified PASS.
+
+## B112 — B110 P1: B105 suite scope
+
+**Status: OPEN (filed 2026-09-28; A-468; brief `reports/b110/P1-suite-scope.md`; after B111's leak fix).**
+
+**Scope:**
+- `--ignore=tests/test_python_qualification.py` and removal of `--override-ini=pythonpath=src` in both self-qualification lanes, with drift tests;
+- the `tests/zz_slow/` tier (whole-file moves and splits; pinned paths untouched);
+- `tests/test_dataclass_contract.py` with its fixture.
+
+**Acceptance:**
+- [ ] The brief's oracles pass.
+- [ ] `self-qualification-preflight` passes R0/R1 with 100% line and branch coverage on the changed suite.
+- [ ] tester-unified PASS.
+
+## B113 — B110 P2: loop-progress guards
+
+**Status: OPEN (filed 2026-09-28; A-466; brief `reports/b110/P2-loop-guards.md`).**
+
+**Observed:** 14 at-risk and 4 latent single-operator mutants can make a scanner cursor stall, move backwards, or grow memory without bound, or block a pipe drain:
+- go.py 292/321/323/330;
+- javascript.py 243/245/249;
+- sql_lex.py 193×3/195 (latent 270/273);
+- go_modfile.py 393;
+- git.py 335×2;
+- isolation.py 1388/1392 (latent);
+- liveness.py 1530 at test level.
+
+The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ever pass a native R2.
+
+**Acceptance:**
+- [ ] `errors.require_advance` at the named sites.
+- [ ] A drain rewrite with the exclusions fixture updated.
+- [ ] A watchdog on the real-child liveness tests.
+- [ ] Deterministic oracles for each guarded site.
+- [ ] tester-unified and preflight PASS.
+
+## B114 — B110 P3: verdict v14 cold-witness kills with a proven no-coverage R2 command
+
+**Status: OPEN (filed 2026-09-28; A-469/A-470/A-471; briefs `reports/b110/P3a-v14-schema-verify.md`, `P3b-r2-command-cold-witness.md`, `P3c-liveness-lane-keys.md`, `P3d-gate-report-binding.md`; integration branch `assay-b110-v14`).**
+
+**Scope:** the B110 cold-witness contract as resolved by A-470:
+- the `--cold-witness` opt-in;
+- the transform `assay-r2-pytest-nocov/1`;
+- coverage and no-cov baseline manifests;
+- hook and runtime fingerprints;
+- per-candidate `evidence`;
+- `witness-cold` and `ledger` execution modes;
+- `judgment.r2.{cold_witness_kills, r2_command, liveness.cpu_window_s/idle_floor_s, equivalence_ledger}`;
+- judge identity `/3`;
+- lane keys `liveness_cpu_window`/`liveness_idle_floor` (A-469);
+- B105 gate flag and source-bound report binding.
+
+**Acceptance:**
+- [ ] All four briefs' oracles pass.
+- [ ] One v14 hard cut, with golden fixtures, W9 frozen and W10 added.
+- [ ] The v13 → v14 cold start.
+- [ ] Docs are synced.
+- [ ] One tester-unified and one preflight PASS after the integration branch merges.
+
+## B115 — B110 P4: bounded work-queue mutation executor
+
+**Status: OPEN (filed 2026-09-28; A-467; brief `reports/b110/P4-work-queue-executor.md`).**
+
+**Scope:**
+- Replace fully joined waves with at most `jobs` candidates in flight, submitted in order.
+- Keep expiry, fatal, ordering and peak-pack semantics.
+- Write state records on completion.
+- Emit `candidate` progress in position order through a reorder buffer.
+
+**Acceptance:**
+- [ ] The existing executor tests stay green (one fake moves to real `Future`s).
+- [ ] New boundary oracles: max in flight, no wave barrier, ordered progress.
+- [ ] tester-unified PASS.
+
+## B116 — B110 P5: cheaper fresh per-candidate snapshots
+
+**Status: OPEN (filed 2026-09-28; A-472; brief `reports/b110/P5-snapshot-costs.md`; after B111's guard tests).**
+
+**Scope:**
+- C1: one `update-index --refresh` per materialization.
+- C2: child-closure bound as base ∪ delta.
+- C3/C4 are optional and measured separately.
+
+**Acceptance:**
+- [ ] Red-first operation-count, index-stat and closure-exactness oracles.
+- [ ] G1–G5 and every existing isolation test stay green.
+- [ ] tester-unified PASS.
+
+## B117 — B110 P6: one persisted campaign deadline and process-group termination
+
+**Status: OPEN (filed 2026-09-28; A-473; brief `reports/b110/P6-campaign-deadline.md`).**
+
+**Scope:**
+- `assay campaign init`;
+- `assay run --campaign-deadline`;
+- refusals for absent, stale or mismatched deadline evidence;
+- UTC→monotonic conversion once per process;
+- SIGTERM/SIGINT and expiry terminate every candidate process group;
+- gate-script and run-gate integration.
+
+**Acceptance:**
+- [ ] Injected-clock oracles.
+- [ ] A real-child termination oracle with no timing assertion.
+- [ ] tester-unified and preflight PASS.
+
+## B118 — B110 P7: non-qualifying pilot candidate selection
+
+**Status: OPEN (filed 2026-09-28; A-474; brief `reports/b110/P7-pilot-tooling.md`).**
+
+**Scope:**
+- `assay run --candidates-file` (no verdict, exit 6, R3 not run) and `--pilot-jobs`;
+- `selection_sha256` in progress;
+- the deterministic `tools/b110_pilot_select.py`;
+- the pilot runbook and report template;
+- P7b: the gate-script modes `b110-pilot` and `b110-screen` (non-qualifying survivor screen) and their run-gate lanes, after P6 and v14 merge.
+
+**Acceptance:**
+- [ ] The brief's oracles pass.
+- [ ] tester-unified PASS.
+
+## B119 — B110 P9: distributed/async mutation evidence
+
+**Status: OPEN (filed 2026-09-28; A-471; brief `reports/b110/P9-distributed-evidence.md`; the reading that pre-deadline, same-identity records may be imported awaits operator confirmation).**
+
+**Scope:**
+- `assay state import`: identity validation, conflict refusal, import receipt;
+- provisional inbox vs. accepted store;
+- consolidation by unsharded `--resume`;
+- a host-agnostic worker runbook (enrolment by measurement, fixed shard count, checksummed transfer).
+
+**Acceptance:**
+- [ ] Two-store, conflicting-record, foreign-identity and stale-tree fixtures.
+- [ ] Consolidation produces one ordinary verifier-accepted verdict.
+- [ ] tester-unified PASS.
+
+## B120 — B110 P10: native Python equivalence ledger with stable site anchors
+
+**Status: OPEN (filed 2026-09-28; A-465; brief `reports/b110/P10-equivalence-ledger.md`).**
+
+**Phases:**
+- P10a: the anchor and ledger design package, with a fresh-session design review before the v14 schema freezes.
+- P10b: the producer on `assay-b110-v14`.
+
+**Scope:**
+- the lane key `judge.mutation.equivalence_ledger`;
+- the TOML ledger;
+- `assay ledger audit` with its receipt;
+- the `--equivalence-audit` binding in the qualifying run;
+- `ledger` execution mode on `equivalent`;
+- verifier rules;
+- the `b110-ledger-audit` gate mode and run-gate lane.
+
+**Acceptance:**
+- [ ] The design review is accepted.
+- [ ] Anchor uniqueness and stability are proven on the real candidate plan.
+- [ ] Audit refusal oracles (killed entry, stale anchor, ambiguous anchor).
+- [ ] The qualifying run refuses a missing or mismatched audit.
+- [ ] tester-unified PASS.
+
+## B121 — B110 P11: isolation-unit execution model (decision-gated fallback)
+
+**Status: OPEN, decision-gated (filed 2026-09-28; A-467; brief `reports/b110/P11-isolation-unit-fallback.md`). Dispatch only after a B110 pilot NO-GO on the claim-preserving path and an explicit operator decision.**
+
+**The model:**
+- per-test-file fresh-process units;
+- the union of per-unit ordered manifests equals the declared manifest;
+- a per-unit dirt check;
+- any unit failure is a kill;
+- a coverage-guided unit order per candidate;
+- R1 coverage combined across units.
+
+It changes the declared execution semantics (cross-file order dependence stops counting), so it needs its own decision and lane/verdict contract.
