@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
+import runpy
+import shlex
+import sys
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
-import re
-import shlex
-import urllib.parse
+from types import SimpleNamespace
 
 import pytest
 
@@ -191,6 +194,63 @@ def test_global_options_work_before_and_after_nested_commands():
     status, calls = _run(harness_cli, ["extract", "session.jsonl", "-f"])
     assert status == 0
     assert calls[0][1].follow is True
+
+
+@pytest.mark.parametrize(
+    ("module_name", "factory_name", "program"),
+    [
+        ("nyxloom.cli_ctl", "operator_cli", "nyxloomctl"),
+        ("nyxloom.cli_harness", "harness_cli", "nyxloom-harness"),
+    ],
+)
+def test_installed_cli_module_entrypoints_call_their_registry(
+    monkeypatch, module_name, factory_name, program
+):
+    from nyxloom import cli_registry
+
+    calls = []
+
+    def run(**kwargs):
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        cli_registry,
+        factory_name,
+        lambda: SimpleNamespace(run=run),
+    )
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    monkeypatch.setattr(sys, "argv", [program])
+
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_module(module_name, run_name="__main__")
+
+    assert raised.value.code == 0
+    assert calls == [{"argv": None}]
+
+
+def test_daemon_module_entrypoint_runs_the_current_daemon(monkeypatch):
+    from nyxloom import config, daemon
+
+    registry = {"fixture": Path("/tmp/fixture-project")}
+    calls = []
+
+    class StubDaemon:
+        def __init__(self, projects):
+            calls.append(("init", projects))
+
+        def run(self):
+            calls.append(("run",))
+
+    monkeypatch.setattr(config, "load_registry", lambda: registry)
+    monkeypatch.setattr(daemon, "Daemon", StubDaemon)
+    monkeypatch.delitem(sys.modules, "nyxloom.daemon_entrypoint", raising=False)
+
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_module("nyxloom.daemon_entrypoint", run_name="__main__")
+
+    assert raised.value.code == 0
+    assert calls == [("init", registry), ("run",)]
 
 
 def test_repeatable_options_preserve_each_value_and_unknown_options_fail():

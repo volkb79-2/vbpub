@@ -11,10 +11,12 @@ source: {kind: user, ref: null}
 scope:
   touch:
     - "pyproject.toml"
+    - "assay.toml"
     - "src/nyxloom/cli.py"
     - "src/nyxloom/cli_harness.py"
     - "src/nyxloom/cli_ctl.py"
     - "src/nyxloom/cli_registry.py"
+    - "src/nyxloom/exception_census.py"
     - "src/nyxloom/backlog_entries.py"
     - "src/nyxloom/backlog_wizard.py"
     - "src/nyxloom/daemon_entrypoint.py"

@@ -43,7 +43,7 @@ def _bootstrap_logging(args=None, *, persist: bool = True) -> None:
         log_module.configure(level=level, log_dir=log_dir, console=False)
     except ValueError:
         log_module.configure(level=log_module.INFO, log_dir=log_dir, console=False)
-    except OSError:  # pragma: no cover -- defensive, requires unwritable host state
+    except OSError:
         log_module.configure(level=log_module.INFO, log_dir=None, console=False)
 
 

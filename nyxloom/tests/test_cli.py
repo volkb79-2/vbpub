@@ -1190,6 +1190,27 @@ def test_bootstrap_logging_invalid_env_level_falls_back_to_info(
     assert capsys.readouterr().out.strip() != ""
 
 
+def test_bootstrap_logging_unwritable_log_falls_back_to_ephemeral(tmp_state, monkeypatch):
+    from nyxloom import log, paths
+
+    calls = []
+    log_dir = paths.logs_dir()
+
+    def configure(*, level, log_dir, console):
+        calls.append((level, log_dir, console))
+        if log_dir is not None:
+            raise OSError("log directory is not writable")
+
+    monkeypatch.setattr(log, "configure", configure)
+
+    cli._bootstrap_logging()
+
+    assert calls == [
+        ("info", log_dir, False),
+        (log.INFO, None, False),
+    ]
+
+
 def test_capability_map_refresh_write_path(sample_project, tmp_state, capsys, monkeypatch):
     """A real refresh persists both the accumulated store and catalog."""
     from nyxloom import benchmark_store, capability_map, paths

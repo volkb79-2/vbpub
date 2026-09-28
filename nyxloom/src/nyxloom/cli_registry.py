@@ -99,7 +99,7 @@ def _invoke(
             return handler(args)
         except (CliFailure, PromptCancelled, KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:
+        except Exception as exc:  # census: process-boundary translation (P112)
             if bool(getattr(args, "traceback", False)):
                 raise
             print(f"error: {exc}", file=runtime.output.stderr)
