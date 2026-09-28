@@ -4690,3 +4690,14 @@ remaining estimate rather than treating the old duration as a deadline. The
 next process/progress observation is no earlier than `04:47:30Z`, unless an
 error or expected terminal completion justifies an earlier check. Do not
 infer any verdict from elapsed time.
+
+### RW-355 — 2026-09-28 04:25:34Z — P6 contract mirror restored before its final gate
+
+The P6 worktree's daemon-side contract had the system-bus placement-bridge
+paragraph, but the canonical run-gate mirror lacked those six lines. The
+controller copied the same normative text into
+`run-gate-project/nyxloom-trove/RG55-INTERFACE-CONTRACT.md` in the P6 branch
+as commit `5d81dcbd`; `cmp` now confirms the canonical and daemon mirror are
+byte-identical and `git diff --check` passes. This docs-only commit changes
+the P6 candidate tip, so P6's final short gates and fresh Sol review must
+include it. No P6 campaign was running in that worktree.
