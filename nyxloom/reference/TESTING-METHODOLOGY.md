@@ -322,8 +322,7 @@ Evidence and numbers:
 `assay/nyxloom-trove/reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`, and
 the research records
 `assay/nyxloom-trove/reports/b110/research/R9-heavy-tests-structural.md`,
-`R10-snapshot-structural.md` and `R11-dry-libraries.md`. (These files exist
-only on the `assay-b110-landing` branch: merge this change only after it.)
+`R10-snapshot-structural.md` and `R11-dry-libraries.md`.
 
 ### Where the cost comes from
 
