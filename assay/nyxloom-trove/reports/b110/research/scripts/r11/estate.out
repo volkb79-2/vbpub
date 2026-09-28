@@ -1,0 +1,68 @@
+project totals:
+  assay              files=  50 lines= 47265 cand= 3760
+  ciu                files=  45 lines= 31155 cand= 2553
+  cmru               files=  42 lines= 19089 cand= 2086
+  nyxloom            files= 103 lines= 57371 cand= 4617
+  run-gate           files=   1 lines=  8841 cand= 1034
+  topos              files=  98 lines= 30579 cand= 3691
+  pwmcp              files=   4 lines=   903 cand=   53
+  lib-worktree       files=   2 lines=  1307 cand=  183
+  lib-cli-extended   files=   6 lines=  2581 cand=  341
+
+helper-sized (<=80 lines) functions per category: funcs/lines/cand
+  category                     assay             ciu            cmru         nyxloom        run-gate           topos           pwmcp      lib-worktr      lib-cli-ex
+  atomic-write                2/59/7        9/248/25          2/41/5        4/133/10           1/8/1          2/60/5               -          1/15/4               -
+  canonical-json            7/220/27          2/28/5        4/145/19       14/216/38        3/100/16      34/594/102               -          1/15/4               -
+  duration-parse              1/20/6          2/36/1          1/49/6           1/3/1          2/40/9               -               -               -               -
+  git-argv                         -        6/136/28      32/754/146      21/482/104       13/237/64               -           1/9/5        4/178/52               -
+  git-wrapper                      -         4/87/17      32/754/146      20/479/104       12/229/64               -           1/9/5        4/178/52               -
+  hashing                  14/337/28          2/26/2          5/92/8         6/84/10               -          5/40/2               -          1/11/0               -
+  json-load                13/452/42       14/390/72       29/553/92     73/1935/274        6/165/24      22/639/109          2/12/1          1/15/1               -
+  nofollow-io                 3/82/4               -               -          1/39/9          2/27/2           0/0/0               -               -               -
+  path-containment         12/525/54               -               -          1/13/1          1/27/3               -               -               -               -
+  subprocess               10/301/27     28/1087/165     55/1428/258      33/855/185      20/532/123        6/133/26           1/9/5        4/178/52               -
+  toml-load                   2/89/6        9/236/21          6/59/7       16/239/36          2/81/7           0/0/0               -               -               -
+
+helper names recurring across >=2 projects:
+  load: nyxloom nyxloom/src/nyxloom/benchmark_sources.py:631 (10L,3c); nyxloom nyxloom/src/nyxloom/capability_map.py:149 (10L,3c); nyxloom nyxloom/src/nyxloom/config.py:846 (26L,1c); nyxloom nyxloom/src/nyxloom/config.py:1167 (9L,3c); nyxloom nyxloom/src/nyxloom/control_auth.py:275 (39L,9c); nyxloom nyxloom/src/nyxloom/daemon.py:1642 (21L,3c)
+  git: ciu ciu/src/ciu/worktree.py:668 (8L,3c); cmru cmru/src/cmru/changelog.py:40 (8L,5c); cmru cmru/src/cmru/cli.py:640 (20L,5c); cmru cmru/src/cmru/transaction.py:37 (10L,6c); cmru cmru/src/cmru/version.py:37 (9L,4c); nyxloom nyxloom/src/nyxloom/resync.py:176 (14L,5c)
+  run: ciu ciu/src/ciu/diagnose.py:31 (2L,3c); ciu ciu/src/ciu/host_enroll.py:113 (3L,2c); cmru cmru/src/cmru/delegated.py:33 (5L,0c); nyxloom nyxloom/src/nyxloom/effects.py:134 (11L,2c); nyxloom nyxloom/src/nyxloom/effects.py:191 (3L,0c)
+  digest: assay assay/src/assay/analysis.py:46 (10L,0c); nyxloom nyxloom/src/nyxloom/snapshot.py:470 (13L,0c); nyxloom nyxloom/src/nyxloom/workflow_ir.py:496 (3L,0c); topos topos/src/topos/config.py:331 (3L,1c)
+  sniff: assay assay/src/assay/mutation_parsers/mutation_report_json.py:119 (18L,3c); nyxloom nyxloom/src/nyxloom/session_extract/adapters/claude_code.py:262 (33L,6c); nyxloom nyxloom/src/nyxloom/session_extract/adapters/codex.py:176 (27L,8c); nyxloom nyxloom/src/nyxloom/session_extract/adapters/reasonix.py:57 (30L,7c)
+  json: assay assay/src/assay/analysis.py:28 (16L,0c); cmru cmru/src/cmru/version_registry.py:151 (6L,0c); cmru cmru/src/cmru/version_registry.py:544 (9L,0c)
+  parse: assay assay/src/assay/coverage_parsers/coverage_istanbul_json.py:247 (28L,0c); assay assay/src/assay/coverage_parsers/coverage_py_json.py:92 (50L,9c); nyxloom nyxloom/src/nyxloom/session_extract/adapters/codex.py:784 (56L,12c)
+  sha256_file: assay assay/src/assay/provenance.py:85 (6L,0c); cmru cmru/src/cmru/release.py:65 (2L,0c); cmru cmru/src/cmru/transaction.py:754 (6L,0c)
+  load_schema: assay assay/src/assay/verdict.py:567 (3L,0c); nyxloom nyxloom/src/nyxloom/backlog_entries.py:153 (5L,0c); nyxloom nyxloom/src/nyxloom/backlog_items.py:194 (5L,0c)
+  fetch_json: nyxloom nyxloom/src/nyxloom/benchmark_sources.py:75 (7L,1c); nyxloom nyxloom/src/nyxloom/free_models.py:158 (16L,0c); pwmcp pwmcp/scripts/resolve-playwright-version.py:110 (6L,1c)
+  parse_duration: assay assay/src/assay/config.py:384 (20L,6c); cmru cmru/src/cmru/cli.py:137 (49L,6c)
+  parse_line: assay assay/src/assay/liveness.py:1100 (9L,2c); nyxloom nyxloom/src/nyxloom/session_extract/follow.py:322 (6L,1c)
+  write: assay assay/src/assay/mutation.py:808 (13L,1c); topos topos/src/topos/daemon/api.py:684 (7L,1c)
+  to_json: assay assay/src/assay/verdict.py:5453 (3L,1c); nyxloom nyxloom/src/nyxloom/results.py:363 (8L,1c)
+  read_instance_record: ciu ciu/src/ciu/worktree.py:460 (6L,0c); run-gate run-gate-project/run-gate.py:5057 (19L,2c)
+  run_child: ciu ciu/src/ciu/worktree.py:3152 (10L,1c); cmru cmru/src/cmru/transaction.py:1674 (23L,3c)
+  load_toml: cmru cmru/src/cmru/bundle.py:248 (5L,0c); nyxloom nyxloom/src/nyxloom/product_truth.py:62 (4L,1c)
+  read_toml: cmru cmru/src/cmru/config.py:528 (15L,1c); run-gate run-gate-project/run-gate.py:371 (9L,0c)
+  git_out: cmru cmru/src/cmru/runner.py:60 (13L,6c); run-gate run-gate-project/run-gate.py:2473 (7L,3c)
+  run_command: cmru cmru/src/cmru/runner.py:316 (68L,11c); topos topos/src/topos/providers/net_host.py:18 (3L,3c)
+  head_commit: nyxloom nyxloom/src/nyxloom/wrapper.py:253 (15L,4c); run-gate run-gate-project/run-gate.py:2919 (10L,5c)
+
+cross-project T2 function clones: 19 clusters
+  assay assay/src/assay/cli.py:108 add_subparsers (4L,0c); ciu ciu/src/ciu/cli_utils.py:40 add_subparsers (4L,0c); nyxloom nyxloom/src/nyxloom/cli.py:264 add_subparsers (4L,0c); topos topos/src/topos/cli_diagnostics.py:26 add_subparsers (4L,0c)
+  assay assay/src/assay/cli.py:119 error (5L,0c); ciu ciu/src/ciu/cli_utils.py:51 error (5L,0c); nyxloom nyxloom/src/nyxloom/cli.py:275 error (5L,0c); run-gate run-gate-project/run-gate.py:150 error (5L,0c); topos topos/src/topos/cli_diagnostics.py:37 error (5L,0c)
+  assay assay/src/assay/verify.py:2537 _fmt (2L,1c); cmru cmru/src/cmru/release.py:112 _repo_url (2L,0c); run-gate run-gate-project/run-gate.py:6522 _stall (5L,0c)
+  ciu ciu/src/ciu/cli_utils.py:29 cli_error (6L,1c); topos topos/src/topos/cli_diagnostics.py:15 print_cli_error (6L,1c)
+  ciu ciu/src/ciu/composefile.py:103 _leak_message (8L,0c); nyxloom nyxloom/src/nyxloom/handoff_trace.py:122 _actor_label (2L,0c); nyxloom nyxloom/src/nyxloom/product_truth.py:166 actual_interpreter (6L,0c); nyxloom nyxloom/src/nyxloom/render.py:512 _html_head (12L,0c); nyxloom nyxloom/src/nyxloom/types.py:38 new_id (2L,0c); topos topos/src/topos/procs/identity.py:42 entity_key (2L,0c)
+  ciu ciu/src/ciu/deploy_pkg/health.py:257 anchored_name_filter (9L,0c); cmru cmru/src/cmru/release.py:208 asset_download_url (2L,0c)
+  ciu ciu/src/ciu/output.py:25 _colour_enabled (6L,4c); cmru cmru/src/cmru/output.py:25 _colour_enabled (7L,4c)
+  ciu ciu/src/ciu/output.py:104 configure (8L,1c); cmru cmru/src/cmru/output.py:109 configure (9L,1c)
+  ciu ciu/src/ciu/output.py:114 consume_cli_flags (17L,7c); cmru cmru/src/cmru/output.py:120 consume_cli_flags (23L,7c)
+  ciu ciu/src/ciu/output.py:36 __init__ (6L,1c); cmru cmru/src/cmru/output.py:37 __init__ (6L,1c)
+  ciu ciu/src/ciu/output.py:47 _prefix (7L,0c); cmru cmru/src/cmru/output.py:48 _prefix (7L,0c)
+  ciu ciu/src/ciu/output.py:55 _write_normal (9L,2c); cmru cmru/src/cmru/output.py:56 _write_normal (10L,2c)
+  ciu ciu/src/ciu/output.py:65 write (27L,3c); cmru cmru/src/cmru/output.py:67 write (30L,3c)
+  ciu ciu/src/ciu/output.py:93 flush (6L,1c); cmru cmru/src/cmru/output.py:98 flush (6L,1c)
+  ciu ciu/src/ciu/scaffold.py:60 _template (6L,0c); cmru cmru/src/cmru/scaffold.py:65 _template (6L,0c)
+  ciu ciu/src/ciu/scaffold.py:139 flag (7L,4c); cmru cmru/src/cmru/scaffold.py:242 flag (7L,4c)
+  ciu ciu/src/ciu/worktree.py:492 _utc_stamp (5L,0c); lib-worktree libraries/worktree/src/worktree/core.py:598 _stamp (2L,0c)
+  cmru cmru/src/cmru/release.py:445 _die (3L,0c); pwmcp pwmcp/scripts/resolve-playwright-version.py:64 fail (3L,0c)
+  cmru cmru/src/cmru/transaction.py:754 _sha256_file (6L,0c); topos topos/src/topos/snapshot/bundle.py:227 _sha256 (6L,0c)

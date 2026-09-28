@@ -14,6 +14,7 @@
 **Contents:**
 - Part A answers two questions: are we reinventing the wheel, and what does the plan change?
 - Part B answers a third: can a product be designed so that R2 costs less, and what does that mean for assay?
+- Part C questions the structure behind the cost (slow tests, installed-wheel tests, the snapshot, DRY) and lists the proposals S1–S10 that follow.
 
 ---
 
@@ -242,3 +243,151 @@ Splitting a big module is worth it when it creates a clear layer or unit, not fo
 2. **A reflink-capable `TMPDIR` for tester-unified.** It turns ≈130 MB of copies per candidate into metadata operations. A-184 already allows it; it is an environment item.
 3. **Split the mega test files along the tier line** (`test_cli_run.py`, `test_standalone.py`) so that the fast part stays in the early tier. This is a P1 detail.
 4. **Do not split `runner.py` or `verdict.py` as a standalone refactor now.** It pays only under P11 units or B109 dependency proofs. Decide after the pilot.
+
+---
+
+# Part C. Structure before symptoms: four questions asked of the design
+
+**Added:** 2026-09-28, second pass. The operator asked the design to be questioned before any symptom is fixed. Three fresh read-only research agents answered; their verbatim records are:
+- [`b110/research/R9-heavy-tests-structural.md`](b110/research/R9-heavy-tests-structural.md): slow tests and installed-wheel tests;
+- [`b110/research/R10-snapshot-structural.md`](b110/research/R10-snapshot-structural.md): snapshot shape, tmpfs, fsync, copy-on-write;
+- [`b110/research/R11-dry-libraries.md`](b110/research/R11-dry-libraries.md): DRY and managed libraries.
+
+Their probes are in `b110/research/scripts/r10/` and `scripts/r11/`. The timings come from the devcontainer at host load 10–14, so they indicate direction rather than exact gate values. Labels are as in Parts A and B.
+
+**Headline.** The largest savings are **structural**, and none of them needs a new runner feature. Much of each candidate's work cannot depend on the mutant at all. The design questions are: what does this test (or setup step) prove, and must it happen once per mutant?
+
+## C1. "113 slow tests take 72% of the time. Why, and can we change what they depend on?"
+
+**Why they are slow** (top 25 tests, 221.8 s [M], R9 §0–§1):
+
+| Share | Seconds | Cause |
+|---:|---:|---|
+| 54% | 118.9 | **Their result cannot depend on the mutated source:** Topos/PATH-wheel tests, the committed 1.2.5 wheel, gate-script wheel builds, pyflakes, `pyproject.toml` packaging negatives, the pip hash re-check |
+| 36% | 79.1 | **Real-clock waits,** because a production constant (the 30 s liveness window, the 5 s heartbeat floor) cannot be shortened at the end-to-end layer. The decision logic is already tested with a fake clock (`liveness.py:1299-1330` has monotonic/sleep/cpu-reader/popen seams). |
+| 8% | 17.8 | Genuine nested pytest runs. These are intrinsic, but the same behavior is re-proven at 3–4 layers (canary, `run_lane`, CLI, wheel). |
+
+**Costs outside call time, which the plan does not see:**
+- **Assertion rewriting.** Every fresh snapshot recompiles and assertion-rewrites the ~245 *unchanged* test modules: ≈5.5 CPU-s per candidate [M]. That is most of the "fixed" ≈7.4 s collection constant, and **every kill pays it**. This is the largest lever on the qualifying run (RC4).
+- **The `git_repo` fixture** starts 6 git processes for each of ≥616 tests (≈18–49 s per run [C/A]).
+- **The `standalone` wheel fixture** is triggered early by a cheap FIFO test (`test_analysis.py:721`), so it lands in the fast tier.
+- **The zipapp fixture** does two full-history clone-and-build passes per candidate; the second exists only to prove byte-reproducibility, which the mutant cannot affect.
+
+**Structural fixes** (R9 §2; RC = root cause):
+
+| RC | Fix | Kind | Saving |
+|---|---|---|---|
+| RC1/RC2 | Take **every** mutant-independent test out of the B105 lanes, not only `test_python_qualification.py`: gate-script, `pyproject.toml`, pyflakes and pip oracles, the standalone packaging negatives. Keep them in the release lane. | lane move | ≈94 s + ≈45–55 s per full run. It also closes a **false-kill channel**: 82 literal subprocess `timeout=` values in 19 test files can fail under load, and any non-zero exit is `killed` (`mutation.py:1683-1686`). |
+| RC3 | Liveness windows (D5, decided). Heartbeat: shrink the floor in the test. | product seam / test | ≈43–45 s (D5; **not** ≈60 s as analysis §6 said) + ≈6.5 s |
+| RC4 | Reuse the baseline's rewritten **test** bytecode in each candidate (never `src` bytecode: the stale-pyc hazard), or run R2 with `--assert=plain` | product | **≈4–5 s on every candidate, kills included** [I]; needs a gate probe and a decision |
+| RC5 | A session template repository copied per test instead of 6 git processes | test | ≈15–40 s per run, mostly in the fast tier |
+| RC6 | Run the FIFO test without the wheel; move all `standalone` users together; drop the second zipapp build | test / lane move | −5–6 s from the fast tier; −12–15 s per run |
+| RC7 | One real-subprocess test per mechanism; fakes at the other layers (`run_lane(process_runner=…)`); `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` in toy lanes | test | ≈20–40 s; **only after kill-matrix evidence** shows which tests are sole killers |
+| RC8 | Session-cached source parse for the static sweeps | test | ≈4–5 s |
+
+## C2. "87 s per run goes to installed-wheel tests. Is this needed? Isn't the wheel already OK?"
+
+**Not per mutant, and yes, the wheel is already established elsewhere** (R9 §3):
+- **What the file tests.** `tests/test_python_qualification.py` tests the **gate harness** `gate/python/qualify_topos.py`, running an unchanging, once-built assay wheel against a real Topos tree. It never imports assay (`:105-106`).
+- **It cannot kill a mutant.** Every candidate gets the same answer. The only way it can affect a candidate is a false kill from a host-caused failure.
+- **Where the wheel is established.** The release lane (`assay.toml:44`) runs the whole suite, this file included, against a same-commit wheel. The release gate also runs the real Topos qualification (`tester-unified-gate.sh:671,679`).
+- **History.** P25 (`2607cb7d`) put the file in `tests/` when the only lane was the R0 release lane, where "the installed wheel" *was* the artifact under test. B105 (A-462) later reused `tests/` for a per-mutant lane without re-scoping it. Its presence in R2 is inherited, not designed.
+
+**The per-candidate `standalone` wheel** (37.7 s of calls plus 5–6 s of setup) can be the *only* killer in just two cases:
+- code that branches on the install layout: provenance's installed/zipapp detection, zip resources, plugin-origin fingerprints. That is ≈36–136 candidates, bounded by file;
+- a missing in-process assertion, which is a test gap to fix.
+
+**Recommendation:**
+- Packaging-property tests and wheel-path R0–R3 runs: release lane only.
+- Layout branches: covered by stand-in tests. The injectable `module`/`dist` seams already exist in `provenance.py`.
+
+**What the plan misses (R9 §4.2).** B105's definition of done never requires a **same-commit release-gate pass**. So "the release lane keeps it" (D4(a)) currently transfers no assurance. Adding that requirement to Qualifying GO makes every such lane move claim-neutral.
+
+## C3. "Every mutant copies the whole vbpub repo with full history. Do we need that? Why not the latest commit? tmpfs, eatmydata, copy-on-write?"
+
+**Full history: no.** Once `test_python_qualification.py` is ignored (A-468(a)), no collected test needs history, tags or old commits (R10 §1):
+- Only 17 test functions (24 cases) use git on the real repository, and they need only HEAD.
+- The pinned `topos` commit was the whole reason for `snapshot_history = "full"` (`assay.toml:73-74`).
+- **"Just the latest commit" is shallow, which is already A-451's default.** B105 opted out only for those pinned tests.
+
+**It must still be a git repository whose HEAD is the mutant's own commit:**
+- 13 tests clone it and build a wheel from HEAD;
+- the dirty/HEAD check (A-195) and the deterministic child identity (A-186) depend on it;
+- without a repository, 11 cases fail and 33 skip silently.
+
+**Why not copy the live worktree** (R10 §2). A copy would:
+- bring in uncommitted edits and ignored residue, including stale `.pyc`, which is a false-kill hazard;
+- lose exact-revision binding and determinism;
+- in a ciu worktree, copy a `.git` **gitfile** that points into `vbpub/.git/worktrees/<name>`, so a test's `git commit` could move the real branch.
+
+"Build one base per lane, copy it per candidate" keeps every guarantee (R2's five conditions, plus "never pre-compile bytecode into the base"). On this storage, though, the copy is **no cheaper** than today's write (0.6–2.7 s against 0.8–1.3 s [M]); it pays only with reflink.
+
+**Environment options** (R10 §3):
+
+| Option | Verdict |
+|---|---|
+| eatmydata / `core.fsync=none` | **Saves nothing.** strace: 0 fsync calls in the whole per-candidate snapshot path (git's default `core.fsync=committed,-loose-object` fsyncs packs only, and P22 creates none). The tests' own clones fsync 3×, ≈80 ms. |
+| tmpfs | Charged to the container's 2 GiB memory cgroup: ≈140–170 MiB per live snapshot today, ≈60 MiB at the shallow + `assay/`-only shape. It turns reclaimable page cache into swap-backed memory on a host already using 24 GiB of swap. Only at the small footprint, with the worker count checked. |
+| Reflink (XFS/btrfs) | The gate's `/tmp` is the overlay2 upper layer on host **ext4**, so there is no reflink. Needs a new volume on the production host. Only if the pilot shows I/O matters. |
+| overlayfs / fuse-overlayfs | Needs privileges the uid-1003 container lacks, and counts as the "tree reuse" A-472 forbids |
+| ZFS snapshots | Host-level. nyxloom's remote mutation audit already supports a ZFS dataset lifecycle for **stateful test infrastructure** (`nyxloom/reference/TESTING-METHODOLOGY.md`, "Host ZFS lifecycle"). It does not apply to the per-candidate source snapshot on this host. |
+| git alternates, `--shared`, `--reference` | Forbidden (A-184/A-185), and they would save only the pack copy |
+
+**Measured per-candidate snapshot equivalent** (R10 §3.2, n=3; compare rows rather than absolute values):
+
+| Shape | Time |
+|---|---:|
+| Full history, whole tree (today) | 2.71 s |
+| + C1 refresh (P5) | 2.50 s |
+| Shallow | 1.60 s |
+| Shallow + refresh | 1.50 s |
+| **Shallow, `assay/`-only worktree** | **0.46 s** |
+
+Also: `build_release`'s clones take 2.55 s each from a full snapshot and 0.9 s from a shallow one.
+
+**Consequence for P5.** With shallow adopted, C2 (the incremental closure bound) is moot: the full walk is already 0.03 s. C1's net gain drops to ≈0.1 s, because the refresh is itself a full hash pass. The plan assumed 0.25–0.85 s. **Defer P5's C1/C2 and its ctime sweep.** Keep P0's guard tests. Fix the existing assume-unchanged hole on its own merits.
+
+## C4. "Can assay itself be made DRY, putting code into its own managed libraries?"
+
+**Yes to DRY, and it needs no library** (R11):
+- **Internal consolidation** removes ≈395–528 of the 3,760 candidates (10.5–14%) with **no claim change and no new decision**. That is ≈27–37 min off each qualifying run on 3 workers [C]. The duplication is in repeated idioms, not copy-paste:
+  - 148 `frozen`/`kw_only` dataclass flags; one shared `@record` decorator plus a reflective test removes ≈144;
+  - 122 typed-field checks ("int but not bool" and the like; ≈111 removable through guard helpers);
+  - the R1–R4 "judgment present iff attempted" rule, written four times in `verdict.py:4769-4910` (≈35);
+  - other repeated same-side decisions (≈100).
+- **Duplication that must stay.** 290 of `verify.py`'s 327 candidates re-check producer rules on purpose (A-129, A-182).
+- **A managed library moves candidates; it does not remove them.** It saves only if the library is requalified less often than assay. Over the last 12 releases, 821 candidates sat in files changed at most once (parsers, adapters), while `verdict`, `runner` and `mutation` changed in 5–8 of 12.
+- **Claim consequence of a library:**
+  - Moving code out of `src/assay` narrows B105 silently, because `b105_report_check.py` checks only `src/assay`.
+  - The claim would have to become "assay source + a pinned, independently qualified library", bound by the library subtree's git tree hash and its own verified R0–R3 verdict.
+  - Under A-005 (zero runtime dependencies), only vendoring into the build works with the pip-less zipapp install (A-402). It still needs new decisions: A-005's wording, A-462's scope, and checker binding.
+- **An estate-core library** exists only in small form, with assay as the *provider*: its bounded git runner and no-follow IO are stricter than the other tools'. Assay's share is ≤197 candidates, realistically 80–150.
+- **Do not game the inventory.** Rewriting boundary comparisons as `in`-sets, regexes or lookups only hides decisions from the four operators. (`isdigit()` also accepts Unicode digits.) Collapsing one rule written N times into one helper is a genuine reduction, because the rule is still mutated once.
+- **Land DRY changes before the pilot,** since they change the candidate plan.
+
+## C5. What the structural answers do to the plan (proposals, not decided)
+
+**Scenario, not a forecast** [C/A]:
+
+| Item | Before | After |
+|---|---|---|
+| Fixed cost per kill (after P5) | 9.4–11.4 s | minus ≈4–5 s (RC4), ≈1 s (shallow) and ≈1 s (`assay/`-only) → **≈3.5–6 s**, P5 no longer needed |
+| Inventory | 3,760 | −10.5–14% (C4) |
+| Survivor full run | ≈385 s after P1 | ≈200–275 s (RC1/2/5/6/7) |
+
+That moves the claim-preserving path from "borderline" (analysis §1.7) to comfortable, and makes the P11 isolation-unit fallback less likely. The pilot still decides.
+
+| # | Proposal | Needs |
+|---|---|---|
+| S1 | Require a same-commit release-gate pass in B105's definition of done and Qualifying GO, so lane moves transfer assurance | plan §1/§8.2 amendment; decision |
+| S2 | Extend A-468(a) to every mutant-independent test (RC1/RC2) | A-468 amendment; P1 brief |
+| S3 | Probe RC4 in the gate (cold vs. warm collection), then choose test-bytecode carry-in (never `src`) or `--assert=plain` | a gate probe; a decision (snapshot invariant or D6-style equivalence ruling) |
+| S4 | Shallow snapshot for both B105 lanes, right after P1 (plan §11 item 9 gets an owner) | decision note (A-451 default applies); `test_self_lane.py:102`; a drift-proof preflight |
+| S5 | `assay/`-only worktree as a new `snapshot_selection` value | decision amending A-161/A-269 §2; per-test outcome comparison in the pilot |
+| S6 | Defer P5 (C1/C2 + sweep); keep P0 G1–G5; decouple the assume-unchanged fix | plan §4 |
+| S7 | Test redesign RC5/RC6/RC8 now; RC7 after S8 | P1 scope |
+| S8 | Retain each candidate's failing node IDs (a kill matrix); today the liveness events that hold them are deleted | small P0/P3b extension |
+| S9 | DRY items R11 #1–#4 before the pilot | new small package |
+| S10 | Libraries (R11 #8/#9) only if the pilot still misses 6 h | A-005/A-462 decisions |
+
+**Order: structure first.** S2, S4, S7, S9, and the S3 probe belong with P0/P1, **before** the runner packages are sized, because they change the per-candidate cost the pilot measures.
