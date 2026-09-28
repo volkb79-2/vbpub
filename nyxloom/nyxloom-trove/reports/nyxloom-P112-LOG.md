@@ -190,4 +190,15 @@ Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adop
 - R1 did not run because baseline pytest failed. Peak memory was 772 MiB, p90 747 MiB, and memory-full stalls totaled 32.3 seconds.
 - Progress was checked at about 90 seconds: the assay JSONL showed the baseline pytest lane active at 65 seconds. The earlier gate history showed 147- and 327-second runs; this attempt finished after 232 seconds.
 
-The frozen-baseline correction must be committed, then the installed wheel and full gate must be rebuilt/repeated against that exact implementation revision.
+## Fourth tester-unified attempt — 2026-09-28
+
+Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adoption tester-unified` from `nyxloom/`.
+
+- Judged commit: `3029fca1037308fa7816740af0f3ec618c3d4027`.
+- `tester-unified`: `FAIL/COMMAND_FAILED`, exit 1 after 243 seconds. Baseline pytest reported one failure: `tests/test_behavioral.py::test_scope_amendment_request_triggers_bounded_re_dispatch_not_blocked`.
+- A dispatch raised `ValueError("invalid literal for int() with base 10: ''")` while reading `wrapper.pid`. The intermediate child creates/truncates that file before `Path.write_text()` writes the PID, so under parallel load the parent can observe the empty interval. A resumed attempt can also reuse an old PID marker.
+- R1 did not run because baseline pytest failed. Peak memory was 836 MiB, p90 710 MiB, and memory-full stalls totaled 37.3 seconds.
+- Updated `wrapper.launch_detached` to remove a stale PID marker before each launch and retry until it can parse a complete PID or reaches its existing 10-second failsafe. Added a deterministic test that presents a stale value, then an empty marker, then the current PID and verifies that only the current PID is returned.
+- The wrapper and test additions are covered by P112 `scope.touch` and the handoff amendment above, under the user's authorization for necessary scope expansion.
+
+The wrapper-race fix must be committed, then rebuild and verify the isolated wheel and repeat the full gate against that exact implementation revision.

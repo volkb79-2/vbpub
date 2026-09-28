@@ -68,6 +68,7 @@ scope:
     - "src/nyxloom/intake_bridge.py"
     - "src/nyxloom/migrate_store.py"
     - "src/nyxloom/reconcile.py"
+    - "src/nyxloom/wrapper.py"
     - "README.md"
     - "docs/CLI-REFERENCE.md"
     - "docs/DESIGN-GUIDE.md"
@@ -90,6 +91,7 @@ scope:
     - "tests/test_reconcile.py"
     - "tests/legacy_planner.py"
     - "tests/test_core_characterization.py"
+    - "tests/test_wrapper.py"
     - "nyxloom-trove/nyxloom.toml"
     - "nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md"
     - "nyxloom-trove/decisions.md"
@@ -205,6 +207,16 @@ service after the split. The user has authorized necessary scope additions,
 so P112 also updates the unit, its operator guide, and live command references
 in implementation modules/tests. These edits point existing workflows at the
 installed `nyxloomctl` entrypoint; they add no new command behavior.
+
+### User-authorized wrapper publication-race correction — 2026-09-28
+
+The full gate exposed a real launch race: the parent could observe an empty
+`wrapper.pid` after the intermediate child created/truncated it but before
+`write_text()` published the PID, causing a `TICK_ERROR`. A resumed attempt
+could also encounter the prior launch's PID in the same attempt directory.
+P112 now removes the stale marker before launching, waits for a complete PID,
+and tests the empty-file and stale-marker cases. The user authorized the
+necessary scope expansion; these files are included in `scope.touch`.
 
 ## Approved decisions
 
