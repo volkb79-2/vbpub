@@ -4506,3 +4506,28 @@ judged that follow-up tree. Keep the exact `cc7e` R2 artifacts unchanged,
 commit the new test and triage record, then run fresh short gates and R2 on
 the quiet follow-up tree; preserve the Sol round-4 session for fix-verification
 if it remains available.
+
+### RW-348 — 2026-09-28 03:05:00Z — B107 load-dependent CLI fixtures removed; P1 fix accepted
+
+The first B107 `tester-unified` run on `115eb94873c569e1bc7d6b57f03dfc6a317e7b0f`
+was clean and history-eligible but failed after 749.391 seconds: 5,163 passed,
+21 skipped, two failed. One CLI-level mutation fixture expected
+`CANDIDATE_HUNG` after a real 50-second wall deadline; observed external
+pressure paused B107's eligible liveness clock, so the correct bounded result
+was `LANE_TIMEOUT`/incomplete. The fixture's pass/fail therefore depended on
+host scheduling and contradicted B107's explicit deterministic-test contract.
+The other failure was a stale `CommandResult` import flagged by pyflakes.
+
+Commit `612843ef` on `rg55-assay-b107-r1` removes the two real-deadline CLI
+mutation fixtures, updates the bucket-test coverage map, and removes that
+unused import. The same suite's monitor tests inject clocks, process
+observations, and pressure; mutation bucket/evidence persistence remain tested
+separately. Targeted local tests passed (85 passed). A replacement registered
+`tester-unified` run is active in container
+`run-gate-assay-selfhosted-2621167-9451-1790564672`; do not treat it as green
+until its terminal verdict and history are read separately.
+
+P1's empty-`comm` survivor repair at `e55a547cf6eec3a19242e3488fd4aae73e177b28`
+received Sol round-5 `ACCEPT`; the report is committed as `0080eba7` on the
+P1 fix branch. This acceptance covers the repair only. Fresh short gates and
+R2 still need to judge the resulting committed tree before release.
