@@ -4760,3 +4760,30 @@ add a growing-CPU post-finish case that remains incomplete at its configured
 budget. Re-run focused tests, changed-line line+branch coverage, and the
 registered exact-tree `tester-unified` gate after that repair, then request
 fresh GPT-6-Sol xhigh review before merge.
+
+### RW-358 — 2026-09-28 21:20:23Z — old P1/P6 campaigns are terminal; B107 review is active
+
+The P1 R2 campaign on exact tree `0080eba7f91128d4df2d50368b7edaf1465f7805`
+is terminal, not running: its schema-13 verdict is
+`BUDGET_EXCEEDED/CANDIDATE_HUNG` (exit 4), with all 125 candidates accounted
+for as 115 killed and 10 hung. The progress stream shows all ten hung
+candidates completed all 1,394 tests before classification. Preserve this as
+unresolved evidence; it predates the B107 repair and does not establish that
+host load caused the hangs. No RG-55 mutation container was running at this
+check.
+
+The latest saved P6 R2 artifact is still the older exact tree `6540f877` and is
+also terminal `BUDGET_EXCEEDED/CANDIDATE_HUNG` (exit 4): 312 accounted for,
+301 killed, 10 survived, and 1 hung. The separate older `aae66356` retry ended
+`BUDGET_EXCEEDED/LANE_TIMEOUT` with 362 candidates, 312 killed, 12 survived,
+and 38 budget-exceeded. Neither artifact qualifies the reconciled P6 tree.
+Two unrelated mutation campaigns were active in cmru worktrees and a separate
+Nyxloom gate was active; leave all of them and their containers untouched.
+
+The B107 integrated candidate is `f239216a`; a fresh GPT-6-Sol xhigh review is
+in progress there. Its focused adversarial suite has passed (193 tests), but
+the reviewer has not yet completed its combined-axis probe or written a final
+report. Shared `main` advanced to `9a0d247c` with the Nyxloom session-extract
+merge after the candidate's base `facbacd2`. Do not alter the reviewed
+worktree while that review is active; after the review, reconcile this main
+advance and re-run final-tree evidence before merge.
