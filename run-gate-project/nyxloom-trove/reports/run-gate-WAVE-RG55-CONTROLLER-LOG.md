@@ -4740,3 +4740,23 @@ as commit `5d81dcbd`; `cmp` now confirms the canonical and daemon mirror are
 byte-identical and `git diff --check` passes. This docs-only commit changes
 the P6 candidate tip, so P6's final short gates and fresh Sol review must
 include it. No P6 campaign was running in that worktree.
+
+### RW-357 — 2026-09-28 20:26:28Z — B107 must preserve RW-57's CPU-idle finish grace
+
+Manual review of the integrated B107 tree `5b79fcd1` found that the
+`session_finish` hang branch still tests event/output inactivity but not
+candidate-tree CPU growth. The durable-evidence validator has the same gap:
+its `session-finish-hang` early return checks elapsed time and the idle value,
+then skips the trailing CPU-window proof. The retained B097 test
+`test_session_finish_then_still_alive_is_hung_after_a_full_idle_grace` makes
+the mismatch explicit: its fake process-tree CPU grows continuously while the
+test expects `hung`.
+
+Binding RW-57 says the post-finish grace expires only while candidate-tree CPU
+is idle for the complete grace. Treat this as merge-blocking, not as a policy
+reopening: require a complete trailing CPU-quiet window in both the live
+monitor and cached-evidence validator; preserve the truly idle hang case and
+add a growing-CPU post-finish case that remains incomplete at its configured
+budget. Re-run focused tests, changed-line line+branch coverage, and the
+registered exact-tree `tester-unified` gate after that repair, then request
+fresh GPT-6-Sol xhigh review before merge.
