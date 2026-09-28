@@ -294,6 +294,17 @@ The user requested the previously unrun session-extract R2 campaign asynchronous
 
 The machine-readable verdict is `nyxloom/.assay/verdict-session-extract.json`; the run-gate log is `/tmp/run-gate/run-gate-vbpub-session-extract-3301962-1790628037.log`. No product code was mutated.
 
-An `assay plan` probe with `source_roots = ["src/nyxloom/session_extract"]` confirmed the intended package scope still has exactly 414 candidates. Assay's conservative serial estimate is 49,680 seconds (13h48m) at the configured 120-second per-candidate failsafe; the old 8-hour lane budget could not cover that upper bound.
+The initial `assay plan` probe reported 414 while the prior cap was 413. That was the pre-submission limit sentinel (`max_mutants + 1`), not the full candidate count. Re-running with the interim cap of 414 produced the same sentinel shape at 415. A read-only plan using a temporary copy of the lane config with a 1000-candidate ceiling fully enumerated the package and found 599 candidates (76 bool-constant, 196 boolean-operator, 286 comparison, 41 falsy-swap). Its declared serial upper bound is 71,880 seconds (19h58m) at 120 seconds per candidate.
 
-Corrected `nyxloom/assay.toml` without relaxing coverage or mutation rigor: scope R1/R2 source roots to `src/nyxloom/session_extract`, set the exact candidate cap to 414, and raise the lane budget to 16 hours (derived from the plan's 13h48m upper bound plus baseline/verdict overhead). The broader CLI/parser surface remains covered by the passing tester-unified R1 gate. The corrected lane must be committed before the next authoritative run; its outcome is not yet known.
+The 16-hour/414-cap correction was therefore insufficient and is superseded before any mutants ran. The final correction keeps R1/R2 source roots at `src/nyxloom/session_extract`, sets the exact cap to 599, and raises both lane budgets to 22 hours to cover the 19h58m candidate bound plus baseline/verdict overhead. No coverage floor or mutation rigor was relaxed. The broader CLI/parser surface remains covered by the passing tester-unified R1 gate. The lane must be committed before another authoritative run.
+
+## Session-extract lane follow-up — second refusal — 2026-09-28
+
+The second run used commit `025b6366abe51aa2b1511fe6bc7a2a743af2a0ad` with the package-only source root and interim cap 414. It ended after 28.97 seconds:
+
+- R0: PASS.
+- R1: FAIL at 95.43% (2,427/2,511 lines and 849/922 branches). The missing coverage is recorded in `.assay/verdict-session-extract.json`; it includes validation and adapter-edge paths in files such as `config.py`, `claude_code.py`, and `codex.py`.
+- R2: refusal sentinel at 415 candidates against cap 414; zero mutants were submitted.
+- R3: INCONCLUSIVE because R1 did not pass.
+
+The selected test argv omitted two existing focused files: `tests/test_session_extract_config_validation.py` and `tests/test_session_extract_edge_contracts.py`. Added both to the lane before the next attempt. Separately, a source-backed plan with a temporary cap of 1000 enumerated all 599 package candidates; the final committed lane uses that exact cap and the 22-hour budget derived from its 19h58m serial upper bound. No coverage threshold or mutation setting was weakened.
