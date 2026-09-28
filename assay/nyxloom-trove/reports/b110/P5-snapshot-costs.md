@@ -1,16 +1,20 @@
-# B110-P5: Cheaper per-candidate snapshots (C1 index refresh, C2 incremental child-closure bound)
+# B110-P5: Cheaper per-candidate snapshots (C1 index refresh with a ctime sweep, C2 incremental child-closure bound)
+
+*Revised 2026-09-28 after round-1 review (see REVIEW-2026-09-28-round1.md).* This revision applies round-1 findings P5-1..P5-6 and carver decisions **C4** and **C15**.
+
+The C4 addition: after C1 the post-command dirt check becomes stat-based. A same-size, in-place edit made in the same wall-clock second, with its mtime restored, could then pass unseen (P5-1). So C1 now ships together with a **ctime-nanosecond sweep**, and the sweep is gated by a probe (Work step 0).
 
 | Field | Value |
 |---|---|
 | Backlog | **B116** (split from B110) |
-| Branch | `assay-b110-p5-snapshot` from the integration line `assay-b105-evidence-integrity`, after the plan §11.1 reconciliation |
+| Branch | `assay-b110-p5-snapshot` from the integration line (the plan §11.1 / C18 reconciliation branch `assay-b110-integration`) |
 | Depends on | **P0** (B111): its snapshot guard tests **G1–G5** must be merged and green on your base. Read their definitions in `b110/P0-measurement-hygiene.md`. |
 | Contract class | **2b**: public behavior, refusal pairs and invariants are fixed; the private construction is yours |
 | Implementer | Opus, fresh session |
-| Decisions | **A-472 (plan D8)**: C1 plus C2; keep one fresh private repository per candidate; hardlinks, tree reuse and in-place mutation stay forbidden. Constraining: A-120, A-161, A-184, A-186, A-193, A-194, A-195. |
-| Size | M: `isolation.py` (three functions plus the constructor), one `git.py` constant, one new test file, docs |
+| Decisions | **A-472 (plan D8)**: C1 plus C2; keep one fresh private repository per candidate; hardlinks, tree reuse and in-place mutation stay forbidden. Constraining: A-120, A-161, A-184, A-186, A-193, A-194, A-195. Round-1 carver decisions: **C4** (ctime watermark sweep, probe-gated) and **C15** (dataclass-contract fixture). |
+| Size | M/L: `isolation.py` (three functions, the constructor, one new frozen dataclass, one sweep function), one `git.py` constant, a one-line call-site change in each of `mutation.py` and `runner.py`, one new test file, docs |
 
-**What this package buys, as an estimate only:** about 0.6–1.4 s less git work per candidate (analysis report §7.2), times 3,760 candidates. **No oracle asserts time.**
+**What this package buys, as an estimate only:** about 0.6–1.4 s less git work per candidate (analysis report §7.2), times 3,760 candidates. The C4 sweep costs about 5.3k `lstat` calls plus, normally, one small `hash-object` process for the few suspects. That is expected to be well under the saved `status` hash pass, but it is **measured in the pilot, never asserted**. **No oracle asserts time.**
 
 ---
 
@@ -22,6 +26,7 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
 2. `nyxloom-trove/reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`, §7.2 (the snapshot internals: step inventory, measured costs, invariants table, stale-pyc probe).
 3. `src/assay/isolation.py`:
    - `:67` `_FIXED_MTIME`;
+   - `:229-256` the frozen `Snapshot` dataclass, which gains one field;
    - `:569-590` `SnapshotRepository.__init__`;
    - `:670-727` `materialize`, `materialize_replacement`, `_materialize`;
    - **`:762-863` `_build`** (the call order you change: `_write_worktree` at `:852`, the HEAD write at `:860`, `_verify` at `:861`);
@@ -32,10 +37,14 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
    - `:1329-1371` `_enforce_object_limits` and `_enforce_tree_blob_limits` (their messages are reused verbatim);
    - `:1961-2132` `prepare_snapshot` (the closures at `:1993-2012` and `:2048-2077`, the judged-tree walk at `:2088-2102`, construction at `:2103`).
 4. `src/assay/git.py`:
-   - `:150-178` `_FIXED_CONFIG` and its comment;
+   - `:143-164` the `_FIXED_CONFIG` comment and `:165-178` the tuple;
+   - `:826-905` `dirty_paths` (unchanged; it stays generic because it is also used on real checkouts);
    - `:1222-1243` `_p22_argv`;
    - `:1244-1268` `_p22_spawn`;
    - `:1352-1400` `_p22_git`, whose non-zero exit becomes `GIT_FAILED`.
+4b. The two **post-command snapshot dirt checks** that gain the sweep. Each is a one-line union:
+   - `src/assay/mutation.py:1843-1874` `_snapshot_left_dirt` (the `git.dirty_paths(snapshot.root, …)` at `:1859`);
+   - `src/assay/runner.py:3104-3115` (the `post_dirty = git.dirty_paths(snapshot.root, …)` at `:3109`).
 5. `nyxloom-trove/decisions.md`, rows A-120 (`:373`), A-161 (`:454`), A-184 (`:502`), A-186 (`:504`), A-193 (`:516`), A-194 (`:517`), A-195 (`:518`).
 6. The tests that pin the invariants. These must stay green unchanged, except the constructor call sites in Work step 4:
    - `tests/test_isolation.py`: fixtures `_root_repo` `:104`, `_scratch` `:146`, `_spec` `:152`, `LITERALS` `:65`; tests `:309`, `:420`, `:450`, `:1324`, `:1598`, and **`:1760` `test_reviewer_the_child_closure_is_bounded_not_only_the_base`**;
@@ -65,13 +74,41 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
   ```
 
   - This applies to **both** `materialize()` and `materialize_replacement()`, because both go through `_build`.
-  - `_verify` is unchanged. Its `status` stays the authoritative clean-tree proof; after C1 it is stat-only.
+  - `_verify` is unchanged. Its `status` stays the authoritative clean-tree proof at build time; after C1 it is stat-only.
 - **C1 hardening.** Add three entries at the end of `git._FIXED_CONFIG` (`:165-178`):
   - `"-c", "core.checkStat=default"`
   - `"-c", "core.trustctime=true"`
   - `"-c", "core.ignoreStat=false"`
 
   Put a comment above them: "after B116's index refresh the dirty check is stat-based; a consumer-written `.git/config` must not be able to weaken stat comparison". **Never** set `checkStat=minimal`, `trustctime=false`, or `ignoreStat=true` anywhere.
+
+  **What the `-c` pins do and do not cover (P5-5).**
+  - They defeat **config-level** weakening only.
+  - `core.ignoreStat=false` has no effect on assay's own `status --no-optional-locks`. It is kept only as a pin.
+  - A consumer command can also weaken the **child's index**, by writing assume-unchanged or skip-worktree bits with its own `git update-index`. The `-c` pins cannot stop that. The C4 sweep does, because it compares against a baseline assay recorded itself and ignores index bits.
+- **C4: the ctime-nanosecond sweep.** It runs in addition to `git.dirty_paths` on every post-command snapshot dirt check. New code in `isolation.py`:
+
+  ```python
+  @dataclass(frozen=True, kw_only=True)
+  class _StatBaseline:
+      watermark_ns: int                               # max st_ctime_ns over `regular`, read right after the refresh
+      regular: Mapping[str, tuple[int, int, str]]     # repo-top-relative POSIX path -> (st_ino, st_size, blob oid);
+                                                      # every tracked, non-skip-worktree REGULAR file of the manifest
+  ```
+
+  - `Snapshot` (`:229`) gains `stat_baseline: _StatBaseline | None = None`. `_build` always sets it after the refresh. `None` only occurs for snapshots that tests construct directly.
+  - `def snapshot_content_drift(snapshot: Snapshot, *, remaining: git.Remaining | None) -> tuple[str, ...]` is a module-level function. It returns the sorted repo-top-relative paths whose **content** differs from the baseline OID:
+    1. If `snapshot.stat_baseline is None`, return `()`.
+    2. Call `os.lstat(root / p)` for each `p` in `regular`. A path that no longer exists, or is no longer a regular file, is **not** reported here, because `dirty_paths` reports deletions and type changes.
+    3. `suspects` are the paths with `st.st_ctime_ns >= watermark_ns` **or** `(st.st_ino, st.st_size) != baseline[:2]`. Use `>=`, not `>`: files written in the same coarse clock tick as the watermark are always re-hashed. There are only a handful.
+    4. If `suspects` is non-empty, hash them in **one** bounded `git hash-object --no-filters --stdin-paths` call, run with `cwd=root` and the snapshot's `.git`, under the P22/`_FIXED_CONFIG` hardening.
+       - Never use `-w`.
+       - Never allow filters. Without `--no-filters`, a `.gitattributes` in repo content could invoke a filter driver defined in a consumer-written `.git/config` (A-186).
+    5. Return the suspects whose computed OID differs from `baseline[2]`.
+  - **Call sites (one line each).** `mutation._snapshot_left_dirt` (`:1859`) and `runner.py:3109` use `git.dirty_paths(snapshot.root, remaining=…)` **or** `isolation.snapshot_content_drift(snapshot, remaining=…)`, and report `DIRTY_TREE` if either is non-empty.
+    - The drift paths are added to the reported path set. Keep the existing message and reason pair.
+    - Nothing else in `mutation.py` or `runner.py` changes.
+  - **The residual,** recorded in A-472 by the controller: the realtime clock stepping **backwards** during a candidate, between the watermark read and a same-size in-place edit that keeps the inode. Rename-replacement is still caught by the inode comparison, and by `status` under `checkStat=default`.
 - **C2.** Add a frozen dataclass in `isolation.py`:
 
   ```python
@@ -86,6 +123,17 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
   - `SnapshotRepository.__init__` gains a **required** keyword-only parameter `base_closure: _BaseClosure`.
   - `prepare_snapshot` computes the value once, via `_compute_base_closure(...)`.
 - **`_closure_oids(..., exclude: str | None = None)`.** When `exclude` is given, append `"--not", exclude` after the positive commit (and after `resolved_base`, if both are given). Everything else is unchanged, including the non-empty and `max_objects` guards.
+
+### Required flow (C1 + C4, inside `_build`)
+
+1. Write the worktree and `HEAD`, as today.
+2. Run `update-index --refresh` (C1). A non-zero exit gives the `GIT_FAILED` above.
+3. Build the `_StatBaseline`:
+   - `regular` comes from the manifest's regular-file entries minus skip-worktree omissions, with `(st_ino, st_size)` from `os.lstat` and the entry's blob OID.
+   - `watermark_ns = max(st_ctime_ns)` over them.
+   - This is a Python-only pass, with no git process.
+4. `_verify(...)`, unchanged.
+5. Construct the `Snapshot` with `stat_baseline=…`.
 
 ### Required flow (C2)
 
@@ -107,11 +155,12 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
 
 ### Topology and bounds
 
-- Per candidate, the P22 git subcommands are the same as today except:
+- **Inside `materialize_replacement`,** the P22 git subcommands are the same as today except:
   - one `rev-list --objects --not` (delta) replaces the full `rev-list --objects` child walk;
   - the `cat-file --batch-check` stdin carries only the delta;
   - one `update-index --refresh` is added.
 - The `--no-walk` child tree walk stays.
+- **After the command** (the caller's dirt check), the sweep adds one `lstat` per tracked regular file (about 5.3k for B105, in Python) and **at most one** `hash-object --no-filters --stdin-paths` process, only when there are suspects.
 - The per-candidate hash pass (the refresh) is the **only** per-candidate proof that the written bytes match the OIDs. It also catches a tampered seed or template. Never remove it.
 - Limits: unchanged (`SnapshotLimits`). Their values come from the lane or the defaults, exactly as today.
 
@@ -125,17 +174,23 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
 | Child closure count == `max_objects` | yield | none |
 | Child closure count == `max_objects + 1` | `BUDGET_EXCEEDED` / `SNAPSHOT_LIMIT_EXCEEDED` | no child yielded; scratch holds only the seed |
 | Same, for `max_total_object_bytes` or `max_total_tree_blob_bytes` | same pair | same |
-| A consumer command writes `core.checkStat=minimal` / `trustctime=false` / `ignoreStat=true` into the snapshot's `.git/config`, then makes a same-size edit with the mtime restored | the post-command dirt check still reports `DIRTY_TREE` (the `-c` overrides win) | existing A-195 path |
+| A consumer command writes `core.checkStat=minimal` / `trustctime=false` / `ignoreStat=true` into the snapshot's `.git/config`, then **rename-replaces** a tracked file with same-size different bytes and the mtime restored (new inode) | `DIRTY_TREE`: `status` under the `-c` pins sees the inode change, and the sweep sees `(ino, size)` changed and a different OID | existing A-195 path |
+| Same hostile config; in-place same-size edit with mtime restored, **after** the wall-clock second has passed the file's ctime second | `DIRTY_TREE`: `trustctime=true` makes `status` see the ctime change; the sweep also sees `ctime_ns >= watermark` | same |
+| **No** config change; in-place same-size edit with mtime restored **in the same wall-clock second** as materialization (P5-1) | `DIRTY_TREE` from the **sweep** (`ctime_ns >= watermark`, OID differs), even if `status` reports clean | same |
+| The consumer sets assume-unchanged / skip-worktree on a tracked file in the child index, then edits it | `DIRTY_TREE` from the sweep, which ignores index bits | same |
+| The suspect's content is unchanged (for example a `touch`) | not dirty (OID equal) | none |
 
 ### Prepared proof and traceability
 
 | Work | Owner | Oracle | Fixture | Controlled break |
 |---|---|---|---|---|
 | C1 refresh | `isolation._build` | R2 | `_root_repo` | drop the refresh → R2 sees `mtime: 0:0` |
-| C1 no `-q` | same | G5 (P0) | P0's same-size overwrite | add `-q` → G5 yields instead of `GIT_FAILED` |
-| C1 hardening | `git._FIXED_CONFIG` | R4 | hostile `.git/config` + same-size edit | remove the three `-c` → R4 sees a clean tree |
-| C2 delta walk | `isolation._enforce_child_closure` | R1 | `_root_repo` + second commit | keep the full walk → R1 finds a `rev-list --objects` without `--no-walk`/`--not` |
-| C2 exactness | same | R3 | X/Y history fixture | drop the subtraction → R3 refuses at the reference limit |
+| C1 no `-q` | same | **R6** (the message and `__cause__`) | same-size overwrite after `_write_worktree` | add `-q` → the refresh passes, `_verify`'s different message fires, R6 is red. G5 alone cannot tell, because it only checks the pair (P5-2). |
+| C1 hardening | `git._FIXED_CONFIG` | R4 (rename-replacement), R4b (trustctime) | hostile `.git/config` | remove `checkStat=default` → R4's `status` half is clean; remove `trustctime=true` → R4b's `status` half is clean. Each half is asserted **separately** from the sweep, by calling `git.dirty_paths` directly. |
+| C4 sweep | `isolation.snapshot_content_drift` plus the two call sites | R5 (same second), R5b (assume-unchanged) | in-place edit right after yield | drop the sweep → R5's `snapshot_content_drift` returns `()`, and the caller-level check reports clean |
+| C4 no filters | same | R5c | `.gitattributes` naming a filter driver whose command would create a marker file | drop `--no-filters` → the marker file exists |
+| C2 delta walk | `isolation._enforce_child_closure` | R1 | `_root_repo` + second commit | keep the full walk → R1 finds a `rev-list --objects` without `--no-walk`/`--not`, and the batch-check OID count ≠ |delta − base| |
+| C2 exactness | same | R3 (+ shallow variant) | X/Y history fixture, |X| > |Y| | drop the subtraction → R3 refuses at the reference limit |
 | Existing invariants | — | `test_isolation.py:1760`, G1–G4 | existing | hardlink `_copy_objects` → G1 red |
 
 ### Degrees of freedom
@@ -146,17 +201,35 @@ You may **not**:
 - change a refusal pair or a limit value;
 - skip the tree-blob check;
 - move the refresh after `_verify`;
-- add a code path that runs without a `_BaseClosure`.
+- add a code path that runs without a `_BaseClosure`;
+- make the sweep compare against index stat data or index bits (it must use its own `_StatBaseline`);
+- hash suspects with filters or with `-w`;
+- use `>` instead of `>=` against the watermark;
+- skip the sweep at either call site.
 
 ## Work
 
-1. **Red first.** Create `tests/test_snapshot_costs.py`, importing the fixtures from `tests/test_isolation.py` via `from test_isolation import _root_repo, _scratch, _spec, LITERALS, TIMEOUT`. If that `sys.modules` import misbehaves, copy the helpers. Write R1–R4 (see Oracles).
+0. **Probe, before writing any production code (C4).** Record every command and its output in `assay-B116-REPORT.md` under "C4 probe".
+   - **(a) Git stat granularity.** Use `git version --build-options`, which does **not** reveal USE_NSEC, so this probe is empirical. Run it once with the devcontainer git, and once in the gate image through one short-lived container, only when no gate is running:
+     ```
+     docker run --rm --name b116-probe --cpus=1 --memory=256m -v <host path of a scratch dir>:/p -w /p tester-unified:local bash /p/probe.sh
+     ```
+     Remember the host-path bind rule: the docker daemon is the host's.
+     - `probe.sh` creates a repo with one committed file; sets its mtime to 946684800 with `touch -d @946684800`; runs `git update-index --refresh`.
+     - Then, **within the same second,** it rewrites the file in place with same-size different bytes (`printf … | dd conv=notrunc`), restores the mtime, and runs `git status --porcelain`.
+     - Record whether `status` reports the file. Either answer is acceptable: "clean" proves the P5-1 hole, and "dirty" means the build compares nanoseconds. The sweep ships either way.
+   - **(b) ctime ordering (kernel-level; containers share the host kernel, so the devcontainer suffices).** In a scratch directory, write 200 files, take `watermark = max(st_ctime_ns)`, then do 1,000 immediate in-place writes to one of them and check `st_ctime_ns >= watermark` after each. The test is purely `>=` against a stored value, with no elapsed-time assertion.
+   - **BLOCKED** if (b) ever observes `st_ctime_ns < watermark` after a write. That would contradict the sweep's premise; write `BLOCKED: C4 premise contradicted` with the numbers.
+1. **Red first.** Create `tests/test_snapshot_costs.py`, importing the fixtures from `tests/test_isolation.py` via `from test_isolation import _root_repo, _scratch, _spec, LITERALS, TIMEOUT`. If that `sys.modules` import misbehaves, copy the helpers. Write R1–R6 (see Oracles).
    - Run them against the unchanged code and record in `assay-B116-REPORT.md`:
      - which ones fail;
-     - R1's **observed "before" subcommand multiset**, obtained by running the recorder. Do not predict it.
-   - R2, R3, and R1's "no full walk" and "exactly one refresh" parts must fail before the change. R4 must fail before the hardening only if the refresh already makes the dirt check stat-based. So run R4 again after C1 without the hardening, and record that it fails there.
-2. Implement **C1** (`isolation.py:860-861`) and the **C1 hardening** (`git.py:165-178`).
+     - R1's **observed "before" subcommand multiset**, obtained by running the recorder on the unchanged code and pinned as a literal in the test, with a comment naming the REPORT section. Do not predict it.
+   - R2, R3, R5 and R6, and R1's "no full walk", "exactly one refresh" and "batch-check count" parts, must fail before the change.
+   - For R4 and R4b, record their state at three points: before C1, after C1 without the hardening, and after the hardening.
+2. Implement **C1** (`isolation.py:860-861`), the **C4** baseline in `_build`, and the **C1 hardening** (`git.py:165-178`).
+2b. Implement **C4**: `_StatBaseline`, the `Snapshot.stat_baseline` field, `snapshot_content_drift`, and the two one-line call-site unions (`mutation.py:1859`, `runner.py:3109`).
 3. Implement **C2**: `_BaseClosure`, `_compute_base_closure`, the `_closure_oids(exclude=)` parameter, the new `_enforce_child_closure` body.
+3b. **C15.** `_BaseClosure`, `_StatBaseline` and the new `Snapshot` field change the dataclass inventory. Regenerate `tests/fixtures/dataclass-contract.json` with the command P1 (B112) documents in DESIGN-GUIDE, review the diff (exactly the new classes and field), and commit it in the same change.
 4. Update the **five direct `SnapshotRepository(...)` constructions** in tests (Context 6), passing `base_closure=`:
    - if the test reaches `materialize_replacement`, build the closure with `_compute_base_closure` over its seed;
    - otherwise pass `_BaseClosure(oids=frozenset(), object_count=0, object_bytes=0, metadata=MappingProxyType({}))`, and add a comment "never replaced in this test".
@@ -164,6 +237,7 @@ You may **not**:
 6. Run these focused files serially:
    - `tests/test_snapshot_costs.py`
    - `tests/test_isolation.py`
+   - `tests/test_runner_p23_cleanup_and_budget.py`, `tests/test_b105_mutation_boundaries.py` and `tests/test_b105_runner_boundaries.py` (the two call sites)
    - `tests/test_b105_isolation_proof_boundaries.py`
    - `tests/test_b105_isolation_manifest_boundaries.py`
    - `tests/test_b105_git_process_boundaries.py`
@@ -172,8 +246,8 @@ You may **not**:
    - `tests/test_runner_p23_combined_axis_review.py`
    - `tests/test_isolation_unsafe_symlink_omissions.py`
    - P0's guard test file
-7. Update **CHANGES.md** under `## [Unreleased]` → `### Changed`: "Snapshots record real index stat data with one `update-index --refresh` and bound each mutant child's closure as base ∪ git-reported delta; the fixed Git config pins stat comparison (B116, A-472)."
-8. Write `assay-B116-REPORT.md` (traceability with actual names, the R1 before/after multisets, red/green counts), then commit.
+7. Update **CHANGES.md** under `## [Unreleased]` → `### Changed`: "Snapshots record real index stat data with one `update-index --refresh`, re-hash any tracked file touched after materialization in the post-command dirt check, and bound each mutant child's closure as base ∪ git-reported delta; the fixed Git config pins stat comparison (B116, A-472)."
+8. Write `assay-B116-REPORT.md` (the C4 probe, traceability with actual names, the R1 before/after multisets, red/green counts), then commit.
 
 **Optional, not in this package's acceptance** (file separately if the pilot shows a need):
 - C3: a per-seed `.git` template;
@@ -185,27 +259,66 @@ You may **not**:
 ## Oracles
 
 - **R1: operation-count oracle (structural, not timing).**
-  - Setup: wrap `git._p22_spawn` with a delegating recorder via `monkeypatch.setattr(git, "_p22_spawn", recorder)`. Normalize each argv to its subcommand tokens by stripping `--no-pager`, `--no-optional-locks`, `--literal-pathspecs`, `--git-dir=…`, `--work-tree=…` and every `-c k=v` pair. Record only the calls made inside one `with prepared.materialize_replacement(...)` block, on a fixture with at least 2 commits.
+  - **Setup:** wrap `git._p22_spawn` with a delegating recorder via `monkeypatch.setattr(git, "_p22_spawn", recorder)`, and wrap `isolation._object_metadata` with a delegating recorder of the `oids` argument length.
+  - **Recording window:** from immediately **before** `prepared.materialize_replacement(...)` is called (the build runs in `__enter__`) until immediately **after** its `with` block exits (teardown included). Record nothing else. The fixture has at least 2 commits.
+  - **Normalization grammar** (P5-3), applied per argv, in this order:
+    1. drop the executable;
+    2. drop the global options `--no-pager`, `--no-optional-locks`, `--literal-pathspecs`, `--git-dir=…`, `--work-tree=…`, `--template=…`, and every `-c k=v` pair;
+    3. replace every token matching `^[0-9a-f]{40}$` or `^[0-9a-f]{64}$` with `<oid>`;
+    4. replace every token that is an absolute path (starts with `/`) with `<path>`.
+
+    The normalized argv is a tuple of tokens. The multiset is a `collections.Counter` of those tuples.
+  - **Pinned "before":** the Counter observed on the **unchanged** code (Work step 1), written into the test as a literal.
   - *Observable:*
-    - exactly one call whose tokens start with `update-index --refresh`;
-    - every call whose tokens contain `rev-list` and `--objects` also contains `--no-walk` or `--not`;
-    - the total multiset equals the pinned "after" multiset, which you obtain by running the recorder once after the change and pin with a comment naming the REPORT section. It must equal the "before" multiset with only the three changes of §Topology.
-  - *Negative:* the current code has a full `rev-list --objects` and no refresh.
+    - `after == before - Counter({<the full child `rev-list --objects …` tuple>: 1}) + Counter({<the delta `rev-list --objects … <oid> --not <oid>` tuple>: 1, ("update-index", "--refresh"): 1})`. The "after" is **derived**, never separately observed and pinned.
+    - Every recorded tuple containing `rev-list` and `--objects` also contains `--no-walk` or `--not`.
+    - The single post-delta `_object_metadata` call receives exactly `|delta − base|` OIDs. Compute that independently: plain `git rev-list --objects --no-object-names <child> --not <spec.commit>` in the child's `.git`, minus plain `git rev-list --objects --no-object-names <spec.commit>` in the seed.
+  - *Negative:* the current code has a full `rev-list --objects` and no refresh; an implementation that still batch-checks base ∪ delta passes the argv shape but fails the OID count.
   - *Gate:* tester-unified.
 - **R2: index stat oracle.**
   - *Observable:* at yield, the real `git ls-files --debug` in the child (plain `subprocess` git, the test's `_git` helper) shows `mtime: 946684800:0` and `size: <true size>` for every non-skip-worktree regular entry.
   - *Negative:* today it shows `mtime: 0:0` and `size: 0`.
-- **R3: closure exactness.**
-  - Fixture: a repository with commit 1 holding `lib/data.bin = X` and commit 2 (HEAD, judged) holding `lib/data.bin = Y`.
-  - Replace Y with X in the child. X's blob already exists in history, which is exactly the subtraction case.
-  - Compute the reference with real git on an independent clone: `len(rev-list --objects --no-object-names <child>)`, obtained by first yielding once with defaults and reading `child.commit`. Also compute the exact byte total and the tree-blob total.
-  - *Observable:* with `max_objects = reference` it yields; with `reference - 1` it raises `BUDGET_EXCEEDED`/`SNAPSHOT_LIMIT_EXCEEDED`. The same holds for `max_total_object_bytes` and `max_total_tree_blob_bytes`, each varied alone.
-  - *Negative:* without the subtraction, the count is one too high and the snapshot refuses at `reference`.
+- **R3: closure exactness (P5-4).**
+  - **Fixture:** commit 1 holds `lib/data.bin = X` and commit 2 (HEAD, judged) holds `lib/data.bin = Y`, with **|X| > |Y|** (for example 64 vs 32 bytes). Only `lib/data.bin` differs between the two commits, so the child tree equals commit 1's tree, the most adversarial case.
+  - Replace Y with X in the child. X's blob, and the child's root and `lib` trees, already exist in history.
+  - **Reference values:** yield once with default limits, read `child.commit`, and inside that yielded child run plain `git rev-list --objects --no-object-names <child.commit>` in the **child's own `.git`**. An independent clone cannot contain the child commit. From that list compute the object count, the byte total (via plain `git cat-file --batch-check` in the child), and the tree-blob total of `<child.commit>^{tree}`.
+  - Because |X| > |Y|, the seed's own closure, bytes and tree-blob total are each strictly below the reference values. So `prepare_snapshot` passes at `reference - 1`, and any refusal must come from the child.
+  - *Observable:*
+    - with `max_objects = reference` it yields;
+    - with `reference - 1`, the **`materialize_replacement` call** raises `BUDGET_EXCEEDED`/`SNAPSHOT_LIMIT_EXCEEDED` (assert that `prepare_snapshot` returned first);
+    - the same holds for `max_total_object_bytes` and `max_total_tree_blob_bytes`, each varied alone.
+  - **Shallow variant:** repeat the object-count case with `snapshot_history = "shallow"` and a seed in which X exists only in an ancestor outside the shallow boundary. X is then genuinely new in the delta.
+  - *Negative:* without the subtraction, the snapshot refuses at `reference`. Do not predict by how much (§3b F).
   - `test_isolation.py:1760` must also still pass.
-- **R4: hostile config cannot weaken the dirt check.**
-  - Inside a yielded child: write `[core]\n\tcheckStat = minimal\n\ttrustctime = false\n\tignoreStat = true\n` to `.git/config` (append). Overwrite one tracked file with different bytes of the same size, then `os.utime` it back to `_FIXED_MTIME`. Call `git.dirty_paths(child.root)`. This is the same call `mutation._snapshot_left_dirt` makes at `mutation.py:1859`.
-  - *Observable:* the edited path is reported dirty.
-  - *Negative:* without the three `-c` overrides, a stat-trusting config hides it.
+- **R4: hostile config plus rename-replacement (P5-1, P5-5).**
+  - Inside a yielded child, append `[core]\n\tcheckStat = minimal\n\ttrustctime = false\n\tignoreStat = true\n` to `.git/config`.
+  - Write same-size different bytes to `f.tmp`, `os.utime` it to `_FIXED_MTIME`, then `os.replace("f.tmp", f)` for a tracked `f`. That gives a new inode with the same size and mtime.
+  - *Observable:* `git.dirty_paths(child.root)` reports `f`, because the `-c core.checkStat=default` pin makes the inode compare, **and** `isolation.snapshot_content_drift(child)` reports `f`. Assert each **separately**.
+  - *Negative:* without the `checkStat` pin, `dirty_paths` is clean. The sweep half stays red-free independently.
+- **R4b: hostile config plus in-place edit after the second boundary.**
+  - The same hostile config.
+  - Wait until `int(time.time()) > os.stat(f).st_ctime_ns // 10**9`. This is a precondition, not an assertion: poll with `time.sleep(0.05)` and a 5 s failsafe that fails the test with a message.
+  - Rewrite `f` **in place** (`open(f, "r+b")`, same size, different bytes) and restore the mtime.
+  - *Observable:* `git.dirty_paths` reports `f` (the `trustctime=true` pin), and so does the sweep.
+  - *Negative:* without the `trustctime` pin, `dirty_paths` is clean.
+- **R5: same-second in-place edit, no hostile config (the P5-1 hole; C4).**
+  - Immediately after yield, with no waiting, rewrite a tracked `f` in place with same-size different bytes and restore the mtime.
+  - *Observable:* `isolation.snapshot_content_drift(child)` returns `(f,)`. The caller-level check reports `DIRTY_TREE`: call `mutation._snapshot_left_dirt(job, child, remaining=None)` with a minimal job, and assert the reason pair.
+  - Whether `git.dirty_paths` alone sees it depends on the git build (Work step 0) and on timing. **Do not assert on it.**
+  - **Deterministic `>=` sub-case (R5-eq).** After the edit, build a `_StatBaseline` from the child's real baseline, but with `watermark_ns` set to `f`'s **post-edit** `st_ctime_ns`, so the edit lands exactly in the watermark tick. Attach it with `dataclasses.replace(child, stat_baseline=…)`, then assert that `snapshot_content_drift` reports `f`.
+  - *Negative:* dropping the sweep turns R5 red. Using `>` instead of `>=` turns R5-eq red. Comparing against index stat data turns R5b red.
+- **R5b: assume-unchanged in the child index.** Run `git update-index --assume-unchanged f` in the child (plain subprocess git), then edit `f` in place with the mtime restored.
+  - *Observable:* the sweep reports `f`.
+  - *Negative:* a sweep that consults index bits.
+- **R5c: no filters executed.** Commit a `.gitattributes` in the fixture: `data.bin filter=evil`. The child's `.git/config` gets `[filter "evil"] clean = touch <tmp>/FILTER_RAN`. Edit `data.bin` in place.
+  - *Observable:* the sweep reports it, and `<tmp>/FILTER_RAN` does not exist.
+  - *Negative:* hashing without `--no-filters` creates the marker.
+- **R5d: the runner call site (`runner.py:3109`, inside `_execute_snapshot_unit` at `:2800`).** Follow the existing direct-call pattern in `tests/test_b105_runner_boundaries.py:463-620`. Give `runner._execute_snapshot_unit` a fake `process_runner` that rewrites a tracked file in place, with the same size and the mtime restored, inside its `cwd`. For determinism, pre-attach a `stat_baseline` whose watermark equals that file's post-edit ctime (the R5-eq technique), then return exit 0.
+  - *Observable:* the unit's post-command reason is `DIRTY_TREE`, and the path is named.
+  - *Negative:* forgetting the runner call site turns R5d red.
+- **R6: the refresh, not `_verify`, catches a materialization mismatch (P5-2).** Use the same tamper as G5: wrap `_write_worktree` to overwrite one file with same-size different bytes and `_FIXED_MTIME` after it writes.
+  - *Observable:* `GIT_FAILED`, whose message contains `"does not match the index after update-index --refresh"`, and whose `__cause__` is the refresh's own `AssayError`.
+  - *Negative:* with `-q`, the refresh exits 0, `_verify`'s status raises a different message, and R6 is red.
 - **G1–G5 (from P0)** stay green: disjoint inodes, no residue across candidates, the stale-pyc sequence, fixed mtime/mode, and same-size overwrite gives `GIT_FAILED`.
 
 ### Anti-pattern list (verbatim from `nyxloom/reference/AUTHORING.md` §3b)
@@ -298,29 +411,34 @@ it is not an oracle yet.
 
 ## Docs sync
 
-- **DESIGN-GUIDE:** find the P22 section with `rg -n "status --porcelain\|hash pass\|child closure\|A-186" docs/DESIGN-GUIDE.md`. Add one paragraph covering:
+- **DESIGN-GUIDE:** find the P22 section with `rg -n -e "status --porcelain" -e "hash pass" -e "child closure" -e "A-186" docs/DESIGN-GUIDE.md`. In ripgrep `\|` is a literal pipe, so use `-e` (P5-6). Add one paragraph covering:
   - the index is refreshed once per materialization, and that refresh is the content proof;
+  - the post-command sweep re-hashes files touched after the watermark, and ignores index bits;
+  - the residual (a backwards realtime clock step);
   - the child closure is bounded as base ∪ delta, and why that is exact (the subtraction);
-  - the pinned stat-comparison config.
+  - the pinned stat-comparison config and its scope (config only, not index bits).
 
   Cite A-472.
-- **README / CONSUMERS:** no change. There is no user-visible behavior, the refusals are identical, and no key is added. Confirm with `rg -n "update-index\|closure" README.md docs/CONSUMERS.md`, and edit only if a sentence describes the per-child full walk.
+- **README / CONSUMERS:** no change. There is no user-visible behavior, the refusals are identical, and no key is added. Confirm with `rg -n -e "update-index" -e "closure" README.md docs/CONSUMERS.md`, and edit only if a sentence describes the per-child full walk.
 - **CHANGES:** Work step 7.
 
 ## Scope / forbid
 
 - **Touch:**
-  - `src/assay/isolation.py` (`_build`, `_enforce_child_closure`, `_closure_oids`, `SnapshotRepository.__init__`, `prepare_snapshot`, the new `_BaseClosure` and `_compute_base_closure`);
+  - `src/assay/isolation.py` (`_build`, `_enforce_child_closure`, `_closure_oids`, `SnapshotRepository.__init__`, `prepare_snapshot`, `Snapshot` (one new field), and the new `_BaseClosure`, `_compute_base_closure`, `_StatBaseline` and `snapshot_content_drift`);
   - `src/assay/git.py` (`_FIXED_CONFIG` only);
+  - `src/assay/mutation.py`: **only** the `git.dirty_paths` line in `_snapshot_left_dirt` (`:1859`), turned into the union with the sweep. P4 and P6 edit other regions of this file; rebase on whichever merged first;
+  - `src/assay/runner.py`: **only** the `post_dirty = …` line at `:3109`, turned into the union;
   - `tests/test_snapshot_costs.py` (new);
   - the five constructor sites in `tests/test_b105_isolation_proof_boundaries.py` and `tests/test_b105_isolation_manifest_boundaries.py`;
   - `tests/test_git_boundary.py` (a pin only, if present);
+  - `tests/fixtures/dataclass-contract.json` (C15, regenerated, Work step 3b);
   - `docs/DESIGN-GUIDE.md`, `CHANGES.md`, `nyxloom-trove/reports/assay-B116-REPORT.md`.
 - **Forbid:**
   - `_copy_objects` (no hardlinks, no shared packs);
-  - `_write_worktree` (C4 is out of scope);
+  - `_write_worktree` (the optional template copy, formerly labelled "C4" in the research record, is out of scope; do not confuse it with carver decision C4);
   - `_verify`'s proof set;
-  - `mutation.py`;
+  - `mutation.py` and `runner.py` beyond the two single lines named above;
   - `config.py` and any lane key;
   - `assay.toml`, `run-gate.toml`, the gate scripts;
   - `decisions.md` (the controller records A-472).
@@ -346,9 +464,11 @@ it is not an oracle yet.
 If a named contract cannot be met as specified, or the scope requires a forbidden file, STOP. Write `BLOCKED: <reason>` to `nyxloom-trove/reports/assay-B116-REPORT.md`, commit, and exit. Do NOT improvise a workaround.
 
 Specific triggers:
+- the Work step 0 probe contradicts the sweep's premise (`st_ctime_ns < watermark` after a write);
 - R3 cannot be made exact with base ∪ delta;
 - a G-test from P0 goes red;
-- the refresh needs `-q` to pass any existing test. That would mean that test was relying on an unproven tree, so report it instead of patching around it.
+- the refresh needs `-q` to pass any existing test. That would mean that test was relying on an unproven tree, so report it instead of patching around it;
+- an existing test legitimately rewrites a tracked file inside a snapshot, so the sweep would newly report it dirty. Report it; do not exempt paths.
 
 ## Report
 

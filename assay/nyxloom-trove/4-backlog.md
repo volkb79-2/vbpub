@@ -172,7 +172,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
-- B106 — provenance-safe selective mutation reruns across source/test changes — DONE (`assay-v7.1.0`, merge `e5e9b95c`, A-461; registered tester-unified PASS). Inert for B105 until B112 drops `--override-ini` and B114 removes pytest-cov from the R2 command.
+- B106 — provenance-safe selective mutation reruns across source/test changes — DONE (`assay-v7.1.0`, merge `e5e9b95c`, A-461; registered tester-unified PASS). Inert for B105 until B112 drops `--override-ini` and B114 removes pytest-cov from the R2 command. It is listed here for one cycle only, since this section otherwise lists non-DONE items. Its acceptance boxes were not individually re-audited; the evidence is the Wave C P5 report.
 - B107 — time-aligned candidate liveness evidence to distinguish hangs from resource stalls — OPEN (filed 2026-09-26 from RG-55 P6 exact-tree R2 campaigns)
 - B108 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
 - B109 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
@@ -188,8 +188,8 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B117 — P6 persisted campaign deadline + process-group termination — OPEN
 - B118 — P7 non-qualifying pilot selection — OPEN
 - B108 phase 1 — P8 deterministic campaign analysis core (run-gate closeout stays phase 2) — OPEN
-- B119 — P9 distributed/async evidence import and consolidation — OPEN (D7 reading awaits operator confirmation)
-- B120 — P10 native Python equivalence ledger + same-commit audit — OPEN (P10a design review first)
+- B119 — P9 distributed/async evidence import and consolidation — OPEN (after B108 phase 1; D7 defaults to NO until the operator answers; gate mode `b119-import`)
+- B120 — P10 native Python equivalence ledger + same-commit audit — OPEN (P10a design review first; P10c gate mode after P7b)
 - B121 — P11 isolation-unit execution model — OPEN, decision-gated (only after a pilot NO-GO and an operator decision)
 
 **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
@@ -11318,13 +11318,30 @@ The acceptance items above are now owned as follows:
 
 **Superseded details in the text above:**
 - "Permit only B105's exact `--override-ini=pythonpath=src`" is superseded by A-468: the lanes drop the override.
-- "falls back to the original declared command" is refined by A-470: a completed, proof-matching no-cov run is the survivor's full run, and only a proof mismatch falls back to the declared command.
-- The first-draft scenario "snapshot + collection ≈ 3,760 × 6.5–8 s" is corrected to ≈ 9–13 s per kill; see the analysis report §6.
+- "falls back to the original declared command" and desired-behaviour bullet 1's "Survivors … run the full declared suite" are both refined by A-470. A completed, proof-matching no-cov run is the survivor's full run; only a proof mismatch falls back to the declared command.
+- "Record one candidate execution-evidence item for every candidate ID" and "Candidate evidence IDs equal the candidate buckets" are refined by A-470/A4:
+  - `evidence` is required on survivors and cold kills;
+  - it is optional on `full` kills, `crashed`, `hung` and `budget_exceeded`;
+  - it is forbidden on ledger equivalents and when cold is off.
+- "cold receipts bind to the actual started prefix" is implemented through the plugin's per-start check, `started_count`/`failed_call_index`, and the retained ordered manifest sidecar (B114/P3d).
+- The terminal draft's scenario "snapshot + collection ≈ 3,760 × 6.5–8 s" is corrected to ≈ 9.4–13.4 s per kill; see the analysis report §6. That phrase appears only in research record R0, not in the text above.
+- **Runtime transform-proof failures** are a whole-lane refusal (A-470 C1), not an R2-only claim.
 
-**B110 acceptance (remaining after the split):**
-- [ ] B111–B118 and B108 phase 1 are merged, independently reviewed, and gated. B120's producer is also merged if the survivor screen leaves any equivalents.
-- [ ] The fixed pilot (plan §7) ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, within 90 minutes, stopped by 2 hours at the latest. `reports/assay-B110-PILOT-REPORT.md` records the cold-kill rate with its interval, the snapshot/collection/prefix distributions, survivor durations, per-worker and aggregate peak RSS, memory-full stall, a stratified p50/p90 projection with fixed overhead, shard skew, and consolidation cost.
-- [ ] The go/no-go (plan §8) is recorded. NO-GO leads to an operator decision among B121, measured remote capacity (B119), or a further test-plan change; never to a longer timeout.
+**B110 acceptance (remaining after the split; revised after the round-1 review):**
+- [ ] B111–B118, B108 phase 1, the v14 integration branch and the P7b gate modes are merged, independently reviewed, and gated. B120 (P10b + P10c) is also merged if the survivor screen leaves any equivalents.
+- [ ] **The fixed pilot (plan §7)** ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, within 90 minutes, stopped by 2 hours at the latest.
+  - `reports/assay-B110-PILOT-REPORT.md` records:
+    - the cold-kill rate with its interval;
+    - the snapshot, collection and prefix distributions;
+    - survivor durations;
+    - per-worker peak RSS and aggregate cgroup `memory.peak`;
+    - memory-full stall;
+    - a stratified p50/p90 projection with fixed overhead;
+    - shard skew;
+    - a survivor-screen cost projection.
+  - Consolidation cost is measured in B119, not in the pilot.
+- [ ] **Pilot GO (plan §8.1)** is recorded. NO-GO leads to an operator decision among B121, measured remote capacity (B119), or a further test-plan change; never to a longer timeout.
+- [ ] **Qualifying GO (plan §8.2)** is recorded after the screens and the ledger audit at X*.
 - [ ] The qualifying runbook (plan §9.3) is ready. The B105 lane's `jobs` is set from the pilot.
 
 ## B111 — B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test leak, report-checker partial-scope refusal, snapshot guard tests
@@ -11366,7 +11383,7 @@ The acceptance items above are now owned as follows:
 
 **Status: OPEN (filed 2026-09-28; A-466; brief `reports/b110/P2-loop-guards.md`).**
 
-**Observed:** 14 at-risk and 4 latent single-operator mutants can make a scanner cursor stall, move backwards, or grow memory without bound, or block a pipe drain:
+**Observed:** 14 source-level at-risk mutants, plus one at test level (15 in all), and 4 latent single-operator mutants can make a scanner cursor stall, move backwards, or grow memory without bound, or block a pipe drain:
 - go.py 292/321/323/330;
 - javascript.py 243/245/249;
 - sql_lex.py 193×3/195 (latent 270/273);
@@ -11462,7 +11479,9 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 - `selection_sha256` in progress;
 - the deterministic `tools/b110_pilot_select.py`;
 - the pilot runbook and report template;
-- P7b: the gate-script modes `b110-pilot` and `b110-screen` (non-qualifying survivor screen) and their run-gate lanes, after P6 and v14 merge.
+- P7b: the gate-script modes `b110-pilot` and `b110-screen` (non-qualifying survivor screen) and their run-gate lanes, after P6 and v14 merge;
+- a selection enables the state root and writes one record per executed candidate (C5);
+- a `PILOT-STATE` sentinel file.
 
 **Acceptance:**
 - [ ] The brief's oracles pass.
@@ -11470,7 +11489,7 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 
 ## B119 — B110 P9: distributed/async mutation evidence
 
-**Status: OPEN (filed 2026-09-28; A-471; brief `reports/b110/P9-distributed-evidence.md`; the reading that pre-deadline, same-identity records may be imported awaits operator confirmation).**
+**Status: OPEN (filed 2026-09-28; A-471; brief `reports/b110/P9-distributed-evidence.md`; depends on B108 phase 1, B112, B114 and B117. Pre-deadline records are refused by default (C8) until the operator answers plan §11.2.)**
 
 **Scope:**
 - `assay state import`: identity validation, conflict refusal, import receipt;
@@ -11489,6 +11508,7 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 
 **Phases:**
 - P10a: the anchor and ledger design package, with a fresh-session design review before the v14 schema freezes.
+- P10c: the `b110-ledger-audit` gate mode, off the integration line after P7b.
 - P10b: the producer on `assay-b110-v14`.
 
 **Scope:**
@@ -11515,8 +11535,8 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 - per-test-file fresh-process units;
 - the union of per-unit ordered manifests equals the declared manifest;
 - a per-unit dirt check;
-- any unit failure is a kill;
-- a coverage-guided unit order per candidate;
-- R1 coverage combined across units.
+- a coverage-guided unit order per candidate. The coverage map orders units and never skips any.
+
+The kill semantics of a unit failure, and whether R1 stays single-process (the carver's recommendation) or combines per-unit coverage, are **open choices** in the P11 design packet. They are not fixed here.
 
 It changes the declared execution semantics (cross-file order dependence stops counting), so it needs its own decision and lane/verdict contract.

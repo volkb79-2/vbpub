@@ -1,87 +1,139 @@
-# B110-P9 — Distributed / async evidence: campaign identity, `assay state import`, consolidation, worker runbook
+# B110-P9 — Distributed / async evidence: campaign identity, `assay state import`, audit sample, consolidation, worker runbook
+
+*Revised 2026-09-28 after round-1 review (see `REVIEW-2026-09-28-round1.md`). This revision covers findings P9-1..P9-10 and carver decisions C7, C8, C12, C13 and C15.*
 
 | Field | Value |
 |---|---|
 | Backlog | B119, plan package P9 |
-| Branch | `assay-b110-p9-distributed`, cut from the integration line after `assay-b110-v14` (P3a–P3d) and P6 are merged |
-| Depends on | **P3b** (judge identity `/3` with the cold policy, transform, R2 collection digest and runtime fingerprint); **P6** (persisted campaign deadline file); **P1** (the `tests/zz_slow/` tier exists); plan §11.2 (D7 operator confirmation: this changes only the runbook step, not the code) |
-| Contract class | 2a→2b. The design choices are enumerated below, each with the carver's chosen option. Once the controller accepts the §"Design packet" choices at dispatch, the package executes as 2b. |
+| Branch | `assay-b110-p9-distributed`, cut from the integration line (`assay-b110-integration`, per plan §11.1 / C18) after these have merged: `assay-b110-v14` (P3a–P3d), P6, P7 + P7b, P8 and P1 |
+| Depends on | **P3b**: judge identity `/3` with the cold policy, transform, R2 collection digest and runtime fingerprint. The hook-fingerprint paths must be normalized relative to site-packages/purelib and plugin tokens must be id-free (P3B-4); otherwise resumed evidence fails verification across venvs. **P6**: the campaign deadline file, and state records carrying `campaign_deadline_sha256` when written under `--campaign-deadline` (C8). **P7**: pilot runs write the `PILOT-STATE` sentinel into their state dir and record `selection_sha256`. **P8**: `cli.plan_jobs()`, whose plan rows carry `source_sha256`/`mutated_file_sha256` (C13). **P1**: the `tests/zz_slow/` tier. **Plan §11.2**: D7 defaults to **NO** until the operator answers (C8). |
+| Contract class | 2a→2b. The design choices are enumerated below, each with the carver's chosen option. Once the controller accepts them at dispatch, the package executes as 2b. |
 | Implementer | Opus |
-| Decisions | A-471 (plan D7); A-473 (P6 deadline); A-464 (shards are scheduling, not proof; time never classifies); A-462 as amended by A-467 |
+| Decisions | A-471 (plan D7; C8 default NO); A-473 (P6 deadline); A-474 (pilot state is never imported); A-464 (shards are scheduling, not proof; time never classifies); A-462 as amended by A-467 |
 | Size | L |
 
 ## Why this package exists
 
-The operator wants two things:
-- expensive R2 work runs asynchronously on several hosts while development continues;
-- a provisionally accepted first step whose evidence counts later.
+The operator wants expensive R2 work to run asynchronously on several hosts while development continues.
 
-That is safe only if a result produced elsewhere can be proven to belong to *this* campaign's exact judging identity. A disagreement must be surfaced as nondeterminism, never averaged away. The final claim must still be one ordinary, complete, verifier-accepted verdict (A-464: "shards are scheduling, not proof").
+That is safe only under three conditions:
+- A result produced elsewhere must be provably bound to *this* campaign's exact judging identity **and** to its persisted deadline.
+- A disagreement must be surfaced as nondeterminism, never averaged away.
+- The final claim must still be one ordinary, complete, verifier-accepted verdict (A-464: "shards are scheduling, not proof").
 
 This package adds:
-- the identity file;
-- a conflict-refusing import;
+- the store identity file;
+- a conflict-refusing, deadline-bound import;
+- an audit-sample re-execution that tests worker honesty;
 - the consolidation contract;
+- the gate modes;
 - a host-agnostic worker runbook.
+
+## Trust model (state it verbatim in DESIGN-GUIDE and the report)
+
+**What a record is.** A state record is **worker-authored**. Its `judge_sha256`, `outcome_bucket`, `execution`, `evidence` and `campaign_deadline_sha256` are all written by the process that ran the candidate.
+
+**What `SHA256SUMS` proves.** Only that the bytes arrived as the worker wrote them.
+
+**What import proves.** Identity binding proves a record *claims* the right campaign; it cannot prove the claimed outcome is true.
+- A buggy or malicious worker can write `killed` for a survivor, copy the correct judge, and regenerate `SHA256SUMS`.
+- Without the mitigation below, such a record would be accepted, resumed without execution by the consolidating run, and pass `assay verify`.
+- Conflict detection catches a lie only when the same candidate also ran on another host.
+
+**Mitigation (C12): the audit sample.**
+- For each source, a deterministic sample of the records that would be accepted is **held back** from the store. The sample is 2%, minimum 5, or all records if fewer than 5.
+- The consolidating run therefore re-executes those candidates locally.
+- `assay state audit-check` then compares each local outcome with the held-back worker record. Any bucket disagreement refuses **that whole source** and fails the gate.
+- The sample is seeded by the campaign name, so it is reproducible and cannot be chosen by the worker.
+
+**Residual risk (state it honestly).**
+- A dishonest worker is caught with probability 1 − (1 − f)^k, where f is the fraction of its records that are false and k is the sample size. A worker with a single false record out of 1,000 has about a 2% chance of being caught per campaign.
+- The audit sample tests worker *honesty*, not every record.
+- Enrol only hosts you control. Remote capacity is "measured" (A-464), not "trusted".
+- This limit is part of the operator's D7 question (plan §11.2).
 
 ## Context to read first
 
-Paths are relative to `assay/` at HEAD `db85f747`. Line numbers move with P3/P4/P6; locate code by symbol.
+Paths are relative to `assay/` at HEAD `db85f747`. Line numbers move with P3, P4, P6, P7 and P8, so locate code by symbol.
 
-1. `nyxloom-trove/reports/assay-B110-PLAN-2026-09-28.md`:
-   - §3 D7 and D10;
-   - §5 (the judge identity inputs, `runtime_fingerprint_sha256` and the label `assay-judge-identity/3`);
-   - §6 (the P9 contract);
-   - §9.3;
-   - §11.2.
-2. `src/assay/mutation.py`:
-   - `judge_sha256` 1052-1156, whose docstring states the injective netstring construction;
+1. `nyxloom-trove/reports/assay-B110-PLAN-2026-09-28.md`: §3 D7 and D10; §5 (the judge identity inputs, `runtime_fingerprint_sha256`, label `assay-judge-identity/3`); §6 (the P9 contract); §9.3; §11.2 and §11.6.
+2. `nyxloom-trove/reports/b110/REVIEW-2026-09-28-round1.md`: C7, C8, C12, C13.
+3. `src/assay/mutation.py`:
+   - `judge_sha256` **1137-1156** (construction; its docstring starts at 1052);
    - the one production caller in `run_mutation` 2345-2366 ("ONE judge identity for this whole sweep");
    - `mutation_state_record_name` 1159-1175;
    - `default_state_root` 1187-1189;
    - `_write_mutation_state_record` 1244-1270 (atomic temp + `os.replace`);
-   - `_load_validated_state_record` 1273-1402. Read its whole docstring: the three-way return; B021 corruption versus a B088 judge mismatch; the fail-open `isinstance` lesson.
+   - `_load_validated_state_record` 1273-1402. Read its whole docstring: the three-way return; B021 corruption (`MutationStateError`) versus B088 judge mismatch (`_RECORD_REJECTED`, compared from the record itself at 1398-1400); the fail-open `isinstance` lesson;
+   - the resume loop 2385-2412, which re-validates every record against the recomputed judge;
    - `_execution_from_state_record` 1450-1497;
    - `select_mutation_shard` 1500-1520 (blake2b-4 mod N; `MAX_SHARD_COUNT`);
-   - `merge_mutation_shards` 1529-1641. This library-only function is **not** a certificate, because it never compares against a fresh plan (Sol review).
-   - The state-record payload written at 2956-2990.
-3. `src/assay/isolation.py:595-624`: `tree_sha256` and `tree_sha256_for_identity_exclude`. These are content digests of the prepared manifest, not the Git tree ID.
-4. `src/assay/cli.py`:
+   - `merge_mutation_shards` 1529-1641, which is library-only and **not** a certificate (Sol review);
+   - the state-record payload 2956-2990.
+4. **Tests that glob `*.json` in a state dir.** Every file P9 adds to a store must avoid the `.json` extension (P9-1):
+   - `tests/test_mutation_progress_budget_plan.py:547` (`len == 2`), `:638`, `:967`, `:1034`;
+   - `tests/test_cli_run.py:864/902/1059`;
+   - `tests/test_mutation_judge_identity.py:546/598/813`;
+   - `tests/test_state_dir_resume.py:142/182/203`;
+   - `tests/test_mutation_state_crash_tails.py:86`;
+   - `tests/test_b106_reuse_and_witness.py:1034`;
+   - `tests/test_mutation_resume_sharding.py:136`.
+5. `src/assay/cli.py`:
    - the `--state-dir` flag :418;
-   - `_resolve_state_dir` 845-878 (the git-visibility refusal);
+   - `_resolve_state_dir` 845-878 (git-visibility refusal);
    - the `run` parser 255-328;
-   - the `plan` parser 330-367;
    - `_cmd_plan` 1571-1886;
-   - the subparser registration around :219-451.
-5. `src/assay/analysis.py:1006-1020` `_write_new`: publish without overwriting, which is the pattern for the receipt.
-6. `tools/self-qualification-gate.sh`: the exact-OID private clone, build-venv/run-venv, and the `assay run … --resume --state-dir` invocation (~:183-189). A worker reproduces this.
-7. `run-gate.toml` `[lanes.self-qualification]`: `resources = {cpus="3", memory="2g", memory_swap="8g"}`. This is the per-worker envelope.
-8. `nyxloom-trove/decisions.md` A-464 (:943) and A-462 (:941).
-9. `tests/test_b106_reuse_and_witness.py:661-784`: `_seed_pytest_mutation` plus a real `runner.run_lane` R2 on a tiny pytest project. This is the real-run fixture pattern.
-10. `tests/conftest.py`: `git_repo` (:530), `make_lane` (:952), `make_r2_judge` (:1084).
+   - after P8: `plan_jobs()` and the rows that carry `source_sha256`/`mutated_file_sha256`;
+   - `src/assay/candidate_identity.py:8` `candidate_id_from_fields`.
+6. `src/assay/analysis.py:1006-1020` `_write_new`: publish without overwriting (the pattern for the receipt).
+7. `tools/self-qualification-gate.sh`:
+   - the requested-lane `case` at :16-19;
+   - the exact-OID clone, build-venv/run-venv and wheel (:49-154);
+   - `run_and_verify_lane` 156-214, whose state path `.assay/mutation-state-$lane` at :160 is **STORE**.
+   - After P6, P7b and P10c: their arms and the deadline wiring.
+8. `run-gate.toml` `[lanes.self-qualification]`, whose `resources = {cpus="3", memory="2g", memory_swap="8g"}` is the per-worker envelope. After P7b: `[lanes.b110-screen]`, the shape to copy.
+9. `nyxloom-trove/decisions.md`: A-464 (:943), A-462 (:941), A-471 (end of file).
+10. `tests/test_b106_reuse_and_witness.py:661-784`: `_seed_pytest_mutation` plus a real `runner.run_lane` R2 on a tiny pytest project. This is the real-run fixture pattern.
+11. `tests/conftest.py`: `git_repo` (:530), `make_lane` (:952), `make_r2_judge` (:1084).
+
+## Tracer-bullet probe (carver/controller, before dispatch; no gates, no containers)
+
+This probes the dangerous seam: consolidation by `--resume` over records copied between stores. Run it at the current HEAD with the devcontainer `assay`, on a scratch tiny pytest repo (two killable sites, one test file), serially under `nice -n 19 ionice -c3`.
+
+1. `assay run L --shard 0/2 --resume --state-dir S0`, then `assay run L --shard 1/2 --resume --state-dir S1`.
+2. `cp S1/*.json S0/`.
+3. `assay run L --resume --state-dir S0 --progress P.jsonl --verdict-json V.json`.
+4. Expect the `resume` progress event to report `resumed_total == 2` and **no** `candidate` events, and `assay verify V.json` exits 0.
+
+Record the commands and results in the P9 carve log. If step 4 executes any candidate, the consolidation contract is wrong, and P9 goes back to the carver.
 
 ## Design packet (2a → 2b; the carver's choice for each)
 
-| # | Open choice | Admissible options | Invariant it must keep | Carver's choice and deciding evidence |
+| # | Open choice | Admissible options | Invariant | Carver's choice and deciding evidence |
 |---|---|---|---|---|
-| OC1 | Where the import gets "this campaign's identity" | (a) Recompute from `assay plan` without execution. (b) An identity file written by a real baseline run. (c) Trust each worker's own claim. | "A check is only as strong as what it compares." Identity inputs include `tree_sha256` (a prepared-manifest digest), the R2 collection digest and the runtime fingerprint, and none of those is derivable without preparing a snapshot and running the baselines. | **(b).** (a) cannot produce the runtime fingerprint or the collection digest. (c) is self-attestation. |
-| OC2 | When the identity file is written | Every native-R2 run with a store, or only an explicit subcommand | It must never describe a campaign other than the one whose records sit next to it. | **Every native-R2 run with `state_root is not None`**, immediately after `judge` is computed (mutation.py ~2353) and before any candidate executes. Written atomically, **replacing** any older file: it describes the most recent run. |
-| OC3 | What counts as an identical duplicate versus a conflict | Byte equality; a semantic signature | Natural timing differences (`elapsed_seconds`, `cpu_seconds`) are not nondeterminism. A different bucket, mode or witness node is. | **Signature = (`judge_sha256`, `outcome_bucket`, `execution.mode`, `execution.witness.node_id` or `null`).** Same signature means `duplicate_consistent` (skip). Different signature means a conflict. |
-| OC4 | Partial acceptance | All-or-nothing; per record | A conflict is a campaign-level signal. A foreign or stale record is a per-record fact. | **Per-record refusals** (the rest are accepted, exit 1). **Any conflict** means the whole import is refused, **nothing is written**, and the exit is 2. |
-| OC5 | Transfer integrity | Nothing; `SHA256SUMS`; signed bundles | Bytes must equal what the worker wrote. | **A mandatory `SHA256SUMS`** (GNU `sha256sum` format) covering exactly the `*.json` files in the source directory, no more and no fewer. Signing is deferred. |
-| OC6 | Where "accepted" lives | A `status` field inside records; store membership plus a receipt | A worker must not be able to forge acceptance. | **Store membership plus a retained import receipt.** No field in the record (a worker could write it). |
-| OC7 | Imported provenance on the verdict wire | A new v14/v15 field; none | No schema change in P9 | **None.** Receipts are retained gate evidence, and the §9.3 runbook requires them. A wire field would be v15 and is deferred. |
-| OC8 | Records produced before the campaign deadline init (the screen, early workers) | Accept; refuse | Identity-bound validity (A-471) | **The code accepts them** (identity is the authority). Whether §9.3 step 4 imports them is the **operator's pending D7 confirmation** (plan §11.2). If the answer is no, the runbook omits the step; no code change. |
-| OC9 | An existing store record with a *different* judge (stale) | Keep; replace; refuse | Resume already treats it as absent (`_RECORD_REJECTED`). | **Replace it atomically** and list it under `replaced_stale` in the receipt. |
-| OC10 | Worker clock skew against the absolute UTC deadline (P6) | Ignore; measure at enrolment | The deadline is absolute UTC (plan D9). | **Measure at enrolment.** A host with an absolute NTP offset over 2 s is not enrolled. This is a runbook rule, not code. |
+| OC1 | Where import gets "this campaign's identity" | (a) recompute from `assay plan`; (b) an identity file written by a real baseline run; (c) trust each worker | "A check is only as strong as what it compares." The identity includes `tree_sha256`, the R2 collection digest and the runtime fingerprint, none of which can be derived without running the baselines. | **(b).** (a) cannot produce the runtime fingerprint; (c) is self-attestation. The store identity comes from the coordinator's own run (the `b119-worker` arm, shard 0 into STORE). |
+| OC2 | Identity file name and write time | any | It must never collide with record globs (P9-1), and must describe the records beside it. | **`<state-dir>/CAMPAIGN-IDENTITY`** (JSON content, no extension). It is written by every native-R2 run with `state_root is not None`, right after `judge` is computed (mutation.py ~2353) and before any candidate executes. The write is atomic and replaces any older file, under the store lock (OC14). |
+| OC3 | Duplicate vs. conflict | byte equality; a semantic signature | Timing differences are not nondeterminism. A different bucket is. | **Conflict signature = (`judge_sha256`, `outcome_bucket`).** The same signature is `duplicate_consistent`. Two `killed` records that differ only in `execution.mode`/witness node are **not** a conflict; they are reported in `mode_differences` (P9-9). |
+| OC4 | Partial acceptance | all-or-nothing; per record | A conflict is campaign-level; a foreign, stale or non-final record is a per-record fact. | **Per-record refusals** (the rest are accepted, exit 1). **Any conflict** → the whole import is refused, nothing is written to the store root, exit 2. |
+| OC5 | Transfer integrity | none; `SHA256SUMS`; signed | The bytes must equal what the worker wrote. | **Mandatory `SHA256SUMS`** with a fixed grammar (see *SHA256SUMS grammar*). Signing is deferred. |
+| OC6 | Where "accepted" lives | a record field; store membership plus a receipt | A worker must not forge acceptance. | **Store membership + a retained import receipt + a passing audit-check.** No field in the record. |
+| OC7 | Imported provenance on the verdict wire | v15 field; none | No schema change in P9 | **None.** Receipts and audit-check results are retained gate evidence. |
+| OC8 | Records not bound to the current campaign deadline (screen, pre-init workers) | accept; refuse; flag-gated | D7 is pending and defaults to NO (C8) | **Refuse by default:** a record whose `campaign_deadline_sha256` ≠ sha256(`--require-campaign-deadline` FILE) is refused `unbound-record`. `--accept-unbound-records` accepts only records that **lack** the field, never a *different* deadline. The runbook forbids that flag unless the operator answers D7 yes. |
+| OC9 | An existing store record with a different judge (stale) | keep; replace; refuse | Resume treats it as absent | **Replace it atomically.** It is listed in `replaced_stale`, which is a subset of `accepted`. |
+| OC10 | Worker clock skew | ignore; measure | The deadline is absolute UTC | **Measure at enrolment**: NTP offset ≤ 2 s. A runbook rule, not code. |
+| OC11 | Worker honesty | trust; re-execute everything; audit sample | Complete-inventory claim; bounded extra cost | **Audit sample** (see Trust model): 2% per source, min 5 (or all if fewer), selected by lowest `blake2b(campaign + ":" + candidate_id)`, where `campaign` is the deadline file's `campaign` field. Held-back records go to `STORE/.import-audit/<LABEL>/<id>.json` (outside the root glob), and `assay state audit-check` compares them after consolidation. |
+| OC12 | Non-final buckets | accept; refuse | A-464: host load must not decide a campaign | **Refuse `hung`, `budget_exceeded` and `crashed` per record** (`non-final-bucket`), so consolidation re-executes them locally (P9-9). Otherwise a load-induced worker result could be replayed or become a conflict. |
+| OC13 | Pilot state | ignore; refuse | A-474: pilot state is never imported | **Refuse the whole source** (`source-pilot`, exit 2) if it contains `PILOT-STATE` or its `CAMPAIGN-IDENTITY.selection_sha256` is non-null (P9-6). |
+| OC14 | Concurrency | none; lock | No time-of-check/time-of-use gap between a running shard and an import (P9-8) | **An exclusive `fcntl.flock(LOCK_EX \| LOCK_NB)` on `STORE/.lock`**, honored by `assay run` (whenever a state dir is set) and by `assay state import`/`audit-check`. A held lock is a refusal: import exits 2 `store-locked`; run gives a whole-lane `ERROR/BAD_LANE_CONFIG` "state dir is locked by another assay process" before any execution. |
+| OC15 | Host vs. container | host import; container import | `assay_version` must equal the exact-OID wheel (P9-4) | **Import runs only inside tester-unified** through the gate arm `b119-import`. STORE is the gate's `.assay/mutation-state-self-qualification`. There is never a host-side `campaign init` or import. |
 
-**No D-decision beyond A-471 is needed.** OC8 is already routed to the operator (plan §11.2).
+**No D-decision beyond A-471 is needed.** OC8's default (NO) holds until the operator answers plan §11.2.
 
 ## Implementation packet (normative, after the design is accepted)
 
 ### Owned interfaces
 
-**Owner `src/assay/mutation.py`.** Refactor the identity into one derivation; do **not** duplicate it.
+**Owner `src/assay/mutation.py`.** There is one identity derivation; do **not** duplicate it.
 
 ```python
 def judge_identity_inputs(*, tree_sha256: str, plan: CommandPlan, link_paths: Sequence[str] = (),
@@ -90,233 +142,339 @@ def judge_identity_inputs(*, tree_sha256: str, plan: CommandPlan, link_paths: Se
                           equivalence_ledger_sha256: str | None) -> dict: ...
 def judge_sha256_from_inputs(inputs: Mapping[str, Any]) -> str: ...   # the ONLY digest implementation
 def judge_sha256(**same_kwargs) -> str:                               # == judge_sha256_from_inputs(judge_identity_inputs(...))
+def validate_state_record_shape(payload: object, *, stem: str, plan_row: Mapping[str, Any] | None) -> str | None:
+    """Return None if valid, else the refusal reason (closed set below). Shared by
+    `_load_validated_state_record` (which maps a non-None reason to MutationStateError)
+    and `state import`, so the two validators cannot drift (P9-10)."""
 ```
 
-- The keyword set equals whatever P3b gave `judge_sha256`. If P3b's signature differs from the list above, **use P3b's**, keep this shape, and note the difference in the report.
+**`judge_identity_inputs`:**
+- The keyword set equals P3b's `judge_sha256`. If P3b's signature differs from the list above, **use P3b's**, keep this shape, and note it in the report.
 - The inputs dict is JSON-safe with exactly these keys:
-  - `label` (`"assay-judge-identity/3"`)
-  - `tree_sha256`
-  - `tool_version` (a string; `""` for None, matching today's netstring rule)
-  - `argv_effective` (a list)
-  - `env_declared` (an object, keys sorted)
-  - `env_ambient_names` (a sorted list)
-  - `cwd_declared` (a string or `""`)
-  - `project_prefix` (a string or `""`)
-  - `link_paths` (a sorted list)
-  - `cold_witness_kills`
-  - `transform`
-  - `r2_collection_sha256`
-  - `runtime_fingerprint_sha256`
-  - `equivalence_ledger_sha256`
-- `judge_sha256_from_inputs` reproduces **byte-for-byte** the netstring/count construction of `judge_sha256` (mutation.py 1135-1156, plus P3b's additions). It refuses unknown or missing keys with `ValueError`.
+  - `label` (`"assay-judge-identity/3"`);
+  - `tree_sha256`;
+  - `tool_version` (`""` for None);
+  - `argv_effective` (list);
+  - `env_declared` (object, sorted keys);
+  - `env_ambient_names` (sorted list);
+  - `cwd_declared`;
+  - `project_prefix`;
+  - `link_paths` (sorted list);
+  - `cold_witness_kills`;
+  - `transform`;
+  - `r2_collection_sha256`;
+  - `runtime_fingerprint_sha256`;
+  - `equivalence_ledger_sha256`.
+- `judge_sha256_from_inputs` reproduces **byte-for-byte** the netstring/count construction of `judge_sha256` (mutation.py 1137-1156, plus P3b's additions). Unknown or missing keys raise `ValueError`.
 
-**New file `<state-dir>/campaign-identity.json`** (written by `run_mutation`, owner mutation.py):
+**`_load_validated_state_record` refactor:**
+- It calls `validate_state_record_shape` for the structural checks.
+- Existing behavior is unchanged: a structural failure raises `MutationStateError` (B021), and a judge mismatch returns `_RECORD_REJECTED` (B088), still checked **last**.
+
+**New file `<state-dir>/CAMPAIGN-IDENTITY`** (JSON; written by `run_mutation`; owner `mutation.py`):
 
 ```json
 {"schema_version": 1, "kind": "assay-campaign-identity", "lane": "self-qualification",
  "commit": "<40hex>", "git_tree": "<40hex>", "assay_version": "7.2.0.dev12+g1a2b3c4",
  "judge_sha256": "<64hex>", "judge_inputs": { ...exactly the dict above... },
- "shard": {"index": 1, "count": 4}, "written_at": "2026-10-03T11:02:07Z"}
+ "shard": {"index": 0, "count": 4}, "selection_sha256": null,
+ "campaign_deadline_sha256": "<64hex>", "written_at": "2026-10-03T11:02:07Z"}
 ```
 
-- `shard` is `null` when unsharded. It is informational only, because the judge identity excludes the shard.
-- `commit` and `git_tree` come from the lane run's HEAD and the snapshot spec: the same values the verdict records.
+- `shard` is `null` when unsharded; it is informational, because the judge excludes the shard.
+- `selection_sha256` is P7's selection digest for a `--candidates-file` run, else `null`.
+- `campaign_deadline_sha256` is the sha256 of the `--campaign-deadline` file bytes when given, else `null`.
+- `commit` and `git_tree` are the values the verdict records.
 - **Invalid examples:**
-  - `judge_sha256` ≠ `judge_sha256_from_inputs(judge_inputs)` → `identity-inconsistent`.
-  - `judge_inputs` has an extra key → `identity-inconsistent`.
-- The filename does not match `^[0-9a-f]{64}\.json$`, so it never collides with a record and nothing that scans records reads it. P8 ignores it by name.
+  - `judge_sha256` ≠ `judge_sha256_from_inputs(judge_inputs)` → `identity-inconsistent`;
+  - `judge_inputs` has an extra key → `identity-inconsistent`;
+  - a missing `selection_sha256` key → `identity-inconsistent`.
+- The name has no `.json`, so no record glob and no existing test sees it (P9-1). P8 ignores it by name.
 
-**New CLI (owner: new module `src/assay/state_import.py`, registered in `cli.py`):**
+**New store files, none named `*.json`:**
+- `STORE/.lock`: the flock target, empty.
+- `STORE/.import-journal/<receipt-basename>.pending`: journal.
+- `STORE/.import-audit/<LABEL>/<id>.json`: held-back audit sample. This is in a subdirectory, so the root globs never see it.
+
+**New CLI** (owner: new module `src/assay/state_import.py`, registered in `cli.py`):
 
 ```
 assay state import <lane> --file <assay.toml> --state-dir <STORE>
-    --from <LABEL>=<DIR> [--from <LABEL>=<DIR> ...] --receipt <PATH> [--worktree <dir>]
+    --from <LABEL>=<DIR> [--from <LABEL>=<DIR> ...] --receipt <PATH>
+    --require-campaign-deadline <DEADLINE.json> [--accept-unbound-records] [--worktree <dir>]
+assay state audit-check <lane> --file <assay.toml> --state-dir <STORE>
+    --import-receipt <PATH> [--import-receipt <PATH> ...] --out <PATH> [--worktree <dir>]
 ```
 
 - `LABEL` matches `^[A-Za-z0-9._-]{1,64}$` and is unique across `--from`.
-- `--receipt` must not exist. Publish it with the `_write_new` link-without-overwrite pattern.
-- `--state-dir` is resolved and refused by the **same** `_resolve_state_dir`.
+- `--receipt` and `--out` must not exist; publish with the `_write_new` pattern.
+- `--state-dir` and every `--from` pass the **same** `_resolve_state_dir` visibility refusal.
+- `--require-campaign-deadline` is **required**. The file must pass P6's deadline validation for this commit, tree, lane and version. If it has expired, the import still runs: import is not execution, and the deadline bounds the consolidating run.
 - Add `src/assay/state_import.py` to **both** `judge.targets` lists in `assay.toml` (`tests/test_self_lane.py:128-135`).
 
-### Required flow (the order is normative; nothing is written before step 8)
+### SHA256SUMS grammar (OC5)
 
-1. Resolve arguments. `--receipt` must not exist. `--state-dir` passes `_resolve_state_dir`. Each `--from` must be a directory.
-2. Load `STORE/campaign-identity.json`. It is **required**; if it is absent, exit 2 with `store-identity-missing`.
-   - Validate its shape.
-   - Recompute `judge_sha256_from_inputs(judge_inputs)` and compare with the stored value; on mismatch, exit 2 with `identity-inconsistent`.
-3. Bind the store identity to the current state:
-   - `lane == <lane>`;
-   - `commit == git rev-parse HEAD` of the worktree;
+- UTF-8, LF line endings only (no CR), and a final LF.
+- Exactly one line per listed file: `<64 lowercase hex>` + two spaces + `<name>`. This is GNU text mode; the `*` binary marker is refused.
+- `<name>` is a bare filename: no `/`, no leading `.`, not `SHA256SUMS`.
+- Lines are sorted by `<name>` (bytewise), with no duplicates.
+- The listed set must equal **exactly**: every `^[0-9a-f]{64}\.json$` file in the directory, plus `CAMPAIGN-IDENTITY`.
+- An unlisted such file, a listed missing file, or any other regular file in the directory (a `PILOT-STATE` file is caught earlier as `source-pilot`) → `source-integrity`.
+- Size ≤ 4 MiB.
+
+### Required flow (order is normative)
+
+1. **Arguments.**
+   - `--receipt` must not exist.
+   - `--state-dir` and every `--from` pass `_resolve_state_dir`.
+   - Each `--from` is a directory.
+   - Take the **store lock** (OC14); if it is held, exit 2 `store-locked`.
+   - If any `STORE/.import-journal/*.pending` exists, exit 2 `journal-pending`, naming it. The operator inspects it; resume validation remains authoritative.
+2. **The store identity.**
+   - Load `STORE/CAMPAIGN-IDENTITY`. It is required; if absent, exit 2 `store-identity-missing`.
+   - Validate its shape, and recompute `judge_sha256_from_inputs(judge_inputs)`. A mismatch is exit 2 `identity-inconsistent`.
+   - Its `selection_sha256` must be `null` (else exit 2 `store-is-pilot`).
+   - Its `campaign_deadline_sha256` must equal sha256(`--require-campaign-deadline`); a mismatch is exit 2 `store-identity-stale`.
+3. **Bind the store identity** to the current state:
+   - `lane`;
+   - `commit == HEAD`;
    - `git_tree == HEAD^{tree}`;
    - `assay_version == assay.__version__`;
    - `judge_inputs.tool_version == assay.__version__`.
 
-   Any mismatch → exit 2, `store-identity-stale`.
-4. Reconstruct the current plan with the same planner code as `assay plan`. Reuse the `_lane_plan` helper that P8 ported, or call the underlying functions; do not shell out. This yields `plan_by_id`. If the plan is unsupported, exit 2.
-5. For each source, in `--from` order:
-   - `SHA256SUMS` must exist and list exactly every `*.json` in the directory, no extras and no missing; every digest must match. Otherwise exit 2 with `source-integrity`, naming the label.
-   - `campaign-identity.json` must exist. Validate it as in step 2 (failure → exit 2, `source-identity-inconsistent`).
-   - Record `identity_matches` = (its `judge_sha256` equals the store's), and `differing_components` = the sorted `judge_inputs` keys whose values differ.
-
-     A mismatching source is **not** refused wholesale: its records are refused per record in step 6, so the receipt shows the cause. For example, `runtime_fingerprint_sha256` differs when the host environment differs.
-6. For each `<64hex>.json` record in each source (other names are ignored, except `SHA256SUMS` and `campaign-identity.json`), run the checks below in order. The first failing check is the refusal reason:
+   Any mismatch is exit 2 `store-identity-stale`. On the host, this always fails, by design (OC15).
+4. **Existing store records.**
+   - Validate every existing `STORE/<64hex>.json` with `validate_state_record_shape`. A failure is exit 2 `store-corrupt`, naming the file, with nothing written.
+   - Records with a different judge are stale (OC9).
+5. **The current plan:** `cli.plan_jobs(lane, worktree=…)` (P8, C13) gives `plan_by_id`. If the plan is unsupported, exit 2.
+6. **For each source**, in `--from` order:
+   1. `PILOT-STATE` present → exit 2 `source-pilot` (OC13).
+   2. `SHA256SUMS` passes the grammar, and every listed digest matches the bytes → else exit 2 `source-integrity`, naming the label.
+   3. `CAMPAIGN-IDENTITY` validates as in step 2 → else exit 2 `source-identity-inconsistent`. Its `selection_sha256 != null` → exit 2 `source-pilot`.
+   4. Record `identity_matches` (its judge equals the store's) and `differing_components` (the sorted `judge_inputs` keys that differ). A mismatching source is **not** refused wholesale; step 7 refuses its records individually, so the receipt shows why (for example, a different `runtime_fingerprint_sha256` means a different host environment).
+7. **Per-record checks.** For each `<64hex>.json` record, keep only `(path, sha256, parsed signature fields)` in memory; never hold all payload bytes (P9-8). The first failing check is the refusal reason:
 
    | # | Check | Refusal reason |
    |---|---|---|
-   | 1 | Size ≤ `MUTATION_STATE_RECORD_LIMIT` | `oversized` |
-   | 2 | UTF-8 JSON object | `malformed` |
-   | 3 | `schema_version == 1` | `schema-version` |
-   | 4 | `candidate_id` == filename stem | `malformed` |
-   | 5 | Candidate is in `plan_by_id` | `not-in-plan` |
-   | 6 | `path`, `operator`, `source_sha256` and `replacement_sha256` equal the plan row | `identity-fields` |
-   | 7 | `outcome_bucket ∈ MUTATION_BUCKETS` | `malformed` |
-   | 8 | `_execution_from_state_record` succeeds | `malformed` |
-   | 9 | `judge_sha256` is a string equal to the store identity's | `judge-mismatch` |
+   | 1 | `validate_state_record_shape(payload, stem=…, plan_row=None)` passes: size ≤ `MUTATION_STATE_RECORD_LIMIT`, UTF-8 JSON object, `schema_version == 1`, `candidate_id == stem`, `outcome_bucket ∈ MUTATION_BUCKETS`, `_execution_from_state_record` succeeds, and `candidate_id_from_fields(record identity fields) == stem` | the shape reason: `oversized`, `malformed`, `schema-version` or `identity-fields` |
+   | 2 | The candidate is in `plan_by_id` | `not-in-plan` |
+   | 3 | The record's `path`, `operator`, `start_byte`, `end_byte`, `source_sha256` and `mutated_file_sha256` equal the plan row | `identity-fields` |
+   | 4 | `outcome_bucket ∈ {killed, survived, equivalent}` | `non-final-bucket` (OC12) |
+   | 5 | `judge_sha256` is a string equal to the store identity's | `judge-mismatch` |
+   | 6 | `campaign_deadline_sha256` equals sha256(DEADLINE). A record without the key is accepted only with `--accept-unbound-records`. | `unbound-record` |
 
    Records that pass are *candidates for acceptance*.
-7. **Conflict detection.** Across all candidates-for-acceptance from all sources, plus each existing `STORE/<id>.json` whose `judge_sha256` equals the store identity:
-   - group by candidate ID and compare signatures (OC3);
-   - the same signature → keep one (the store's copy if present, else the first source by `--from` order); the others are `duplicate_consistent`;
-   - a different signature → conflict.
+8. **Conflict detection.** Consider all candidates for acceptance from all sources, plus every existing store record whose judge equals the store identity. Group them by candidate ID and compare conflict signatures (OC3):
+   - The same signature: keep one (the store copy if present, else the first source), and mark the rest `duplicate_consistent`. `killed` records whose modes differ are also listed in `mode_differences`.
+   - A different signature: a conflict. **Any conflict:** publish only the receipt (`result: "refused"`), exit 2, and leave the store root byte-for-byte unchanged.
+9. **The audit sample (OC11).** Per source, over its records that would be written (not duplicates), select the audit sample. Those records are **held back**: they are written to `STORE/.import-audit/<LABEL>/<id>.json` instead of the store root, and listed as `audit_held`.
+10. **The journal.** Write `STORE/.import-journal/<receipt-basename>.pending`: a JSON list of `{candidate_id, source, sha256, destination}` for every intended write.
+11. **Write.** For each record to write:
+    - **re-read** the source file;
+    - recompute its sha256, which must equal both the `SHA256SUMS` digest and the step-7 digest (else abort: exit 2 `source-changed`, leaving the journal in place);
+    - write with `_write_mutation_state_record(STORE, payload)`, canonical and atomic.
 
-   **Any conflict:** write only the receipt (`result: "refused"`), exit 2, and leave the store byte-for-byte unchanged. An existing store record with a different judge is stale (OC9) and does not take part in conflicts.
-8. Write each accepted record with `_write_mutation_state_record(STORE, payload)`, which gives canonical JSON and an atomic write. A stale store record is replaced; list it under `replaced_stale`. `record_sha256` in the receipt is the SHA-256 of the bytes written.
-9. Publish the receipt. Exit 0 if nothing was refused; exit 1 if at least one record was refused per record.
+    A replaced stale store record is listed in `replaced_stale`. `record_sha256` is the sha256 of the bytes written.
+12. **Finish.** Publish the receipt, remove the journal, and release the lock. Exit 0 if nothing was refused per record, else exit 1.
 
-### Import receipt (owner `state_import.py`; schema `src/assay/schemas/state-import-receipt.schema.json`, `"schema_version": {"const": 1}`)
+**`assay state audit-check`.** This runs after the consolidating `assay run`, inside the same gate arm, still under the lock.
+- For each `audit_held` entry in each supplied import receipt:
+  - the root record `STORE/<id>.json` must exist with the current store judge. That means consolidation executed it; if not, the result is `audit-not-executed`.
+  - Its `outcome_bucket` must equal the held record's. If not, the result is `audit-disagreed`, and the source is named.
+  - For `killed`, differing modes are informational.
+- **Output:** writes `--out` `{schema_version:1, kind:"assay-state-audit-check", store_judge_sha256, sources:[{label, held, agreed, disagreed:[ids], not_executed:[ids]}], result}`.
+- **Exit codes:** 0 when every held record agreed; 2 on any disagreement or not-executed. The disagreeing **source** must be discarded (re-import without it) and consolidation re-run. The gate fails.
+
+### Import receipt
+
+Owner `state_import.py`; schema `src/assay/schemas/state-import-receipt.schema.json`, with `"schema_version": {"const": 1}`.
 
 **Valid example:**
+
 ```json
 {"schema_version": 1, "kind": "assay-state-import", "lane": "self-qualification",
- "commit": "<40hex>", "store": "/abs/.assay/campaign-X", "store_judge_sha256": "<64hex>",
+ "commit": "<40hex>", "store": "/abs/.assay/mutation-state-self-qualification", "store_judge_sha256": "<64hex>",
+ "campaign": "b105-1a2b3c4d5e6f", "campaign_deadline_sha256": "<64hex>", "accept_unbound_records": false,
  "assay_version": "7.2.0.dev12+g1a2b3c4", "created_at": "2026-10-03T12:00:00Z",
  "result": "partial",
- "sources": [{"label": "hostb-s1", "path": "/abs/inbox/hostb-s1", "sha256sums_sha256": "<64hex>",
+ "sources": [{"label": "hostb-s1", "path": "/abs/.assay/inbox/hostb-s1", "sha256sums_sha256": "<64hex>",
               "identity_judge_sha256": "<64hex>", "identity_matches": true, "differing_components": []}],
- "counts": {"examined": 941, "accepted": 939, "duplicate_consistent": 1, "replaced_stale": 0, "refused": 1},
+ "counts": {"examined": 941, "accepted": 920, "audit_held": 19, "duplicate_consistent": 1,
+            "refused": 1, "not_written": 0, "replaced_stale": 0},
  "accepted": [{"candidate_id": "<64hex>", "source": "hostb-s1", "record_sha256": "<64hex>"}],
+ "audit_held": [{"candidate_id": "<64hex>", "source": "hostb-s1", "record_sha256": "<64hex>", "outcome_bucket": "killed"}],
  "duplicate_consistent": [{"candidate_id": "<64hex>", "sources": ["store", "hostb-s1"]}],
+ "mode_differences": [],
  "replaced_stale": [],
  "refused": [{"candidate_id": "<64hex>", "source": "hostb-s1", "reason": "judge-mismatch"}],
+ "not_written": [],
  "conflicts": []}
 ```
 
-**Receipt rules:**
-- `result` ∈ {`accepted`, `partial`, `refused`}.
-- `accepted` means `refused == []` and `conflicts == []`.
-- `partial` means `refused` is non-empty and `conflicts == []`.
-- `refused` means `conflicts` is non-empty, `accepted == []` and `replaced_stale == []`.
-- Every count equals the length of its list, and `examined` equals the sum of the other four counts.
-- `reason` comes from the closed set of step 6.
-- A conflict entry has the shape `{"candidate_id", "a": {"source", "outcome_bucket", "mode", "node_id"}, "b": {...}}`.
+**Receipt rules (P9-3):**
+- `examined == accepted + audit_held + duplicate_consistent + refused + not_written`, where each term is the count.
+- `replaced_stale` is a **subset** of `accepted`: every entry's `candidate_id` appears in `accepted`, and it is not added to the sum.
+- Every other count equals the length of its list.
+- **`result`:**
+  - `accepted` ⇔ `refused == []` and `conflicts == []`;
+  - `partial` ⇔ `refused != []` and `conflicts == []`;
+  - `refused` ⇔ `conflicts != []`, `accepted == []`, `audit_held == []` and `replaced_stale == []`. In that case `not_written` lists every record that passed the per-record checks but was not written.
+- `reason` is from the closed set: `oversized, malformed, schema-version, identity-fields, not-in-plan, non-final-bucket, judge-mismatch, unbound-record`.
+- A conflict entry is `{"candidate_id", "a": {"source", "outcome_bucket", "mode", "node_id"}, "b": {...}}`.
+- **Whole-import failure reasons** (stderr + exit 2, no receipt unless a conflict): `store-locked, journal-pending, store-identity-missing, identity-inconsistent, store-is-pilot, store-identity-stale, store-corrupt, source-pilot, source-integrity, source-identity-inconsistent, source-changed`.
 
-**Invalid examples**, which the model check or schema must reject:
-1. `result: "accepted"` with a non-empty `refused` list.
-2. `counts.accepted: 939` with `accepted` holding 938 entries.
+**Invalid examples** (the schema or model must reject each):
+1. `result: "accepted"` with a non-empty `refused`.
+2. `counts.accepted: 920` with 919 `accepted` entries.
+3. A `replaced_stale` entry whose `candidate_id` is not in `accepted`.
 
 ### Topology and namespaces
 
 ```
-worker host W_k:  exact-OID clone → run-venv → STATE_k (private, never shared)
-                  STATE_k/<id>.json + STATE_k/campaign-identity.json + SHA256SUMS
-        │ transfer (rsync/scp, any transport) — bytes only
+worker host W_k (inside tester-unified, gate arm b119-worker):
+    exact-OID clone → run-venv → STATE_k = <project>/.assay/mutation-state-self-qualification (private, never shared)
+    STATE_k/<id>.json + CAMPAIGN-IDENTITY + SHA256SUMS
+        │ transfer (rsync/scp, any transport) — bytes only; `sha256sum -c SHA256SUMS` on arrival
         ▼
-coordinator:      <project>/.assay/inbox/<LABEL>/        ← PROVISIONAL (never read by `assay run`)
-                  assay state import … --from LABEL=… --state-dir STORE --receipt …
-                  STORE = <project>/.assay/campaign-<id>/ ← ACCEPTED (gitignored path)
-                  assay run <lane> --resume --state-dir STORE --cold-witness [--campaign-deadline …]
-                  (no --shard) → ONE ordinary verdict
+coordinator host (inside tester-unified):
+    <project>/.assay/inbox/<LABEL>/                  ← PROVISIONAL (never read by `assay run`)
+    gate arm b119-import  → assay state import … --state-dir STORE --require-campaign-deadline D
+    STORE = <project>/.assay/mutation-state-self-qualification  ← ACCEPTED (+ .lock, .import-audit/, .import-journal/)
+    gate arm self-qualification → assay run --resume --state-dir STORE --cold-witness --campaign-deadline D  (no --shard)
+                                → assay state audit-check (if import receipts exist) → assay verify → report check
 ```
 
-- Paths in the receipt are absolute on the coordinator.
-- The inbox must be gitignored or outside the tree. Reuse `_resolve_state_dir`'s visibility refusal for `--from` directories inside the project, so the next run cannot go `DIRTY_TREE`.
+- Receipt paths are absolute inside the container.
+- `.assay/` is gitignored, so the inbox is covered by the `_resolve_state_dir` visibility refusal.
+
+### Gate arms (owner P9; `tools/self-qualification-gate.sh` + `run-gate.toml`; merge after P7b and P10c, per plan §11.6)
+
+Add two arms. They use the same shared clone/build/venv steps and the same lane shape as P7b's `b110-screen` (tester-unified, 3 CPU / 2g / 8g):
+- **`b119-worker`:**
+  - reads `.assay/b119-shard`, which contains exactly `k/N` (a regex-validated single line);
+  - requires `.assay/campaign-deadline-b105-<commit12>.json`, copied from the coordinator (absent → exit 2 before any run; this arm **never** runs `campaign init`);
+  - runs `assay run self-qualification --shard k/N --cold-witness --resume --require-judge-provenance --state-dir .assay/mutation-state-self-qualification --campaign-deadline <D> --progress .assay/progress-b119-worker.jsonl --verdict-json .assay/verdict-b119-worker.json`;
+  - then writes `SHA256SUMS` over the records and `CAMPAIGN-IDENTITY`;
+  - prints `B119_WORKER_EXIT=` and `B119_WORKER_STATE=`;
+  - the worker verdict is diagnostic only.
+- **`b119-import`:**
+  - if `.assay/campaign-deadline-b105-<commit12>.json` is absent, runs P6's `campaign init` exactly as the qualifying arm would (campaign `b105-<commit12>`, 8 h, both lanes). This is the only place besides the qualifying arm that creates it, and it runs in the container, never on the host (OC15);
+  - if `.assay/inbox/` has subdirectories, runs one `assay state import` with every subdirectory as `--from <dirname>=<path>` in sorted order, `--receipt .assay/import-<commit12>-<UTC yyyymmddThhmmssZ>.json` and `--require-campaign-deadline <D>`;
+  - on exit 0 or 1, moves the imported inbox dirs to `.assay/inbox-imported/<receipt-stem>/`;
+  - prints `B119_IMPORT_EXIT=` and `B119_IMPORT_RECEIPT=`.
+
+**The qualifying `self-qualification` arm** (a P9 edit, after P3d, P6, P7b and P10c):
+- after `assay run` and **before** `assay verify`, if any `.assay/import-<commit12>-*.json` exists, run `assay state audit-check … --import-receipt <each> --out .assay/audit-check-<commit12>.json`;
+- a non-zero exit fails the lane (exit 2), with the marker `B119_AUDIT_CHECK_EXIT=`.
 
 ### Bounds
 
-- At most 64 `--from` sources.
+- ≤ 64 `--from` sources.
 - Records per source ≤ the lane's `max_mutants` (≤ 10,000).
-- Each record ≤ 1 MiB (existing limit).
+- Each record ≤ 1 MiB.
 - `SHA256SUMS` ≤ 4 MiB.
+- In memory: at most `(path, sha256, signature)` per record.
 - All reads go through `safeio.read_bounded_input` / `read_bounded_file`.
 
-### Decision table
+### Decision table (import)
 
-| State | Exit | Store written? | Receipt |
+| State | Exit | Store root written? | Receipt |
 |---|---|---|---|
-| Store identity missing, inconsistent or stale | 2 | no | not written (stderr names the cause) |
-| A source fails integrity or its identity file is inconsistent | 2 | no | not written |
+| Lock held, journal pending, store identity missing / inconsistent / pilot / stale, or store corrupt | 2 | no | not written (stderr names the reason) |
+| A source is pilot, fails integrity, has an inconsistent identity, or changes during the write | 2 | no (a `source-changed` abort leaves the journal) | not written |
 | At least one conflict | 2 | no | written, `refused` |
-| Some per-record refusals, no conflicts | 1 | accepted records only | written, `partial` |
-| Everything accepted or duplicate | 0 | yes | written, `accepted` |
+| Some per-record refusals, no conflicts | 1 | accepted records only (audit sample held back) | written, `partial` |
+| All accepted or duplicate | 0 | yes (audit sample held back) | written, `accepted` |
 
-### Consolidation contract (no new code; tests prove it)
+### Consolidation contract (the existing resume path; tests prove it)
 
-`assay run <lane> --resume --state-dir STORE --cold-witness …` **without `--shard`**:
+`assay run <lane> --resume --state-dir STORE --cold-witness …`, **without `--shard`**:
 - re-runs both baselines;
 - recomputes the judge;
-- resumes every accepted record through the unchanged `_load_validated_state_record`;
-- executes anything missing or rejected;
+- resumes every accepted root record through `_load_validated_state_record`;
+- executes anything missing, rejected or held back (the audit sample);
 - writes one ordinary verdict.
 
-**`state import` is an early filter; the consolidating run is the authority.** For example, a record accepted because the store identity matched is still re-executed if the consolidating host's runtime fingerprint differs from the store identity. This is expected, and the P9 report states it.
+`audit-check` then compares the held-back records with the locally re-executed ones.
+
+**`state import` is an early filter; the consolidating run plus audit-check is the authority.** For example, if the consolidating host's runtime fingerprint differs from the store identity, every record is rejected and re-executed; the P9 report states this.
+
+**Consolidation cost (C7, a B119 acceptance measurement; diagnostic, never an oracle):**
+- The P9 report measures the wall time of `state import` over 3,760 synthetic shape-valid records bound to a fixture store identity.
+- It also measures the zero-execution consolidating `--resume` on the O3 fixture, which is dominated by the two baselines.
+- It gives the formula: consolidation ≈ coverage baseline + no-cov baseline + per-record validation × records + audit sample × per-candidate cost.
+- Plan §8 uses this in place of the dropped pilot phase-C measurement.
 
 ### Degrees of freedom
 
 - Private helper names inside `state_import.py`.
 - The order of per-record checks **within** one refusal reason.
-- The receipt's text rendering on stderr.
+- The stderr rendering.
 
-## Worker runbook (host-agnostic; this becomes `docs/CONSUMERS.md` "Distributed R2 workers" and the plan §9 appendix)
+## Worker runbook (host-agnostic; becomes `docs/CONSUMERS.md` "Distributed R2 workers" and the plan §9 appendix)
 
-**Enrolment (per host, by measurement, recorded in the campaign log):**
+**Enrolment** (per host, by measurement, recorded in the campaign log):
 - `nproc`;
-- the container's effective `cpu.max` and `memory.max` / `memory.swap.max`, which must be at least the gate's 3 CPU / 2 GiB / 8 GiB, or the host's own documented cap;
-- the tester-unified image digest;
-- the NTP offset, which must be ≤ 2 s (OC10).
+- the effective `cpu.max`, `memory.max` and `memory.swap.max`, which must be ≥ the gate's 3 CPU / 2 GiB / 8 GiB, or the host's own documented cap;
+- the tester-unified image digest (`docker image inspect … --format '{{.Id}}'`), which must equal the coordinator's;
+- `assay --version` inside the image, which must equal the coordinator's;
+- the NTP offset, ≤ 2 s (OC10).
 
-Remote capacity counts as **zero until measured** (A-464).
+After a first worker run, compare its `CAMPAIGN-IDENTITY.judge_inputs.runtime_fingerprint_sha256` with the coordinator's; they must be equal (import reports `differing_components`). Remote capacity counts as **zero until measured** (A-464), and it is never *trusted* beyond the audit sample (Trust model).
 
 **Run:**
-1. The coordinator fixes N (shard count) once per campaign. **Never change N mid-campaign.**
-2. The coordinator runs `assay campaign init` (P6) and copies the deadline file to every worker. **The coordinator is worker 0:** it runs shard `0/N` directly into STORE. That run writes `STORE/campaign-identity.json`, which every import requires; until it exists, imports exit 2 with `store-identity-missing`.
-3. On each worker W_k, inside the tester-unified image with the per-host cgroup limits:
-   1. Make the exact-OID clone and build/install the wheel exactly as `tools/self-qualification-gate.sh` does.
-   2. Run `assay run self-qualification --shard k/N --cold-witness --resume --state-dir $STATE_k --campaign-deadline $DEADLINE --progress $P_k --verdict-json $V_k`. The worker verdict is diagnostic only.
-4. On the worker: `cd $STATE_k && sha256sum *.json > SHA256SUMS`. Transfer the directory to the coordinator's `.assay/inbox/<host>-s<k>/` with any transport, then verify with `sha256sum -c` on arrival.
-5. On the coordinator: `assay state import … --from <host>-s<k>=… --receipt .assay/import-<host>-s<k>.json`, one import per arriving batch.
-   - Exit 1 → inspect the `refused` reasons. `judge-mismatch` usually means that host's environment differs; stop using that host.
-   - Exit 2 with conflicts → **stop the campaign.** A conflict is a nondeterminism finding: file it, and do not "pick one".
-6. Consolidate on the coordinator (§9.3). Retain every import receipt with the gate evidence.
+1. The coordinator fixes N (the shard count) once per campaign. **Never change N mid-campaign.**
+2. The coordinator runs the gate arm **`b119-import`** once with an empty inbox. This creates the campaign deadline inside the container (OC15).
+3. The coordinator writes `.assay/b119-shard` = `0/N` and runs **`b119-worker`**. This is shard 0 directly into STORE, and it writes STORE's `CAMPAIGN-IDENTITY`, which every import requires.
+4. The coordinator copies `.assay/campaign-deadline-b105-<commit12>.json` to every worker.
+5. Each worker W_k, on its own checkout of the exact commit, writes `.assay/b119-shard` = `k/N` and runs `b119-worker`. The per-host cgroup limits apply.
+6. Transfer `STATE_k` (records, `CAMPAIGN-IDENTITY`, `SHA256SUMS`) to the coordinator's `.assay/inbox/<host>-s<k>/`, then `sha256sum -c SHA256SUMS` on arrival.
+7. On the coordinator, run **`b119-import`**, once per arriving batch or batches.
+   - Exit 1: inspect the `refused` reasons. `judge-mismatch` means that host's environment differs; stop using it.
+   - Exit 2 with conflicts: **stop the campaign.** It is a nondeterminism finding; file it and do not pick a side.
+8. Consolidate with the qualifying `self-qualification` arm (plan §9.3). It runs `audit-check`, and any disagreement discards that source and fails the gate. Retain every import receipt and the audit-check result with the gate evidence.
 
-**Never** share a state directory between hosts (NFS etc.) or between concurrently running invocations. **Never** hand-edit a record; import refuses it and resume treats it as corruption (B021).
+**Never:**
+- share a state directory between hosts (NFS, etc.) or between concurrently running invocations; the lock refuses the latter;
+- hand-edit a record; import refuses it and resume treats it as corruption (B021);
+- use `--accept-unbound-records` unless the operator has answered D7 "yes" (plan §11.2).
 
 ## Work
 
 1. Refactor to `judge_identity_inputs` / `judge_sha256_from_inputs`. Prove equality with the existing digest (O1) before anything else. Commit.
-2. Write `campaign-identity.json` from `run_mutation` (OC2). Commit.
-3. Implement `src/assay/state_import.py` (flow steps 1-9), the receipt model and the schema. Register the CLI. Add the module to both target lists.
-4. Write the fast unit tests on synthetic stores (`tests/test_state_import.py`).
-5. Write the real-run consolidation tests in `tests/zz_slow/test_state_import_real_runs.py`. They use the `_seed_pytest_mutation`-style tiny project, real `runner.run_lane`, and `--shard 0/2` and `1/2` into separate state dirs.
-6. Docs and runbook (Docs sync). Update the B119 backlog entry and CHANGES.
-7. Run the focused tests, then the gates. Write the report.
+2. Extract `validate_state_record_shape`; `_load_validated_state_record` uses it, and all existing tests stay green. Commit.
+3. Write `CAMPAIGN-IDENTITY` from `run_mutation` (OC2), and add the store lock (OC14) to `assay run` and the new commands. Commit.
+4. Implement `src/assay/state_import.py`: `import` (flow steps 1-12) and `audit-check`, the receipt model and schema, and CLI registration. Add the module to both target lists.
+5. Write fast unit tests on synthetic stores in `tests/test_state_import.py`.
+6. Write real-run tests in `tests/zz_slow/test_state_import_real_runs.py`: the `_seed_pytest_mutation`-style tiny project, real `runner.run_lane`, `--shard 0/2` / `1/2`, and a fixture deadline file (use P6's `campaign init` in-process).
+7. Add the gate arms `b119-worker` and `b119-import`, the qualifying-arm `audit-check` step, and the run-gate lanes. Extend the `tests/test_self_lane.py` pins with `b119-worker`, `b119-import`, `B119_IMPORT_EXIT=`, `B119_AUDIT_CHECK_EXIT=` and `--require-campaign-deadline`.
+8. Measure consolidation cost (C7), and record it in the report as diagnostic.
+9. Docs and runbook (Docs sync), the B119 backlog entry, and CHANGES. If a dataclass is added or changed, regenerate `tests/fixtures/dataclass-contract.json` with P1's documented command (C15).
+10. Run the focused tests, then the gates. Write the report.
 
 ## Oracles
 
 | # | Oracle (observable) | Negative it distinguishes |
 |---|---|---|
-| O1 | For 5 existing judge-identity test vectors, `judge_sha256_from_inputs(judge_identity_inputs(x)) == judge_sha256(x)`, byte-equal. All existing `tests/test_mutation_judge_identity*.py` tests stay green unchanged. | A second derivation that drifts |
-| O2 | After a native-R2 run with a store, `campaign-identity.json` exists, recomputes to its own `judge_sha256`, and that equals the `judge_sha256` in every record written by that run. | An identity file describing a different plan |
-| O3 | **Two shard stores** (real runs, `0/2` and `1/2`): run shard `0/2` directly into STORE, which acts as the coordinator's own worker and writes STORE's identity file. Run shard `1/2` into a separate dir S1, add `SHA256SUMS`, then import S1 into STORE. The receipt is `accepted` and the counts reconcile. A consolidating `--resume` run then executes **zero** candidates: the tracked process runner sees only the baseline invocations. Its verdict passes `assay verify`, and `candidate_ids` equals the full plan. | Consolidation that re-executes, or a verdict missing the shard 1 IDs |
-| O4 | **A conflicting record:** a copy of an accepted shard-1 record with `outcome_bucket` flipped (and a valid SHA256SUMS regenerated) in a second source → exit 2, `conflicts` names both sources, and the store bytes are unchanged (snapshot with a directory hash before and after). | "Last writer wins", or partial writes |
-| O5 | **A foreign-identity record:** a record produced by a run whose lane `env` value differs (a different `judge_sha256`) → refused `judge-mismatch`, the others are accepted, exit 1, `result: partial`, and `differing_components` contains `env_declared`. | Accepting on candidate ID alone |
-| O6 | **A stale-tree record:** records produced at commit X. Commit a test-only change (X'). Run the baseline at X' to rewrite the store identity. Import X's records → every one is refused `judge-mismatch`, and a later `--resume` executes them all. | Trusting unchanged mutant bytes after a test change (the B088 defect class) |
-| O7 | Missing `SHA256SUMS`, an extra unlisted `*.json`, and one byte flipped in a record → each exits 2 `source-integrity`, and nothing is written. | Importing corrupted transfers |
-| O8 | Tampered `campaign-identity.json` in the store (a changed `judge_inputs.transform`) → exit 2 `identity-inconsistent`. A store identity at a commit different from HEAD → exit 2 `store-identity-stale`. | Trusting an identity file's self-reported digest |
-| O9 | A store record with an older judge plus a matching source record → replaced atomically and listed in `replaced_stale`. The same judge with a different bucket is a conflict (O4). | Keeping stale records, or treating stale as a conflict |
-| O10 | The receipt validates against its schema, and the two invalid examples fail the model/schema check. | Receipt drift |
-| O11 | `--receipt` pointing at an existing file → refused before any write. `--state-dir` or `--from` inside the tree and git-visible → refused, as with `assay run`. | Clobbering evidence, or making the tree dirty |
+| O1 | For 5 existing judge-identity test vectors, `judge_sha256_from_inputs(judge_identity_inputs(x)) == judge_sha256(x)`. The expected hex values are **captured from the pre-refactor function at HEAD and committed as literals** before the refactor. All `tests/test_mutation_judge_identity*.py` tests stay green unchanged. | Both digests built from the same new dict builder, so they drift together |
+| O2 | After a native-R2 run with a store, `CAMPAIGN-IDENTITY` exists, recomputes to its own `judge_sha256`, and that equals every record's `judge_sha256`. `sorted(state_dir.glob("*.json"))` returns exactly the records, so the existing glob tests stay green. | `campaign-identity.json` breaking `len(glob) == 2` (P9-1) |
+| O3 | **Two shard stores** (real runs): shard `0/2` into STORE, shard `1/2` into S1. Add `SHA256SUMS` and import S1. The receipt is `accepted` and the counts reconcile. The **consolidating `--resume`** executes exactly the held-back audit sample of S1: the tracked process runner sees the baselines plus those candidates only. `audit-check` gives 0. The verdict passes `assay verify` with `[]`, and `candidate_ids` equals the full plan. A **runtime-fingerprint change** (a monkeypatched fingerprint function) before consolidation forces every record to re-execute. | Consolidation that re-executes everything; skipping validation when the records are genuine |
+| O4 | **Conflicts.** (a) A second source whose copy of an S1 record has `outcome_bucket` flipped, with `SHA256SUMS` regenerated, gives exit 2, `conflicts` naming both sources, and the store root unchanged (directory hash before and after). (b) A **store-vs-source** conflict (the store already holds `killed`; the source says `survived`) gives the same result. (c) Two `killed` records differing only in mode are **not** a conflict; they are listed in `mode_differences`. | "Last writer wins"; checking conflicts only between sources; mode-only conflicts |
+| O5 | **Foreign identity:** a record from a run whose lane `env` differs is refused `judge-mismatch`, the rest are accepted, exit 1, `result: partial`, and `differing_components` contains `env_declared`. The check uses **each record's** judge, not the source's `CAMPAIGN-IDENTITY`. A source identity that matches, carrying one record with a different judge, refuses that record. | Trusting the source identity file instead of each record |
+| O6 | **Stale tree:** records produced at commit X, then a test-only commit X′. At X′, run shard `0/2` into STORE, which rewrites `CAMPAIGN-IDENTITY` for X′ before executing. Import X's shard-1 records: every one is refused `judge-mismatch`, and a later `--resume` executes them all. | Trusting unchanged mutant bytes after a test change (B088) |
+| O7 | **Integrity:** a missing `SHA256SUMS`, an extra unlisted record, a CRLF line, a `*` binary marker, an unsorted file, and one flipped byte in a record each give exit 2 `source-integrity` with nothing written. A source file modified **between validation and write** (a test hook between steps 7 and 11) gives exit 2 `source-changed`, and the journal is left. | Importing corrupted transfers; verify-then-reread |
+| O8 | **Identity binding:** a tampered store `CAMPAIGN-IDENTITY` (changed `judge_inputs.transform`) gives `identity-inconsistent`. A store identity at another commit, **or** another `git_tree`, **or** another `assay_version`, **or** a different deadline sha, gives `store-identity-stale`. | Binding only the commit |
+| O9 | **Stale store record:** a store record with an older judge plus a matching source record → replaced atomically; its ID is listed in both `replaced_stale` and `accepted`. | Keeping stale records, or treating stale as conflict |
+| O10 | **Receipt schema:** the receipt and the audit-check output validate against their schemas; the three invalid examples fail. | Receipt drift |
+| O11 | **Destination guards:** `--receipt`/`--out` pointing at an existing file are refused before any write. A git-visible `--state-dir` or `--from` inside the tree is refused. | Clobbering evidence, or a dirty tree |
+| O12 | **Non-final buckets:** a `budget_exceeded`, a `hung` and a `crashed` record are each refused `non-final-bucket`, and consolidation re-executes them. | Replaying load-induced worker outcomes |
+| O13 | **Pilot:** a source containing `PILOT-STATE`, and a source whose identity has a non-null `selection_sha256`, each give exit 2 `source-pilot`. | Importing pilot state (A-474) |
+| O14 | **Deadline binding (D7 = NO):** a record without `campaign_deadline_sha256` is refused `unbound-record`, but accepted with `--accept-unbound-records`. A record with a **different** deadline sha is refused even with the flag. | Accepting screen records by default |
+| O15 | **Lock:** a held `STORE/.lock` (taken by the test in-process) gives `state import` exit 2 `store-locked`, and `assay run --state-dir STORE` a whole-lane `BAD_LANE_CONFIG` with no candidate executed. A leftover `.pending` journal gives `journal-pending`. | A time-of-check/time-of-use race between a shard run and import |
+| O16 | **Audit sample:** a forged sole-copy S1 record (bucket flipped from `survived` to `killed`, judge copied, `SHA256SUMS` regenerated) inside the deterministic sample. Consolidation re-executes it locally as `survived`, and `audit-check` exits 2 naming S1 with `audit-disagreed`. A forged record **outside** the sample is not caught; the test asserts this documented residual, so the trust-model statement stays honest. The sample IDs are the lowest `blake2b(campaign:id)` ranks. | "Audit" that re-validates only identities; a sample the worker could choose |
+| O17 | **Corrupt store:** an existing malformed `STORE/<id>.json` gives exit 2 `store-corrupt`, naming it, with nothing written. | Silently overwriting evidence |
 
-**Gate observable:** `tester-unified` PASS and `self-qualification-preflight` PASS. The new module must be at 100% line and branch coverage and add no exclusions.
+**Gate observable:** `tester-unified` PASS and `self-qualification-preflight` PASS. The new module must reach 100% line and branch coverage and add no exclusions.
 
 ### Oracle anti-patterns (AUTHORING.md §3b, pasted verbatim)
 
@@ -408,43 +566,51 @@ it is not an oracle yet.
 
 ## Docs sync
 
-- **README (WHAT):** "Distributed R2 evidence". Explain that records are identity-bound, that `assay state import` refuses conflicts, and that the final claim is always one consolidating `--resume` verdict.
+- **README (WHAT):** "Distributed R2 evidence". Records are identity- and deadline-bound; `assay state import` refuses conflicts, non-final buckets, pilot state and unbound records; an audit sample is re-executed; the final claim is always one consolidating `--resume` verdict plus a passing `audit-check`.
 - **DESIGN-GUIDE (WHY):**
-  - why the identity file exists;
+  - the **trust model** verbatim, including the residual-risk formula;
+  - why the identity file exists and why it has no `.json` extension;
   - why a conflict is refusal-worthy nondeterminism;
-  - why import is a filter and consolidation is the authority;
-  - why "accepted" is store membership, not a record field;
-  - that shards are scheduling (A-464);
-  - the D7 pre-deadline reading and its pending operator confirmation.
-- **CONSUMERS (HOW):** the worker runbook above (pasteable), the receipt fields, and the exit codes.
+  - why non-final buckets are refused;
+  - why import is a filter and consolidation plus audit-check is the authority;
+  - why "accepted" is store membership plus receipt plus audit-check;
+  - the lock;
+  - shards are scheduling (A-464);
+  - the D7 default (NO) and what a "yes" would change.
+- **CONSUMERS (HOW):** the worker runbook (pasteable), the receipt and audit-check fields, the gate arms, and the exit codes.
 - **CHANGES.md:** `### Added`.
 - **Backlog:** update B119's status.
 
 ## Scope / forbid
 
 **Touch:**
-- `src/assay/mutation.py` (the identity refactor and the identity-file write only);
+- `src/assay/mutation.py`: the identity refactor, `validate_state_record_shape`, and the identity-file write only;
+- `src/assay/cli.py`: registration, plumbing, and the store lock in `_resolve_state_dir`'s caller;
 - `src/assay/state_import.py` (new);
-- `src/assay/cli.py` (registration and plumbing);
-- `src/assay/schemas/state-import-receipt.schema.json` (new);
+- `src/assay/schemas/state-import-receipt.schema.json` and `…/state-audit-check.schema.json` (new);
 - `assay.toml` (the two target lists);
+- `tools/self-qualification-gate.sh` (the `b119-worker` and `b119-import` arms, and the audit-check step in the qualifying arm);
+- `run-gate.toml` (the two lanes);
+- `tests/test_self_lane.py` (pins only);
 - `tests/test_state_import.py` and `tests/zz_slow/test_state_import_real_runs.py` (new);
 - the existing judge-identity tests, **only** by adding O1 vectors;
+- `tests/fixtures/dataclass-contract.json` (regeneration only, C15);
 - README, DESIGN-GUIDE, CONSUMERS, CHANGES, the backlog and the report.
 
 **Forbid:**
 - any verdict/schema wire change (OC7);
-- `MUTATION_STATE_SCHEMA_VERSION` (it stays 1);
+- `MUTATION_STATE_SCHEMA_VERSION` (stays 1);
 - `merge_mutation_shards` semantics;
-- run-gate or Buildkite code;
-- actually enrolling or using remote hosts (the runbook only);
-- any new `ReasonCode`.
+- run-gate or Buildkite **code**;
+- actually enrolling or using remote hosts (runbook only);
+- any new `ReasonCode`;
+- any host-side `campaign init` or import path.
 
 ## Gate
 
-1. Focused tests, serially: `nice -n 19 ionice -c3 python -m pytest tests/test_state_import.py tests/zz_slow/test_state_import_real_runs.py tests/test_mutation_judge_identity.py tests/test_mutation_judge_identity_properties.py tests/test_self_lane.py -q -p no:cacheprovider`. Adjust the path if P1 moved `test_mutation_judge_identity_properties.py` into `tests/zz_slow/`.
-2. `cd <worktree>/assay && python ./run-gate.py tester-unified`. Then, **in a separate step**, read `ASSAY_GATE_CONTAINER_EXIT` and `ASSAY_REGISTERED_GATE_COMPLETE` from the log (L4).
-3. `python ./run-gate.py self-qualification-preflight`.
+1. Run the focused tests, serially: `nice -n 19 ionice -c3 python -m pytest tests/test_state_import.py tests/zz_slow/test_state_import_real_runs.py tests/test_mutation_judge_identity.py tests/test_mutation_progress_budget_plan.py tests/test_state_dir_resume.py tests/test_mutation_state_crash_tails.py tests/test_mutation_resume_sharding.py tests/test_self_lane.py -q -p no:cacheprovider`. If P1 moved `test_mutation_judge_identity_properties.py` into `tests/zz_slow/`, add it at its new path.
+2. Run `cd <worktree>/assay && python ./run-gate.py tester-unified`. Then, **in a separate step**, read `ASSAY_GATE_CONTAINER_EXIT` and `ASSAY_REGISTERED_GATE_COMPLETE` from the log (L4).
+3. Run `python ./run-gate.py self-qualification-preflight`. Never run the new `b119-*` arms against the real campaign here; the real-run tests use the tiny fixture.
 
 **Host-load rule. Paste it into every agent prompt; it is not optional.**
 - The host is shared with a production game server.
@@ -460,16 +626,19 @@ If a named contract cannot be met as specified, or scope requires a forbidden fi
 
 **Specific triggers:**
 - P3b's identity inputs cannot be expressed as a JSON-safe dict that reproduces the digest byte-for-byte.
-- The planner cannot be reused in-process.
+- `cli.plan_jobs()` (P8) is absent, or its rows lack the identity digests.
+- P6 state records do not carry `campaign_deadline_sha256`, or P7 does not write `PILOT-STATE`/`selection_sha256`.
 - O3 requires a verdict/schema change.
+- The tracer-bullet probe (carve log) showed consolidation re-executing copied records.
 
 ## Report
 
 Write `nyxloom-trove/reports/assay-B110-P9-REPORT.md` with:
-- the accepted design choices (OC1–OC10, noting any controller override);
+- the accepted design choices (OC1–OC15, noting any controller override);
 - a traceability table (`work | owner | oracle | test | controlled break`) with real test names and red-first counts;
 - the gate verdicts, read separately;
-- the explicit statement "import is a filter; consolidation is the authority";
-- residuals, including signed bundles (deferred) and the verdict provenance field (v15, deferred).
+- the consolidation-cost measurement (C7, diagnostic);
+- the explicit statements "import is a filter; consolidation plus audit-check is the authority" and the trust model's residual risk;
+- residuals: signed bundles (deferred), the verdict provenance field (v15, deferred), and the audit sample's detection limit.
 
 Commit trailer: `Co-Authored-By: Claude Sonnet <noreply@anthropic.com>`

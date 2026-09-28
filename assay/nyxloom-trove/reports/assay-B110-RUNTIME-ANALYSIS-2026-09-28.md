@@ -29,30 +29,30 @@
 ## 1. Executive summary
 
 1. **Every candidate paid for a whole baseline.**
-   - Every killed candidate recorded `tests_completed = 5831`. Killed and surviving candidates cost the same, about one baseline each: 30eec294 killed 559.5 s vs. survived 561.1 s, baseline 519.9 s [M].
+   - Every killed candidate ran its whole collected suite: `tests_completed = 5831` in 30eec294, and 5,819 (its own baseline count) in e79. Killed and surviving candidates cost the same, about one baseline each: 30eec294 killed 559.5 s vs. survived 561.1 s, baseline 519.9 s [M].
    - The declared command runs the whole coverage-instrumented suite in a fresh interpreter and a fresh full-history snapshot of the whole vbpub repository. Nothing stops at the first failure.
 2. **The 62h40m plan was never evidence.** `assay plan` executes nothing and multiplies 3,760 candidates by a hard-coded 60 s (`cli.py:1786-1801`). The measured baseline (~520 s) already existed; reality was about 9× the plan [C]. `docs/CONSUMERS.md:2307-2312` wrongly calls that figure an upper bound.
 3. **Spinning hangs cost three baselines.**
    - In the e79 attempt, 4 of 39 candidates were `budget_exceeded` at about 1,518 s each, which is 24.8% of that run's candidate time [M].
    - They are scanner loops (`adapters/go.py:292/321/323/330`) whose cursor stops or moves backwards. They keep the CPU busy, so liveness correctly does not call them `hung`.
-   - 14 such at-risk mutants and 4 latent ones exist across the source (§7.4).
+   - 14 source-level at-risk mutants exist across the source, plus `liveness.py:1530` at test level (15 in all), and 4 latent ones (§7.4).
 4. **The suite's cost is concentrated in a few tests, in the wrong place** [M]:
    - 113 of 5,831 tests take 317.7 s, 71.9% of the 441.7 s of call time. 4,875 tests take under 10 ms each, about 4 s in total.
    - Alphabetical order spends 99% of call time before the `test_v*` files. `verdict.py` and `verify.py` hold 950 of the 3,760 candidates.
    - 73.6 s per candidate goes to tests that exercise only the *unmutated* wheel on PATH. The whole of `tests/test_python_qualification.py` never executes snapshot source: it costs 97.8 worker-hours per campaign and can never kill a mutant [C].
    - Two liveness tests wait on real 30 s windows (66.7 s).
-5. **CPU is idle.** The container has 3 CPUs; the campaign used 0.83–0.89 cores on average [M].
+5. **CPU is idle.** The container has 3 CPUs. The preflight used 0.89 cores on average [M]. The lower end, 0.83, comes from the first-session reading and was not re-found in the retained logs during review [unverified].
 6. **The structural point, which matters more than runtime: a passing native R2 campaign contains only kills.**
-   - `judge_mutation` passes a native lane only with zero survived, hung, crashed or budget-exceeded candidates (`mutation.py:3748-3769`).
-   - Native lanes cannot lower `fail_under`, and `equivalent` requires a SQL-only artifact (`config.py:3082-3106`; `verdict.py:5041-5053`).
+   - `judge_mutation` passes a native lane only with zero survived, hung, crashed or budget-exceeded candidates (`mutation.py:3726-3769`).
+   - Native lanes cannot lower `fail_under`: it is an ingested-only field (`config.py:457`, `_MUTATION_INGESTED_FIELDS`). `equivalent` requires the SQL-only `equivalence_artifact` (`config.py:3082-3106`; `verdict.py:5041-5053`).
    - The ordered opening prefixes had 7/15 survivors (30eec294) and 9 survivors plus 4 hangs out of 39 (e79). The outcomes were identical on the 15 shared candidates [M].
    - 5 of the first 7 survivors are `@dataclass(frozen=…, kw_only=…)` flag flips; the plan holds 148 of them.
    - So B110's "273 survivor worker-hours" is the cost of a campaign that would **fail anyway**. Survivor cost belongs to a non-qualifying find-and-fix loop. A *qualifying* run costs, summed over 3,760 kills, snapshot + startup/collection + the declared-order prefix up to the first failing test.
 7. **What a qualifying run costs on the claim-preserving path** (scenario, not forecast; §6):
    - per kill ≈ S + C + P ≈ 10–21 s, where S is the snapshot (2–4 s today, ~1–2 s after P5), C is interpreter start plus collection (≈8–9 s) and P is the prefix to the first failure (unmeasured);
    - that is 3.5–7.3 h on 3 workers plus ~40 min of fixed work, which fits the 6 h target only at the low end;
-   - correction to the first draft: snapshot + collection alone use 2.9–4.0 h of the 5 h candidate budget on 3 workers, so the mean prefix must be ≤ ~3–6 s;
-   - **the pilot decides.** The isolation-unit model (≈0.35–2.3 h) is the designed fallback.
+   - correction to the first draft (arithmetic re-checked in the round-1 review): the fixed per-kill cost of snapshot + start/collection + overhead is 9.4–13.4 s. Across 3,760 kills on 3 workers, that uses **3.3–4.7 h** of the 5 h candidate budget. The budget is 54,000 worker-s / 3,760 = 14.4 s per kill, so the **mean prefix must be ≤ ~1–5 s**;
+   - **the pilot decides.** The isolation-unit model (≈0.7–2.3 h) is the designed fallback.
 8. **Operator decisions from the interview** (full list in the plan §3):
    - a reviewed **equivalence ledger** keyed by stable site anchors, with a **middle-path** audit in the screen at the same commit;
    - **loop guards**, keeping A-464 (time never classifies);
@@ -99,7 +99,7 @@
 
 The `/tmp` evidence is not durable. Section 4 retains every number that matters, and the per-test classification is in `b110/research/R8`.
 
-- **Source applicability:** 30eec294 is not an ancestor of `db85f747`, because the branch was rebased. `git diff 30eec294 db85f747 -- assay/src` is empty; only `assay.toml`, `run-gate.toml`, `tests/test_self_lane.py` and `tools/self-qualification-gate.sh` differ. The evidence therefore applies to the analyzed source.
+- **Source applicability:** 30eec294 is not an ancestor of `db85f747`, because the branch was rebased. `git diff 30eec294 db85f747 -- assay/src` is empty. Outside `src`, the differences are `assay.toml`, `run-gate.toml`, `tests/test_self_lane.py`, `tools/self-qualification-gate.sh` and the README / CONSUMERS / DESIGN-GUIDE docs. The evidence therefore applies to the analyzed source.
 - **Tool environment** (probed in `tester-unified:local`) [M]:
   - Python 3.14.6 (the devcontainer host has 3.14.7);
   - pytest 9.1.1; pytest-cov 7.1.0; coverage 7.16.1 with the `sysmon` core (the default on 3.14);
@@ -115,7 +115,8 @@ The `/tmp` evidence is not durable. Section 4 retains every number that matters,
 | 30eec294 | 15 | 8 killed / 7 survived | 559.5 s | 561.1 s | 519.9 s (`plan.baseline_s` 519.891) | all-candidate mean 560.3 s; auto budget 1,559.67 s |
 | e79eb8f5 | 39 | 26 killed / 9 survived / 4 budget_exceeded | 530.9 s | 515.8 s | 504.6 s | 4 × ≈1,518 s = 24.8% of candidate time |
 
-- Every killed candidate in both attempts recorded `tests_completed = 5831`. No kill stopped early.
+- Every killed candidate ran its whole collected suite: `tests_completed = 5831` in 30eec294, and 5,819 in e79, which is that run's own baseline count. No kill stopped early.
+- The suite really has 5,833 tests. Two call records are lost to the `test_liveness.py` redirection leak (§7.3).
 - The shared first 15 candidates had identical outcomes in both attempts. The outcome is deterministic, not load-driven.
 - The `plan` event values were:
   - `budget_per_candidate_s = 1559.67`, i.e. `max(3b, b+60)`;
@@ -192,11 +193,11 @@ A precise `--baseline-from` design is in plan P0 and research R4 §C.
 
 ### 4.5 Resources [M]
 
-- **CPU:** 0.83–0.89 cores on average in a 3-CPU container.
+- **CPU:** 0.89 cores on average in a 3-CPU container, for the preflight [M]. 0.83 is [unverified].
 - **Peak RSS:**
   - 738 MiB in the preflight (612 MiB p90), with a 2.3 s memory-full stall;
   - 987 MiB in the e79 R2;
-  - 588 MiB in attempt 3.
+  - 588 MiB in attempt 3 [unverified: not re-found in the retained logs during review].
 - **Coverage overhead:** an uncontrolled comparison only. The coverage-free R0 release lane took 573.17 s; the covered preflight baseline took 548.35 s, on different trees and at different load. The overhead is probably small; its real significance is that it **blocks witnesses** (§7.1).
 
 ### 4.6 Candidate inventory (3,760; plan at 30eec294) [M]
@@ -238,11 +239,13 @@ A precise `--baseline-from` design is in plan P0 and research R4 §C.
 
 | Scenario (scenario, not forecast) | Per kill | 3,760 kills on 3 workers | + fixed | Fits 6 h? |
 |---|---:|---:|---:|---|
-| S+C only, today's snapshot | 10.4–13.4 s | 3.6–4.7 h | 4.2–5.4 h | only if P ≈ 0 |
-| S+C only, after P5 | 9.4–10.4 s | 3.3–3.6 h | 3.9–4.2 h | leaves 1–2 h for Σ P |
-| Mean P = 3 s, after P5 | 12.4–13.4 s | 4.3–4.7 h | 4.9–5.3 h | borderline |
-| Mean P = 10 s | 19.4–23.4 s | 6.8–8.2 h | >7 h | **no** |
-| Isolation units (P11): S + unit start + K | 1–6.5 s | 0.35–2.3 h | 1.0–2.9 h | yes |
+| S+C+O only, today's snapshot (S 2–4, C 7.9–8.9, O 0.5) | 10.4–13.4 s | 3.6–4.7 h | 4.2–5.3 h | only if P ≈ 0 |
+| S+C+O only, after P5 (S 1–2) | 9.4–11.4 s | 3.3–4.0 h | 3.9–4.6 h | leaves 1.4–2.1 h for Σ P |
+| Mean P = 3 s, after P5 | 12.4–14.4 s | 4.3–5.0 h | 4.9–5.7 h | borderline |
+| Mean P = 10 s, after P5 | 19.4–21.4 s | 6.8–7.5 h | 7.4–8.1 h | **no** |
+| Isolation units (P11): S + unit start + K | ≈2–6.5 s (S alone is 1–2 s) | 0.7–2.3 h | 1.3–2.9 h | yes |
+
+Every row is re-derived as `per_kill × 3,760 / 3 / 3,600`, plus 0.6–0.67 h fixed. The arithmetic was checked in the round-1 review (R-10).
 
 **Correction to the first (terminal) draft.** That draft said "snapshot + collection alone ≈ 3,760 × 6.5–8 s". With the leading gap correctly attributed, it is 3,760 × ≈9–13 s. The conclusion is unchanged but sharper: the claim-preserving path fits only if the tiered order makes most kills happen within a few seconds of collection. The pilot is decisive, and P11 is a real fallback, not a formality.
 
@@ -384,7 +387,7 @@ Any tree reuse therefore risks **false kills**, i.e. a false PASS. The current f
 | `:323` | trailing `//` without a newline | `i = -1` |
 | `:330` | unterminated `/*` | `i = 1`, a step backwards |
 
-**At risk (14 mutants):**
+**At risk (15 mutants: 14 at source level plus `liveness.py:1530` at test level):**
 - go.py ×4;
 - javascript.py 243/245/249 (the same bugs as go.py);
 - sql_lex.py 193 ×3 and 195. The SQL corpus contains `\n-`, and `test_adapters_sql_lexer.py:57` has a trailing `--` with no newline;
@@ -556,7 +559,7 @@ So a per-test coverage map is **safe only for ordering** (or for isolation-unit 
 | 5 | Loop guards | 1,518 s → seconds per hang; required for a PASS | — | ordinary tests | neutral | high | P2 |
 | 6 | Snapshot C1/C2 (+C3/C4) | ≈0.6–1.4 s × 3,760 ≈ 0.6–1.5 worker-hours | — | op-count + guard tests | neutral | medium | P5 |
 | 7 | Faster suite for survivors and R0 (PQ ignore, short windows in test lanes) | ≈520 → ≈365–385 s per survivor | — | B105 amendment (A-468) | preserved | medium | P1, P3c |
-| 8 | Isolation units + coverage-guided unit order | per kill ≈1–6.5 s → 0.35–2.3 h | small processes | per-unit manifests, union proof, R1 combine | **changed execution model** | medium | P11 (gated) |
+| 8 | Isolation units + coverage-guided unit order | per kill ≈2–6.5 s → 0.7–2.3 h | small processes | per-unit manifests, union proof, R1 combine | **changed execution model** | medium | P11 (gated) |
 | 9 | Remove the duplicate R0/R1 | ≈9 min | — | — | neutral | high | not planned (preflight is a safety gate) |
 | 10 | B106 eligibility now; B109 later | reruns only | — | B109 closure proof | preserved | — | enabled by P1+P3 |
 | 11 | Schemata / fork server | 10–100× in screening [I] | low | — | non-qualifying only | low | not planned |
@@ -569,7 +572,7 @@ So a per-test coverage map is **safe only for ordering** (or for isolation-unit 
    - Why: A-462 and the native judge make any survivor a FAIL. Some mutants are genuinely equivalent (behavior-preserving), and a test cannot kill them.
    - The ledger is committed, reviewed and anchored to a *stable site*: path, enclosing scope, operator, original→replacement token, ordinal, plus a semantic fingerprint. Line numbers or candidate IDs would change on any edit. This overlaps B109's need for stable site identity.
 2. **Ledger execution: middle path** (option 1).
-   - Option 1 (chosen): the qualifying run skips ledger candidates, and a mandatory audit runs each ledger candidate on the full declared suite, in the screen, at the **same commit**, before the qualifying run.
+   - Option 1 (chosen): the qualifying run skips ledger candidates. A mandatory audit runs each ledger candidate in the screen, at the **same commit**, before the qualifying run. After the round-1 review (C10), the audit uses the qualifying attempt path: the R2 command with the cold attempt, then the declared command on uncertainty. Each entry also binds a `scope_sha256` of its enclosing scope, so a stale review is refused.
    - Option 2 (not chosen): execute ledger candidates inside the qualifying run.
    - Neither option changes PASS correctness, because equivalents are excluded from the score either way. What differs is where the "still survives" check lives: a separate audit receipt bound by commit, tree, judge identity and ledger digest (option 1), or inside the verdict itself (option 2).
    - Option 1 loses in-verdict freshness but saves a full suite (≈380–520 s) per ledger entry from the 6 h budget.
@@ -642,7 +645,7 @@ So a per-test coverage map is **safe only for ordering** (or for isolation-unit 
   - 1892-1909 (auto budget);
   - 1912-2557 (`run_mutation`);
   - 2559-3035 (`_execute_mutation_jobs`; waves 2889-2994);
-  - 3748-3769 (the PASS rule);
+  - 3726-3769 (the PASS rule);
 - `src/assay/isolation.py`: 67, 703-863, 970-1009, 1011-1085, 1154-1166, 1870-1958, 1961-2132;
 - `src/assay/mutation_witness.py`: 18, 33-74, 146-204, 228-263, 308-321, 324-493;
 - `src/assay/liveness.py`: 207-225, 523-526, 529-544, 586-625, 641-646, 830-947, 950-1013, 1299-1537;
@@ -650,7 +653,7 @@ So a per-test coverage map is **safe only for ordering** (or for isolation-unit 
 - `src/assay/runner.py`: 210-308, 687-741, 936, 1168-1182, 1301-1339, 3561-4583, 4099;
 - `src/assay/verdict.py`: 350, 1473-1583, 2523-3111, 2934-2970, 5041-5053;
 - `src/assay/verify.py`: 1286-1302, 1619-1814, 2011-2196, 3012-3091;
-- `src/assay/config.py`: 226-238, 438-450, 3082-3106, 3144-3185;
+- `src/assay/config.py`: 226-238, 438-450, 457, 3082-3106, 3144-3185;
 - `src/assay/errors.py`: 57-66, 196-276;
 - `src/assay/reuse.py:13-14`;
 - `tests/conftest.py`: 52-56, 59, 165-212, 215, 326-334, 342-347, 1431-1499;
@@ -663,7 +666,7 @@ So a per-test coverage map is **safe only for ordering** (or for isolation-unit 
 - `tools/self-qualification-gate.sh`;
 - `tools/tester-unified-gate.sh`: 141-150, 491-523, 576-654;
 - `nyxloom-trove/decisions.md`: 940-943;
-- `nyxloom-trove/4-backlog.md`: 10661, 10738, 10795, 10858, 10949, 11028;
+- `nyxloom-trove/4-backlog.md`: 10661, 10738, 10795, 10858, 10949, 11028. These line numbers are from `db85f747`; the B110 docs commits shift them, so search for the `## B105` … `## B110` headings.
 - `nyxloom-trove/reports/assay-B105-LOG.md`: 58-74, 182, 193, 212-215, 240-250, 258, 296-315;
 - `nyxloom-trove/carve-assets/P22/test_acceptance.py:266-309`;
 - `nyxloom-trove/carve-assets/P33/test_acceptance_v5.py:406-417`;

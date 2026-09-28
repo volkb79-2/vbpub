@@ -1,16 +1,20 @@
 # B110-P6 — A persisted campaign deadline, and termination that leaves no candidate behind
 
+*Revised 2026-09-28 after the round-1 review (see REVIEW-2026-09-28-round1.md). This revision applies findings P6-1..P6-11 and carver decisions C3, C8, C15 and C16.*
+
 | Field | Value |
 |---|---|
 | Backlog | **B117** (split from B110) |
-| Branch | `assay-b110-p6-deadline` from the integration line `assay-b105-evidence-integrity` (after the plan §11.1 reconciliation) |
-| Depends on | nothing. It can run in parallel with P0, P2 and P10a. **Merge note:** P3d also edits `tools/self-qualification-gate.sh`. Serial `--no-ff` merges apply; whichever merges second rebases its gate-script hunk. |
+| Branch | `assay-b110-p6-deadline` from the integration line (the plan §11.1 / C18 reconciliation branch `assay-b110-integration`) |
+| Depends on | Nothing; it can run in parallel with P0, P2 and P10a.<br>**Merge order (plan §11.6):**<br>• P6 merges **before** v14 (P3d) and before P7b. P3d and P7b rebase onto P6's gate-script wiring and its `tests/test_self_lane.py` pins.<br>• P0 edits the same `LivenessRunner` Popen region (`liveness.py:1336-1380`) for its sampler. If P0 merged first, rebase and keep both edits.<br>• P4 rebases onto P6's `_run_attempt` change (C3). |
 | Contract class | **2b.** The file format, CLI, refusals and termination semantics are fixed; the private construction is yours. |
 | Implementer | Opus (fresh session) |
-| Decisions | **A-473 (plan D9).** Also binding: A-464 (8 h hard stop; an expiry is incomplete infrastructure evidence, never a candidate outcome), A-160, A-193 (monotonic lane clock, remainder sampled at each boundary), A-195. |
-| Size | M: `cli.py` (new subcommand, one flag, signal wrapper), `runner.py` (`LaneDeadline` helper, termination flag, `execute_plan` check), `liveness.py` (live process-group registry), `mutation.py` (one kwarg and one check), gate script, run-gate.toml comment, tests, docs |
+| Decisions | **A-473 (plan D9).** Also binding: A-464 (8 h hard stop; an expiry is incomplete infrastructure evidence, never a candidate outcome), A-160, A-193 (monotonic lane clock, remainder sampled at each boundary), A-195.<br>Round-1 carver decisions:<br>• **C3:** unclassified attempts are owned by P6.<br>• **C8:** state records are bound to the deadline; D7 defaults to NO.<br>• **C15:** dataclass-contract fixture.<br>• **C16:** signal handlers only on the main thread. |
+| Size | L:<br>• `cli.py`: new subcommand, one flag, signal wrapper.<br>• `runner.py`: `LaneDeadline` helper and field, termination flag, `execute_plan` post-check, `default_process_runner` session and registry.<br>• `liveness.py`: live process-group registry.<br>• `mutation.py`: `plan_sha256`, one kwarg and check, `_run_attempt` result handling (C3), and the state-record deadline key and loader check (C8).<br>• Gate script, run-gate.toml comment, tests, docs. |
 
 B110's rule is that a resume, retry or replacement worker consumes the **same** remaining time. None of them resets the campaign clock. Today every `assay run` starts a fresh `LaneDeadline` from the lane budget (`cli.py:1169`). A SIGTERM from the gate's `timeout` also leaves candidate process groups (`start_new_session=True`) running as orphans.
+
+**Round-1 finding P6-1 (C3).** A candidate still running when the lane or campaign deadline expires is capped at `deadline.remaining()` (`mutation.py:2698-2703`). Today its timeout comes back as a *returned* `BUDGET_EXCEEDED/LANE_TIMEOUT` result (`runner.py:1224-1263`) and is **recorded** as `budget_exceeded`. On `--resume` that record is replayed (`mutation.py:1126`). So after the first invocation's budget, a resumed campaign could never PASS. P6 therefore also makes such attempts **unclassified**: `_run_attempt` raises LANE_TIMEOUT, the executor masks the position, no record is written, and resume re-executes it.
 
 ---
 
@@ -18,38 +22,49 @@ B110's rule is that a resume, retry or replacement worker consumes the **same** 
 
 Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
 
-1. `nyxloom-trove/reports/assay-B110-PLAN-2026-09-28.md`: §0, §3 D9, §7 (the pilot uses `campaign init --campaign pilot … --hours 2`), §9.3, §10.
+1. `nyxloom-trove/reports/assay-B110-PLAN-2026-09-28.md`: §0, §3 D9, §7, §9.3 and §10.
+   - The pilot's deadline is created by P7b's gate mode as campaign `b110-pilot-<commit12>`, 2 h.
+   - The qualifying deadline is created by this package's gate wiring as campaign `b105-<commit12>`.
+   - Never run `campaign init` on the host (plan §9.3 step 2).
 2. `src/assay/runner.py`:
-   - `:210-308` `LaneDeadline` (`start`, `tightened`, `remaining`, `unbounded`).
-   - `:321-347` `default_process_runner`: plain `subprocess.run` with no new session, so these children share assay's process group.
-   - `:1094-1110` `execute_plan` signature: the single boundary every R0 baseline, R2 candidate, R3 half and probe goes through.
-   - `:4526-4541`: the `except mutation.InvalidRejudgeIdError: raise` pattern.
+   - `:209-308`: `LaneDeadline`, a frozen `kw_only` dataclass (`start`, `tightened`, `remaining`, `unbounded`).
+   - `:321-347`: `default_process_runner`. It is plain `subprocess.run` with no new session, so these children share assay's process group. **You change this** (Interfaces 6).
+   - `:1094-1110`: the `execute_plan` signature. It is the single boundary that every R0 baseline, R2 candidate, R3 half and probe goes through.
+   - `:1180-1270`: `execute_plan` → `_execute_plan_inner`, which turns `TimeoutExpired`, `LivenessHungExpired` and `OSError` into **returned** results.
+   - `:2800`: `_execute_snapshot_unit`.
+   - `:4526-4541`: the `except mutation.InvalidRejudgeIdError: raise` pattern (the tuple at `:4532`).
    - `:5385-5410`: the outer `except AssayError` that renders the whole-lane refusal (`refuse_all`).
 3. `src/assay/cli.py`:
-   - `:255-328`: the `run` parser. Add your flag after `--reuse-from`.
+   - `:255-328`: the `run` parser. Add your flag after `--reuse-from`; P7 also adds flags there.
    - `:330-367`: the `plan` parser.
    - `:456-495`: `main`, dispatch and the `except AssayError` handler.
    - `:725-812`: `_cmd_run`, which calls `_resolve_state_dir` at `:804`; see also `_resolve_state_dir` at `:845-878`.
    - `:1124-1171`: `_run_reserved` up to `LaneDeadline.start`.
-   - `:1224-1325`: the HEAD read and the **pre-`run_lane` LANE_TIMEOUT refusal path**, including the label-grace `LaneDeadline(expires_at=…)` direct construction at `:1279-1282`.
+   - `:1236-1325`: the HEAD read (`git.head_rev` at **`:1238`**) and the **pre-`run_lane` LANE_TIMEOUT refusal path**, including the label-grace `LaneDeadline(expires_at=…)` direct construction at `:1279-1282`.
    - `:1326-1331`: the run header.
    - `:1379-1414`: the refusal shape (`runner.refuse_lane(...)`, `write_verdict`, `_emit_verdict_written`, `_print_run_summary`).
-   - `:1490-1540`: the `run_lane` call and its LANE_TIMEOUT handler.
+   - `:1481`: the `run_lane` call; `:1527`: its LANE_TIMEOUT handler.
    - `:1571-1790`: `_cmd_plan`, whose discovery (`:1648-1765`) you will extract.
 4. `src/assay/mutation.py`:
-   - `:1023` `candidate_id`.
-   - `:2318-2343`: the selection block, where the plan-digest check goes before shard selection.
-   - `:2700-2720`: `_run_attempt`, calling `execute_plan` with `timeout=command_deadline`.
+   - `:290`: `InvalidRejudgeIdError`.
+   - `:1023`: `candidate_id`.
    - `:1244-1270`: the atomic temp-and-replace write pattern for state records.
+   - `:1273-1402`: `_load_validated_state_record` (C8's loader check goes here, next to the judge check at `:1399-1402`).
+   - `:2318-2343`: the selection block, where the plan-digest check goes before shard selection.
+   - **`:2698-2712`: `_run_attempt`'s `command_deadline`.** It is `deadline.remaining()`, lowered to `budget_per_candidate_seconds` only when that is strictly smaller. That comparison is exactly the C3 "timeout source" fact.
+   - `:2956-2989`: the state-record payload (C8 adds one optional key).
 5. `src/assay/liveness.py`:
-   - `:1299-1340`: `LivenessRunner.__init__`, including the `_process_group_killer` injection at `:1332`.
-   - `:1360-1440`: spawn with `start_new_session=True` at `:1375`, and the group kill at `:1405-1439`.
-6. `tools/self-qualification-gate.sh:11-60, :150-248` and `run-gate.toml:33-62`.
+   - `:1299-1340`: `LivenessRunner.__init__`, including the `_process_group_killer` injection at **`:1333`**.
+   - `:1360-1440`: spawn with `start_new_session=True` at `:1375`, and the group kill at `:1405-1439`. P0 also edits `:1336-1380`.
+6. `tools/self-qualification-gate.sh:11-60, :150-248` (`run_and_verify_lane` is at `:156-214`) and `run-gate.toml:33-62`.
 7. `nyxloom-trove/decisions.md`, rows A-160 (`:453`) and A-193 (`:516`).
 8. Test precedents:
    - `tests/test_lane_timeout_writes_a_verdict.py`: the refusal verdict for an expired deadline.
-   - `tests/test_cli_run.py:586-625`: a real child spinning under `LivenessRunner` via in-process `main()`.
+   - `tests/test_cli_run.py` (`test_run_liveness_classifies_a_busy_loop_as_budget_exceeded_not_hung`; find it **by name**, because P1 may move it to `tests/zz_slow/test_cli_run_real_campaigns.py`): a real child spinning under `LivenessRunner` via in-process `main()`.
    - `tests/test_state_dir_resume.py`.
+   - `tests/test_config_unbounded_budget.py:300-338`: it records `subprocess.run`'s `timeout`. Interfaces 6 moves its recorder.
+   - `tests/test_config_rigor_grammar.py:98`: `subprocess.run`/`Popen` sentinels (unchanged).
+   - `tests/test_runner_execute.py:220`: undecodable child output (must stay green).
 
 ## Implementation packet (normative)
 
@@ -99,12 +114,15 @@ Invalid documents that `assay run` must refuse, each with `ERROR`/`BAD_LANE_CONF
 
 `init` refusals (exit 2, `ERROR`/`BAD_LANE_CONFIG`, message on stderr, nothing written):
 - the output file already exists with a **different** identity (`commit`, `git_tree`, `lanes`, `assay_version` or `plan_sha256` differ). If it exists with the **same** identity, init prints the existing file's path and exits 0 **without changing `expires_at_utc`**. Re-running init never extends a deadline.
-- any `--state-dir` already contains a `*.json` record while no deadline file exists. That is the backlog's "state without a matching deadline cannot silently start a new clock". To start a new campaign after an expiry, the operator must move the old state dir aside deliberately.
+- any `--state-dir` contains a state record (a `<64hex>.json` file) whose top-level `campaign_deadline_sha256` (C8, Interfaces 8) is **absent or different** from the SHA-256 of the deadline file being created or reused. That covers the backlog's "state without a matching deadline cannot silently start a new clock".
+  - A same-identity re-init over its own campaign's records passes, because those records carry this file's digest.
+  - To start a new campaign after an expiry, or to reuse a state dir that holds unbound records (a screen, the pilot, imports), the operator must move the old state dir aside deliberately.
+  - Importing unbound records is P9's job (`assay state import`, C8), not `init`'s.
 - a dirty worktree, using the same integrity check `_cmd_plan` uses (`runner._resolve_snapshot_worktree_integrity`), without `--allow-dirty`. `init` has no `--allow-dirty` flag.
 
 **2. `assay run --campaign-deadline PATH`.** Optional. When given, the flow below applies.
 
-**3. `mutation.plan_sha256(candidate_ids: Sequence[str]) -> str`.** SHA-256 over `b"".join(f"{len(i)}:{i},".encode("ascii") for i in candidate_ids)`, which is netstrings in plan order.
+**3. `mutation.plan_sha256(candidate_ids: Sequence[str]) -> str`.** SHA-256 over `b"".join(f"{len(i)}:{i},".encode("ascii") for i in candidate_ids)`, which is netstrings in **plan order**. **P6 is the single owner of this helper** (P7-7). P7 (`selection_sha256`), P8 and P9 import it, and nobody defines a second one. If P7 runs in parallel and needs it first, P7 imports it from P6's merged base or stops with BLOCKED; it never copies it.
 
 **4. `runner.campaign_bounded_deadline(lane_deadline: LaneDeadline, *, expires_at_utc: datetime, wall_now: datetime, monotonic_now: float) -> LaneDeadline`.**
 - Pure.
@@ -116,53 +134,116 @@ Invalid documents that `assay run` must refuse, each with `ERROR`/`BAD_LANE_CONF
 - `runner.request_termination()` sets a module-level `threading.Event`, `_TERMINATION`.
 - `runner.termination_requested() -> bool`.
 - `runner._reset_termination_for_tests()` exists for the test fixture only.
-- `LaneDeadline.remaining()` raises the existing `BUDGET_EXCEEDED`/`LANE_TIMEOUT` `AssayError` when `_TERMINATION` is set, even for an unbounded lane.
-- `execute_plan` raises the same error **after** its process runner returns, if `_TERMINATION` is set. So no result that finished during a termination is ever classified.
-- `liveness.terminate_live_process_groups(sig=signal.SIGKILL) -> int` kills every registered live candidate process group and returns the count. `LivenessRunner` registers `proc.pid` (the pgid) right after `Popen` at `:1375` and unregisters it in the `finally` that reaps the process. The registry is a module-level `set[int]` under a `threading.Lock`.
+- `LaneDeadline` gains a field `honors_termination: bool = True`. This changes a dataclass, so C15 applies.
+  - `LaneDeadline.remaining()` raises the existing `BUDGET_EXCEEDED`/`LANE_TIMEOUT` `AssayError` when `_TERMINATION` is set **and** `honors_termination` is true. This also applies to an unbounded lane.
+  - The label-grace deadline at `cli.py:1279-1282` is constructed with `honors_termination=False` (P6-8). A SIGTERM before or during the HEAD read therefore still gets its commit label read within the grace, and writes the `BUDGET_EXCEEDED`/`LANE_TIMEOUT` verdict (exit 4) instead of exiting 2 with no verdict.
+  - `tightened()` and `campaign_bounded_deadline` copy the field.
+- **`execute_plan` checks termination on every exit path (P6-2).** After `_execute_plan_inner` returns, it raises the same LANE_TIMEOUT error if `_TERMINATION` is set, whatever the result. That covers the normal return, the returned `TimeoutExpired` / `LivenessHungExpired` / `OSError` conversions (`runner.py:1224-1263`), and every other terminal. Put the check in `execute_plan`'s `try` around the `_execute_plan_inner` call, **not** inside `_execute_plan_inner`'s branches. So no result that finished or failed during a termination is ever classified.
+- `liveness.terminate_live_process_groups(sig=signal.SIGKILL) -> int` kills every registered live process group and returns the count.
+  - `liveness.register_live_group(pgid)` and `unregister_live_group(pgid)` are the only mutators.
+  - `LivenessRunner` registers `proc.pid` (the pgid) right after `Popen` at `:1375` and unregisters it in the `finally` that reaps the process.
+  - `runner.default_process_runner` does the same (Interfaces 6).
+  - **Handler safety (P6-4).** The registry is a module-level `set[int]` guarded by a `threading.RLock`. The signal handler runs on the main thread, and must not deadlock if the main thread already holds the lock (the baseline `LivenessRunner` runs on it), so the handler takes the lock with `acquire(blocking=False)`.
+    - If the lock is held by **another** thread, the handler snapshots the set without the lock: `list(_LIVE_GROUPS)` is atomic under the GIL for a set of ints. It kills that snapshot, then sets a flag so the next `unregister_live_group` call re-runs `terminate_live_process_groups()` under the lock.
+    - The handler never calls `print`, because `print` can raise "reentrant call". It writes its one diagnostics line with `os.write(2, b"...")`.
+
+**6. `runner.default_process_runner` runs every child in its own session and registers it (P6-3).** Today its children share assay's process group, so GNU `timeout`'s group SIGTERM can kill a non-liveness candidate (exit −15) **before** the main-thread handler sets `_TERMINATION`. That candidate would then be classified `killed` and recorded.
+
+Because the qualifying lane mutates Assay's own signal-handling code, a mutant can genuinely make a candidate kill itself. So "treat −15 as unclassifiable" is rejected: it would make such a mutant stop the whole lane on every resume. The fix is to order the events instead. New body, same signature and the same observable result shape:
+1. `proc = subprocess.Popen(list(argv), env=dict(env), cwd=cwd, stdout=PIPE, stderr=PIPE, text=True, errors="replace", start_new_session=True)`, then `liveness.register_live_group(proc.pid)`.
+2. `stdout, stderr = proc.communicate(timeout=timeout)`. On `subprocess.TimeoutExpired`:
+   - `os.killpg(proc.pid, SIGKILL)`, ignoring `ProcessLookupError`;
+   - `stdout, stderr = proc.communicate()`;
+   - raise `subprocess.TimeoutExpired(proc.args, timeout, output=stdout, stderr=stderr)`. This is the same exception type and fields `subprocess.run` raised, and `_execute_plan_inner` handles it unchanged.
+3. `finally: liveness.unregister_live_group(proc.pid)`.
+4. Return `subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)`.
+
+The children no longer receive `timeout`'s group signal directly. Only assay does. The handler sets `_TERMINATION` **first** and then SIGKILLs every registered group, so by the time any child's death is observed, termination is already requested, and Interfaces 5 and 7 make it unclassified.
+
+A mutant that signals its own candidate is still classified normally, because termination was never requested. Legacy mode classifies it `killed`; `--cold-witness` mode classifies it `crashed`, per P3b and C2.
+
+**Test impact:**
+- `tests/test_config_unbounded_budget.py:311-317` recorded `subprocess.run`'s `timeout` kwarg. Move its recorder to wrap `runner.default_process_runner`'s internal `communicate` timeout. Expose a module-level helper `runner._wait_child(proc, timeout)` that the test monkeypatches.
+- Keep `assert None not in recorded` and **add** `assert recorded`, so the test can no longer pass vacuously.
+
+**7. C3: unclassified attempts, in `mutation._run_attempt` (P6-1, P6-2).** The attempt's outcome is decided by `execute_plan`. After it returns, in this order:
+1. `lane_bound = budget_per_candidate_seconds is None or budget_per_candidate_seconds >= <the remainder sampled for command_deadline>`. Capture that sampled remainder in a local where `command_deadline` is computed (`:2698-2703`).
+2. If the result is `BUDGET_EXCEEDED` with reason `LANE_TIMEOUT` **and** `lane_bound`, raise `AssayError(<message naming the lane/campaign deadline>, outcome=BUDGET_EXCEEDED, reason_code=LANE_TIMEOUT)`. The executor's existing expiry branch then masks the position, writes no record, and stops submitting (I5 in P4). `--resume` re-executes it.
+   - A per-candidate budget timeout (`not lane_bound`) keeps today's `budget_exceeded` classification and record. That is a genuine candidate outcome, the spinning-mutant case.
+   - A `CANDIDATE_HUNG` result keeps today's `hung` classification unless termination was requested (step 3).
+3. Termination is already covered, because `execute_plan` raises when `_TERMINATION` is set (Interfaces 5). No extra check is needed here.
+4. The post-command dirt check's existing absorption of LANE_TIMEOUT (`mutation.py:2761-2779`) is unchanged. It only protects an already-decided *candidate* result. After step 2, an attempt the lane deadline cut off never reaches it.
+
+**8. C8: state records are bound to the deadline.**
+- When `assay run` receives `--campaign-deadline`, every state record it writes gains the optional top-level key `campaign_deadline_sha256`: the SHA-256 of the deadline file's bytes as read in Flow 1. The loader tolerates extra top-level keys (`mutation.py:1310-1348`), and `MUTATION_STATE_SCHEMA_VERSION` stays 1.
+- Under `--campaign-deadline --resume`, `_load_validated_state_record` treats a record whose `campaign_deadline_sha256` is absent or different as **rejected**. It is re-executed and counted in the `resume` progress event's rejected total, exactly like a judge mismatch. Import unbound records only through P9's `assay state import`, never implicitly.
+- Without `--campaign-deadline`, the key is neither written nor checked. Today's behaviour is byte-identical.
 
 ### Required flow
 
 **`assay run … --campaign-deadline PATH`**
-1. `_cmd_run` resolves and parses PATH before any work, next to `_resolve_state_dir` at `:804`. Unreadable, invalid, or a lane not in `lanes` → `BAD_LANE_CONFIG` through `main()`'s handler. There is no verdict yet, exactly like other pre-run config refusals.
-2. In `_run_reserved`, immediately after `LaneDeadline.start` (`:1169-1171`):
-   `deadline = runner.campaign_bounded_deadline(deadline, expires_at_utc=…, wall_now=datetime.now(timezone.utc), monotonic_now=time.monotonic())`.
-   This is the **only** UTC→monotonic conversion in the process.
-3. HEAD read (`:1224`). If the campaign has already expired, this raises LANE_TIMEOUT, and the **existing** refusal path (`:1239-1325`) writes the `BUDGET_EXCEEDED`/`LANE_TIMEOUT` verdict. Add no new code for this case.
-4. Right after `_emit_run_header(commit)` (`:1331`), validate: `commit == HEAD`, `git_tree == HEAD^{tree}` (read through `git.run` with `remaining=deadline.remaining`), and `assay_version == __version__`. On a mismatch, refuse with `ERROR`/`BAD_LANE_CONFIG` through the exact `runner.refuse_lane(...)` / `write_verdict` / `_emit_verdict_written` / `_print_run_summary` shape at `:1394-1414` (with `evidence=()` if it has not been loaded yet), and return the exit code.
-5. Pass `expected_plan_sha256=doc["plan_sha256"][lane.name]` through `run_lane` → `_run_higher_rigor_lane` → `_run_prepared_lane` → `run_mutation`, as a keyword with default `None`. Mirror how `reuse_from` is threaded at `runner.py:5565`, `:5164`, `:5351-5378` and `:3585`.
-6. In `run_mutation`, once `job_list` and `total` are known and **before** the shard selection at `:2324`: if `expected_plan_sha256` is not `None` and `plan_sha256([candidate_id(j) for j in job_list]) != expected_plan_sha256`, raise `CampaignPlanMismatchError`. This is a new `AssayError` subclass in `mutation.py` next to `InvalidRejudgeIdError` (`:292`), with `ERROR`/`BAD_LANE_CONFIG`; export it in `__all__`.
-   - At `runner.py:4532`, extend the except to `except (mutation.InvalidRejudgeIdError, mutation.CampaignPlanMismatchError): raise`. The outer handler at `:5385` then renders the whole-lane refusal. Nothing runs after the mismatch.
+1. `_cmd_run` resolves and parses PATH before any work, next to `_resolve_state_dir` at `:804`. Unreadable, invalid, or a lane not in `lanes` → `BAD_LANE_CONFIG` through `main()`'s handler. There is no verdict yet, exactly like other pre-run config refusals. Keep the file's raw bytes to compute `campaign_deadline_sha256` (C8).
+2. `LaneDeadline.start` (`:1169-1171`) runs unchanged, on the **lane** budget.
+3. HEAD read (`:1238`), unchanged, under the lane deadline.
+4. Right after `_emit_run_header(commit)` (`:1331`), validate the **identity**:
+   - `commit == HEAD`;
+   - `git_tree == HEAD^{tree}`, read through `git.run` with `remaining=deadline.remaining`;
+   - `assay_version == __version__`.
 
-**Signals (only in `assay run`, main thread)**
-7. `_cmd_run` installs handlers for SIGTERM and SIGINT with `signal.signal`, saves the previous handlers, and restores them in `finally`. The handler is idempotent and **never raises**. It:
-   - calls `runner.request_termination()`;
-   - calls `liveness.terminate_live_process_groups()`;
-   - writes one line, `assay: termination requested (signal N); stopping and writing an incomplete verdict`, to the diagnostics stream.
-8. The run then unwinds normally:
-   - In-flight candidates have been killed. `execute_plan` raises LANE_TIMEOUT when their runners return. The executor masks them as `budget_exceeded`, together with every unsubmitted candidate, which is the existing expiry path.
-   - The baseline and non-liveness children in assay's own process group received the signal directly, and are converted the same way.
-   - The verdict is written through the existing LANE_TIMEOUT handlers, and the process exits `4`. A killed candidate can never become `killed`, `crashed` or `hung`.
-9. On a natural lane-deadline expiry, the existing per-attempt `timeout=` already kills the candidate's group (`liveness.py:1405-1439`). No new mechanism is added; oracle O6 pins it.
+   On a mismatch, refuse with `ERROR`/`BAD_LANE_CONFIG` through the exact `runner.refuse_lane(...)` / `write_verdict` / `_emit_verdict_written` / `_print_run_summary` shape at `:1394-1414` (with `evidence=()` if it has not been loaded yet), and return the exit code.
+5. **Only now** convert: `deadline = runner.campaign_bounded_deadline(deadline, expires_at_utc=…, wall_now=datetime.now(timezone.utc), monotonic_now=time.monotonic())`. This is the **only** UTC→monotonic conversion in the process.
+   - If the campaign has already expired, the result lies in the past. The first `deadline.remaining()` inside `run_lane` then raises LANE_TIMEOUT, and the **existing** `run_lane` LANE_TIMEOUT handler (`cli.py:1527`) writes the `BUDGET_EXCEEDED`/`LANE_TIMEOUT` verdict (exit 4). Add no new code for this case.
+   - **Precedence (P6-7), pinned:**
+     1. file structure (step 1, exit 2, no verdict);
+     2. identity (step 4, exit 2, a `BAD_LANE_CONFIG` verdict);
+     3. campaign expiry (exit 4, a `LANE_TIMEOUT` verdict);
+     4. plan digest (step 7).
+
+     So an **expired** file for a **different** commit reports the identity mismatch, never a timeout.
+6. Pass `expected_plan_sha256=doc["plan_sha256"][lane.name]` and `campaign_deadline_sha256=<digest>` through `run_lane` → `_run_higher_rigor_lane` → `_run_prepared_lane` → `run_mutation`, as keywords with default `None`. Mirror how `reuse_from` is threaded at `runner.py:5565`, `:5164`, `:5351-5378` and `:3585`.
+7. In `run_mutation`, once `job_list` and `total` are known and **before** the shard selection at `:2324`: if `expected_plan_sha256` is not `None` and `plan_sha256([candidate_id(j) for j in job_list]) != expected_plan_sha256`, raise `CampaignPlanMismatchError`.
+   - This is a new `AssayError` subclass in `mutation.py` next to `InvalidRejudgeIdError` (`:290`), with `ERROR`/`BAD_LANE_CONFIG`. Export it in `__all__`.
+   - At `runner.py:4532`, extend the except to `except (mutation.InvalidRejudgeIdError, mutation.CampaignPlanMismatchError): raise`. The outer handler at `:5385` then renders the whole-lane refusal. Nothing runs after the mismatch.
+   - P3b adds `R2CommandProofError` to the same tuple (C1). P7 does **not** add to it; its unknown-ID refusal reuses `InvalidRejudgeIdError`'s shape. Whichever of P6 and P3b merges second rebases the tuple.
+
+**Signals (only in `assay run`, and only on the main thread: C16)**
+8. `_cmd_run` installs handlers for SIGTERM and SIGINT with `signal.signal` **only if** `threading.current_thread() is threading.main_thread()`. Off the main thread, `signal.signal` raises `ValueError`; there, skip installation silently, which is the library/threaded-caller case. It saves the previous handlers and restores them in `finally`. The handler is idempotent and **never raises**. It:
+   - calls `runner.request_termination()` **first**;
+   - then calls `liveness.terminate_live_process_groups()`;
+   - then writes one line, `assay: termination requested (signal N); stopping and writing an incomplete verdict`, with `os.write(2, …)`.
+9. The run then unwinds normally:
+   - Every live group, whether liveness candidates or default-runner children (Interfaces 6), has been killed **after** `_TERMINATION` was set. `execute_plan` raises LANE_TIMEOUT whatever the runner returned (Interfaces 5). The executor masks them as `budget_exceeded` with **no state record**, together with every unsubmitted candidate. That is the existing expiry path.
+   - The verdict is written through the existing LANE_TIMEOUT handlers, and the process exits `4`. A terminated candidate can never become `killed`, `crashed`, `hung` or a recorded `budget_exceeded`.
+10. **Natural lane or campaign expiry (C3).** The per-attempt `timeout=` kills the candidate's group (`liveness.py:1405-1439` for liveness runners; Interfaces 6 for the default runner). `_run_attempt` step 2 (Interfaces 7) then turns the lane-bound timeout into an unclassified LANE_TIMEOUT: no record, and re-executed on resume. Oracles O6 and O10 pin this.
 
 **Gate integration (`tools/self-qualification-gate.sh`)**
-10. After `wheel_digest` (`:151`) and `assay_bin` (`:154`):
+11. After `wheel_digest` (`:151`) and `assay_bin` (`:154`):
     - For a full run (`requested_lane == self-qualification`): `campaign="b105-${source_commit:0:12}"` and `deadline=".assay/campaign-deadline-$campaign.json"`. If the file is absent, run `"$assay_bin" campaign init --file assay.toml --campaign "$campaign" --lane self-qualification --lane self-qualification-preflight --hours 8 --state-dir .assay/mutation-state-self-qualification --state-dir .assay/mutation-state-self-qualification-preflight --wheel-sha256 "$wheel_digest"`.
     - For a standalone preflight run: `campaign="b105-pre-${source_commit:0:12}"`, with `--lane self-qualification-preflight --hours 1` and only the preflight state dir.
     - Print `B105_CAMPAIGN_DEADLINE=$deadline`.
-11. In `run_and_verify_lane`, compute `remaining_s` from the file with the run-venv python (`int(expires_at - now)`, floored at 1), and wrap the run:
+12. In `run_and_verify_lane` (`:156-214`), define `remaining_s` exactly (P6-9). Compute it with the run-venv python:
+    ```
+    remaining_s = max(0, floor(expires_at_utc - now_utc))
+    ```
+    There is no "floored at 1". Then wrap the run:
     `timeout --verbose --signal=TERM --kill-after=30s "$((remaining_s + 120))s" "$assay_bin" run "$lane" … --campaign-deadline "$deadline"`.
-    - The 120 s grace lets assay's own expiry write the verdict first. The `timeout` is only a failsafe.
-    - If `remaining_s` is ≤ 0, still invoke assay. It writes the LANE_TIMEOUT verdict itself, which is then verified like any other.
-12. `run-gate.toml`:
+    - Assay is **always** invoked, even when `remaining_s == 0`. It then writes the LANE_TIMEOUT verdict itself (Flow 5), and that verdict is verified like any other.
+    - The +120 s lets assay's own expiry write the verdict first. The `timeout` is only a failsafe.
+    - When the `timeout` failsafe **fires**, GNU `timeout` exits **124**, not assay's 4. The script must treat 124 as "failsafe fired; any verdict file is untrusted". Echo `B105_TIMEOUT_FAILSAFE=1` and exit non-zero **without** running `assay verify` or the report checker on it.
+13. `run-gate.toml`:
     - Keep the outer `timeout … 7h30m` on `self-qualification` as the outermost failsafe.
-    - Rewrite the comment block at `:38-44`: "the persisted campaign deadline (B117, A-473) bounds preflight + full lane together; this outer timeout and nyxloom's 8 h watchdog are failsafes only".
+    - Rewrite the comment block at `:38-44` to say three things. The persisted campaign deadline (B117, A-473) bounds preflight plus the full lane together. This outer timeout and nyxloom's 8 h watchdog are failsafes only. When the outer one fires, it signals the inner `timeout` (its own process group), which forwards the signal to its child. Either way the result is a no-verdict failure, never evidence.
     - Add a one-line comment on the preflight lane saying it creates its own `b105-pre-*` campaign.
+    - **Verify the forwarding claim locally before writing it (P6-9), with no docker.** Run `timeout --signal=TERM 3 timeout 60 python3 -c 'import signal,sys,time; signal.signal(signal.SIGTERM, lambda *a: (open("/tmp/<unique>","w").write("got"), sys.exit(42))); time.sleep(30)'; echo "outer=$?"` under nice, and record in the REPORT whether the marker was written.
+      - If it was **not**, the comment says instead that the outer timeout reaches only the inner `timeout`, and assay is then killed by the inner `--kill-after`. The claim must match what was observed.
+      - Clean up the marker afterwards.
 
 ### Topology and bounds
 
 - The deadline file lives in the **worktree's** `.assay/` directory. The repository-root `.gitignore:343` ignores `.assay/`. It is created inside the tester-unified container by the gate's own wheel, so `assay_version` matches the binary that validates it.
-- Bounds: `--hours` ≤ 24. There is exactly one UTC→monotonic conversion per process. The live-group registry holds at most `jobs` entries.
-- Termination is cooperative only after all live groups have received SIGKILL. There is no timing assumption; the 30 s `--kill-after` failsafe exists only for a wedged assay.
+- Bounds: `--hours` ≤ 24. There is exactly one UTC→monotonic conversion per process.
+- The live-group registry holds at most `jobs` candidate groups, plus the baseline, probe or canary child that the main thread may be running. That is `jobs + 1`.
+- Termination is cooperative only after all live groups have received SIGKILL, and `_TERMINATION` is set **before** any kill. There is no timing assumption. The 30 s `--kill-after` failsafe exists only for a wedged assay.
 
 ### Decision table
 
@@ -170,15 +251,22 @@ Invalid documents that `assay run` must refuse, each with `ERROR`/`BAD_LANE_CONF
 |---|---|---|---|
 | no `--campaign-deadline` | today's behaviour, byte-identical | unchanged | unchanged |
 | valid file, time remaining, identity matches | lane runs under `min(lane budget, campaign remainder)` | normal | normal |
-| valid file, already expired | existing pre-`run_lane` timeout refusal | `BUDGET_EXCEEDED`/`LANE_TIMEOUT` | 4 |
+| valid file, identity matches, already expired | `run_lane`'s first `remaining()` raises; existing `run_lane` LANE_TIMEOUT handler | `BUDGET_EXCEEDED`/`LANE_TIMEOUT` | 4 |
 | file unreadable, invalid, or lane not listed | refusal before HEAD | none (`main()` handler prints) | 2 |
-| commit, tree or version mismatch | refusal after the run header | `ERROR`/`BAD_LANE_CONFIG`, whole lane | 2 |
+| commit, tree or version mismatch (**including an expired file**; identity wins, P6-7) | refusal after the run header | `ERROR`/`BAD_LANE_CONFIG`, whole lane | 2 |
 | plan digest mismatch | refusal before any candidate | `ERROR`/`BAD_LANE_CONFIG`, whole lane | 2 |
-| SIGTERM or SIGINT during R2 | live groups killed; in-flight and unsubmitted candidates `budget_exceeded` | `BUDGET_EXCEEDED`/`LANE_TIMEOUT` | 4 |
+| SIGTERM or SIGINT during R2 (liveness or non-liveness lane) | `_TERMINATION` set, then live groups killed; in-flight and unsubmitted candidates masked `budget_exceeded`, **no state records** | `BUDGET_EXCEEDED`/`LANE_TIMEOUT` | 4 |
 | SIGTERM during the baseline | baseline converted to LANE_TIMEOUT | existing refusal/claim shape for a timed-out baseline | 4 |
-| `init` with the same identity, file present | prints path; deadline unchanged | — | 0 |
+| SIGTERM before or during the HEAD read | label read under the non-terminating grace deadline; verdict written | `BUDGET_EXCEEDED`/`LANE_TIMEOUT` | 4 |
+| a candidate attempt timed out by the **lane/campaign remainder** (C3) | `_run_attempt` raises LANE_TIMEOUT: masked, **no record**, submission stops; resume re-executes it | `BUDGET_EXCEEDED`/`LANE_TIMEOUT` (lane) | 4 |
+| a candidate attempt timed out by **`budget_per_candidate`** | unchanged: recorded `budget_exceeded` | unchanged | unchanged |
+| termination requested while the liveness monitor reports hung / timeout / OSError | `execute_plan` raises LANE_TIMEOUT: unclassified, no record | `BUDGET_EXCEEDED`/`LANE_TIMEOUT` | 4 |
+| a candidate whose own code signals itself (no termination requested) | classified as today (legacy `killed`; cold mode `crashed` per P3b/C2) | normal | normal |
+| `--resume` under a deadline over a record lacking or mismatching `campaign_deadline_sha256` | record rejected, candidate re-executed | normal | normal |
+| gate: inner `timeout` failsafe fired (exit 124) | `B105_TIMEOUT_FAILSAFE=1`; no verify, no checker | none trusted | non-zero |
+| `init` with the same identity, file present, own records only | prints path; deadline unchanged | — | 0 |
 | `init` with a different identity, file present | refusal | — | 2 |
-| `init` with no file but state records present | refusal | — | 2 |
+| `init` where a state dir holds a record lacking or mismatching this file's `campaign_deadline_sha256` | refusal | — | 2 |
 
 ### Prepared proof and traceability
 
@@ -191,6 +279,12 @@ Invalid documents that `assay run` must refuse, each with `ERROR`/`BAD_LANE_CONF
 | natural expiry kills group | existing liveness | O6 | real spinning child | — (pin) |
 | SIGTERM leaves nothing alive | cli signals + registry | O7 | real subprocess assay | no handler → candidate pid alive after assay exit |
 | gate script | `self-qualification-gate.sh` | O8 | `tests/test_self_lane.py` substrings | missing `--campaign-deadline` → O8 red |
+| C3 lane-bound timeout unclassified | `mutation._run_attempt` | O10 | fake runner + injected deadline + state root | return the result as today → a `budget_exceeded` record exists and resume does not re-execute |
+| termination on every exit path | `runner.execute_plan` | O11 | `_TERMINATION` set + runner raising `LivenessHungExpired` / `TimeoutExpired` / `OSError` | check only on normal return → `hung` classified |
+| non-liveness group SIGTERM | `default_process_runner` session + registry | O12 | real subprocess assay, `liveness = false`, `os.killpg(assay_pgid, SIGTERM)` | old `subprocess.run` runner → candidate `killed` with a record |
+| handler / registry / main-thread guard, in-process (coverage) | cli + liveness | O13 | direct calls, Event reset fixture | blocking `Lock` → handler deadlocks when main thread holds it (O13 runs it with a failsafe join) |
+| label grace unaffected by termination | `LaneDeadline.honors_termination` | O14 | `_TERMINATION` set before `main(["run", …])` | grace honoring termination → exit 2, no verdict |
+| C8 record binding | writer + loader + init | O15 | two deadline files, one state dir | unbound record accepted → not re-executed |
 
 ### Degrees of freedom
 
@@ -202,18 +296,26 @@ Invalid documents that `assay run` must refuse, each with `ERROR`/`BAD_LANE_CONF
 
 ## Work
 
-1. **Red first.** Add `tests/test_campaign_deadline.py` (O1–O5, O8) and `tests/test_campaign_termination_real.py` (O6, O7). If `tests/zz_slow/` exists on your base (P1 merged), put the real-subprocess file there. Otherwise put it at the top level and note in the REPORT that P1's tier move must include it. Record the red state in `assay-B117-REPORT.md`.
-2. Add `mutation.plan_sha256` and `CampaignPlanMismatchError`, and the check in `run_mutation` (Flow 6). Add the `runner.py:4532` except tuple.
-3. Add `runner.campaign_bounded_deadline`, the termination event, the `LaneDeadline.remaining` check, and the post-runner check in `execute_plan`.
-4. Add the `liveness` live-group registry and `terminate_live_process_groups`.
-5. Extract `_cmd_plan`'s discovery (`cli.py:1648-1765`) into `_discover_plan_jobs(...)`. Prove `assay plan` output is unchanged: the existing plan tests must pass unmodified.
-6. Add the `campaign init` subcommand, `--campaign-deadline`, Flow 1–5, and the signal wrapper (Flow 7).
-7. Gate script and run-gate.toml (Flow 10–12). Extend `tests/test_self_lane.py`'s gate-script substring pins (`:176-200`) with `campaign init`, `--campaign-deadline` and `B105_CAMPAIGN_DEADLINE=`.
-8. Run the focused tests, then the docs (see Docs sync), CHANGES, REPORT, and commit.
+1. **Red first.**
+   - Add `tests/test_campaign_deadline.py`, holding O1–O5, O8, O10, O11 and O13–O15. These are in-process and give the coverage the floor needs for the handler, registry and termination branches (P6-5).
+   - Add `tests/test_campaign_termination_real.py`, holding O6, O7 and O12. These are real subprocesses; they are behavioural proof only, because subprocesses are not coverage-measured.
+   - If `tests/zz_slow/` exists on your base (P1 merged), put the real-subprocess file there. Otherwise put it at the top level and note in the REPORT that P1's tier move must include it.
+   - Record the red state in `assay-B117-REPORT.md`.
+2. Add `mutation.plan_sha256` and `CampaignPlanMismatchError`, and the check in `run_mutation` (Flow 7). Add the `runner.py:4532` except tuple.
+3. Add `runner.campaign_bounded_deadline`, the termination event, the `LaneDeadline.honors_termination` field and `remaining` check, and the every-exit-path check in `execute_plan` (Interfaces 5).
+4. Add the `liveness` live-group registry (an `RLock`, non-blocking acquire in the handler path), `register_live_group`/`unregister_live_group`/`terminate_live_process_groups`, and the `LivenessRunner` registration.
+5. Rewrite `runner.default_process_runner` (Interfaces 6), with the `_wait_child` seam. Update `tests/test_config_unbounded_budget.py`'s recorder, adding the non-empty assertion.
+6. Add the C3 handling in `mutation._run_attempt` (Interfaces 7).
+7. Add C8: the record key on write, the loader check, and the `init` refusal (Interfaces 8).
+8. Extract `_cmd_plan`'s discovery (`cli.py:1648-1765`) into `_discover_plan_jobs(...)`. Prove `assay plan` output is unchanged: the existing plan tests must pass unmodified.
+9. Add the `campaign init` subcommand, `--campaign-deadline`, Flow 1–7, the main-thread-only signal wrapper (Flow 8), and the label-grace `honors_termination=False`.
+10. Gate script and run-gate.toml (Flow 11–13), including the timeout-forwarding probe. Extend `tests/test_self_lane.py`'s gate-script substring pins (`:176-200`) with `campaign init`, `--campaign-deadline`, `B105_CAMPAIGN_DEADLINE=` and `B105_TIMEOUT_FAILSAFE`.
+11. **C15.** `LaneDeadline` gains a field, so regenerate `tests/fixtures/dataclass-contract.json` with the command P1 (B112) documents in DESIGN-GUIDE. If P1 has not merged yet, the fixture does not exist; note that in the REPORT, because P1 then generates it including this field. Commit the regenerated fixture in the same change.
+12. Run the focused tests, then the docs (see Docs sync), CHANGES, REPORT, and commit.
 
 ## Oracles
 
-- **O1: init writes exactly the specified document.** Use a toy lane repository with R0 and R2 (the `tests/test_cli_run.py:586` shape) and run `main(["campaign", "init", ...])`.
+- **O1: init writes exactly the specified document.** Use a toy lane repository with R0 and R2 (the shape of the busy-loop test in `tests/test_cli_run.py`, found by name) and run `main(["campaign", "init", ...])`.
   - *Observable:*
     - the key set equals the ten keys listed above;
     - `commit` and `git_tree` equal real `git rev-parse`;
@@ -238,7 +340,8 @@ Invalid documents that `assay run` must refuse, each with `ERROR`/`BAD_LANE_CONF
 - **O7: SIGTERM leaves no candidate alive, and no candidate is classified by the termination.**
   - Toy repository:
     - `pkg/mod.py` holds `def guard(x):\n    return x <= 0\n`, a real compare-swap site.
-    - The test file has `if guard(0): pass`. In the else-branch it writes `os.getpid()` to an absolute path embedded in the test source (`tmp_path / "candidate.pid"`), then runs `while True: pass`. Spinning keeps CPU growing, so liveness never calls it `hung`.
+    - The test file has `if guard(0): pass`. In the else-branch it writes `os.getpid()` and its `/proc/self/stat` start time (field 22) to an absolute path embedded in the test source (`tmp_path / "candidate.pid"`).
+    - It then spins with `parent = os.getppid()` and `while os.getppid() == parent: pass` (P6-10, host safety). If assay, or the whole test process, is killed for any reason, the candidate is re-parented and the loop ends by itself; it never burns a CPU forever on the shared host. Spinning keeps CPU growing, so liveness never calls it `hung`.
     - The lane has `rigor = ["R0","R2"]`, `liveness = true`, `budget_per_candidate = "600s"` and `budget = "15m"`.
   - Start assay as a real subprocess: `[sys.executable, "-c", "import sys; from assay.cli import main; sys.exit(main(sys.argv[1:]))", "run", "package", "--file", "assay.toml", "--verdict-json", str(v)]`, with `env = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}` and `cwd=repo`.
   - Wait for the pid file, polling at 0.2 s with a **failsafe of 180 s** that fails the test. Then send `os.kill(assay.pid, signal.SIGTERM)` and `assay.wait(timeout=120)` as a failsafe.
@@ -246,10 +349,38 @@ Invalid documents that `assay run` must refuse, each with `ERROR`/`BAD_LANE_CONF
     - exit code 4;
     - the verdict status is `BUDGET_EXCEEDED` with reason `LANE_TIMEOUT`;
     - the candidate's ID is in R2 `budget_exceeded`, and not in `killed`, `crashed` or `hung`;
-    - `/proc/<candidate pid>/stat` is absent or shows state `Z`.
-  - *Negative:* without the handler, assay dies on the default SIGTERM action with exit `-15`, writes no verdict, and the spinning candidate is still in state `R`.
-  - **Cleanup (always, in `finally`):** `os.killpg(candidate_pid, SIGKILL)`, ignoring `ProcessLookupError`, so a red run never leaks a spinning process onto the shared host.
-- **O8: the gate script is wired.** `tests/test_self_lane.py` asserts the substrings `campaign init`, `--campaign-deadline "$deadline"` and `B105_CAMPAIGN_DEADLINE=` in `tools/self-qualification-gate.sh`, and asserts that the `timeout` wrapper wraps the `assay run` invocation.
+    - no state record exists for it (run with `--resume --state-dir`);
+    - `/proc/<candidate pid>/stat` is absent, or shows state `Z`, **or** shows a different start time. The last case is pid reuse; compare against the recorded start time, never the pid alone.
+  - *Negative:* without the handler, assay dies on the default SIGTERM action with exit `-15`, writes no verdict, and the spinning candidate is still in state `R`, with its start time matching.
+  - **Cleanup (always, in `finally`):** `os.killpg(candidate_pid, SIGKILL)` only if `/proc/<pid>/stat`'s start time still matches, ignoring `ProcessLookupError`. A red run then never leaks a spinning process onto the shared host, and never kills a reused pid.
+- **O8: the gate script is wired.** `tests/test_self_lane.py` asserts, in `tools/self-qualification-gate.sh`:
+  - the substrings `campaign init`, `--campaign-deadline "$deadline"`, `B105_CAMPAIGN_DEADLINE=` and `B105_TIMEOUT_FAILSAFE`;
+  - that the `timeout` wrapper wraps the `assay run` invocation;
+  - that `124` is handled before `assay verify`.
+- **O10: C3, a lane-bound timeout is unclassified and re-executed on resume.** In-process, with a toy R2 lane of 2 candidates, a `state_root`, `jobs=1`, and `budget_per_candidate` omitted, so every attempt is lane-bound.
+  - Use an injected `LaneDeadline` whose `remaining()` returns a finite value. The fake `process_runner` raises `subprocess.TimeoutExpired` for candidate A (the path taken when the lane remainder expires) and passes for B.
+  - *Observable:* A is in `budget_exceeded`, **no state record exists for A**, and B was never submitted (it is masked after the stop).
+  - A second run with `--resume` and a fresh deadline, where the fake passes A and B, executes A (the runner is called for A) and B.
+  - *Contrast:* with `budget_per_candidate = "1s"` and the lane remainder larger, the same `TimeoutExpired` is **recorded** as `budget_exceeded`, and resume does **not** re-execute A.
+  - *Negative:* today's code writes A's record, and the resume replays it.
+- **O11: termination is checked on every exit path of `execute_plan`.** Call `runner._reset_termination_for_tests()`, then `runner.request_termination()`. `execute_plan` with fake runners that, in turn: return exit 0, raise `liveness.LivenessHungExpired`, raise `subprocess.TimeoutExpired`, and raise `OSError`.
+  - *Observable:* every call raises `AssayError(BUDGET_EXCEEDED, LANE_TIMEOUT)`.
+  - *Negative:* a check only after a normal return lets the hung/timeout/OSError results through.
+- **O12: non-liveness group SIGTERM (P6-3).** O7's shape with `liveness = false`, so the default runner is used. Send `os.killpg(os.getpgid(assay.pid), signal.SIGTERM)` to simulate GNU `timeout`'s group signal.
+  - *Observable:* exit 4; the candidate is in `budget_exceeded` with no record, and never in `killed`; the candidate is not alive (start-time check).
+  - *Negative:* with the old `subprocess.run` runner, the candidate dies with −15 in assay's group, can be classified `killed`, and gets a record.
+- **O13: in-process handler, registry and main-thread guard (P6-4, P6-5, C16).** The module has an autouse fixture that calls `runner._reset_termination_for_tests()` and clears the registry before and after each test.
+  - (a) Calling the handler function directly, with a fake `terminate_live_process_groups` recorder, sets `_TERMINATION`, kills the registered groups, and writes one line to fd 2 (capture with `capfd`).
+  - (b1) **The lock is held by the main thread.** Acquire the registry lock on the main thread, then call the handler function directly on the main thread; this simulates a signal that arrives while the main thread holds the lock. It must return, which the `RLock` guarantees, and the registered groups must be killed. To keep a regression from hanging the suite, run this in a helper thread with a 60 s failsafe join, holding the lock in that thread before calling the handler. A plain `Lock` implementation deadlocks there.
+  - (b2) **The lock is held by another thread.** A helper thread acquires the lock and waits on an Event. The main thread calls the handler, which must return without blocking, kill the snapshot of groups, and set the deferred flag. Then release the helper. The next `unregister_live_group` call re-runs termination under the lock. Use a 60 s failsafe join.
+  - (c) Calling the handler-installing helper from a `threading.Thread` installs nothing and raises nothing, and `signal.getsignal(SIGTERM)` is unchanged.
+- **O14: termination before the HEAD read still writes a verdict (P6-8).** Call `runner.request_termination()`, then `main(["run", lane, "--verdict-json", v, …])` in-process.
+  - *Observable:* exit 4; `v` exists with `BUDGET_EXCEEDED`/`LANE_TIMEOUT`; the commit label equals HEAD.
+  - *Negative:* a grace deadline that honours termination gives exit 2 and no verdict.
+- **O15: C8 binding.** Init deadline file F1 and run R2 with `--resume --state-dir S`: the records carry `campaign_deadline_sha256 == sha256(F1)`.
+  - (a) Write a second valid file F2 for the same identity at a different path. `--resume` with F2 re-executes every candidate: the records are rejected, and the `resume` event's rejected count equals the record count.
+  - (b) Delete F1, then `init` with a new campaign name over S. Exit 2, and nothing is written.
+  - *Negative:* a loader that ignores the key replays the F1 records under F2.
 
 ### Anti-pattern list (verbatim from `nyxloom/reference/AUTHORING.md` §3b)
 
@@ -347,7 +478,9 @@ it is not an oracle yet.
   - why re-init never extends the deadline;
   - why state without a deadline refuses;
   - why `wheel_sha256` is recorded but not validated;
-  - SIGTERM semantics: kill the live groups, then never classify a result that finished during termination.
+  - SIGTERM semantics: set the flag first, then kill every live group; every child runs in its own session and is registered; and a result that finished or failed during termination is never classified;
+  - C3: a candidate cut off by the lane or campaign remainder is unclassified and re-executed on resume, while a per-candidate budget exhaustion is a recorded outcome;
+  - C8: records are bound to their deadline file, and D7's import path is P9's, not `--resume`'s.
 
   Cite A-473.
 - **CONSUMERS (HOW):** a pasteable sequence: init, run, run again (resume), and reading the refusal. State the exit codes 4 and 2 from the decision table.
@@ -356,17 +489,19 @@ it is not an oracle yet.
 ## Scope / forbid
 
 - **Touch:**
-  - `src/assay/cli.py`, `src/assay/runner.py` (`LaneDeadline`, the termination helpers, `execute_plan`, the threading of `expected_plan_sha256`, the except tuple at `:4532`);
-  - `src/assay/mutation.py` (`plan_sha256`, `CampaignPlanMismatchError`, the `run_mutation` kwarg and check only);
-  - `src/assay/liveness.py` (the registry only);
+  - `src/assay/cli.py`;
+  - `src/assay/runner.py`: `LaneDeadline` (the new field), the termination helpers, `execute_plan`, `default_process_runner` and `_wait_child`, the threading of `expected_plan_sha256`/`campaign_deadline_sha256`, and the except tuple at `:4532`;
+  - `src/assay/mutation.py`: `plan_sha256`, `CampaignPlanMismatchError`, the `run_mutation` kwargs and check, `_run_attempt`'s result handling (C3, Interfaces 7), the state-record write (one optional key), and `_load_validated_state_record` (the C8 check) only;
+  - `src/assay/liveness.py`: the registry and `LivenessRunner`'s register/unregister only;
   - `tools/self-qualification-gate.sh`, `run-gate.toml` (comments only);
-  - `tests/test_campaign_deadline.py`, `tests/test_campaign_termination_real.py`, `tests/test_self_lane.py` (substring pins);
+  - `tests/test_campaign_deadline.py`, `tests/test_campaign_termination_real.py`, `tests/test_self_lane.py` (substring pins), and `tests/test_config_unbounded_budget.py` (the recorder move plus the non-empty assertion only);
+  - `tests/fixtures/dataclass-contract.json` (C15, regenerated);
   - README, DESIGN-GUIDE, CONSUMERS, CHANGES, `nyxloom-trove/reports/assay-B117-REPORT.md`.
 - **Forbid:**
   - the verdict schema, `verdict.py`, `verify.py`, `ReasonCode`, `EXIT_CODES`;
   - `assay.toml` lane keys;
   - `MUTATION_STATE_SCHEMA_VERSION`;
-  - the executor loop (that is P4);
+  - the executor loop (that is P4; C3 lives only in `_run_attempt`);
   - `decisions.md`.
 
   Needing any of them is a BLOCKED trigger. **Do not add a new module**: B105's `judge.targets` must equal the discovered files. Keep the 100% line and branch floor for every new line and branch, with no `pragma: no cover`.
@@ -386,7 +521,9 @@ it is not an oracle yet.
    - `tests/test_campaign_termination_real.py`
    - `tests/test_lane_timeout_writes_a_verdict.py`
    - `tests/test_liveness_runner_monitor.py`
-   - `tests/test_cli_run.py`
+   - `tests/test_runner_execute.py`, `tests/test_config_unbounded_budget.py`, `tests/test_config_rigor_grammar.py` (the runner rewrite)
+   - `tests/test_runner_p23_cleanup_and_budget.py`, `tests/test_mutation_resume_sharding.py`, `tests/test_b105_mutation_boundaries.py` (C3 / C8)
+   - `tests/test_cli_run.py`, or its `tests/zz_slow/` split if P1 has merged
    - `tests/test_self_lane.py`
    - `tests/test_mutation_progress_budget_plan.py`
    - `tests/test_b105_cli_boundaries.py`
@@ -399,9 +536,11 @@ it is not an oracle yet.
 If a named contract cannot be met as specified, or the scope needs a forbidden file, STOP. Write `BLOCKED: <reason>` to `nyxloom-trove/reports/assay-B117-REPORT.md`, commit, and exit. Do NOT improvise a workaround.
 
 Specific triggers:
-- `execute_plan`'s post-runner check changes an existing test's classification. That would mean a test depended on a termination-time result.
+- `execute_plan`'s termination check changes an existing test's classification. That would mean a test depended on a termination-time result.
 - the `_cmd_plan` extraction changes `assay plan` output.
-- O7 cannot be made to pass without a timing assertion.
+- O7 or O12 cannot be made to pass without a timing assertion.
+- the `default_process_runner` rewrite changes any existing test's observable result (exit code, output tails, decoding), other than the named recorder move;
+- C3 changes an existing test's classification of a **per-candidate-budget** timeout.
 
 ## Report
 

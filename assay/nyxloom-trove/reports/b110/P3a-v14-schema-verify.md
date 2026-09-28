@@ -1,10 +1,12 @@
 # B110-P3a — Verdict schema v14 hard cut: model, schema, verifier, fixtures, carve assets
 
+*Revised 2026-09-28 after the round-1 review (see `REVIEW-2026-09-28-round1.md`). Findings applied: P3A-1..P3A-13 and carver decisions C1, C9, C10 (the X8 split), C15.*
+
 | Field | Value |
 |---|---|
 | Backlog | **B114** (B110 umbrella) |
-| Branch | `assay-b110-p3a-schema`. It branches off `assay-b110-v14`, which is cut from the integration line `assay-b105-evidence-integrity` after the plan §11.1 reconciliation. |
-| Depends on | P10a accepted: the ledger wire shape and the anchor grammar. If P10a is not accepted when you start, see the BLOCKED rule. |
+| Branch | `assay-b110-p3a-schema`, off `assay-b110-v14`. `assay-b110-v14` is cut from the integration line after the plan §11.1 reconciliation (C18: the new canonical branch `assay-b110-integration`) and after P0, P1 and P2 merge (plan §11.6). This package may start earlier on its own branch off the integration line. It is then rebased **once** onto the `assay-b110-v14` tip before review (see protocol item 3). |
+| Depends on | P10a's ledger wire shape. Either P10a is accepted, or you finish under the documented **BLOCKED-PARTIAL** escape: anchor validated by length only, with P10b adding the grammar later. Either way the rest of this package is dispatchable. |
 | Contract class | **2b**. Public shapes are fixed below; the private construction is yours. |
 | Implementer | Opus (fresh session) |
 | Decisions | A-470 (D6, v14 cold-witness contract, A1–A9), A-465 (ledger wire fields), A-469 (D5 liveness disclosure fields), A-471 (runtime fingerprint field) |
@@ -19,7 +21,7 @@ P3b produces cold evidence, P3c produces the liveness values, and P10b produces 
 **v14 integration-branch protocol (binding on P3a–P3d and P10b):**
 1. `assay-b110-v14` is cut once from the integration-line tip.
 2. Each sub-branch (`-p3a-`, `-p3b-`, `-p3c-`, `-p3d-`, P10b) branches from the **current** `assay-b110-v14` tip. After its own review and gate, it merges back `--no-ff`, **serially**, in the order P3a → P3b → P3c → P3d → P10b. P3c may merge before P3b if it is ready first.
-3. If the integration line moves (for example P2 lands), the controller merges it into `assay-b110-v14` (`--no-ff`). Never rebase.
+3. If the integration line moves (for example P6 lands), the controller merges it into `assay-b110-v14` (`--no-ff`). **The shared `assay-b110-v14` branch is never rebased.** A sub-branch started before `assay-b110-v14` existed is rebased exactly once onto the v14 tip before its review (plan §11.6); after review, no sub-branch is rebased.
 4. **Nothing from `assay-b110-v14` merges into the integration line until P3a–P3d and P10b are all merged, reviewed and green.** Then there is exactly one `--no-ff` merge into the integration line, followed by one `tester-unified` gate and one `self-qualification-preflight` run on the merge commit.
 5. `VERDICT_SCHEMA_VERSION = 14` is set **in this package** and never partially. The branch is either wholly v13 or wholly v14.
 
@@ -44,18 +46,23 @@ Paths are relative to `assay/`. Line numbers are verified at `db85f747`; re-anch
   - `_check_producer_fork` at 2843-2881, **including the `[:-3]` slice trap at 2856**;
   - `_check_native_policy` at 2883-2971, with the liveness exact-key check at ~2934-2970;
   - `to_dict` at 3061-3111.
-- 4747-4861: `_check_judgment_matches_claims`, the R2 block. `_check_equivalence_pairing` is called at ~4805.
+- 4747-4863: `_check_judgment_matches_claims`, the R2 block. `_check_equivalence_pairing` is called at **4858** and `_check_discarded_disposition` at 4863.
 - 5038-5060: `_check_equivalence_pairing` (model).
+- ~4362: `Verdict.argv_declared` (document-level argv). The model **does** have it in scope, so X11 is enforced in the model as well (P3A-10).
 
 **`src/assay/schemas/verdict.schema.json`:**
 - 1-24: `$id` and the `schema_version` const.
 - 1287-1323: `mutation_witness_receipt` and `mutation_execution` (a 2-branch `oneOf`).
 - 1326-1480: `mutant_outcome` and the per-bucket rules.
-- 1631-1909: `judgment_r2`. `liveness` is at 1730-1748; the native/ingested fork is at 1862-1909.
+- 1631-1909: `judgment_r2`. `liveness` is at 1730-1748: `reason` is `{"type":"string","minLength":1}` at 1739-1742, so **null is invalid**. The native/ingested fork is at 1862-1909; the ingested `not required` list is at **1900–1907**.
+
+**`src/assay/liveness.py`:** 449 and 468. The only active liveness `reason` values the producer emits are `"declared-true"` and `"auto-pytest-argv"`. The model rejects anything but a non-empty string (`verdict.py` ~2950-2954).
 
 **`src/assay/verify.py`:**
 - 1280-1305: `_check_equivalence_pairing` (raw).
-- 1619-1738: `_check_b106_mutation_provenance`.
+- 1619-1738: `_check_b106_mutation_provenance`. **It returns early** for ingested producers (~1650), for the `MUTANT_LIMIT_EXCEEDED` sentinel (1655-1676) and for a non-dict payload. A v14 command-level check placed inside it would skip exactly those cases (P3A-12).
+- 2455-2480: `_INDEPENDENT_R2_TERMINALS`. `BAD_LANE_CONFIG` is **deliberately absent** (B094/A-458): a whole-lane refusal renders the identical pair on every level. Do **not** widen this set (carver decision C1).
+- 3060-3075: the `verify_document` check list. The new `_check_v14_*` functions are called **here**, as siblings.
 - 1741-1790: `_check_b106_execution`. Its "unknown execution mode" branch is at 1758-1760.
 - 1793-1814: `_check_b106_receipt`. Reuse it unchanged; it already rejects bool exits.
 - 2011-2082: `_reconstruct_judgment_r2` (`liveness=raw.get("liveness")` at 2079).
@@ -63,7 +70,12 @@ Paths are relative to `assay/`. Line numbers are verified at `db85f747`; re-anch
 - 3012-3091: `verify_document`. The version gate is at 3027-3042 and the check order at 3060-3075.
 
 **Everything else:**
-- `src/assay/reuse.py`: 14 (`V12_COLD_START`), 50-90 (the version switch and the "current v13 verifier" message).
+- `src/assay/reuse.py`: 14 (`V12_COLD_START`), 50-90 (the version switch and the "current v13 verifier" message), and **139** (`"v12 cold start has no reusable witnesses"`).
+- `src/assay/runner.py`: 4532 (`except mutation.InvalidRejudgeIdError: raise`) and 5385-5412 (the outer `except AssayError` → `refuse_all`). This is the whole-lane refusal path that C1's A5 refusal uses; P3b owns the producer side.
+- `nyxloom-trove/carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json` (native SQL, `schema_version: 13` at line 185, a 3-key liveness block, an `equivalence_artifact`) and `tests/test_gate_qualify_dstdns_sql.py:550-555` (asserts `== 13`). W3 is **migrated by every cut**; the v13 merge `e5e9b95c` changed both files.
+- `tests/test_python_qualification.py:396-422` (`P25_V13_EXPECTED_ROOT` → W9; the template names).
+- `gate/python/qualify_topos.py:1030` (the "complete v13 artifact differs" wording).
+- `tests/test_verify_layer_independence.py`, the precedent for **raw-layer** tests that call `verify._check_*` directly.
 - `src/assay/runner.py`: 6033-6038 (reuse cold-start wording).
 - `src/assay/cli.py`: 296-298 (the `--reuse-from` help, "native v13 verdict; v12 starts cold").
 - `src/assay/mutation.py`: 1800-1840, `_outcome_of`. **A never-started budget leftover is `_outcome_of(job)`, i.e. `execution == MutationExecution(mode="full")` with no witness.** That fact is used below.
@@ -108,6 +120,46 @@ def collection_digest(node_ids: Sequence[str]) -> str:
     assay.isolation.netstring (character length, no comma); do not reuse it."""
 ```
 
+**The `transform_argv` case table (normative; the test enumerates exactly these, P3A-8).**
+
+| # | Input argv (after `pytest tests`) | Result |
+|---|---|---|
+| 1 | B105's argv after P1: `-q --ignore=… --ignore=… --deselect=… --deselect=… --cov=src/assay --cov-branch --cov-report=json:.assay/coverage-self-qualification.json` | the same argv minus the last three tokens |
+| 2 | `-q` (no coverage option at all) | identity |
+| 3 | `--cov=pkg` | removed |
+| 4 | `--cov-branch --cov-branch` (duplicate) | both removed |
+| 5 | `--cov-report=term-missing --cov-report=json:x.json` | both removed |
+| 6 | `--cov src` (two-token form) | refused: `--cov` |
+| 7 | `--cov=` (empty value) | refused: `--cov=` |
+| 8 | `--cov-report=` (empty value) | refused: `--cov-report=` |
+| 9 | `--cov-config=x` | refused |
+| 10 | `--cov-append` | refused |
+| 11 | `--no-cov-on-fail` | refused |
+| 12 | `--no-cov` | refused |
+| 13 | `--covx` (lookalike) | refused (starts with `--cov`) |
+| 14 | `--cov-fail-under=90` | refused |
+| 15 | a positional `tests/--cov=weird.py` (does not start with `--`) | kept (identity) |
+
+**Owner `src/assay/verdict.py`, `CampaignBinding` (C9; producer wiring is P3d's).**
+
+```python
+@dataclass(frozen=True, kw_only=True)
+class CampaignBinding:
+    name: str             # ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$  (P6's campaign-name grammar)
+    deadline_sha256: str  # 64 lowercase hex: sha256 of the deadline FILE BYTES
+    created_at_utc: str   # "YYYY-MM-DDTHH:MM:SSZ"
+    expires_at_utc: str   # same form; strictly later than created_at_utc
+```
+- `Verdict` gains a top-level `campaign: CampaignBinding | None = None`. It is emitted as `"campaign"` **only when not None**, so documents produced without `--campaign-deadline` are byte-identical in that respect.
+- Valid: `{"name":"b105-3f391d6e0c1a","deadline_sha256":"<64 hex>","created_at_utc":"2026-10-02T08:00:00Z","expires_at_utc":"2026-10-02T16:00:00Z"}`.
+- Invalid:
+  - `"expires_at_utc":"2026-10-02T16:00:00+02:00"` (not the `Z` form);
+  - `expires_at_utc` equal to or earlier than `created_at_utc`;
+  - `"name":"-bad"`;
+  - an extra key, or a missing key;
+  - `"campaign": null` written explicitly (absent means none).
+- The schema adds an optional top-level `campaign` property (`additionalProperties:false`, four required string keys with patterns). Raw verify checks the key set, the patterns and the ordering. `_reject_unknown_keys` must accept the new top-level key.
+
 **Owner `src/assay/verdict.py`.** New frozen `kw_only` dataclasses:
 
 ```python
@@ -120,7 +172,11 @@ class R2BaselineFacts:
     hook_count: int                  # int, not bool, >= 0
     runtime_fingerprint_sha256: str | None = None   # hex; REQUIRED on BOTH baselines (carver 2026-09-28, P10 OC12)
     wall_s: float | None = None                     # finite >= 0; required iff role == "r2"
-    # validated by R2Command, which knows the role
+    # validated by R2Command, which knows the role.
+    # WIRE (P3A-11, fixed): coverage_baseline serializes EXACTLY 6 keys (collection_count,
+    # collection_sha256, duplicates, hook_fingerprint_sha256, hook_count,
+    # runtime_fingerprint_sha256). The "wall_s" key is OMITTED, not null.
+    # r2_baseline serializes EXACTLY those 6 plus "wall_s" = 7 keys.
 
 @dataclass(frozen=True, kw_only=True)
 class R2Command:
@@ -128,8 +184,8 @@ class R2Command:
     argv_declared: tuple[str, ...]
     argv_transformed: tuple[str, ...]   # == transform_argv(argv_declared)
     appended: tuple[str, ...]           # == R2_APPENDED
-    cwd: str                         # non-empty POSIX, relative, no "..", e.g. "assay"
-    config_sha256: str | None        # hex, or None when pytest found no inifile
+    cwd: str                         # non-empty POSIX, relative, no "..", e.g. "assay"; "." when the project is the repo root
+    config_sha256: str | None        # hex, or None when pytest found no inifile. The key is ALWAYS emitted (null allowed)
     coverage_baseline: R2BaselineFacts  # runtime_fingerprint_sha256 required (differs from r2's by design: pytest-cov is loaded there, blocked in R2; no equality rule); wall_s is None
     r2_baseline: R2BaselineFacts        # both non-None
     # __post_init__: the transform equality, both duplicates == 0, and
@@ -216,30 +272,36 @@ _NATIVE_ONLY_FIELDS = _NATIVE_REQUIRED_FIELDS + _NATIVE_OPTIONAL_FIELDS
   - a missing key (all six keys are always present);
   - an extra key.
 
-**`r2_command`.** The valid example is plan §5 verbatim, with `argv_transformed == transform_argv(argv_declared)`. Invalid:
+**`r2_command`.** The valid example is plan §5 verbatim, with `argv_transformed == transform_argv(argv_declared)`, `coverage_baseline` with 6 keys and `r2_baseline` with 7. Invalid:
 - `argv_transformed` still containing `--cov-branch`;
 - `appended == ["-p","no:pytest_cov","-x"]`;
 - `coverage_baseline.collection_sha256 != r2_baseline.collection_sha256`;
+- `coverage_baseline.collection_count != r2_baseline.collection_count` (sha equal);
 - `duplicates: 1`;
 - `r2_baseline.runtime_fingerprint_sha256` missing;
 - `coverage_baseline.runtime_fingerprint_sha256` missing;
-- `coverage_baseline.wall_s` present;
-- `transform: "assay-r2-pytest-nocov/2"`.
+- `coverage_baseline.wall_s` present (with any value, including null);
+- `transform: "assay-r2-pytest-nocov/2"`;
+- `argv_declared: ["pytest", 1, "--cov"]` (a non-string element) → a **failure string**, never an exception out of `assay verify`;
+- `argv_declared` containing `--cov-config=x` → the re-application raises `UnrecognizedCoverageOption`, which raw verify catches and reports as a failure;
+- `config_sha256` key absent (it is always emitted, null allowed).
 
 **`equivalence_ledger`**
 - Valid: `{"path":"mutation-equivalence-ledger.toml","sha256":"<hex>","entry_count":3,"audit_sha256":"<hex>"}`.
 - Invalid: `entry_count: 0`; `path: "../x"`; a missing `audit_sha256`.
 
 **`liveness` additions**
-- Valid: `{"active":true,"reason":null,"plugin":"...","cpu_window_s":30.0,"idle_floor_s":15.0}`.
+- Valid (active): `{"active":true,"reason":"auto-pytest-argv","plugin":"<plugin path string>","cpu_window_s":30.0,"idle_floor_s":15.0}`. `reason` is a non-empty string, as today (schema `minLength:1`; the model rejects null). The producer's active values are `"auto-pytest-argv"` and `"declared-true"`.
+- Valid (inactive): the existing inactive shape, whose `reason` is the existing non-empty inactive reason string, with `"cpu_window_s":null,"idle_floor_s":null`.
 - Invalid:
   - `{"active":false,…,"cpu_window_s":30.0}` (must be null when inactive);
+  - `"reason": null` with `active: true` (existing invariant);
   - the 3-key v13 dict (missing keys);
   - `"cpu_window_s": true`.
 
-### Cross-object rules (model `Verdict._check_cold_witness_policy` and raw verify must BOTH enforce these)
+### Cross-object rules (model `Verdict._check_cold_witness_policy` and raw verify must BOTH enforce these; X12 is raw-only because the model cannot see a missing key)
 
-Add the model check after `_check_equivalence_pairing` in the R2 block of `_check_judgment_matches_claims`, around verdict.py:4805-4861. Here `P = judgment.r2`, `M = claim[R2].mutation`, and "payload" means `M` is not None.
+Add the model check after `_check_equivalence_pairing` (called at verdict.py:4858) in the R2 block of `_check_judgment_matches_claims`. Here `P = judgment.r2`, `M = claim[R2].mutation`, and "payload" means `M` is not None.
 
 | # | State | Rule |
 |---|---|---|
@@ -250,12 +312,16 @@ Add the model check after `_check_equivalence_pairing` in the R2 block of `_chec
 | X5 | `witness-cold` outcome | bucket is `killed`, `cold_witness_kills is True`, `evidence` is not None with non-null `started_count`, `evidence.command == "r2"` and `evidence.collection_{count,sha256} == r2_baseline.collection_{count,sha256}` and `evidence.hook_fingerprint_sha256 == r2_baseline.hook_fingerprint_sha256` |
 | X6 | `survived` outcome, `cold_witness_kills is True` | `evidence` required; `started_count is None`. `command == "r2"` → the digests match `r2_baseline` (collection and hook). `command == "declared"` → `collection_{count,sha256}` match `coverage_baseline` and `hook_fingerprint_sha256 == coverage_baseline.hook_fingerprint_sha256` |
 | X7 | `killed` with `full`/`witness-prefix`, or `crashed`/`hung`/`budget_exceeded` | `evidence` optional; if present, `started_count is None` |
-| X8 | `equivalent` bucket non-empty on native | `equivalence_ledger` is not None, every equivalent has `mode == "ledger"` and no evidence, and `len(equivalent) == equivalence_ledger.entry_count` |
+| X8 | native, split by producer (C10) | (a) `equivalence_ledger` not None → **every** `equivalent` entry has `mode == "ledger"` and no `evidence`, and `len(equivalent) == equivalence_ledger.entry_count`. (b) `equivalence_artifact` not None (SQL) → **no** entry anywhere has `mode == "ledger"`, and the existing artifact rules apply unchanged. (c) Neither declared → `equivalent` must be empty (the existing pairing rule). The W3 carve asset and `r2_inconclusive_all_mutants_equivalent.json` (both native SQL with an artifact) fall under (b) and must verify `[]`. |
 | X9 | `mode == "ledger"` anywhere | bucket is `equivalent` and `equivalence_ledger` is not None |
-| X10 | `equivalence_ledger` not None | `equivalence_artifact is None` (SQL-only; both declared is refused) |
-| X11 | `r2_command` not None | `r2_command.argv_declared == document.argv_declared` (top level; raw verify only; the model has no document-level argv in scope) |
+| X10 | `equivalence_ledger` not None | `equivalence_artifact is None`. A ledger is native-Python-only; declaring both is refused |
+| X11 | `r2_command` not None | `r2_command.argv_declared == document.argv_declared` (top level). Enforced in **both** layers: raw verify, and the model via `Verdict.argv_declared` (~4362) inside `Verdict._check_cold_witness_policy` |
+| X12 | native `judgment.r2` (raw layer only) | the keys `cold_witness_kills`, `r2_command` and `equivalence_ledger` are all **present** (values may be null where X2/X4 allow). `_reject_unknown_keys` catches only extras, so this presence check is the only thing stopping a document that omits a key (P3A-7). Ingested: all three keys absent |
+| X13 | top-level `campaign` present | shape per `CampaignBinding` (C9). No cross-rule to `judgment.r2`; the B105 checker binds it to the deadline file (P3d) |
 
-`_check_equivalence_pairing` (model 5038-5060 and raw 1280-1305) now reads: the `equivalent` bucket requires **either** `equivalence_artifact` **or** `equivalence_ledger`.
+`_check_equivalence_pairing` (model 5038-5060 and raw 1280-1305) now reads: the `equivalent` bucket requires **either** `equivalence_artifact` **or** `equivalence_ledger`, never both (X10). The per-mode rules are X8(a)/(b).
+
+**No widening of `_INDEPENDENT_R2_TERMINALS` (C1).** The A5 transform-proof refusal is a **whole-lane** `ERROR`/`BAD_LANE_CONFIG` (P3b raises `R2CommandProofError` through the existing `runner.py:4532` → `5385` `refuse_all` path, the B094/A-458 precedent). Every declared level carries the identical pair, so the existing baseline comparison in `_check_r2_rederivation` already accepts it. A payload-free R2 `ERROR/BAD_LANE_CONFIG` beside a passing R0 remains **unverifiable by design**, and P3a keeps it that way.
 
 **The `Mutation`-level rule at 1978-1983** becomes: a non-killed bucket cannot carry a witness, a `witness-prefix` or a `witness-cold`. A non-equivalent bucket cannot carry a `ledger`.
 
@@ -266,15 +332,27 @@ Add the model check after `_check_equivalence_pairing` in the R2 block of `_chec
 3. `_check_b106_execution` adds two branches before the unknown-mode refusal at 1758:
    - `witness-cold`: keys exactly `{"mode","witness"}`; `bucket == "killed"`; `cold_policy is True`; `_check_b106_receipt`.
    - `ledger`: keys exactly `{"mode","anchor"}`; `bucket == "equivalent"`; `ledger_declared is True`; anchor type and bound.
-4. The new `_check_v14_evidence(bucket, entry, policy, failures)` runs per outcome. It checks the raw key set of `evidence` (exactly six keys), the types (`type(x) is int`, rejecting bool) and X5–X7.
-5. The new `_check_v14_r2_command(document, policy, claim, failures)`:
-   - checks the key sets of `r2_command`, of each baseline (`coverage_baseline` has 5 keys; `r2_baseline` has 7) and of `equivalence_ledger`;
-   - re-applies `r2_command.transform_argv`;
-   - checks the equalities, `duplicates == 0` and X2–X4, X8–X11.
-6. **Register every new wire field in reconstruction in this same commit.** `_reject_unknown_keys` is top-level only; this is the A-323 lesson.
+4. The new `_check_v14_evidence(bucket, entry, policy, failures)` runs per outcome. It is called from `_check_b106_mutation_provenance`'s per-entry loop, which only exists when there is a payload. It checks:
+   - the raw key set of `evidence` (exactly six keys);
+   - the types (`type(x) is int`, rejecting bool; 64-lowercase-hex strings);
+   - X5–X7, comparing **each field separately**: `collection_count`, `collection_sha256` and `hook_fingerprint_sha256` each against the named baseline.
+5. The new `_check_v14_r2_command(document, failures)` is **called directly from `verify_document`'s check list (3060-3075), immediately after `_check_b106_mutation_provenance`, as its own sibling (P3A-12).** It must **not** be nested inside `_check_b106_mutation_provenance`: that function returns early for the sentinel (1655-1676), for ingested producers and for non-dict payloads, and X3/X4/X12 must still be checked in those cases. It:
+   - locates the R2 claim and `judgment.r2` itself; a document with no R2 claim is a no-op;
+   - checks X12 presence (native: all three keys present; ingested: all absent);
+   - checks the key sets of `r2_command` (`coverage_baseline` has **6** keys, `r2_baseline` has **7**, `config_sha256` always present) and of `equivalence_ledger`;
+   - type-checks every `argv_*` list as a list of `str`. Anything else is a failure string, never an exception;
+   - re-applies `r2_command.transform_argv` inside `try/except UnrecognizedCoverageOption`; the exception becomes a failure string;
+   - checks the equalities (count and sha separately), `duplicates == 0` and X2–X4, X8–X11.
+   - A new `_check_v14_campaign(document, failures)` (X13) is added beside it.
+
+   Raw checks have no surrounding `try` in `verify_document`, so every one of them must be total: any malformed input yields a failure string, never a crash.
+6. **Register every new wire field in reconstruction in this same commit.** `_reject_unknown_keys` is top-level only; this is the A-323 lesson. It must also admit the new top-level `campaign` key.
    - `_reconstruct_judgment_r2` adds the three fields, building the dataclasses from the raw dicts.
    - `_reconstruct_mutant_outcome` adds `anchor` to `MutationExecution(...)` and `evidence`.
-7. `_check_r2_rederivation` is unchanged: `killed` is killed regardless of execution mode.
+   - `_reconstruct_verdict` adds `campaign`.
+7. `_check_r2_rederivation` is unchanged: `killed` is killed regardless of execution mode. `_INDEPENDENT_R2_TERMINALS` is unchanged (C1).
+
+**Layer independence (P3A-6).** `verify_document` reconstructs the document through the model (≈3077), and the model re-applies the same rules. So a check missing from the raw layer is masked in an end-to-end `assay verify` test, and its controlled break never goes red. **Every raw rule (X1–X13, the evidence and ledger key sets, the transform re-derivation) gets at least one test that calls the raw function directly**: `verify._check_v14_r2_command(document, failures)`, `verify._check_v14_evidence(...)`, `verify._check_b106_execution(...)`, following `tests/test_verify_layer_independence.py`. Each asserts on the returned `failures` list. The end-to-end tests are additional, not a substitute.
 
 ### Topology
 
@@ -291,7 +369,15 @@ The model and verify see only the wire document. There are no paths to resolve: 
 | v14 cold true, survivor without evidence | failure (X6) |
 | v14 cold true, payload present, `r2_command` null | failure (X3) |
 | v14 native, `equivalent` non-empty, ledger null, artifact null | failure (pairing) |
-| v14 ingested with `cold_witness_kills` present | failure (fork) |
+| v14 native SQL, `equivalent` non-empty, artifact set, ledger null, no `ledger` modes (W3, `r2_inconclusive_all_mutants_equivalent.json`) | `[]` (X8b) |
+| v14 native, ledger set, one equivalent with `mode:"full"` | failure (X8a) |
+| v14 ingested with `cold_witness_kills` present (any value, including null) | failure (fork / X12) |
+| v14 native with the key `r2_command` or `equivalence_ledger` **absent** | failure (X12, raw) and failure (model) |
+| v14 cold true, `MUTANT_LIMIT_EXCEEDED` sentinel, `r2_command: null` | failure (X3), from the raw layer and the model |
+| v14 R2 payload-free (e.g. `INCONCLUSIVE/MUTATION_UNSUPPORTED`), `r2_command` not null | failure (X4) |
+| a whole-lane `ERROR/BAD_LANE_CONFIG` refusal document, every level the same pair (the A5 shape) | `[]` via the existing whole-lane handling; no verify change |
+| v14 with a malformed `campaign` block | failure (X13) |
+| `r2_command.argv_declared` with a non-string element | failure string; `assay verify` does not crash |
 | every fixture in `tests/fixtures/verdicts/` after migration | `[]` |
 
 ### Bounds
@@ -305,21 +391,30 @@ The model and verify see only the wire document. There are no paths to resolve: 
 
 | Work | Owner | Oracle | Fixture | Controlled break |
 |---|---|---|---|---|
-| `transform_argv` | `r2_command.py` | table test of 12 argv cases, including the B105 argv, an identity case, and `--cov src` (two-token → refused) | `tests/test_r2_command.py` (new) | remove the `len(t) > 6` guard → `--cov=` is silently accepted → the test goes red |
+| `transform_argv` | `r2_command.py` | the 15-row case table above, exactly | `tests/test_r2_command.py` (new) | remove the `len(t) > 6` guard → `--cov=` (case 7) is silently accepted → the test goes red |
 | `collection_digest` | `r2_command.py` | digest of `[]`, of `["a"]`, of `["é"]` (byte length 2 ≠ char length 1), of `["a","a"]` ≠ `["a"]`, and of `["a","b"]` ≠ `["b","a"]`. The expected hex values are computed in the test by an independent inline `hashlib` expression | same | swap to `isolation.netstring` → the `é` case goes red |
-| `witness-cold` model/schema/verify | verdict/schema/verify | 4 invalid + 1 valid per the examples above, each through **both** the model constructor and `assay verify` on a JSON document | `tests/test_v14_contract.py` (new) | drop the bucket check in raw verify only → the model rejects but raw accepts → a paired test fails |
-| evidence rules X5–X7 | same | one test per X-row with a minimally mutated copy of the carver fixture below | same | drop the X6 `declared` branch → the declared-survivor fixture is refused → red |
-| ledger rules X8–X10 | same | valid ledger PASS; the 4 invalid cases | `tests/fixtures/verdicts/r2_pass_cold_witness_ledger.json` | allow `ledger` in `killed` → red |
-| r2_command rules | same | each invalid example | same test file | skip re-applying the transform → the `--cov-branch`-left-in case is accepted → red |
-| hard cut | verify/schema | every v13 fixture copy (`schema_version` patched back to 13) gets exactly one version diagnostic | `tests/test_v14_contract.py` | — |
+| `witness-cold` model/schema/verify | verdict/schema/verify | 4 invalid + 1 valid per the examples above, each through **three** paths: the model constructor, the **raw** function (`verify._check_b106_execution` / `verify._check_v14_evidence` called directly), and `assay verify` on a JSON document | `tests/test_v14_contract.py` (new) | drop the bucket check in raw verify only → the model and end-to-end still reject, but the **direct raw call** returns `[]` → red |
+| evidence rules X5–X7 | same | one test per X-row with a minimally mutated copy of the carver fixture below. X6 has **three per-field negatives**: the survivor's `collection_count` alone changed, its `collection_sha256` alone changed, and its `hook_fingerprint_sha256` alone changed. Each fails, at the raw and the model layer | same | compare only the hook digest (the baselines' collection facts are equal by design) → the `collection_count`-only and `collection_sha256`-only negatives are accepted → red |
+| ledger rules X8–X10 | same | valid ledger PASS; the 4 invalid cases; the X8(b) SQL/artifact case (`r2_inconclusive_all_mutants_equivalent.json` and the migrated W3 witness verify `[]`); ledger + artifact both set → failure | `tests/fixtures/verdicts/r2_pass_cold_witness_ledger.json` | apply X8(a) literally to every native lane → the SQL fixture fails → red |
+| r2_command rules | same | each invalid example, at the raw layer (direct call) **and** end to end | same test file | skip re-applying the transform in raw only → the direct raw call accepts `--cov-branch` left in → red |
+| X12 presence | raw verify | native documents with each of the three keys deleted in turn fail at the raw layer | same | rely on `_reject_unknown_keys` → deleted keys pass → red |
+| X3 sentinel / X4 payload-free | raw verify, via the `verify_document` call site | a cold-true `MUTANT_LIMIT_EXCEEDED` sentinel with `r2_command:null` fails; `INCONCLUSIVE/MUTATION_UNSUPPORTED` payload-free with a non-null `r2_command` fails | same | nest the check inside `_check_b106_mutation_provenance` → the sentinel's early return skips it → red |
+| `campaign` block (C9) | verdict/schema/verify | the valid example verifies `[]`; each invalid example fails at the raw layer and in the model | same | skip the ordering check → `expires == created` accepted → red |
+| hard cut | verify/schema | every v13 fixture copy (`schema_version` patched back to 13) gets exactly one version diagnostic. `{"schema_version":15}` is "unsupported" | `tests/test_v14_contract.py`; `tests/test_b106_reuse_and_witness.py` (the future-version case is now 15) | — |
+| raw totality | raw verify | the forged `argv_declared: ["pytest", 1, "--cov"]` and a `--cov-config=x` in `argv_declared` each yield failure strings; `assay verify` exits with its normal failure status, not a traceback | same | drop the `try/except UnrecognizedCoverageOption` → crash → red |
 | producer defaults | runner/mutation | a real small native R2 run (existing `make_lane`) emits `cold_witness_kills: false`, `r2_command: null`, `equivalence_ledger: null`, and liveness with 30.0/15.0 when active | existing `tests/test_cli_run.py` exact-dict pins, updated | — |
 
-**Carver-authored expected artifact (normative).** Build `tests/fixtures/verdicts/r2_pass_cold_witness.json` from `r2_pass.json`:
+**Carver-authored expected artifacts (normative recipes).** These are specified as exact recipes, not committed bytes. No carver skeleton or tracer bullet was run before dispatch: the carve session was read-only (P3A-13). Work step 2 therefore materializes them first and records each file's sha256 in the report. The reviewer re-derives them independently from these recipes and compares. Build `tests/fixtures/verdicts/r2_pass_cold_witness.json` from `r2_pass.json`:
 - set `schema_version` to 14;
-- make `judgment.r2` exactly plan §5's native block;
+- make `judgment.r2` exactly plan §5's native block, but with `liveness.reason` set to `"auto-pytest-argv"`. Plan §5's round-0 example had `null`, which is invalid (P3A-2); plan §5 is corrected by the carver;
 - set `argv_declared` to `["pytest","tests","-q","--cov=pkg","--cov-branch","--cov-report=json:cov.json"]`, and set the top-level `argv_declared` to the same;
 - `argv_transformed` is then `["pytest","tests","-q"]`;
-- give the baselines equal collection facts (`collection_count: 3`, one sha computed by `collection_digest(["tests/test_x.py::test_a","tests/test_x.py::test_b","tests/test_x.py::test_c"])`), different hook digests, `hook_count` 9 and 7, and `wall_s: 1.5`;
+- give the baselines:
+  - equal collection facts (`collection_count: 3`, one sha computed by `collection_digest(["tests/test_x.py::test_a","tests/test_x.py::test_b","tests/test_x.py::test_c"])`);
+  - different hook digests, `hook_count` 9 (coverage) and 7 (r2);
+  - two different `runtime_fingerprint_sha256` values, one on each baseline;
+  - `wall_s: 1.5` on `r2_baseline` only, with the `wall_s` key absent from `coverage_baseline` (6 keys);
+  - `config_sha256` set to 64 hex;
 - its killed entry gets `"execution":{"mode":"witness-cold","witness":{"node_id":"tests/test_x.py::test_b",…}}` and `"evidence":{"command":"r2","collection_count":3,"collection_sha256":<same>,"hook_fingerprint_sha256":<r2 hook>,"started_count":2,"failed_call_index":1}`;
 - add a second killed entry with `mode:"full"` and no `evidence` key. A PASS has no survivors.
 
@@ -341,17 +436,19 @@ Its expected verify result is `[]`.
 
 ## Work
 
-1. **Branch.** Create `assay-b110-p3a-schema` from `assay-b110-v14`, in a worktree under `/workspaces/vbpub/.worktrees/`. The gate launcher refuses other roots.
-2. **Red first.** Add `tests/test_r2_command.py` and `tests/test_v14_contract.py`, plus the two carver fixtures. Run them and record that they fail (import error / version 13).
+1. **Branch.** Create `assay-b110-p3a-schema` from `assay-b110-v14`, in a worktree under `/workspaces/vbpub/.worktrees/`. The gate launcher refuses other roots. If `assay-b110-v14` does not exist yet, branch from the integration line and rebase once onto `assay-b110-v14` before review (protocol item 3).
+2. **Red first.** Add `tests/test_r2_command.py` and `tests/test_v14_contract.py`, plus the three carver fixtures materialized from the recipes (record their sha256). Run them and record that they fail (import error / version 13).
 3. **Create `src/assay/r2_command.py`** per the packet. Add it to both `judge.targets` lists in `assay.toml`, sorted. Run `tests/test_self_lane.py`.
 4. **Update `verdict.py`:**
    - add the new dataclasses;
    - extend `MutationExecution` and `MutantOutcome`;
    - rewrite the producer fork (**remove the `[:-3]` slice**);
    - extend `_check_native_policy` (the liveness 5-key set; the type of `cold_witness_kills`);
-   - add `_check_cold_witness_policy` (X1–X10);
-   - extend `Mutation` 1978-1983 and `_check_equivalence_pairing`;
+   - add `_check_cold_witness_policy` (X1–X11; X11 via `self.argv_declared`);
+   - add `CampaignBinding` and `Verdict.campaign` (C9);
+   - extend `Mutation` 1978-1983 and `_check_equivalence_pairing` (X8 split by producer, X10);
    - update `to_dict` emission.
+   - Every new dataclass changes the dataclass contract (P1's `tests/test_dataclass_contract.py`). Regenerate `tests/fixtures/dataclass-contract.json` in the same commit with `cd assay && PYTHONPATH=src:tests python tests/test_dataclass_contract.py > tests/fixtures/dataclass-contract.json` (P1's documented command), and review the diff: only the new classes may appear (C15).
    - Then bump `VERDICT_SCHEMA_VERSION = 14` and add a "Bumped 13 → 14 (B110)" history paragraph after 337-349, naming A-470/A-465/A-469/A-471.
 5. **Update the schema (`verdict.schema.json`):**
    - `$id` `urn:assay:schema:verdict:14`; const 14;
@@ -360,8 +457,9 @@ Its expected verify result is `[]`.
    - `mutant_outcome.evidence`;
    - `judgment_r2` properties;
    - the native `required` list (1876-1880) gains `cold_witness_kills`, `r2_command`, `equivalence_ledger`;
-   - the ingested `not required` list (1897-1904) gains all three;
-   - the `liveness` object gets the 5 required keys.
+   - the ingested `not required` list (**1900–1907**) gains all three;
+   - the `liveness` object gets the 5 required keys (`reason` keeps `minLength:1`);
+   - an optional top-level `campaign` property (`$defs/campaign_binding`).
 
    The schema cannot express X5–X11; the model and verify own those, the same layering as today.
 6. **Update `verify.py`** per the "Required flow (verify)" steps 2–6, including reconstruction in the same commit.
@@ -372,7 +470,7 @@ Its expected verify result is `[]`.
 8. **Update `reuse.py`:**
    - replace `V12_COLD_START = 12` with `COLD_START_VERSIONS = frozenset({12, 13})`;
    - any version in that set is a bounded cold start that trusts only the version and consumes nothing. The version is 12 or 13 exactly; ≤ 11 stays refused as today;
-   - update the messages at 57-85 ("current v14 verifier", "expected 12 or 13 cold start or current version 14");
+   - update the messages at 57-85 ("current v14 verifier", "expected 12 or 13 cold start or current version 14") **and at 139** (`"v12 or v13 cold start has no reusable witnesses"`);
    - update `runner.py:6033-6038` and the `cli.py:296-298` help ("native v14 verdict; v12 and v13 start cold");
    - a prior `witness-cold` kill is replay-eligible (`reuse.classify_candidate` needs only `execution.witness`). Add a test that proves it with a v14 prior document.
 9. **Fixtures.**
@@ -380,13 +478,21 @@ Its expected verify result is `[]`.
    - The 11 native-R2 fixtures listed in the v14 implementation map (`inconclusive.json`, `r2_*.json`) gain `cold_witness_kills: false`, `r2_command: null`, `equivalence_ledger: null`. If they carry an active liveness block, it gains the two keys.
    - `tests/test_verdict_conformance.py:389-413` must stay green over the full set.
 10. **Carve assets.**
+    - **W3 migrates (P3A-1).** Like every cut, including v13's merge `e5e9b95c`, migrate `carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json`:
+      - `"schema_version": 14` (line 185);
+      - `judgment.r2` gains `"cold_witness_kills": false, "r2_command": null, "equivalence_ledger": null`;
+      - its 3-key liveness block (`{"active": false, "plugin": null, "reason": "language-not-python"}` at `db85f747`) gains `"cpu_window_s": null, "idle_floor_s": null`. Keep `reason` as is.
+      - Its `equivalent` entries stay under the artifact rules (X8b).
+      - Update `tests/test_gate_qualify_dstdns_sql.py:554` (`== 13` → `== 14`).
+      - `gate/python/qualify_dstdns_sql.py` regenerates the witness end to end and compares with `==` (per the comment at 550-553). Confirm the regenerated document equals the hand migration; a mismatch is BLOCKED, not a hand edit to match.
     - Leave `carve-assets/W9/` byte-unchanged.
     - Create `carve-assets/W10/`:
       - `verdict.schema.v14.json` (a byte copy of the shipped schema);
       - `expected/p25-pass-v14-template.json` and `expected/p25-missing-v14-template.json` (the W9 templates lifted to 14, with the three native keys added if they carry native R2);
       - `test_acceptance_v14.py`, modelled on W9's (byte identity, both templates schema- and verify-valid, W9 templates hit the v14 hard cut);
       - `MANIFEST.md`.
-    - Point `gate/python/qualify_topos.py:111` `_EXPECTED_ROOT` at W10. Change the literal 13 at 964-965 and 1021-1022 to `VERDICT_SCHEMA_VERSION`-driven or 14, as `tests/test_gate_harness_version_pins.py` demands, and the template names at 1287/1324/1372-1373 to `-v14-`.
+    - Point `gate/python/qualify_topos.py:111` `_EXPECTED_ROOT` at W10. Change the literal 13 at 964-965 and 1021-1022 to `VERDICT_SCHEMA_VERSION`-driven or 14, as `tests/test_gate_harness_version_pins.py` demands, the template names at 1287/1324/1372-1373 to `-v14-`, and the wording at **1030** ("the complete v13 artifact differs …") to v14.
+    - `tests/test_python_qualification.py:396-422`: rename `P25_V13_EXPECTED_ROOT` → `P25_V14_EXPECTED_ROOT`, point it at `carve-assets/W10/expected`, update the comment above it ("Wave C's v13 cut moves the live P25 controls to W9" → the v14 equivalent, with W9 frozen), and use the `-v14-` template names. (P1 keeps this file at its path and only `--ignore`s it in the B105 lanes; the release lane still runs it.)
 11. **Successor tests.**
     - `git mv tests/test_verdict_v13_successors.py tests/test_verdict_v14_successors.py`.
     - Lift W8's R3/R4 controls **and** W9's two P25 templates to 14 in it; the module docstring explains v14.
@@ -399,13 +505,17 @@ Its expected verify result is `[]`.
     - point the successors file at `test_verdict_v14_successors.py`;
     - after the B106 suite, add `tests/test_v14_contract.py` and `tests/test_r2_command.py`, with the marker `verdict-v14-successors-verified` replacing `verdict-v13-successors-verified`.
 
-    Update `tests/test_distribution_gate.py:215-256` to the new markers, file names and order (`v13_cut < v14_p25 < v14_successors < v14_suite < v14 < self_hosted`).
+    Update `tests/test_distribution_gate.py:215-256` to the new markers, file names and order (`v13_cut < v14_p25 < v14_successors < v14_suite < v14 < self_hosted`). Add two guards there:
+    - the marker string `verdict-v13-successors-verified` is **absent** from the gate script;
+    - the hard-cut probe tuple contains `("W9", 13)`.
 13. **Version-literal tests.** Update every literal `13` that means the schema version:
     - `tests/test_standalone.py` 343, 702, 1231, 1600;
     - `tests/test_verify_layer_independence.py` 111, 515;
     - `tests/test_verdict_conformance.py` 1209 and the message at 1323;
     - `tests/test_reuse_coverage_controls.py` 19, 93;
-    - `tests/test_b106_reuse_and_witness.py` 96 and the `_v13_*` helpers (rename them `_v14_*` or make them version-driven);
+    - `tests/test_b106_reuse_and_witness.py`:
+      - the `_v13_*` helpers: rename them `_v14_*` or make them version-driven;
+      - **line 96 is not a literal 13.** It is the *future-version* case `('{"schema_version":14}', "unsupported")`, which must become `('{"schema_version":15}', "unsupported")`. Leave line 95 (`13` duplicate-key case) meaningfully duplicate-keyed; its value may stay 13 or become 14, since the duplicate is what is tested;
     - `tests/test_verdict_schema_is_packaged.py:267` → `urn:assay:schema:verdict:14`.
 
     **Trap:** `tests/test_analysis.py:823` does `text.replace('"schema_version": 13', '"schema_version": 11')`. At v14 that replace silently does nothing. Change it to replace `"schema_version": 14`, and add an `assert '"schema_version": 11' in text` after the replace, so a future cut cannot hollow it again.
@@ -439,8 +549,9 @@ Each oracle names its observable, the negative case (what a broken implementatio
    - Observable: an `r2_command` with `--cov-branch` left in `argv_transformed` fails.
    - Negative: trusting the producer's `argv_transformed` accepts it.
    - Gate: tester-unified.
-5. **Ledger pairing.**
-   - Observable: a native equivalent with ledger null and artifact null fails. A ledger with `entry_count` ≠ the number of equivalents fails. A `ledger` in `killed` fails.
+5. **Ledger pairing, split by producer.**
+   - Observable: a native equivalent with ledger null and artifact null fails. A ledger with `entry_count` ≠ the number of equivalents fails. A `ledger` in `killed` fails. A native SQL document with an artifact and equivalents (W3, `r2_inconclusive_all_mutants_equivalent.json`) verifies `[]`. Ledger and artifact both set fails.
+   - Negative: applying X8(a) to every native lane rejects the SQL fixtures.
    - Gate: tester-unified.
 6. **Ingested unaffected.**
    - Observable: every existing ingested fixture verifies `[]` after the version bump. Adding `cold_witness_kills` to one fails.
@@ -449,8 +560,16 @@ Each oracle names its observable, the negative case (what a broken implementatio
    - Observable: a test constructs a native `JudgmentR2` with every optional field None and `cold_witness_kills=False` → OK. Without `cold_witness_kills` → `ValueError` naming it.
    - Negative: keeping `[:-3]` after adding fields silently makes `liveness` required or `cold_witness_kills` optional.
 8. **Reuse cold start.**
-   - Observable: `--reuse-from` a v13 verdict gives `cold_start=True` and consumes nothing. v11 is refused with the updated message. A v14 prior with a witness-cold kill yields that candidate as replay-eligible.
+   - Observable: `--reuse-from` a v13 verdict gives `cold_start=True` and consumes nothing; so does a v12. v11 is refused with the updated message. The classify message for a cold start names "v12 or v13". A v14 prior with a witness-cold kill yields that candidate as replay-eligible.
+   - Negative: `version < 14` cold-starts everything → the v11 case is accepted → red.
    - Gate: tester-unified (`tests/test_b106_reuse_and_witness.py` extended).
+9. **Raw-layer independence.**
+   - Observable: for every X-row, a direct call to the raw verify function on the offending document returns a failure naming the field path, **independently** of the model.
+   - Negative: an implementation that enforces a rule only in the model passes every end-to-end `assay verify` test (reconstruction masks it) but fails the direct raw call.
+   - Gate: tester-unified.
+10. **Campaign binding shape (C9).**
+    - Observable: the valid `campaign` block verifies `[]`; each invalid example fails raw and in the model; a document without `campaign` is unchanged.
+    - Gate: tester-unified.
 
 ### Forbidden oracle patterns (AUTHORING.md §3b, verbatim)
 
@@ -549,7 +668,7 @@ Verify each anchor with `grep -n` first.
   - :152-167 (the B092/B106 bullets): judge identity is unchanged here (P3b changes it);
   - add a v14 line to the version-compatibility text if present.
 - **docs/DESIGN-GUIDE.md:**
-  - §6 verdict contract (:402ff): document the three new native `judgment.r2` fields, `evidence`, and the `witness-cold`/`ledger` modes as *wire contract* (the semantics paragraphs come with P3b/P10b);
+  - §6 verdict contract (:402ff): document the three new native `judgment.r2` fields, `evidence`, the `witness-cold`/`ledger` modes, the X8 producer split (ledger vs SQL artifact) and the optional top-level `campaign` block as *wire contract* (the semantics paragraphs come with P3b/P3d/P10b);
   - the hard-cut policy (~:1477-1485): add v14 and the v12/v13 reuse cold start;
   - fix the stale "`schema_version: 8`" at ~:1446 if still present.
 - **docs/CONSUMERS.md:**
@@ -560,12 +679,22 @@ Verify each anchor with `grep -n` first.
 
 ## Scope / forbid
 
-- **Touch:** `src/assay/{verdict.py,verify.py,reuse.py,r2_command.py}`, `src/assay/schemas/verdict.schema.json`, `src/assay/runner.py` (only `_build_judgment_r2` defaults and the reuse wording), `src/assay/cli.py` (help text only), `assay.toml` (the targets lists only), `gate/python/qualify_topos.py` (version/W10 only), `tools/tester-unified-gate.sh` (the markers section only), `nyxloom-trove/carve-assets/W10/**` (new), `tests/**` as listed, README/DESIGN-GUIDE/CONSUMERS/CHANGES.
+- **Touch:**
+  - `src/assay/{verdict.py,verify.py,reuse.py,r2_command.py}`, `src/assay/schemas/verdict.schema.json`;
+  - `src/assay/runner.py` (only `_build_judgment_r2` defaults and the reuse wording);
+  - `src/assay/cli.py` (help text only);
+  - `assay.toml` (the targets lists only);
+  - `gate/python/qualify_topos.py` (version/W10 only) and `gate/python/qualify_dstdns_sql.py` (only if its version literal needs it);
+  - `tools/tester-unified-gate.sh` (the markers section only);
+  - `nyxloom-trove/carve-assets/W10/**` (new) and **`nyxloom-trove/carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json` (the per-cut migration only)**;
+  - `tests/**` as listed, including `tests/fixtures/dataclass-contract.json`, regenerated with P1's command (C15);
+  - README/DESIGN-GUIDE/CONSUMERS/CHANGES.
 - **Forbid:**
-  - any producer behaviour: no `witness-cold`/`evidence`/`ledger` emission, and no plugin changes (`mutation_witness.py` is P3b's);
+  - any producer behaviour: no `witness-cold`/`evidence`/`ledger`/`campaign` emission, and no plugin changes (`mutation_witness.py` is P3b's; the `campaign` wiring is P3d's);
   - `mutation.py` except reading it;
   - `MUTATION_STATE_SCHEMA_VERSION` (never bump it);
-  - `carve-assets/W1–W9` content;
+  - the content of `carve-assets/W1`, `W2` and `W4–W9` (W3 is migrated by design, see above);
+  - widening `verify.py`'s `_INDEPENDENT_R2_TERMINALS` or `_POST_BASELINE_R2_TERMINALS` (C1);
   - lane schema;
   - a new `ReasonCode`;
   - `liveness.py` (P3c).
@@ -581,7 +710,7 @@ Verify each anchor with `grep -n` first.
 - Remove containers by exact name only.
 
 1. Run the focused suites serially:
-   `nice -n 19 ionice -c3 python -m pytest tests/test_r2_command.py tests/test_v14_contract.py tests/test_verdict_conformance.py tests/test_b106_reuse_and_witness.py tests/test_self_lane.py tests/test_distribution_gate.py tests/test_gate_harness_version_pins.py -q -p no:cacheprovider`
+   `nice -n 19 ionice -c3 python -m pytest tests/test_r2_command.py tests/test_v14_contract.py tests/test_verdict_conformance.py tests/test_verify_layer_independence.py tests/test_b106_reuse_and_witness.py tests/test_gate_qualify_dstdns_sql.py tests/test_dataclass_contract.py tests/test_self_lane.py tests/test_distribution_gate.py tests/test_gate_harness_version_pins.py -q -p no:cacheprovider`
 2. Run the full local suite once, serially and niced, as a pre-gate sanity check (not the gate).
 3. Run the gate:
    `cd <worktree>/assay && python ./run-gate.py tester-unified > /tmp/b110-p3a-gate.log 2>&1; echo EXIT=$?`
@@ -593,7 +722,9 @@ Verify each anchor with `grep -n` first.
 
 If a named contract cannot be met as specified, STOP. This applies when:
 - a §5 wire shape conflicts with an existing invariant you cannot preserve;
-- P10a's anchor grammar is not accepted when you reach the `ledger` validation;
+- P10a's anchor grammar is not accepted when you reach the `ledger` validation (this is the partial case below, not a full stop);
+- `qualify_dstdns_sql.py`'s end-to-end regeneration of the W3 witness disagrees with the hand migration;
+- a verifier rule would require widening `_INDEPENDENT_R2_TERMINALS`;
 - the gate needs a file outside the touch list.
 
 Write `BLOCKED: <reason>` to `nyxloom-trove/reports/assay-B110-P3a-REPORT.md`, commit, and exit. Do NOT improvise a workaround. **Special case:** if P10a is not yet accepted, validate `anchor` as non-empty UTF-8 ≤ 4096 bytes only, record `BLOCKED-PARTIAL: anchor grammar pending P10a` in the report, and finish everything else. P10b then adds the grammar check.

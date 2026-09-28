@@ -1,11 +1,13 @@
 # B110-P11 — Isolation-unit execution model (decision-gated fallback design)
 
+*Revised 2026-09-28 after round-1 review (see `REVIEW-2026-09-28-round1.md`, findings P11-1..P11-3).*
+
 | Field | Value |
 |---|---|
 | Backlog | B121, plan package P11 |
-| Branch | `assay-b110-p11-units`, cut from the integration line |
-| Dispatch condition | **Only** when the plan §7 pilot returns **NO-GO** on the claim-preserving path (plan §8) **and** the operator decides to pursue this model. Both conditions must hold. Until then, the brief is dormant. |
-| Depends on | P0–P8 merged; the pilot report `reports/assay-B110-PILOT-REPORT.md` exists |
+| Branch | `assay-b110-p11-units`, cut from the integration line (`assay-b110-integration`, plan §11.1 / C18) |
+| Dispatch condition | **Only** when the plan §7 pilot returns **NO-GO** on the claim-preserving path (plan §8, pilot GO) **and** the operator decides to pursue this model. Both conditions must hold. Until then, the brief is dormant. |
+| Depends on | P0–P8 merged, including P8's exported pure `project(samples, rows, jobs, fixed)` (C14); the pilot report `reports/assay-B110-PILOT-REPORT.md` exists |
 | Contract class | **2a**: design and probe. The implementation brief (P11b) is carved only after the operator decision. |
 | Implementer | Opus |
 | Decisions | A-467 (plan D3: the units model is a pilot-gated fallback needing its own decision); A-464 (time never classifies; shards and units are scheduling, not proof); A-462 (full-source claim) |
@@ -21,7 +23,12 @@ If the pilot shows that fixed per-candidate cost (snapshot, interpreter start, c
 
 The analysis report ranked this row 8: per kill ≈ snapshot + unit start (~0.5–1.5 s, assumed) + K ≈ 1–6.5 s, which gives **0.35–2.3 h on 3 workers plus fixed overhead**. That figure is **a scenario, not a forecast**; this package measures it.
 
-**This changes the declared execution semantics.** Order dependence across files stops counting: a test whose result depends on what an earlier file did would behave differently. That is why A-467 requires a separate operator decision, and why this package only designs and measures.
+**This changes the declared execution semantics, in both directions.**
+- A test whose result depends on what an earlier file did in the same process would behave differently.
+- Some kills can disappear: a mutant is caught only because an earlier file left state that the killing test depends on.
+- Kills can also be **added**: a mutant's effect that single-process order masks, for example a value cached by an earlier file before the mutated code path ran, can surface in a fresh unit.
+
+That is why A-467 requires a separate operator decision, and why this package only designs and measures.
 
 ## Context to read first
 
@@ -48,6 +55,16 @@ Paths are relative to `assay/` at HEAD `db85f747`; the lines move with P0–P8.
    - "Any code measured before a dynamic context is set will be recorded in this empty context" ([contexts](https://coverage.readthedocs.io/en/latest/contexts.html)).
    - No subprocess coverage is configured in this repository.
 10. Test inventory: 243 top-level `tests/test_*.py` files and 247 in all (including `tests/qualification/`). After P1, add the `tests/zz_slow/` files. `tests/test_python_qualification.py` and `tests/test_self_hosting.py` are ignored by the B105 lanes (D4).
+11. `tools/tester-unified-gate.sh:742-826`. It shows how a tester-unified container is launched from this devcontainer:
+    - the host daemon is used, so the bind source is the **host** path, derived with `docker inspect "$HOSTNAME" --format '{{range .Mounts}}{{if eq .Destination "/workspaces/vbpub"}}{{println .Source}}{{end}}{{end}}'`;
+    - `--cgroup-parent="$(tools/cgroup-parent.sh)"`;
+    - `--init`;
+    - `--network=none`;
+    - image `tester-unified:local`;
+    - an exact container name.
+
+    The probe copies this pattern (see *Tracer-bullet probe*).
+12. P8's exported `campaign.project(samples, rows, jobs, fixed)` (C14) is the projection helper. Also plan §3 D7/P9's closed `judge_identity_inputs` key set: any new identity input, such as a coverage-map digest, is a coordinated change to P9's derivation.
 
 ## Design packet (2a)
 
@@ -61,7 +78,7 @@ Paths are relative to `assay/` at HEAD `db85f747`; the lines move with P0–P8.
 - **Per candidate:**
   1. Use one fresh P22 snapshot (never one per unit).
   2. Run units sequentially in that snapshot, in the candidate's **unit order**, each in a fresh interpreter.
-  3. Run the A-195 dirt check after **every** unit.
+  3. Run the A-195 dirt check after **every** unit. A unit that leaves dirt, i.e. changes the snapshot's named Git state, gets **exactly today's A-195 treatment**: a `DIRTY_TREE`/`HEAD_CHANGED` fatal that stops later work. It is never a kill and never a reason to continue with the next unit. The only difference from today is that the check runs more often.
   4. Stop at the first unit whose cold receipt is a verified call-phase failure. That candidate is `killed`, and its evidence names the unit and the receipt.
 - **Survivor:** every unit ran and passed, and each unit's manifest equals its baseline manifest. Then the ordered union equals the declared manifest by construction.
 - **Uncertainty** (a unit collection error, an untrusted hook, a manifest mismatch, or a failure during setup or teardown): fall back to **one declared-command full attempt**, exactly the P3/D6 A2 fallback. That attempt is authoritative.
@@ -79,7 +96,7 @@ Paths are relative to `assay/` at HEAD `db85f747`; the lines move with P0–P8.
 |---|---|---|---|---|---|
 | OC1 | Unit granularity | per file; per directory; per P1 tier; per test | **per file** | Every declared test is in exactly one unit | T1/T2: unit start cost × file count against the gain |
 | OC2 | Unit order | coverage-covering first then duration; duration only; previous killer first (PIT rule 4) as an extra key for B106 reruns | **covering-first, duration ascending**, with the prior killer's unit first when `--reuse-from` applies | Order never changes the inventory | T5 offline replay on the pilot kills |
-| OC3 | Coverage map | one ctrace plus `--cov-context=test` run per campaign, bound by digest into the judge identity; per-candidate recomputation; none | **once per campaign**, digest in the identity | A map is an ordering hint and never outcome evidence | T4 overhead, the empty-context fraction, and subprocess blind spots |
+| OC3 | Coverage map | one ctrace plus `--cov-context=test` run per campaign, bound by digest into the judge identity; per-candidate recomputation; none | **once per campaign**, digest in the identity | A map is an ordering hint and never outcome evidence | T4 overhead and the empty-context fraction. **Note:** a new identity input extends P9's closed `judge_identity_inputs` key set (`judge_sha256_from_inputs` refuses unknown keys), so P11b must change P9's derivation and its O1 vectors together. It is not a local addition. |
 | OC4 | Snapshot scope | per candidate; per unit | **per candidate** | A-120/A-184: fresh per mutant; A-195: dirt checked per unit | T2 plus P5's measured snapshot cost |
 | OC5 | Kill evidence | per-unit cold receipt plus the unit manifest equal to its baseline; any non-zero unit exit | **cold receipt plus manifest** (same strength as P3) | A collection error is not a cold kill | P3 contract |
 | OC6 | Survivor proof | all units plus per-unit manifest equality; also rerun the declared command | **all units plus manifest equality** | Complete declared inventory | T3 concatenation equality |
@@ -95,7 +112,14 @@ Paths are relative to `assay/` at HEAD `db85f747`; the lines move with P0–P8.
 3. **The coverage map is ordering only.** It never skips, and never contributes positive evidence.
 4. Time, host load and ETA never decide an outcome (A-464). A unit that is still running at a deadline leaves the candidate incomplete.
 5. Any uncertainty takes the authoritative declared-command attempt.
-6. **Semantic change to disclose:** cross-file order dependence (a test's result depending on earlier files in the same process) no longer counts. The unit-mode baseline must pass, so a dependence that makes a test *pass only after* earlier files is caught at baseline. A dependence that makes a test *fail only after* earlier files becomes invisible under units.
+6. **Semantic change to disclose:** cross-file order dependence (a test's result depending on earlier files in the same process) no longer counts.
+   - The unit-mode baseline must pass, so a dependence that makes a test *pass only after* earlier files is caught at baseline.
+   - A dependence that makes a test *fail only after* earlier files becomes invisible under units.
+   - **Per candidate, units can both remove and add kills** relative to the single-process claim:
+     - **removed:** a kill that needed earlier-file state (fixture H1);
+     - **added:** a mutant effect that single-process order masked, now exposed in a fresh unit.
+
+   The decision row must disclose both directions.
 
 ### Required operator decision (after the probe)
 
@@ -107,26 +131,62 @@ A new `decisions.md` row, the next free A-number at that time. It records that t
 
 Run it once. It needs **controller approval**, because it runs the suite about three times.
 
-**Environment:**
-- A **scratch clone** of the integration-line tip, never a gate worktree.
-- **One** tester-unified container, `--cpus=1 --memory=2g --memory-swap=8g`, run under `nice -n 19 ionice -c3`.
-- No other gate may be running (`docker ps` first). Remove the container by exact name.
+**Environment** (exact; P11-1):
+1. **Scratch clone.** Make a git worktree of the integration-line tip at `/workspaces/vbpub/.worktrees/b121-probe-<yyyymmdd>`. It must be under the bind root, so the container sees it, and it is never a gate worktree. Write the probe script `tools/b121_units_probe.py` into it. Outputs go to `<clone>/assay/.assay/b121-probe/`, which is gitignored.
+2. **Preconditions.** `docker ps` must show no running `run-gate-*`, `b121-probe-*` or `tester-unified` container. If one is running, stop (BLOCKED trigger). Record the host load (`cat /proc/loadavg`) in the probe JSON; it is diagnostic only.
+3. **Host path.**
+
+   ```bash
+   host_repo_root="$(docker inspect "$HOSTNAME" --format '{{range .Mounts}}{{if eq .Destination "/workspaces/vbpub"}}{{println .Source}}{{end}}{{end}}')"
+   ```
+
+   It must be exactly one line and non-empty; otherwise stop. This is the same derivation as `tester-unified-gate.sh:808-816`.
+4. **Launch.** Run exactly one container:
+
+   ```bash
+   name="b121-probe-$(date -u +%Y%m%dT%H%M%SZ)"
+   nice -n 19 ionice -c3 docker run --rm --name "$name" --init --network=none \
+     --cgroup-parent="$(<clone>/assay/tools/cgroup-parent.sh)" \
+     --cpus=1 --memory=2g --memory-swap=8g \
+     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+     -w "<clone>/assay" tester-unified:local \
+     timeout --verbose --signal=TERM --kill-after=60s 3h \
+     python tools/b121_units_probe.py --out .assay/b121-probe --lane self-qualification --file assay.toml
+   ```
+
+   - The image's default user is the same identity the registered gate uses; do not pass `--user`.
+   - The session cap is **3 h**, enforced by `timeout` inside the container. A timed-out session gives partial, labelled output. Never extend it.
+   - After exit, run `docker ps -a --filter name=^/$name$`, which must be empty (`--rm`). If it is not, remove the container by **exact name**.
+5. **Per-unit failsafe.** The probe script runs each unit command under `subprocess.run(..., timeout=1800)`.
+   - A unit that exceeds this is recorded as `probe_timeout: true` with its partial output. It is **never** classified as pass or fail, and it is excluded from T5 with a count.
+   - This is a failsafe against a hang, not a measurement bound (§3b.A).
+6. **Inside the container**, all runs are serial. `-p no:cacheprovider` applies everywhere.
 
 **Tests:**
-- **T1, per-file isolation baseline.** For each unit, run `python -m pytest <file> -q -p no:cacheprovider` with the lane's `--ignore`/`--deselect` filters and the R2 no-cov transform. Record the pass/fail and wall time per file. **Every file that fails alone but passes in the full run is a cross-file order dependence**; list each one with its failing node IDs. Expected cost: about one suite run plus per-file overhead.
-- **T2, unit start cost.** For 10 small files (no session fixtures), run `python -m pytest <file> --collect-only -q` five times each. Report the median. Also report the median T1 wall minus call time, per file.
-- **T3, manifest concatenation.** Compare the concatenated per-file collection node IDs (declared file order) with a single `--collect-only -q tests …` run of the lane argv, as a sequence. Any difference is listed.
+- **T1, per-file isolation baseline.**
+  - For each unit, run `python -m pytest <file> -q -p no:cacheprovider` with the lane's `--ignore`/`--deselect` filters and the R2 no-cov transform.
+  - Record pass/fail, wall time, and the per-unit hook fingerprint (P3b's plugin, manifest-only) for each file.
+  - **Every file that fails alone but passes in the full run is a cross-file order dependence.** List each one with its failing node IDs.
+  - **A unit whose hook fingerprint differs from the others' common set** means every candidate would fall back to the declared command in that unit (fixture H3). Examples: a conftest-level `pytest_collection_modifyitems` in a subdirectory, or a file-local plugin. List each such unit.
+  - Expected cost: about one suite run plus per-file overhead.
+- **T2, unit start cost.**
+  - The file choice is fixed: the **first 10 top-level `tests/test_*.py` files in sorted name order** whose source text contains none of the session/module fixture names `standalone`, `schema`, `validator`, `built`, `gate_functions`, `lint_venv` or `installed_assay`. The probe script computes and records this list.
+  - Run `python -m pytest <file> --collect-only -q` five times each and report the median.
+  - Also report the median T1 wall minus call time, per file.
+- **T3, manifest concatenation.** Compare, as a sequence, the concatenated per-file collection node IDs (declared file order) with a single `--collect-only -q tests …` run of the lane argv. Any difference is listed. Compare sequences, not sets: a reordering is a difference.
 - **T4, coverage context map.** Run one full-suite pass with `COVERAGE_CORE=ctrace` and `--cov=src/assay --cov-context=test`. Report:
   - its overhead against the no-cov baseline;
   - the `.coverage` size;
-  - the fraction of the 3,760 candidate lines with ≥ 1 covering test context;
-  - the fraction recorded only in the empty context;
-  - the lines covered only by child processes, which appear uncovered here. Estimate these from R1's single-process coverage and the lanes' known child-process tests.
-- **T5, offline replay.** Use the pilot's killed candidates, whose witness node IDs are in the pilot evidence. For each, compute:
-  - the projected time-to-kill under OC2 unit order (sum of the preceding units' T1 walls plus the killing unit's start + prefix);
-  - the declared-order cold prefix actually measured.
+  - the fraction of the current plan's candidate lines with ≥ 1 covering test context. Take the candidate count from `assay plan` at the probe commit; do not use a hard-coded "3,760";
+  - the fraction recorded only in the empty context.
 
-  Then project the full inventory with P8's stratified helper, using unit-mode per-candidate costs.
+  There is no child-process estimate. R1 already measures 100% of `src/assay` in-process, so no candidate line is reachable only through a child process. Any such claim would be reasoning about a report (§3b.F).
+- **T5, offline replay.**
+  - Use the pilot's killed candidates, whose witness node IDs are in the pilot evidence. For each, compute:
+    - the projected time-to-kill under OC2 unit order: the sum of the preceding units' T1 walls, plus the killing unit's start and prefix;
+    - the declared-order cold prefix actually measured.
+  - Then project the full inventory with **P8's exported `campaign.project(samples, rows, jobs, fixed)`** (C14). Pass unit-mode per-candidate costs as `samples`, the current `cli.plan_jobs()` rows as `rows`, `jobs` equal to the lane's measured worker count, and the measured fixed components.
+  - The projection reports **nearest-rank p50/p90** per stratum, exactly as `project()` computes it. Never report sample means.
 
 **Outputs:**
 - `nyxloom-trove/reports/assay-B121-P11-PROBE.json`;
@@ -149,11 +209,16 @@ Run it once. It needs **controller approval**, because it runs the suite about t
 
 | # | Observable | Negative |
 |---|---|---|
-| O1 | T3 concatenation equality holds, or every difference is listed with its cause | Units silently drop or duplicate tests |
-| O2 | T1 lists every alone-fail/full-pass file. The design states for each whether it is fixed before adoption. | Adopting units over an unknown order dependence |
-| O3 | The projection states its sample size, its strata and its fallback counts (P8 helper), and is labelled a scenario | Presenting a forecast |
-| O4 | The design keeps invariants 1–6 and shows where each is enforced in the P11b outline | A design that uses the coverage map for selection |
-| O5 | The review verdict and the operator decision row are both present before any P11b brief exists | Implementation without the decision |
+| O1 | T3 **sequence** equality holds, or every difference (including reorderings) is listed with its cause | Units silently drop, duplicate or reorder tests; comparing sets instead of sequences |
+| O2 | T1 lists every alone-fail/full-pass file and every hook-fingerprint outlier unit. The design states for each whether it is fixed before adoption. | Adopting units over an unknown order dependence or a unit that always falls back |
+| O3 | The projection comes from P8's `project()`, states its sample size, strata, fallback counts and nearest-rank p50/p90, and is labelled a scenario | Presenting a forecast; using sample means under a "scenario" label |
+| O4 | The design keeps invariants 1–6 (including both kill-direction disclosures and the dirt-in-unit rule) and shows where each is enforced in the P11b outline | A design that uses the coverage map for selection |
+| O5 | The review verdict and the operator's ruling (an accepted decision row, not "proposed") are both present before any P11b brief exists | Implementation without the decision; a "proposed" row treated as the ruling |
+
+**Design fixtures the P11b outline must carry forward:**
+- **H1:** a kill that depends on a mutant's module global being set by an earlier file.
+- **H2:** the `standalone` session fixture rebuilt per unit, combined with the kill-ordering choice.
+- **H3:** a subdirectory conftest `pytest_collection_modifyitems` hook, which gives a per-unit hook fingerprint mismatch, so the declared-command fallback applies for every candidate.
 
 Any tests later specified for P11b must obey this list:
 
@@ -255,7 +320,7 @@ P11 is design only, so there are no user-facing docs.
 
 **Touch only:**
 - `nyxloom-trove/reports/assay-B121-P11-*.{md,json}`;
-- a probe script under `tools/b121_units_probe.py` (not collected by pytest);
+- a probe script under `tools/b121_units_probe.py` (not collected by pytest). It lives in the scratch probe clone; commit it to the P11 branch only if the design review asks for it to be kept;
 - a proposed decision row, marked "proposed, pending operator".
 
 **Forbid:**
@@ -267,7 +332,7 @@ P11 is design only, so there are no user-facing docs.
 
 ## Gate
 
-There is no registered gate for a design package. The probe is the evidence, and it runs only as the approved single-container session above. If a later P11b exists, it follows plan §10:
+There is no registered gate for a design package. The probe is the evidence, and it runs only as the approved single-container session above, with the exact `docker run` line, the 3 h session cap and the per-unit failsafe. If a later P11b exists, it follows plan §10:
 1. `cd <worktree>/assay && python ./run-gate.py tester-unified`, then read `ASSAY_GATE_CONTAINER_EXIT` and `ASSAY_REGISTERED_GATE_COMPLETE` in a separate step (L4).
 2. `self-qualification-preflight`.
 
@@ -285,8 +350,10 @@ If a named contract cannot be met as specified, or scope requires a forbidden fi
 
 **Specific triggers:**
 - The dispatch condition is not met.
-- The probe container cannot be granted or would overlap another gate.
+- The probe container cannot be granted or would overlap another gate (step 2 of the environment).
+- The host bind source cannot be derived as exactly one line.
 - T3 shows the unit manifests cannot reproduce the declared manifest for a structural reason, such as cross-file parametrization.
+- P8's `project()` is not exported with the stated signature.
 
 ## Report
 

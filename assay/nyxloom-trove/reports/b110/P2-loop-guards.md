@@ -1,16 +1,19 @@
 # B110-P2 — Loop-progress guards: a spinning mutant fails fast instead of burning three baselines
 
+Revised 2026-09-28 after round-1 review (see REVIEW-2026-09-28-round1.md).
+
 | Field | Value |
 |---|---|
 | Backlog | **B113** (split from B110) |
-| Branch | `assay-b110-p2-guards`, from the integration line `assay-b105-evidence-integrity` (after the plan §11.1 reconciliation) |
+| Branch | `assay-b110-p2-guards`, from the integration line `assay-b110-integration` (created by the plan §11.1 reconciliation, C18) |
 | Depends on | nothing. It can start on day one, in parallel with P0, P6 and P10a. |
+| Merge order | Plan §11.6: **P2 → P1 → P3c**. P2 merges before P1, so the two real-child liveness tests are still in `tests/test_cli_run.py` when P2 edits them. P1 later moves them, with P2's watchdog helper, into `tests/zz_slow/test_cli_run_real_campaigns.py`. |
 | Contract class | **2d**: exact helper, exact call-site map, carver-witnessed red and green oracle |
 | Implementer | Sonnet (fresh session) |
 | Decisions | **A-466** (plan D2, operator): add loop-progress guards and **keep A-464 unchanged**. Time never determines a candidate's classification, and there is no "hung counts as killed" rule. A guarded mutant becomes an ordinary **kill**, because a test raises; the monitor's rules are untouched. |
 | Size | S: 1 helper, 8 one-line call-site rewrites plus imports, 1 loop rewrite, 1 exclusion-map update, 2 test files, 1 test-harness watchdog |
 
-**Why.** In the e79 attempt, 4 of 39 candidates were `budget_exceeded` at 1,518 s each, 24.8% of that run's candidate time. They were `go.py` scanner mutants whose cursor stopped advancing. A CPU-spinning candidate keeps `cpu_growing` true, so liveness correctly never calls it `hung`; it burns the whole auto budget of `max(3×baseline, baseline+60)`. The analysis found 14 at-risk and 4 latent single-operator mutants. After this package, each of them raises `AssertionError` in whichever test drives that scanner path. The suite fails in normal time, so the candidate is `killed`. Nothing about liveness, budgets or classification changes.
+**Why.** In the e79 attempt, 4 of 39 candidates were `budget_exceeded` at 1,518 s each, 24.8% of that run's candidate time. They were `go.py` scanner mutants whose cursor stopped advancing. A CPU-spinning candidate keeps `cpu_growing` true, so liveness correctly never calls it `hung`; it burns the whole auto budget of `max(3×baseline, baseline+60)`. The analysis found 14 source-level at-risk single-operator mutants, plus `liveness.py:1530` at test level (15 in all), and 4 latent ones. After this package, each source-level one raises `AssertionError` in whichever test drives that scanner path. The test-level one is handled by the watchdog. The suite fails in normal time, so the candidate is `killed`. Nothing about liveness, budgets or classification changes.
 
 ---
 
@@ -28,12 +31,12 @@ Paths are relative to `assay/`, verified at HEAD `db85f747`.
    - `src/assay/adapters/sql_lex.py:60-66` (imports), `:174-300` (`_lex_once`; cursor assignments `:197` and `:280`);
    - `src/assay/adapters/go_modfile.py:76-77` (imports), `:372-395` (`_tokens`; `:393`);
    - `src/assay/isolation.py:50-52` (imports), `:1374-1407` (`_parse_tree`; `:1406`).
-4. `src/assay/git.py:283-365`: `_run_bounded`. The drain loop is `:335-355`; the wait loop `:357-365` is timeout-bounded and not touched. The selector-cleanup `pragma: no cover` lines are `:376-377` and `:1342-1343`.
-5. `tests/fixtures/b105-coverage-exclusions.json`: git.py is pinned at `[376, 377, 1342, 1343]`. It is enforced by `tests/conftest.py:107-113` and `:165-214` in the B105 preflight, and by `tests/test_b105_source_coverage_controls.py:136-162`.
+4. `src/assay/git.py:283-367`: `_run_bounded`. The drain loop is `:335-356`; the wait loop `:357-367` is timeout-bounded and not touched. The selector-cleanup `pragma: no cover` lines are `:376-377` and `:1342-1343`.
+5. `tests/fixtures/b105-coverage-exclusions.json`: git.py is pinned at `[376, 377, 1342, 1343]`. Each pinned pair is an `except …:  # pragma: no cover` line **N** and its `pass` line **N+1**. It is enforced by `tests/conftest.py:107-113` and `:163-205` in the B105 preflight, and by `tests/test_b105_source_coverage_controls.py:136-162`.
 6. The mutation operators, so you know which mutants exist: `src/assay/adapters/python.py:445-470` (the compare-swap and boolop-swap catalogues), `:537-611` (compare-swap, boolop-swap and bool-const-flip site builders), `:618-672` (falsy-swap, direct falsy returns only), and `generate_mutation_sites` at `:881`.
-7. The real-child liveness tests: `tests/test_cli_run.py:463` `test_run_liveness_classifies_a_thread_join_hang_as_hung` (budget `"50s"` at `:529`) and `:586` `test_run_liveness_classifies_a_busy_loop_as_budget_exceeded_not_hung` (budget `"35s"` at `:645`). Both call `run(argv)` (`:127`) in-process.
-   - **If P1 merged first**, both live in `tests/zz_slow/test_cli_run_real_campaigns.py`. Find them by name.
+7. The real-child liveness tests: `tests/test_cli_run.py:463` `test_run_liveness_classifies_a_thread_join_hang_as_hung` (budget `"50s"` at `:529`) and `:586` `test_run_liveness_classifies_a_busy_loop_as_budget_exceeded_not_hung` (budget `"35s"` at `:645`). Both call `run(argv)` (`:127`) in-process. P2 merges before P1, so they are still in `tests/test_cli_run.py`; find them by name anyway.
    - Supporting context: `src/assay/runner.py:4420` (`liveness.LivenessRunner(...)` is looked up on the module at call time, so it is patchable), `src/assay/liveness.py:1299-1316` (the `popen` seam), `:1375` (`start_new_session=True`) and `:1530-1537` (the timeout check that a mutant can disable).
+   - Cross-package constraint: P6 installs SIGTERM/SIGINT handlers in the `assay run` path, and `signal.signal` raises `ValueError` off the main thread. So `run(argv)` must stay **on the main thread** (C16).
 8. The analysis: `nyxloom-trove/reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`, hang-loop section. It has the full 50-loop inventory and explains why an inline `assert` or a bounded `for … else` was rejected.
 
 ---
@@ -100,13 +103,21 @@ Why each form fails or works:
 - `is None → is not None` skipped draining, which deadlocks `proc.wait()` on more than ~64 KiB of output.
 - `overflowed` is `None` or a non-empty tuple, so its truthiness is exactly `is not None`. The existing overflow tests take the true side; every ordinary call takes the false side.
 
-The rewrite shifts later `git.py` lines. Update `tests/fixtures/b105-coverage-exclusions.json` `"src/assay/git.py".lines` to the **new** line numbers of the same two `except … # pragma: no cover` lines and their `pass` lines. Take the numbers from `grep -n "pragma: no cover" src/assay/git.py` after the edit; do not predict them. Keep the `reason` text unchanged.
+The `if overflowed: break` goes **after** the `for` statement, at the `while` body's indentation. Inside the `for` body it would only leave the `for`, and the `while` would keep draining an infinite producer. The behavioral oracle O4b catches that placement.
+
+The rewrite shifts later `git.py` lines. Update `tests/fixtures/b105-coverage-exclusions.json` `"src/assay/git.py".lines` to the **new** line numbers:
+- Run `grep -n "pragma: no cover" src/assay/git.py` after the edit. It returns only the two `except …:  # pragma: no cover` lines.
+- **Each hit N contributes N and N+1**: the `except` line and its `pass` line.
+- The new list is `[N1, N1+1, N2, N2+1]`.
+- Take the numbers from the grep; do not predict them. Keep the `reason` text unchanged.
 
 **`liveness.py:1530`** (the `timeout is not None` check) cannot be protected against a mutant of itself. Its hazard is test-level: a mutant that disables the timeout makes the busy-loop test's child spin forever. The fix is the **test watchdog** below, not a source change.
 
 ### Watchdog for the two real-child liveness tests
 
-This goes in the test module that currently holds them. The helper is private to that module:
+This goes in the test module that currently holds them, `tests/test_cli_run.py`. The helper is private to that module.
+
+**`run(argv)` stays on the main thread** (carver decision C16, round-1 P2-1). P6 installs signal handlers in the `assay run` path, and `signal.signal` raises `ValueError` off the main thread. So the *timer* is the background thread: on expiry it `killpg`s the recorded candidate groups, which makes the in-process monitor see its child exit and return.
 
 ```python
 @contextlib.contextmanager
@@ -128,30 +139,51 @@ def _recorded_liveness_children(monkeypatch) -> Iterator[list[subprocess.Popen]]
     yield started
 
 
-def _run_with_child_watchdog(monkeypatch, argv, *, failsafe_s: float = 300.0):
-    """Run `run(argv)` in a thread; a FAILSAFE only (A-466, AUTHORING §3b A).
-    On expiry, kill every candidate process group the run started (each is its
-    own session, `start_new_session=True`, so the outer kill cannot reach it)
-    and fail. Never decides pass/fail for a run that returns."""
+def _run_with_child_watchdog(monkeypatch, argv, *, failsafe_s: float):
+    """Run `run(argv)` on the MAIN thread with a background FAILSAFE timer only
+    (A-466, C16, AUTHORING §3b A). If the timer fires, it kills every candidate
+    process group the run started (each is its own session,
+    `start_new_session=True`, so no outer kill reaches it); the monitor then sees
+    its child exit and `run` returns, and the test fails. The timer never decides
+    pass/fail for a run that returns on its own."""
     with _recorded_liveness_children(monkeypatch) as started:
-        box: dict[str, object] = {}
-        thread = threading.Thread(target=lambda: box.setdefault("result", run(argv)), daemon=True)
-        thread.start()
-        thread.join(timeout=failsafe_s)
-        if thread.is_alive():
-            for proc in started:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(proc.pid, signal.SIGKILL)
-            thread.join(timeout=60.0)
-            pytest.fail("watchdog: the real-child liveness run did not return; its candidate process groups were killed")
-        assert all(proc.poll() is not None for proc in started), "a candidate process outlived its run"
-        return box["result"]
+        fired = threading.Event()
+        done = threading.Event()
+
+        def _timer() -> None:
+            if not done.wait(timeout=failsafe_s):
+                fired.set()
+                for proc in list(started):
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+
+        timer = threading.Thread(target=_timer, daemon=True)
+        timer.start()
+        try:
+            result = run(argv)                     # main thread
+        finally:
+            done.set()
+            timer.join(timeout=60.0)
+        if fired.is_set():
+            pytest.fail("watchdog: the real-child liveness run did not return in time; "
+                        "its candidate process groups were killed")
+        for proc in started:                       # whole-group post-condition, not timing
+            with pytest.raises(ProcessLookupError):
+                os.killpg(proc.pid, 0)
+        return result
 ```
 
-In both tests, replace `code, out, err = run([...])` with `code, out, err = _run_with_child_watchdog(monkeypatch, [...])` and add the `monkeypatch` parameter. Their assertions stay byte-identical.
+In both tests, replace `code, out, err = run([...])` with `code, out, err = _run_with_child_watchdog(monkeypatch, [...], failsafe_s=...)` and add the `monkeypatch` parameter. Their assertions stay byte-identical.
 
-- The failsafe of 300 s is generous: both runs return in about 31–36 s today. It exists only so that a mutant which disables the elapsed-budget check becomes a *test failure*, and a kill, within 300 s, instead of consuming the outer auto budget of about 1,560 s and leaving an orphaned spinning child.
-- The final `poll()` assertion is a deterministic post-condition. It is not timing.
+**Failsafe sizing** (round-1 P2-5, C16). It is sized from each test's **declared** per-candidate budget, never from a fixed constant: `failsafe_s = 4 * <that test's budget_per_candidate in seconds>`.
+- For the hang test (`"50s"`) that is 200.0; for the busy-loop test (`"35s"`) it is 140.0.
+- Write the literal next to the budget with a comment tying them together. P3c later lowers the hang-test budget, and the failsafe follows.
+
+Why this is a failsafe, not an oracle:
+- It exists only so that a mutant which disables the elapsed-budget check (`liveness.py:1530`) becomes a *test failure*, and so a kill. It fails within a bounded multiple of the test's own budget, instead of consuming the outer auto budget of about 1,560 s and leaving an orphaned spinning child.
+- Under extreme host load the multiple still scales with what the test itself declared.
+
+**The post-condition checks the whole process group, not just the leader.** `os.killpg(pgid, 0)` raises `ProcessLookupError` only when **no** process remains in the group; `proc.poll()` would only prove the group leader exited. Both tests' candidates are single-process, so an empty group after `run` returns is deterministic. It is not timing.
 
 ### The deterministic mutant oracle
 
@@ -159,7 +191,11 @@ This is `tests/test_scanner_progress_guards.py`, prepared and witnessed by the c
 - **red (today):** every case raises `_StepLimit`;
 - **green (after the guards):** every case raises `AssertionError("scanner cursor did not advance ...")`.
 
-The carver ran exactly this table against an unmodified `src` (16/16 hit the step limit) and against a scratch copy with the packet's edits applied (16/16 raise the guard's `AssertionError`). The scratch prototype is `/tmp/claude-1003/-workspaces-vbpub/4d188675-268f-4f79-8aec-e7e00b2aac8a/scratchpad/p2_oracle_proto.py`; the test below is its pytest form.
+The carver ran exactly this table against an unmodified `src` (16/16 hit the step limit) and against a scratch copy with the packet's edits applied (16/16 raise the guard's `AssertionError`). That prototype lived in session scratch outside pytest and coverage, so **it is not evidence the implementer can rely on**. The implementer's red commit (Work 1) and green commit (Work 2) are the proof, and the report must include both runs' per-case outcomes (round-1 P2-5).
+
+**Caveat for R2 and the pilot** (round-1 P2-4). Under an R2 campaign, this file also "kills" its own 16 target mutants **textually**. On a mutated snapshot the anchor (e.g. `"end == -1"`) no longer matches, or the targeted site is no longer generated, so `_locate` or the site assertion fails, and a failing test is a kill. Those kills therefore do not prove the guards work. The guards' real effect on R2 is that the *other* scanner tests fail fast instead of spinning.
+- Record this in the report.
+- The plan §7 pilot's known-hard set (go.py 292/321/323/330) will be killed by this tripwire as well. The pilot report must not read those kills as a measurement of the guards.
 
 ```python
 import ast
@@ -282,7 +318,20 @@ It also needs these sibling tests in the same file:
   2. Find the single line in it containing `while selector.get_map():` and the single line `if overflowed:`.
   3. Assert that `PythonAdapter().generate_mutation_sites(text, {those two line numbers}, operators=("python:compare-swap", "python:boolop-swap", "python:falsy-swap", "python:bool-const-flip"), limit=1000)` is empty.
 
-  Red today: the old header line carries `Is` and `And` sites.
+  It is red today, but only because its anchor (`if overflowed:`) is missing. It is not red because "sites are present". Say so in the red-commit record (round-1 P2-3).
+- `test_the_git_drain_stops_after_an_output_overflow_even_without_a_deadline` (O4b, behavioral; round-1 P2-3):
+  1. Call `git._run_bounded([sys.executable, "-c", "import sys\nwhile True: sys.stdout.buffer.write(b'x' * 65536)"], remaining=None)` in a **worker thread**. This is only because a wrong implementation would never return. It is safe here, because `_run_bounded` installs no signal handler.
+  2. Join with `timeout=120.0` as a failsafe. On expiry, kill the recorded child's process group and `pytest.fail`. Record the pid by wrapping `subprocess.Popen` inside `git` with `monkeypatch`, delegating to the real one.
+  3. Assert the call raised `AssayError` with `reason_code is ReasonCode.GIT_FAILED` and a message naming `standard output`.
+  4. Assert the child's process group is gone (`os.killpg(pid, 0)` raises `ProcessLookupError`).
+
+  A correct rewrite overflows, kills the owned group and raises. The wrong placement, `if overflowed: break` inside the `for`, keeps draining forever, so the failsafe fires and the test fails.
+- `test_every_b105_exclusion_line_is_a_pragma_line_or_inside_its_block` (round-1 P2-2; goes in `tests/test_b105_source_coverage_controls.py`). For every file and line `L` in `tests/fixtures/b105-coverage-exclusions.json`:
+  - parse the file with `ast`;
+  - assert there is a line `P` containing `pragma: no cover` with either `L == P`, or `L` inside the body of the compound statement or handler that begins on `P` (from `body[0].lineno` to `end_lineno`);
+  - conversely, assert every `pragma: no cover` line in those files is itself listed.
+
+  This catches a stale git.py entry in the fast suite, instead of only in the ~10-minute preflight. It is pure source analysis and involves no coverage run.
 
 ### Decision table
 
@@ -292,7 +341,7 @@ It also needs these sibling tests in the same file:
 | Mutant stalls or rewinds a guarded cursor | spins until the per-candidate budget → `budget_exceeded` | `AssertionError` in the driving test → suite fails → `killed` | this changes **which code runs**, not a classification rule |
 | Mutant grows memory in a latent loop (`go_modfile:393`, `sql_lex:273`, `isolation:1388/1392`) | unbounded RSS for up to ~26 min | immediate `AssertionError` | same |
 | `git.py` drain `and→or` / `is None→is not None` | blocking forever or deadlock | site no longer exists | fewer candidates |
-| `liveness.py:1530` mutant hangs the busy-loop test | child spins; the outer candidate burns its budget; orphan child | watchdog kills the child group at 300 s; the test fails → `killed`; no orphan | same |
+| `liveness.py:1530` mutant hangs the busy-loop test | child spins; the outer candidate burns its budget; orphan child | watchdog kills the child group at 4× the test's declared budget; the test fails → `killed`; no orphan | same |
 
 ### Prepared proof and traceability
 
@@ -301,8 +350,9 @@ It also needs these sibling tests in the same file:
 | helper | `errors.py` | O1 | `tests/test_errors.py` new test | change `<=` to `<` → `require_advance(3, 3)` does not raise → O1 fails |
 | 8 call sites | adapters, `isolation.py` | O2 (16 parametrized cases), O3 | `CASES` | remove any one call-site guard → its case hits `_StepLimit`, not `AssertionError` → O2 fails |
 | drain rewrite | `git.py` | O4 | `_run_bounded` source | restore the old header → sites found → O4 fails |
-| exclusion map | `tests/fixtures/b105-coverage-exclusions.json` | O5 | existing `test_b105_source_coverage_controls.py` and the B105 preflight | leave the old line numbers → the preflight's raw-exclusion validation fails |
-| watchdog | liveness real-child tests | O6 | the two tests | (review only) remove the `killpg` loop → a disabled-timeout mutant leaves an orphan (argued, not executed) |
+| drain placement | `git.py` | O4b | infinite-output child, `remaining=None` | put `if overflowed: break` inside the `for` → the drain never stops → failsafe fires → O4b fails |
+| exclusion map | `tests/fixtures/b105-coverage-exclusions.json` | O5, O5b | the new fast structural test, `test_b105_source_coverage_controls.py`, and the B105 preflight | leave the old line numbers → O5b fails in the fast suite, and the preflight's raw-exclusion validation fails |
+| watchdog | liveness real-child tests | O6 | the two tests | (local, not committed) set the busy-loop test's failsafe below its runtime → `fired` → the test fails and the group post-condition holds; remove the `killpg` loop → a disabled-timeout mutant leaves an orphan (argued) |
 
 ### Degrees of freedom
 
@@ -323,8 +373,12 @@ You choose the watchdog helper's private names and the exact assertion-message t
      ```
    - Run both files and confirm the failures. The 16 guard cases fail with `_StepLimit`. The drain-site test fails with sites present. The errors test fails on import.
    - Record the counts, then commit as the red commit.
-2. **Implement** the helper, the 8 call sites with their imports and the drain rewrite. Update the exclusion map from `grep -n "pragma: no cover" src/assay/git.py`. Re-run the focused tests: all green. Commit.
-3. **Watchdog.** Add `_recorded_liveness_children` and `_run_with_child_watchdog` to the module holding the two real-child liveness tests, then switch both tests to them. Add imports as needed (`contextlib`, `os`, `signal`, `subprocess`, `threading`, `from assay import liveness`, `Iterator`); keep pyflakes clean. Run those two tests once, serially. Commit.
+2. **Implement** the helper, the 8 call sites with their imports and the drain rewrite. Update the exclusion map from `grep -n "pragma: no cover" src/assay/git.py`, where each hit N contributes N and N+1. Add O4b and O5b. Re-run the focused tests: all green. Commit.
+3. **Watchdog.**
+   - Add `_recorded_liveness_children` and `_run_with_child_watchdog` to `tests/test_cli_run.py`, then switch both tests to them, with `failsafe_s` = 4× each test's declared budget.
+   - Add imports as needed (`contextlib`, `os`, `signal`, `subprocess`, `threading`, `from assay import liveness`, `Iterator`); keep pyflakes clean.
+   - Run those two tests once, serially.
+   - Commit.
 4. **Docs** (below). Commit.
 
 ## Oracles
@@ -343,12 +397,21 @@ For each oracle: what shows it holds (Observable), the plausible wrong implement
   - Observable: the "ordinary input" sibling test passes, and the whole existing adapter and isolation suites stay green unchanged (for example `tests/test_adapters_sql_lexer.py` and `tests/test_isolation.py`).
   - Negative: a guard on a path where the cursor legitimately equals `end`. None exists; the test proves it.
 - **O4. The drain loop's exit test has no mutation site.** Observable: the site-generation assertion. Negative: the old header.
+- **O4b. The drain stops after an overflow, with no deadline.**
+  - Observable: `GIT_FAILED` naming standard output, and the child's group gone.
+  - Negative: `if overflowed: break` placed inside the `for`. O4 stays green, but the drain never stops, and O4b fails through its failsafe.
 - **O5. The coverage exclusion inventory still matches raw coverage.**
   - Observable: `self-qualification-preflight` passes. Its session hook validates raw `excluded_lines` against the updated map.
   - Negative: stale line numbers, or excluding a line that is not a `pragma` line.
+- **O5b. The exclusion map is structurally consistent with the source.**
+  - Observable: every listed line is a pragma line or inside that pragma line's block, and every pragma line is listed.
+  - Negative: the same stale numbers as O5, now caught in the fast suite.
 - **O6. The watchdog is a failsafe and never an oracle.**
-  - Observable: both liveness tests pass with byte-identical assertions, and the post-run `poll()` check holds.
-  - Negative: using the 300 s join as the pass condition, for example asserting the elapsed time. That is forbidden.
+  - Observable: both liveness tests pass with byte-identical assertions, `run` executes on the main thread, and the whole-group post-condition holds.
+  - Negative:
+    - using the failsafe as the pass condition, for example asserting the elapsed time, which is forbidden;
+    - running `run(argv)` in a worker thread, which breaks once P6's signal handler install lands;
+    - checking only `proc.poll()`, which misses a surviving group member.
 
 ### What an oracle must NOT contain (AUTHORING.md §3b, verbatim)
 
@@ -446,7 +509,8 @@ it is not an oracle yet.
   - time never classifies a candidate (A-464), so a mutant that spins must fail by itself;
   - scanner cursors advance through `errors.require_advance`, one shared comparison that one test kills;
   - the `git.py` drain loop's exit test deliberately has no mutable comparison;
-  - the two real-child liveness tests carry a failsafe watchdog.
+  - the two real-child liveness tests carry a failsafe watchdog, sized at 4× the test's declared budget, running `run` on the main thread;
+  - `tests/test_scanner_progress_guards.py` also kills its own target mutants textually, so its kills are not evidence that the guards work (the guards' effect shows in the other scanner tests).
 
   Cite A-466.
 - **`CHANGES.md` `## [Unreleased]`:**
@@ -462,7 +526,8 @@ it is not an oracle yet.
 - `src/assay/isolation.py`, `:52` and `:1406` only;
 - `src/assay/git.py`, the drain loop only;
 - `tests/test_errors.py`, `tests/test_scanner_progress_guards.py` (new);
-- the module that holds the two real-child liveness tests, for the watchdog and those two call sites only;
+- `tests/test_b105_source_coverage_controls.py`: the one new structural test (O5b) only;
+- `tests/test_cli_run.py`, for the watchdog helper and the two real-child liveness tests' call sites only;
 - `tests/fixtures/b105-coverage-exclusions.json`, the git.py `lines` only;
 - `docs/DESIGN-GUIDE.md`, `CHANGES.md`.
 
@@ -519,6 +584,8 @@ Write `nyxloom-trove/reports/assay-B110-P2-REPORT.md` and return:
 - `git diff --stat`;
 - the traceability table with actual node IDs. Give the red run's failure count per case and the green run's pass count. Report every controlled break you ran, with its result;
 - the new git.py exclusion line numbers and the grep that produced them;
+- the red and green per-case outcome lists of `tests/test_scanner_progress_guards.py` (the proof; the carver's scratch prototype is not evidence);
+- the R2 caveat that the guard test file kills its own targets textually;
 - the gate log paths, with the markers read separately;
 - residuals.
 

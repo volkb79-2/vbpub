@@ -1,14 +1,16 @@
 # B110-P7 — Pilot tooling: non-qualifying candidate selection runs, a deterministic selector, and the pilot runbook
 
+*Revised 2026-09-28 after round-1 review (see REVIEW-2026-09-28-round1.md). Applies findings P7-1..P7-7 and carver decisions C3 (via P6), C5, C6, C7 and C15.*
+
 | Field | Value |
 |---|---|
 | Backlog | **B118** (split from B110) |
-| Branch | `assay-b110-p7-pilot` off the integration line `assay-b105-evidence-integrity` (after the plan §11.1 reconciliation) |
-| Depends on | **P0** (B111) for the per-candidate resource and phase fields. **P7b** (Work step 9, the gate-script pilot mode) also needs **P3b** (`--cold-witness`) and **P6** (`campaign init`, `--campaign-deadline`) on its base. The controller dispatches it as a second commit after those merge. |
+| Branch | `assay-b110-p7-pilot` off the integration line (the plan §11.1 / C18 reconciliation branch `assay-b110-integration`); P7b: `assay-b110-p7b-gate-modes` |
+| Depends on | **P0** (B111) for the per-candidate resource and phase fields.<br>**P6** (B117) for `mutation.plan_sha256`. P6 is its **single owner** (P7-7): import it and never redefine it.<br>**P7b** (Work step 9, the gate-script `b110-pilot` and `b110-screen` modes) also needs **P3b** (`--cold-witness`), **P6** (`campaign init`, `--campaign-deadline`, the gate's `remaining_s` rule, C3) and the whole v14 branch merged on its base. The controller dispatches it after those merge.<br>The screen's re-invocations depend on **P6's C3** change. Without it, a re-invocation would replay stale lane-timeout `budget_exceeded` records (P7-5). |
 | Contract class | **2c**: bounded integration against fixed contracts |
 | Implementer | Sonnet (fresh session) |
-| Decisions | **A-474 (plan D10)**. Relevant: A-461 (the `candidate_ids` inventory is equal to the bucket IDs), A-464 (the pilot is measurement, never qualification) |
-| Size | M: `cli.py` (two flags, pilot summary), the `runner.py`/`mutation.py` selection threading, one new tool, two new test files, the gate script (P7b), `run-gate.toml` (P7b), docs |
+| Decisions | **A-474 (plan D10)**. Relevant: A-461 (the `candidate_ids` inventory is equal to the bucket IDs), A-464 (the pilot is measurement, never qualification). Round-1 carver decisions:<br>• **C5**: a selection enables the state root;<br>• **C6**: two-stage GO, so the pilot feeds only "Pilot GO";<br>• **C7**: no consolidation measurement in the pilot;<br>• **C15**: dataclass fixture. |
+| Size | M: `cli.py` (two flags, one `_finish` closure, pilot summary), the `runner.py`/`mutation.py` selection threading plus the state-root gate, one new tool, two new test files, the gate script (P7b), `run-gate.toml` (P7b), docs |
 
 ---
 
@@ -20,21 +22,28 @@ Paths are relative to `assay/`. Line numbers were verified at HEAD `db85f747`.
 2. `src/assay/cli.py`:
    - `:255-328`: the `run` parser, including `--shard` at `:289`, `--reuse-from` at `:290-300` and `--rejudge*` at `:301-327`.
    - `:725-812`: `_cmd_run`. The `--operators` lane override via `replace(...)` at `:731-760` is the **precedent** for the pilot lane override. `_resolve_state_dir` is called at `:804`.
-   - `:1490-1540`: the `run_lane` call.
-   - `:1541-1553`: the verdict write, `_emit_verdict_written` and `_print_run_summary`.
-   - `:1820-1853`: the `assay plan` row and payload shape (`id`, `path`, `operator`, `start_byte`, `end_byte`, `lineno`, `description`).
+   - `:1124`: `_run_reserved`. Its **three verdict tails** each write, emit and print, and all three are intercepted (§F):
+     - `:1318-1325` (the HEAD-read LANE_TIMEOUT refusal);
+     - `:1407-1413` (the evidence refusal);
+     - `:1546-1553` (the common tail, reached by the normal return, the `run_lane` LANE_TIMEOUT handler at `:1527-1545`, and the adapter refusal at `:1440`).
+
+     P6 adds a fourth, its identity refusal.
+   - `:1481`: the `run_lane` call.
+   - `:1820-1853`: the `assay plan` row and payload shape (`id`, `path`, `operator`, `start_byte`, `end_byte`, `lineno`, `description`). `assay plan` has **no `--json` flag**; it always prints JSON. Plan §7's `--json` is a typo.
 3. `src/assay/mutation.py`:
-   - `:292-315`: `InvalidRejudgeIdError` and `_reject_unknown_rejudge_ids`, the pattern for unknown IDs.
+   - `:290-315`: `InvalidRejudgeIdError` and `_reject_unknown_rejudge_ids`, the pattern for unknown IDs.
    - `:1023`: `candidate_id`.
+   - `:2140-2150`: `run_mutation` refuses `resume`/shard without a `state_root`. The selection now also requires one (C5).
    - `:2318-2343`: the selection block, where the selection is applied and which is mutually exclusive with sharding.
    - `:2436-2455`: the `candidates` progress event, which gains `selection_sha256`.
    - `:2503-2523`: the `candidate_ids` stamping (a shard records its slice).
 4. `src/assay/runner.py`:
+   - **`:4516-4523`**: the `state_root=` expression passes a root **only** when `resume or shard_index is not None`. Without C5, a pilot (no `--resume`, no `--shard`) writes **no** state records (P7-1).
    - `:4526-4541`: the `except mutation.InvalidRejudgeIdError: raise`, which leads to the outer whole-lane refusal at `:5385`.
    - The `reuse_from` threading, which you mirror for `candidate_selection`: `run_lane` at `:5565`, `_run_higher_rigor_lane` at `:5164`, the `_run_prepared_lane` call at `:5351-5378`, the `_run_prepared_lane` parameter at `:3585`, and the `run_mutation` call at `:4449-4531`.
 5. `src/assay/errors.py:57-66`: `EXIT_CODES` 0–5. **6 is unused** and belongs to the pilot.
-6. `tools/b105_report_check.py`, the shape of a standalone tool, and `tests/test_b105_report_check.py:1-33`, which loads a tool by path through `PROJECT_ROOT / "tools" / …`.
-7. `tests/test_cli_run.py:586-640`: how a toy R0+R2 lane repo is built (`git_repo`, lane TOML, compare-swap site), and `run()` at `:127-130`.
+6. `tools/b105_report_check.py`, the shape of a standalone tool. `tests/test_b105_report_check.py` runs the checker as a **subprocess** (`:18`, `:82`). The selector tests use `importlib.util.spec_from_file_location` instead (Work step 1), registering the module in `sys.modules` before `exec_module`.
+7. `tests/test_cli_run.py`, found **by name**, because P1 may move it into `tests/zz_slow/test_cli_run_real_campaigns.py`: the busy-loop test's toy R0+R2 lane repo (`git_repo`, lane TOML, compare-swap site), and `run()` at `:127-130`.
 8. For P7b only:
    - `tools/self-qualification-gate.sh`: arguments and lane `case` at `:11-19`, wheel and venv at `:92-154`, `run_and_verify_lane` at `:156-214`.
    - `run-gate.toml:33-62`.
@@ -75,6 +84,12 @@ Invalid (each refused before any work with `LaneConfigError`, which becomes `ERR
 - `--state-dir` is absent;
 - the lane's rigor lacks `R2`.
 
+`--resume` **is permitted** with `--candidates-file` (C5). An interrupted pilot can be resumed in the same state dir. It then resumes only records whose judge identity matches, as for any `--resume`.
+
+**C2. The pilot sentinel.** Before any execution, `_cmd_run` writes the file `<state-dir>/PILOT-STATE` atomically (temp file plus `os.replace`). It has no `.json` extension, so the `*.json` record globs never see it (P9-1). Its content is the JSON `{"schema": "assay-pilot-state/1", "selection_sha256": "<hex>", "lane": "<lane>"}`.
+- If the file already exists with a different `selection_sha256`, refuse with exit 2: one pilot selection per state dir.
+- P9's `assay state import` refuses any source directory that contains `PILOT-STATE` (A-474, P7-7). Until P9 exists, this file is the machine-checkable marker; D10 is not left to operator discipline.
+
 **D. The pilot lane.** `_cmd_run` builds it once, like the `--operators` precedent:
 `replace(lane, rigor=tuple(r for r in lane.rigor if r != "R3"), judge=replace(lane.judge, mutation=replace(lane.judge.mutation, jobs=N)))`.
 R3 is **not executed**.
@@ -91,12 +106,25 @@ if candidate_selection is not None:
 ```
 
 - `InvalidCandidateSelectionError(AssayError)` is new, sits beside `InvalidRejudgeIdError`, and is exported.
-- `runner.py:4532` becomes `except (mutation.InvalidRejudgeIdError, mutation.InvalidCandidateSelectionError): raise`. If P6 has already added `CampaignPlanMismatchError` to that tuple, keep all three.
-- The `candidates` progress event gains `"selection_sha256": <hex>`, **only when a selection is active**, so other streams stay byte-identical. The value is `mutation.plan_sha256(selected ids in plan order)`. If P6 has not merged yet, add `plan_sha256` here with P6's exact definition, `sha256(b"".join(f"{len(i)}:{i},".encode("ascii") for i in ids))`, and note it for P6.
+- `runner.py:4532` becomes `except (mutation.InvalidRejudgeIdError, mutation.InvalidCandidateSelectionError, <whatever P6/P3b already added>): raise`. Keep every entry already present.
+- The `candidates` progress event gains `"selection_sha256": <hex>`, **only when a selection is active**, so other streams stay byte-identical. The value is `mutation.plan_sha256(selected ids in plan order)`, **imported from P6**. P6 is the single owner. If P6 has not merged on your base, stop with `BLOCKED: plan_sha256 owner (P6) not merged`; never copy the definition.
+- **C5: the selection enables the state root.** At `runner.py:4516-4523`, the condition becomes `if (resume or shard_index is not None or candidate_selection is not None)`. Every executed candidate therefore writes its state record into `--state-dir`, which is required, as with `--resume`. In `run_mutation` (`:2140-2150`), a non-`None` `candidate_selection` without a `state_root` is a `ValueError`, like resume and shard. That is a programming error, since the CLI always supplies one.
+- **C15.** Adding a dataclass, or a field to one (for example if you model the parsed selection as one), requires regenerating `tests/fixtures/dataclass-contract.json` with the command P1 (B112) documents. Plain frozensets and functions need nothing.
 
 **F. The pilot summary.** A pilot never writes a verdict.
-- `_cmd_run` receives the in-memory `Verdict` from `run_lane`. It prints **one** JSON document to stdout (`sort_keys=True, indent=2`). It does **not** call `write_verdict`, and it does **not** print `_print_run_summary`.
-- It still emits the `verdict_written` progress record, with `destination: null`.
+- **Interception mechanism (P7-2).** `_run_reserved` gains **one** local closure, `_finish(verdict) -> int`, and every verdict tail calls it instead of its inline write/emit/print/return:
+  - `:1318-1325`;
+  - `:1407-1413`;
+  - `:1546-1553`;
+  - P6's identity refusal, if P6 has merged. If it hasn't, route it through `_finish` when you rebase.
+- Without a selection, `_finish` does exactly what each tail does today, **in the same order**: write if `destination`, emit `verdict_written`, print the summary unless `-`, and return `verdict.exit_code`. The existing CLI tests must pass unchanged.
+- With a selection, `_finish`:
+  - builds the §F JSON from the in-memory verdict and prints it to stdout (`sort_keys=True, indent=2`);
+  - emits `verdict_written` with `destination: null`;
+  - does **not** call `write_verdict`;
+  - does **not** print `_print_run_summary`;
+  - returns per §G.
+- Refusals **before** HEAD go through `main()`'s handler (stderr only, exit 2), and no summary is printed. The pre-HEAD rows of the decision table say so.
 
 ```json
 {
@@ -122,7 +150,7 @@ if candidate_selection is not None:
 ```
 
 Field rules:
-- `r1` is `null` when the lane has no R1.
+- **`r0` and `r1` (P7-6)** are the `status` string of the verdict's claim at that rigor level. For a whole-lane refusal (`refuse_lane` renders the refusal on every declared level), that is the refusal's status, for example `"ERROR"` or `"BUDGET_EXCEEDED"`. Use `null` when the lane does not declare the level or the verdict carries no claim for it.
 - `buckets` always lists all six `MUTATION_BUCKETS`.
 - `candidates` is in plan order.
 - `execution_mode` is `outcome.execution.mode`.
@@ -153,9 +181,13 @@ python tools/b110_pilot_select.py --plan PLAN.json --repo-root REPO --out CANDID
 - `rank(id) = hashlib.blake2b((seed + id).encode("ascii"), digest_size=16).hexdigest()`; a lower rank is picked earlier.
 
 The stratified set **S** is built in this order:
-1. Per file: for every distinct `path`, taken in sorted order, add the row with the lowest rank. If the file count exceeds `size`, exit 2.
+1. Per file: for every distinct `path`, taken in sorted order, add the row with the lowest rank.
 2. Operators: for each operator in sorted order of the plan's operators, if no row in S has that operator, add that operator's lowest-rank row not already in S.
 3. Fill: go through all rows by ascending rank and add rows not in S until `|S| == size`, or the plan is exhausted.
+
+**Size bound (P7-6).** Let `F` be the number of distinct files and `M` the number of operators still missing after step 1.
+- If `F + M > size`, exit 2 with *"size N is smaller than per-file (F) plus missing-operator (M) coverage"*. That also covers `F > size`. So `|S| <= size` always holds.
+- `|S| == size` exactly whenever the plan has at least `size` rows.
 
 The known-hard set **H** holds 6 entries, reported separately. It is also included in the candidates file.
 
@@ -193,13 +225,19 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
    - parse the file (§A), enforce the conflicts (§C), and parse `--pilot-jobs` (§B);
    - build the pilot lane (§D);
    - keep `selection` as a `frozenset` and keep `candidates_file_sha256`.
-2. Run the ordinary reserved path with `candidate_selection=selection`. R0 and R1 run as declared. R2 runs only the selection, in plan order, on a queue of `jobs` workers. R3 does not run.
-3. After `run_lane` returns, or after the existing LANE_TIMEOUT handler builds a refusal verdict, build the §F summary from the in-memory verdict, print it, emit `verdict_written` with `destination=None`, and return per §G.
+2. After `_resolve_state_dir`, write or verify `<state-dir>/PILOT-STATE` (§C2).
+3. Run the ordinary reserved path with `candidate_selection=selection`. R0 and R1 run as declared. R2 runs only the selection, in plan order, on a queue of `jobs` workers, and **writes a state record per executed candidate** (C5). R3 does not run.
+4. Every terminal verdict (§F) reaches `_finish`, which builds the §F summary from the in-memory verdict, prints it, emits `verdict_written` with `destination=None`, and returns per §G.
 
 ### Topology and bounds
 
-- Pilot state lives only in the `--state-dir` passed to the pilot run. The runbook uses `.assay/b110-pilot-state`.
-- **Pilot state is never imported into a qualifying campaign** (D10). Its judge identity is shared with the full lane, because the judge identity omits the lane name and selection. That is exactly why the runbook uses a separate state dir and P9's `state import` must not be pointed at it. The DESIGN-GUIDE says so.
+- Pilot state lives only in the `--state-dir` passed to the pilot run, which holds one record per executed candidate (C5) plus `PILOT-STATE`. The runbook uses `.assay/b110-pilot-state`.
+- **Pilot state is never imported into a qualifying campaign** (D10). Its judge identity is shared with the full lane, because the judge identity omits the lane name and selection. So separation is enforced three ways:
+  - the pilot uses a separate state dir;
+  - the `PILOT-STATE` sentinel is refused by P9's `state import`;
+  - P6's `campaign init` refuses a state dir holding records not bound to its deadline.
+
+  The DESIGN-GUIDE says so.
 - Bounds:
   - selection size ≤ `max_mutants`;
   - `--pilot-jobs` ≤ 8;
@@ -209,8 +247,10 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
 
 | Input | Work done | Output | Exit |
 |---|---|---|---|
-| valid file, R2 completes, any bucket mix | R0 (+R1), R2 on the selection | summary with `completed: true` | 6 |
+| valid file, R2 completes, any bucket mix (including survivors, so R2 is FAIL/MUTANTS_SURVIVED) | R0 (+R1), R2 on the selection, one state record per executed candidate | summary with `completed: true` | **6** |
 | valid file, every candidate killed | same | summary with `completed: true` | **6, never 0** |
+| same selection re-run with `--resume` in the same state dir | only non-resumed candidates execute | summary with `completed: true` | 6 |
+| `PILOT-STATE` present with a different `selection_sha256` | none | stderr refusal | 2 |
 | valid file, pilot deadline expires during R2 | partial | `completed: false`, `unresolved` non-empty | 4 |
 | valid file, R0 fails | R0 only | `completed: false`, `refusal` present | 1 |
 | an ID not in the current plan | baseline, then refusal before any candidate | `completed: false`, refusal `ERROR`/`BAD_LANE_CONFIG` | 2 |
@@ -226,9 +266,13 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
 | selection | `mutation.run_mutation` | T3 | toy lane with 3 sites | ignore the selection → 3 `candidate` events |
 | unknown ID | same + `runner.py:4532` | T4 | toy lane | silently drop unknowns → exit 6 |
 | never PASS | `cli` | T5 | an all-killed toy lane | return the verdict code → exit 0 |
+| any bucket mix → 6 | `cli._finish` | T8 | selection containing the survivor | "6 only on PASS" → exit 1 |
+| records per executed candidate (C5) | `runner.py:4516-4523` + `run_mutation` | T3 (records clause), T9 | T3 fixture, then `--resume` | state root left `None` → no record files |
+| sentinel | `cli._cmd_run` | T10 | two selections, one state dir | no sentinel check → second pilot runs |
+| every verdict tail intercepted | `cli._finish` | T4 (the common tail via the whole-lane refusal), T11 (the HEAD-read timeout tail), T12 (structural) | toy lane; `budget = "0.001s"` precedent from `tests/test_lane_timeout_writes_a_verdict.py` | a tail bypassing `_finish` → T11 prints `_print_run_summary` text or returns 4 without a summary; T12 finds a second `runner.write_verdict(` call in `_run_reserved` |
 | R3 skipped | pilot lane | T6 | toy lane declaring R3 | keep R3 → canary progress events |
 | selection digest | `mutation`/`cli` | T7 | T3 fixture | hash in file order → mismatch |
-| selector | `tools/b110_pilot_select.py` | S1–S7 | synthetic plan + source | see the Oracles section |
+| selector | `tools/b110_pilot_select.py` | S1–S8 | synthetic plan + source | see the Oracles section |
 
 ### Degrees of freedom
 
@@ -241,74 +285,97 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
 ## Work
 
 1. **Red first.**
-   - Add `tests/test_pilot_candidates_file.py` (T1–T7). Build a toy R0+R2 lane repo, following the `tests/test_cli_run.py:586-640` shape, with at least 3 fast-killed compare-swap sites and one surviving site. Call `run([...])` in-process.
-   - Add `tests/test_b110_pilot_select.py` (S1–S7). Load the tool with `importlib.util.spec_from_file_location("b110_pilot_select", PROJECT_ROOT / "tools" / "b110_pilot_select.py")` and call `main([...])`.
+   - Add `tests/test_pilot_candidates_file.py` (T1–T12). Build a toy R0+R2 lane repo, following the busy-loop test's shape in `tests/test_cli_run.py` (found by name), with at least 3 fast-killed compare-swap sites and one surviving site. Call `run([...])` in-process.
+   - Add `tests/test_b110_pilot_select.py` (S1–S8). Load the tool with `importlib.util.spec_from_file_location("b110_pilot_select", PROJECT_ROOT / "tools" / "b110_pilot_select.py")`, register it in `sys.modules["b110_pilot_select"]` **before** `spec.loader.exec_module(...)` (a dataclass in the tool would otherwise fail, per P1-1), and call `main([...])`.
    - Record the red state in `assay-B118-REPORT.md`.
-2. Add `InvalidCandidateSelectionError`, the selection branch, and `selection_sha256` to `mutation.py`. Add `plan_sha256` here if P6 has not merged it yet.
-3. Thread `candidate_selection` through `runner.py` (Context 4) and extend the except tuple at `:4532`.
-4. In `cli.py`: add the parser flags after `--reuse-from` (`:300`), `_parse_candidates_file`, the conflicts, the pilot lane, the summary and the exit code.
+2. Add `InvalidCandidateSelectionError`, the selection branch, and `selection_sha256` to `mutation.py`, importing `plan_sha256` from P6's merged code (BLOCKED if it is absent).
+3. Thread `candidate_selection` through `runner.py` (Context 4), apply the C5 state-root condition at `:4516-4523`, and extend the except tuple at `:4532`.
+4. In `cli.py`:
+   - add the parser flags after `--reuse-from` (`:300`); P6 also inserts one there, so rebase trivially;
+   - add `_parse_candidates_file`, the conflicts, the `PILOT-STATE` sentinel and the pilot lane;
+   - add the `_finish` closure, and route **every** verdict tail through it (§F);
+   - add the summary and the exit code.
 5. Add `tools/b110_pilot_select.py`.
 6. Run the focused tests serially: the two new files, `tests/test_cli_run.py`, `tests/test_b105_cli_boundaries.py`, `tests/test_mutation_resume_sharding.py`, `tests/test_mutation_progress_budget_plan.py` and `tests/test_b106_reuse_and_witness.py`.
 7. Update the docs (see Docs sync) and CHANGES.
 8. Write the REPORT, then commit (**P7a**).
-9. **P7b: second commit. It requires P3b and P6 on the base; the controller dispatches it after both merge.**
-   - Add a third requested lane, `b110-pilot`, to `tools/self-qualification-gate.sh` (the `case` at `:16-19`). After the existing clone, build and venv steps (`:49-154`), it runs:
+9. **P7b: a separate branch, `assay-b110-p7b-gate-modes`. It requires P6 and the whole v14 branch (P3b/P3d) merged on its base; the controller dispatches it after that.**
+   - **Script structure (P7-4).** Today the `case` at `tools/self-qualification-gate.sh:16-19` only validates lane names, with empty `;;` arms, and the lane logic follows later. Change it to:
+     - Extend the validation `case` to accept `b110-pilot|b110-screen`.
+     - Define **two shell functions**, `run_b110_pilot()` and `run_b110_screen()`. Each is declared with `name() {` at column 0 and closed by a lone `}` at column 0. Each holds exactly the body below.
+     - After the shared clone, build and venv steps (`:49-154`), add a dispatch: `case "$requested_lane" in b110-pilot) run_b110_pilot; exit 0 ;; b110-screen) run_b110_screen; exit 0 ;; esac`. It sits before the existing `self-qualification`/preflight flow, which stays unchanged.
+   - `run_b110_pilot()`:
      ```bash
-     pilot_campaign="b110-pilot-${source_commit:0:12}"
-     pilot_deadline=".assay/campaign-deadline-$pilot_campaign.json"
-     "$assay_bin" plan self-qualification --file assay.toml > .assay/b110-pilot-plan.json
-     "$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_pilot_select.py" \
-       --plan .assay/b110-pilot-plan.json --repo-root "$worktree" \
-       --out .assay/b110-pilot-candidates.txt --report .assay/b110-pilot-selection.json
-     [[ -f "$pilot_deadline" ]] || "$assay_bin" campaign init --file assay.toml \
-       --campaign "$pilot_campaign" --lane self-qualification --hours 2 \
-       --state-dir .assay/b110-pilot-state --wheel-sha256 "$wheel_digest"
-     remaining_s=…   # from $pilot_deadline, as P6's gate integration computes it
-     set +e
-     timeout --verbose --signal=TERM --kill-after=30s "$((remaining_s + 120))s" \
-       "$assay_bin" run self-qualification --file assay.toml \
-         --candidates-file .assay/b110-pilot-candidates.txt --pilot-jobs 3 --cold-witness \
-         --state-dir .assay/b110-pilot-state --progress .assay/progress-b110-pilot.jsonl \
-         --campaign-deadline "$pilot_deadline" > .assay/b110-pilot-summary.json
-     pilot_status=$?
-     set -e
-     echo "B110_PILOT_EXIT=$pilot_status"
-     echo "B110_PILOT_SUMMARY=.assay/b110-pilot-summary.json"
-     [[ $pilot_status -eq 6 ]] && echo "B110_PILOT_COMPLETED=1"
-     exit 0      # the pilot is measurement; its completeness is read from the markers, never from this exit
+     run_b110_pilot() {
+       pilot_campaign="b110-pilot-${source_commit:0:12}"
+       pilot_deadline=".assay/campaign-deadline-$pilot_campaign.json"
+       "$assay_bin" plan self-qualification --file assay.toml > .assay/b110-pilot-plan.json
+       "$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_pilot_select.py" \
+         --plan .assay/b110-pilot-plan.json --repo-root "$worktree" \
+         --out .assay/b110-pilot-candidates.txt --report .assay/b110-pilot-selection.json
+       [[ -f "$pilot_deadline" ]] || "$assay_bin" campaign init --file assay.toml \
+         --campaign "$pilot_campaign" --lane self-qualification --hours 2 \
+         --state-dir .assay/b110-pilot-state --wheel-sha256 "$wheel_digest"
+       # exactly P6's rule (P6 Flow 12): max(0, floor(expires_at_utc - now_utc)); never "floored at 1"
+       remaining_s="$("$scratch/run-venv/bin/python" -c 'import json,sys,math,datetime as d; e=d.datetime.strptime(json.load(open(sys.argv[1]))["expires_at_utc"],"%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc); print(max(0, math.floor((e-d.datetime.now(d.timezone.utc)).total_seconds())))' "$pilot_deadline")"
+       set +e
+       timeout --verbose --signal=TERM --kill-after=30s "$((remaining_s + 120))s" \
+         "$assay_bin" run self-qualification --file assay.toml \
+           --candidates-file .assay/b110-pilot-candidates.txt --pilot-jobs 3 --cold-witness \
+           --state-dir .assay/b110-pilot-state --progress .assay/progress-b110-pilot.jsonl \
+           --campaign-deadline "$pilot_deadline" > .assay/b110-pilot-summary.json
+       pilot_status=$?
+       set -e
+       echo "B110_PILOT_EXIT=$pilot_status"
+       echo "B110_PILOT_SUMMARY=.assay/b110-pilot-summary.json"
+       [[ $pilot_status -eq 124 ]] && echo "B110_PILOT_TIMEOUT_FAILSAFE=1"   # summary untrusted
+       [[ $pilot_status -eq 6 ]] && echo "B110_PILOT_COMPLETED=1"
+       return 0      # measurement: completeness is read from the markers, never from this exit
+     }
      ```
    - Add a `run-gate.toml` lane `[lanes.b110-pilot]`:
      - `kind = "command"`, `environment = "tester-unified"`;
-     - `argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h10m", "bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "b110-pilot"]`;
-     - `clean_tree = true`, `budget = "2h"`;
+     - `argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h20m", "bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "b110-pilot"]`;
+     - `clean_tree = true`, `budget = "2h20m"`;
      - `resources = { cpus = "3", memory = "2g", memory_swap = "8g" }`;
-     - `artifacts` = the six `.assay/b110-pilot-*` and `progress-b110-pilot.jsonl` paths;
-     - a comment citing A-474.
-   - Extend the substring pins in `tests/test_self_lane.py:176-200` with `b110-pilot`, `--candidates-file` and `B110_PILOT_EXIT=`.
-   - **Survivor-screen mode** (added by the carver on 2026-09-28; plan §9.1). Add a fourth requested lane, `b110-screen`, to the same `case`. After the shared clone, build and venv steps, it runs:
+     - `artifacts` = the `.assay/b110-pilot-*` files and `progress-b110-pilot.jsonl`;
+     - a comment citing A-474 and giving the **margin (P7-6)**: `2h20m ≥ clone/build/venv (≤ 10 min measured bound, recorded in the REPORT from the gate log) + 2 h campaign + 120 s inner grace + 30 s kill-after`. The campaign is initialised only after the build, so the outer failsafe must include the build time.
+   - Extend the substring pins in `tests/test_self_lane.py:176-200` with `b110-pilot`, `--candidates-file`, `B110_PILOT_EXIT=` and `B110_PILOT_TIMEOUT_FAILSAFE`.
+   - **Survivor-screen mode** (plan §9.1). `run_b110_screen()`:
      ```bash
-     set +e
-     "$assay_bin" run self-qualification --file assay.toml --cold-witness --resume \
-       --state-dir .assay/b110-screen-state --progress .assay/progress-b110-screen.jsonl \
-       --verdict-json .assay/verdict-b110-screen.json
-     screen_status=$?
-     set -e
-     echo "B110_SCREEN_EXIT=$screen_status"
-     echo "B110_SCREEN_VERDICT=.assay/verdict-b110-screen.json"
-     exit 0      # non-qualifying: survivors (exit 1) are the expected result; read the markers
+     run_b110_screen() {
+       reuse_args=()
+       # plan §9.1 step 5: the controller renames the previous commit's screen verdict to
+       # verdict-b110-screen-prev.json before re-screening a new commit (B106 witness replay)
+       [[ -f .assay/verdict-b110-screen-prev.json ]] \
+         && reuse_args=(--reuse-from .assay/verdict-b110-screen-prev.json)
+       set +e
+       "$assay_bin" run self-qualification --file assay.toml --cold-witness --resume \
+         "${reuse_args[@]}" \
+         --state-dir .assay/b110-screen-state --progress .assay/progress-b110-screen.jsonl \
+         --verdict-json .assay/verdict-b110-screen.json
+       screen_status=$?
+       set -e
+       echo "B110_SCREEN_EXIT=$screen_status"
+       echo "B110_SCREEN_VERDICT=.assay/verdict-b110-screen.json"
+       [[ ${#reuse_args[@]} -gt 0 ]] && echo "B110_SCREEN_REUSE_FROM=.assay/verdict-b110-screen-prev.json"
+       return 0      # non-qualifying: survivors (exit 1) are the expected result; read the markers
+     }
      ```
      - It passes **no** `--campaign-deadline`. The screen is non-qualifying (plan §9.1), so each invocation is bounded by the lane `budget` and the outer `timeout`, and a re-invocation resumes `.assay/b110-screen-state`.
-     - It never passes `--candidates-file`, `--shard` or `--reuse-from`. The optional B106 `--reuse-from` re-screen after fixes is a later controller step, documented in the plan, not part of this mode.
+     - It depends on **P6's C3**: a candidate the lane budget cut off is unrecorded and re-executes on the next invocation. So re-invocations make progress instead of replaying stale `budget_exceeded` records (P7-5).
+     - It never passes `--candidates-file` or `--shard`. `--reuse-from` combined with `--resume` is accepted today, since only `--shard` is refused (`runner.py:5983-6050`). `"${reuse_args[@]}"` with an empty array under `set -u` needs bash ≥ 4.4, which tester-unified has; note it in the REPORT.
      - Add a `run-gate.toml` lane `[lanes.b110-screen]` with the same shape as `b110-pilot`, but:
        - `timeout … 7h30m`;
        - `budget = "8h"`;
        - `artifacts` = `.assay/verdict-b110-screen.json` and `.assay/progress-b110-screen.jsonl`;
-       - a comment: "non-qualifying survivor screen (plan §9.1); never evidence for B105 except through the B119 import path".
-     - Extend the `tests/test_self_lane.py` pins with `b110-screen` and `B110_SCREEN_EXIT=`. Add an oracle that the screen branch of the gate script contains neither `--campaign-deadline` nor `--candidates-file`: a static substring check of that `case` arm, extracted between its label and the next `;;`.
+       - a comment: "non-qualifying survivor screen (plan §9.1); never evidence for B105 except through the B119 import path, whose use for pre-deadline records awaits the operator's D7 answer (C8)".
+     - Extend the `tests/test_self_lane.py` pins with `b110-screen`, `B110_SCREEN_EXIT=` and `verdict-b110-screen-prev.json`.
+     - **Static body oracle (P7-4).** Extract each function body from the script text: from the line `run_b110_screen() {` to the next line that is exactly `}`, and the same for `run_b110_pilot`. Assert that the screen body contains `--cold-witness` and `--resume`, and contains neither `--campaign-deadline` nor `--candidates-file`. Assert that the pilot body contains `--candidates-file` and `--campaign-deadline`. Assert that the dispatch `case` contains `run_b110_screen` and `run_b110_pilot`.
 
 ## Oracles
 
-**CLI (T1–T7).** Each is in-process `main()` on a toy lane, with no timing.
+**CLI (T1–T12).** Each is in-process `main()` on a toy lane, with no timing. T12 is a static AST check.
 
 - **T1: file grammar.**
   - *Observable:* uppercase, trailing-space, duplicate and empty files each give exit 2, a stderr message naming the line or ID, and no progress `run` header.
@@ -322,8 +389,9 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
     - exactly one `candidate` progress event, whose `candidate_id` is the selected one;
     - the summary's `candidates` holds exactly that ID;
     - no verdict file is written anywhere under the repo;
-    - `progress` ends with `verdict_written` with `destination: null`.
-  - *Negative:* an implementation that ignores the selection emits 3 events.
+    - `progress` ends with `verdict_written` with `destination: null`;
+    - **C5:** `--state-dir` contains exactly one `<64hex>.json` record, whose `candidate_id` is the selected ID, plus `PILOT-STATE`. No `--resume` was passed.
+  - *Negative:* an implementation that ignores the selection emits 3 events. One that leaves the state root at `None` writes no record.
 - **T4: unknown ID.**
   - *Observable:* a well-formed ID absent from the plan gives exit 2, a summary with `completed: false` and `refusal.reason_code == "BAD_LANE_CONFIG"`, and no `candidate` event.
 - **T5: never PASS.**
@@ -334,13 +402,29 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
   - *Observable:* `summary["r3"] == "not-run: pilot"`; no canary progress event or canary process runs (a counting process runner sees only the baseline plus the selected candidates).
 - **T7: digest.**
   - *Observable:* the `candidates` event's `selection_sha256` equals the summary's, and equals the §E encoding over the selected IDs in **plan** order, even when the file lists them in reverse.
+- **T8: any bucket mix exits 6 (P7-3).** Select two IDs: one killable site and the surviving site.
+  - *Observable:* exit **6**, `completed: true`, `r2 == {"status": "FAIL", "reason_code": "MUTANTS_SURVIVED"}`, `buckets.survived == 1` and `buckets.killed == 1`.
+  - *Negative:* "6 only when PASS" exits 1.
+- **T9: `--resume` with a selection (C5).** Re-run T3's selection with `--resume` and the same `--state-dir`, with a counting process runner.
+  - *Observable:* exit 6, the resumed candidate is **not** executed again (the runner sees only the baseline), and `completed: true`.
+  - *Negative:* no record from the first run, which is the P7-1 defect, re-executes it.
+- **T10: the sentinel.** Run pilot A with selection X into state dir S, then pilot B with a different selection Y into S.
+  - *Observable:* B exits 2 before any execution, with stderr naming `PILOT-STATE`. `S/PILOT-STATE` holds X's `selection_sha256`.
+- **T11: the HEAD-read timeout tail (P7-2).** Use a pilot selection on a lane with `budget = "0.001s"`, following the precedent in `tests/test_lane_timeout_writes_a_verdict.py`.
+  - *Observable:* a §F summary on stdout with `completed: false`, and `refusal.reason_code == "LANE_TIMEOUT"`; exit 4; no verdict file anywhere; `verdict_written` with `destination: null`; no `_print_run_summary` text.
+  - *Negative:* the `:1318-1325` tail left inline writes or prints the ordinary summary.
+- **T12: one write site (structural, supplementary).** Parse `src/assay/cli.py` with `ast`. Inside `_run_reserved`, exactly one call to `runner.write_verdict` exists, and it sits inside `_finish`.
+  - *Negative:* any tail keeping its own write.
 
-**Selector (S1–S7).** These use a synthetic plan JSON and synthetic source files under `tmp_path`, laid out as `assay/src/assay/...`.
+**Selector (S1–S8).** These use a synthetic plan JSON and synthetic source files under `tmp_path`, laid out as `assay/src/assay/...`.
 
 - **S1: determinism.** Two runs produce byte-identical `CANDIDATES.txt` and `SELECTION.json`. With a different `--seed`, the stratified set differs (on a fixture large enough that this is certain).
 - **S2: one per file and operator coverage.**
   - *Observable:* every path is represented. An operator that appears only in a row that loses every per-file pick is still present, with `reason: "operator"`.
-- **S3: fill and bounds.** `|S| == size` when the plan has at least `size` rows. `size` smaller than the file count gives exit 2. A plan smaller than `size` gives all rows.
+- **S3: fill and bounds.** `|S| == size` when the plan has at least `size` rows. A plan smaller than `size` gives all rows.
+- **S8: the size bound (P7-6).** Use a plan whose file count equals `size` and in which one operator appears only in rows that lose every per-file pick. So `F + M = size + 1`.
+  - *Observable:* exit 2 with the §H message naming F and M.
+  - *Negative:* the old algorithm produced `|S| = size + 1`.
 - **S4: known-hard exact matching.**
   - *Observable:* a synthetic `go.py` containing the four exact lines in the named functions yields 4 labelled rows.
   - A duplicated line in the same function gives exit 2, naming the spec. A span that does not slice to `b"=="` gives exit 2 with *"source does not match plan"*.
@@ -358,7 +442,9 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
 - **S6: refusals.** Trailing garbage after the plan JSON, `status != "ok"`, and a missing `candidates` key each give exit 2.
 - **S7: selection digest.** `SELECTION.json["selection_sha256"]` equals the §E encoding over `S ∪ H` in plan order.
 
-**P7b (O-gate).** `tests/test_self_lane.py` asserts the P7b substrings. The lane parses under `./run-gate.py --list`, which is a read-only listing.
+**P7b (O-gate).**
+- `tests/test_self_lane.py` asserts the P7b substrings and the static function-body oracle (Work step 9).
+- Both lanes parse under `./run-gate.py --list`, which is a read-only listing.
 
 ### Anti-pattern list (verbatim from `nyxloom/reference/AUTHORING.md` §3b)
 
@@ -455,14 +541,18 @@ it is not an oracle yet.
   - why the pilot never writes a verdict: a partial inventory must not be able to look like a pass (A-462/A-474);
   - why exit 6 sits outside `EXIT_CODES`;
   - why R3 is skipped;
-  - why pilot state must never be imported: the judge identity omits the lane and the selection.
+  - why a selection writes state records (C5): the pilot's measurement lives in them;
+  - why pilot state must never be imported: the judge identity omits the lane and the selection. Hence the `PILOT-STATE` sentinel.
 - **CONSUMERS (HOW):** a pasteable `assay plan` → selector → `assay run --candidates-file` sequence, and how to read the summary.
 - **CHANGES:** `### Added` for B118.
 
 ## Scope / forbid
 
 - **Touch:**
-  - `src/assay/cli.py`, `src/assay/runner.py` (threading plus the except tuple only), `src/assay/mutation.py` (the selection branch, the error class, the progress key, `plan_sha256` if absent);
+  - `src/assay/cli.py`;
+  - `src/assay/runner.py`: the threading, the C5 state-root condition at `:4516-4523`, and the except tuple only;
+  - `src/assay/mutation.py`: the selection branch, the error class, the progress key, and the `state_root` requirement for a selection. `plan_sha256` is **imported from P6, never defined here**;
+  - `tests/fixtures/dataclass-contract.json`, only under C15;
   - `tools/b110_pilot_select.py` (new);
   - `tests/test_pilot_candidates_file.py`, `tests/test_b110_pilot_select.py`;
   - README, DESIGN-GUIDE, CONSUMERS, CHANGES, `nyxloom-trove/reports/assay-B118-REPORT.md`;
@@ -493,7 +583,9 @@ If a named contract cannot be met as specified, or scope needs a forbidden file:
 Specific triggers:
 - the runner or verdict model refuses the §D pilot lane (R3 removed while `judge.canary` is still declared);
 - the in-memory verdict cannot be built for a selection subset;
-- T4 cannot produce a summary because the refusal happens before a verdict exists.
+- T4 cannot produce a summary because the refusal happens before a verdict exists;
+- `mutation.plan_sha256` (P6) is not on your base;
+- routing a verdict tail through `_finish` changes any existing CLI test's output.
 
 If you hit the last one, report which layer raised it; do not add a verdict write.
 
@@ -517,7 +609,7 @@ Do not merge.
 
 ## Pilot runbook (operator/controller)
 
-This mirrors plan §7. It is carried out only after P0–P8 are merged, P7b is on the integration line, and the controller has approved it.
+This mirrors plan §7. It is carried out only after all of these are on the integration line: P0–P8, the whole v14 branch (P3a–P3d; the pilot uses `--cold-witness`), and P7b. The controller must also have approved it.
 
 **Preconditions:**
 - `docker ps` shows no gate container;
@@ -526,17 +618,24 @@ This mirrors plan §7. It is carried out only after P0–P8 are merged, P7b is o
 - `python ./run-gate.py tester-unified` has passed on that exact commit.
 
 **Commands** (from `<worktree>/assay` on the host):
-1. `python ./run-gate.py b110-pilot > /tmp/b110-pilot.log 2>&1; echo "exit=$?"`. This is the only gate container; the outer failsafe is 2h10m, and the pilot's own deadline is 2 h via P6.
-2. In a separate step: `grep -E "B110_PILOT_EXIT=|B110_PILOT_COMPLETED=|B105_SOURCE_COMMIT=" /tmp/b110-pilot.log`.
-3. Offline, on the host, under nice:
-   `assay analyze campaign --lane self-qualification --progress .assay/progress-b110-pilot.jsonl --state-dir .assay/b110-pilot-state --json > /tmp/b110-pilot-analysis.json`. This is P8's analysis command; use the exact flags from P8's brief.
-4. Offline projection: per stratum (file × operator) p50 and p90 of `elapsed_seconds`, plus fixed overhead (the baseline `wall_s`, R0/R1 and consolidation). Compute it with a short script recorded in the report, and use Wilson 95% for the cold-kill rate.
-5. Consolidation cost: `assay state import` (P9) of the pilot records into a **scratch** state dir, then time `--resume` there. **Never** import into a real campaign (D10).
-6. Write `nyxloom-trove/reports/assay-B110-PILOT-REPORT.md` from the template below, and give it to the controller for the plan §8 go/no-go decision.
+1. `python ./run-gate.py b110-pilot > /tmp/b110-pilot.log 2>&1; echo "exit=$?"`. This is the only gate container.
+   - The outer failsafe is 2h20m.
+   - The pilot's own deadline is 2 h, as P6 campaign `b110-pilot-<commit12>`, created inside the gate after the build.
+   - Never run `campaign init` on the host.
+2. In a separate step: `grep -E "B110_PILOT_EXIT=|B110_PILOT_COMPLETED=|B110_PILOT_TIMEOUT_FAILSAFE=|B105_SOURCE_COMMIT=" /tmp/b110-pilot.log`. `B110_PILOT_TIMEOUT_FAILSAFE=1` means the inner `timeout` fired; the summary is then untrusted, and the pilot must be re-planned, not interpreted.
+3. Offline, on the host, under nice: run P8's `assay analyze campaign` over `.assay/progress-b110-pilot.jsonl` and `.assay/b110-pilot-state`, **with the exact flags from P8's brief**, including P8's required `--project-jobs 3` for the projection. Write the result to `/tmp/b110-pilot-analysis.json`.
+4. Offline projection: use P8's projection output, with the plan §7/C19 strata fall-back (operator × file-size class → operator → all), p50 and p90, plus fixed overhead:
+   - the coverage-baseline wall time;
+   - the no-cov baseline `wall_s`;
+   - R0/R1;
+   - an R3 estimate of two suite runs taken from the measured baselines (C19).
+
+   Use Wilson 95% for the cold-kill rate. **No consolidation measurement here (C7):** consolidation cost is measured in B119's acceptance.
+5. Write `nyxloom-trove/reports/assay-B110-PILOT-REPORT.md` from the template below, and give it to the controller for the plan §8 **Pilot GO** decision (C6).
 
 **Stop rules:**
 - The pilot's campaign deadline (2 h) is authoritative.
-- An expiry gives `B110_PILOT_EXIT=4` and `completed: false`. The candidates in `unresolved` are **unresolved, never classified**.
+- An expiry gives `B110_PILOT_EXIT=4` and `completed: false`. The candidates in `unresolved` are **unresolved, never classified**. Per P6's C3, the lane deadline cut them off, so they have no state records.
 - Never lengthen the deadline; re-running `campaign init` cannot extend it.
 
 ### Template: `reports/assay-B110-PILOT-REPORT.md`
@@ -565,21 +664,21 @@ cold-kill rate k/n = … (Wilson 95%: … – …); survivors (id, path:line, op
 Known-hard set: per label, bucket + elapsed (guards from P2 expected to turn scanner hangs into fast kills).
 
 ## 5. Resources
-Aggregate peak RSS …; per-worker peak RSS …; memory-full stall s … (… % of wall); CPU avg cores ….
+Aggregate peak memory from the run-gate cgroup `memory.peak` … (C19: this is the GO number); per-candidate 1 Hz RSS samples (a lower bound only) …; memory-full stall s … (… % of wall); CPU avg cores ….
 
 ## 6. Projection (3,760 candidates)
-Formula: fixed + Σ_strata (count × p90) / effective workers; also at p50. Result: … h (p90), … h (p50). Assumptions + censoring.
+Formula: fixed (coverage baseline + no-cov baseline + R0/R1 + R3 estimate as two suite runs) + Σ_strata (count × p90) / effective workers; also at p50. Strata fall-back: operator × file-size class → operator → all (C19). Result: … h (p90), … h (p50). Assumptions + censoring.
 
-## 7. Shard skew and consolidation
-Hash shards (N=3) replay of measured durations vs queue: makespan …; import + `--resume` scratch consolidation: … s.
+## 7. Shard skew
+Hash shards (N=3) replay of measured durations vs queue: makespan …. (Consolidation cost is not measured by the pilot; it is B119's acceptance, C7.)
 
-## 8. Go / no-go inputs (plan §8)
+## 8. Pilot GO inputs (plan §8, C6)
 | Criterion | Threshold | Measured | Pass? |
-| 1 screen clean | 0/0/0/0 | (not measured by pilot — from §9.1) | n/a |
+| 1 screen clean | 0/0/0/0 | Qualifying GO only (C6): not a Pilot GO input | — |
 | 2 projection | ≤ 5 h p90, ≤ 4 h p50 | | |
-| 3 memory | peak ≤ 1.6 GiB, stall ≤ 5 % | | |
-| 4 fixed overhead | ≤ 60 min | | |
-| 5 packages merged/reviewed | P0–P8 | | |
+| 3 memory | cgroup `memory.peak` ≤ 1.6 GiB, stall ≤ 5 % | | |
+| 4 fixed overhead | ≤ 60 min (incl. preflight + R3 estimate) | | |
+| 5 packages merged/reviewed | P0–P8, v14 (P3a–P3d), P7b | | |
 
 ## 9. Limitations
 1.7 % of the inventory; stratified by file/operator, not by kill difficulty; censored tails; shared host; not qualification evidence.
