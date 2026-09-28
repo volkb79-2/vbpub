@@ -4676,3 +4676,17 @@ then run `assay plan r2 --reuse-from <6540f877 verdict>` on the final candidate
 tree and verify each classification. Survivors, hung outcomes, changed/new
 candidate IDs, and all uncertain witness replays execute the full suite.
 Final R2 and full-gate evidence remain required for release.
+
+### RW-354 — 2026-09-28 04:22:30Z — P1 R2 advances at a slower-than-prior campaign rate
+
+At the scheduled progress observation, the exact P1 container
+`run-gate-rg55-p1-r2-isolated-r2-2711042-1790567389` was still running with
+`NanoCpus=3000000000` under `dev-gates.slice`. On quiet judged tree
+`0080eba7`, the Assay stream had completed candidate index 31 of 125
+(32 accounted), last candidate 99.962 seconds, total elapsed 1,913 seconds.
+The current throughput extrapolates about 97 minutes remaining; the prior
+same-size campaign took 92 minutes total, so use a broad ~1.5–2 hour
+remaining estimate rather than treating the old duration as a deadline. The
+next process/progress observation is no earlier than `04:47:30Z`, unless an
+error or expected terminal completion justifies an earlier check. Do not
+infer any verdict from elapsed time.
