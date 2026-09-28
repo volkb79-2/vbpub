@@ -1,6 +1,6 @@
 # B110-P0 — Measurement evidence and campaign hygiene
 
-Revised 2026-09-28 after round-1 review (see REVIEW-2026-09-28-round1.md).
+Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).
 
 | Field | Value |
 |---|---|
@@ -188,18 +188,26 @@ def first_event_times(events_path: Path | None) -> tuple[float | None, float | N
 Refactor `_pid_cpu_ticks` so one read yields a private record of all five values. `tree_cpu_seconds`, the classification input, must keep its exact behavior (utime+stime of live processes only) and its exceptions.
 
 **`TreeSample` semantics** (round-1 P0-4; these are fixed, diagnostic only):
-- `cpu_seconds` = Σ over every **live** process in the tree at the sample of `(utime + stime + cutime + cstime) / CLK_TCK`.
-  - Each CPU second of a reaped descendant is counted exactly once. When a process is reaped, the kernel folds its own and its children's times into its parent's `cutime`/`cstime`, and it stops being live.
-  - So git and pytest children that were already reaped still count, through their live ancestor. A plain live-tree utime+stime sum would lose them.
-  - Known under-count, to be documented: CPU of a process reparented outside the tree (a double-forked daemon), and CPU spent after the last sample, up to one poll interval. It is a lower bound.
+- **Per-sample value.** A sample's `cpu_seconds` = Σ over every **live** process in the tree at that sample of `(utime + stime + cutime + cstime) / CLK_TCK`.
+  - **Pinned walk order (round-2 P0R2-3).** The walker reads each process's own stat line **before** listing its children. This is the pre-order walk that today's `tree_cpu_seconds` already uses (`liveness.py:607-622`). A post-order walker (children first) is forbidden: it can read a child live and then read the parent after that child was reaped into the parent's `cutime`, counting it twice. With pre-order reads, a child reaped mid-walk is **lost** from that sample, never double-counted.
+  - When a process is reaped, the kernel folds its own and its children's times into its parent's `cutime`/`cstime`, and it stops being live. So git and pytest children that were already reaped still count, through their live ancestor. A plain live-tree utime+stime sum would lose them.
   - This deliberately counts more than "root cutime/cstime only". A grandchild reaped by a still-live intermediate process appears only in that intermediate's `cutime`.
-- `rss_bytes` = Σ over live processes of `rss × SC_PAGE_SIZE` at the sample. `peak_rss_bytes` is the maximum over samples. It is sampled at 1 Hz, so it is a **lower bound** on the true peak. Documentation says so. Aggregate container peak evidence comes from run-gate's cgroup `memory.peak`, not from this field (plan §8, C19).
+- **Per-sample guarantee.** Each sample is a **lower bound** on the tree's cumulative CPU at that instant. The series is **not** monotone. It can dip:
+  - on a mid-walk reap;
+  - on reparenting out of the tree (a double-forked daemon);
+  - for children auto-reaped under `SIGCHLD=SIG_IGN`, whose time never reaches any `cutime`.
+
+  CPU spent after the last sample is also missing, up to one poll interval. Documentation says all of this and does **not** claim "exactly once".
+- **Recorded value (round-2 P0R2-3).** The recorded `cpu_seconds` is the **maximum over samples**, not the last sample. The maximum is still a valid lower bound on the candidate's total CPU. The last sample can be lower than an earlier one after a dip.
+- **Memory.** `rss_bytes` = Σ over live processes of `rss × SC_PAGE_SIZE` at the sample. `peak_rss_bytes` is the maximum over samples.
+  - Documentation calls it a "**1 Hz lower bound on peak Σ RSS**", and states that Σ RSS itself overcounts shared and copy-on-write pages, so it is **not** a bound on true peak memory use.
+  - Aggregate container peak evidence comes from run-gate's cgroup `memory.peak`, not from this field (plan §8, C19).
 
 **`LivenessRunner.__init__`** gains `sampler: Callable[[int], TreeSample] | None = None`. It does not change `cpu_reader`: the 17 existing `cpu_reader=` injections stay byte-identical. When `sampler` is not `None`, `_monitor` calls it once per poll tick, **after** the classification inputs for that tick are computed:
 - A sampler exception is swallowed; that tick contributes no sample.
 - The sampler value **never** enters `cpu_growing`, `hung` or `timeout`.
 
-**Monitor bookkeeping and sidecar.** `_monitor` keeps `samples` (count), `last_cpu_seconds` and `peak_rss_bytes`. On **every** exit path it writes `events_path.with_suffix(RESOURCE_SIDECAR_SUFFIX)` atomically (tmp + `os.replace`) with exactly:
+**Monitor bookkeeping and sidecar.** `_monitor` keeps `samples` (count), `max_cpu_seconds` (the maximum over samples, per the semantics above) and `peak_rss_bytes`. The sidecar's `cpu_seconds` is `max_cpu_seconds`. On **every** exit path it writes `events_path.with_suffix(RESOURCE_SIDECAR_SUFFIX)` atomically (tmp + `os.replace`) with exactly:
 
 ```json
 {"format": 1, "samples": 37, "cpu_seconds": 35.21, "peak_rss_bytes": 212992000, "spawned_at": 1790000000.123}
@@ -251,8 +259,11 @@ It returns a list **aligned one-to-one and in order with `baseline_test_events(p
 
 **Owner rule.** Both lists come from **one** factored owner selection. It is the same rule `_selected_test_events` applies today: the session-owner pid, with foreign-pid records ignored. Do not write a second rule.
 
-**Pairing rule** (round-1 P0-7). Node IDs can repeat, e.g. under `--keep-duplicates`, so this rule pairs records **by occurrence**, never by summing per nodeid:
-- For the *k*-th owner `test` record with nodeid *N*, which is its *j*-th occurrence of *N*, `setup_s` is the duration of the owner's *j*-th `phase` record with `when == "setup"` and nodeid *N*. `teardown_s` is the same for `when == "teardown"`.
+**Pairing rule** (round-1 P0-7, revised by round-2 P0R2-4). Node IDs can repeat, e.g. under `--keep-duplicates`. This rule pairs records **positionally in the owner's record stream**, never by summing per nodeid and never by occurrence count:
+- For each owner `test` record (a call) with nodeid *N*, walk the owner's ordered record stream:
+  - `setup_s` is the duration of the **nearest preceding unconsumed** `phase` record with `when == "setup"` and nodeid *N*. That record is then consumed.
+  - `teardown_s` is the duration of the **next following** `phase` record with `when == "teardown"` and nodeid *N* that occurs before the next call record for *N*. That record is then consumed.
+- A setup record with no call after it is never paired, because a setup error or skip produces no call. It therefore cannot shift later pairings, which occurrence-counting would do.
 - A missing, non-numeric, bool, negative or non-finite duration gives `None` for that key.
 - No duration is ever summed across occurrences.
 
@@ -301,7 +312,7 @@ Check order: 8 (arguments) → 9 (structure) → 1–4 (plan) → 5–7 (report 
 1. `__call__` does the stale cleanup (now including the sidecar), sets `spawned_at = time.time()`, then calls `popen`.
 2. `_monitor` loops. Each tick:
    1. Classification exactly as today.
-   2. If `self._sampler`: `try: s = self._sampler(proc.pid)`. Update `samples`, `last_cpu_seconds = s.cpu_seconds` and `peak_rss_bytes = max(...)`. `except Exception: pass`.
+   2. If `self._sampler`: `try: s = self._sampler(proc.pid)`. Update `samples`, `max_cpu_seconds = max(max_cpu_seconds, s.cpu_seconds)` and `peak_rss_bytes = max(...)`. `except Exception: pass`.
    3. Sleep.
 3. On any exit, the `finally:` writes the sidecar, then the original return or raise propagates **unchanged**.
 4. Back in `_run_attempt`, after `execute_plan` returns or raises through its normal path, read the sidecar and event times. A classification already decided is never revisited.
@@ -316,8 +327,8 @@ The events file is `candidate_events_path(liveness_events_dir, resolve_run_cwd(s
 |---|---|---|---|---|---|
 | Non-liveness lane | `null` | `null` | measured | `null` | none |
 | Liveness lane, sampler raised every tick | `null` | `null` | measured | from events | none |
-| Liveness lane, normal exit | last sample | max sample | measured | from events | none |
-| `hung` / `budget_exceeded` (killed) | last sample before kill | max | measured (incl. `teardown`) | from events or `null` | none; bucket decided exactly as today |
+| Liveness lane, normal exit | max over samples | max sample | measured | from events | none |
+| `hung` / `budget_exceeded` (killed) | max over samples before kill | max | measured (incl. `teardown`) | from events or `null` | none; bucket decided exactly as today |
 | Sidecar unreadable or malformed | `null` | `null` | measured | from events | none |
 | Resumed candidate (state record reused) | not re-measured; no new `candidate` event, as today | | | | none |
 
@@ -333,9 +344,9 @@ The events file is `candidate_events_path(liveness_events_dir, resolve_run_cwd(s
 | W1 provenance fields | analysis.py + cli.py | O5b | a progress file with known bytes; a `run` header whose `commit` differs from HEAD; one whose `commit` is `null` | hash the path string instead of the bytes, or hard-code `commit_matches_head: true` → O5b fails |
 | W2 sampler never classifies | liveness.py | O6 | `LivenessRunner` with fake `popen`/`monotonic`/`cpu_reader` (pattern: `tests/test_liveness_runner_monitor.py`); the full 3×3 matrix {normal exit, hung, busy→timeout} × {`sampler=None`, constant sampler `TreeSample(1e9, 10**12)`, sampler raising `OSError`} | feed sampler CPU into `cpu_growing` → the busy→timeout row with the constant sampler flips; call the sampler before classification → a raising sampler changes the row's exception |
 | W2 sidecar on every exit | liveness.py | O7 | same harness, three runs: normal exit, hung, timeout; then a second `__call__` for the same cwd whose `popen` raises | write only on normal exit → O7 fails; skip the stale cleanup → the second call leaves the first call's sidecar → O7 fails |
-| W2 CPU semantics | liveness.py | O7b | a parent that forks and **reaps** a CPU-burning child before the sample (real processes; the assertion compares the sample to the parent's own `cutime` read from `/proc`, not to a duration) | sum live utime+stime only → the reaped child's CPU is missing → O7b fails |
+| W2 CPU semantics | liveness.py | O7b | a parent that forks and **reaps** a child that burns ≥ 50 ticks of its own CPU, then prints `ready`; the test blocks on that line; precondition `cutime+cstime > helper utime+stime` (real processes; the assertion compares kernel-reported values, never a duration) | sum live utime+stime only → the reaped child's CPU is missing → O7b fails; a post-order walker → forbidden by the pinned walk order (review) |
 | W2 wiring | mutation.py/runner.py | O8 | real-pytest R2 lane (`tests/test_b106_reuse_and_witness.py:661-677` seed pattern) | forget the event/record plumbing → the keys are absent → O8 fails; forget `sampler=` at runner.py:4420 → caught by a unit test asserting the production `LivenessRunner` construction passes `sampler=liveness.tree_sample` (spy on the constructor), since the sample count itself is host-dependent |
-| W3 forwarding | liveness.py/mutation.py | O9 | baseline events file with setup/call/teardown for two nodeids, one nodeid occurring **twice** (duplicate run), + a foreign-pid record | forward setup as a `test` event, ignore the pid rule, or sum per nodeid (double-counts the duplicate) → O9 fails |
+| W3 forwarding | liveness.py/mutation.py | O9 | baseline events file with setup/call/teardown for two nodeids; one nodeid occurring **twice** (duplicate run), preceded by a third occurrence with a setup record but **no** call (setup error); plus a foreign-pid record | forward setup as a `test` event, ignore the pid rule, sum per nodeid (double-counts the duplicate), or pair by occurrence count (mispairs after the call-less setup) → O9 fails |
 | W4 leak | tests/test_liveness.py | O10 | nested pytest over `tests/test_liveness.py` with a live events file | revert one `monkeypatch.context()` → O10 fails |
 | W5 refusals | tools/b105_report_check.py | O11 | `_verifier_valid_report` + generated plan JSON | skip the set-equality check → O11 fails; never read `plan["status"]` → the refusal-2 case fails; let a list-shaped plan raise `TypeError` → the refusal-9 case exits 1 instead of 2 |
 | W5 wiring | gate script | O12 | `tests/test_self_lane.py` substring **and ordering** pins | omit `--plan-json`, or generate the plan after `run` → O12 fails |
@@ -344,7 +355,7 @@ The events file is `candidate_events_path(liveness_events_dir, resolve_run_cwd(s
 
 ### Degrees of freedom
 
-Private helper names and the decomposition inside `liveness.py`, `analysis.py` and the checker are yours. So is whether `tree_sample` and `tree_cpu_seconds` share a private walker, provided `tree_cpu_seconds`'s behavior and exceptions are unchanged. Every key name, JSON shape, refusal and wiring point above is fixed.
+Private helper names and the decomposition inside `liveness.py`, `analysis.py` and the checker are yours. So is whether `tree_sample` and `tree_cpu_seconds` share a private walker, provided that `tree_cpu_seconds`'s behavior and exceptions are unchanged, and that any walker used by `tree_sample` reads each process's stat **before** listing its children (the pinned pre-order walk; see `TreeSample` semantics). Every key name, JSON shape, refusal and wiring point above is fixed.
 
 ---
 
@@ -394,15 +405,18 @@ Do this first: P1 depends on it.
 4. Extend `_MutantRun`, `_run_attempt` (three monotonic phase stamps, then the sidecar and event-time read next to `tests_completed`), `_run_one` (combination rules), the `candidate` event and the state record (`resources`).
 5. Tests:
    - O6: the full 3×3 matrix in the packet's traceability row, and O7 including the second-call stale-cleanup case, both in `tests/test_liveness_runner_monitor.py` with its fake-process harness;
-   - O8 in a new `tests/test_mutation_resource_evidence.py`, with one real-pytest R2 lane of two candidates (copy the `_seed_pytest_mutation` pattern), asserting field presence and types, not values;
+   - O8 in a new `tests/test_mutation_resource_evidence.py`, with one real-pytest R2 lane of two candidates, asserting field presence and types, not values. Copy the `_seed_pytest_mutation` pattern, **but build the lane with `liveness="true"`** (round-2 P0R2-1). The seed pattern uses `liveness="false"` (`test_b106_reuse_and_witness.py:686-691`), and under that setting the decision table makes `startup_seconds` null, which would contradict O8;
    - `tree_sample` against `os.getpid()`: `cpu_seconds > 0` and `rss_bytes > 0` are allowed, because the numbers are properties of a live process, not timing; plus a nonexistent pid raising `OSError`;
-   - O7b, in the same new file:
-     1. Start a real helper process (`sys.executable -c ...`) that forks a child, has it run a fixed number of loop iterations, and **waits for it** (`os.waitpid`).
-     2. It then blocks on stdin, so the helper stays alive and its child has been reaped.
-     3. Read the helper's own `cutime + cstime` from `/proc/<pid>/stat` directly.
-     4. Assert `tree_sample(helper_pid).cpu_seconds >= (cutime + cstime) / CLK_TCK`.
+   - O7b, in the same new file, with a readiness handshake (round-2 P0R2-2):
+     1. Start a real helper process (`sys.executable -c ...`, stdout=PIPE, stdin=PIPE) that forks a child.
+     2. The child burns CPU in a loop until **its own** `/proc/self/stat` `utime + stime` reaches **at least 50 ticks**. The stop condition is CPU-based, not iteration- or wall-clock-based, so the burned CPU is always enough to discriminate. Then it exits.
+     3. The helper `os.waitpid`s the child, **then** writes the line `ready\n` to stdout and flushes, **then** blocks on stdin. The helper stays alive and its child has been reaped.
+     4. The test **blocks reading that `ready` line** before sampling. This synchronization point replaces any sleep. A 60 s read failsafe applies only as a hang guard.
+     5. Read the helper's own `utime, stime, cutime, cstime` from `/proc/<pid>/stat` directly.
+     6. **Precondition** (it makes the fixture discriminating; fail the test, not skip, if it does not hold): `cutime + cstime > utime + stime` of the helper. A live-only sum would then be strictly smaller than the reaped-inclusive sum.
+     7. Assert `tree_sample(helper_pid).cpu_seconds >= (cutime + cstime) / CLK_TCK`.
 
-     The oracle compares two kernel-reported quantities; it never asserts a duration. Close stdin and `join` the helper at the end, with a 60 s failsafe only.
+     The oracle compares kernel-reported quantities; it never asserts a duration. Close stdin and `join` the helper at the end, with a 60 s failsafe only.
 
 ### W3. Forward setup/teardown durations with each baseline `test` event
 
@@ -429,7 +443,7 @@ Do this first: P1 depends on it.
 5. Test O14 goes in a new file, `tests/test_b105_report_check_real_plan.py`. It uses the `git_repo`/`make_lane`/`make_r2_judge` fixtures and the `_seed_pytest_mutation` pattern from `tests/test_b106_reuse_and_witness.py:661-677`, giving a tiny R2 repo with 2–3 candidates and a real pytest suite.
    1. Run `assay plan <lane>` in-process through `main([...])` and capture its JSON.
    2. Run `assay run <lane> --verdict-json v.json` in-process.
-   3. Load the checker module by path, as `tests/test_b105_report_check.py` does, and call `check_campaign_scope(verdict, plan)`. It must not raise.
+   3. Load the checker module by path with `importlib.util.spec_from_file_location("b105_report_check", <repo>/assay/tools/b105_report_check.py)` and `module_from_spec` / `exec_module`. `tests/test_b105_report_check.py` runs the checker as a subprocess (`:24`, `:83`, `:105`) and loads nothing by path, so do not "mirror" it (round-2 P0R2-5). Call `check_campaign_scope(verdict, plan)`; it must not raise.
    4. Repeat step 2 with `--shard 0/2`. `check_campaign_scope` must raise, through refusal 5 or 7.
    5. Assert nothing about timings.
 
@@ -496,6 +510,12 @@ Each oracle lists what proves it (**Obs**) and a plausible wrong implementation 
   - Neg:
     - Routing sampler CPU into `cpu_growing` flips the busy→timeout row under the constant sampler.
     - Calling the sampler before the tick's classification, and letting a raise escape, changes the raising-sampler row.
+  - **Ordering spy (round-2 P0R2-6).** Once exceptions are swallowed, "sampler after classification" is otherwise unobservable, so add a fourth run.
+    - Wrap the fake `cpu_reader` so it records the tick index of each call.
+    - Pass a spy `sampler` that asserts, on every call, that `cpu_reader` has **already** been called for the current tick, and appends `True` to a list when so.
+    - The assertion failures are collected in a list, not raised, so the swallow cannot hide them.
+    - The test asserts the list is non-empty and all `True`.
+    - Neg: calling the sampler before `cpu_reader` in a tick.
 - **O7. The sidecar exists on every exit path.**
   - Obs:
     - After normal exit, `LivenessHungExpired` and `TimeoutExpired`, `read_resource_sidecar(events_path)` returns a dict with exactly `{"format", "samples", "cpu_seconds", "peak_rss_bytes", "spawned_at"}`.
@@ -506,7 +526,7 @@ Each oracle lists what proves it (**Obs**) and a plausible wrong implementation 
   - Neg: a live-only utime+stime sum.
 - **O8. End-to-end wiring.**
   - Obs:
-    - In a real-pytest R2 run through `runner.run_lane`, each `candidate` event has `cpu_seconds` (float ≥ 0) and `peak_rss_bytes` (int > 0).
+    - In a real-pytest R2 run through `runner.run_lane`, on a lane built with `liveness="true"`, each `candidate` event has the keys `cpu_seconds` (`float ≥ 0` or `null`) and `peak_rss_bytes` (`int > 0` or `null`). Both are nullable per the last bullet below.
     - It has `phase_seconds` with exactly the keys `{"materialize", "command", "integrity", "teardown"}`, all floats ≥ 0.
     - It has `startup_seconds` with exactly `{"to_session_start", "to_first_test"}`.
     - Each state record has the same values under `resources`.
@@ -515,8 +535,9 @@ Each oracle lists what proves it (**Obs**) and a plausible wrong implementation 
   - Neg: forgetting the runner wiring, where every candidate event lacks the keys entirely; resume rejecting the new key.
 - **O9. Baseline phase forwarding.**
   - Obs:
-    - The forwarded `test` events carry `setup_s`/`teardown_s` equal to the owner's records **paired by occurrence**.
-    - For the duplicated nodeid, the first and second `test` events carry their own occurrence's values, not a sum.
+    - The forwarded `test` events carry `setup_s`/`teardown_s` equal to the owner's records, paired by the **nearest preceding unconsumed setup** and the **next teardown**.
+    - For the duplicated nodeid, the first and second `test` events carry their own call's values, not a sum.
+    - The fixture also has an earlier duplicate whose setup record has **no** call (a setup error). That setup is never paired, and the later call gets its own setup's duration (round-2 P0R2-4).
     - A foreign-pid `phase` record is ignored.
     - The number of `test` events is unchanged, and there is no new event name.
   - Neg: emitting `phase` records as events; summing per nodeid.

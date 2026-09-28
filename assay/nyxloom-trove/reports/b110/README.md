@@ -5,7 +5,8 @@ Carved 2026-09-28 from the B110 analysis. Nothing here has been dispatched yet.
 - **Plan (decisions D1–D10, order, gates, pilot, go/no-go, runbooks):** [`../assay-B110-PLAN-2026-09-28.md`](../assay-B110-PLAN-2026-09-28.md)
 - **Analysis (every measured fact, the cost model, external comparison, citations):** [`../assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`](../assay-B110-RUNTIME-ANALYSIS-2026-09-28.md)
 - **Verbatim research records R0–R8 and probe scripts:** [`research/`](research/)
-- **Round-1 pre-dispatch review and carver decisions C1–C20:** [`REVIEW-2026-09-28-round1.md`](REVIEW-2026-09-28-round1.md)
+- **Round-1 pre-dispatch review and carver decisions C1–C20:** [`REVIEW-2026-09-28-round1.md`](REVIEW-2026-09-28-round1.md). Verbatim outputs are in [`review-round1/`](review-round1/).
+- **Round-2 review and carver decisions C21–C32:** [`REVIEW-2026-09-28-round2.md`](REVIEW-2026-09-28-round2.md). Verbatim outputs are in [`review-round2/`](review-round2/).
 - **Decisions:** `../../decisions.md` A-465–A-474.
 - **Backlog:** `../../4-backlog.md` B110 (umbrella: pilot and go/no-go), B111–B121, B108 phase 1.
 
@@ -19,7 +20,7 @@ Carved 2026-09-28 from the B110 analysis. Nothing here has been dispatched yet.
 | P3c | B114 | [P3c-liveness-lane-keys.md](P3c-liveness-lane-keys.md) | 2c | P3a; P2 and P1 in the v14 base |
 | P3d | B114 | [P3d-gate-report-binding.md](P3d-gate-report-binding.md) | 2c | P3b, P0, P6 in the v14 base |
 | P4 | B115 | [P4-work-queue-executor.md](P4-work-queue-executor.md) | 2b | P0 |
-| P5 | B116 | [P5-snapshot-costs.md](P5-snapshot-costs.md) | 2b | P0 (G1–G5) |
+| P5 | B116 | [P5-snapshot-costs.md](P5-snapshot-costs.md) | 2b | P0 (G1–G5), P1, P2; merges after P4/P6 |
 | P6 | B117 | [P6-campaign-deadline.md](P6-campaign-deadline.md) | 2b | — |
 | P7 | B118 | [P7-pilot-tooling.md](P7-pilot-tooling.md) (steps 1–8) | 2c | P0, P6 |
 | P7b | B118 | [P7-pilot-tooling.md](P7-pilot-tooling.md) (step 9: `b110-pilot` / `b110-screen` gate modes) | 2c | P7, P6, v14 merged |

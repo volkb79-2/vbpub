@@ -11300,7 +11300,7 @@ An analysis-only session measured the retained evidence and ran an operator inte
 briefs: `reports/b110/`; decisions A-465–A-474.
 
 It established:
-- every killed candidate ran all 5,831 tests;
+- every killed candidate ran its whole collected suite (5,831 tests in 30eec294; 5,819 in e79);
 - a passing native campaign contains only kills and ledger-audited equivalents, so survivor cost belongs to a non-qualifying screen/fix loop;
 - 97.8 worker-hours per campaign went to a test file that can never kill a mutant;
 - 14 single-operator mutants can spin or block scanner loops.

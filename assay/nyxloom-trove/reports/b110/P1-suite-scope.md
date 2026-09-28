@@ -1,6 +1,6 @@
 # B110-P1 — Self-qualification suite scope: exclusions, override removal, a slow tier and the dataclass contract
 
-Revised 2026-09-28 after round-1 review (see REVIEW-2026-09-28-round1.md).
+Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).
 
 | Field | Value |
 |---|---|
@@ -136,7 +136,9 @@ In the preflight test (`:227-257`), add the same exact-tuple pin with `coverage-
 
 Moved and split files import shared fixtures and helpers with `from conftest import ...`. They get paths from `conftest.PROJECT_ROOT`, **never** from `Path(__file__)`.
 
-**Whole-file moves.** Use `git mv` and keep the content byte-identical, unless a `Path(__file__)` use forces an edit (none of these has one, verified at `db85f747`):
+**Whole-file moves.** Use `git mv` and keep the content byte-identical, unless a `Path(__file__)` use forces an edit. None of the pre-existing files below has one; that was verified at `db85f747`.
+
+That check cannot cover P0's new test files, which did not exist at `db85f747`: `tests/test_b105_report_check_real_plan.py`, `tests/test_mutation_resource_evidence.py` and `tests/test_plan_baseline_from.py`. **Re-run `grep -n "Path(__file__)"` over every file you move or split after P0 has merged** (round-2 P1R2-2). If a hit appears, replace it with `conftest.PROJECT_ROOT` in the same commit.
 
 | From `tests/` | To `tests/zz_slow/` |
 |---|---|
@@ -365,8 +367,12 @@ Each oracle names its **observable** and its **negative**. Its gate is the focus
   - Observable: `pythonpath == ["src"]` and `testpaths == ["tests"]`.
   - Negative: a later edit of pyproject silently changes what B105 snapshots import.
 - **O3. The same suite, reordered.**
-  - Observable: the collected node set of `pytest --collect-only -q tests --ignore=tests/test_self_hosting.py --ignore=tests/test_python_qualification.py` equals the set before the move, minus nothing, apart from the new W3/W4 tests and the path prefix change of moved nodes. Compare by `(basename, test name)` pairs, recorded before and after in your report. Every `zz_slow` node comes after every non-`zz_slow` node in that output.
-  - Negative: a split that drops or duplicates a test.
+  - Observable: the collected node set of `pytest --collect-only -q tests --ignore=tests/test_self_hosting.py --ignore=tests/test_python_qualification.py` equals the set before the move, minus nothing, apart from the new W3/W4 tests and the path changes of moved nodes. Every `zz_slow` node comes after every non-`zz_slow` node in that output.
+  - **Comparison key** (round-2 P1R2-1). A `(basename, test name)` pair cannot match for *split* tests, because their basename changes. Compare instead the **multiset of `(origin file, test name incl. parametrize id)`**.
+    - For an unmoved node the origin file is its own file.
+    - For a moved or split node it is the source file named by the W2 whole-file table or split table.
+    - Record the before and after multisets in your report. They must be equal, apart from the new W3/W4 tests.
+  - Negative: a split that drops or duplicates a test; a split whose helper move silently drops a parametrize case.
 - **O4. Order independence holds.**
   - Observable: the lane-selection full run above is green, and the `self-qualification-preflight` gate is green, with R1 still 100% line and branch.
   - Negative: a moved test that depended on an earlier test's leftovers fails here. Fix that test's own setup. Never reorder to hide it.

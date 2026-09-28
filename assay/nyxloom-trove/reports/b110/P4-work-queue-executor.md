@@ -1,6 +1,6 @@
 # B110-P4 — Bounded work-queue executor for native mutation candidates
 
-*Revised 2026-09-28 after round-1 review (see REVIEW-2026-09-28-round1.md).* Round-1 findings P4-1..P4-8 are applied, together with carver decisions C3 and C15.
+*Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).* Round-1 findings P4-1..P4-8 and round-2 findings P4R2-1..P4R2-3 are applied, together with carver decisions C3, C15 and C30.
 
 | Field | Value |
 |---|---|
@@ -33,8 +33,8 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
 4. `nyxloom-trove/decisions.md`: the rows A-082 (`:280`), A-113 (`:361`), A-122 (`:375`), A-160 (`:453`), A-193 (`:516`) and A-195 (`:518`). Read only these rows.
 5. The tests that pin the current semantics. They must stay green **without edits**, except the one named in Work step 5:
    - `tests/test_mutation_executor_bound.py`. `_RecordingExecutor` at `:52-70` wraps a real `ThreadPoolExecutor`; the tests are at `:122-276`.
-   - `tests/test_mutation_isolation.py`: `_SynchronousExecutor` at `:81-107` returns real, already-resolved `Future`s; `_make_decide_by_mutated_content` is at `:110-133`; the tests are at `:136`, `:172` and `:358`. **Warning:** that helper only knows the contents `a`/`b`/`c`/`d = False` and raises `AssertionError` on anything else (`:129`), and `test_mutation_executor_bound.py`'s `_TARGETS` yields **five** candidates (`a`..`e`, `:34-45`). The new tests therefore use their own 3-candidate fixture (Work step 1).
-   - `tests/test_mutation_classification.py:92`: a second `_SynchronousExecutor`.
+   - `tests/test_mutation_isolation.py`: `_SynchronousExecutor` at `:81-107` returns real, already-resolved `Future`s; `_make_decide_by_mutated_content` is at `:110-133`; the tests are at `:136`, `:172` and `:358`. **Warning:** that helper only knows the contents `a`/`b`/`c`/`d = False` and raises `AssertionError` on anything else (`:129`), and `test_mutation_executor_bound.py`'s `_TARGETS` yields **five** candidates (`a`..`e`, `:34-45`). The new tests therefore use their own content-keyed 3-candidate and 5-candidate fixtures (Work step 1).
+   - `tests/test_mutation_classification.py:92`: a second `_SynchronousExecutor`. P1 may have moved this file to `tests/zz_slow/test_mutation_classification.py`. Find it and every other cited test **by name** (C30).
    - `tests/test_runner_p23_cleanup_and_budget.py`. Line `:295`: every identity after an expiry is budget-stopped, and with `jobs=1` exactly `["baseline", "mutant"]` units run. Lines `:365` and `:471` cover the P22 policy refusal and the absorbed integrity-check expiry.
    - `tests/test_b105_mutation_boundaries.py`. Line `:390` checks that a direct `_execute_mutation_jobs` Git failure propagates. **`:432`** is the duck-typed fake executor that this package converts.
    - `tests/test_mutation_progress_budget_plan.py:58-160`: candidate indices `[-1, 0, 1]` appear in order.
@@ -99,7 +99,8 @@ try:
                     buffer.stage(position, <the `candidate` PROGRESS payload, unchanged, :2929-2955>)
             # 4. Emit every staged event that is now contiguous from the cursor.
             for event in buffer.drain_contiguous():
-                write_progress(event)
+                if write_progress is not None:   # the existing guard (:2929) is kept
+                    write_progress(event)
         # the loop only exits with in_flight empty: every submitted future was
         # consumed (drained), including after the first fatal
     # 5. After the pool context exits (every in-flight future has closed its snapshot):
@@ -108,7 +109,8 @@ try:
             budget_exceeded_mask[leftover] = True
             buffer.resolve_without_event(leftover)
     for event in buffer.drain_contiguous():
-        write_progress(event)
+        if write_progress is not None:
+            write_progress(event)
 finally:
     # 6. Abnormal exit only (a non-AssayError exception propagating, KeyboardInterrupt,
     #    SystemExit from a signal handler): every state record already written must
@@ -116,7 +118,8 @@ finally:
     #    ascending position order, skipping unresolved gaps. The indices stay
     #    monotonic, and a jump over a gap is acceptable only on this path.
     for event in buffer.drain_all_ascending():
-        write_progress(event)
+        if write_progress is not None:
+            write_progress(event)
 if fatals:
     raise fatals[min(fatals)]        # I6: the LOWEST-POSITION fatal among ALL observed
 ```
@@ -174,9 +177,9 @@ It holds at most `total - cursor` staged events. Behind one long-running positio
 | In-order events (pure) | reorder buffer | T3a | direct calls, no threads | `drain_contiguous` emits out of order or skips a staged event → assertion |
 | In-order events (integration) | `_execute_mutation_jobs` | T3b | release gated on the main-thread state write of position 1 | Emit on completion → `[1, 0, 2]` |
 | First fatal across batches | same | T4 (converted `:432`) + T4b | real Futures with `set_exception`; batches split | "First observed wins" → T4b raises position 2's error |
-| Expiry at `jobs ≥ 2` | same | T6 | Event-held positions 0 and 2, position 1 raises LANE_TIMEOUT | Mask all in-flight → no records for 0/2; keep submitting → `submitted > 3` |
-| Fatal at `jobs ≥ 2` | same | T7 | Event-held positions 0 and 2, position 1 raises GIT_FAILED | Stop draining → missing records for 0/2 |
-| Resume monotonicity | same | T8 | 2 of 5 records pre-seeded, reversed completion | Index over the full list, or emitted on completion → non-monotonic |
+| Expiry at `jobs ≥ 2` | same | T6 | 5 candidates, `jobs=3`; Event-held positions 0 and 2; position 1 raises LANE_TIMEOUT via the `runner.execute_plan` seam; `mutation.wait` wrapper releases `hold` once f1 is done | Mask all in-flight → no records for 0/2; keep submitting → 3 or 4 submitted; no leftover mask → 3/4 missing from `budget_exceeded` |
+| Fatal at `jobs ≥ 2` | same | T7 | the same, with GIT_FAILED | Stop draining → missing records for 0/2; keep submitting → 3 or 4 submitted |
+| Resume monotonicity | same | T8 | 2 of 5 records directly written, reversed completion | Index over the full list, or emitted on completion → non-monotonic |
 | Expiry / fatal semantics at `jobs = 1` | same | existing I5/I6 tests | unchanged | — |
 | Abnormal-exit flush | same | T3a (`drain_all_ascending`) | direct call | Missing `finally` → staged events are lost (reviewed by inspection; T3a pins the helper) |
 | Docs | docstring, DESIGN-GUIDE | `rg -n "waves" src/assay/mutation.py docs/DESIGN-GUIDE.md` returns no hit describing the executor | — | — |
@@ -197,6 +200,10 @@ Private helper names, how the reorder buffer is stored internally (dict or list)
    - The fixture: a private `_TEXT3` with three independent sites (`a = True`, `b = True`, `c = True`), `_TARGETS3`, and a private content-keyed runner factory `_decide3(repo_path, behaviours)`. It maps mutated content `"a = False"`/`"b = False"`/`"c = False"` to a callable, keeps the baseline as PASS, and raises `AssertionError` on anything else.
    - **Do not** import `_make_decide_by_mutated_content`: it knows only `a`–`d`, and its `c`/`d` branches raise.
    - Reuse `_seed_repo`'s pattern (`:73`) with `_TEXT3`, and `_run_with_recording_factory`'s shape (`:84`) through a sibling helper that takes `targets`, `jobs`, `process_runner` and `state_root`.
+   - **Also add a 5-candidate content-keyed fixture** (round-2 P4R2-1), used by T1, T6, T7 and T8.
+     - `_TEXT5` has five independent sites, `a = True` … `e = True`, with `_TARGETS5`.
+     - `_decide5(repo_path, behaviours)` maps mutated content `"a = False"`…`"e = False"` to the callable in `behaviours`, or to a default that returns FAIL, i.e. killed. It keeps the baseline as PASS and raises `AssertionError` on anything else.
+     - It is self-contained: do not reuse `_TARGETS` with `_make_decide_by_mutated_content`, whose `c`/`d`/`e` handling raises.
    - **T2 is red-first.** Run it on the unchanged wave code and record in your REPORT that it fails by failsafe expiry, not by hanging. T6 and T7 must also be run on the wave code; record their result (at least one is expected red).
    - **T1, T3a/T3b, T4b and T8 are guards or new-helper tests.** Record their status before and after the rewrite.
 2. **Replace the loop** at `mutation.py:2889-2994` following the Required flow.
@@ -225,7 +232,7 @@ Private helper names, how the reorder buffer is stored internally (dict or list)
 6. Run the focused files serially, under nice/ionice:
    - `tests/test_mutation_executor_bound.py`
    - `tests/test_mutation_isolation.py`
-   - `tests/test_mutation_classification.py`
+   - `tests/test_mutation_classification.py` (or `tests/zz_slow/test_mutation_classification.py` after P1)
    - `tests/test_runner_p23_cleanup_and_budget.py`
    - `tests/test_b105_mutation_boundaries.py`
    - `tests/test_mutation_progress_budget_plan.py`
@@ -241,7 +248,7 @@ Private helper names, how the reorder buffer is stored internally (dict or list)
 - **T1: at most `jobs` outstanding, submitted in order.** Wrap a real `ThreadPoolExecutor(max_workers=jobs)`.
   - `submit(fn, position)` appends `position` to `positions`, increments `outstanding` under a `threading.Lock`, updates `max_outstanding`, and submits a **wrapper** that runs `fn(position)` inside `try: … finally: decrement outstanding under the lock`.
   - The decrement therefore happens *before* the future completes. CPython's `Future.set_result` wakes `wait()` before `add_done_callback` callbacks run, so a callback-based decrement can record `jobs + 1` under a correct implementation (P4-1).
-  - Run the 5-candidate `_TARGETS` with `jobs=2`.
+  - Run the 5-candidate fixture (`_TARGETS5`/`_decide5`) with `jobs=2`.
   - *Observable:* `max_outstanding <= 2` and `positions == [0, 1, 2, 3, 4]`.
   - *Negative:* submitting everything up front gives `max_outstanding == 5`; reverse-order submission changes `positions`.
   - *Gate:* tester-unified.
@@ -263,7 +270,7 @@ Private helper names, how the reorder buffer is stored internally (dict or list)
   - The state write happens on the main thread when position 1 is *handled*. So position 0 is still unresolved when position 1's event is staged, whatever the batching. This fixes P4-2: gating on the runner returning left the dirt check and teardown racing.
   - Collect the `write_progress` records.
   - *Observable:* the `candidate_index` values of `event == "candidate"` records are `[0, 1, 2]`, each once, and state files exist for all three.
-  - *Negative:* emitting on completion gives `[1, 0, 2]`.
+  - *Negative:* emitting on completion makes position 1's event precede position 0's (round-2 P4R2-3). The exact full sequence of a broken implementation is not guaranteed.
   - *Gate:* tester-unified.
 - **T4: first fatal with real Futures.** This is the converted `:432` test.
   - *Observable:* `caught.value is errors[0]`.
@@ -271,21 +278,36 @@ Private helper names, how the reorder buffer is stored internally (dict or list)
   - **T4b** (fatals in separate batches) is specified in Work step 5.
 - **T5: existing semantics unchanged.** All tests listed in Context 5 pass with no edits apart from Work step 5.
   - *Negative:* pre-submitting beyond `jobs` makes `test_runner_p23_cleanup_and_budget.py:295` see a third unit.
-- **T6: expiry at `jobs = 3`.** Use the 3-candidate fixture with a `state_root`.
+- **T6: expiry at `jobs = 3`** (round-2 P4R2-1 and P4R2-2). Use the **5-candidate** fixture with a `state_root` and the recording executor, which records submitted positions.
   - Positions 0 and 2 block on `hold.wait(timeout=60)`.
-  - Position 1's runner raises `subprocess.TimeoutExpired`. Alternatively, inject through the `execute_plan` seam an `AssayError(BUDGET_EXCEEDED, LANE_TIMEOUT)` for position 1's cwd, then call `hold.set()`.
+  - **Position 1's expiry is injected only through the seam.** Monkeypatch `assay.runner.execute_plan`; `mutation.py` imports it lazily at `:2279`, so patch the `runner` module attribute. The patched function raises `AssayError(outcome=BUDGET_EXCEEDED, reason_code=LANE_TIMEOUT)` when the plan's cwd belongs to position 1's snapshot, and delegates to the real function otherwise.
+    - Do **not** use a runner that raises `subprocess.TimeoutExpired`: `_execute_plan_body` catches that and *returns* a `BUDGET_EXCEEDED/LANE_TIMEOUT` result (`runner.py:1239-1265`), which is classified `budget_exceeded` **with** a record and an event. T6 would then go red on a correct executor.
+  - **Deterministic stop before any refill.** Monkeypatch the name `mutation.wait`, which Work step 2 imports, with a main-thread wrapper:
+    1. call the real `wait(...)`;
+    2. if the returned `done` set contains position 1's future, call `hold.set()`;
+    3. return the real result unchanged.
+
+    The main thread processes position 1's expiry, setting `stop_submitting`, in the same loop iteration, **before** its next submission step. So positions 3 and 4 are never submitted, whatever the thread timing.
   - *Observable:*
-    - state records exist for positions 0 and 2, and not for 1;
+    - the recorded submitted positions are exactly `[0, 1, 2]`;
+    - state records exist for positions 0 and 2, and not for 1, 3 or 4;
     - `candidate` events are `[0, 2]`;
-    - `submitted == 3`;
-    - `mutation.budget_exceeded` contains exactly position 1's identity.
-  - *Negative:* masking every in-flight position loses 0 and 2; pre-submitting beyond `jobs` shows up in `submitted`.
+    - `mutation.budget_exceeded` contains exactly the identities of positions 1, 3 and 4. Position 1 expired; 3 and 4 were never submitted and are masked.
+  - *Negative:*
+    - masking every in-flight position loses 0 and 2;
+    - continuing to submit after the expiry makes positions 3 or 4 appear in the submitted list;
+    - not masking the unsubmitted leftovers drops 3 and 4 from `budget_exceeded`.
   - *Gate:* tester-unified.
-- **T7: fatal at `jobs = 3`.** The same setup, but position 1 raises `AssayError(ERROR, GIT_FAILED)`.
-  - *Observable:* the raised error is position 1's; state records exist for 0 and 2; `submitted == 3`.
-  - *Negative:* not draining in-flight futures loses the records for 0 and 2.
+- **T7: fatal at `jobs = 3`.** The same 5-candidate setup and the same `mutation.wait` wrapper, but the seam raises `AssayError(ERROR, GIT_FAILED)` for position 1.
+  - *Observable:*
+    - the raised error is position 1's;
+    - state records exist for 0 and 2;
+    - the recorded submitted positions are exactly `[0, 1, 2]`, so 3 and 4 are never submitted.
+  - *Negative:*
+    - not draining in-flight futures loses the records for 0 and 2;
+    - continuing to submit after a fatal submits 3 or 4.
   - *Gate:* tester-unified.
-- **T8: resume keeps indices monotonic.** Use the 5-candidate `_TARGETS`, a `state_root` pre-seeded (via a first `jobs=1` run over a 2-candidate selection, or directly written valid records) so that 2 of 5 candidates resume. Then run with `jobs=2`, completion order reversed through Event gates keyed on content.
+- **T8: resume keeps indices monotonic.** Use the 5-candidate fixture with a `state_root` pre-seeded **by directly writing** two valid state records, built with `_write_mutation_state_record` and the correct judge identity. Do not use a first "2-candidate selection" run: that mechanism only exists after P7 (round-2 P4R2-3). 2 of 5 candidates then resume. Run with `jobs=2`, with completion order reversed through Event gates keyed on content.
   - *Observable:* the emitted `candidate_index` values are strictly increasing, cover `0..2` (the 3 pending candidates), and `candidate_total == 3`.
   - *Negative:* indexing over the full job list, or emitting on completion.
   - *Gate:* tester-unified.

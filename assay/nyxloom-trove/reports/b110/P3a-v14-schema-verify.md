@@ -1,6 +1,6 @@
 # B110-P3a — Verdict schema v14 hard cut: model, schema, verifier, fixtures, carve assets
 
-*Revised 2026-09-28 after the round-1 review (see `REVIEW-2026-09-28-round1.md`). Findings applied: P3A-1..P3A-13 and carver decisions C1, C9, C10 (the X8 split), C15.*
+*Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md). Round 1: P3A-1..P3A-13 and carver decisions C1, C9, C10 (the X8 split), C15. Round 2: P3A2-1..P3A2-4, the P3A-13 residual, and C23/C30 (pinned `run_mutation` order; tests are found by name after P1's `tests/zz_slow/` moves).*
 
 | Field | Value |
 |---|---|
@@ -72,7 +72,12 @@ Paths are relative to `assay/`. Line numbers are verified at `db85f747`; re-anch
 **Everything else:**
 - `src/assay/reuse.py`: 14 (`V12_COLD_START`), 50-90 (the version switch and the "current v13 verifier" message), and **139** (`"v12 cold start has no reusable witnesses"`).
 - `src/assay/runner.py`: 4532 (`except mutation.InvalidRejudgeIdError: raise`) and 5385-5412 (the outer `except AssayError` → `refuse_all`). This is the whole-lane refusal path that C1's A5 refusal uses; P3b owns the producer side.
-- `nyxloom-trove/carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json` (native SQL, `schema_version: 13` at line 185, a 3-key liveness block, an `equivalence_artifact`) and `tests/test_gate_qualify_dstdns_sql.py:550-555` (asserts `== 13`). W3 is **migrated by every cut**; the v13 merge `e5e9b95c` changed both files.
+- `nyxloom-trove/carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json` and `tests/test_gate_qualify_dstdns_sql.py:550-555` (which asserts `== 13`). W3 is **migrated by every cut**; the v13 merge `e5e9b95c` changed both files. The witness is:
+  - native SQL, with `schema_version: 13` at line 185;
+  - a 3-key liveness block;
+  - an `equivalence_artifact`;
+  - an R2 payload of **1 killed, 5 survived and 0 equivalent**, so it is *not* an X8(b)-with-equivalents case;
+  - placeholders `@HEAD_OID@`, `@BASE_OID@`, `@STARTED@`, `@ENDED@` and `@ASSAY_VERSION@`, which `_witness_as_actual()` at `:506` substitutes. `test_compare_with_witness_accepts_the_frozen_witness_round_tripped` is at `:524`. The end-to-end `test_capture_witness_end_to_end_matches_the_frozen_witness` (`:1122`) needs docker and `postgres:18-alpine`, and **no registered lane runs it**. Do not run it (P3A2-2).
 - `tests/test_python_qualification.py:396-422` (`P25_V13_EXPECTED_ROOT` → W9; the template names).
 - `gate/python/qualify_topos.py:1030` (the "complete v13 artifact differs" wording).
 - `tests/test_verify_layer_independence.py`, the precedent for **raw-layer** tests that call `verify._check_*` directly.
@@ -369,10 +374,11 @@ The model and verify see only the wire document. There are no paths to resolve: 
 | v14 cold true, survivor without evidence | failure (X6) |
 | v14 cold true, payload present, `r2_command` null | failure (X3) |
 | v14 native, `equivalent` non-empty, ledger null, artifact null | failure (pairing) |
-| v14 native SQL, `equivalent` non-empty, artifact set, ledger null, no `ledger` modes (W3, `r2_inconclusive_all_mutants_equivalent.json`) | `[]` (X8b) |
+| v14 native SQL, `equivalent` non-empty, artifact set, ledger null, no `ledger` modes (`r2_inconclusive_all_mutants_equivalent.json`) | `[]` (X8b) |
+| the migrated W3 witness after `_witness_as_actual()` substitutes its placeholders (native SQL, artifact set, 0 equivalents, cold false, liveness inactive) | `[]` |
 | v14 native, ledger set, one equivalent with `mode:"full"` | failure (X8a) |
 | v14 ingested with `cold_witness_kills` present (any value, including null) | failure (fork / X12) |
-| v14 native with the key `r2_command` or `equivalence_ledger` **absent** | failure (X12, raw) and failure (model) |
+| v14 native with the key `r2_command` or `equivalence_ledger` **absent** | failure (X12, **raw layer only**). Reconstruction uses `raw.get(...)`, so the model sees `None` and, when cold is false, accepts it. That is why X12 lives in raw verify (P3A2-4). |
 | v14 cold true, `MUTANT_LIMIT_EXCEEDED` sentinel, `r2_command: null` | failure (X3), from the raw layer and the model |
 | v14 R2 payload-free (e.g. `INCONCLUSIVE/MUTATION_UNSUPPORTED`), `r2_command` not null | failure (X4) |
 | a whole-lane `ERROR/BAD_LANE_CONFIG` refusal document, every level the same pair (the A5 shape) | `[]` via the existing whole-lane handling; no verify change |
@@ -395,19 +401,22 @@ The model and verify see only the wire document. There are no paths to resolve: 
 | `collection_digest` | `r2_command.py` | digest of `[]`, of `["a"]`, of `["é"]` (byte length 2 ≠ char length 1), of `["a","a"]` ≠ `["a"]`, and of `["a","b"]` ≠ `["b","a"]`. The expected hex values are computed in the test by an independent inline `hashlib` expression | same | swap to `isolation.netstring` → the `é` case goes red |
 | `witness-cold` model/schema/verify | verdict/schema/verify | 4 invalid + 1 valid per the examples above, each through **three** paths: the model constructor, the **raw** function (`verify._check_b106_execution` / `verify._check_v14_evidence` called directly), and `assay verify` on a JSON document | `tests/test_v14_contract.py` (new) | drop the bucket check in raw verify only → the model and end-to-end still reject, but the **direct raw call** returns `[]` → red |
 | evidence rules X5–X7 | same | one test per X-row with a minimally mutated copy of the carver fixture below. X6 has **three per-field negatives**: the survivor's `collection_count` alone changed, its `collection_sha256` alone changed, and its `hook_fingerprint_sha256` alone changed. Each fails, at the raw and the model layer | same | compare only the hook digest (the baselines' collection facts are equal by design) → the `collection_count`-only and `collection_sha256`-only negatives are accepted → red |
-| ledger rules X8–X10 | same | valid ledger PASS; the 4 invalid cases; the X8(b) SQL/artifact case (`r2_inconclusive_all_mutants_equivalent.json` and the migrated W3 witness verify `[]`); ledger + artifact both set → failure | `tests/fixtures/verdicts/r2_pass_cold_witness_ledger.json` | apply X8(a) literally to every native lane → the SQL fixture fails → red |
+| ledger rules X8–X10 | same | valid ledger PASS; the 4 invalid cases; the X8(b) SQL/artifact case (`r2_inconclusive_all_mutants_equivalent.json` verifies `[]`); ledger + artifact both set → failure. The migrated W3 witness has 0 equivalents, so it proves only the cut migration (next row), not X8(b). | `tests/fixtures/verdicts/r2_pass_cold_witness_ledger.json` | apply X8(a) literally to every native lane → the SQL fixture fails → red |
+| W3 migration | carve asset + `tests/test_gate_qualify_dstdns_sql.py` | `test_compare_with_witness_accepts_the_frozen_witness_round_tripped` passes, and a new test runs `verify.verify_document(json.dumps(_witness_as_actual()))` and gets `[]` | the migrated W3 file | leave W3 at 13 → the round-trip test's `== 14` and the verify call both fail → red |
 | r2_command rules | same | each invalid example, at the raw layer (direct call) **and** end to end | same test file | skip re-applying the transform in raw only → the direct raw call accepts `--cov-branch` left in → red |
 | X12 presence | raw verify | native documents with each of the three keys deleted in turn fail at the raw layer | same | rely on `_reject_unknown_keys` → deleted keys pass → red |
 | X3 sentinel / X4 payload-free | raw verify, via the `verify_document` call site | a cold-true `MUTANT_LIMIT_EXCEEDED` sentinel with `r2_command:null` fails; `INCONCLUSIVE/MUTATION_UNSUPPORTED` payload-free with a non-null `r2_command` fails | same | nest the check inside `_check_b106_mutation_provenance` → the sentinel's early return skips it → red |
 | `campaign` block (C9) | verdict/schema/verify | the valid example verifies `[]`; each invalid example fails at the raw layer and in the model | same | skip the ordering check → `expires == created` accepted → red |
 | hard cut | verify/schema | every v13 fixture copy (`schema_version` patched back to 13) gets exactly one version diagnostic. `{"schema_version":15}` is "unsupported" | `tests/test_v14_contract.py`; `tests/test_b106_reuse_and_witness.py` (the future-version case is now 15) | — |
 | raw totality | raw verify | the forged `argv_declared: ["pytest", 1, "--cov"]` and a `--cov-config=x` in `argv_declared` each yield failure strings; `assay verify` exits with its normal failure status, not a traceback | same | drop the `try/except UnrecognizedCoverageOption` → crash → red |
-| producer defaults | runner/mutation | a real small native R2 run (existing `make_lane`) emits `cold_witness_kills: false`, `r2_command: null`, `equivalence_ledger: null`, and liveness with 30.0/15.0 when active | existing `tests/test_cli_run.py` exact-dict pins, updated | — |
+| producer defaults | runner/mutation | a real small native R2 run (existing `make_lane`) emits `cold_witness_kills: false`, `r2_command: null`, `equivalence_ledger: null`, and liveness with 30.0/15.0 when active | the existing exact-dict pins, updated: `tests/test_cli_run.py` (~409-443) and `tests/zz_slow/test_cli_run_real_campaigns.py` (the three liveness-active tests, found by name) | — |
 
-**Carver-authored expected artifacts (normative recipes).** These are specified as exact recipes, not committed bytes. No carver skeleton or tracer bullet was run before dispatch: the carve session was read-only (P3A-13). Work step 2 therefore materializes them first and records each file's sha256 in the report. The reviewer re-derives them independently from these recipes and compares. Build `tests/fixtures/verdicts/r2_pass_cold_witness.json` from `r2_pass.json`:
+**Carver-authored expected artifacts (normative recipes).** These are specified as exact recipes, not committed bytes. No carver skeleton or tracer bullet was run before dispatch: the carve session was read-only (P3A-13, still a residual after round 2). Work step 2 therefore materializes them first and records each file's sha256 in the report. The reviewer re-derives them independently from these recipes and compares.
+
+Build `tests/fixtures/verdicts/r2_pass_cold_witness.json` from `r2_pass.json`. At `db85f747` that file has top-level `argv_declared == argv_effective == ["pytest","tests","-q"]`, `argv_appended == []`, **two** R2 `killed` entries (both `{"mode":"full"}`), no survivors, and `judgment.r2` keys `{jobs, kill_attribution, max_mutants, mode, operators, producer}`. Then:
 - set `schema_version` to 14;
-- make `judgment.r2` exactly plan §5's native block, but with `liveness.reason` set to `"auto-pytest-argv"`. Plan §5's round-0 example had `null`, which is invalid (P3A-2); plan §5 is corrected by the carver;
-- set `argv_declared` to `["pytest","tests","-q","--cov=pkg","--cov-branch","--cov-report=json:cov.json"]`, and set the top-level `argv_declared` to the same;
+- **merge** plan §5's native keys (`cold_witness_kills`, `r2_command`, `equivalence_ledger`, and the 5-key `liveness`) **into** the existing `judgment.r2`. Keep `producer`, `jobs`, `kill_attribution`, `max_mutants`, `mode` and `operators` unchanged (P3A2-3). Set `liveness.reason` to `"auto-pytest-argv"`: plan §5's round-0 example had `null`, which is invalid (P3A-2), and plan §5 is corrected by the carver;
+- set `r2_command.argv_declared` to `["pytest","tests","-q","--cov=pkg","--cov-branch","--cov-report=json:cov.json"]`. Set the top-level `argv_declared` **and** the top-level `argv_effective` to the same list, and keep the top-level `argv_appended` as `[]`, so that `argv_effective == argv_declared + argv_appended` (`verdict.py:4665`) still holds (P3A2-3);
 - `argv_transformed` is then `["pytest","tests","-q"]`;
 - give the baselines:
   - equal collection facts (`collection_count: 3`, one sha computed by `collection_digest(["tests/test_x.py::test_a","tests/test_x.py::test_b","tests/test_x.py::test_c"])`);
@@ -415,8 +424,8 @@ The model and verify see only the wire document. There are no paths to resolve: 
   - two different `runtime_fingerprint_sha256` values, one on each baseline;
   - `wall_s: 1.5` on `r2_baseline` only, with the `wall_s` key absent from `coverage_baseline` (6 keys);
   - `config_sha256` set to 64 hex;
-- its killed entry gets `"execution":{"mode":"witness-cold","witness":{"node_id":"tests/test_x.py::test_b",…}}` and `"evidence":{"command":"r2","collection_count":3,"collection_sha256":<same>,"hook_fingerprint_sha256":<r2 hook>,"started_count":2,"failed_call_index":1}`;
-- add a second killed entry with `mode:"full"` and no `evidence` key. A PASS has no survivors.
+- the **first** existing killed entry (in file order) gets `"execution":{"mode":"witness-cold","witness":{"node_id":"tests/test_x.py::test_b",…}}` and `"evidence":{"command":"r2","collection_count":3,"collection_sha256":<same>,"hook_fingerprint_sha256":<r2 hook>,"started_count":2,"failed_call_index":1}`;
+- the **second** existing killed entry stays `{"mode":"full"}` with no `evidence` key. **Do not add a third entry** (P3A2-3). A PASS has no survivors.
 
 The expected verify result is `[]`. Its sibling `r2_fail_cold_witness_declared_survivor.json` is a FAIL/MUTANTS_SURVIVED with one survivor carrying `evidence.command == "declared"` that matches the coverage baseline. Its expected verify result is also `[]`.
 
@@ -448,7 +457,8 @@ Its expected verify result is `[]`.
    - add `CampaignBinding` and `Verdict.campaign` (C9);
    - extend `Mutation` 1978-1983 and `_check_equivalence_pairing` (X8 split by producer, X10);
    - update `to_dict` emission.
-   - Every new dataclass changes the dataclass contract (P1's `tests/test_dataclass_contract.py`). Regenerate `tests/fixtures/dataclass-contract.json` in the same commit with `cd assay && PYTHONPATH=src:tests python tests/test_dataclass_contract.py > tests/fixtures/dataclass-contract.json` (P1's documented command), and review the diff: only the new classes may appear (C15).
+   - Every new dataclass changes the dataclass contract (P1's `tests/test_dataclass_contract.py`). Regenerate `tests/fixtures/dataclass-contract.json` with `cd assay && PYTHONPATH=src:tests python tests/test_dataclass_contract.py > tests/fixtures/dataclass-contract.json` (P1's documented command), and review the diff: only the new classes may appear (C15).
+   - **The fixture exists only after P1 has merged** (P3A2-1). If this package started before `assay-b110-v14` existed (protocol item 3), do the regeneration **after the one rebase onto the v14 tip**, as its own commit before review, not on the pre-rebase base.
    - Then bump `VERDICT_SCHEMA_VERSION = 14` and add a "Bumped 13 → 14 (B110)" history paragraph after 337-349, naming A-470/A-465/A-469/A-471.
 5. **Update the schema (`verdict.schema.json`):**
    - `$id` `urn:assay:schema:verdict:14`; const 14;
@@ -484,7 +494,11 @@ Its expected verify result is `[]`.
       - its 3-key liveness block (`{"active": false, "plugin": null, "reason": "language-not-python"}` at `db85f747`) gains `"cpu_window_s": null, "idle_floor_s": null`. Keep `reason` as is.
       - Its `equivalent` entries stay under the artifact rules (X8b).
       - Update `tests/test_gate_qualify_dstdns_sql.py:554` (`== 13` → `== 14`).
-      - `gate/python/qualify_dstdns_sql.py` regenerates the witness end to end and compares with `==` (per the comment at 550-553). Confirm the regenerated document equals the hand migration; a mismatch is BLOCKED, not a hand edit to match.
+      - W3 has **0 equivalents** (1 killed, 5 survived), so X8 is not exercised by it; the artifact rule simply stays satisfied.
+      - **Validate the hand migration without docker (P3A2-2):**
+        - `test_compare_with_witness_accepts_the_frozen_witness_round_tripped` (`:524`) passes;
+        - add one test beside it that runs `verify.verify_document(json.dumps(_witness_as_actual()))` and asserts `[]`. The raw file carries `@HEAD_OID@`-style placeholders, so always verify the substituted document from `_witness_as_actual()`, never the raw file.
+      - **Do not** run `gate/python/qualify_dstdns_sql.py`'s end-to-end regeneration (`test_capture_witness_end_to_end_matches_the_frozen_witness`, `:1122`). It starts a `postgres:18-alpine` container outside any registered lane, which the host-load rule forbids. Record in the report that the end-to-end regeneration was not run, and why.
     - Leave `carve-assets/W9/` byte-unchanged.
     - Create `carve-assets/W10/`:
       - `verdict.schema.v14.json` (a byte copy of the shipped schema);
@@ -505,11 +519,15 @@ Its expected verify result is `[]`.
     - point the successors file at `test_verdict_v14_successors.py`;
     - after the B106 suite, add `tests/test_v14_contract.py` and `tests/test_r2_command.py`, with the marker `verdict-v14-successors-verified` replacing `verdict-v13-successors-verified`.
 
-    Update `tests/test_distribution_gate.py:215-256` to the new markers, file names and order (`v13_cut < v14_p25 < v14_successors < v14_suite < v14 < self_hosted`). Add two guards there:
+    Update `tests/test_distribution_gate.py:215-256` to the new markers, file names and order (`v13_cut < v14_p25 < v14_successors < v14_suite < v14 < self_hosted`).
+    - **Keep P1's `v13_real` pin under the v14 names (P3A2-1).** P1 added `v13_real = source.index("zz_slow/test_b106_witness_real_runs.py")` with `v13_suite < v13_real < v13`, plus a same-command-block, not-a-comment check. After this package that becomes `v14_suite < v14_real < v14`, where `v14_real` is the index of `"zz_slow/test_b106_witness_real_runs.py"` and `v14` is the `verdict-v14-successors-verified` marker.
+    - The new `tests/test_v14_contract.py` and `tests/test_r2_command.py` paths go into the **same** pytest command block as `test_b106_reuse_and_witness.py` and `zz_slow/test_b106_witness_real_runs.py`. Keep P1's block check.
+
+    Add two guards there:
     - the marker string `verdict-v13-successors-verified` is **absent** from the gate script;
     - the hard-cut probe tuple contains `("W9", 13)`.
-13. **Version-literal tests.** Update every literal `13` that means the schema version:
-    - `tests/test_standalone.py` 343, 702, 1231, 1600;
+13. **Version-literal tests.** Update every literal `13` that means the schema version. **Paths are those after P1's moves (C30).** Find each test by name, because line numbers are from `db85f747`, before P1's moves:
+    - `tests/zz_slow/test_standalone.py` (P1 moved the whole file), at the lines that were 343, 702, 1231 and 1600;
     - `tests/test_verify_layer_independence.py` 111, 515;
     - `tests/test_verdict_conformance.py` 1209 and the message at 1323;
     - `tests/test_reuse_coverage_controls.py` 19, 93;
@@ -522,10 +540,14 @@ Its expected verify result is `[]`.
 14. **Hand-built native `JudgmentR2`/raw r2 dicts** in the test files the map lists must gain `cold_witness_kills=False`:
     - `test_verdict_judgment.py` (27);
     - `test_verdict_mutation_artifacts.py` (6);
-    - `test_runner_assemble_verdict_mutation.py`, `test_verdict_b105_constructors.py`, `test_verdict_interval_and_unsupported.py`, `test_verdict_claims.py`, `test_verdict_serialises.py`, `test_verify_layer_independence.py` (5 raw), `test_reuse_coverage_controls.py` (5), `test_standalone.py`, `test_verify_raw_b105.py`;
-    - the exact `judgment.r2` dict pins in `tests/test_cli_run.py` (~409-443, 576-577, 672, 760), `tests/test_standalone.py:775` and `tests/test_verdict_judgment.py:549`.
+    - `test_runner_assemble_verdict_mutation.py`, `test_verdict_b105_constructors.py`, `test_verdict_interval_and_unsupported.py`, `test_verdict_claims.py`, `test_verdict_serialises.py`, `test_verify_layer_independence.py` (5 raw), `test_reuse_coverage_controls.py` (5), `zz_slow/test_standalone.py`, `test_verify_raw_b105.py`;
+    - the exact `judgment.r2` dict pins, after P1's moves (P3A2-1):
+      - the ~409-443 pin stays in `tests/test_cli_run.py`. It is the liveness-inactive test before the moved ones.
+      - The pins formerly at 576-577, 672 and 760 now live in **`tests/zz_slow/test_cli_run_real_campaigns.py`**, inside `test_run_liveness_classifies_a_thread_join_hang_as_hung`, `test_run_liveness_classifies_a_busy_loop_as_budget_exceeded_not_hung` and `test_run_liveness_does_not_turn_a_configure_time_raise_into_a_false_survivor`. Find them by those names.
+      - `tests/zz_slow/test_standalone.py`: the pin formerly at `:775`.
+      - `tests/test_verdict_judgment.py:549`.
 
-    Use `grep -rn "producer=\"native\"\|'producer': 'native'\|\"producer\": \"native\"" tests/` to find the rest.
+    Use `grep -rn -e 'producer="native"' -e "'producer': 'native'" -e '"producer": "native"' tests/`. It recurses into `tests/zz_slow/`. Use it to find the rest.
 15. **Docs sync** (below). CHANGES `## [Unreleased]`.
 16. **Run** the focused suites, then the gate (below). Write the report.
 
@@ -710,7 +732,9 @@ Verify each anchor with `grep -n` first.
 - Remove containers by exact name only.
 
 1. Run the focused suites serially:
-   `nice -n 19 ionice -c3 python -m pytest tests/test_r2_command.py tests/test_v14_contract.py tests/test_verdict_conformance.py tests/test_verify_layer_independence.py tests/test_b106_reuse_and_witness.py tests/test_gate_qualify_dstdns_sql.py tests/test_dataclass_contract.py tests/test_self_lane.py tests/test_distribution_gate.py tests/test_gate_harness_version_pins.py -q -p no:cacheprovider`
+   `nice -n 19 ionice -c3 python -m pytest tests/test_r2_command.py tests/test_v14_contract.py tests/test_verdict_conformance.py tests/test_verify_layer_independence.py tests/test_b106_reuse_and_witness.py tests/zz_slow/test_b106_witness_real_runs.py tests/test_gate_qualify_dstdns_sql.py tests/test_dataclass_contract.py tests/test_suite_layout.py tests/test_self_lane.py tests/test_distribution_gate.py tests/test_gate_harness_version_pins.py tests/test_cli_run.py tests/zz_slow/test_cli_run_real_campaigns.py -q -p no:cacheprovider`
+   - `test_gate_qualify_dstdns_sql.py`'s docker test skips without its fixtures. Do not provide them.
+   - `tests/zz_slow/test_standalone.py` builds a wheel and venv. Run it once, niced, after the others pass.
 2. Run the full local suite once, serially and niced, as a pre-gate sanity check (not the gate).
 3. Run the gate:
    `cd <worktree>/assay && python ./run-gate.py tester-unified > /tmp/b110-p3a-gate.log 2>&1; echo EXIT=$?`
@@ -723,7 +747,8 @@ Verify each anchor with `grep -n` first.
 If a named contract cannot be met as specified, STOP. This applies when:
 - a §5 wire shape conflicts with an existing invariant you cannot preserve;
 - P10a's anchor grammar is not accepted when you reach the `ledger` validation (this is the partial case below, not a full stop);
-- `qualify_dstdns_sql.py`'s end-to-end regeneration of the W3 witness disagrees with the hand migration;
+- the migrated W3 witness fails the round-trip test or `verify_document(_witness_as_actual())` and cannot be fixed by the per-cut migration alone;
+- a test the brief names is not where P1's move list says it is (a missing P1 move);
 - a verifier rule would require widening `_INDEPENDENT_R2_TERMINALS`;
 - the gate needs a file outside the touch list.
 

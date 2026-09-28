@@ -1,6 +1,11 @@
 # B110-P3c — Liveness window lane keys with guardrails, and their v14 disclosure
 
-**Revised 2026-09-28 after the round-1 review (see `REVIEW-2026-09-28-round1.md`).** This revision applies P3C-1..P3C-8, the wrong anchors, and carver decision C17.
+**Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).** Round 1 applied P3C-1..P3C-8, the wrong anchors, and carver decision C17. Round 2 applied P3C2-1, P3C2-2 and C30:
+- the properties return `float | None`;
+- `LivenessRunner` exposes public `cpu_window_s`/`cpu_growth_floor_s`;
+- `LivenessCalibration` gains `idle_floor_s`;
+- the impossible runtime-inactive fixture is dropped;
+- tests are found by name after P1.
 
 | Field | Value |
 |---|---|
@@ -97,7 +102,12 @@ liveness_idle_floor = "5s"     # default when omitted: 15s (liveness.LIVENESS_ID
 - The minimum of 5 s is 5 × the 1 s poll interval and gives a growth floor of 5/30 ≈ 0.167 CPU-seconds per window.
 - The maximum of 1 h keeps the disclosure finite and the window shorter than any realistic `budget_per_candidate`.
 
-**Runtime-inactive lanes.** A lane can pass row 7 and still run with liveness inactive at run time, for example when `inject_liveness_plugin` refuses. The disclosure then emits `cpu_window_s: null` and `idle_floor_s: null`, following P3a's inactive rule. The declared strings remain visible in `assay lanes --json`.
+**Runtime-inactive lanes.** `inject_liveness_plugin` (`liveness.py:~430-470`) goes inactive only in three cases:
+- `liveness = false` (`declared-false`);
+- `true` with a non-pytest argv;
+- auto with a non-pytest argv (`argv-does-not-invoke-pytest`).
+
+Rows 6 and 7 (plus RW-36) refuse the keys at load in exactly those cases, so a lane that **declares** the keys can never run with liveness inactive; that combination is impossible (round-2 P3C2-2). The inactive disclosure (`cpu_window_s: null`, `idle_floor_s: null`, P3a's rule) therefore applies only to lanes that do **not** declare the keys, for example a non-python lane (`language-not-python`) or `liveness = false`. That case is pinned by the "Valid, inactive" example and the existing inactive exact-dict pin at `test_cli_run.py` ~409-443.
 
 **Fallback path.** When the calibration falls back to `max(60, baseline/4)` (no plugin events; `liveness.py:996-1002`), the idle floor is **not** applied. The disclosed `idle_floor_s` is the **declared/effective configuration value** passed to calibration, not a claim that it bounded this run. DESIGN-GUIDE states this.
 
@@ -105,7 +115,7 @@ liveness_idle_floor = "5s"     # default when omitted: 15s (liveness.LIVENESS_ID
 - `liveness_cpu_window: str | None = None`;
 - `liveness_idle_floor: str | None = None`.
 
-These are the **declared strings**. The parsed seconds are derived at use: add the properties `liveness_cpu_window_s -> float` and `liveness_idle_floor_s -> float`, which return the parsed value or the liveness-module default. `as_declared()` echoes each key **only when declared**, as the verbatim string, like the `liveness` key at 641. `_MUTATION_OPTIONAL_FIELDS` gains both names.
+These are the **declared strings**. The parsed seconds are derived at use: add the properties `liveness_cpu_window_s -> float | None` and `liveness_idle_floor_s -> float | None`. They return the parsed declared value, or **`None` when undeclared**. They never return a liveness-module default; that resolution belongs to `liveness.py` (round-2 P3C2-1). `as_declared()` echoes each key **only when declared**, as the verbatim string, like the `liveness` key at 641. `_MUTATION_OPTIONAL_FIELDS` gains both names.
 
 **`liveness.py`** (carver decision C17):
 - New module constant, directly under 524:
@@ -116,6 +126,9 @@ These are the **declared strings**. The parsed seconds are derived at use: add t
 
   `_HUNG_CPU_GROWTH_FLOOR_S = 1.0` and `_HUNG_CPU_WINDOW_S = 30.0` **stay**, because tests reference them (`test_liveness_runner_monitor.py:209, 343, 348`). A new unit test pins `_HUNG_CPU_WINDOW_S * _HUNG_CPU_GROWTH_FRACTION == _HUNG_CPU_GROWTH_FLOOR_S` (exactly `1.0`, verified in float).
 - `compute_liveness_calibration(..., idle_floor_s: float | None = None)`. `None` resolves **at call time** to the module attribute `LIVENESS_IDLE_FLOOR_S`. It replaces `LIVENESS_IDLE_FLOOR_S` at 1006 and 1009 with the resolved value. `LIVENESS_FALLBACK_FLOOR_S` (60 s) is **unchanged**.
+- **`LivenessCalibration` (the NamedTuple at `liveness.py:844`; constructed only at 998 and 1004 in `src/`) gains a trailing field `idle_floor_s: float`** (round-2 P3C2-1). It is the resolved floor that calibration used: the declared value, or `LIVENESS_IDLE_FLOOR_S` at call time.
+  - It is set on **both** return paths. The fallback path also records the resolved value, even though that path does not apply it; see "Fallback path" above.
+  - Append it last, so positional construction and unpacking elsewhere keep working. Grep `LivenessCalibration(` and fix every constructor in `src/` and `tests/`.
 - `LivenessRunner.__init__(..., cpu_window_s: float | None = None)`. In `__init__`:
 
   ```python
@@ -123,6 +136,8 @@ These are the **declared strings**. The parsed seconds are derived at use: add t
   self._cpu_window_s = window
   self._cpu_growth_floor_s = window * _HUNG_CPU_GROWTH_FRACTION           # the ONE formula; never window / 30
   ```
+
+  Add **public read-only properties** `LivenessRunner.cpu_window_s -> float` and `LivenessRunner.cpu_growth_floor_s -> float` (round-2 P3C2-1). The runner and the tests read the effective window and floor through them, never through the private attributes (§3b-C).
 
   The `None` default is **not** `= _HUNG_CPU_WINDOW_S` in the signature, because that binds at definition time and would ignore the existing monkeypatch at `test_liveness_runner_monitor.py:209`. With construction-time lookup, that test sees window 2.0 and floor 2.0 × (1/30). Its flat CPU still never grows, so its `clock.t == 5.0` pin holds unchanged.
 - `_monitor` uses `_CpuSampleHistory(self._cpu_window_s)` at 1458 and `>= self._cpu_growth_floor_s` at 1498.
@@ -134,7 +149,11 @@ These are the **declared strings**. The parsed seconds are derived at use: add t
 - `_build_judgment_r2` gains the kwargs `liveness_cpu_window_s: float | None` and `liveness_idle_floor_s: float | None`. The liveness dict emits them when `liveness_active` is true and `None` when inactive, matching the P3a model rule.
 - The `plan` progress event gains **top-level** keys `"cpu_window_s"` and `"idle_floor_s"`, beside the existing `worst_gap_s` and `expect_next_event_within_s` (`mutation.py:2251-2254`). They are **not** nested inside a `liveness` sub-object, and both are `null` when liveness is inactive. The values reach `run_mutation` through a new kwarg, `liveness_windows: tuple[float, float] | None = None`, in the fixed order **`(cpu_window_s, idle_floor_s)`**.
 
-`MutationConfig` properties `liveness_cpu_window_s` and `liveness_idle_floor_s` return the parsed declared value, or `None` when undeclared. The `None` then resolves in `liveness.py` as above. The runner passes the effective resolved values (`runner._cpu_window_s`, and the calibration's resolved floor) to the plan event and the disclosure, **never** a re-derived default.
+`MutationConfig` properties `liveness_cpu_window_s` and `liveness_idle_floor_s` return the parsed declared value, or `None` when undeclared. The `None` then resolves in `liveness.py` as above. The runner passes the **effective resolved values** to the plan event and the disclosure:
+- `candidate_runner.cpu_window_s`, the public property on the constructed `LivenessRunner`;
+- `calibration.idle_floor_s`, the new `LivenessCalibration` field.
+
+It **never** passes a re-derived default, and never a private attribute (round-2 P3C2-1).
 
 ### Serialized examples
 
@@ -193,8 +212,8 @@ These are the **declared strings**. The parsed seconds are derived at use: add t
 | window used by the monitor | liveness | `LivenessRunner(cpu_window_s=6.0)` with no progress events, an injected `cpu_reader` and an injected `monotonic`/`sleep` (**no real time**; the `_FakeClock`/`_ScriptedProc` harness of `test_liveness_runner_monitor.py`). Growth floor = `6 × (1/30) = 0.2`. A CPU sequence growing 0.05 s per 1 s poll (0.30 per 6 s window, above 0.2) → **not** hung. A flat sequence with `expect_next_event_within_s = 8.0` → `LivenessHungExpired`, fired **exactly** at the pinned tick `clock.t == 8.0` (idle reaches the bound after the 6 s window already decided not-growing) | new cases in `tests/test_liveness_runner_monitor.py` (additive) | keep the absolute 1.0 floor → the 0.05-per-poll case is hung → red; an off-by-one 7 s window changes nothing at 8.0, but the companion case below catches it |
 | window length pinned | liveness | flat CPU, `cpu_window_s=6.0`, `expect_next_event_within_s=3.0`, so idle crosses first and CPU is still undecided → hung fires exactly at **`clock.t == 6.0`**, the first tick with a full 6 s history | same file | a 7 s window → fires at 7.0 → red; a 5 s window → fires at 5.0 → red |
 | formula pin | liveness | `_HUNG_CPU_WINDOW_S * _HUNG_CPU_GROWTH_FRACTION == _HUNG_CPU_GROWTH_FLOOR_S`. For `cpu_window_s=5.75` the instance floor equals `5.75 * _HUNG_CPU_GROWTH_FRACTION` bit-for-bit | `tests/test_liveness_lane_keys.py` | use `window / 30` → differs in the last bit at 5.75 → red |
-| default exactness | liveness | `LivenessRunner()` with no kwarg has window 30.0 and floor 1.0. The existing monitor tests, including `:209`'s monkeypatch and `:259-350`'s boundary test, stay green **unchanged** | existing | a signature default `= _HUNG_CPU_WINDOW_S` → `:209` ignores the monkeypatch → red |
-| idle floor in calibration | liveness | `compute_liveness_calibration(..., idle_floor_s=5.0)` with a tiny `worst_gap` → a bound of 5.0. The default call → 15.0 | unit, `tests/test_liveness.py` style | ignore the kwarg → 15.0 → red |
+| default exactness | liveness | `LivenessRunner()` with no kwarg: the **public** `cpu_window_s == 30.0` and `cpu_growth_floor_s == 1.0`. With `_HUNG_CPU_WINDOW_S` monkeypatched to 2.0 before construction: `cpu_window_s == 2.0`. The existing monitor tests, including `:209`'s monkeypatch and `:259-350`'s boundary test, stay green **unchanged**. No private attribute is read (§3b-C, round-2 P3C2-1) | existing plus one new case | a signature default `= _HUNG_CPU_WINDOW_S` → the monkeypatched construction reports 30.0 and `:209` ignores the monkeypatch → red |
+| idle floor in calibration | liveness | `compute_liveness_calibration(..., idle_floor_s=5.0)` with a tiny `worst_gap` → a bound of 5.0, and **`calibration.idle_floor_s == 5.0`**. The default call → 15.0 and `idle_floor_s == 15.0`. The fallback path (no events) → bound `max(60, baseline/4)`, with `idle_floor_s` still the resolved value (5.0 / 15.0), recorded but not applied | unit, `tests/test_liveness.py` style | ignore the kwarg → 15.0 → red; omit the field on the fallback path → `AttributeError`/`TypeError` → red |
 | idle floor threaded by the runner | runner | on the declared-keys smoke lane (window 6s, floor 5s), the `plan` progress event satisfies `expect_next_event_within_s == max(3.0 * worst_gap_s, idle_floor_s)` and `idle_floor_s == 5.0`, `cpu_window_s == 6.0`. This compares two disclosed values from the same event and involves **no timing** | the hang smoke test's progress stream (add `--progress` to its invocation) | the runner forgets to pass `idle_floor_s` → the relation uses 15 → red whenever `3 × worst_gap < 15`. The fixture must assert `3.0 * worst_gap_s < 15.0` first and skip-fail loudly (pytest.fail with a message, **not** a skip) if not, so the oracle is never vacuous |
 | disclosure | runner / verdict | the declared-keys lane → `judgment.r2.liveness == {"active": True, "reason": "auto-pytest-argv", "plugin": <pin>, "cpu_window_s": 6.0, "idle_floor_s": 5.0}` and `assay verify` gives `[]`. Without keys → 30.0/15.0 | the hang smoke test's exact dict pin (was `test_cli_run.py:577-582`) | swap window and floor → 5.0/6.0 → red; emit the lane strings instead of floats → a verify/model failure → red |
 | B105 defaults pinned | tests | `tests/test_self_lane.py` asserts that neither `self-qualification` nor `self-qualification-preflight` declares `liveness_cpu_window` or `liveness_idle_floor` (O-B105) | `tests/test_self_lane.py` (additive) | add a key to a B105 lane → red |
@@ -267,7 +286,8 @@ The traceability rows are the oracles. Each has its observable, the controlled b
 1. `liveness` omitted, a `/bin/sh` argv on a python lane, and both keys declared → row 7 refusal. This path had no test before.
 2. Window 6s with idle floor 5s → catches a swapped disclosure or wrong threading.
 3. The existing `:209` monkeypatched test run under the new signature → still `clock.t == 5.0`.
-4. Keys declared, and the plugin inactive at run time (a runtime refusal from `inject_liveness_plugin`) → disclosure `null`/`null`, while `assay lanes --json` still echoes the declared strings.
+
+(Round-1 fixture 4, "keys declared and the plugin inactive at run time", was **dropped** in round 2 (P3C2-2). Rows 6 and 7 plus RW-36 refuse the keys in every case where `inject_liveness_plugin` would go inactive, so the combination cannot be constructed. Fixture 1 covers the refusal side, and the existing inactive pin covers the undeclared-inactive disclosure.)
 
 ### Forbidden oracle patterns (AUTHORING.md §3b, verbatim)
 

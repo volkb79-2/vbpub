@@ -50,7 +50,8 @@
    - So B110's "273 survivor worker-hours" is the cost of a campaign that would **fail anyway**. Survivor cost belongs to a non-qualifying find-and-fix loop. A *qualifying* run costs, summed over 3,760 kills, snapshot + startup/collection + the declared-order prefix up to the first failing test.
 7. **What a qualifying run costs on the claim-preserving path** (scenario, not forecast; §6):
    - per kill ≈ S + C + P ≈ 10–21 s, where S is the snapshot (2–4 s today, ~1–2 s after P5), C is interpreter start plus collection (≈8–9 s) and P is the prefix to the first failure (unmeasured);
-   - that is 3.5–7.3 h on 3 workers plus ~40 min of fixed work, which fits the 6 h target only at the low end;
+   - after P5 that is 9.4–21.4 s per kill, i.e. 3.3–7.5 h on 3 workers, or 3.9–8.1 h with fixed work. That fits the 6 h target only at the low end;
+   - **against the plan's Pilot GO thresholds:** ≤ 4 h at the median including ~0.63 h of fixed work means ≤ ~9.7 s per kill, and p90 ≤ 5 h means ≤ ~12.5 s. The no-prefix floor after P5 is already 9.4–11.4 s. Pilot GO is therefore reachable only if the unmeasured no-cov start-up and collection time is well below the 7.9–8.9 s measured under coverage, and prefixes are tiny. **Plan for B121 (isolation units) or measured remote capacity as a likely outcome, not a remote one** (round-2 N-12);
    - correction to the first draft (arithmetic re-checked in the round-1 review): the fixed per-kill cost of snapshot + start/collection + overhead is 9.4–13.4 s. Across 3,760 kills on 3 workers, that uses **3.3–4.7 h** of the 5 h candidate budget. The budget is 54,000 worker-s / 3,760 = 14.4 s per kill, so the **mean prefix must be ≤ ~1–5 s**;
    - **the pilot decides.** The isolation-unit model (≈0.7–2.3 h) is the designed fallback.
 8. **Operator decisions from the interview** (full list in the plan §3):
@@ -213,13 +214,13 @@ A precise `--baseline-from` design is in plan P0 and research R4 §C.
 
 | # | Cause | Mechanism | Evidence | Remedy (package) |
 |---|---|---|---|---|
-| 1 | Full suite per candidate, even for kills | The declared command has no stop condition. The witness plugin cannot stop: B105's argv is ineligible because of `--override-ini` (`mutation_witness.py:60-63`); pytest-cov's `pytest_runtestloop wrapper=True` breaks `standard_loop`; and the conftest `pytest_sessionfinish` is untrusted. | every kill `tests_completed=5831` | cold witness + R2 command (P3) |
+| 1 | Full suite per candidate, even for kills | The declared command has no stop condition. The witness plugin cannot stop: B105's argv is ineligible because of `--override-ini` (`mutation_witness.py:60-63`); pytest-cov's `pytest_runtestloop wrapper=True` breaks `standard_loop`; and the conftest `pytest_sessionfinish` is untrusted. | every kill ran its whole collected suite (5,831 in 30eec294; 5,819 in e79) | cold witness + R2 command (P3) |
 | 2 | Estimate without evidence | 60 s constant | `cli.py:1786-1801` | `--baseline-from` (P0) |
 | 3 | Spinning hangs run to 3× budget | cursor non-advance, CPU busy, so not `hung` | e79: 4 × 1,518 s | guards (P2) |
 | 4 | Heavy tests early in the declared order | alphabetical collection | §4.3 | tiered `zz_slow` (P1) |
 | 5 | Tests that cannot kill | PATH wheel / locked 1.2.5 wheel | 97.8 worker-h per campaign | `--ignore` (P1) |
 | 6 | Real-clock tests | 30 s CPU window, 15 s idle floor | 66.7 s | lane-level liveness keys; short windows in test lanes only (P3c) |
-| 7 | Idle CPUs | `jobs = 1`; the executor uses joined waves | 0.83–0.89 cores | work queue (P4) |
+| 7 | Idle CPUs | `jobs = 1`; the executor uses joined waves | 0.89 cores (preflight) [M]; 0.83 [unverified] | work queue (P4) |
 | 8 | Heavy snapshot | whole repo, full history; status hashes every file (zeroed stat after `read-tree`); the full closure is re-walked | 18+6 git procs | C1/C2 (P5) |
 | 9 | Duplicate R0/R1 | the preflight and the lane both run R0/R1 (R2 starts on an R0 PASS even when R1 refuses, `runner.py:4099`) | +~9 min | accepted as fixed cost; the preflight is a safety gate (A-462) |
 | **S** | **Survivors present** | a native PASS needs all kills; no native equivalence path | 7/15 and 9/39 survivors | screen → fix → ledger (P1 contract test, P10, runbook §9) |
@@ -237,13 +238,15 @@ A precise `--baseline-from` design is in plan P0 and research R4 §C.
   - `W_eff`: effective workers. ≤3 locally (3 CPUs, 2 GiB aggregate).
   - `T_fixed`: ≈35–40 min [A]. Setup is 1–3 min, preflight 526–548 s, the lane's own coverage baseline 504–520 s, the no-cov baseline ≈1 suite, the R3 control ≈1 suite (`canary.py:300`), plus consolidation and verify (seconds).
 
-| Scenario (scenario, not forecast) | Per kill | 3,760 kills on 3 workers | + fixed | Fits 6 h? |
-|---|---:|---:|---:|---|
-| S+C+O only, today's snapshot (S 2–4, C 7.9–8.9, O 0.5) | 10.4–13.4 s | 3.6–4.7 h | 4.2–5.3 h | only if P ≈ 0 |
-| S+C+O only, after P5 (S 1–2) | 9.4–11.4 s | 3.3–4.0 h | 3.9–4.6 h | leaves 1.4–2.1 h for Σ P |
-| Mean P = 3 s, after P5 | 12.4–14.4 s | 4.3–5.0 h | 4.9–5.7 h | borderline |
-| Mean P = 10 s, after P5 | 19.4–21.4 s | 6.8–7.5 h | 7.4–8.1 h | **no** |
-| Isolation units (P11): S + unit start + K | ≈2–6.5 s (S alone is 1–2 s) | 0.7–2.3 h | 1.3–2.9 h | yes |
+| Scenario (scenario, not forecast) | Per kill | 3,760 kills on 3 workers | + fixed | Fits 6 h? | Meets Pilot GO (median ≤ 4 h incl. fixed, i.e. ≤ ~9.7 s/kill)? |
+|---|---:|---:|---:|---|---|
+| S+C+O only, today's snapshot (S 2–4, C 7.9–8.9, O 0.5) | 10.4–13.4 s | 3.6–4.7 h | 4.2–5.3 h | only if P ≈ 0 | no |
+| S+C+O only, after P5 (S 1–2) | 9.4–11.4 s | 3.3–4.0 h | 3.9–4.6 h | leaves 1.4–2.1 h for Σ P | only at the very low end, with P ≈ 0 |
+| Mean P = 3 s, after P5 | 12.4–14.4 s | 4.3–5.0 h | 4.9–5.7 h | borderline | no |
+| Mean P = 10 s, after P5 | 19.4–21.4 s | 6.8–7.5 h | 7.4–8.1 h | **no** | no |
+| Isolation units (P11): S + unit start + K | ≈2–6.5 s (S alone is 1–2 s) | 0.7–2.3 h | 1.3–2.9 h | yes | yes |
+
+C is measured under coverage (sysmon). The no-cov C is unmeasured, and it is the single number most likely to move these rows.
 
 Every row is re-derived as `per_kill × 3,760 / 3 / 3,600`, plus 0.6–0.67 h fixed. The arithmetic was checked in the round-1 review (R-10).
 

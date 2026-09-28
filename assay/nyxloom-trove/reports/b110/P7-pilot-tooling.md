@@ -1,6 +1,8 @@
 # B110-P7 — Pilot tooling: non-qualifying candidate selection runs, a deterministic selector, and the pilot runbook
 
-*Revised 2026-09-28 after round-1 review (see REVIEW-2026-09-28-round1.md). Applies findings P7-1..P7-7 and carver decisions C3 (via P6), C5, C6, C7 and C15.*
+*Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).*
+- Round 1 applied findings P7-1..P7-7 and carver decisions C3 (via P6), C5, C6, C7 and C15.
+- Round 2 applies findings P7R2-1..P7R2-7 and carver decisions C23, C27 (the `glob("*.json")` record assertion) and C31.
 
 | Field | Value |
 |---|---|
@@ -9,7 +11,7 @@
 | Depends on | **P0** (B111) for the per-candidate resource and phase fields.<br>**P6** (B117) for `mutation.plan_sha256`. P6 is its **single owner** (P7-7): import it and never redefine it.<br>**P7b** (Work step 9, the gate-script `b110-pilot` and `b110-screen` modes) also needs **P3b** (`--cold-witness`), **P6** (`campaign init`, `--campaign-deadline`, the gate's `remaining_s` rule, C3) and the whole v14 branch merged on its base. The controller dispatches it after those merge.<br>The screen's re-invocations depend on **P6's C3** change. Without it, a re-invocation would replay stale lane-timeout `budget_exceeded` records (P7-5). |
 | Contract class | **2c**: bounded integration against fixed contracts |
 | Implementer | Sonnet (fresh session) |
-| Decisions | **A-474 (plan D10)**. Relevant: A-461 (the `candidate_ids` inventory is equal to the bucket IDs), A-464 (the pilot is measurement, never qualification). Round-1 carver decisions:<br>• **C5**: a selection enables the state root;<br>• **C6**: two-stage GO, so the pilot feeds only "Pilot GO";<br>• **C7**: no consolidation measurement in the pilot;<br>• **C15**: dataclass fixture. |
+| Decisions | **A-474 (plan D10)**. Relevant: A-461 (the `candidate_ids` inventory is equal to the bucket IDs), A-464 (the pilot is measurement, never qualification). Round-1 carver decisions:<br>• **C5**: a selection enables the state root;<br>• **C6**: two-stage GO, so the pilot feeds only "Pilot GO";<br>• **C7**: no consolidation measurement in the pilot;<br>• **C15**: dataclass fixture.<br>Round-2 carver decisions:<br>• **C23**: the pinned `run_mutation` order. The selection is applied **after** P6's full-list digest check and after P10's ledger placement, and before resume lookup.<br>• **C27**: record assertions use `glob("*.json")`, so non-JSON store files (`PILOT-STATE`, P9's `.lock` and `CAMPAIGN-IDENTITY`) are tolerated.<br>• **C31**: any `timeout` exit ≥ 124 is a failsafe with no trusted output. |
 | Size | M: `cli.py` (two flags, one `_finish` closure, pilot summary), the `runner.py`/`mutation.py` selection threading plus the state-root gate, one new tool, two new test files, the gate script (P7b), `run-gate.toml` (P7b), docs |
 
 ---
@@ -21,7 +23,7 @@ Paths are relative to `assay/`. Line numbers were verified at HEAD `db85f747`.
 1. `nyxloom-trove/reports/assay-B110-PLAN-2026-09-28.md`: §0, §3 D10, §7 (pilot), §8 (go/no-go), §10.
 2. `src/assay/cli.py`:
    - `:255-328`: the `run` parser, including `--shard` at `:289`, `--reuse-from` at `:290-300` and `--rejudge*` at `:301-327`.
-   - `:725-812`: `_cmd_run`. The `--operators` lane override via `replace(...)` at `:731-760` is the **precedent** for the pilot lane override. `_resolve_state_dir` is called at `:804`.
+   - `:725-812`: `_cmd_run`. The `--operators` lane override via `replace(...)` at `:736-762` is the **precedent** for the pilot lane override. `_resolve_state_dir` is called at `:804`.
    - `:1124`: `_run_reserved`. Its **three verdict tails** each write, emit and print, and all three are intercepted (§F):
      - `:1318-1325` (the HEAD-read LANE_TIMEOUT refusal);
      - `:1407-1413` (the evidence refusal);
@@ -31,7 +33,7 @@ Paths are relative to `assay/`. Line numbers were verified at HEAD `db85f747`.
    - `:1481`: the `run_lane` call.
    - `:1820-1853`: the `assay plan` row and payload shape (`id`, `path`, `operator`, `start_byte`, `end_byte`, `lineno`, `description`). `assay plan` has **no `--json` flag**; it always prints JSON. Plan §7's `--json` is a typo.
 3. `src/assay/mutation.py`:
-   - `:290-315`: `InvalidRejudgeIdError` and `_reject_unknown_rejudge_ids`, the pattern for unknown IDs.
+   - `:292-315`: `InvalidRejudgeIdError` (class at `:292`) and `_reject_unknown_rejudge_ids`, the pattern for unknown IDs.
    - `:1023`: `candidate_id`.
    - `:2140-2150`: `run_mutation` refuses `resume`/shard without a `state_root`. The selection now also requires one (C5).
    - `:2318-2343`: the selection block, where the selection is applied and which is mutually exclusive with sharding.
@@ -87,14 +89,32 @@ Invalid (each refused before any work with `LaneConfigError`, which becomes `ERR
 `--resume` **is permitted** with `--candidates-file` (C5). An interrupted pilot can be resumed in the same state dir. It then resumes only records whose judge identity matches, as for any `--resume`.
 
 **C2. The pilot sentinel.** Before any execution, `_cmd_run` writes the file `<state-dir>/PILOT-STATE` atomically (temp file plus `os.replace`). It has no `.json` extension, so the `*.json` record globs never see it (P9-1). Its content is the JSON `{"schema": "assay-pilot-state/1", "selection_sha256": "<hex>", "lane": "<lane>"}`.
-- If the file already exists with a different `selection_sha256`, refuse with exit 2: one pilot selection per state dir.
+
+Refusals, each with exit 2 before any execution and stderr naming `PILOT-STATE` (P7R2-6):
+- the file exists with a different `selection_sha256`: one pilot selection per state dir;
+- the file exists but is **malformed**: not valid JSON, a duplicate key, a wrong `schema`, or a key set other than exactly those three;
+- the file exists for a **different `lane`**;
+- the file is **absent**, but the state dir already holds `<64hex>.json` state records. That is a non-pilot store, such as a screen or a qualifying campaign, and a pilot must never write into it.
+
+A same-selection, same-lane re-run (`--resume`) over its own sentinel passes.
 - P9's `assay state import` refuses any source directory that contains `PILOT-STATE` (A-474, P7-7). Until P9 exists, this file is the machine-checkable marker; D10 is not left to operator discipline.
 
 **D. The pilot lane.** `_cmd_run` builds it once, like the `--operators` precedent:
 `replace(lane, rigor=tuple(r for r in lane.rigor if r != "R3"), judge=replace(lane.judge, mutation=replace(lane.judge.mutation, jobs=N)))`.
 R3 is **not executed**.
 
-**E. Selection threading.** `candidate_selection: frozenset[str] | None = None` goes from `run_lane` through `_run_higher_rigor_lane` and `_run_prepared_lane` to `run_mutation`, exactly like `reuse_from`. In `run_mutation`, at the selection block (`:2323`):
+**E. Selection threading.** `candidate_selection: frozenset[str] | None = None` goes from `run_lane` through `_run_higher_rigor_lane` and `_run_prepared_lane` to `run_mutation`, exactly like `reuse_from`.
+
+**The order in `run_mutation` is pinned by C23 (P7R2-1).** P6, P7 and P10 all edit this block:
+1. discovery (`job_list`);
+2. P6's campaign plan-digest check, over the **full** discovered `job_list`;
+3. P10's ledger placement (only with `--equivalence-audit`, which is refused together with `--candidates-file`, so it is inert for a pilot);
+4. **this selection** (or the shard selection);
+5. resume lookup.
+
+The selection must **never** narrow `job_list` before step 2. Otherwise every pilot, which always runs with `--campaign-deadline` in P7b, would be refused `BAD_LANE_CONFIG` after its R0/R1 baselines had already run. T13 proves the combined order.
+
+At the selection block (`:2323`), after P6's check:
 
 ```python
 current_ids = [candidate_id(job) for job in job_list]
@@ -160,14 +180,18 @@ Field rules:
 2. its `reason_code` is not `LANE_TIMEOUT`;
 3. the union of the bucket IDs equals the selection.
 
-When `completed` is false, `unresolved` lists the selected IDs that are absent from the payload or sit in `budget_exceeded` under an R2 `LANE_TIMEOUT`.
+When `completed` is false, `unresolved` lists the selected IDs that were **masked**, defined by the mask and not by the bucket (P7R2-2). Those are selected IDs that are absent from the payload, or that sit in `budget_exceeded` **with no state record** in `--state-dir`: never submitted, or cut off by the lane or campaign deadline and left unclassified by P6's C3.
+
+A `budget_exceeded` candidate **with** a state record is a real, per-candidate-budget outcome. It is not unresolved, even when R2 as a whole ends `LANE_TIMEOUT`.
 
 If the run is refused before R2 (R0 fails, a config refusal, a timeout before R2), the summary still prints: `completed: false`, `r2: null`, `buckets: null`, and the refusal's `status`/`reason_code` go under `"refusal"`.
 
 **G. Exit codes.**
 - **6** iff `completed`.
 - Otherwise the in-memory verdict's own `exit_code`, which is in 1–5.
-- A pilot can never exit 0. Enforce this with `assert code != 0` before return, and cover it with a test.
+- A pilot can never exit 0. Enforce this with an **explicit branch**, not an `assert`, because `assert` disappears under `-O` (P7R2-7):
+  - `if code == 0:` write one stderr line, `assay: pilot: a non-completed selection produced a PASS verdict; reporting ERROR`, and set `code = EXIT_CODES[Outcome.ERROR]` (2).
+  - A test covers that branch, as the 100% floor requires: monkeypatch the completeness predicate (a named private helper, `cli._pilot_completed`) to return `False` on an all-killed PASS verdict, and assert exit 2 plus that line.
 
 **H. Selector: `tools/b110_pilot_select.py`** (a standalone script; stdlib only)
 
@@ -250,7 +274,9 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
 | valid file, R2 completes, any bucket mix (including survivors, so R2 is FAIL/MUTANTS_SURVIVED) | R0 (+R1), R2 on the selection, one state record per executed candidate | summary with `completed: true` | **6** |
 | valid file, every candidate killed | same | summary with `completed: true` | **6, never 0** |
 | same selection re-run with `--resume` in the same state dir | only non-resumed candidates execute | summary with `completed: true` | 6 |
-| `PILOT-STATE` present with a different `selection_sha256` | none | stderr refusal | 2 |
+| `PILOT-STATE` present with a different `selection_sha256`, malformed, or for another lane; or absent while `<64hex>.json` records exist | none | stderr refusal | 2 |
+| `--campaign-deadline` whose `plan_sha256` was computed over the **full** plan, plus a selection | runs; records carry `campaign_deadline_sha256` | summary with `completed: true` | 6 |
+| `--campaign-deadline` whose `plan_sha256` was computed over the **selection only** | baselines, then P6's whole-lane plan-digest refusal | `completed: false`, refusal `ERROR`/`BAD_LANE_CONFIG` | 2 |
 | valid file, pilot deadline expires during R2 | partial | `completed: false`, `unresolved` non-empty | 4 |
 | valid file, R0 fails | R0 only | `completed: false`, `refusal` present | 1 |
 | an ID not in the current plan | baseline, then refusal before any candidate | `completed: false`, refusal `ERROR`/`BAD_LANE_CONFIG` | 2 |
@@ -268,7 +294,9 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
 | never PASS | `cli` | T5 | an all-killed toy lane | return the verdict code → exit 0 |
 | any bucket mix → 6 | `cli._finish` | T8 | selection containing the survivor | "6 only on PASS" → exit 1 |
 | records per executed candidate (C5) | `runner.py:4516-4523` + `run_mutation` | T3 (records clause), T9 | T3 fixture, then `--resume` | state root left `None` → no record files |
-| sentinel | `cli._cmd_run` | T10 | two selections, one state dir | no sentinel check → second pilot runs |
+| sentinel | `cli._cmd_run` | T10 | two selections, one state dir; a malformed sentinel; another lane; a non-pilot store | no sentinel check → second pilot runs |
+| C23 order with a deadline | `mutation.run_mutation` (P6 check before selection) | T13 | in-process `campaign init` + selection | selection applied before the digest → a full-plan deadline is refused |
+| never exit 0 (explicit branch) | `cli._finish` | T14 | monkeypatched `cli._pilot_completed` | `assert` stripped under `-O` / no branch → exit 0 |
 | every verdict tail intercepted | `cli._finish` | T4 (the common tail via the whole-lane refusal), T11 (the HEAD-read timeout tail), T12 (structural) | toy lane; `budget = "0.001s"` precedent from `tests/test_lane_timeout_writes_a_verdict.py` | a tail bypassing `_finish` → T11 prints `_print_run_summary` text or returns 4 without a summary; T12 finds a second `runner.write_verdict(` call in `_run_reserved` |
 | R3 skipped | pilot lane | T6 | toy lane declaring R3 | keep R3 → canary progress events |
 | selection digest | `mutation`/`cli` | T7 | T3 fixture | hash in file order → mismatch |
@@ -285,10 +313,18 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
 ## Work
 
 1. **Red first.**
-   - Add `tests/test_pilot_candidates_file.py` (T1–T12). Build a toy R0+R2 lane repo, following the busy-loop test's shape in `tests/test_cli_run.py` (found by name), with at least 3 fast-killed compare-swap sites and one surviving site. Call `run([...])` in-process.
+   - Add `tests/test_pilot_candidates_file.py` (T1–T14). Build a toy R0+R2 lane repo, following the busy-loop test's shape in `tests/test_cli_run.py` (found by name), with at least 3 fast-killed compare-swap sites and one surviving site. Call `run([...])` in-process.
+   - **No counting process runner.** `default_process_runner` is bound as a default argument (`runner.py:1099`, `:5528`), so there is no seam for counting children (P7R2-5). Count **progress events** instead:
+     - `candidate` events per candidate ID;
+     - the `resume` event's totals;
+     - canary-phase events.
+
+     The one exception is P6's `runner._wait_child` seam, if a test really needs to count child processes. Monkeypatch it; never the bound default.
    - Add `tests/test_b110_pilot_select.py` (S1–S8). Load the tool with `importlib.util.spec_from_file_location("b110_pilot_select", PROJECT_ROOT / "tools" / "b110_pilot_select.py")`, register it in `sys.modules["b110_pilot_select"]` **before** `spec.loader.exec_module(...)` (a dataclass in the tool would otherwise fail, per P1-1), and call `main([...])`.
    - Record the red state in `assay-B118-REPORT.md`.
 2. Add `InvalidCandidateSelectionError`, the selection branch, and `selection_sha256` to `mutation.py`, importing `plan_sha256` from P6's merged code (BLOCKED if it is absent).
+   - Place the selection **after** P6's plan-digest check, in the C23 order.
+   - Add a one-line comment at the block naming the order: `# C23: discovery → campaign digest (full list) → ledger placement → selection/shard → resume`.
 3. Thread `candidate_selection` through `runner.py` (Context 4), apply the C5 state-root condition at `:4516-4523`, and extend the except tuple at `:4532`.
 4. In `cli.py`:
    - add the parser flags after `--reuse-from` (`:300`); P6 also inserts one there, so rebase trivially;
@@ -309,13 +345,20 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
      run_b110_pilot() {
        pilot_campaign="b110-pilot-${source_commit:0:12}"
        pilot_deadline=".assay/campaign-deadline-$pilot_campaign.json"
+       # P7R2-4: init FIRST, so `assay plan` and the selector run inside the 2 h campaign
+       # and the outer failsafe only has to cover the build plus the campaign.
+       if [[ ! -f "$pilot_deadline" ]]; then
+         if ! "$assay_bin" campaign init --file assay.toml \
+              --campaign "$pilot_campaign" --lane self-qualification --hours 2 \
+              --state-dir .assay/b110-pilot-state --wheel-sha256 "$wheel_digest"; then
+           echo "B110_PILOT_INIT_REFUSED=1"
+           return 0      # read the marker; no pilot ran
+         fi
+       fi
        "$assay_bin" plan self-qualification --file assay.toml > .assay/b110-pilot-plan.json
        "$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_pilot_select.py" \
          --plan .assay/b110-pilot-plan.json --repo-root "$worktree" \
          --out .assay/b110-pilot-candidates.txt --report .assay/b110-pilot-selection.json
-       [[ -f "$pilot_deadline" ]] || "$assay_bin" campaign init --file assay.toml \
-         --campaign "$pilot_campaign" --lane self-qualification --hours 2 \
-         --state-dir .assay/b110-pilot-state --wheel-sha256 "$wheel_digest"
        # exactly P6's rule (P6 Flow 12): max(0, floor(expires_at_utc - now_utc)); never "floored at 1"
        remaining_s="$("$scratch/run-venv/bin/python" -c 'import json,sys,math,datetime as d; e=d.datetime.strptime(json.load(open(sys.argv[1]))["expires_at_utc"],"%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc); print(max(0, math.floor((e-d.datetime.now(d.timezone.utc)).total_seconds())))' "$pilot_deadline")"
        set +e
@@ -328,7 +371,8 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
        set -e
        echo "B110_PILOT_EXIT=$pilot_status"
        echo "B110_PILOT_SUMMARY=.assay/b110-pilot-summary.json"
-       [[ $pilot_status -eq 124 ]] && echo "B110_PILOT_TIMEOUT_FAILSAFE=1"   # summary untrusted
+       # C31 / P7R2-3: any status >= 124 (124, 125-127, 137 after --kill-after) is the failsafe
+       [[ $pilot_status -ge 124 ]] && echo "B110_PILOT_TIMEOUT_FAILSAFE=1"   # summary untrusted
        [[ $pilot_status -eq 6 ]] && echo "B110_PILOT_COMPLETED=1"
        return 0      # measurement: completeness is read from the markers, never from this exit
      }
@@ -339,8 +383,10 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
      - `clean_tree = true`, `budget = "2h20m"`;
      - `resources = { cpus = "3", memory = "2g", memory_swap = "8g" }`;
      - `artifacts` = the `.assay/b110-pilot-*` files and `progress-b110-pilot.jsonl`;
-     - a comment citing A-474 and giving the **margin (P7-6)**: `2h20m ≥ clone/build/venv (≤ 10 min measured bound, recorded in the REPORT from the gate log) + 2 h campaign + 120 s inner grace + 30 s kill-after`. The campaign is initialised only after the build, so the outer failsafe must include the build time.
-   - Extend the substring pins in `tests/test_self_lane.py:176-200` with `b110-pilot`, `--candidates-file`, `B110_PILOT_EXIT=` and `B110_PILOT_TIMEOUT_FAILSAFE`.
+     - a comment citing A-474 and giving the **margin (P7-6, P7R2-4)**: `2h20m ≥ clone/build/venv (≤ 10 min measured bound, recorded in the REPORT from the gate log) + 2 h campaign + 120 s inner grace + 30 s kill-after`.
+       - The campaign is initialised right **after the build and before** `assay plan` and the selector. So plan and selector time are inside the 2 h campaign, and the outer failsafe only has to add the build time.
+   - Extend the substring pins in `tests/test_self_lane.py:176-200` with `b110-pilot`, `--candidates-file`, `B110_PILOT_EXIT=`, `B110_PILOT_TIMEOUT_FAILSAFE`, `B110_PILOT_INIT_REFUSED` and `-ge 124`.
+   - Pin that, inside `run_b110_pilot`'s body, `campaign init` precedes `plan self-qualification`.
    - **Survivor-screen mode** (plan §9.1). `run_b110_screen()`:
      ```bash
      run_b110_screen() {
@@ -390,7 +436,7 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
     - the summary's `candidates` holds exactly that ID;
     - no verdict file is written anywhere under the repo;
     - `progress` ends with `verdict_written` with `destination: null`;
-    - **C5:** `--state-dir` contains exactly one `<64hex>.json` record, whose `candidate_id` is the selected ID, plus `PILOT-STATE`. No `--resume` was passed.
+    - **C5, asserted via `glob("*.json")` (C27):** `sorted(p.name for p in state_dir.glob("*.json"))` is exactly one `<64hex>.json` record, whose `candidate_id` is the selected ID, and `PILOT-STATE` exists. Other **non-JSON** files in the dir are tolerated, because P9 later adds `.lock` and `CAMPAIGN-IDENTITY`. **Never** assert on the full directory listing. No `--resume` was passed.
   - *Negative:* an implementation that ignores the selection emits 3 events. One that leaves the state root at `None` writes no record.
 - **T4: unknown ID.**
   - *Observable:* a well-formed ID absent from the plan gives exit 2, a summary with `completed: false` and `refusal.reason_code == "BAD_LANE_CONFIG"`, and no `candidate` event.
@@ -399,22 +445,37 @@ Exit codes: 0 when written, 2 on any refusal. Output bytes are deterministic for
   - *Negative:* returning the verdict code gives 0.
 - **T6: R3 skipped.**
   - The toy lane declares `rigor = ["R0","R2","R3"]` with a valid canary.
-  - *Observable:* `summary["r3"] == "not-run: pilot"`; no canary progress event or canary process runs (a counting process runner sees only the baseline plus the selected candidates).
+  - *Observable:* `summary["r3"] == "not-run: pilot"`. The progress stream has no canary-phase event, and its `candidate` events are exactly the selected IDs. These are counted from progress events, not from a process runner (P7R2-5).
 - **T7: digest.**
   - *Observable:* the `candidates` event's `selection_sha256` equals the summary's, and equals the §E encoding over the selected IDs in **plan** order, even when the file lists them in reverse.
 - **T8: any bucket mix exits 6 (P7-3).** Select two IDs: one killable site and the surviving site.
   - *Observable:* exit **6**, `completed: true`, `r2 == {"status": "FAIL", "reason_code": "MUTANTS_SURVIVED"}`, `buckets.survived == 1` and `buckets.killed == 1`.
   - *Negative:* "6 only when PASS" exits 1.
-- **T9: `--resume` with a selection (C5).** Re-run T3's selection with `--resume` and the same `--state-dir`, with a counting process runner.
-  - *Observable:* exit 6, the resumed candidate is **not** executed again (the runner sees only the baseline), and `completed: true`.
-  - *Negative:* no record from the first run, which is the P7-1 defect, re-executes it.
-- **T10: the sentinel.** Run pilot A with selection X into state dir S, then pilot B with a different selection Y into S.
-  - *Observable:* B exits 2 before any execution, with stderr naming `PILOT-STATE`. `S/PILOT-STATE` holds X's `selection_sha256`.
+- **T9: `--resume` with a selection (C5).** Re-run T3's selection with `--resume` and the same `--state-dir`.
+  - *Observable:*
+    - exit 6 and `completed: true`;
+    - the second run's progress segment has **no** `candidate` event for the resumed ID;
+    - its `resume` event reports one resumed record.
+  - *Negative:* with no record from the first run (the P7-1 defect), a `candidate` event for it appears again.
+- **T10: the sentinel.**
+  - (a) Run pilot A with selection X into state dir S, then pilot B with a different selection Y into S. B exits 2 before any execution, with stderr naming `PILOT-STATE`, and `S/PILOT-STATE` still holds X's `selection_sha256`.
+  - (b) A malformed `PILOT-STATE` (a duplicate key, or a missing `lane`) gives exit 2.
+  - (c) A `PILOT-STATE` for another lane gives exit 2.
+  - (d) (P7R2-6) A state dir with no `PILOT-STATE` that already holds a `<64hex>.json` record, written by an ordinary `--resume --state-dir` run of the same lane, gives exit 2, and no sentinel is written.
 - **T11: the HEAD-read timeout tail (P7-2).** Use a pilot selection on a lane with `budget = "0.001s"`, following the precedent in `tests/test_lane_timeout_writes_a_verdict.py`.
   - *Observable:* a §F summary on stdout with `completed: false`, and `refusal.reason_code == "LANE_TIMEOUT"`; exit 4; no verdict file anywhere; `verdict_written` with `destination: null`; no `_print_run_summary` text.
   - *Negative:* the `:1318-1325` tail left inline writes or prints the ordinary summary.
 - **T12: one write site (structural, supplementary).** Parse `src/assay/cli.py` with `ast`. Inside `_run_reserved`, exactly one call to `runner.write_verdict` exists, and it sits inside `_finish`.
   - *Negative:* any tail keeping its own write.
+- **T13: selection under a campaign deadline, in the C23 order (P7R2-1).** Run in-process: `main(["campaign", "init", "--campaign", "t13", "--lane", lane, "--hours", "1", "--state-dir", S, ...])`, then `main(["run", lane, "--candidates-file", F, "--state-dir", S, "--campaign-deadline", <file>, ...])` with a 1-of-3 selection.
+  - *Observable:*
+    - exit 6 and `completed: true`;
+    - the one record in `S` carries `campaign_deadline_sha256 == sha256(<file bytes>)`.
+  - Then hand-write a second deadline file for the same identity whose `plan_sha256[lane]` is `mutation.plan_sha256` over the **selected** IDs only. The run with it gives exit 2, a summary with `completed: false` and `refusal.reason_code == "BAD_LANE_CONFIG"`, and no `candidate` event.
+  - *Negative:* a selection applied before P6's digest check refuses the full-plan file and accepts the selection-only one.
+- **T14: never exit 0 (P7R2-7).** Use an all-killed selection, with `cli._pilot_completed` monkeypatched to return `False`.
+  - *Observable:* exit 2, and stderr contains the §G line.
+  - *Negative:* an `assert`-based guard exits 0 under `python -O`, and the missing branch leaves the floor uncovered.
 
 **Selector (S1–S8).** These use a synthetic plan JSON and synthetic source files under `tmp_path`, laid out as `assay/src/assay/...`.
 
@@ -585,6 +646,7 @@ Specific triggers:
 - the in-memory verdict cannot be built for a selection subset;
 - T4 cannot produce a summary because the refusal happens before a verdict exists;
 - `mutation.plan_sha256` (P6) is not on your base;
+- P6's digest check is not on your base, so T13 cannot be written. Do not reorder around a missing check;
 - routing a verdict tail through `_finish` changes any existing CLI test's output.
 
 If you hit the last one, report which layer raised it; do not add a verdict write.
@@ -622,7 +684,12 @@ This mirrors plan §7. It is carried out only after all of these are on the inte
    - The outer failsafe is 2h20m.
    - The pilot's own deadline is 2 h, as P6 campaign `b110-pilot-<commit12>`, created inside the gate after the build.
    - Never run `campaign init` on the host.
-2. In a separate step: `grep -E "B110_PILOT_EXIT=|B110_PILOT_COMPLETED=|B110_PILOT_TIMEOUT_FAILSAFE=|B105_SOURCE_COMMIT=" /tmp/b110-pilot.log`. `B110_PILOT_TIMEOUT_FAILSAFE=1` means the inner `timeout` fired; the summary is then untrusted, and the pilot must be re-planned, not interpreted.
+2. In a separate step: `grep -E "B110_PILOT_EXIT=|B110_PILOT_COMPLETED=|B110_PILOT_TIMEOUT_FAILSAFE=|B110_PILOT_INIT_REFUSED=|B105_SOURCE_COMMIT=" /tmp/b110-pilot.log`.
+   - `B110_PILOT_TIMEOUT_FAILSAFE=1` means the inner `timeout` fired (any status ≥ 124, C31). The summary is then untrusted, and the pilot must be re-planned, not interpreted.
+   - `B110_PILOT_INIT_REFUSED=1` means no pilot ran.
+   - An outer run-gate exit ≥ 124 is likewise a failsafe with no trusted output.
+
+**Re-piloting on a new commit (P7R2-6).** The new commit gets a new deadline file name, `b110-pilot-<new commit12>`. But `.assay/b110-pilot-state` still holds the old commit's deadline-bound records and its `PILOT-STATE`: P6's `init` refuses the unbound records, and the sentinel refuses the new selection. So **before** re-piloting, move `.assay/b110-pilot-state` aside (for example to `.assay/b110-pilot-state-<old commit12>`), and retain it with the old pilot report. Never delete or edit its contents.
 3. Offline, on the host, under nice: run P8's `assay analyze campaign` over `.assay/progress-b110-pilot.jsonl` and `.assay/b110-pilot-state`, **with the exact flags from P8's brief**, including P8's required `--project-jobs 3` for the projection. Write the result to `/tmp/b110-pilot-analysis.json`.
 4. Offline projection: use P8's projection output, with the plan §7/C19 strata fall-back (operator × file-size class → operator → all), p50 and p90, plus fixed overhead:
    - the coverage-baseline wall time;
@@ -635,7 +702,7 @@ This mirrors plan §7. It is carried out only after all of these are on the inte
 
 **Stop rules:**
 - The pilot's campaign deadline (2 h) is authoritative.
-- An expiry gives `B110_PILOT_EXIT=4` and `completed: false`. The candidates in `unresolved` are **unresolved, never classified**. Per P6's C3, the lane deadline cut them off, so they have no state records.
+- An expiry gives `B110_PILOT_EXIT=4` and `completed: false`. The candidates in `unresolved` are **unresolved, never classified**: they are masked with no state record, and P6's C3 left any in-flight one unclassified. A `budget_exceeded` candidate **with** a record (its per-candidate budget) is a real outcome and is reported, not unresolved.
 - Never lengthen the deadline; re-running `campaign init` cannot extend it.
 
 ### Template: `reports/assay-B110-PILOT-REPORT.md`
@@ -654,7 +721,7 @@ tester-unified, 3 CPUs, 2 GiB / 8 GiB mem+swap, `--pilot-jobs 3`; concurrent hos
 | Phase | Wall s | Source |
 | coverage baseline (R0/R1) | | progress `command_finished` |
 | no-cov R2 baseline | | `r2_command.r2_baseline.wall_s` / plan event `r2_baseline_s` |
-| campaign init + plan + selector | | gate log phases |
+| campaign init, then plan + selector (inside the 2 h campaign) | | gate log phases |
 
 ## 3. Per-candidate cost (from P0 fields)
 | Stratum (file × operator) | n | killed | survived | other | elapsed p50 / p90 | materialize p50 | command p50 | started_count p50 / p90 | peak RSS p90 |

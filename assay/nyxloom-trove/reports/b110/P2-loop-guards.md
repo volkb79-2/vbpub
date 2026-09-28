@@ -1,6 +1,6 @@
 # B110-P2 — Loop-progress guards: a spinning mutant fails fast instead of burning three baselines
 
-Revised 2026-09-28 after round-1 review (see REVIEW-2026-09-28-round1.md).
+Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).
 
 | Field | Value |
 |---|---|
@@ -154,6 +154,11 @@ def _run_with_child_watchdog(monkeypatch, argv, *, failsafe_s: float):
             if not done.wait(timeout=failsafe_s):
                 fired.set()
                 for proc in list(started):
+                    # Only groups whose LEADER is still ours and unreaped: a reaped
+                    # leader's pid (= pgid) may have been reused by a sibling
+                    # candidate's group under jobs=3 (round-2 P2R2-1).
+                    if proc.poll() is not None:
+                        continue
                     with contextlib.suppress(ProcessLookupError, PermissionError):
                         os.killpg(proc.pid, signal.SIGKILL)
 
@@ -175,9 +180,14 @@ def _run_with_child_watchdog(monkeypatch, argv, *, failsafe_s: float):
 
 In both tests, replace `code, out, err = run([...])` with `code, out, err = _run_with_child_watchdog(monkeypatch, [...], failsafe_s=...)` and add the `monkeypatch` parameter. Their assertions stay byte-identical.
 
-**Failsafe sizing** (round-1 P2-5, C16). It is sized from each test's **declared** per-candidate budget, never from a fixed constant: `failsafe_s = 4 * <that test's budget_per_candidate in seconds>`.
-- For the hang test (`"50s"`) that is 200.0; for the busy-loop test (`"35s"`) it is 140.0.
-- Write the literal next to the budget with a comment tying them together. P3c later lowers the hang-test budget, and the failsafe follows.
+**Failsafe sizing** (round-1 P2-5, C16; floor added by round-2 P2R2-1). The failsafe is sized from each test's **declared** per-candidate budget, with a floor:
+
+`failsafe_s = max(4 * <that test's budget_per_candidate in seconds>, 600.0)`
+
+- For the hang test (`"50s"`) and the busy-loop test (`"35s"`), that is 600.0 today. It stays 600.0 after P3c lowers the hang test to `"25s"`.
+- The floor matters under an R2 campaign on the loaded shared host. A slow but *correct-code* run killed by a tight failsafe becomes a **false kill** of an unrelated mutant, so the failsafe must sit far above any plausible correct-code runtime.
+- 600 s is still far below the ~1,560 s outer auto budget, so a disabled-timeout mutant is still bounded well before it.
+- Write the expression next to the budget, with a comment tying them together.
 
 Why this is a failsafe, not an oracle:
 - It exists only so that a mutant which disables the elapsed-budget check (`liveness.py:1530`) becomes a *test failure*, and so a kill. It fails within a bounded multiple of the test's own budget, instead of consuming the outer auto budget of about 1,560 s and leaving an orphaned spinning child.
@@ -341,7 +351,7 @@ It also needs these sibling tests in the same file:
 | Mutant stalls or rewinds a guarded cursor | spins until the per-candidate budget → `budget_exceeded` | `AssertionError` in the driving test → suite fails → `killed` | this changes **which code runs**, not a classification rule |
 | Mutant grows memory in a latent loop (`go_modfile:393`, `sql_lex:273`, `isolation:1388/1392`) | unbounded RSS for up to ~26 min | immediate `AssertionError` | same |
 | `git.py` drain `and→or` / `is None→is not None` | blocking forever or deadlock | site no longer exists | fewer candidates |
-| `liveness.py:1530` mutant hangs the busy-loop test | child spins; the outer candidate burns its budget; orphan child | watchdog kills the child group at 4× the test's declared budget; the test fails → `killed`; no orphan | same |
+| `liveness.py:1530` mutant hangs the busy-loop test | child spins; the outer candidate burns its budget; orphan child | watchdog kills the child group at `max(4× declared budget, 600 s)`; the test fails → `killed`; no orphan | same |
 
 ### Prepared proof and traceability
 
@@ -371,11 +381,11 @@ You choose the watchdog helper's private names and the exact assertion-message t
              with pytest.raises(AssertionError, match="scanner cursor did not advance"):
                  require_advance(3, stalled)
      ```
-   - Run both files and confirm the failures. The 16 guard cases fail with `_StepLimit`. The drain-site test fails with sites present. The errors test fails on import.
+   - Run both files and confirm the failures. The 16 guard cases fail with `_StepLimit`. The drain-site test (O4) fails **because its anchor `if overflowed:` is missing today**, not because "sites are present"; record it that way. The errors test fails on import.
    - Record the counts, then commit as the red commit.
 2. **Implement** the helper, the 8 call sites with their imports and the drain rewrite. Update the exclusion map from `grep -n "pragma: no cover" src/assay/git.py`, where each hit N contributes N and N+1. Add O4b and O5b. Re-run the focused tests: all green. Commit.
 3. **Watchdog.**
-   - Add `_recorded_liveness_children` and `_run_with_child_watchdog` to `tests/test_cli_run.py`, then switch both tests to them, with `failsafe_s` = 4× each test's declared budget.
+   - Add `_recorded_liveness_children` and `_run_with_child_watchdog` to `tests/test_cli_run.py`, then switch both tests to them, with `failsafe_s = max(4 × each test's declared budget, 600.0)`.
    - Add imports as needed (`contextlib`, `os`, `signal`, `subprocess`, `threading`, `from assay import liveness`, `Iterator`); keep pyflakes clean.
    - Run those two tests once, serially.
    - Commit.
@@ -509,7 +519,7 @@ it is not an oracle yet.
   - time never classifies a candidate (A-464), so a mutant that spins must fail by itself;
   - scanner cursors advance through `errors.require_advance`, one shared comparison that one test kills;
   - the `git.py` drain loop's exit test deliberately has no mutable comparison;
-  - the two real-child liveness tests carry a failsafe watchdog, sized at 4× the test's declared budget, running `run` on the main thread;
+  - the two real-child liveness tests carry a failsafe watchdog, sized at `max(4 × the test's declared budget, 600 s)`, running `run` on the main thread and killing only groups whose leader is still unreaped;
   - `tests/test_scanner_progress_guards.py` also kills its own target mutants textually, so its kills are not evidence that the guards work (the guards' effect shows in the other scanner tests).
 
   Cite A-466.

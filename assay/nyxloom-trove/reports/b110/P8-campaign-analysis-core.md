@@ -1,15 +1,15 @@
 # B110-P8 — Campaign analysis core (`assay analyze campaign`, B108 phase 1)
 
-*Revised 2026-09-28 after round-1 review (see `REVIEW-2026-09-28-round1.md`; findings P8-1..P8-10, carver decisions C13, C14, C15).*
+*Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md). Round-1: P8-1..P8-10 and carver decisions C13–C15. Round-2: P8R2-1..P8R2-5 and carver decisions C25, C26, C29.*
 
 | Field | Value |
 |---|---|
 | Backlog | B108 phase 1 of 2. Phase 2, the run-gate automatic post-lane closeout, is **out of scope**. Plan package P8. |
 | Branch | `assay-b110-p8-analysis`, cut from the integration line (`assay-b110-integration`, per plan §11.1 / C18) |
-| Depends on | **P0 merged**: the candidate event carries `cpu_seconds`, `peak_rss_bytes` and `phase_seconds`. **P7 merged before Work step 9**: `--candidates-file`, `mutation.plan_sha256`, and `"qualifying": false` runs. Read-only tolerance of the v14 fields (plan §5). The v14 fixtures belong to the v14 merge (Work step 11). **Downstream:** P9 depends on P8's `cli.plan_jobs()` (C13), and P11 on P8's exported `project()` (C14). |
+| Depends on | **P0 merged**: the candidate event carries `cpu_seconds`, `peak_rss_bytes`, `phase_seconds` and `startup_seconds`. **P6 merged** (C29): P6 extracts `_discover_plan_jobs` and owns `mutation.plan_sha256`; P7 depends on P6, so this holds whenever P7 does. **P7 merged before Work step 9**: `--candidates-file`, `mutation.plan_sha256`, and `"qualifying": false` runs. Read-only tolerance of the v14 fields (plan §5). The v14 fixtures belong to the v14 merge (Work step 11). **Downstream:** P9 depends on P8's `cli.plan_jobs()` (C13), and P11 on P8's exported `project()` (C14). |
 | Contract class | 2c: bounded integration. A substantial uncommitted implementation exists and is ported, not redesigned. |
 | Implementer | Opus |
-| Decisions | A-460 (analysis status/exit policy; P8 deliberately diverges on exit 3, see the status table); A-464 (time, ETA and host load never classify); A-474 / plan D10 (pilot is non-qualifying); A-470 / plan D6 (v14 fields read-only); C13/C14 (round-1 carver decisions) |
+| Decisions | A-460 (analysis status/exit policy; P8 deliberately diverges on exit 3, see the status table); A-464 (time, ETA and host load never classify); A-474 / plan D10 (pilot is non-qualifying); A-470 / plan D6 (v14 fields read-only); C13/C14 (round 1); C25 (`judge_sha256` in the `candidates` event), C26 (file-size classes), C29 (single planner-jobs extraction) (round 2) |
 | Size | L |
 
 ## Why this package exists
@@ -45,10 +45,12 @@ Paths are relative to `assay/` at HEAD `db85f747` unless marked.
        - parser 1235-1254;
        - `run_campaign_command` 1256-1295.
      - `tests/test_campaign.py` (354 lines, untracked): helpers `_repository` :19, `_plan_rows` :71, `_write_progress` :92, `_invoke` :175, `_install_plan` :204. The backlog ID sits in this test module's docstring (`tests/test_campaign.py:1`), not in `campaign.py`'s.
-       - **Warning:** `_install_plan` monkeypatches `_lane_plan` with rows taken from the verdict under test (WIP tests :35-47). Tests built only on it share the implementation's assumption. The oracles below therefore add one real-planner fixture (O15).
+       - **Warning:** `_install_plan` (WIP tests :204-215) monkeypatches `_lane_plan` with rows built by `_plan_rows` (:71-89) from the verdict under test. Tests built only on it share the implementation's assumption. The oracles below therefore add one real-planner fixture (O15).
+       - **Port fix (P8R2-5):** `_plan_rows` must copy `source_sha256` and `mutated_file_sha256` from the verdict outcomes, which carry them since v13 (A-461). Without them, every `_install_plan` test becomes an `evidence_error` under the new row-identity check.
      - WIP rules to keep:
-       - `complete` requires an observed `--command-exit` equal to the verdict exit (`campaign.py:1003`, `:1155`);
-       - `measurement_window` (`:1097`).
+       - `complete` requires an observed `--command-exit` equal to the verdict exit (`campaign.py:1003`, `:1155`). A supplied exit that **differs** is an `evidence_error` (`:1004-1005`);
+       - `complete` requires the **whole plan** inventory to be exhausted (`:1140-1142`);
+       - `measurement_window` (`:1097-1101`), with its `first`/`last` key names.
      - WIP rule to change: without `--coverage`, the WIP reads the lane-declared `.assay` artifact (`campaign.py:318-326`). This contradicts "all paths are explicit inputs" (see Topology).
      - `src/assay/schemas/analysis-campaign.schema.json` (226 lines, untracked).
      - `git -C ../.worktrees/assay-b107-analysis-30eec294 diff -- assay/src/assay/analysis.py`: a 7-line hook that registers the parser and dispatches `campaign`.
@@ -63,12 +65,16 @@ Paths are relative to `assay/` at HEAD `db85f747` unless marked.
 4. `src/assay/mutation.py`:
    - `PROGRESS_EVENTS` 846-870;
    - `_progress_event` 998-1021;
+   - `candidate_id(job)` 1023-1034: the **only** place the two identity digests are computed from a job (`sha256(job.original_text.encode("utf-8"))` and `sha256(job.site.apply(original_bytes))`). Job objects carry no digest attributes;
+   - `judge_sha256` computed once in `run_mutation` (~2353-2366), and the `candidates` progress event (~2445-2452), which today carries only `candidate_total`, `selected_total`, `pending_total` and `commit`;
+   - the `resume` progress event (~2423-2430), which carries totals only, and `--rejudge` handling (~2403-2409);
    - the `candidate` progress event and state-record payload 2930-2990 (P0 and P4 move these lines; locate them by content). **Ordering fact:** the `candidate` event is written (`:2930`) *before* the state record (`:2966`). A live run observed mid-write can therefore show an event whose record does not exist yet;
    - `_load_validated_state_record` 1273-1402 (key checks at 1313-1348);
    - `_execution_from_state_record` 1450-1497. It raises "execution mode is unknown" for any mode outside `full`/`witness-prefix` (`:1462-1474`) until v14 lands;
    - `select_mutation_shard` 1500-1520;
    - `MUTATION_STATE_RECORD_LIMIT` :206.
-5. `src/assay/runner.py`: the coverage baseline's `command_finished` phase is `"baseline"` (`:2835`, `:3744`); the R0-only phase is `"direct"` (`:6344`). P3b adds `"r2-baseline"` (plan §3 D6/A7).
+5. `src/assay/runner.py`: the `command_finished` event is emitted at `:3090-3100` (`:2835` is only a parameter default). The coverage baseline's phase is `"baseline"` (`:3744`); the R0-only phase is `"direct"` (`:6344`). P3b adds `"r2-baseline"` (plan §3 D6/A7).
+   - The verdict's `judge_provenance` (`verdict.py:2135-2157`) is the **wheel's** provenance, not the mutation judge. No verdict carries the mutation `judge_sha256` (P10 confirms this). C25 therefore adds it to the `candidates` event.
 6. `nyxloom-trove/4-backlog.md` `## B108` (desired behavior plus six acceptance boxes). Phase 1 covers boxes 1-4 and the analysis half of box 6. Box 5 (run-gate auto-closeout) is phase 2.
 7. `nyxloom-trove/decisions.md`: the A-460 row (:934) and the A-464 row (:943).
 8. `nyxloom-trove/reports/assay-B110-PLAN-2026-09-28.md`: §3 (D6/A2, A4 and D10), §5 (the v14 `evidence` and `execution.mode` vocabulary) and §7 phase C (the projection this package supplies). Also `reports/b110/REVIEW-2026-09-28-round1.md` C13/C14.
@@ -108,17 +114,30 @@ Paths are relative to `assay/` at HEAD `db85f747` unless marked.
 - `source_sha256`: 64 lowercase hex, the sha256 of the candidate file's source bytes, i.e. the same value the executor records.
 - `mutated_file_sha256`: 64 lowercase hex, the sha256 of the mutated file bytes.
 
-Take both from the planner's own job objects (the same values `_plan_candidate_id(job)` hashes). Never recompute them from the worktree.
+**Where the digests come from (P8R2-5 / round-2 P8-1 gap).** Job objects carry **no** digest attributes. The digests are computed only inside `mutation.candidate_id(job)` (`mutation.py:1023-1034`).
+- Extract that computation into one public helper in `mutation.py`: `candidate_identity_fields(job: MutantJob) -> dict[str, object]`. It returns exactly `{path, source_sha256, start_byte, end_byte, mutated_file_sha256, operator}`.
+- `candidate_id(job)` becomes `candidate_id_from_fields(**candidate_identity_fields(job))`, byte-for-byte the same digest.
+- The plan row takes its two digests from that helper. Never recompute them from the worktree, and never duplicate the hashing.
+- The existing plan and judge-identity tests must pass unmodified; that proves the refactor.
 
-**Change 2: a shared helper.** Extract the job-building part of `_cmd_plan` into a public, pure-ish helper:
+**Change 2: a shared helper (C29).** There is **no second extraction** of `_cmd_plan`'s discovery. P6 extracts `cli.py:1648-1765` into `_discover_plan_jobs(...)` (P6 Work step 8). P8 adds a thin public wrapper on top of it:
 
 ```python
-def plan_jobs(lane: LaneConfig, *, worktree: Path, request_base: str | None = None) -> list[PlanRow]
+def plan_jobs(
+    lane_file: LaneFile,
+    lane: LaneConfig,
+    *,
+    request_base: str | None = None,
+    allow_dirty: bool = False,
+) -> list[PlanRow] | Literal["UNSUPPORTED"]
 ```
 
-- `PlanRow` is a `TypedDict`, or a frozen dataclass, with exactly: `id, path, operator, start_byte, end_byte, lineno, description, source_sha256, mutated_file_sha256`.
-- `_cmd_plan` calls `plan_jobs`, and the WIP's `_lane_plan` calls it instead of building a `Namespace` by hand.
+- **Inputs.** The wrapper takes the `LaneFile` because discovery needs `lane_file.project_root` and `lane_file.dirty_ignore` (`cli.py:1651-1660`). It passes everything else to P6's `_discover_plan_jobs` unchanged.
+- **Unsupported contract.** When discovery returns `mutation.UNSUPPORTED` (the case `_cmd_plan` renders as `status: "unsupported"` / `MUTATION_UNSUPPORTED`, `cli.py:1765-1768`), `plan_jobs` returns the string `"UNSUPPORTED"`. The campaign analysis turns that into an `evidence_error` ("lane has no mutation plan"). Every other failure propagates unchanged as its `AssayError` or `LaneConfigError`; the analysis turns those into `evidence_error` too.
+- **Rows.** `PlanRow` is a `TypedDict`, or a frozen dataclass, with exactly: `id, path, operator, start_byte, end_byte, lineno, description, source_sha256, mutated_file_sha256`.
+- **Callers.** `_cmd_plan` builds its row list from `plan_jobs`. The WIP's `_lane_plan` calls it instead of building a `Namespace` by hand.
 - The hand-built `Namespace` breaks whenever `_cmd_plan` reads a new argument (P7 and P6 add some). Where a `Namespace` is still needed, build it through the real parser: `build_parser().parse_args([...])`.
+- **BLOCKED trigger:** if `_discover_plan_jobs` does not exist on the base (P6 not merged), stop with `BLOCKED: P8 needs P6's _discover_plan_jobs (C29)`. Do not write a second extraction.
 
 **Invariant (oracle O16):** for every row,
 
@@ -140,6 +159,22 @@ end_byte=row.end_byte, mutated_file_sha256=row.mutated_file_sha256, operator=row
 - a row whose recomputed ID ≠ `id`.
 
 **Downstream:** P9 reuses `cli.plan_jobs()`. It is the single plan source for analysis, import and execution.
+
+### The `candidates` event carries the mutation judge (C25; owner: `src/assay/mutation.py`)
+
+**Why:** store reconciliation needs the *current* mutation judge. No verdict carries it, because `judge_provenance` is the wheel's provenance. The `resume` event carries only totals (P8R2-1).
+
+**Change:** add **one** additive key, `"judge_sha256": <64 lowercase hex>`, to the `candidates` progress event (`mutation.py` ~2445-2452).
+- Emit it **only when a state root is set**, i.e. whenever the run can write or resume records. Without a state root the key is absent; it is not `null`.
+- The value is the same `judge` string `run_mutation` computed once (~2353-2366) and passes to the state-record writer.
+- The event vocabulary is not closed on keys (only event names are, `mutation.py:846-870`), so no schema change is needed. The analysis schema accepts the key.
+
+**The "current judge", in order:**
+1. The latest run's `candidates` event `judge_sha256`, when present.
+2. **Fallback, for streams written before C25:** the single distinct `judge_sha256` among in-selection records that pair with a same-bucket `candidate` event of the latest run. If no record pairs, or the pairing records carry more than one distinct judge, the judge is **unknown**.
+3. When the judge is unknown, no record counts toward completion. Records only enrich rows (`outcome_source: "state"`) for candidates that also have a same-bucket latest-run event.
+
+`state.judge_sha256_source` reports which rule applied: `"candidates-event"`, `"paired-records"` or `"unknown"`.
 
 ### CLI (owner: `src/assay/campaign.py`, registered by `analysis.build_analyze_parser`)
 
@@ -166,11 +201,11 @@ assay analyze campaign <lane> --file <assay.toml> --expected-commit <40hex|64hex
 
 | # | Situation | `status` | exit |
 |---|---|---|---|
-| 1 | Any input refused: malformed, wrong lane, stale commit, disagreement, oversized, a plan the analysis cannot reconstruct, a plan row without identity inputs. | `evidence_error` (the output is still one JSON document with `errors`) | 2 |
+| 1 | Any input refused: malformed, wrong lane, stale commit, disagreement with a verified verdict, oversized, a plan the analysis cannot reconstruct, a plan row without identity inputs, an `"UNSUPPORTED"` plan, **or a supplied `--command-exit` that differs from the verdict's exit** (the WIP rule, `campaign.py:1004-1005`; P8R2-4). | `evidence_error` (the output is still one JSON document with `errors`) | 2 |
 | 2 | A pilot (`--candidates-file`, or any progress `candidates` event carrying `selection_sha256`). | `incomplete`, `qualifying: false` | 3 |
-| 3 | The verdict's `reason_code` is `LANE_TIMEOUT`, **or** any `budget_exceeded` candidate has no `candidate` progress event in any run at the expected commit, i.e. a never-started leftover masked by expiry. | `incomplete`, plus `unresolved: {matching_total, candidates:[...]}` (capped at `--limit`) listing the never-started or unclassified candidate IDs | 3 |
-| 4 | No verdict supplied, or the inventory is not exhausted, or the progress terminal disagrees with the verdict, or `--command-exit` was not supplied, or it differs from the verdict exit, or coverage was not reverified. | `incomplete` | 3 |
-| 5 | Verdict supplied, inventory complete, terminal agrees, `--command-exit` supplied and equal to the verdict exit, coverage reverified, verdict outcome `PASS`, and no row above matched. | `complete` | 0 |
+| 3 | The verdict's `reason_code` is `LANE_TIMEOUT`, **or** any `budget_exceeded` candidate has no `candidate` progress event **in the verdict's run** at the expected commit, i.e. a never-started leftover masked by expiry or by a fatal stop (`mutation.py:2991-2994`). | `incomplete`, plus `unresolved: {matching_total, candidates:[...]}` (capped at `--limit`) listing the never-started or unclassified candidate IDs | 3 |
+| 4 | No verdict supplied, or the **whole-plan** inventory is not exhausted (the WIP rule, `campaign.py:1140-1142`), or the progress terminal disagrees with the verdict, or `--command-exit` was not supplied, or coverage was not reverified, or the store has `state.unreconciled > 0`. | `incomplete` | 3 |
+| 5 | Verdict supplied, whole-plan inventory complete, terminal agrees, `--command-exit` supplied and equal to the verdict exit, coverage reverified, verdict outcome `PASS`, and no row above matched. | `complete` | 0 |
 | 6 | As row 5, but the verdict outcome is not `PASS` (for example a screen FAIL with survivors). | `complete` | 1 |
 
 **Notes on the rows:**
@@ -205,15 +240,19 @@ A failure of checks 2–9 is an `evidence_error` naming the file. These are stru
 
 **Store reconciliation** (C14). This replaces the earlier "must agree" and "mixed_judge" rules. It is applied after shape validation:
 1. **Foreign records.** A valid record whose `candidate_id` is not in the reconstructed plan, for example a candidate a source fix removed, goes to `state.foreign: {count, sample_ids[≤10]}`. It is **not** an error and not counted. Re-screens reuse the screen state dir (plan §9.1), so foreign records are normal.
-2. **The current judge.**
-   - It is the `judge_sha256` carried by the latest run's evidence when available: the verdict's `judge_provenance`, or a `resume` event field if present.
-   - Otherwise it is **unknown**. Then no record is counted toward completion, and records only enrich rows (`outcome_source: "state"`) for candidates that also have a latest-run event with the same bucket.
+2. **The current judge** comes from the rule in *The `candidates` event carries the mutation judge* (C25). The verdict's `judge_provenance` is **not** a judge source: it is the wheel's provenance.
 3. **Counted records.** A record counts toward `completed_total` only if it is in the selected set (shard, selection, or plan), its `judge_sha256` equals the current judge, and it reconciles with the latest run, meaning either:
    - a latest-run `candidate` event exists for it with the same bucket; or
-   - the latest run's `resume` event reports it among `resumed` (the count reconciles: `resume.resumed_total` must equal the number of counted records without a latest-run event, else `evidence_error` "resume count does not reconcile with the store").
+   - it has no latest-run event, and the eventless same-judge records reconcile with the latest run's `resume.resumed_total` (their count equals it exactly).
+
+   **When the count does not reconcile (P8R2-2),** count **no** eventless record. Report them as `state.unreconciled: {count, sample_ids[≤10]}`, and make the status `incomplete` (row 4), **never** exit 2. Legitimate stores do this:
+   - an interrupted `--rejudge` run, whose rejudged records carry the current judge but are neither resumed nor evented (`mutation.py:2403-2409`);
+   - P6's C8 loader, which rejects same-judge records that lack the deadline sha;
+   - a re-run without `--resume`.
 4. **Stale-judge records.** Records with another `judge_sha256` are **never counted**. They go to `state.stale_judge: {count, judge_sha256_counts}`. They are not an error: a store is legitimately mixed after a tree change, and the latest run's `resume.rejected_total` accounts for them.
 5. **Disagreement.** A counted-eligible record (current judge, in selection) whose bucket disagrees with the latest-run event for the same candidate goes to `reclassified` with `source: "state_vs_progress"`. It is counted once, by the latest-run event, and is not an error. Only a disagreement with a *verified verdict bucket* is an `evidence_error`.
-6. **The output block:** `state: {records, counted, foreign, stale_judge, judge_sha256_current, judge_sha256_counts}`.
+6. **The output block:** `state: {records, counted, foreign, stale_judge, unreconciled, judge_sha256_current, judge_sha256_source, judge_sha256_counts}`.
+7. **Shared shape validator (P9R2-11).** Checks 1–9 above use P9's `validate_state_record_shape` once P9 lands. Until then, `campaign.py` keeps its own copy with an identical rule list. P9 swaps it for the shared validator, so there is never a third validator.
 
 **Wrong implementations this rules out:**
 - An all-stale store (every record at J_X, latest run at X′) must **not** yield `pending_total == 0`, `eta_reason: "no_remaining_work"`, or `survived: 0` built from stale kills. Fixture F2 in O17 pins this.
@@ -239,17 +278,20 @@ A failure of checks 2–9 is an `evidence_error` naming the file. These are stru
 
 ```json
 {"elapsed_seconds": 412.7, "cpu_seconds": 380.2, "peak_rss_bytes": 612368384,
- "phase_seconds": {"materialize": 2.1, "command": 409.9, "integrity": 0.7},
+ "phase_seconds": {"materialize": 2.1, "command": 409.9, "integrity": 0.7, "teardown": 0.4},
+ "startup_seconds": <P0's object, copied verbatim, or null>,
  "started_count": null, "evidence_command": "r2", "outcome_source": "verdict",
  "run_id": "progress-line-7:2026-10-02T10:00:00+00:00"}
 ```
+
+**P0 is the authority for the shapes of `phase_seconds` and `startup_seconds`** (P8R2-5). `phase_seconds` has four keys, `materialize`, `command`, `integrity` and `teardown`, each a number or `null`. `startup_seconds` is P0's **object**, not a number. The analysis copies both verbatim, and the schema mirrors P0's definition. If P0's shapes differ from this example, follow P0.
 
 **Where each field comes from:**
 - The timing fields come from the progress `candidate` event of the run that executed the candidate.
 - `started_count` and `evidence_command` come from the v14 verdict `evidence` object, or the state record's `evidence` in no-verdict mode.
 - **Absent always means `null`. Never 0.**
 - `execution_mode` is the raw string from the verified verdict, the validated record, or, in progress-only mode, P3b's candidate-event `execution_mode` field when present (else `null`). Count modes generically (`execution_mode_counts: {mode: n}`), so v14's `witness-cold` and `ledger` need no code change in the counting path.
-- P0 also emits `startup_seconds`. Keep it in the row as `startup_seconds` (null when absent).
+- P0 also emits `startup_seconds`, an object. Keep it in the row verbatim as `startup_seconds` (null when absent).
 
 **Adverse lists:**
 - `adverse: {survived: {matching_total, candidates:[...]}, hung: ..., crashed: ..., budget_exceeded: ...}` is always emitted.
@@ -289,7 +331,7 @@ Any execution mode counts.
 
 ```json
 "timing": {"diagnostic_only": true, "eta_reason": null, "sample_count": 57, "minimum_sample_count": 20,
-  "measurement_window": {"first_emitted_at": "2026-10-02T10:00:00+00:00", "last_emitted_at": "2026-10-02T11:10:00+00:00", "run_id": "progress-line-7:2026-10-02T10:00:00+00:00"},
+  "measurement_window": {"first": "2026-10-02T10:00:00+00:00", "last": "2026-10-02T11:10:00+00:00", "run_id": "progress-line-7:2026-10-02T10:00:00+00:00"},
   "eta": {"jobs": 3, "jobs_source": "lane", "pending": 3703,
           "p50_candidate_s": 11.2, "p90_candidate_s": 38.0,
           "remaining_seconds_p50": 13824.5, "remaining_seconds_p90": 46905.3},
@@ -307,7 +349,7 @@ Any execution mode counts.
   - `remaining_seconds_pX = round(pending × pX_candidate_s / jobs, 1)`;
   - `pX_candidate_s = round(sorted[...], 1)`, rounded after selection;
   - `remaining_*` is computed from the unrounded percentile, then rounded to 1 decimal.
-- **`measurement_window`** is the WIP's (`campaign.py:1097`): the first and last `emitted_at` of the sampled events, plus the run ID. It is `null` when there is no sample. B108 requires it.
+- **`measurement_window`** is the WIP's (`campaign.py:1097-1101`), keeping its key names `first` and `last`: the first and last `emitted_at` of the sampled events, plus the run ID. It is `null` when there is no sample. B108 requires it.
 - Time **never** changes `status` or the exit code.
 
 ### Stratified projection (`--project`; the pilot's §7 phase C helper)
@@ -315,31 +357,41 @@ Any execution mode counts.
 **Output.** `projection` is `null` unless `--project` is given. With it:
 
 ```json
-"projection": {"diagnostic_only": true, "strata_rule": "path×operator→operator→all, n≥20",
+"projection": {"diagnostic_only": true, "strata_rule": "operator×size_class→operator→all, n≥20",
+  "size_classes": {"small": "≤10", "medium": "11–100", "large": ">100"},
   "bases": {
     "killed": {"samples": 58, "candidates_projected": 3760,
-               "fallback_counts": {"path_operator": 0, "operator": 1843, "all": 1917},
+               "fallback_counts": {"operator_size_class": 0, "operator": 1843, "all": 1917},
                "serial_seconds_p50": 41000.0, "serial_seconds_p90": 132000.0},
     "killed_and_survived": { ...same shape... }},
   "jobs": 3, "jobs_source": "project-jobs",
   "fixed_seconds_measured": 1180.4,
   "fixed_components": {"coverage_baseline": 548.3, "r2_baseline": 402.1, "other": 230.0},
   "fixed_components_missing": ["r3"],
-  "wall_seconds_p50": 14846.7, "wall_seconds_p90": 45180.4, "wall_basis": "killed"}
+  "wall_seconds_p50": 14846.7, "wall_seconds_p90": 45180.4, "wall_basis": "killed",
+  "wall_scope": "fixed_seconds_measured + serial/jobs; excludes preflight, R3 and consolidation"}
 ```
+
+**File-size class (C26; P8's `project()` owns this definition).** A candidate's `size_class` depends on the number of plan candidates in its file, `n_file`:
+- `small`: `n_file ≤ 10`;
+- `medium`: `11 ≤ n_file ≤ 100`;
+- `large`: `n_file > 100`.
+
+`n_file` is counted over the **full plan rows** passed to `project()`, never over the samples. The 12 strata are `operator × size_class`, 4 operators × 3 classes. Plan §8.1 and P7's report template cite this definition.
 
 **How it is computed:**
 1. **Per-candidate cost.** For every candidate in the **full plan** (not only the selection), take the cost of its stratum:
-   - the stratum `(path, operator)` if that has ≥ 20 samples;
+   - the stratum `(operator, size_class)` if that has ≥ 20 samples;
    - else `(operator)` if that has ≥ 20;
    - else `all`, if the whole basis has ≥ 20;
    - otherwise the basis is `null`, with `reason: "insufficient_sample"`.
 
-   With about 70 pilot samples, the `path×operator` strata will rarely reach 20. That is expected, and the fallback counts disclose it.
+   With about 70 pilot samples, some `operator × size_class` strata will not reach 20. That is expected, and the fallback counts disclose it.
 2. **Serial totals.** For each basis, sum the p50 and the p90 costs, using the same nearest-rank rule as the ETA.
 3. **Wall time.** `jobs` is the required `--project-jobs N` (C14). For the pilot, pass the pilot's `--pilot-jobs` value (3). For a qualifying projection, pass the lane's `jobs`. `wall = fixed + serial / jobs`. The `killed` basis is the one used in `wall_*`, because the qualifying run is all-kills (plan §2 item 2).
+   - **`wall_scope` label (P8R2-5).** `wall_*` covers only `fixed_seconds_measured` plus the serial candidate cost. It **excludes** the preflight, R3 and consolidation/verify that plan §8.1 criterion 3 counts in fixed overhead. The controller adds those from their own measurements; the projection never claims to include them.
 4. **`fixed_components`** (exact formula, from the latest run of the analyzed progress stream):
-   - `coverage_baseline`: `ended − started` of the latest run's `command_finished` event with `phase == "baseline"` (`runner.py:2835`/`:3744`). If absent, use the `direct` phase (`:6344`).
+   - `coverage_baseline`: `ended − started` of the latest run's `command_finished` event (emitted at `runner.py:3090-3100`) with `phase == "baseline"` (`:3744`). If absent, use the `direct` phase (`:6344`).
    - `r2_baseline`:
      - `ended − started` of the latest run's `command_finished` event with `phase == "r2-baseline"` (P3b);
      - **only if** that event is absent, the `plan` event's `r2_baseline_s` (plan D6/A7);
@@ -354,6 +406,7 @@ Any execution mode counts.
    ```
 
    - `CostSample` is `(path, operator, bucket, seconds)`.
+   - `size_class` is derived inside `project()` from `rows`, per C26. Callers never pass it.
    - It returns the `projection` object above. There is no I/O and no clock.
    - P11 imports it to project synthetic unit-mode costs (C14). It is part of P8's public contract, so test it directly.
 
@@ -370,7 +423,8 @@ Any execution mode counts.
   - `timing.eta` present while `sample_count < 20`. Encode this as a JSON-schema `if`/`then`: `if {properties:{sample_count:{maximum:19}}} then {properties:{eta:{const:null}}}`. It is fully expressible, so there is no separate "model check".
   - `status: "complete"` with `qualifying: false`.
 - **Other shape rules:**
-  - The schema has explicit object shapes, with `additionalProperties: false`, for `timing`, `timing.measurement_window`, `projection`, `projection.fixed_components` and `unresolved`.
+  - The schema has explicit object shapes, with `additionalProperties: false`, for `timing`, `timing.measurement_window` (`first`, `last`, `run_id`), `projection` (including `size_classes` and `wall_scope`), `projection.fixed_components`, `unresolved` and `state` (including `unreconciled` and `judge_sha256_source`).
+  - `phase_seconds` and `startup_seconds` in candidate rows mirror P0's shapes exactly (P8R2-5).
   - `fixed_components_missing` is an array of `enum ["coverage_baseline","r2_baseline","other","r3"]`.
   - The `evidence_error` document is its own `oneOf` branch.
 
@@ -390,13 +444,20 @@ Any execution mode counts.
 
 1. Port the four WIP artifacts listed above. Record their pre-port sha256 values. Commit as `feat(assay): port campaign analysis WIP (B108 phase 1)`, unchanged apart from the backlog ID in the test module's docstring (`tests/test_campaign.py:1`).
 2. Add `src/assay/campaign.py` to **both** `judge.targets` lists in `assay.toml`, in sorted position. Confirm `tests/test_self_lane.py` is green. **Note:** `campaign.py` adds R2 mutation targets to the B105 campaign. They must be killed like every other candidate before the plan's qualifying GO, so budget the screen accordingly.
-   - **2a (C13).** Add `source_sha256`/`mutated_file_sha256` to the `assay plan` rows, and extract `cli.plan_jobs()` (see *Plan rows carry candidate identity inputs*). Switch the WIP's `_lane_plan` to `plan_jobs()`. Wherever a `Namespace` is still needed, build it with the real parser. Add O16.
+   - **2a (C13, C29).**
+     - Extract `mutation.candidate_identity_fields(job)` from `candidate_id(job)`.
+     - Add `source_sha256`/`mutated_file_sha256` to the `assay plan` rows from that helper.
+     - Add `cli.plan_jobs()` as a thin wrapper over P6's `_discover_plan_jobs` (no second extraction; see *Plan rows carry candidate identity inputs*).
+     - Switch the WIP's `_lane_plan` to `plan_jobs()`. Wherever a `Namespace` is still needed, build it with the real parser.
+     - Make the WIP `_plan_rows` test helper copy the two digests from the verdict outcomes.
+     - Add O16.
+   - **2b (C25).** Add `judge_sha256` to the `candidates` progress event when a state root is set. Add O20.
 3. Replace the exit mapping and emit `evidence_error` documents (status/exit table rows 1–6). Invert the WIP test at `tests/test_campaign.py:251`, so that never-started `budget_exceeded` leftovers are `incomplete` (row 3).
-4. Make `--verdict` optional, and implement the three evidence modes, read-only shape validation (identity via `candidate_id_from_fields`), store reconciliation (`foreign`, `stale_judge`, counted records, `reclassified`).
+4. Make `--verdict` optional, and implement the three evidence modes, read-only shape validation (identity via `candidate_id_from_fields`), and store reconciliation: the C25 judge rule, `foreign`, `stale_judge`, counted records, `unreconciled`, `reclassified`.
 5. Implement plan reconstruction without a verdict (the `--request-base` rule).
 6. Extend candidate rows, the `adverse` lists, `unresolved` and `execution_mode_counts`. Tolerate absent P0/v14 fields as `null`.
 7. Implement the ETA sample rule (`MIN_ETA_SAMPLE = 20`, the nearest-rank index formula, `measurement_window`, the `jobs` source rules).
-8. Implement `--project --project-jobs N`: the pure exported `project()`, hierarchical strata, two bases, and the exact fixed-component formula.
+8. Implement `--project --project-jobs N`: the pure exported `project()`, the C26 size classes and hierarchical strata, two bases, the exact fixed-component formula, and the `wall_scope` label.
 9. **After P7 is merged:** add `--candidates-file`, the `mutation.plan_sha256` (plan-order) selection checks, `qualifying: false` and the never-complete rule (status row 2). If P7 has not landed when you reach this step, write `BLOCKED: P8 step 9 waits for P7` to the LOG, finish steps 10-12 for everything else, and commit.
 10. Update the schema, the docs (see Docs sync) and CHANGES. If `campaign.py` or `cli.py` gain or change a dataclass, regenerate `tests/fixtures/dataclass-contract.json` with P1's documented command (C15).
 11. **v14 merge step, for the controller: O14 moves here.** Before v14, `_execution_from_state_record` rejects `witness-cold` (`mutation.py:1462-1474`), and `verify_text` rejects a v14 verdict. So O14 cannot pass on P8's own branch. When `assay-b110-v14` merges into the integration line, the merge must:
@@ -414,15 +475,15 @@ Each oracle lists its observable, its negative, and the test that checks it. All
 
 | # | Oracle | Observable | Negative (the wrong implementation it catches) |
 |---|---|---|---|
-| O1 | A complete campaign with verdict PASS and `--command-exit 0` exits 0. The same campaign with a FAIL verdict and `--command-exit 1` exits 1, `status: complete`. The PASS campaign **without** `--command-exit` gives `incomplete`, exit 3, `complete_blockers: ["command_exit_not_observed"]`. `--command-exit 1` against a PASS verdict gives `evidence_error`, exit 2. | Exit code, `status`, `complete_blockers` | The WIP's "complete → 0" regardless of outcome; ignoring an absent `--command-exit` |
+| O1 | A complete campaign with verdict PASS and `--command-exit 0` exits 0. The same campaign with a FAIL verdict and `--command-exit 1` exits 1, `status: complete`. The PASS campaign **without** `--command-exit` gives `incomplete`, exit 3, `complete_blockers: ["command_exit_not_observed"]`. `--command-exit 1` against a PASS verdict gives `evidence_error`, exit 2 (status row 1). | Exit code, `status`, `complete_blockers` | The WIP's "complete → 0" regardless of outcome; ignoring an absent `--command-exit`; a differing exit treated as `incomplete` |
 | O2 | Appended `--resume` runs: `completed_total` equals the unique resolved candidates, and `runs[]` keeps per-run counts. | Three runs where run 2 resumes 5 and executes 3 | Summing candidate events across runs |
 | O3 | Without a verdict the result is never `complete`, even when every candidate event is present. | `status: incomplete`, exit 3 | Treating event exhaustion as completion |
 | O4 | Structural and verdict disagreements. A state record whose bucket disagrees with the **verified verdict** bucket, and a record whose recomputed `candidate_id_from_fields(...)` ≠ its filename stem, each give `evidence_error`, exit 2, with the filename named. A record whose *path* was altered (so its identity no longer matches) is caught the same way. | `errors[].message` | Silently preferring one source; skipping missing keys |
-| O5 | Store reconciliation, fixture **F2**: no verdict; every record is at judge J_X; the latest run is at X′ with `resume.rejected_total = N` and 3 candidate events; one extra record is for a candidate absent from the plan. Expected: `pending_total == selected_total − 3`, `state.stale_judge.count == N`, `state.foreign.count == 1`, no error, `eta_reason != "no_remaining_work"`, and survivors counted only from the 3 events. | Output fields | Pending computed from stale records; foreign records treated as an error; `completed_total` counting all valid records |
+| O5 | Store reconciliation, fixture **F2**: no verdict; N records are at judge J_X; the latest run is at X′ with a `candidates` event carrying `judge_sha256 = J_X′`, `resume.rejected_total = N`, `resume.resumed_total = 0` and 3 candidate events, **and the 3 executed candidates' records are at J_X′**; one extra record is for a candidate absent from the plan. Expected: `state.judge_sha256_current == J_X′`, `judge_sha256_source == "candidates-event"`, `pending_total == selected_total − 3`, `state.stale_judge.count == N`, `state.foreign.count == 1`, no error, `eta_reason != "no_remaining_work"`, and survivors counted only from the 3 events. **Variant F2b (P8R2-2):** add 2 extra J_X′ records with no latest-run event while `resumed_total == 0`: `state.unreconciled.count == 2`, they are not counted, `status: incomplete`, exit 3 (never 2). **Variant F2c:** drop `judge_sha256` from the `candidates` event: the judge is derived from the 3 paired records (`judge_sha256_source == "paired-records"`); if those records carry two distinct judges, the judge is `unknown` and `counted == 0`. | Output fields | Pending computed from stale records; foreign records treated as an error; `completed_total` counting all valid records; a reconciliation mismatch raised as exit 2; `judge_provenance` used as the judge |
 | O6 | Progress-only mode: the same candidate is `survived` in run 1 and `killed` in run 2. It is listed under `reclassified` and counted once, as killed. | `reclassified`, `outcomes` | Double counting, or an error |
 | O7 | ETA. 19 samples → `eta: null`, `eta_reason: "insufficient_sample"`. 20 samples with **distinct** 10th and 11th values (e.g. 1.0…20.0) → `p50_candidate_s == 10.0` (the 10th value, index 9) and `p90_candidate_s == 18.0` (index 17), exactly as `sorted[ceil(X/100×n)−1]` gives. `measurement_window` spans the sampled events. | Values | `statistics.median` (would give 10.5); mean instead of rank; the WIP's threshold of 5 |
 | O8 | Changing every timing and resource field (`elapsed_seconds`, `emitted_at`, `cpu_seconds`, `peak_rss_bytes`, `phase_seconds`, `startup_seconds`) in a slower-host replay changes the `timing`/`projection` numbers but **not** `status`, `outcomes`, the exit code, `unresolved` or the `adverse` membership. | Diff of the two outputs, restricted to those keys | Any time- or resource-dependent classification |
-| O9 | Projection fallbacks, via the exported pure `project()`: 25 samples of one operator and 3 of another give `fallback_counts` operator/all exactly as specified. A basis with fewer than 20 samples overall is `null` with a reason. `--project` without `--project-jobs` is refused (exit 2). | Output | Projecting from 3 samples; defaulting jobs to 1 |
+| O9 | Projection fallbacks, via the exported pure `project()`. **Size classes (C26):** rows with files of exactly 10, 11, 100 and 101 candidates land in `small`, `medium`, `medium`, `large`. **Fallbacks:** 25 samples in `(compare-swap, small)` and 3 in `(boolop-swap, large)` give `fallback_counts` `operator_size_class`/`operator`/`all` exactly as specified. A basis with fewer than 20 samples overall is `null` with a reason. `--project` without `--project-jobs` is refused (exit 2). `wall_scope` is present. | Output | Projecting from 3 samples; defaulting jobs to 1; classifying by samples instead of plan rows; an off-by-one at 10/11 or 100/101; strata keyed by path |
 | O10 | The adverse list with `--limit 2` over 5 survivors shows 2, `matching_total: 5`, and `next_offset: 2`. | Output | Silent truncation |
 | O11 | Pilot selection (fixture **F3**). A candidates file in **reverse plan order** whose `selection_sha256` was computed over plan order must match. A `candidates` event whose `selection_sha256` mismatches, and a pilot progress stream with no `--candidates-file`, are each `evidence_error`. A matching selection gives `qualifying: false` and `status: incomplete` even when everything is killed. `verdict_written{destination: null, exit_code: 6}` is accepted. `--project --project-jobs 3` gives `projection.jobs == 3`. | Output | Hashing in file order; a pilot reported complete |
 | O12 | A torn final progress record: with no verdict it is `incomplete` and `torn_final_record: true`. With a verdict it is `evidence_error`. | Output | The WIP always refuses, or always accepts |
@@ -432,6 +493,7 @@ Each oracle lists its observable, its negative, and the test that checks it. All
 | O16 | `cli.plan_jobs()` rows: for every row of the real-planner fixture, `candidate_id_from_fields(**identity fields) == row["id"]`. A row with a tampered `source_sha256` makes a matching state record an `evidence_error`. | Values | Rows without digests; skipping missing keys |
 | O17 | Expiry (fixture **F1**): the verdict's `reason_code` is `LANE_TIMEOUT`, 200 never-started `budget_exceeded` leftovers have no candidate event, `--command-exit 4`, there is a terminal `end`, and a state dir is supplied. Expected: `status: incomplete`, exit 3, `unresolved.matching_total == 200`. Also a sharded 1/4 PASS verdict with `--command-exit 0` (fixture **F4**) is never `complete`. | Output | LANE_TIMEOUT → `complete`, exit 1; shard PASS → complete |
 | O18 | All six buckets (B108 box 2): a fixture verdict with at least one candidate in each of `killed`, `survived`, `equivalent`, `crashed`, `hung` and `budget_exceeded` gives exact `outcomes` counts and exact adverse candidate IDs, paths and operators. Stale-commit and wrong-lane inputs are each `evidence_error`. | Output | Dropped buckets; silent zero on bad input |
+| O20 | **C25 judge in the `candidates` event.** A real `runner.run_lane` R2 run with `--resume` and a state dir writes a `candidates` event whose `judge_sha256` equals the `judge_sha256` in every state record it writes. The same run without a state root writes no `judge_sha256` key (absent, not `null`). The `candidates` event keeps its existing four keys unchanged. | Progress JSONL and records | A missing key; a different digest (e.g. the tree digest); `null` instead of absent |
 | O19 | Coverage (B108 box 4): with `--coverage` pointing at a reverified artifact that has one missing line and one missing arc, the output lists them exactly. **Without** `--coverage`, `coverage.status == "not_supplied"`, `status` is not `complete`, and no `.assay` file is read (assert with a non-existent declared artifact path). | Output | Reading the lane-declared artifact implicitly; a missing artifact shown as zero gaps |
 
 **Boxes not covered.** If any B108 box 1-4 item cannot get an oracle in this package, **do not tick that box**. List it as a residual.
@@ -532,7 +594,8 @@ it is not an oracle yet.
 - **DESIGN-GUIDE (WHY):** a subsection after the `analyze report` rationale (~:3368-3420) covering:
   - explicit inputs only;
   - why the result is never `complete` without a verdict and a matching command exit, for a pilot, or after an expiry;
-  - store reconciliation (`foreign`, `stale_judge`, counted records);
+  - store reconciliation (`foreign`, `stale_judge`, `unreconciled`, counted records), and why the judge comes from the `candidates` event: the verdict's `judge_provenance` is the wheel, not the mutation judge (C25);
+  - the file-size classes (small ≤ 10, medium 11–100, large > 100 candidates per file; C26), and that `wall_*` excludes preflight, R3 and consolidation;
   - the exit mapping and how it aligns with A-460: 0, 1 and 2 are shared; 3 means post-hoc `incomplete`, not A-460's freshness-bounded `running`, and why;
   - the ETA sample rule and the projection strata;
   - that A-464 makes both of them diagnostic;
@@ -542,6 +605,7 @@ it is not an oracle yet.
   - a pilot projection with `--candidates-file --project`.
 - **CHANGES.md:** `## [Unreleased]` → `### Added` bullet.
 - **CONSUMERS (HOW), `assay plan`:** one line documenting the two new plan-row keys (`source_sha256`, `mutated_file_sha256`).
+- **CONSUMERS (HOW), progress events:** one line documenting the new `candidates`-event key `judge_sha256`, present only when a state root is set (C25).
 - **Backlog:** tick only the B108 acceptance boxes 1-4 that have an oracle above (O15, O18 and O19 cover boxes 1, 2 and 4). Add a phase note to B108's status line. **Do not** tick box 5.
 
 ## Scope / forbid
@@ -549,7 +613,8 @@ it is not an oracle yet.
 **Touch:**
 - `src/assay/campaign.py` (new);
 - `src/assay/analysis.py` (the hook only);
-- `src/assay/cli.py` (C13 only: extract `plan_jobs()` and add the two row keys; no other behavior change);
+- `src/assay/cli.py` (C13/C29 only: the `plan_jobs()` wrapper over P6's `_discover_plan_jobs`, and the two row keys; no other behavior change);
+- `src/assay/mutation.py`, two additive changes only: extract `candidate_identity_fields(job)` from `candidate_id(job)` (C13; identical digest), and add the `judge_sha256` key to the `candidates` progress event when a state root is set (C25);
 - `src/assay/schemas/analysis-campaign.schema.json` (new);
 - `tests/test_campaign.py` (new);
 - `tests/test_b105_cli_boundaries.py` and any existing test that pins the plan payload, but only to accept the two additive row keys;
@@ -560,7 +625,8 @@ it is not an oracle yet.
 - your report.
 
 **Forbid:**
-- any change to verdict, schema, runner, mutation or liveness behavior (the `cli.py` plan-row change is additive only);
+- any change to verdict, schema, runner, mutation or liveness behavior beyond the two additive `mutation.py` changes above (the `cli.py` plan-row change is additive only);
+- a second extraction of `_cmd_plan`'s discovery (C29);
 - `run-gate-project/`;
 - the WIP worktree itself (read only);
 - the WIP's backlog/decision diffs;
@@ -571,7 +637,7 @@ it is not an oracle yet.
 
 ## Gate
 
-1. Focused tests, serially: `nice -n 19 ionice -c3 python -m pytest tests/test_campaign.py tests/test_analysis.py tests/test_self_lane.py tests/test_b105_cli_boundaries.py -q -p no:cacheprovider`. If P1 has landed, add `tests/test_dataclass_contract.py`.
+1. Focused tests, serially: `nice -n 19 ionice -c3 python -m pytest tests/test_campaign.py tests/test_analysis.py tests/test_self_lane.py tests/test_b105_cli_boundaries.py tests/test_mutation_judge_identity.py tests/test_mutation_progress_budget_plan.py -q -p no:cacheprovider`. The last two prove the `candidate_identity_fields` refactor and the additive `candidates` key. If P1 has landed, add `tests/test_dataclass_contract.py`. Find any test that P1 moved into `tests/zz_slow/` by name.
 2. `cd <worktree>/assay && python ./run-gate.py tester-unified`. The worktree must be under `/workspaces/vbpub`. Then, **in a separate step**, read `ASSAY_GATE_CONTAINER_EXIT` and `ASSAY_REGISTERED_GATE_COMPLETE` from the gate log (L4). Never pipe-tail them.
 3. `python ./run-gate.py self-qualification-preflight`. The new module adds target lines, so the 100% whole-target floor must hold.
 
@@ -590,8 +656,9 @@ If a named contract cannot be met as specified, or scope requires a forbidden fi
 **Specific triggers:**
 - `mutation.plan_sha256` (P6/P7) does not exist, or has a different contract from "netstrings over IDs in plan order" (step 9 only).
 - The ported WIP cannot reach 100% branch coverage without a pragma.
-- `cli.plan_jobs()` cannot reconstruct the plan for a lane without a verdict, or the planner's job objects do not expose the source and mutated-file digests.
-- The current judge cannot be determined from any supplied evidence, and a fixture requires counting records. Report it; do not invent a judge source.
+- P6's `_discover_plan_jobs` is not on the base (C29).
+- `cli.plan_jobs()` cannot reconstruct the plan for a lane without a verdict, or `candidate_identity_fields(job)` cannot reproduce `candidate_id(job)` byte for byte.
+- A fixture requires counting records but the C25 judge rule yields `unknown` for it. Fix the fixture (give the `candidates` event a `judge_sha256`); never invent another judge source, and never use `judge_provenance`.
 
 ## Report
 
