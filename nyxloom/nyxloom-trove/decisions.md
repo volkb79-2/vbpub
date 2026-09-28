@@ -219,3 +219,23 @@ declared for that reason alone, not because anything still uses them.
 **Decision:** Approved: add `nyxloom backlog new --interactive [TITLE]` and `nyxloom backlog edit ENTRY_ID`. With interactive creation, TITLE may be omitted and is then requested by the prompt flow; if supplied it seeds the title prompt. Without `--interactive`, the existing required TITLE and noninteractive behavior remain. The wizard's editable metadata is the same set already supported by `backlog new`: title, type, severity, priority, component, context_estimate, folds_into, provenance, filed_by, and spec_owner. Existing CLI field options seed interactive prompts; an empty optional value clears that field. The existing body template or `--body-from` behavior remains in force for creation. `edit ENTRY_ID` loads the managed entry and prompts for that same metadata set. It preserves fields outside the form, including generated/transition-owned metadata, and preserves the Markdown body verbatim. The complete candidate must validate before writing; status and merge-owned fields stay under their transition functions.
 **Context pointers:** nyxloom/src/nyxloom/backlog_entries.py; nyxloom/src/nyxloom/schemas/backlog-entry.schema.json; nyxloom/docs/CLI-REFERENCE.md; D-010 and D-014.
 **Resume prompt:** "Implement the approved backlog wizard grammar and field ownership from D-014/D-016; retain scriptable `new TITLE` and validate before any write."
+
+## D-017 · 2026-09-28 · nyxloom-P112 · DECIDED 2026-09-28
+**Question:** What should an empty invocation of a CLI or delegated command group do after registry adoption?
+**Why it matters:** The old `nyxloom backlog` group printed help but returned exit 2. cli-extended's contract treats an empty invocation as a help request that exits 0, so keeping the old status would make Nyxloom's delegated grammar disagree with the shared boundary.
+**Options:**
+- Preserve exit 2 for empty command groups as a malformed invocation.
+- Follow cli-extended: print generated help and exit 0 for empty invocation, with no state/log side effects.
+**Recommendation:** Follow the shared cli-extended contract across root and delegated CLIs. A user who types a command group without its subcommand receives its choices; scripts that treated exit 2 as an error should pass a subcommand or `--help` explicitly.
+**Decision:** Approved under the user's direction to align fully with cli-extended: empty root or delegated command invocation prints the applicable generated help and exits 0 without side effects.
+**Context pointers:** `libraries/cli-extended/SPEC.md` §9; `nyxloom/docs/CLI-REFERENCE.md`; `tests/test_cli_help.py`; `tests/test_backlog_entries.py`.
+
+## D-018 · 2026-09-28 · nyxloom-P112 · DECIDED 2026-09-28
+**Question:** Should the installed CLI reject malformed values against their authoritative domain vocabularies and types before dispatch?
+**Why it matters:** Backlog statuses and finding kinds/severities are closed values in their schema or registry, while event cursors are integers and finding fields have a `KEY=VALUE` form. Accepting arbitrary strings lets typos look like empty reads or pushes malformed input into handlers, where it can produce a different exit status and omit command help.
+**Options:**
+- Keep these declarations as free strings and rely on each handler to reject invalid values.
+- Declare source-derived choices and parser types so invalid values fail as cli-extended usage errors before dispatch.
+**Recommendation:** Use the owning sources for backlog statuses, finding kinds/severities, and integer sequence cursors. Validate finding field shape at parse time. Do not duplicate these vocabularies in the registry.
+**Decision:** Approved under the user's direction to audit every option and align fully with cli-extended: declare backlog list status choices from `backlog_entries.STATUSES`, finding record/list kinds and record severities from `findings.FINDING_KINDS` and `findings.SEVERITIES`, parse `digest/events --since` as integers, and reject malformed `finding record --field` values before dispatch. Existing valid values remain valid; malformed or unknown values exit 2 with the relevant generated help.
+**Context pointers:** `nyxloom/src/nyxloom/cli_registry.py`; `nyxloom/src/nyxloom/backlog_entries.py`; `nyxloom/src/nyxloom/findings.py`; `nyxloom/src/nyxloom/cli.py`; `nyxloom/docs/CLI-REFERENCE.md`; P112's parser-to-handler and documentation oracles.
