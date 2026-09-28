@@ -117,7 +117,10 @@ says so. Never import-and-hope; never reimplement another package's logic.
 
 ## Deliverables (all four, or the package is incomplete)
 
-1. Implementation in your owned files only.
+1. Implementation in files owned by this task. `scope.touch` is the planned
+   inventory rather than an exclusive edit allowlist; necessary additions are
+   allowed when the accepted task requires them and must be recorded. The
+   protected-file and other-package ownership rules above still apply.
 2. Tests green under the gate command.
 3. `handoff/reports/P<NN>-REPORT.md`: result (done|BLOCKED), per-oracle
    pass/fail table, files touched, gate output tail (verbatim), deviations
@@ -131,7 +134,7 @@ Use Git writes only from the assigned task worktree and its feature branch.
 Commits there are allowed and expected when the declared gate requires a clean,
 committed tree for changed-line coverage. Do not stage, commit, reset, rebase,
 or amend from the shared main checkout. Keep the gate's `--worktree` target on
-the assigned task worktree. Also never touch files outside your declared
-ownership; start long-lived daemons that outlive your tests; call external
-networks or AI services; or edit this file or any handoff as an implementation
-agent.
+the assigned task worktree. Also never edit protected files or another active
+package's files without explicit bounded authorization; start long-lived
+daemons that outlive your tests; call external networks or AI services; or edit
+this file or any handoff as an implementation agent.
