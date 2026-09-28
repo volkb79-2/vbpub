@@ -17,7 +17,7 @@ from assay import liveness
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
 from assay.mutation import MutationTarget, run_mutation
-from assay.runner import CommandResult, execute_command
+from assay.runner import execute_command
 
 _TEXT = (
     "def flags():\n"
