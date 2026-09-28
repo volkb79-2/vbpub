@@ -571,9 +571,10 @@ class TestCliFreeModelsList:
         assert "groq-model" in out
         assert "or-model" not in out
 
-    def test_no_subcommand_prints_help_and_exits_2(self, capsys):
+    def test_no_subcommand_prints_help_and_exits_0(self, capsys):
         exit_code = ctl_main(["free-models"])
-        assert exit_code == 2
+        assert exit_code == 0
+        assert "list" in capsys.readouterr().out
 
 
 class TestCliFreeModelsRefresh:

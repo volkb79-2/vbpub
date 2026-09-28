@@ -17,6 +17,7 @@ import io
 import json
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import structlog.contextvars
@@ -744,6 +745,94 @@ class TestInteractiveBacklog:
         assert not d.exists()
 
 
+class TestBacklogWizardFailures:
+    @pytest.mark.parametrize("operation", ["text", "select"])
+    def test_invalid_prompt_value_gets_field_context(self, operation):
+        from cli_extended import CliFailure
+        from nyxloom import backlog_wizard
+
+        class Driver:
+            def text(self, *_args, **_kwargs):
+                if operation == "text":
+                    raise CliFailure("bad answer", exit_code=2)
+                return "title"
+
+            def select(self, *_args, **_kwargs):
+                if operation == "select":
+                    raise CliFailure("bad choice", exit_code=2)
+                return "feature"
+
+        runtime = SimpleNamespace(prompts=Driver())
+        call = (
+            lambda: backlog_wizard._prompt_text(runtime, "title", None, required=True)
+            if operation == "text"
+            else backlog_wizard._prompt_choice(runtime, "type", None)
+        )
+        with pytest.raises(CliFailure, match="invalid") as raised:
+            call()
+        assert raised.value.exit_code == 2
+        assert "rerun `nyxloom backlog new --interactive`" in raised.value.hint
+
+    @pytest.mark.parametrize("operation", ["text", "select"])
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "prompts require both stdin and stdout to be terminals",
+            "install the optional Questionary extra to use this prompt",
+        ],
+    )
+    def test_environment_prompt_failures_are_preserved(self, operation, message):
+        from cli_extended import CliFailure
+        from nyxloom import backlog_wizard
+
+        error = CliFailure(message, exit_code=2)
+
+        class Driver:
+            def text(self, *_args, **_kwargs):
+                if operation == "text":
+                    raise error
+                return "title"
+
+            def select(self, *_args, **_kwargs):
+                if operation == "select":
+                    raise error
+                return "feature"
+
+        runtime = SimpleNamespace(prompts=Driver())
+        call = (
+            lambda: backlog_wizard._prompt_text(runtime, "title", None, required=True)
+            if operation == "text"
+            else backlog_wizard._prompt_choice(runtime, "type", None)
+        )
+        with pytest.raises(CliFailure) as raised:
+            call()
+        assert raised.value is error
+
+    def test_create_schema_error_and_edit_missing_id_are_translated(
+        self, tmp_path, monkeypatch
+    ):
+        from cli_extended import CliFailure
+        from nyxloom import backlog_wizard
+
+        cfg = make_cfg(tmp_path)
+        monkeypatch.setattr(
+            backlog_wizard, "collect_values", lambda *_args: {"title": "candidate"}
+        )
+
+        def invalid_candidate(*_args, **_kwargs):
+            raise ValueError("schema rejected candidate")
+
+        monkeypatch.setattr(backlog_entries, "create_entry", invalid_candidate)
+        with pytest.raises(CliFailure, match="schema rejected") as create_error:
+            backlog_wizard.create(cfg, object(), None, {})
+        assert create_error.value.exit_code == 1
+        assert "no files were changed" in create_error.value.hint
+
+        with pytest.raises(CliFailure, match="no entry CIU-99") as edit_error:
+            backlog_wizard.edit(cfg, object(), "CIU-99")
+        assert edit_error.value.exit_code == 1
+
+
 # ----- docs sync (estate mandate: shipped-loader parses every example) -----
 
 class TestDocsSync:
@@ -880,6 +969,55 @@ class TestCoverageClosure:
             backlog_entries.set_status(cfg, "CIU-1", "fixed", reason="x")
 
 
+class TestEditFieldsValidation:
+    def test_rejects_unknown_fields_blank_titles_and_bad_priority(self, tmp_path):
+        cfg = make_cfg(tmp_path)
+        entry_path = backlog_entries.create_entry(cfg, "before", priority=5)
+        original = entry_path.read_bytes()
+
+        for values, message in (
+            ({"unowned": "x"}, "unsupported editable fields"),
+            ({"title": "  "}, "title must not be blank"),
+            ({"priority": True}, "priority must be an integer or empty"),
+            ({"priority": "5"}, "priority must be an integer or empty"),
+        ):
+            with pytest.raises(ValueError, match=message):
+                backlog_entries.edit_fields(cfg, "CIU-1", values)
+            assert entry_path.read_bytes() == original
+
+    def test_clears_optional_fields_and_accepts_integer_zero(self, tmp_path):
+        cfg = make_cfg(tmp_path)
+        entry_path = backlog_entries.create_entry(
+            cfg, "before", priority=5, component="runtime"
+        )
+
+        backlog_entries.edit_fields(
+            cfg, "CIU-1", {"priority": "", "component": None}
+        )
+        cleared = backlog_entries.parse_entry(entry_path)
+        assert cleared.priority is None
+        assert cleared.component is None
+
+        backlog_entries.edit_fields(
+            cfg, "CIU-1", {"priority": 0, "component": "core"}
+        )
+        updated = backlog_entries.parse_entry(entry_path)
+        assert updated.priority == 0
+        assert updated.component == "core"
+
+    def test_rejects_invalid_utf8_before_any_write(self, tmp_path, monkeypatch):
+        cfg = make_cfg(tmp_path)
+        entry_path = backlog_entries.create_entry(cfg, "before")
+        entry = backlog_entries.parse_entry(entry_path)
+        corrupt = b"\xff"
+        entry_path.write_bytes(corrupt)
+        monkeypatch.setattr(backlog_entries, "_find", lambda *_args: entry)
+
+        with pytest.raises(ValueError, match="not valid UTF-8"):
+            backlog_entries.edit_fields(cfg, "CIU-1", {"title": "after"})
+        assert entry_path.read_bytes() == corrupt
+
+
 # ----- gate-driven closure: every CLI refusal/discovery branch gets an oracle -----
 
 class TestCliRefusalsAndDiscovery:
@@ -910,6 +1048,28 @@ class TestCliRefusalsAndDiscovery:
         assert "repro" in e.path.read_text()
         assert cli.main(["backlog", "new", "--project-id", "demo", "bad",
                          "--body-from", "/nonexistent/f.md"]) == 1
+
+    def test_interactive_new_missing_body_file_fails_before_prompting(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        cfg = make_cfg(tmp_path)
+        driver = _BacklogPromptDriver()
+        status, _stdout, _stderr = _run_interactive_backlog(
+            monkeypatch, cfg,
+            ["backlog", "new", "--project-id", "demo", "--interactive",
+             "--body-from", str(tmp_path / "missing.md")],
+            driver,
+        )
+        assert status == 1
+        assert "--body-from" in capsys.readouterr().err
+        assert driver.calls == []
+        assert not backlog_entries.resolve_dir(cfg).exists()
+
+    def test_edit_rejects_unknown_project_and_project_without_entries(
+        self, sample_project
+    ):
+        assert cli.main(["backlog", "edit", "--project-id", "ghost", "CIU-1"]) == 1
+        assert cli.main(["backlog", "edit", "--project-id", "demo", "CIU-1"]) == 1
 
     def test_promote_refusals_exit_1(self, demo_with_entries):
         plain = demo_with_entries.root / "nyxloom-trove" / "backlog.md"

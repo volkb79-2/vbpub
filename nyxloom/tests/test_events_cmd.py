@@ -1,4 +1,4 @@
-"""Tests for `nyxloom events` -- PACKAGE SP04 (docs/plan-state-integrity.md
+"""Tests for `nyxloomctl events` -- PACKAGE SP04 (docs/plan-state-integrity.md
 A.3): the greppability bridge that dumps the event store as JSONL to stdout,
 restoring `| jq` / `| lnav` over the (now backend-agnostic, file or SQLite)
 event log.

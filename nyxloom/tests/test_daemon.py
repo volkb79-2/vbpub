@@ -3520,7 +3520,7 @@ def test_reconcile_trace_flush_skipped_when_plan_project_returns_bare_list(
 
 
 # --------------------------------------------------------------------------
-# P38 2026-07-16 Oracle 3: `nyxloom doctor`'s dashboard-URL line reflects
+# P38 2026-07-16 Oracle 3: `nyxloomctl doctor`'s dashboard-URL line reflects
 # reachability -- a bridge bind (0.0.0.0) also names the alias address
 # reachable from a co-networked container (e.g. the devcontainer), not only
 # the host-loopback address a devcontainer operator could never reach.

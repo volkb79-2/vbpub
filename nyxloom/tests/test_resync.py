@@ -391,7 +391,7 @@ def test_git_helper_returns_empty_on_oserror(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# CLI verb: `nyxloom resync <project>` -- prints, never writes
+# CLI verb: `nyxloomctl resync <project>` -- prints, never writes
 
 def test_cli_resync_no_tasks_prints_message(sample_project, tmp_state, capsys):
     exit_code = ctl_main(["resync", "demo"])

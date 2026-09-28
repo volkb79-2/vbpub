@@ -437,7 +437,7 @@ def edit_fields(cfg: ProjectConfig, entry_id: str, values: dict) -> Path:
     except UnicodeDecodeError as exc:
         raise ValueError(f"entry is not valid UTF-8: {exc}") from exc
     normalized = raw_text.replace("\r\n", "\n")
-    frontmatter, _body, _line = split_frontmatter(normalized)
+    frontmatter, _body, body_start_line = split_frontmatter(normalized)
     candidate = dict(frontmatter)
     for key, value in values.items():
         if key == "title":
@@ -458,19 +458,11 @@ def edit_fields(cfg: ProjectConfig, entry_id: str, values: dict) -> Path:
 
     validate_candidate(candidate)
 
-    # Identify the exact byte range after the frontmatter closing line so
-    # CRLF and body contents are retained byte-for-byte.
-    lines = raw_bytes.splitlines(keepends=True)
-    if not lines or lines[0].rstrip(b"\r\n") != b"---":
-        raise ValueError("entry frontmatter must start with '---'")
-    closing = next(
-        (index for index, line in enumerate(lines[1:], start=1)
-         if line.rstrip(b"\r\n") == b"---"),
-        None,
-    )
-    if closing is None:
-        raise ValueError("entry frontmatter has no closing '---'")
-    body_bytes = b"".join(lines[closing + 1:])
+    # split_frontmatter is the source of the closing delimiter and body
+    # boundary. Slice the raw bytes at the equivalent line so CRLF and body
+    # contents remain byte-for-byte unchanged.
+    raw_lines = raw_bytes.split(b"\n")
+    body_bytes = b"\n".join(raw_lines[body_start_line - 1:])
     yaml_text = yaml.safe_dump(candidate, sort_keys=False, allow_unicode=True)
     new_bytes = b"---\n" + yaml_text.encode("utf-8") + b"---\n" + body_bytes
     entry.path.write_bytes(new_bytes)

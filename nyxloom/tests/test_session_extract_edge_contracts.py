@@ -492,8 +492,9 @@ def test_cli_follow_and_json_flag_edges_return_human_errors(tmp_path, capsys):
         ["--max-time-minutes", "5"],
         ["--extract-metadata", "pre"],
     ):
-        assert harness_main(["extract", str(source), "--follow", *extra]) == 1
+        assert harness_main(["extract", str(source), "--follow", *extra]) == 2
         error = capsys.readouterr().err
+        assert "usage:" in error.lower()
         assert "cannot be combined" in error or "cannot keep" in error
 
     for extra in (
@@ -501,8 +502,10 @@ def test_cli_follow_and_json_flag_edges_return_human_errors(tmp_path, capsys):
         ["--timestamp-format", "%H:%M"],
         ["--extract-metadata", "pre"],
     ):
-        assert harness_main(["extract", str(source), "--json", *extra]) == 1
-        assert "only affect" in capsys.readouterr().err
+        assert harness_main(["extract", str(source), "--json", *extra]) == 2
+        error = capsys.readouterr().err
+        assert "usage:" in error.lower()
+        assert "only affect" in error
 
 
 def test_cli_argument_aliases_and_shared_follow_validation_are_preserved():
@@ -541,8 +544,10 @@ def test_cli_report_conflict_and_detailed_json_paths(tmp_path, capsys):
              "output_tokens": 3,
          }, "content": [{"type": "text", "text": "Found the issue."}]}}]) + "\n")
 
-    assert harness_main(["extract-report", str(source), "--detailed", "--type", "report-detailed"]) == 1
-    assert "legacy alias" in capsys.readouterr().err
+    assert harness_main(["extract-report", str(source), "--detailed", "--type", "report-detailed"]) == 2
+    error = capsys.readouterr().err
+    assert "usage:" in error.lower()
+    assert "legacy alias" in error
     assert harness_main(["extract-report", str(source), "--type", "report-detailed", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)
 
@@ -559,8 +564,10 @@ def test_cli_debug_rejects_missing_cursor_and_unsupported_tool_visibility(tmp_pa
 
     assert harness_main([
         "extract-debug", str(source), "--format", "claude-code", "--show-tool-call-intent",
-    ]) == 1
-    assert "requires --show-tool-calls" in capsys.readouterr().err
+    ]) == 2
+    error = capsys.readouterr().err
+    assert "usage:" in error.lower()
+    assert "requires --show-tool-calls" in error
 
     from nyxloom.session_extract import adapters
 

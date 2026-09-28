@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import re
 import runpy
 import shlex
@@ -12,8 +13,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from cli_extended import CliFailure
 
-from nyxloom.cli_registry import harness_cli, operator_cli, primary_cli
+from nyxloom.cli_registry import _extract_guard, _opt, harness_cli, operator_cli, primary_cli
 
 
 def _stub_handlers(registered, calls, prefix=()):
@@ -182,6 +184,35 @@ def test_invalid_arities_choices_and_missing_inputs_never_dispatch(factory, argv
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["extract", "missing.jsonl", "--follow", "--strip-stale-wakeups"],
+        ["extract", "missing.jsonl", "--json", "--show-timestamps", "pre"],
+        ["extract-report", "missing.jsonl", "--type", "csv", "--json"],
+    ],
+)
+def test_conflicting_extraction_options_fail_before_source_dispatch(
+    argv, capsys, monkeypatch
+):
+    from nyxloom import cli
+
+    calls = []
+
+    def handler(name):
+        return lambda _args: calls.append(name) or 0
+
+    monkeypatch.setattr(cli, "cmd_extract", handler("extract"))
+    monkeypatch.setattr(cli, "cmd_extract_report", handler("extract-report"))
+    status = harness_cli().run(
+        argv=argv, interactive_extra="nyxloom[interactive]"
+    )
+    error = capsys.readouterr().err
+    assert status == 2
+    assert calls == []
+    assert "usage:" in error.lower()
+
+
 def test_global_options_work_before_and_after_nested_commands():
     status, calls = _run(operator_cli, ["--traceback", "project", "list"])
     assert status == 0
@@ -244,6 +275,7 @@ def test_daemon_module_entrypoint_runs_the_current_daemon(monkeypatch):
 
     monkeypatch.setattr(config, "load_registry", lambda: registry)
     monkeypatch.setattr(daemon, "Daemon", StubDaemon)
+    importlib.import_module("nyxloom.daemon_entrypoint")
     monkeypatch.delitem(sys.modules, "nyxloom.daemon_entrypoint", raising=False)
 
     with pytest.raises(SystemExit) as raised:
@@ -251,6 +283,17 @@ def test_daemon_module_entrypoint_runs_the_current_daemon(monkeypatch):
 
     assert raised.value.code == 0
     assert calls == [("init", registry), ("run",)]
+
+
+def test_store_false_option_default_and_extract_json_guard():
+    option = _opt("--no-color", "disable color", action="store_false")
+    assert option.parser_kwargs["default"] is True
+
+    _extract_guard(SimpleNamespace(json=True))
+    with pytest.raises(CliFailure) as raised:
+        _extract_guard(SimpleNamespace(json=True, show_timestamps="pre"))
+    assert raised.value.exit_code == 2
+    assert raised.value.show_help is True
 
 
 def test_repeatable_options_preserve_each_value_and_unknown_options_fail():

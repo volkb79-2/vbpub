@@ -853,15 +853,6 @@ def cmd_extract(args) -> int:
     from .session_extract import extract
     from .session_extract.events import EventKind
 
-    if args.follow and args.strip_stale_wakeups:
-        print(
-            "error: extract --follow cannot be combined with --strip-stale-wakeups: "
-            "the trailing-run transform requires a fixed, complete span and cannot be "
-            "applied to live output without silently diverging",
-            file=sys.stderr,
-        )
-        return 1
-
     resolved = _resolve_session_log(args)
     if resolved is None:
         return 1
@@ -876,42 +867,6 @@ def cmd_extract(args) -> int:
     since_marker, err = _resolve_since_marker(args, detected_format)
     if err is not None:
         return err
-
-    if args.json:
-        text_only = []
-        if args.blank_lines is not None:
-            text_only.append("--blank-lines")
-        if args.gap_marker is not None:
-            text_only.append("--gap-marker")
-        if args.min_gap_records is not None:
-            text_only.append("--min-gap-records")
-        if args.show_gap_source:
-            text_only.append("--show-gap-source")
-        if args.task is not None:
-            text_only.append("--task")
-        if args.task_file is not None:
-            text_only.append("--task-file")
-        if args.render_markdown:
-            text_only.append("--render-markdown")
-        if args.highlight:
-            text_only.append("--highlight")
-        if args.show_timestamps is not None:
-            text_only.append("--show-timestamps")
-        if args.timestamp_format is not None:
-            text_only.append("--timestamp-format")
-        if args.extract_metadata is not None:
-            text_only.append("--extract-metadata")
-        if getattr(args, "color", None) is not None:
-            text_only.append("--color/--no-color")
-        if text_only:
-            print(f"error: {', '.join(text_only)} only affect(s) text-mode rendering -- has no "
-                  f"effect combined with --json", file=sys.stderr)
-            return 1
-
-    flag_error = _validate_render_and_follow_flags(args)
-    if flag_error is not None:
-        print(f"error: {flag_error}", file=sys.stderr)
-        return 1
 
     if args.redact_pattern:
         import re as re_mod
@@ -944,9 +899,6 @@ def cmd_extract(args) -> int:
         return 1
 
     if args.ledger:
-        if args.json:
-            print("error: --ledger has no JSON equivalent yet -- text mode only", file=sys.stderr)
-            return 1
         if result.format != "claude-code":
             print(f"error: --ledger does not support {result.format!r} yet -- see "
                   f"session_extract/ledger.py's module docstring", file=sys.stderr)
@@ -1032,11 +984,6 @@ def cmd_extract_lossless(args) -> int:
     if resolved is None:
         return 1
     path, session_id = resolved
-
-    flag_error = _validate_render_and_follow_flags(args)
-    if flag_error is not None:
-        print(f"error: {flag_error}", file=sys.stderr)
-        return 1
 
     fmt = args.format or detect(path).name
     since_marker, err = _resolve_since_marker(args, fmt)
@@ -1135,11 +1082,6 @@ def cmd_extract_debug(args) -> int:
         return 1
     path, session_id = resolved
     fmt = args.format or detect(path).name
-
-    flag_error = _validate_render_and_follow_flags(args)
-    if flag_error is not None:
-        print(f"error: {flag_error}", file=sys.stderr)
-        return 1
 
     since_marker, err = _resolve_since_marker(args, fmt)
     if err is not None:
@@ -1240,14 +1182,7 @@ def cmd_extract_report(args) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    if args.detailed and args.report_type not in (None, "csv"):
-        print("error: --detailed is a legacy alias for --type csv and cannot be combined with another --type",
-              file=sys.stderr)
-        return 1
     report_type = args.report_type or ("csv" if args.detailed else "report-sheet")
-    if report_type == "csv" and args.json:
-        print("error: --type csv selects CSV output and cannot be combined with --json", file=sys.stderr)
-        return 1
     if report_type == "report-sheet":
         blocks = stats.build_blocks(rows)
         if args.json:
@@ -1773,7 +1708,7 @@ def cmd_resume(args) -> int:
             print(
                 f"error: refusing to resume '{args.project_id}' -- could not "
                 f"verify its state first (the pre-resume drift scan "
-                f"itself failed). Inspect manually: nyxloom resync "
+                f"itself failed). Inspect manually: nyxloomctl resync "
                 f"{args.project_id}; pass --force to resume without a "
                 f"completed scan once you've confirmed it's safe.",
                 file=sys.stderr,
@@ -1797,8 +1732,8 @@ def cmd_resume(args) -> int:
                 file=sys.stderr,
             )
             print(
-                f"inspect: nyxloom resync {args.project_id}   "
-                f"repair: nyxloom resync {args.project_id} --apply",
+                f"inspect: nyxloomctl resync {args.project_id}   "
+                f"repair: nyxloomctl resync {args.project_id} --apply",
                 file=sys.stderr,
             )
             return 1
@@ -1879,7 +1814,7 @@ def cmd_events(args) -> int:
     PACKAGE SP04 2026-07-21 (docs/plan-state-integrity.md A.3 -- the
     greppability bridge). Dumps the event store as JSONL to stdout via
     storage.iter_events, which is backend-agnostic (file or SQLite, per
-    the SQLite store) -- so `nyxloom events P | jq` / `| lnav` works
+    the SQLite store) -- so `nyxloomctl events P | jq` / `| lnav` works
     unchanged regardless of which backend is selected. Each printed line is
     `Event.to_dict()` JSON-encoded, the exact shape storage.py's file
     backend writes to events.jsonl, so a dump round-trips to the same
@@ -2262,8 +2197,6 @@ def cmd_backlog_new(args) -> int:
         )
         print(path)
         return 0
-    if not getattr(args, "title", None):
-        raise ValueError("TITLE is required unless --interactive is used")
     body = None
     if args.body_from:
         try:
@@ -2516,7 +2449,7 @@ def cmd_auth(args) -> int:
     identity or generation forward.
 
     Refusals and rotations are auditable with
-    `nyxloom events _nyxloom-control`."""
+    `nyxloomctl events _nyxloom-control`."""
     from . import control_auth, paths, storage
     from .types import EventType
 
@@ -2537,7 +2470,7 @@ def cmd_auth(args) -> int:
     except control_auth.CredentialStoreError as exc:
         print(f"error: {exc} ({store.path})", file=sys.stderr)
         if args.auth_cmd == "rotate":
-            print("hint: `nyxloom auth rotate --force` replaces an unreadable "
+            print("hint: `nyxloomctl auth rotate --force` replaces an unreadable "
                   "store with a fresh credential", file=sys.stderr)
         return 1
 

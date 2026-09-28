@@ -146,7 +146,7 @@ def test_resume_project_refusal_names_the_drifted_task_and_branch(
     # sorted -- see resync._refs_merge_evidence) -- not just a generic
     # "drift found" message.
     assert "present in `git branch --merged`" in combined
-    assert "nyxloom resync demo" in combined  # the actionable repair command
+    assert "nyxloomctl resync demo" in combined  # the actionable repair command
 
 
 # ---------------------------------------------------------------------------

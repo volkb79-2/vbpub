@@ -44,7 +44,7 @@ INTERFACE CONTRACT (frozen):
 CR-16 2026-08-03 (liveness, channel health, silent-failure detection;
 RISK-007) adds three checks, folded into doctor_project's sweep AND
 available standalone via `liveness_findings(cfg)` (the fast path
-`nyxloom doctor --liveness` and the container healthcheck use — see
+`nyxloomctl doctor --liveness` and the container healthcheck use — see
 cli.cmd_doctor and nyxloomd/docker-compose.yml):
     reconcile-deadman   critical no evidence of a completed reconcile pass
                                 (the store's heartbeat gauge, or the most
@@ -62,7 +62,7 @@ cli.cmd_doctor and nyxloomd/docker-compose.yml):
                                 'unreachable'. 'unconfigured'/'healthy' ->
                                 no finding, same convention as
                                 docker-transport-lying below.
-These three are the reason `nyxloom doctor` — a plain CLI invocation that
+These three are the reason `nyxloomctl doctor` — a plain CLI invocation that
 constructs no Daemon and starts no HTTP server — is RISK-007's escape
 path: every one of them is readable, and reportable via this process's own
 exit code, with the daemon dead, wedged, or its own push channel down.
@@ -185,7 +185,7 @@ def _tick_error_streak_finding(cfg: ProjectConfig, events: list) -> DoctorFindin
     no notion of "still". A burst of TICK_ERRORs followed by recovery leaves
     that run at the tail of the log until some LATER event displaces it -- and
     a recovered daemon reconciling an idle project emits nothing, so nothing
-    ever does. Without this guard `nyxloom doctor --liveness` would keep
+    ever does. Without this guard `nyxloomctl doctor --liveness` would keep
     exiting non-zero for a fault that ended weeks ago, which via the container
     healthcheck means permanently UNHEALTHY: the outage detector causing the
     outage. Reported only while the newest TICK_ERROR is inside the same
@@ -253,7 +253,7 @@ def liveness_findings(cfg: ProjectConfig, *,
     deadman, TICK_ERROR streak, and notification-transport reachability.
     Deliberately separable from doctor_project's other 11 checks (rather
     than only reachable by running the whole sweep) so a fast, narrowly-
-    scoped caller -- the container healthcheck via `nyxloom doctor
+    scoped caller -- the container healthcheck via `nyxloomctl doctor
     --liveness` -- pays for exactly these three, not a full replay-
     divergence pass and a git subprocess call, on a tight polling interval.
     """
@@ -605,7 +605,7 @@ def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
     # task whose input_revision has drifted from current main the same
     # reason-less way, so this check covers both without distinguishing them.
     # But that means a reason-less park now has ONLY pull-based visibility
-    # (the dashboard, `nyxloom status`, a generic daily-digest count) --
+    # (the dashboard, `nyxloomctl status`, a generic daily-digest count) --
     # check 11 above only ever flags the OPEN-D-dep case, so this is the one
     # doctor check aimed specifically at the shape the fix leaves standing.
     # Independent of check 11 (that one reads `fm.decision_deps()` to find
@@ -743,7 +743,7 @@ _CGROUP_PARENT_RE = re.compile(r'--cgroup-parent(?:=|\s+)([^\s\'"]+)')
 def _cgroup_slices_in_argv(argv: list[str]) -> set[str]:
     """Every distinct systemd `.slice` unit name a gate's argv names via
     `--cgroup-parent`. Non-`.slice` values (unexpected, but tolerated) are
-    ignored -- only slice units are what `nyxloom doctor` can verify via
+    ignored -- only slice units are what `nyxloomctl doctor` can verify via
     `systemctl show`."""
     joined = ' '.join(argv)
     return {name for name in _CGROUP_PARENT_RE.findall(joined) if name.endswith('.slice')}

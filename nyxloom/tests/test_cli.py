@@ -1211,6 +1211,80 @@ def test_bootstrap_logging_unwritable_log_falls_back_to_ephemeral(tmp_state, mon
     ]
 
 
+@pytest.mark.parametrize(
+    ("args", "environment", "expected"),
+    [
+        (mock.Mock(log_level="error", quiet=True, debug=True, debug_raw=True), "info", "error"),
+        (mock.Mock(log_level=None, quiet=True, debug=False, debug_raw=False), "info", "warning"),
+        (mock.Mock(log_level=None, quiet=False, debug=True, debug_raw=False), "info", "debug"),
+        (mock.Mock(log_level=None, quiet=False, debug=False, debug_raw=True), "info", "debug"),
+        (mock.Mock(log_level=None, quiet=False, debug=False, debug_raw=False), "trace", "trace"),
+    ],
+)
+def test_bootstrap_logging_cli_level_precedence(monkeypatch, args, environment, expected):
+    from nyxloom import log
+
+    calls = []
+    monkeypatch.setenv("NYXLOOM_LOG_LEVEL", environment)
+    monkeypatch.setattr(
+        log, "configure",
+        lambda *, level, log_dir, console: calls.append((level, log_dir, console)),
+    )
+
+    cli._bootstrap_logging(args, persist=False)
+
+    assert calls == [(expected, None, False)]
+
+
+def test_bootstrap_logging_invalid_cli_level_falls_back_to_info(monkeypatch):
+    from nyxloom import log
+
+    calls = []
+
+    def configure(*, level, log_dir, console):
+        calls.append((level, log_dir, console))
+        if len(calls) == 1:
+            raise ValueError("invalid logging level")
+
+    monkeypatch.setattr(log, "configure", configure)
+
+    cli._bootstrap_logging(persist=False)
+
+    assert calls == [("info", None, False), (log.INFO, None, False)]
+
+
+def test_local_lint_uses_project_discovery_without_host_registry(
+    sample_project, tmp_path, monkeypatch, capsys
+):
+    from nyxloom import config, lint
+
+    monkeypatch.setattr(
+        config, "load_registry",
+        lambda: (_ for _ in ()).throw(AssertionError("local lint read host registry")),
+    )
+    monkeypatch.setattr(lint, "lint_project", lambda _cfg: {})
+    monkeypatch.chdir(sample_project.root)
+    assert cli.main(["lint"]) == 0
+    assert capsys.readouterr().out.strip() == "clean"
+
+    orphan = tmp_path / "unregistered"
+    orphan.mkdir()
+    monkeypatch.chdir(orphan)
+    assert cli.main(["lint"]) == 1
+    assert "no owning project found" in capsys.readouterr().out
+
+
+def test_operator_project_selectors_reject_unknown_ids_and_discuss_missing_decision(
+    tmp_state, sample_project, capsys
+):
+    assert ctl_main(["doctor", "--project-id", "ghost"]) == 1
+    assert "unknown registered project id" in capsys.readouterr().err
+    assert ctl_main(["status", "--project-id", "ghost"]) == 1
+    assert "unknown registered project id" in capsys.readouterr().err
+    assert ctl_main(["discuss", "demo", "D-NOPE"]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
 def test_capability_map_refresh_write_path(sample_project, tmp_state, capsys, monkeypatch):
     """A real refresh persists both the accumulated store and catalog."""
     from nyxloom import benchmark_store, capability_map, paths
@@ -1427,7 +1501,7 @@ def test_finding_list_no_project_enumerates_registry(sample_project, tmp_state, 
     assert "registry-title" in out
 
 
-def test_finding_no_subcommand_exits_2(capsys):
+def test_finding_no_subcommand_prints_help_and_exits_0(capsys):
     """Bare delegated groups follow cli-extended's display-only help behavior."""
     exit_code = ctl_main(["finding"])
     assert exit_code == 0
@@ -1567,10 +1641,8 @@ def test_capability_map_emit_findings_unregistered_project(
     assert "not registered" in err
 
 
-def test_gate_no_subcommand_prints_help_and_exits_2(tmp_state, capsys):
-    """`nyxloom gate` with no verb (e.g. `verify`) -> usage help, exit 2 --
-    mirrors the same unknown-subcommand handling as `project`/`free-models`/
-    `capability-map`/`finding`."""
+def test_retired_gate_command_is_rejected(tmp_state, capsys):
+    """D-005 removed the empty reserved gate path from the installed grammar."""
     exit_code = cli.main(["gate"])
 
     assert exit_code == 2

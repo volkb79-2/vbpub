@@ -4,7 +4,7 @@ id: nyxloom-P112-cli-extended-adoption
 project: nyxloom
 title: "Adopt cli-extended across Nyxloom's installed command surfaces"
 tier: frontier-review
-input_revision: "c4ba7d921e5ba8f85f85cbac86f6af6a62a5a775"
+input_revision: "d0f3d771a7a55430d4f68c1203588c001e1fda24"
 depends_on: []
 session: fresh
 source: {kind: user, ref: null}
@@ -42,6 +42,7 @@ scope:
     - "tests/test_intake_bridge.py"
     - "tests/test_route_doctor.py"
     - "tests/test_liveness.py"
+    - "tests/test_liveness_units.py"
     - "tests/test_intake_chat.py"
     - "tests/test_control_auth.py"
     - "nyxloomd/supervise.sh"
@@ -49,6 +50,24 @@ scope:
     - "docker-bake.hcl"
     - "nyxloomd/ciu.compose.yml.j2"
     - "nyxloomd/docker-compose.yml"
+    - "nyxloomd/ciu.defaults.toml.j2"
+    - "nyxloomd/systemd/README.md"
+    - "nyxloomd/systemd/nyxloom-liveness.service"
+    - "src/nyxloom/commands.py"
+    - "src/nyxloom/control_auth.py"
+    - "src/nyxloom/daemon.py"
+    - "src/nyxloom/types.py"
+    - "src/nyxloom/capability_map.py"
+    - "src/nyxloom/doctor.py"
+    - "src/nyxloom/gate_scaffold.py"
+    - "src/nyxloom/render.py"
+    - "src/nyxloom/transport_check.py"
+    - "src/nyxloom/notify.py"
+    - "src/nyxloom/free_models.py"
+    - "src/nyxloom/resync.py"
+    - "src/nyxloom/intake_bridge.py"
+    - "src/nyxloom/migrate_store.py"
+    - "src/nyxloom/reconcile.py"
     - "README.md"
     - "docs/CLI-REFERENCE.md"
     - "docs/DESIGN-GUIDE.md"
@@ -58,7 +77,21 @@ scope:
     - "docs/ARCHITECTURE.md"
     - "docs/runtime-process-model.md"
     - "docs/backlog-entries-spec.md"
+    - "docs/logging.md"
+    - "docs/plan-logging.md"
+    - "docs/design-choices.md"
+    - "docs/plan-state-integrity.md"
+    - "reference/STANDARD.md"
+    - "reference/TESTING-METHODOLOGY.md"
     - "src/nyxloom/session_extract/README.md"
+    - "tests/test_commands.py"
+    - "tests/test_gate_scaffold.py"
+    - "tests/test_notify.py"
+    - "tests/test_reconcile.py"
+    - "tests/legacy_planner.py"
+    - "tests/test_core_characterization.py"
+    - "nyxloom-trove/nyxloom.toml"
+    - "nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md"
     - "nyxloom-trove/decisions.md"
     - "nyxloom-trove/reports/nyxloom-P112-LOG.md"
     - "nyxloom-trove/reports/nyxloom-P112-REPORT.md"
@@ -163,6 +196,15 @@ this handoff's scope so the rule can be updated. Protected files, ownership by
 another active package, explicit forbids, and unrelated work remain guarded;
 the user's authorization to override a protected file or explicit forbid must
 be recorded as a bounded contract amendment.
+
+### User-authorized service and reference correction — 2026-09-28
+
+The final command-boundary review found the shipped host liveness unit still
+invoking `nyxloom doctor`, a path removed by D-013. This would break the
+service after the split. The user has authorized necessary scope additions,
+so P112 also updates the unit, its operator guide, and live command references
+in implementation modules/tests. These edits point existing workflows at the
+installed `nyxloomctl` entrypoint; they add no new command behavior.
 
 ## Approved decisions
 

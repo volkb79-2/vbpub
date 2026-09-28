@@ -939,7 +939,6 @@ def test_cli_rejects_an_unknown_transport_override(sample_project):
     assert ctl_main(["intake-bridge", "poll", "demo", "--transport", "carrier"]) == 2
 
 
-def test_cli_bare_verb_group_prints_usage(sample_project):
-    from nyxloom import cli
-
-    assert ctl_main(["intake-bridge"]) == 2
+def test_cli_bare_verb_group_prints_usage(sample_project, capsys):
+    assert ctl_main(["intake-bridge"]) == 0
+    assert "poll" in capsys.readouterr().out

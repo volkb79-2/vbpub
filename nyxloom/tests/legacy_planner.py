@@ -272,7 +272,7 @@ INTERFACE CONTRACT (frozen). Semantics:
     NEEDS_OPERATOR escalation leaving it at MERGE_READY on a real conflict)
     so this does not refire for the same task next pass. merge_mode
     defaults to 'manual', under which this item never fires at all --
-    existing behavior (an operator's own `nyxloom merge` after their own
+    existing behavior (an operator's own `nyxloomctl merge` after their own
     real git merge) is completely unchanged.
 14. CARVE TRIGGERS RESPECT project_paused (P52 2026-07-19, live incident):
     neither item 9's untargeted headroom-refill trigger nor item 12's

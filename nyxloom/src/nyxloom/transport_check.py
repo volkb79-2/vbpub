@@ -149,6 +149,6 @@ def probe_docker_transport(
 def probe_default(**kwargs) -> TransportProbe:
     """Probe using the default (or env-overridden) image. The single entry
     point callers should use, so the image choice stays consistent across the
-    gate-verify preflight and ``nyxloom doctor``."""
+    gate-verify preflight and ``nyxloomctl doctor``."""
     image = os.environ.get(PROBE_IMAGE_ENV_VAR, DEFAULT_PROBE_IMAGE)
     return probe_docker_transport(image, **kwargs)

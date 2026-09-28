@@ -884,7 +884,7 @@ def test_forced_rotation_is_the_documented_recovery_path(tmp_state):
 
 def test_bootstrap_losing_the_creation_race_adopts_the_winner_never_a_second_secret(
         tmp_state):
-    """Two daemons (or a daemon and `nyxloom auth bootstrap`) can reach an
+    """Two daemons (or a daemon and `nyxloomctl auth bootstrap`) can reach an
     absent store at once. The O_EXCL create is what makes that safe: the loser
     must adopt the winner's credential, NOT mint a second one -- an operator
     holding the value printed by the first would otherwise be silently locked
@@ -1011,7 +1011,7 @@ def test_a_broken_store_does_not_stop_the_daemon_from_starting(
         tmp_state, sample_project, monkeypatch):
     """Availability half of failing closed: a bad credential file must not
     take the factory down with it. Reads and reconcile keep working; only
-    mutations refuse, so `nyxloom auth rotate --force` can fix it live."""
+    mutations refuse, so `nyxloomctl auth rotate --force` can fix it live."""
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
     _set_ephemeral_http_port(sample_project)
@@ -1863,8 +1863,9 @@ def test_cli_reports_an_untrustworthy_store_instead_of_raising(tmp_state, capsys
     assert forced[-1].payload == {"generation": 1, "forced": True}
 
 
-def test_cli_auth_without_a_subcommand_is_a_usage_error(tmp_state, capsys):
-    assert ctl_main(["auth"]) == 2
+def test_cli_auth_without_a_subcommand_prints_help(tmp_state, capsys):
+    assert ctl_main(["auth"]) == 0
+    assert "bootstrap" in capsys.readouterr().out
     assert not _store().path.exists()
 
 

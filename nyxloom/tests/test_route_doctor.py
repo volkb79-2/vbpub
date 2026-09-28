@@ -1,4 +1,4 @@
-"""Tests for route_doctor.py (BACKLOG B1: `nyxloom route doctor` --
+"""Tests for route_doctor.py (BACKLOG B1: `nyxloomctl route doctor` --
 schema-validate routes.toml + live-probe each route). ALL live probing is
 mocked -- the authoritative gate has no network and no CLI binaries
 installed; `adapters.probe` itself already has its own unmocked-subprocess
@@ -295,15 +295,14 @@ class TestDoctorRoutes:
 
 
 # ---------------------------------------------------------------------------
-# CLI: `nyxloom route doctor`
+# CLI: `nyxloomctl route doctor`
 
 class TestCliRouteDoctor:
-    def test_no_subcommand_prints_help_and_exits_2(self, capsys):
-        """Mirrors the same unknown-subcommand handling as `gate`/
-        `free-models`/`capability-map`/`finding` (see test_cli.py's
-        test_gate_no_subcommand_prints_help_and_exits_2)."""
+    def test_no_subcommand_prints_help_and_exits_0(self, capsys):
+        """An empty delegated group is a generated-help request."""
         exit_code = ctl_main(["route"])
-        assert exit_code == 2
+        assert exit_code == 0
+        assert "doctor" in capsys.readouterr().out
 
     def test_clean_config_exits_0_and_prints_ok_row(self, tmp_state, capsys):
         paths.routes_path().write_text(

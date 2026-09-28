@@ -446,7 +446,7 @@ def test_copy_verification_failure_rolls_back_and_keeps_source(tmp_state, monkey
 
 
 # ---------------------------------------------------------------------------
-# CLI thin-wrapper coverage (cmd_migrate_store) -- `nyxloom migrate-store
+# CLI thin-wrapper coverage (cmd_migrate_store) -- `nyxloomctl migrate-store
 # <project>`. scope.touch keeps CLI tests here (test_cli.py is out of
 # scope for this handoff) rather than in tests/test_cli.py.
 

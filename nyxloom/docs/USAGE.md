@@ -105,9 +105,9 @@ be onboarded this way.
 
 > **`--check-gate` (GA3 v1, docs/plan-gate-adoption.md §GA3):** an opt-in,
 > deterministic, AI-free follow-on -- reports whether the project declares a
-> usable `[gates.*]` and, if not, prints an offer naming the concrete next step
-> (declare one, then run `nyxloom gate verify`). It does not scaffold a gate
-> (Dockerfile/`[gates.*]`-authoring is a v2 follow-up); combine freely with
+> usable `[gates.*]` and, if not, points to the next step: declare a project
+> gate, then run its lane with `./run-gate.py <lane>`. It does not scaffold a
+> gate (Dockerfile/`[gates.*]` authoring is a v2 follow-up); combine freely with
 > `--scan`/`--questionnaire` in the same call.
 
 ### 3.1 Greenfield (empty repo)
@@ -153,7 +153,8 @@ thinner draft and lose hard-won detail. The migration flow:
    roadmap into `milestones[]`, the backlog into `items[]` (IDs preserved), the
    product doc into `features[]` — **keeping every entry**. Author the
    `1-north-star` from the product's mission, with the user.
-3. `nyxloom lint <project>` until **0 findings** (this enforces S1–S5:
+3. From the project checkout, run `nyxloom lint` until **0 findings** (this
+   enforces S1–S5:
    milestone features exist in the product-definition, `folds_into` resolves,
    ids unique).
 4. Retire the now-migrated source docs (repoint or delete the old

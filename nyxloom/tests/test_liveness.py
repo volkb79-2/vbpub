@@ -201,7 +201,7 @@ def test_breaking_the_notification_transport_is_caught_by_a_second_path(
     SILENTLY into the durable log (NOTIFICATION_FAILED; no push reaches
     anyone, because the channel that would carry the alarm is the one that
     is down). The SECOND path -- doctor.liveness_findings' active probe,
-    reported via DoctorFinding + `nyxloom doctor`'s own exit code -- is
+    reported via DoctorFinding + `nyxloomctl doctor`'s own exit code -- is
     what actually surfaces it."""
     sample_project.notify = NotifyConfig(
         ntfy_url="http://127.0.0.1:1", ntfy_topic="alerts")
