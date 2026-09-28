@@ -26,6 +26,21 @@ scope:
     - "tests/test_daemon.py"
     - "tests/test_cli_adoption.py"
     - "tests/test_installed_wheel.py"
+    - "tests/test_free_models.py"
+    - "tests/test_session_extract_edge_contracts.py"
+    - "tests/test_events_cmd.py"
+    - "tests/test_session_extract_reasonix.py"
+    - "tests/test_resync.py"
+    - "tests/test_resync_apply.py"
+    - "tests/test_migrate_store.py"
+    - "tests/test_doctor.py"
+    - "tests/test_resume_guard.py"
+    - "tests/test_backlog_items.py"
+    - "tests/test_intake_bridge.py"
+    - "tests/test_route_doctor.py"
+    - "tests/test_liveness.py"
+    - "tests/test_intake_chat.py"
+    - "tests/test_control_auth.py"
     - "nyxloomd/supervise.sh"
     - "nyxloomd/Dockerfile"
     - "docker-bake.hcl"
@@ -121,6 +136,12 @@ Nyxloom image build and Ciu compose inputs. The added paths are
 `nyxloomd/ciu.compose.yml.j2`. Update all three image-build descriptions and
 entrypoint/healthcheck commands consistently with the existing Nyxloom compose
 file; keep their build contexts aligned.
+
+The user also authorized the CLI ownership changes, including updating
+existing command-level tests that still invoke moved paths through
+`nyxloom.cli:main`. Those tests are now included in `scope.touch`; command
+coverage remains attached to its current test module while invocations move to
+`nyxloomctl` or `nyxloom-harness`.
 
 No separate `cli-extended` runtime distribution is to be installed by Nyxloom.
 Bundle its package source into the existing Nyxloom wheel. The library remains

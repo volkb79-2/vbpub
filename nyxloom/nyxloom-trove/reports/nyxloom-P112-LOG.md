@@ -67,3 +67,22 @@ records the isolated branch base. The amendment and required two-step
 existing scoped `tests/test_daemon.py` will verify both compose files; the
 existing scoped installed-wheel/adoption tests will verify the wheel contents
 and executable paths.
+
+## Additional authorized test-scope amendment — 2026-09-28
+
+During implementation, a repository-wide call-site search found that the old
+single-entrypoint tests for operator, extraction, and diagnostic commands live
+in additional project test modules. Leaving them unchanged would make the
+project gate exercise removed command paths. The user authorized making the
+necessary changes, so P112 `scope.touch` now also includes the test modules
+that exercise moved commands:
+
+`tests/test_free_models.py`, `tests/test_session_extract_edge_contracts.py`,
+`tests/test_events_cmd.py`, `tests/test_session_extract_reasonix.py`,
+`tests/test_resync.py`, `tests/test_resync_apply.py`,
+`tests/test_migrate_store.py`, `tests/test_doctor.py`,
+`tests/test_resume_guard.py`, `tests/test_backlog_items.py`,
+`tests/test_intake_bridge.py`, `tests/test_route_doctor.py`,
+`tests/test_liveness.py`, `tests/test_intake_chat.py`, and
+`tests/test_control_auth.py`. The P112 input revision is being refrozen in the
+required follow-up commit before implementation continues.
