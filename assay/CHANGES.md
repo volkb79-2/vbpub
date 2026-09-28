@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- fix(assay): retain candidate-local progress and resource evidence so host
+  CPU or memory contention alone cannot classify an R2 candidate as hung (B107)
+
 <!-- cmru: release history -->
 
 ## [7.1.0] - 2026-09-25
