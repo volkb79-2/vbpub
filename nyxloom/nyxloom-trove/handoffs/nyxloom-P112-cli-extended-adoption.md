@@ -4,7 +4,7 @@ id: nyxloom-P112-cli-extended-adoption
 project: nyxloom
 title: "Adopt cli-extended across Nyxloom's installed command surfaces"
 tier: frontier-review
-input_revision: "b29ffc5ffbaf9a5ebbe26d49d26460ae4b46af60"
+input_revision: "918d2c6d8c69e2e967540a143016747c83e595e4"
 depends_on: []
 session: fresh
 source: {kind: user, ref: null}
