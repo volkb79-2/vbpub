@@ -13,15 +13,19 @@ import mutation_campaign
 import project_fixture
 
 
-def test_disposable_fixture_copies_estate_configs_read_by_cmrus_tests(tmp_path, monkeypatch):
+def test_disposable_fixture_copies_shared_libraries_and_estate_configs(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     project = repo / "cmru"
     workspace = tmp_path / "fixture"
     workspace.mkdir()
     project.mkdir(parents=True)
-    library = repo / "libraries" / "worktree"
-    library.mkdir(parents=True)
-    (library / "__init__.py").write_text("", encoding="utf-8")
+    for relative in project_fixture.SHARED_LIBRARIES:
+        package_name = relative.name.replace("-", "_")
+        package = repo / relative / "src" / package_name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text(
+            f"name = {package_name!r}\n", encoding="utf-8"
+        )
     for relative in (Path("topos/cmru.toml"), Path("nyxloom/cmru.toml")):
         source = repo / relative
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -40,6 +44,12 @@ def test_disposable_fixture_copies_estate_configs_read_by_cmrus_tests(tmp_path, 
     )
 
     assert copied == workspace / "cmru"
+    for relative in project_fixture.SHARED_LIBRARIES:
+        package_name = relative.name.replace("-", "_")
+        copied_package = workspace / relative / "src" / package_name / "__init__.py"
+        assert copied_package.read_text(encoding="utf-8") == (
+            f"name = {package_name!r}\n"
+        )
     for relative in project_fixture.ESTATE_CONFIG_FIXTURES:
         assert (workspace / relative).read_text(encoding="utf-8") == (
             f"name = {relative.parts[0]!r}\n"
