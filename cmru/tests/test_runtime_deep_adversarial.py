@@ -132,8 +132,48 @@ class TestBundleAndChangelogBoundaries:
         out = run_bundle(cfg)
         assert out.exists() and out.name == "demo-1.0.tar.gz"
 
-    @pytest.mark.parametrize("text,needle", [("", "project_root"), ("project_root='.'\n", "archive"),
-                                               ("project_root='.'\n[archive]\nname_template='x'\nversion_env='V'\n[copy]\nfiles='bad'\n", "lists")])
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        (
+            ("[wheel]\nproject_root = 1\n", "wheel.project_root"),
+            ("[wheel]\nproject_root = ''\n", "wheel.project_root"),
+            ("[wheel]\nfind_links = 1\n", "wheel.find_links"),
+            ("[wheel]\nfind_links = ''\n", "wheel.find_links"),
+        ),
+    )
+    def test_bundle_config_rejects_invalid_optional_wheel_paths(
+        self, tmp_path, extra, message,
+    ):
+        from cmru.bundle import parse_config
+
+        path = tmp_path / "bundle.toml"
+        path.write_text(
+            "project_root = '.'\n"
+            "[archive]\nname_template = '{version}.zip'\nversion_env = 'VERSION'\n"
+            + extra,
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match=message):
+            parse_config(path)
+
+    def test_bundle_config_rejects_malformed_archive_format_field(self, tmp_path):
+        from cmru.bundle import _validate_archive_template
+
+        with pytest.raises(ValueError, match="exactly one \\{version\\} field"):
+            _validate_archive_template("{version")
+
+    @pytest.mark.parametrize(
+        ("text", "needle"),
+        (
+            ("", "project_root"),
+            ("project_root='.'\n", "archive"),
+            (
+                "project_root='.'\n[archive]\nname_template='{version}.zip'\n"
+                "version_env='V'\n[copy]\nfiles='bad'\n",
+                "array",
+            ),
+        ),
+    )
     def test_bundle_config_rejects_incomplete_contract(self, tmp_path, text, needle):
         from cmru.bundle import parse_config
         path = tmp_path / "bundle.toml"; path.write_text(text)

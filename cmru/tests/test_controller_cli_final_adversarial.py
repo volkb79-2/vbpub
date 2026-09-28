@@ -13,7 +13,7 @@ from cmru import cli as cmru_cli
 
 def _args(**kwargs):
     values = dict(plan="plan", landscape="land", consul_addr=None, token=None,
-                  generation_base=3, dry_run=False, to_tag=None, generation=None)
+                  generation_base=3, dry_run=False, generation=None)
     values.update(kwargs)
     return SimpleNamespace(**values)
 
@@ -70,7 +70,7 @@ def test_status_catalog_success_and_backend_failure_without_plan(monkeypatch, ca
     assert "HTTP 503" in capsys.readouterr().out
 
 
-def test_rollback_forwards_tag_generation_and_reports_failure(monkeypatch, tmp_path, capsys):
+def test_rollback_uses_plan_release_coordinate_and_generation(monkeypatch, tmp_path, capsys):
     plan = tmp_path / "plan.toml"; plan.write_text("plan")
     loaded = SimpleNamespace(landscape="land")
     monkeypatch.setattr("cmru.controller.planner.load_plan", lambda path: loaded)
@@ -78,8 +78,8 @@ def test_rollback_forwards_tag_generation_and_reports_failure(monkeypatch, tmp_p
     class Engine:
         def rollback(self, plan, **kwargs): calls.append((plan, kwargs))
     monkeypatch.setattr(cli, "_build_engine", lambda *args: Engine())
-    assert cli.cmd_rollback(_args(plan=str(plan), to_tag="demo-v1", generation=9)) == 0
-    assert calls[0][1] == {"to_tag": "demo-v1", "generation": 9}
+    assert cli.cmd_rollback(_args(plan=str(plan), generation=9)) == 0
+    assert calls[0][1] == {"generation": 9}
     class Broken:
         def rollback(self, *args, **kwargs): raise RuntimeError("rollback failed")
     monkeypatch.setattr(cli, "_build_engine", lambda *args: Broken())
@@ -89,9 +89,7 @@ def test_rollback_forwards_tag_generation_and_reports_failure(monkeypatch, tmp_p
 
 def test_controller_main_dispatches_success_and_propagates_exit(monkeypatch):
     monkeypatch.setattr(cli, "cmd_hold", lambda args: 0)
-    with pytest.raises(SystemExit) as result:
-        cli.main(["hold", "--plan", "p"])
-    assert result.value.code == 0
+    assert cli.main(["hold", "--plan", "p"]) == 0
 
 
 def _cmru_config(tmp_path, project):
@@ -110,9 +108,7 @@ def test_cleanup_dispatch_validates_unmanaged_namespace_before_delete(monkeypatc
     cfg, loaded = _cmru_config(tmp_path, project)
     monkeypatch.setattr(cmru_cli, "_resolve_config", lambda value: cfg)
     monkeypatch.setattr(cmru_cli, "load_config", lambda path: loaded)
-    with pytest.raises(SystemExit) as error:
-        cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-unmanaged-release-tag", "other-v1", "demo", "--dry-run"])
-    assert error.value.code == 2
+    assert cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-unmanaged-release-tag", "other-v1", "demo", "--dry-run"]) == 2
 
 
 def test_cleanup_dispatches_exact_local_build_deletion_and_requires_scope(monkeypatch, tmp_path):
@@ -124,9 +120,7 @@ def test_cleanup_dispatches_exact_local_build_deletion_and_requires_scope(monkey
     monkeypatch.setattr(cmru_cli.transaction, "delete_retained_build_output", lambda *args, **kwargs: calls.append((args, kwargs)) or [tmp_path / "artifact"])
     cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-build-output", "20240101T000000Z_" + "a" * 40, "demo", "--dry-run"])
     assert calls and calls[0][1]["dry_run"] is True
-    with pytest.raises(SystemExit) as error:
-        cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-build-output", "bad"])
-    assert error.value.code == 2
+    assert cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-build-output", "bad"]) == 2
 
 
 def test_cleanup_dispatches_discard_worktree_and_rejects_project_mix(monkeypatch, tmp_path):
@@ -139,9 +133,7 @@ def test_cleanup_dispatches_discard_worktree_and_rejects_project_mix(monkeypatch
     monkeypatch.setattr(cmru_cli.transaction, "discard_build_workspace", lambda *args, **kwargs: calls.append(kwargs) or workspace)
     cmru_cli.main(["cleanup", "--config", str(cfg), "--discard-build-worktree", str(tmp_path / "w"), "--dry-run"])
     assert calls == [{"dry_run": True}]
-    with pytest.raises(SystemExit) as error:
-        cmru_cli.main(["cleanup", "--config", str(cfg), "--discard-build-worktree", str(tmp_path / "w"), "demo", "--dry-run"])
-    assert error.value.code == 2
+    assert cmru_cli.main(["cleanup", "--config", str(cfg), "--discard-build-worktree", str(tmp_path / "w"), "demo", "--dry-run"]) == 2
 
 
 def test_cleanup_age_mode_forwards_cutoff_policy(monkeypatch, tmp_path):

@@ -279,12 +279,12 @@ def test_cli_status_from_console_entrypoint_configures_native_logging(monkeypatc
     )
     monkeypatch.setattr("cmru.version.status_cmd", lambda *args, **kwargs: None)
     monkeypatch.setattr(sys, "argv", ["cmru", "status", "demo"])
-    assert cli.main() is None
+    assert cli.main() == 0
     assert calls and calls[0][1] == {"append": False}
 
     calls.clear()
-    assert cli.main(["status", "demo"]) is None
-    assert calls == []
+    assert cli.main(["status", "demo"]) == 0
+    assert calls and calls[-1][1] == {"append": False}
 
 
 def test_project_loader_requires_both_repository_fact_tables(monkeypatch, tmp_path):
@@ -305,14 +305,10 @@ def test_cli_changelog_backfill_rejects_bad_assignments(monkeypatch, tmp_path, c
     loaded = _loaded(projects, ["demo", "other"])
     monkeypatch.setattr(cli, "_resolve_config", lambda _arg: tmp_path / "cmru.orchestration.toml")
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
-    with pytest.raises(SystemExit):
-        cli.main(["changelog", "demo", "--backfill-tag", "other-v1"])
-    with pytest.raises(SystemExit):
-        cli.main(["changelog", "demo", "--backfill-tag", "demo-v1", "--backfill-tag", "demo-v2"])
-    with pytest.raises(SystemExit):
-        cli.main(["changelog", "all", "--backfill-tag", "demo-v1"])
-    with pytest.raises(SystemExit):
-        cli.main(["changelog", "demo", "--config", str(tmp_path / "cmru.orchestration.toml")])
+    assert cli.main(["changelog", "demo", "--backfill-tag", "other-v1"]) != 0
+    assert cli.main(["changelog", "demo", "--backfill-tag", "demo-v1", "--backfill-tag", "demo-v2"]) != 0
+    assert cli.main(["changelog", "all", "--backfill-tag", "demo-v1"]) != 0
+    assert cli.main(["changelog", "demo", "--config", str(tmp_path / "cmru.orchestration.toml")]) != 0
     assert "required" in capsys.readouterr().err
 
 
@@ -322,8 +318,7 @@ def test_cli_changelog_backfill_diagnostic_discloses_no_prefix_match(monkeypatch
     monkeypatch.setattr(cli, "_resolve_config", lambda _arg: cfg)
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded({"demo": project}))
 
-    with pytest.raises(SystemExit):
-        cli.main(["changelog", "demo", "--backfill-tag", "other-v1"])
+    assert cli.main(["changelog", "demo", "--backfill-tag", "other-v1"]) != 0
 
     assert "matched none" in capsys.readouterr().err
 
@@ -334,16 +329,12 @@ def test_cleanup_rejects_wrong_scope_and_missing_project(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_resolve_config", lambda _arg: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
     monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["demo", "other"])
-    with pytest.raises(SystemExit):
-        cli.main(["cleanup", "all", "--delete-unmanaged-release-tag", "x-v1", "--dry-run"])
+    assert cli.main(["cleanup", "all", "--delete-unmanaged-release-tag", "x-v1", "--dry-run"]) != 0
     monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["demo", "other"])
-    with pytest.raises(SystemExit):
-        cli.main(["cleanup", "demo", "--delete-build-output", "x", "--dry-run"])
+    assert cli.main(["cleanup", "demo", "--delete-build-output", "x", "--dry-run"]) != 0
     monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["missing"])
-    with pytest.raises(SystemExit):
-        cli.main(["cleanup", "demo", "--delete-unmanaged-release-tag", "x-v1", "--dry-run"])
-    with pytest.raises(SystemExit):
-        cli.main(["cleanup", "demo", "--delete-build-output", "x", "--dry-run"])
+    assert cli.main(["cleanup", "demo", "--delete-unmanaged-release-tag", "x-v1", "--dry-run"]) != 0
+    assert cli.main(["cleanup", "demo", "--delete-build-output", "x", "--dry-run"]) != 0
 
 
 def _patch_loader(monkeypatch, module, config_path, loaded):
@@ -375,10 +366,8 @@ def test_getpy_context_outputs_and_rejections(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     getpy.getpy_main(["demo"])
     assert "# demo" in capsys.readouterr().out
-    with pytest.raises(SystemExit):
-        getpy.getpy_main(["all", "--output", str(tmp_path / "one")])
-    with pytest.raises(SystemExit):
-        getpy.getpy_main(["demo", "--output", "one", "--output-dir", str(tmp_path / "many")])
+    assert getpy.getpy_main(["all", "--output", str(tmp_path / "one")]) == 2
+    assert getpy.getpy_main(["demo", "--output", "one", "--output-dir", str(tmp_path / "many")]) == 2
     getpy.getpy_main(["all", "--output-dir", str(tmp_path / "many")])
     assert (tmp_path / "many/demo-get.py").is_file()
     out = capsys.readouterr().out
@@ -457,18 +446,16 @@ def test_runner_context_branches_and_exactly_one_guard(monkeypatch, tmp_path):
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
     monkeypatch.setattr("cmru.config.load_forge_config", lambda _path: SimpleNamespace(orchestration=None))
     monkeypatch.setattr(runner, "run_step", lambda *_args: None)
-    runner.main(["--step", "build"])
+    runner.runner_cli().run(argv=["--step", "build"])
     many = _loaded({"demo": object(), "other": object()}, ["demo", "other"])
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: many)
-    with pytest.raises(SystemExit):
-        runner.main(["all", "--step", "build"])
+    assert runner.runner_cli().run(argv=["all", "--step", "build"]) == 2
     cfg = tmp_path / "cmru.orchestration.toml"
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: one)
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
-    runner.main(["--step", "build"])
-    with pytest.raises(SystemExit):
-        runner.main(["missing", "--step", "build"])
+    runner.runner_cli().run(argv=["--step", "build"])
+    assert runner.runner_cli().run(argv=["missing", "--step", "build"]) == 2
 
 
 def test_standards_reports_explicit_tester_resources():
@@ -529,50 +516,63 @@ def test_scaffold_validation_edges(monkeypatch, tmp_path):
 
 
 def test_scaffold_collect_plan_refuses_invalid_adoption_inputs(monkeypatch, tmp_path):
-    answers = iter(["demo", "repo", "user", "single", "missing"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    with pytest.raises(SystemExit):
-        scaffold.collect_plan([], tmp_path)
-    with pytest.raises(SystemExit):
-        scaffold.collect_plan(["--root", str(tmp_path / "missing")], tmp_path)
-    with pytest.raises(SystemExit):
-        scaffold.collect_plan(["--owner", "", "--repo", "r", "--owner-type", "user", "--layout", "single"], tmp_path)
-    with pytest.raises(SystemExit):
-        scaffold.collect_plan(["--owner", "o", "--repo", "", "--owner-type", "user", "--layout", "single"], tmp_path)
-    with pytest.raises(SystemExit):
-        scaffold.collect_plan(["--owner", "o", "--repo", "r", "--owner-type", "bad", "--layout", "single"], tmp_path)
-    with pytest.raises(SystemExit):
-        scaffold.collect_plan(["--owner", "o", "--repo", "r", "--owner-type", "user", "--layout", "bad"], tmp_path)
+    cases = (
+        {"root": str(tmp_path / "missing")},
+        {"owner": "", "repo": "r", "owner_type": "user", "layout": "single"},
+        {"owner": "o", "repo": "", "owner_type": "user", "layout": "single"},
+        {"owner": "o", "repo": "r", "owner_type": "bad", "layout": "single"},
+        {"owner": "o", "repo": "r", "owner_type": "user", "layout": "bad"},
+    )
+    for options in cases:
+        with pytest.raises(SystemExit):
+            scaffold.collect_plan(options, tmp_path)
 
 
-def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path):
+def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
     (tmp_path / "child").mkdir()
     answers = iter(["child", "child", "Child", "python", "wheel", "yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    plan = scaffold.collect_plan(["--owner", "o", "--repo", "r", "--owner-type", "user", "--layout", "2"], tmp_path)
+    plan = scaffold.collect_plan(
+        {"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path,
+    )
     files = scaffold.build_files(plan, tmp_path)
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="bad", stderr="standards"))
-    with pytest.raises(SystemExit):
+
+    def failing_standards_run(**kwargs):
+        assert kwargs["argv"][0] == "--config"
+        kwargs["stdout"].write("bad")
+        kwargs["stderr"].write("standards")
+        return 1
+
+    monkeypatch.setattr(
+        standards,
+        "standards_cli",
+        lambda: SimpleNamespace(run=failing_standards_run),
+    )
+    with pytest.raises(SystemExit) as error:
         scaffold.validate(files, tmp_path)
+    assert error.value.code == 2
+    assert "generated contracts fail `cmru standards`" in capsys.readouterr().err
 
     outside = tmp_path.parent / "outside-project"
     outside.mkdir(exist_ok=True)
     answers = iter([str(outside), "x", "X", "python", "wheel", "yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     with pytest.raises(SystemExit):
-        scaffold.collect_plan(["--owner", "o", "--repo", "r", "--owner-type", "user", "--layout", "2"], tmp_path)
+        scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path)
 
     answers = iter(["child", "child", "Child", "python", "wheel", "yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    scaffold.collect_plan(["--owner", "o", "--repo", "r", "--owner-type", "user", "--layout=2"], tmp_path)
+    scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path)
     answers = iter(["missing"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     with pytest.raises(SystemExit):
-        scaffold.collect_plan(["--owner", "o", "--repo", "r", "--owner-type", "user", "--layout", "2"], tmp_path)
+        scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path)
     answers = iter([str(tmp_path), "demo", "Demo", "python", "wheel", "yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    plan = scaffold.collect_plan(["--owner", "o", "--repo", "r", "--owner-type", "user", "--layout", "2"], tmp_path)
+    plan = scaffold.collect_plan(
+        {"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path,
+    )
     assert plan["projects"][0]["config"] == "cmru.toml"
 
     # Directly exercise both optional command substitutions in the renderer.

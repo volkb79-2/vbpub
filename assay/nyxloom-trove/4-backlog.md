@@ -10756,3 +10756,66 @@ campaign must remain explicitly incomplete.
       survivor-only request cannot silently stand in for a complete campaign.
 - [ ] README, DESIGN-GUIDE, and CONSUMERS.md explain when selective reuse is
       safe, what evidence is retained, and when a full campaign is still needed.
+
+## B107 — candidate `hung` outcomes lack time-aligned resource evidence, so an actual deadlock cannot be distinguished from a resource stall
+
+**Status: OPEN (filed 2026-09-26 from the RG-55 P6 exact-tree R2 campaign).**
+
+**Observed:** the same P6 mutation candidate
+`0a38e7d8ab99ea0483119223cf9b8e38184e85124ca37f631ee264fed7a135d1`
+(`lib/liveness.py:530`, `IsNot->Is`; source and mutated-file hashes are
+identical across these records) was classified differently in two full
+campaigns. This is not a controlled replay: between the judged trees, the
+production source was unchanged but two P6 tests were added (one placement
+refusal and one unreadable-PID-identity oracle), and the report/log were
+updated. That limits what can be inferred from the cross-run difference. On
+tree `b3df5602ad748997bd58cb383f89a8d957aa8f2a`, it was
+`killed` after 69.49 seconds and 675 completed tests, with the specific
+witness `tests/test_liveness.py::TestStateMachine::test_partial_stream_bytes_cannot_keep_a_silent_lane_alive`.
+On tree `6540f87761a66ff933c8bb45f81d8ac9117f407b`, it was `hung` after
+138.953 seconds at the same completed-test count, with no last test or
+candidate-local observation in the record. The latter campaign's aggregate
+run-gate history reports 135.056 seconds of host memory-full stalls and
+115.664 seconds of gate-container memory-full stalls over the whole run;
+host PSI `full avg10` was 0.0 at both campaign endpoints. These aggregate
+counters do not locate the stalls in time, so they do **not** prove that
+pressure caused the second classification. They do establish that the
+retained evidence cannot distinguish a genuinely hung test from a candidate
+whose execution was delayed by resource pressure.
+
+`LivenessRunner` currently classifies from progress-event gaps, a calibrated
+wall-clock bound, and candidate-tree CPU growth over a 30-second window. The
+per-candidate state and progress records do not retain a time-aligned CPU,
+process-state, or PSI trace sufficient to explain a `hung` result. Therefore a
+controller cannot independently establish whether the candidate stopped
+making progress while eligible to run or was stalled by the host/container.
+This is a qualification/evidence defect even when the candidate is ultimately
+shown to be a real mutant: host load must not choose its outcome bucket.
+
+### Desired behavior
+
+- A `hung` classification is supported by candidate-local, time-aligned
+  evidence that distinguishes lack of candidate progress from external or
+  cgroup resource stalls. The evidence is retained in the per-candidate
+  artifact and can be independently reconciled with the verdict.
+- Replaying the same candidate behavior under different host scheduling and
+  memory-pressure traces does not change a functional mutation outcome.
+  Resource stalls cannot by themselves turn a candidate into `hung`, `killed`,
+  or `survived`; if the judge cannot determine an outcome, the campaign stays
+  explicitly incomplete rather than guessing.
+- A real deadlock such as B090's non-daemon shutdown hang remains detectable
+  without turning an arbitrary elapsed-time threshold into the verdict.
+- Tests drive the liveness decision with injected clocks, process observations,
+  and pressure readings. They prove both sides: a genuinely deadlocked process
+  is not silently accepted, and a progress-capable process delayed by external
+  pressure is not called hung. No test's pass/fail depends on wall-clock speed.
+- README, DESIGN-GUIDE, and CONSUMERS.md explain the outcome evidence and its
+  limits; the registered Assay gate verifies the behavioral contract.
+
+**Evidence bundle:** P6 R2 receipts and discussion are in
+`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
+RW-339/RW-341 and
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REPORT.md`
+Session 17–18. Exact candidate state is under
+`.worktrees/rg55-p6-r2-final/scripts/cgroup-profiler/.assay/`; preserve both
+campaign trees and do not relabel the `hung` result as equivalent.

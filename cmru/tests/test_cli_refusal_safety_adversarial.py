@@ -13,19 +13,35 @@ def _config(tmp_path, project):
     )
 
 
-def test_cleanup_destructive_modes_require_scope_and_confirmation(monkeypatch, tmp_path, capsys):
+def test_cleanup_previews_then_requires_confirmation_unless_yes(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
-    for args, message in (
-        (["cleanup", "--delete-build-output", "id", "demo"], "requires --yes"),
-        (["cleanup", "--discard-build-worktree", str(tmp_path / "failed")], "requires --yes"),
-        (["cleanup", "--discard-build-worktree", str(tmp_path / "failed"), "demo", "--dry-run"], "already exactly scoped"),
-    ):
-        with pytest.raises(SystemExit) as exc:
-            cli.main(args)
-        assert exc.value.code == 2
-        assert message in capsys.readouterr().err
+    output_id = "20240101T000000Z_" + "a" * 40
+    actions = []
+    monkeypatch.setattr(
+        cli.transaction, "delete_retained_build_output",
+        lambda *_args, dry_run, **_kwargs: actions.append(dry_run) or [tmp_path / "artifacts" / output_id],
+    )
+
+    exc = cli.main(["cleanup", "demo", "--delete-build-output", output_id])
+    assert exc == 2
+    assert actions == [True]
+    assert "confirmation is required" in capsys.readouterr().err
+
+    actions.clear()
+    assert cli.main(["cleanup", "demo", "--delete-build-output", output_id, "--dry-run"]) == 0
+    assert actions == [True]
+    capsys.readouterr()
+
+    actions.clear()
+    assert cli.main(["cleanup", "demo", "--delete-build-output", output_id, "--yes"]) == 0
+    assert actions == [True, False]
+    capsys.readouterr()
+
+    exc = cli.main(["cleanup", "--discard-build-worktree", str(tmp_path / "failed"), "demo", "--dry-run"])
+    assert exc == 2
+    assert "already exactly scoped" in capsys.readouterr().err
 
 
 def test_release_child_rejects_non_orchestrated_project_before_release_work(monkeypatch, tmp_path, capsys):
@@ -33,9 +49,9 @@ def test_release_child_rejects_non_orchestrated_project_before_release_work(monk
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--_transaction-child", "missing", "--config", str(tmp_path / "cmru.toml")])
-    assert exc.value.code == 2
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    exc = cli.main(["release", "missing", "--config", str(tmp_path / "cmru.toml")])
+    assert exc == 2
     assert "unknown project(s): missing" in capsys.readouterr().err
 
 
