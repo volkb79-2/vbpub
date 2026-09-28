@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import errno
 import os
+import posixpath
 import subprocess
 import time
 from dataclasses import dataclass
@@ -65,7 +66,7 @@ from . import util
 
 
 def _systemd_attach_process(
-    gates_unit: str,
+    unit_name: str,
     subcgroup: str,
     pid: int,
     *,
@@ -75,10 +76,12 @@ def _systemd_attach_process(
 
     A daemon with private PID and cgroup namespaces cannot write a host PID
     into ``cgroup.procs``: the kernel translates that PID through the writer's
-    namespace and returns ``ESRCH``.  The systemd manager is already the host
+    namespace and returns ``ESRCH``. The systemd manager is already the host
     cgroup authority; its D-Bus method performs the same move in the host PID
-    namespace without relaxing D-15.  The daemon receives no Docker socket and
-    never joins a host namespace.
+    namespace without relaxing D-15. The daemon receives no Docker socket and
+    never joins a host namespace. ``unit_name`` is either the verified gates
+    slice (move into the lane leaf) or the unit owning the original scope
+    (move a survivor back).
     """
     busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
     try:
@@ -92,7 +95,7 @@ def _systemd_attach_process(
                 "org.freedesktop.systemd1.Manager",
                 "AttachProcessesToUnit",
                 "ssau",
-                gates_unit,
+                unit_name,
                 subcgroup,
                 "1",
                 str(pid),
@@ -105,6 +108,25 @@ def _systemd_attach_process(
     except OSError:
         return False
     return completed.returncode == 0
+
+
+def _systemd_destination(cgroup: str) -> Optional[tuple[str, str]]:
+    """Map an absolute cgroup path to its nearest systemd unit and subgroup.
+
+    The systemd bridge is deliberately scoped to a real unit in the already
+    resolved cgroup path. Refuse relative or traversal-shaped paths and paths
+    with no unit boundary rather than asking systemd to attach to a broader
+    ancestor such as ``-.slice``.
+    """
+    if not isinstance(cgroup, str) or not cgroup.startswith("/"):
+        return None
+    parts = cgroup[1:].split("/")
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        return None
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index].endswith((".scope", ".service", ".slice")):
+            return parts[index], "/".join(parts[index + 1:])
+    return None
 
 #: §8.3: the leaf's name is ``rg-`` plus the lane's token.
 LEAF_PREFIX = "rg-"
@@ -426,6 +448,10 @@ class LanePlacement:
         self.guard.check_write(abs_target, value)
         with open(abs_target, "w", encoding="utf-8") as fh:
             fh.write(value)
+        self._record_write(abs_target, value)
+
+    def _record_write(self, abs_target: str, value: str) -> None:
+        """Record a successful cgroup mutation, including a systemd-mediated one."""
         if self._on_write is not None:
             self._on_write(self._relative(abs_target), value)
 
@@ -567,7 +593,19 @@ class LanePlacement:
                 # host PID namespace, then verify through the explicit host
                 # proc view. Other failures retain the existing vanished-pid
                 # tolerance; they cannot silently certify placement.
-                if exc.errno != errno.ESRCH or not self._pid_exists(pid):
+                if exc.errno != errno.ESRCH:
+                    continue
+                from . import access
+
+                if not access.have_host_proc_view(self.proc_root):
+                    enforcement_failed = True
+                    if self._log is not None:
+                        self._log(
+                            f"placement: cannot safely attach pid {pid} through systemd "
+                            "without a verified host-proc view"
+                        )
+                    continue
+                if not self._pid_exists(pid):
                     continue
                 if not self._systemd_attach(self.gates_unit, self.leaf_name, pid):
                     enforcement_failed = True
@@ -585,6 +623,7 @@ class LanePlacement:
                             f"visible in {self.leaf_cgroup}"
                         )
                     continue
+                self._record_write(procs, str(pid))
             self.moved.add(pid)
             moved += 1
         if enforcement_failed and self.error is None:
@@ -637,8 +676,14 @@ class LanePlacement:
         leaf_abs = self.leaf_abs
         if leaf_abs is None or self.released:
             return
+        if not self._move_survivors_back(leaf_abs):
+            if self.error is None:
+                origin_procs = os.path.join(
+                    abs_path(self.cgroup_root, self.origin_cgroup), PROCS
+                )
+                self.error = write_failed(self._relative(origin_procs))
+            return
         self.released = True
-        self._move_survivors_back(leaf_abs)
         for attempt in range(RMDIR_ATTEMPTS):
             try:
                 self._rmdir(leaf_abs)
@@ -651,22 +696,115 @@ class LanePlacement:
         if self._log is not None:
             self._log(f"placement: could not remove leaf {self.leaf_cgroup}: {last}")
 
-    def _move_survivors_back(self, leaf_abs: str) -> None:
+    def _move_survivors_back(self, leaf_abs: str) -> bool:
         """Whatever is still in the leaf goes back to the scope it came from.
 
-        Read straight off the leaf's own ``cgroup.procs`` rather than from
-        :attr:`moved`: the lane may have forked between the last discovery
-        tick and `stop`, and those children are in the leaf too.
+        Read the leaf membership at stop rather than relying on :attr:`moved`:
+        the lane may have forked since the last discovery tick. In a private
+        PID namespace, enumerate host-visible survivors through the configured
+        host-proc view because ``cgroup.procs`` renders them as PID 0. An
+        unresolvable survivor or failed move leaves the leaf intact and is
+        surfaced in ``placement.error``; it is never silently treated as an
+        exited process.
         """
-        survivors = _read_pids(os.path.join(leaf_abs, PROCS))
-        if not survivors:
-            return
+        leaf_procs = os.path.join(leaf_abs, PROCS)
+        visible = _read_pids(leaf_procs)
+        if not visible:
+            return True
+        from . import access, targets
+
+        host_proc_view = access.have_host_proc_view(self.proc_root)
+        if host_proc_view:
+            survivors = targets.pids_in_cgroup(
+                self.leaf_cgroup or "", self.cgroup_root, self.proc_root
+            )
+            if not survivors:
+                # The file was nonempty, so an empty host scan is not proof
+                # that the PIDs exited: it can also mean the host-proc/cgroup
+                # namespace mapping was unavailable.
+                if not _read_pids(leaf_procs):
+                    return True
+                self._log_unrestored_survivor(leaf_procs)
+                return False
+        else:
+            # Positive local PIDs can still be written directly. A zero
+            # placeholder means there is at least one host task we cannot
+            # identify or restore without the explicit broader proc view.
+            survivors = [pid for pid in visible if pid > 0]
+            if any(pid <= 0 for pid in visible):
+                self._log_unrestored_survivor(leaf_procs)
+                return False
+
         origin_procs = os.path.join(abs_path(self.cgroup_root, self.origin_cgroup), PROCS)
+        destination = _systemd_destination(self.origin_cgroup) if host_proc_view else None
+        failed = False
         for pid in survivors:
+            if host_proc_view:
+                if not self._pid_exists(pid):
+                    continue
+                current = self._pid_cgroup(pid)
+                if current is None:
+                    if not self._pid_exists(pid):
+                        continue
+                    failed = True
+                    continue
+                if posixpath.normpath(current) != posixpath.normpath(self.leaf_cgroup or ""):
+                    # A concurrent actor already moved it out of this leaf;
+                    # never move it again based only on a stale proc scan.
+                    continue
             try:
                 self._write(origin_procs, str(pid))
-            except OSError:
-                continue  # exited between the read and the write
+            except OSError as exc:
+                if exc.errno == errno.ESRCH and not self._pid_exists(pid):
+                    continue  # exited between the membership read and write
+                if not host_proc_view or exc.errno != errno.ESRCH or destination is None:
+                    failed = True
+                    continue
+                unit_name, subcgroup = destination
+                # Check the exact D-25 path before crossing the system-bus
+                # boundary; only this session's original scope is admitted.
+                self.guard.check_write(origin_procs, str(pid))
+                if not self._systemd_attach(unit_name, subcgroup, pid):
+                    failed = True
+                    if self._log is not None:
+                        self._log(
+                            f"placement: systemd could not restore pid {pid} "
+                            f"to {unit_name}/{subcgroup}"
+                        )
+                    continue
+                actual = self._pid_cgroup(pid)
+                if posixpath.normpath(actual or "") != posixpath.normpath(self.origin_cgroup):
+                    if actual is None and not self._pid_exists(pid):
+                        continue
+                    failed = True
+                    if self._log is not None:
+                        self._log(
+                            f"placement: systemd restore of pid {pid} was not "
+                            f"visible in {self.origin_cgroup}"
+                        )
+                    continue
+                self._record_write(origin_procs, str(pid))
+            else:
+                if host_proc_view:
+                    actual = self._pid_cgroup(pid)
+                    if actual is not None and posixpath.normpath(actual) != posixpath.normpath(
+                        self.origin_cgroup
+                    ):
+                        failed = True
+                    elif actual is None and self._pid_exists(pid):
+                        failed = True
+
+        if failed:
+            self.error = write_failed(self._relative(origin_procs))
+            self._log_unrestored_survivor(leaf_procs)
+        return not failed
+
+    def _log_unrestored_survivor(self, leaf_procs: str) -> None:
+        if self._log is not None:
+            self._log(
+                f"placement: could not safely restore all survivors from "
+                f"{self._relative(leaf_procs)}; refusing to remove its leaf"
+            )
 
     # -- §8.3: the block ---------------------------------------------------
 

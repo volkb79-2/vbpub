@@ -21,15 +21,19 @@ writable: Linux cgroupfs placement cannot work through a read-only bind. This
 is a deliberate, bounded exception to observation-only operation, not a
 general host-control surface.
 
-The PID move has one namespace-specific seam. A PID read from `/hostproc` is
+PID movement has one namespace-specific seam. A PID read from `/hostproc` is
 not necessarily addressable by a writer in the daemon's private PID namespace;
 the kernel returns `ESRCH` when that PID is written to `cgroup.procs`. In that
 case the daemon calls host systemd's `AttachProcessesToUnit` method over the
-explicit read-only `/run/dbus/system_bus_socket` bind, naming only the verified
-gates slice, its token leaf, and the one PID. It then resolves the PID through
-the host-proc view and refuses to claim placement unless the leaf is observed.
+explicit read-only `/run/dbus/system_bus_socket` bind. On `start`, it names
+only the verified gates slice and its token leaf; on `stop`, it derives the
+nearest systemd unit and subgroup from the exact original cgroup path. Both
+moves require a verified host-proc view and post-move cgroup membership. A
+successful systemd-mediated move is recorded as a `cgroup_write` event. If a
+survivor cannot be enumerated or restored, the daemon reports the precise
+scope path and retains the lane leaf rather than concealing a stranded task.
 This preserves private PID/cgroup/network namespaces while making placement
-real rather than silently leaving an empty leaf.
+and cleanup real.
 
 The progress stream is a lane-controlled path reached through its process
 root. The watcher opens it nonblocking and reads only a regular file; a FIFO

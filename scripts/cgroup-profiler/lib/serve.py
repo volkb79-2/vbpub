@@ -939,7 +939,7 @@ class SessionServer:
             gates_cgroup=targets_mod.slice_to_path(self.gates_slice_name),
             token=token, origin_cgroup=origin_cgroup, request=request,
             on_write=on_write, log=self._log, sleep=self.sampler_sleep,
-            rmdir=self.cgroup_rmdir,
+            rmdir=self.cgroup_rmdir, proc_root=self.proc_root,
         )
 
     def _start_response(self, sess: _Session, *, reused: bool) -> Dict[str, Any]:

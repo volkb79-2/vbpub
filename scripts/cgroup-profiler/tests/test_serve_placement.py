@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from lib import liveness, placement, serve
+from lib import access, liveness, placement, serve
 from tests.conftest import cgroup_files, write_cgroup
 
 CONTAINER_ID = "d" * 64
@@ -117,6 +117,14 @@ def _placement(
 
 def _leaf(root: Path) -> Path:
     return root / "dev.slice" / "dev-gates.slice" / LEAF_NAME
+
+
+def _host_proc_with_pids(monkeypatch, pids: List[int]) -> None:
+    monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+    monkeypatch.setattr(
+        "lib.targets.pids_in_cgroup",
+        lambda _cgroup, _root, _proc: list(pids),
+    )
 
 
 def _start_args(**overrides: Any) -> Dict[str, Any]:
@@ -572,9 +580,13 @@ class TestMigration:
         plc.apply([101])
         assert plc.migrate([101]) == 0
 
-    def test_private_pid_namespace_uses_systemd_attach_and_verifies_membership(self, tmp_path):
+    def test_private_pid_namespace_uses_systemd_attach_and_verifies_membership(
+        self, tmp_path, monkeypatch,
+    ):
         root = _fake_cgroup_root(tmp_path)
         attached: List[Any] = []
+        writes: List[Any] = []
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
 
         class _PrivateNamespace(placement.LanePlacement):
             def _write(self, abs_target: str, value: str) -> None:
@@ -586,6 +598,7 @@ class TestMigration:
             cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
             origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
             request=placement.PlacementRequest(),
+            on_write=lambda rel, value: writes.append((rel, value)),
             systemd_attach=lambda unit, subcgroup, pid: attached.append(
                 (unit, subcgroup, pid)
             ) is None,
@@ -595,6 +608,7 @@ class TestMigration:
         plc.apply([101])
 
         assert attached == [("dev-gates.slice", LEAF_NAME, 101)]
+        assert (f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs", "101") in writes
         assert plc.error is None
         assert plc.block()["pids_moved"] == 1
 
@@ -623,9 +637,10 @@ class TestMigration:
         assert attached == []
         assert plc.block()["pids_moved"] == 0
 
-    def test_failed_systemd_attach_abandons_empty_leaf(self, tmp_path):
+    def test_failed_systemd_attach_abandons_empty_leaf(self, tmp_path, monkeypatch):
         root = _fake_cgroup_root(tmp_path)
         logged: List[str] = []
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
 
         class _PrivateNamespace(placement.LanePlacement):
             def _write(self, abs_target: str, value: str) -> None:
@@ -650,9 +665,12 @@ class TestMigration:
         assert "systemd could not attach pid 101" in logged[-1]
         assert not _leaf(root).exists()
 
-    def test_systemd_attach_membership_mismatch_is_failure_and_logged(self, tmp_path):
+    def test_systemd_attach_membership_mismatch_is_failure_and_logged(
+        self, tmp_path, monkeypatch,
+    ):
         root = _fake_cgroup_root(tmp_path)
         logged: List[str] = []
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
 
         class _PrivateNamespace(placement.LanePlacement):
             def _write(self, abs_target: str, value: str) -> None:
@@ -678,7 +696,10 @@ class TestMigration:
         assert "systemd attach of pid 101 was not visible" in logged[-1]
         assert not _leaf(root).exists()
 
-    def test_systemd_attach_failures_without_log_sinks_still_refuse(self, tmp_path):
+    def test_systemd_attach_failures_without_log_sinks_still_refuse(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
         root = _fake_cgroup_root(tmp_path / "attach")
 
         class _PrivateNamespace(placement.LanePlacement):
@@ -708,6 +729,65 @@ class TestMigration:
         )
         mismatch.apply([101])
         assert mismatch.error is not None
+
+    @pytest.mark.parametrize("with_log", [True, False])
+    def test_esrch_migration_without_host_proc_fails_closed(
+        self, tmp_path, monkeypatch, with_log,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        logged: List[str] = []
+        attached: List[Any] = []
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: False)
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target.endswith("cgroup.procs"):
+                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+            request=placement.PlacementRequest(), systemd_attach=lambda *args: (
+                attached.append(args) or True
+            ), pid_exists=lambda _pid: True,
+            log=logged.append if with_log else None,
+        )
+        plc.apply([101])
+
+        assert attached == []
+        assert plc.error == placement.write_failed(
+            f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs"
+        )
+        assert plc.leaf_cgroup is None
+        if with_log:
+            assert "without a verified host-proc view" in logged[-1]
+
+    def test_esrch_migration_for_a_vanished_pid_does_not_use_systemd(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        attached: List[Any] = []
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target.endswith("cgroup.procs"):
+                    raise OSError(errno.ESRCH, "pid exited", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+            request=placement.PlacementRequest(),
+            systemd_attach=lambda *args: attached.append(args) or True,
+            pid_exists=lambda _pid: False,
+        )
+        plc.apply([101])
+
+        assert attached == []
+        assert plc.error is None
+        assert plc.block()["pids_moved"] == 0
 
     def test_default_proc_helpers_use_the_placement_proc_root(self, tmp_path, monkeypatch):
         root = _fake_cgroup_root(tmp_path)
@@ -758,6 +838,23 @@ def test_systemd_attach_returns_false_when_busctl_cannot_start():
     ) is False
 
 
+@pytest.mark.parametrize(
+    ("cgroup", "expected"),
+    [
+        ("dev.slice/dev-background.slice/job.scope", None),
+        ("/dev.slice/dev-background.slice/job.scope", ("job.scope", "")),
+        ("/dev.slice/dev-background.slice/job.scope/child", ("job.scope", "child")),
+        (
+            "/dev.slice/dev-background.slice/job.scope/worker.slice/task",
+            ("worker.slice", "task"),
+        ),
+        ("/dev.slice/../job.scope", None),
+    ],
+)
+def test_systemd_destination_is_narrow_and_derived_from_unit_path(cgroup, expected):
+    assert placement._systemd_destination(cgroup) == expected
+
+
 class TestRelease:
     def test_survivors_go_back_to_the_origin_scope_and_the_leaf_goes(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -784,13 +881,409 @@ class TestRelease:
 
     def test_a_survivor_that_exits_mid_move_is_skipped(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
-        plc = _placement(root)
+        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+
+        class _ExitedSurvivor(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target == str(origin_procs):
+                    raise OSError(errno.ESRCH, "pid exited", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _ExitedSurvivor(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+            request=placement.PlacementRequest(), pid_exists=lambda _pid: False,
+        )
         plc.apply([])
         (_leaf(root) / "cgroup.procs").write_text("101\nnot-a-pid\n102\n")
-        (root / SCOPE_CGROUP / "cgroup.procs").unlink()
-        os.mkdir(root / SCOPE_CGROUP / "cgroup.procs")  # writes raise EISDIR
         plc.release()
         assert not _leaf(root).exists()  # the leaf still goes
+
+    def test_private_pid_namespace_restores_survivor_via_systemd(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        attached: List[Any] = []
+        writes: List[Any] = []
+        origin = "/" + SCOPE_CGROUP
+        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+        current_cgroups = {4242: f"{GATES_CGROUP}/{LEAF_NAME}"}
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target == str(origin_procs):
+                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        def attach(unit: str, subcgroup: str, pid: int) -> bool:
+            attached.append((unit, subcgroup, pid))
+            current_cgroups[pid] = origin
+            return True
+
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(
+            "lib.targets.pids_in_cgroup",
+            lambda cgroup, _root, _proc: [4242]
+            if cgroup == f"{GATES_CGROUP}/{LEAF_NAME}" else [],
+        )
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup=origin, rmdir=_fake_rmdir, proc_root=str(proc),
+            request=placement.PlacementRequest(),
+            systemd_attach=attach, pid_exists=lambda pid: pid in current_cgroups,
+            pid_cgroup=lambda pid: current_cgroups.get(pid),
+            on_write=lambda rel, value: writes.append((rel, value)),
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert attached == [(f"docker-{CONTAINER_ID}.scope", "", 4242)]
+        assert (f"{SCOPE_CGROUP}/cgroup.procs", "4242") in writes
+        assert plc.error is None
+        assert plc.released is True
+        assert not _leaf(root).exists()
+
+    def test_empty_leaf_after_unavailable_host_scan_can_be_released(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root, request=placement.PlacementRequest())
+        plc.apply([])
+        _host_proc_with_pids(monkeypatch, [])
+        readings = iter(([0], []))
+        monkeypatch.setattr(placement, "_read_pids", lambda _path: next(readings))
+
+        plc.release()
+
+        assert plc.error is None
+        assert plc.released is True
+        assert not _leaf(root).exists()
+
+    def test_unavailable_host_scan_with_remaining_placeholder_keeps_leaf(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        logged: List[str] = []
+        plc = _placement(root, request=placement.PlacementRequest(), log=logged.append)
+        plc.apply([])
+        _host_proc_with_pids(monkeypatch, [])
+        monkeypatch.setattr(placement, "_read_pids", lambda _path: [0])
+
+        plc.release()
+
+        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
+        assert plc.released is False
+        assert _leaf(root).exists()
+        assert "could not safely restore all survivors" in logged[-1]
+
+    @pytest.mark.parametrize(
+        ("exists", "membership", "expected_error", "expected_leaf"),
+        [
+            (False, None, None, False),
+            (True, None, f"place-refused:write-failed:{SCOPE_CGROUP}/cgroup.procs", True),
+            (True, "/elsewhere", None, False),
+        ],
+    )
+    def test_host_proc_source_membership_is_checked_before_restore(
+        self, tmp_path, monkeypatch, exists, membership, expected_error, expected_leaf,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        _host_proc_with_pids(monkeypatch, [4242])
+        plc = _placement(
+            root, request=placement.PlacementRequest(), proc_root=str(proc),
+            pid_exists=lambda _pid: exists, pid_cgroup=lambda _pid: membership,
+            systemd_attach=lambda *_args: pytest.fail("systemd must not see stale membership"),
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert plc.error == expected_error
+        assert _leaf(root).exists() is expected_leaf
+
+    def test_host_proc_pid_disappearing_during_cgroup_read_is_skipped(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        _host_proc_with_pids(monkeypatch, [4242])
+        existence = iter((True, False))
+        plc = _placement(
+            root, request=placement.PlacementRequest(), proc_root=str(proc),
+            pid_exists=lambda _pid: next(existence), pid_cgroup=lambda _pid: None,
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert plc.error is None
+        assert plc.released is True
+        assert not _leaf(root).exists()
+
+    def test_direct_restore_is_verified_and_records_event(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        origin = "/" + SCOPE_CGROUP
+        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+        current = {4242: f"{GATES_CGROUP}/{LEAF_NAME}"}
+        writes: List[Any] = []
+        _host_proc_with_pids(monkeypatch, [4242])
+
+        class _DirectRestore(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                super()._write(abs_target, value)
+                if abs_target == str(origin_procs):
+                    current[4242] = origin
+
+        plc = _DirectRestore(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup=origin, rmdir=_fake_rmdir, proc_root=str(proc),
+            request=placement.PlacementRequest(), pid_exists=lambda _pid: True,
+            pid_cgroup=lambda pid: current.get(pid),
+            on_write=lambda rel, value: writes.append((rel, value)),
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert plc.error is None
+        assert (f"{SCOPE_CGROUP}/cgroup.procs", "4242") in writes
+        assert not _leaf(root).exists()
+
+    @pytest.mark.parametrize(
+        ("after_write", "exists_after", "expected_error", "expected_leaf"),
+        [
+            ("/elsewhere", True, True, True),
+            (None, True, True, True),
+            (None, False, False, False),
+        ],
+    )
+    def test_direct_restore_requires_verified_destination_or_exit(
+        self, tmp_path, monkeypatch, after_write, exists_after, expected_error, expected_leaf,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        _host_proc_with_pids(monkeypatch, [4242])
+        memberships = iter((f"{GATES_CGROUP}/{LEAF_NAME}", after_write))
+        existence = iter((True, exists_after))
+        plc = _placement(
+            root, request=placement.PlacementRequest(), proc_root=str(proc),
+            pid_exists=lambda _pid: next(existence),
+            pid_cgroup=lambda _pid: next(memberships),
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert (plc.error is not None) is expected_error
+        assert _leaf(root).exists() is expected_leaf
+
+    def test_host_proc_restore_rejects_direct_write_failure(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        logged: List[str] = []
+        attached: List[Any] = []
+        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+        _host_proc_with_pids(monkeypatch, [4242])
+
+        class _DirectFailure(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target == str(origin_procs):
+                    raise OSError(errno.EPERM, "write denied", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _DirectFailure(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir, proc_root=str(proc),
+            request=placement.PlacementRequest(), pid_exists=lambda _pid: True,
+            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
+            systemd_attach=lambda *args: attached.append(args) or True,
+            log=logged.append,
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert attached == []
+        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
+        assert _leaf(root).exists()
+        assert "could not safely restore all survivors" in logged[-1]
+
+    def test_host_proc_restore_refuses_origin_without_systemd_unit(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        target_cgroup = "unmanaged/child"
+        write_cgroup(root, target_cgroup, cgroup_files())
+        origin_procs = root / target_cgroup / "cgroup.procs"
+        attached: List[Any] = []
+        _host_proc_with_pids(monkeypatch, [4242])
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target == str(origin_procs):
+                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + target_cgroup, rmdir=_fake_rmdir, proc_root=str(proc),
+            request=placement.PlacementRequest(), pid_exists=lambda _pid: True,
+            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
+            systemd_attach=lambda *args: attached.append(args) or True,
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert attached == []
+        assert plc.error == placement.write_failed(f"{target_cgroup}/cgroup.procs")
+        assert _leaf(root).exists()
+
+    @pytest.mark.parametrize("with_log", [True, False])
+    def test_systemd_restore_membership_mismatch_keeps_leaf_and_logs(
+        self, tmp_path, monkeypatch, with_log,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        logged: List[str] = []
+        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+        attached: List[Any] = []
+        _host_proc_with_pids(monkeypatch, [4242])
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target == str(origin_procs):
+                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        def attach(unit: str, subcgroup: str, pid: int) -> bool:
+            attached.append((unit, subcgroup, pid))
+            return True
+
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir, proc_root=str(proc),
+            request=placement.PlacementRequest(), systemd_attach=attach,
+            pid_exists=lambda _pid: True,
+            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
+            log=logged.append if with_log else None,
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert attached == [(f"docker-{CONTAINER_ID}.scope", "", 4242)]
+        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
+        assert _leaf(root).exists()
+        if with_log:
+            assert any("not visible" in row for row in logged)
+
+    def test_systemd_restore_of_pid_that_exits_after_attach_is_complete(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+        current = {4242: f"{GATES_CGROUP}/{LEAF_NAME}"}
+        _host_proc_with_pids(monkeypatch, [4242])
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target == str(origin_procs):
+                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        def attach(_unit: str, _subcgroup: str, pid: int) -> bool:
+            current.pop(pid)
+            return True
+
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir, proc_root=str(proc),
+            request=placement.PlacementRequest(), systemd_attach=attach,
+            pid_exists=lambda pid: pid in current,
+            pid_cgroup=lambda pid: current.get(pid),
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert plc.error is None
+        assert plc.released is True
+        assert not _leaf(root).exists()
+
+    def test_unknown_private_namespace_survivor_keeps_leaf_and_never_calls_systemd(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        attached: List[Any] = []
+        plc = _placement(
+            root, request=placement.PlacementRequest(),
+            systemd_attach=lambda *args: attached.append(args) or True,
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: False)
+
+        plc.release()
+
+        assert attached == []
+        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
+        assert plc.released is False
+        assert plc.placed is True
+        assert _leaf(root).exists()
+
+    @pytest.mark.parametrize("with_log", [True, False])
+    def test_failed_systemd_restore_keeps_leaf_and_reports_origin_path(
+        self, tmp_path, monkeypatch, with_log,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        proc = _fake_proc(tmp_path)
+        attached: List[Any] = []
+        logged: List[str] = []
+        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+
+        class _PrivateNamespace(placement.LanePlacement):
+            def _write(self, abs_target: str, value: str) -> None:
+                if abs_target == str(origin_procs):
+                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
+                super()._write(abs_target, value)
+
+        def fail_attach(unit: str, subcgroup: str, pid: int) -> bool:
+            attached.append((unit, subcgroup, pid))
+            return False
+
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(
+            "lib.targets.pids_in_cgroup",
+            lambda cgroup, _root, _proc: [4242]
+            if cgroup == f"{GATES_CGROUP}/{LEAF_NAME}" else [],
+        )
+        plc = _PrivateNamespace(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
+            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir, proc_root=str(proc),
+            request=placement.PlacementRequest(), systemd_attach=fail_attach,
+            pid_exists=lambda pid: pid == 4242,
+            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
+            log=logged.append if with_log else None,
+        )
+        plc.apply([])
+        (_leaf(root) / "cgroup.procs").write_text("0\n")
+
+        plc.release()
+
+        assert attached == [(f"docker-{CONTAINER_ID}.scope", "", 4242)]
+        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
+        assert plc.released is False
+        assert _leaf(root).exists()
+        if with_log:
+            assert any("systemd could not restore pid 4242" in row for row in logged)
 
     def test_a_leaf_that_will_not_go_is_retried_three_times_then_reported(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -952,6 +1445,7 @@ class TestServerPlacement:
         assert (root / "dev.slice/dev-gates.slice" / LEAF_NAME).is_dir()
 
         sess = server._sessions[SESSION_ID]
+        assert sess.placement.proc_root == str(tmp_path / "proc")
         assert server._status_entry(sess)["placement"] == block
         reading, _watch = server._watch_lines(sess)
         assert reading["placement"] == block

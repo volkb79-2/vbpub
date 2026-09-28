@@ -57,7 +57,12 @@ placement writes, and `CGPROFILE_PROC_ROOT=/hostproc` selects the host proc
 view. The daemon also receives the host system bus read-only at
 `/run/dbus/system_bus_socket`; it uses only systemd's
 `AttachProcessesToUnit` method when a host PID cannot be written directly
-from the private PID namespace, then verifies membership through `/hostproc`.
+from the private PID namespace. At start it attaches into the verified gates
+leaf; at stop it uses the original cgroup path's nearest systemd unit to
+restore enumerated survivors. Both operations require the verified host-proc
+view and confirm resulting membership there. Successful moves are written to
+the session's `events.jsonl`; an unresolvable or unrestored survivor leaves
+the leaf intact and appears as `placement.error` in the stop summary.
 Placement's D-25 whitelist is the cgroup write boundary. Do not set host
 namespace modes. On startup `serve` verifies that PID 1 in that proc view
 belongs to a PID namespace distinct from the daemon's and refuses if either

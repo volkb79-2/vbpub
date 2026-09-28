@@ -134,7 +134,11 @@ view plus an explicitly writable host cgroup-v2 view for opt-in P6 placement.
 `CgroupWriteGuard` limits cgroup writes to the placement whitelist; the
 daemon uses the read-only host system bus only for systemd's narrow
 `AttachProcessesToUnit` PID move when private PID translation makes a direct
-`cgroup.procs` write impossible, and verifies the result through `/hostproc`.
+`cgroup.procs` write impossible. It uses that bridge both to place a lane into
+its gates leaf and, at `stop`, to return survivors to their original systemd
+scope. Each move is verified through `/hostproc`; if survivors cannot be
+enumerated or restored, the daemon reports the exact cgroup path and leaves
+the lane leaf in place rather than hiding the stranded processes.
 The one-shot helper keeps its cgroup view read-only. It is
 `scripts/cgroup-profiler/`'s own **standalone ciu root** —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
@@ -276,8 +280,11 @@ The daemon's version response is contract major 1:
   read-only; the daemon's host cgroup-v2 bind is writable only because
   opt-in placement creates `rg-*` leaves and moves lane pids. A private-PID
   fallback asks host systemd over the explicitly mounted read-only system bus
-  to attach the verified PID to that leaf; the daemon never joins a host
-  namespace. The daemon's
+  to attach the verified PID to that leaf, and `stop` uses the same bridge to
+  return enumerated survivors to their original systemd scope; the daemon
+  never joins a host namespace. Both directions require the host-proc view,
+  verify membership afterward, and record successful moves. Unresolvable or
+  unrestored survivors keep the leaf and produce a placement error. The daemon's
   D-25 write guard limits those cgroup writes to the documented whitelist;
   DAMON retains its separately mounted sysfs write surface. `ciu up` is the
   managed lifecycle; there is no host-namespace fallback launcher.

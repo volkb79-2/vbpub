@@ -352,10 +352,14 @@ when the caller and target share a cgroup namespace. An unverifiable mapping
 is refused. No RG-55 container uses a host PID, cgroup, or network namespace.
 A private-PID daemon uses the read-only host system bus only as a namespace-
 safe placement bridge: when a direct `cgroup.procs` write returns `ESRCH`, it
-calls systemd's `AttachProcessesToUnit` for the verified gates slice and its
-`rg-<token>` subcgroup, then verifies the PID's host-proc cgroup path. The
-bridge does not join a host namespace and is not a general systemd control
-surface.
+requires a verified host-proc view and calls systemd's
+`AttachProcessesToUnit` for the verified gates slice and its `rg-<token>`
+subcgroup on placement, or the nearest systemd unit and relative subgroup of
+the original scope on stop. It verifies the PID's resulting host-proc cgroup
+path and records each successful move in `events.jsonl`. If it cannot
+enumerate or restore a survivor, it retains the leaf and reports the original
+scope's `cgroup.procs` path. The bridge does not join a host namespace and is
+not a general systemd control surface.
 
 ## 6. Test fixtures shared by both packages
 
@@ -520,7 +524,11 @@ is `+memory +cpu +pids` to the configured gates slice's
 and that session's original scope `cgroup.procs` solely to restore moved
 survivors at `stop`. Leaf creation/removal is limited to that `rg-*` child.
 Any other cgroup write is refused before opening the path. Writes are
-recorded in `events.jsonl`; placement refusal does not fail `start`.
+recorded in `events.jsonl`; successful systemd-mediated moves are recorded by
+the same event sink. Placement refusal does not fail `start`. At `stop`, the
+daemon restores survivors using host-visible PIDs; if the host-proc mapping or
+the move back cannot be verified, it reports the origin `cgroup.procs` path
+and retains the leaf rather than reporting successful cleanup.
 
 ### 8.4 Liveness and policy (D-17, D-22, D-27)
 
