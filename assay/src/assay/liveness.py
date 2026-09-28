@@ -1297,9 +1297,9 @@ class LivenessRunner:
     than :data:`_HUNG_CPU_GROWTH_FLOOR_S` over the trailing
     :data:`_HUNG_CPU_WINDOW_S`; OR a `session_finish` event was seen and the
     process is still alive :data:`_HUNG_SESSION_FINISH_GRACE_S` later with
-    no event or stdout/stderr growth for that whole grace (RW-57: an xdist
-    worker's finish must not expire a candidate still reporting progress).
-    This second branch retains its independent grace, without consulting CPU.
+    no event or stdout/stderr growth for that whole grace AND the same full
+    trailing CPU window is quiet (RW-57: an xdist worker's finish must not
+    expire a candidate still reporting progress or consuming CPU).
     Both branches require the relevant idle window to have complete resource
     evidence and advance only through intervals with no observed pressure.
     On `hung`: kills the whole process group and raises
@@ -1667,6 +1667,7 @@ class LivenessRunner:
                 session_finish_at is not None
                 and (liveness_clock - session_finish_at) >= _HUNG_SESSION_FINISH_GRACE_S
                 and idle_for >= _HUNG_SESSION_FINISH_GRACE_S
+                and not cpu_growing
             )
             hung = resource_trace_complete and (idle_hang or finish_hang)
             if hung:

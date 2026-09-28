@@ -1436,21 +1436,17 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
         return False
     if samples[-1].get("eligible_elapsed_s") != value["eligible_elapsed_s"]:
         return False
-    if value["decision"] == "session-finish-hang":
-        finish_at = value.get("session_finish_eligible_s")
-        return (
-            value.get("candidate_session_finish_seen") is True
-            and finite_number(finish_at)
-            and finish_at >= 0
-            and finish_at <= value["eligible_elapsed_s"]
-            and value["eligible_elapsed_s"] - finish_at
-            >= liveness._HUNG_SESSION_FINISH_GRACE_S
-            and value["required_idle_eligible_s"]
-            >= liveness._HUNG_SESSION_FINISH_GRACE_S
-        )
     finish_seen = value.get("candidate_session_finish_seen")
     finish_at = value.get("session_finish_eligible_s")
-    if finish_seen is True:
+    if value["decision"] == "session-finish-hang":
+        if (
+            finish_seen is not True
+            or not finite_number(finish_at)
+            or finish_at < 0
+            or finish_at > value["eligible_elapsed_s"]
+        ):
+            return False
+    elif finish_seen is True:
         if (
             not finite_number(finish_at)
             or finish_at < 0
@@ -1475,7 +1471,16 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
     if not baseline_candidates:
         return False
     _baseline_eligible, baseline_cpu = baseline_candidates[-1]
-    return current_cpu - baseline_cpu < cpu_floor
+    if current_cpu - baseline_cpu >= cpu_floor:
+        return False
+    if value["decision"] == "session-finish-hang":
+        return (
+            value["eligible_elapsed_s"] - finish_at
+            >= liveness._HUNG_SESSION_FINISH_GRACE_S
+            and value["required_idle_eligible_s"]
+            >= liveness._HUNG_SESSION_FINISH_GRACE_S
+        )
+    return True
 
 
 def _load_validated_state_record(

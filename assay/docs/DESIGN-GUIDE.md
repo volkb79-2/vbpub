@@ -520,13 +520,15 @@ until the gate cgroup reaches `pids.max`.
 
 #### Liveness session-finish grace
 
-RW-57 guards the post-`session_finish` branch with
-`idle_for >= _HUNG_SESSION_FINISH_GRACE_S`. xdist workers and their
-controller append to one events file; the first worker's finish does not
-mean the candidate finished. Later events or stdout/stderr growth reset
-the idle clock, preserving a progressing worker tail while still expiring
-a process that stops reporting after the full 30 s grace. The calibrated
-idle/CPU branch and elapsed budget retain their existing rules.
+RW-57 permits the post-`session_finish` branch to expire only after the full
+30 s grace has no event or stdout/stderr growth **and** the process tree's
+CPU has stayed below the quiet threshold over the complete trailing CPU
+window. xdist workers and their controller append to one events file; the
+first worker's finish does not mean the candidate finished. Later events or
+output growth reset the idle clock, and CPU growth keeps a candidate
+incomplete even if event/output has stopped. Such a candidate reaches its
+configured budget rather than receiving a false `hung` result. The same
+pressure-aware CPU evidence governs the calibrated idle branch.
 
 #### Liveness process identity and xdist parsing (B097)
 

@@ -2358,7 +2358,10 @@ making progress, on EITHER of two branches:
   grew less than 1.0 s over the trailing 30 s window, or
 - a `session_finish` event was seen but the process is still alive 30 s
   later AND no new event or stdout/stderr growth has occurred for a full
-  30 s grace (P7 round-2 B6, RW-57).
+  30 s grace AND process-tree CPU has stayed below the quiet threshold over
+  the complete trailing 30 s CPU window (P7 round-2 B6, RW-57). If CPU keeps
+  growing, the candidate remains incomplete until its configured budget
+  rather than being classified `hung`.
 
 #### Resource-aware hung classification (B107)
 
@@ -2371,6 +2374,9 @@ source or counter reset does too; unknown/reset observations restart the idle
 evidence window. The liveness and CPU-growth clocks resume only after a fresh,
 complete observation and unchanged counters. There is no fractional
 subtraction or guessed per-candidate delay.
+The post-`session_finish` grace also requires a complete trailing CPU window
+below the quiet threshold; an event-free but CPU-growing process is not
+`hung`.
 
 If the declared candidate wall budget expires before a complete clean idle
 window exists, the result is `budget_exceeded` and the mutation lane remains

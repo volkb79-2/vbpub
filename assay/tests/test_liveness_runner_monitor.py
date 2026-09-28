@@ -437,6 +437,7 @@ def test_counter_reset_starts_a_fresh_idle_evidence_window(tmp_path: Path) -> No
         clock=clock,
         cpu_reader=cpu_reader,
         resource_reader=resources,
+        expect_next_event_within_s=600.0,
     )
     with pytest.raises(liveness.LivenessHungExpired) as excinfo:
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
@@ -722,11 +723,11 @@ def test_session_finish_then_still_alive_is_hung_after_a_full_idle_grace(
     tmp_path: Path,
     later_event_at: float | None,
 ) -> None:
-    """RW-57: retain the true hung case, but later progress resets the grace.
+    """RW-57: retain the true CPU-quiet hung case, but later progress resets it.
 
-    Growing CPU and a 600s calibrated bound isolate the session-finish
-    branch. Pin its idle boundary, including when the last event is later
-    than the first finish, so removing the branch or weakening >= fails.
+    A 600s calibrated bound isolates the session-finish branch. Pin its idle
+    boundary, including when the last event is later than the first finish,
+    and keep CPU flat so removing the required quiet-CPU check is observable.
     """
     clock = _FakeClock()
     proc = _ScriptedProc(pid=4245)
@@ -734,7 +735,7 @@ def test_session_finish_then_still_alive_is_hung_after_a_full_idle_grace(
         tmp_path,
         proc=proc,
         clock=clock,
-        cpu_reader=lambda pid: clock.t,
+        cpu_reader=lambda pid: 3.0,
         expect_next_event_within_s=600.0,
     )
     events_path = runner._events_path_for_cwd(cwd)
@@ -758,6 +759,45 @@ def test_session_finish_then_still_alive_is_hung_after_a_full_idle_grace(
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
     assert clock.t == (1.0 if later_event_at is None else later_event_at) + 30.0
     assert proc.waited
+
+
+def test_session_finish_grace_does_not_classify_growing_cpu_as_hung(
+    tmp_path: Path,
+) -> None:
+    """RW-57: CPU growth through the post-finish grace remains incomplete."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=4248)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: clock.t,
+        expect_next_event_within_s=600.0,
+    )
+    events_path = runner._events_path_for_cwd(cwd)
+
+    def write_finish_on_first_poll(dt: float) -> None:
+        clock.advance(dt)
+        if clock.sleep_calls == 1:
+            events_path.write_text(
+                '{"event": "session_finish", "exitstatus": 0, "t": 0.0}\n',
+                encoding="utf-8",
+            )
+
+    runner._sleep = write_finish_on_first_poll  # type: ignore[assignment]
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=40.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 40.0
+    assert proc.waited
+    evidence = excinfo.value.liveness_resource_evidence
+    assert evidence["decision"] == "configured-budget-expired"
+    assert evidence["candidate_session_finish_seen"] is True
+    assert (
+        evidence["samples"][-1]["candidate_cpu_s"]
+        > evidence["samples"][0]["candidate_cpu_s"]
+    )
 
 
 def test_xdist_session_finishes_do_not_hang_a_progressing_candidate(

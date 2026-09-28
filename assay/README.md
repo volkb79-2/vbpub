@@ -386,6 +386,11 @@ that expires before a complete clean idle window remains an incomplete
 `budget_exceeded` result, not `killed`, `survived`, or `hung`. See the
 [design rationale](docs/DESIGN-GUIDE.md#liveness-pressure-and-resource-evidence-b107)
 and [consumer guidance](docs/CONSUMERS.md#resource-aware-hung-classification-b107).
+Both hang paths require process-tree CPU to stay below the quiet threshold
+over a complete trailing window; after `session_finish`, that CPU-quiet window
+is required in addition to 30 seconds without event or output growth.
+Continued CPU work reaches the configured budget instead of being mislabeled
+`hung`.
 **B073 itself is not resolved**: this is per-test data for one runner
 (pytest) on one rigor tier (R2 candidates + the R1/R0 baseline), driven by a
 plugin assay itself materializes — not the general, per-language,

@@ -645,6 +645,28 @@ def test_session_finish_hang_evidence_needs_a_full_clean_grace(tmp_path: Path):
     )
 
 
+@pytest.mark.parametrize("cpu_shape", ["growing", "short-window"])
+def test_session_finish_hang_evidence_requires_a_quiet_complete_cpu_window(
+    cpu_shape: str,
+) -> None:
+    evidence = _hung_evidence()
+    evidence.update(
+        decision="session-finish-hang",
+        idle_eligible_s=31.0,
+        required_idle_eligible_s=30.0,
+        candidate_session_finish_seen=True,
+        session_finish_eligible_s=1.0,
+    )
+    if cpu_shape == "growing":
+        for sample in evidence["samples"]:
+            sample["candidate_cpu_s"] = 3.0 + sample["eligible_elapsed_s"]
+    else:
+        for sample in evidence["samples"][:-2]:
+            sample["candidate_cpu_s"] = None
+
+    assert not mutation._valid_hung_resource_evidence(evidence)
+
+
 def test_idle_hang_evidence_may_also_retain_a_candidate_finish_event():
     evidence = _hung_evidence()
     evidence.update(

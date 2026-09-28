@@ -5,8 +5,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Fixed
-- fix(assay): retain candidate-local progress and resource evidence so host
-  CPU or memory contention alone cannot classify an R2 candidate as hung (B107)
+- fix(assay): require time-aligned resource evidence and a CPU-quiet window
+  before classifying an R2 candidate as hung (B107/RW-57)
 
 <!-- cmru: release history -->
 
