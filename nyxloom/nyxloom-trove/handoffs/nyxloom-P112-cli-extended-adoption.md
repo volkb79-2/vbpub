@@ -27,6 +27,9 @@ scope:
     - "tests/test_cli_adoption.py"
     - "tests/test_installed_wheel.py"
     - "nyxloomd/supervise.sh"
+    - "nyxloomd/Dockerfile"
+    - "docker-bake.hcl"
+    - "nyxloomd/ciu.compose.yml.j2"
     - "nyxloomd/docker-compose.yml"
     - "README.md"
     - "docs/CLI-REFERENCE.md"
@@ -102,9 +105,22 @@ adds the optional prompt API and separates the `mutating` label from required
 confirmation. If either contract is absent, apply the BLOCKED rule below.
 
 Implement in `/workspaces/vbpub/.worktrees/nyxloom-cli-adoption` on branch
-`nyxloom-cli-adoption`, created from `main` after the prerequisite has landed
-and this handoff is available there. Commit only from that worktree. The audit
-authoring worktree is not the implementation worktree.
+`nyxloom-cli-adoption`. The implementation base must contain current local
+`main`, the approved P111/P112 audit and handoff, and the completed gated
+`cli-extended-nyxloom-api` prerequisite. Those commits are already present in
+this worktree. Keep implementation commits isolated here; do not merge them
+into the shared `main` checkout as part of this task. The audit authoring
+worktree is not the implementation worktree.
+
+### User-authorized scope amendment — 2026-09-28
+
+The user authorized expanding `scope.touch` after the implementation audit
+found that the installed wheel and service-entrypoint oracles require the
+Nyxloom image build and Ciu compose inputs. The added paths are
+`nyxloomd/Dockerfile`, `docker-bake.hcl`, and
+`nyxloomd/ciu.compose.yml.j2`. Update all three image-build descriptions and
+entrypoint/healthcheck commands consistently with the existing Nyxloom compose
+file; keep their build contexts aligned.
 
 No separate `cli-extended` runtime distribution is to be installed by Nyxloom.
 Bundle its package source into the existing Nyxloom wheel. The library remains

@@ -1,6 +1,6 @@
 # nyxloom-P112 execution log
 
-## Status: BLOCKED before implementation
+## Initial status: BLOCKED before implementation (resolved 2026-09-28)
 
 BLOCKED: The approved wheel and service-entrypoint oracles cannot be met using
 the declared `scope.touch`. Nyxloom's Docker wheel build receives only the
@@ -15,15 +15,19 @@ Nyxloom project root. The supervisor's default command and both compose
 healthchecks also use `python -m nyxloom.cli ...`, which becomes invalid when
 host commands move to `nyxloomctl` and service launch moves to `nyxloomd`.
 
-The handoff owns `nyxloom/pyproject.toml`, `nyxloom/nyxloomd/supervise.sh`, and
-`nyxloom/nyxloomd/docker-compose.yml`, but omits
-`nyxloom/nyxloomd/Dockerfile`, `nyxloom/docker-bake.hcl`, and
-`nyxloom/nyxloomd/ciu.compose.yml.j2`. `nyxloom/tests/test_daemon.py` explicitly
-checks both compose files, so the Ciu template cannot remain on the old
-healthcheck path while the pre-rendered compose file changes. The project
-`STANDING.md` requires exact `scope.touch` ownership and says implementation
-agents must not edit a handoff; therefore I stopped instead of extending scope
-or leaving the shipped-image path inconsistent.
+The handoff initially omitted `nyxloom/nyxloomd/Dockerfile`,
+`nyxloom/docker-bake.hcl`, and `nyxloom/nyxloomd/ciu.compose.yml.j2`.
+`nyxloom/tests/test_daemon.py` explicitly checks both compose files, so the Ciu
+template cannot remain on the old healthcheck path while the pre-rendered
+compose file changes. I paused before implementation and recorded the mismatch.
+
+## Resolution: user-authorized scope amendment — 2026-09-28
+
+The user directed me to remove the out-of-scope restriction as a blocker and
+authorized the necessary changes. P112 `scope.touch` now includes the Docker
+image/build and Ciu compose inputs listed above, and the worktree procedure
+records the isolated branch base. The amendment and required two-step
+`input_revision` refreeze are being committed before implementation resumes.
 
 ## Evidence inspected
 
@@ -52,15 +56,14 @@ or leaving the shipped-image path inconsistent.
   exact commit: R0, R1, R2, R3, and top-level `gate` all exited 0. The R3
   canary printed its expected rejection message for the redaction-guard
   mutation and the lane exited 0.
-- No Nyxloom implementation files were changed and the Nyxloom gate was not
-  started because this scope blocker is deterministically outside the
-  implementation contract.
+- At the initial block, no Nyxloom implementation files were changed and the
+  Nyxloom gate had not started. Implementation resumes after the amendment
+  commits and handoff refreeze.
 
-## Required amendment
+## Scope added by the amendment
 
-A contract owner must add the Docker image/build and Ciu compose inputs needed
-for the wheel and installed-service oracles to P112 `scope.touch` (at least
 `nyxloom/nyxloomd/Dockerfile`, `nyxloom/docker-bake.hcl`, and
-`nyxloom/nyxloomd/ciu.compose.yml.j2`), plus any exact adjacent test/build file
-that review shows is necessary. Implementation remains stopped until that
-amendment is present.
+`nyxloom/nyxloomd/ciu.compose.yml.j2` are now in P112 `scope.touch`. The
+existing scoped `tests/test_daemon.py` will verify both compose files; the
+existing scoped installed-wheel/adoption tests will verify the wheel contents
+and executable paths.
