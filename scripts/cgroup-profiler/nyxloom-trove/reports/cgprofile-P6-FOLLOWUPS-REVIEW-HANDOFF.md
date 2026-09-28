@@ -64,9 +64,9 @@ narratives. Run your OWN sweeps.
 ## Phase 2 — RECONCILE against the implementers' claims
 
 Read `cgprofile-P6-FOLLOWUPS-LOG.md` (incl. every "Decision asks" block),
-`-REPORT.md`, every `-BRIEF-1..12.md`, and prior review rounds 1–4; check each
-claim; list what you could not verify. Multiple sessions built this — hunt
-the seams between sessions.
+`-REPORT.md`, every existing P6 brief through `-BRIEF-12.md`, and prior review
+rounds 1–4; check each claim; list what you could not verify. Multiple
+sessions built this — hunt the seams between sessions.
 
 ## Attack surface (minimum; add your own)
 
