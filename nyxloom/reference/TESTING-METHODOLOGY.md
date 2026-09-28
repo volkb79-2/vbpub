@@ -295,7 +295,154 @@ snapshot is deliberately retained as a recovery point and named in
 `zfs-events.jsonl`; an operator must quiesce, restore, and destroy it. Never point
 this mechanism at production data or a dataset shared with another audit.
 
-## Property-based testing and Hypothesis
+## Designing for mutation testability
+
+Mutation cost is mostly decided by the **product and test design**, not by the
+mutation tool. The same tool can need weeks or hours for one inventory,
+depending on how fast a nearby test kills each mutant, how much setup every
+mutant repeats, and how many mutants survive. Design for that from the start,
+the way a project designs for coverage.
+
+**Case study (assay B105, 2026-09-28).** Assay's whole-source self-qualification
+has 3,760 mutants and a 5,831-test suite. It projected to about 585
+worker-hours, because every mutant repeated the whole suite on a full copy of
+the monorepo. The measured causes were all design facts, not tool facts:
+- a few slow tests dominated;
+- tests of an installed wheel could never kill a mutant;
+- real-clock waits;
+- spinning loops;
+- declarative flags that only a reflective test kills cheaply;
+- a snapshot that copied the whole repository with full history.
+
+Evidence and numbers:
+`assay/nyxloom-trove/reports/assay-B110-REUSE-AND-TESTABILITY-2026-09-28.md`
+(Part B) and `assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`.
+
+### Where the cost comes from
+
+```
+qualifying run ≈ fixed + Σ_mutants (setup + time to first failing test) / workers
+find-and-fix   ≈ Σ_iterations survivors × one full suite
+hangs          ≈ hanging mutants × timeout (often several full suites each)
+mutant count   ∝ own tracked code in scope × operator density
+```
+
+A killed mutant is cheap only if some **fast** test fails **early**. A
+surviving mutant always costs the whole suite, unless a weaker claim allows
+running only its covering tests. So the levers are: short time-to-kill, cheap
+per-mutant setup, few survivors and equivalents, no hangs, and no unnecessary
+mutants.
+
+### Question the structure before tuning the runner
+
+Before adding parallelism, sharding or caching, ask of every expensive item:
+**what does this test (or this setup step) prove, and does it need to happen
+once per mutant?** Typical findings:
+
+| Symptom | Structural question | Usual structural answer |
+|---|---|---|
+| A few tests dominate suite time | What makes them slow: a real clock, a subprocess, a build, a clone? Is that intrinsic to what they assert? | Inject the clock or process boundary; move the slow part behind a seam the test can replace; keep one end-to-end witness in a slow tier |
+| Tests exercise an installed artifact (wheel, binary, image) | Can such a test ever see the mutated source? | If not, it belongs in a release or distribution lane, not in a per-mutant suite |
+| Every mutant rebuilds a package or venv | Does a mutated comparison change anything the build step itself checks? | Build once per lane, or test packaging in the release lane |
+| Every mutant copies the whole repository and its history | Which tests need which files, and which need history at all? | Make the copy boundary the project boundary; shallow or sparse copies; no test pins another project's history |
+| Mutants hang until the timeout | Can a loop fail to advance? | A progress guard makes the mutant a fast kill |
+| Many survivors in flags or config tables | Is the contract stated anywhere a test can check? | One reflective contract test |
+| Collection takes seconds per mutant | Is it compiling and assertion-rewriting test modules that never change? | Reuse the unchanged **test** bytecode (never the mutated source's bytecode), or run with plain asserts |
+| A per-test fixture spawns processes (e.g. `git init` plus commits) | Is the result identical for every test? | Build a template once per session; copy it per test |
+| Tests are moved out of the per-mutant lane | Does anything still require them to pass on the same commit? | Bind a same-commit release-gate pass into the definition of done; otherwise the move silently drops assurance |
+
+The cheapest mutant is the one the design never makes expensive. Runner
+features (a work queue, early exit, sharding) are still worth having, but
+they cannot remove work that the design adds. In assay's case, test bytecode
+reuse, a shallow project-bounded snapshot and removing mutant-independent tests
+were each worth more per mutant than the planned runner optimizations.
+
+**False kills.** Where any non-zero exit counts as a kill, a load-sensitive
+test in the per-mutant suite (an inner subprocess `timeout=`, a pip or network
+step) can turn host pressure into a "kill". Keep such tests out of the
+per-mutant suite. This is a correctness issue, not only a cost issue: time and
+load must never decide a mutant's result.
+
+### Guidelines
+
+0. **Separate mutant-dependent work from mutant-independent work.** For every
+   test, fixture and setup step, ask whether its outcome can depend on the
+   mutated source. If it cannot (installed artifacts, packaging metadata,
+   linters, release tooling, unchanged test bytecode), it belongs in a
+   once-per-commit lane, not in the per-mutant loop.
+1. **Functional core, imperative shell.** Keep comparisons and boolean
+   decisions in pure functions with millisecond unit tests. Keep subprocesses,
+   git, package builds and clocks in a thin shell.
+2. **Test locality.** Each module's fast tests live in a predictable place and
+   run early in the declared order, so the killer of a module's mutants comes
+   first. Put slow end-to-end tests in a last tier (a directory collected
+   last).
+3. **Inject time; never wait on it.** A behavior that depends on a window,
+   timeout or poll interval takes the value as a parameter, so tests use
+   milliseconds.
+4. **A test of the source must execute the source.** Tests of an installed
+   artifact prove packaging, not logic; run them in a release lane.
+5. **Every loop over external input provably advances or raises.** A mutant
+   that breaks a loop condition should fail fast, not spin until a timeout.
+6. **Give declarative structure a reflective contract test.** Examples:
+   dataclass flags (`frozen`, `kw_only`), enum tables and config key sets.
+   Mutants at import time also defeat in-process mutant switching (schemata,
+   fork servers).
+7. **State each boundary condition once.** Shared validation helpers mean
+   fewer mutants and fewer equivalent mutants. When verification must be
+   independent, reuse the producer's construction rules rather than
+   re-implementing them (assay's `verify.py` does this).
+8. **No unreachable defensive code.** A survivor in a dead branch becomes a
+   reviewed equivalence entry. Delete the branch or make it testable (see
+   "Coverage exclusions: prefer deletion" below).
+9. **Order-independent tests with no shared state.** This is what makes
+   tiering, per-file isolation units and parallel mutant jobs sound. Detect
+   order dependence in ordinary CI (random order, repetition).
+10. **Cheap fixtures, scoped to the tests that need them.** A session fixture
+    that builds a package or venv is paid once per mutant in a
+    fresh-interpreter design.
+11. **The project boundary is the copy boundary.** Tests do not read other
+    projects' trees or pin other projects' commits. Where possible, they do not
+    need repository history at test time.
+12. **Layered module dependencies.** An import graph without cycles is what
+    makes dependency-aware test selection provable. A test that drives the
+    whole CLI in a subprocess depends on everything.
+
+**Libraries.** Third-party code is outside the mutation inventory. Using a
+well-tested library shrinks the inventory and moves that verification to the
+library's maintainers. A zero-dependency policy is a legitimate trade, but
+every hand-written parser then needs its own killing tests. Libraries used by
+the *tests* (package builds, real git, containers) usually matter more to
+runtime than libraries in the product.
+
+**Module size.** When every mutant runs the whole suite, size barely changes
+per-mutant cost. It matters for per-file isolation units, for reuse after
+edits (a change in a large scope invalidates more), and for import cost in
+tests that spawn the CLI.
+
+**DRY, and libraries of your own.** Collapsing one rule that is written N
+times into one helper is a genuine reduction: the rule is still mutated, once.
+In assay, internal consolidation alone removed an estimated 10–14% of the
+inventory with no change to the claim. Moving code into a separately
+versioned in-house library only **moves** mutants: it saves work only if the
+library is requalified less often than its consumers. The consumer's claim
+must then name the pinned, independently qualified library version. Never
+"reduce" the inventory by rewriting comparisons as lookups, sets or regexes
+that the operators cannot see; that hides decisions without testing them.
+Deliberate duplication, such as an independent verifier re-checking a
+producer's rules, stays.
+
+**Environment levers are smaller than they look.** Measured on this estate
+(assay B110, research R10):
+- **fsync:** git performs no fsync in a typical snapshot/materialization path,
+  so disabling fsync (eatmydata, `core.fsync=none`) saves nothing there.
+- **tmpfs:** it is charged to the container's memory cgroup; size it against
+  the memory cap times the number of workers.
+- **Copy-on-write** (reflink on XFS/btrfs, ZFS clones) needs a suitable host
+  filesystem; overlay mounts need container privileges. A plain copy of a
+  prepared base is no cheaper than a fresh write on ext4/overlay2.
+- **Shallow, project-bounded snapshots** are usually the largest
+  environment-free saving.
 
 The "Property/state-machine testing" catalogue row names what it
 establishes: invariants hold over generated values, not just the specific
@@ -500,6 +647,11 @@ gate's own artifacts, not from memory.
       case: `0`, `1`, legal negative values, and any producer-defined
       sentinel (RG-50's `index=-1` is exactly this). "Typical" mid-range
       examples are not boundary coverage.
+- [ ] **Mutation-testable design.** New decision logic has a fast, local
+      test that would kill a mutant of it early in the declared order. New
+      loops over external input advance or raise. Declarative flags have a
+      contract test. Tests of installed artifacts go to a release lane, not
+      the per-mutant suite (`## Designing for mutation testability` above).
 - [ ] **Property coverage for pure/stateful cores.** Where an invariant can
       be stated (round-trip, idempotence, ordering, a state machine's legal
       transitions), a Hypothesis test states it, with `@settings` declared
