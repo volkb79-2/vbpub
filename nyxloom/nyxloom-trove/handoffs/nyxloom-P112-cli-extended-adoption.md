@@ -4,7 +4,7 @@ id: nyxloom-P112-cli-extended-adoption
 project: nyxloom
 title: "Adopt cli-extended across Nyxloom's installed command surfaces"
 tier: frontier-review
-input_revision: "03e7942e88d934072a0a6b98558bc84e02c2c49b"
+input_revision: "c4ba7d921e5ba8f85f85cbac86f6af6a62a5a775"
 depends_on: []
 session: fresh
 source: {kind: user, ref: null}
@@ -73,7 +73,7 @@ oracles:
     negative: "A second parse, handwritten command inventory/help, stale usage(), an option accepted outside its declared path, or a valid documented invocation reaching the wrong handler fails."
     gate: tester-unified
   - id: O3-migration-and-safety
-    observable: "The full old-to-new command map below is implemented and documented. Moved host/session commands have no forwarding paths in `nyxloom`; `gate` and `daemon --foreground` are removed. Existing explicit safeguards and exit/error behavior remain, with only D-001..D-016 changes."
+    observable: "The full old-to-new command map below is implemented and documented. Moved host/session commands have no forwarding paths in `nyxloom`; `gate` and `daemon --foreground` are removed. Existing explicit safeguards and exit/error behavior remain, with only D-001..D-018 changes."
     negative: "Any unapproved grammar/effect change, old alias that still dispatches, generic confirmation added on top of an existing safeguard, or mutation hidden behind a read-only command fails."
     gate: tester-unified
   - id: O4-boundaries-and-effects
@@ -109,7 +109,7 @@ escalate_if:
 # nyxloom-P112 - Adopt cli-extended across Nyxloom's command surfaces
 
 Contract class: **2b, complex solution-bearing execution**. D-001 through
-D-016 fix user-visible behavior and the command boundaries. The implementer
+D-018 fix user-visible behavior and the command boundaries. The implementer
 owns the registry integration, wheel inclusion, backlog wizard, and direct
 service entrypoint, but must not reopen those decisions silently.
 
@@ -202,7 +202,7 @@ Paths below are relative to the Nyxloom project root unless they begin with
    behavioral oracle, exact gate, BLOCKED rule, and two-step input revision.
 2. `nyxloom-trove/STANDING.md` and `nyxloom-trove/DOCTRINE.md`: owned files,
    worktree/commit rules, gate policy, and Nyxloom-specific implementation
-   traps. `nyxloom-trove/decisions.md` D-001..D-016 and
+   traps. `nyxloom-trove/decisions.md` D-001..D-018 and
    `nyxloom-trove/reports/nyxloom-P111-REPORT.md` are the adopted decisions and
    audit evidence; `docs/CLI-REFERENCE.md` is the complete current grammar and
    approved target/migration inventory.
@@ -315,6 +315,9 @@ paths to a second registry.
   confirmation prompt or `--yes` on top of explicit operation/state/role/
   `--apply`/confidence safeguards. Never mislabel an operation to hide its
   effect.
+- Declare closed values and parser types from their authoritative schema or
+  registry; malformed values fail before dispatch with the generated command
+  help (D-018).
 - `nyxloom`, `nyxloom-harness`, and local `nyxloomctl` commands do not become
   HTTP clients. The dashboard remains the existing HTTP/SSE client. New remote
   control/API behavior is out of scope.
@@ -424,7 +427,7 @@ against the installed wheel; all cross-document anchors must resolve.
 2. Build an exact old-command → new-command inventory from
    `docs/CLI-REFERENCE.md` and `src/nyxloom/cli.py`. Implement only the
    approved ownership map above. Keep all current command safeguards and
-   handler outcomes unless D-001..D-016 says otherwise.
+   handler outcomes unless D-001..D-018 says otherwise.
 3. Replace the independent argparse/help/dispatch path with the three
    cli-extended registries. Run actual parse-to-handler probes for each
    advertised path, option, alias, choice, arity, required/optional input,
@@ -518,7 +521,7 @@ commit the log in the implementation worktree, and stop dependent work if:
   Nyxloom's control.
 
 Do not use BLOCKED for a product decision. If implementation evidence reveals
-an externally visible choice not covered by D-001..D-016, record a proposed
-`D-017` (or next available number), show current behavior, alternatives,
+an externally visible choice not covered by D-001..D-018, record a proposed
+`D-019` (or next available number), show current behavior, alternatives,
 compatibility impact, and recommendation, and stop only work dependent on that
 answer while continuing independent audit work.
