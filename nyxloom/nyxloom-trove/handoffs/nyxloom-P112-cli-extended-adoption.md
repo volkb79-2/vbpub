@@ -56,6 +56,7 @@ scope:
     - "docs/ARCHITECTURE.md"
     - "docs/runtime-process-model.md"
     - "docs/backlog-entries-spec.md"
+    - "src/nyxloom/session_extract/README.md"
     - "nyxloom-trove/decisions.md"
     - "nyxloom-trove/reports/nyxloom-P112-LOG.md"
     - "nyxloom-trove/reports/nyxloom-P112-REPORT.md"

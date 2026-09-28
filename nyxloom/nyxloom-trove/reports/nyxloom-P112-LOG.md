@@ -91,3 +91,13 @@ The same search also found `tests/test_lint.py` exercising the old no-argument
 host-wide lint path, so that existing test surface is included in the same
 scope amendment. Its explicit-path tests remain on `nyxloom lint`; only the
 registered-project scan moves to `nyxloomctl lint`.
+
+## Additional authorized documentation-scope amendment — 2026-09-28
+
+Reviewing the user-facing adoption docs found that the detailed session
+extraction guide under `src/nyxloom/session_extract/README.md` uses the old
+`nyxloom extract*` command names throughout. Those examples are part of the
+primary handoff/skill workflow and would be wrong after extraction moves to
+`nyxloom-harness`. The user has authorized the required adoption changes, so
+this exact guide is added to P112 `scope.touch`; the handoff input revision is
+refrozen in the separate follow-up commit as required.
