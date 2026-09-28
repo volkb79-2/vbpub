@@ -149,7 +149,27 @@ def test_budget_expiry_is_budget_exceeded_lane_timeout_via_injection(tmp_path: P
 def _raise_liveness_hung(argv, *, env, cwd, timeout):
     from assay import liveness
 
-    raise liveness.LivenessHungExpired(cmd=list(argv), timeout=timeout)
+    evidence = {
+        "schema_version": 1,
+        "policy": "pressure-adjusted-idle-v1",
+        "decision": "idle-hang",
+        "candidate_pid": 4242,
+        "candidate_cpu_source": "process-tree-cpu-seconds",
+        "wall_elapsed_s": 31.0,
+        "eligible_elapsed_s": 31.0,
+        "idle_eligible_s": 31.0,
+        "required_idle_eligible_s": 15.0,
+        "required_cpu_growth_window_s": 30.0,
+        "required_cpu_growth_floor_s": 1.0,
+        "candidate_session_finish_seen": False,
+        "session_finish_eligible_s": None,
+        "trace_complete": True,
+        "trace_truncated": False,
+        "samples": [],
+    }
+    raise liveness.LivenessHungExpired(
+        cmd=list(argv), timeout=timeout, output=b"", stderr=b"", resource_evidence=evidence
+    )
 
 
 def test_liveness_hung_expired_is_budget_exceeded_candidate_hung(tmp_path: Path) -> None:
@@ -177,6 +197,7 @@ def test_liveness_hung_expired_is_budget_exceeded_candidate_hung(tmp_path: Path)
     assert result.outcome is Outcome.BUDGET_EXCEEDED
     assert result.reason_code is ReasonCode.CANDIDATE_HUNG
     assert result.returncode is None
+    assert result.liveness_resource_evidence["decision"] == "idle-hang"
 
 
 def _raise_timeout_with_bytes_output(argv, *, env, cwd, timeout):

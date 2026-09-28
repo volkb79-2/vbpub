@@ -2360,6 +2360,33 @@ making progress, on EITHER of two branches:
   later AND no new event or stdout/stderr growth has occurred for a full
   30 s grace (P7 round-2 B6, RW-57).
 
+#### Resource-aware hung classification (B107)
+
+Both branches also require a complete, time-aligned resource trace. For each
+candidate the monitor records process-tree CPU, host and candidate-cgroup PSI
+counters, and candidate-cgroup CPU-throttle counters. These are aggregate
+observations, not a per-process measurement of lost runtime. Any positive
+counter delta makes the whole polling interval ineligible; an unreadable
+source or counter reset does too; unknown/reset observations restart the idle
+evidence window. The liveness and CPU-growth clocks resume only after a fresh,
+complete observation and unchanged counters. There is no fractional
+subtraction or guessed per-candidate delay.
+
+If the declared candidate wall budget expires before a complete clean idle
+window exists, the result is `budget_exceeded` and the mutation lane remains
+incomplete. It is not evidence that the mutant was killed, survived, or hung.
+The candidate's `liveness_resource_evidence` is retained in the mutation
+progress record and resumable state record. Its top-level `decision` is
+`idle-hang`, `session-finish-hang`, or `configured-budget-expired`; each sample
+has wall/eligible time, candidate-tree CPU, resource-counter deltas, and the
+observed snapshots. `trace_complete = false` or `trace_truncated = true`
+cannot support a `hung` bucket. A cached `hung` record without valid complete
+evidence is rejected and rerun.
+
+This policy is conservative by design: host activity can delay an incomplete
+candidate, but it cannot itself choose a functional mutation bucket. See the
+[design rationale](DESIGN-GUIDE.md#liveness-pressure-and-resource-evidence-b107).
+
 **xdist (`-n` / `--numprocesses`).** Workers and the controller share the
 events file. Every materialized-plugin record carries its positive producer
 `pid` and, when non-empty, the descriptive `PYTEST_XDIST_WORKER` value. The

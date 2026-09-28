@@ -89,6 +89,7 @@ from typing import (
 )
 
 from .errors import AssayError, Outcome, ReasonCode
+from .liveness_resources import compare_resource_snapshots, read_liveness_resources
 
 if TYPE_CHECKING:
     from .runner import CommandPlan
@@ -511,11 +512,29 @@ class LivenessHungExpired(subprocess.TimeoutExpired):
     ``ReasonCode`` growing a parallel return shape (P7 BRIEF-3's decision,
     RW-33).
 
+    ``resource_evidence`` carries candidate-tree CPU readings and
+    time-aligned host/cgroup pressure counters for the clean intervals that
+    supported this classification. The runner transfers it into the
+    per-candidate mutation artifacts; a missing trace is never filled with a
+    default.
+
     Constructed exactly the way ``subprocess.run`` constructs the real
     thing: ``cmd``/``timeout``/``output``/``stderr`` -- the same shape
     ``_decode_timeout_stream``/``_bounded_tail`` in ``runner.py`` already
     consume, so nothing about that decode path changes for this subclass.
     """
+
+    def __init__(
+        self,
+        cmd: Sequence[str],
+        *,
+        timeout: float | None,
+        output: bytes,
+        stderr: bytes,
+        resource_evidence: Mapping[str, Any],
+    ) -> None:
+        super().__init__(cmd, timeout=timeout, output=output, stderr=stderr)
+        self.resource_evidence = dict(resource_evidence)
 
 
 #: (B091/RW-33, P7 A3) The idle-stall thresholds, named once rather than as
@@ -524,6 +543,7 @@ _HUNG_CPU_WINDOW_S = 30.0
 _HUNG_CPU_GROWTH_FLOOR_S = 1.0
 _HUNG_SESSION_FINISH_GRACE_S = 30.0
 _LIVENESS_POLL_INTERVAL_S = 1.0
+_LIVENESS_RESOURCE_TRACE_MAX_SAMPLES = 1024
 
 
 def _pid_cpu_ticks(pid: int) -> int:
@@ -1198,6 +1218,10 @@ class _CpuSampleHistory:
             return oldest_cpu
         return None
 
+    def reset(self) -> None:
+        """Forget samples across an interval whose resource evidence is unknown."""
+        self._samples.clear()
+
 
 def _safe_size(path: Path) -> int:
     try:
@@ -1245,12 +1269,22 @@ class LivenessRunner:
     pipes, RW-33 is explicit), then polls once a second: (a) has the process
     exited; (b) the events side file's newest `test`/`session_finish`
     record, tolerant of a torn last line; (c) the process TREE's CPU time
-    (:func:`tree_cpu_seconds`) -- ANY `/proc` read failure is read as "CPU
-    is still growing", never as proof of a stall (RW-33's explicit
-    requirement); (d) the plain elapsed-budget bound, enforced by this loop
-    itself now that it owns the launch (`process_runner`'s caller-side
-    ``subprocess.run(timeout=...)`` no longer applies once `Popen` replaces
-    it).
+    (:func:`tree_cpu_seconds`; a `/proc` failure is still treated as unknown,
+    never as proof of flat CPU); (d) cumulative host/candidate-cgroup PSI and
+    cgroup CPU-throttle counters; (e) the plain elapsed-budget bound,
+    enforced by this loop itself now that it owns the launch
+    (`process_runner`'s caller-side ``subprocess.run(timeout=...)`` no longer
+    applies once `Popen` replaces it).
+
+    Resource counters are aggregate observations, not a measurement of this
+    process's lost runtime. A `hung` result therefore requires a complete
+    trace with unchanged pressure/throttle counters across the eligible idle
+    window. Any observed pressure, missing source, or counter reset pauses
+    both the liveness clock and CPU-growth window; the monitor never prorates
+    a host/cgroup delta into invented candidate time. If the independent wall
+    budget expires before a clean window exists, the candidate is explicitly
+    `budget_exceeded` with its available evidence, not assigned a functional
+    mutation result.
 
     `hung` iff: no progress (a NEW plugin event of ANY kind --
     `session_start`, `phase`, `test` or `session_finish`, B091 round-1 B2 --
@@ -1266,6 +1300,8 @@ class LivenessRunner:
     no event or stdout/stderr growth for that whole grace (RW-57: an xdist
     worker's finish must not expire a candidate still reporting progress).
     This second branch retains its independent grace, without consulting CPU.
+    Both branches require the relevant idle window to have complete resource
+    evidence and advance only through intervals with no observed pressure.
     On `hung`: kills the whole process group and raises
     :class:`LivenessHungExpired`. On plain elapsed-budget expiry (a CPU-
     spinning mutant, RW-33 is explicit this is NOT hung): kills the same way
@@ -1311,6 +1347,7 @@ class LivenessRunner:
         sleep: Callable[[float], None] = time.sleep,
         poll_interval_s: float = _LIVENESS_POLL_INTERVAL_S,
         cpu_reader: Callable[[int], float] = tree_cpu_seconds,
+        resource_reader: Callable[[int], Mapping[str, Any]] = read_liveness_resources,
         popen: Callable[..., Any] = subprocess.Popen,
         process_group_killer: Callable[[int, int], None] | None = None,
     ) -> None:
@@ -1326,6 +1363,7 @@ class LivenessRunner:
         self._sleep = sleep
         self._poll_interval_s = poll_interval_s
         self._cpu_reader = cpu_reader
+        self._resource_reader = resource_reader
         self._popen = popen
         # Injectable so tests using synthetic PIDs cannot signal an unrelated
         # real process group on the host. Resolve the default at call time, so
@@ -1449,13 +1487,42 @@ class LivenessRunner:
         stderr_path: Path,
         start: float,
     ) -> "subprocess.CompletedProcess[str]":
-        last_progress_at = start
+        previous_poll_at = start
+        liveness_clock = 0.0
+        last_progress_at = 0.0
         last_event_count = 0
         session_finish_at: float | None = None
         last_stdout_size = 0
         last_stderr_size = 0
         event_reader = _EventProgressReader(proc.pid)
         cpu_samples = _CpuSampleHistory(_HUNG_CPU_WINDOW_S)
+        previous_resources: Mapping[str, Any] | None = None
+        resource_trace: list[dict[str, Any]] = []
+        resource_trace_complete = False
+        resource_trace_truncated = False
+
+        def evidence(reason: str, *, required_idle_s: float) -> dict[str, Any]:
+            return {
+                "schema_version": 1,
+                "policy": "pressure-adjusted-idle-v1",
+                "decision": reason,
+                "candidate_pid": proc.pid,
+                "candidate_cpu_source": "process-tree-cpu-seconds",
+                "wall_elapsed_s": round(max(0.0, now - start), 3),
+                "eligible_elapsed_s": round(liveness_clock, 3),
+                "idle_eligible_s": round(max(0.0, liveness_clock - last_progress_at), 3),
+                "required_idle_eligible_s": round(required_idle_s, 3),
+                "required_cpu_growth_window_s": _HUNG_CPU_WINDOW_S,
+                "required_cpu_growth_floor_s": _HUNG_CPU_GROWTH_FLOOR_S,
+                "candidate_session_finish_seen": session_finish_at is not None,
+                "session_finish_eligible_s": (
+                    round(session_finish_at, 3) if session_finish_at is not None else None
+                ),
+                "trace_complete": resource_trace_complete,
+                "trace_truncated": resource_trace_truncated,
+                "samples": list(resource_trace),
+            }
+
         while True:
             now = self._monotonic()
             if proc.poll() is not None:
@@ -1469,35 +1536,117 @@ class LivenessRunner:
                 )
 
             event_count, saw_session_finish = event_reader.read(events_path)
-            if event_count > last_event_count:
-                last_progress_at = now
-            last_event_count = event_count
-            if saw_session_finish and session_finish_at is None:
-                session_finish_at = now
-
             stdout_size = _safe_size(stdout_path)
             stderr_size = _safe_size(stderr_path)
-            if stdout_size > last_stdout_size or stderr_size > last_stderr_size:
-                last_progress_at = now
-            last_stdout_size, last_stderr_size = stdout_size, stderr_size
-
-            # (RW-33) ANY /proc failure reading this tick's CPU sample is
-            # read as "still growing" -- this tick contributes no sample at
-            # all, so the CPU-growth check below finds no baseline to
-            # compare against yet and defaults to `cpu_growing = True`
-            # exactly as it would in the first `_HUNG_CPU_WINDOW_S` of a
-            # perfectly healthy candidate's life.
             try:
                 cpu_now = self._cpu_reader(proc.pid)
             except Exception:
                 cpu_now = None
+
+            try:
+                resource_result = self._resource_reader(proc.pid)
+                if not isinstance(resource_result, Mapping):
+                    raise TypeError("resource reader returned a non-mapping")
+                resources: Mapping[str, Any] = resource_result
+            except Exception as exc:
+                resources = {
+                    "schema_version": 1,
+                    "status": "unavailable",
+                    "reason": f"resource-reader-failed:{type(exc).__name__}",
+                }
+            prior_resources = previous_resources
+            resource_status, resource_deltas = compare_resource_snapshots(
+                prior_resources, resources
+            )
+            resources_complete = (
+                resources.get("status") == "available"
+                and compare_resource_snapshots(resources, resources)[0] == "clear"
+            )
+            interval_s = max(0.0, now - previous_poll_at)
+            eligible_interval_s = 0.0
+            if resource_status == "clear":
+                # Only unchanged aggregate counters establish an interval
+                # without observed external/cgroup pressure.
+                eligible_interval_s = interval_s
+                liveness_clock += eligible_interval_s
+            else:
+                # PSI/cpu.stat are aggregate counters, not a measurement of
+                # this candidate's lost runtime. Any positive delta, missing
+                # source, or reset makes the whole interval ineligible;
+                # prorating would invent a per-process fact.
+                cpu_samples.reset()
+            previous_resources = (
+                dict(resources) if resources_complete else None
+            )
+            previous_poll_at = now
+
+            sample = {
+                "wall_elapsed_s": round(max(0.0, now - start), 3),
+                "eligible_elapsed_s": round(liveness_clock, 3),
+                "eligible_interval_s": round(eligible_interval_s, 6),
+                "candidate_cpu_s": round(cpu_now, 6) if cpu_now is not None else None,
+                "event_count": event_count,
+                "stdout_bytes": stdout_size,
+                "stderr_bytes": stderr_size,
+                "resource_interval": resource_status,
+                "resource_deltas": resource_deltas,
+                "resources": dict(resources),
+            }
+            if resource_status == "unknown":
+                sample["previous_resources"] = (
+                    dict(prior_resources) if prior_resources is not None else None
+                )
+
+            if resource_status == "unknown":
+                # An available current sample is a trustworthy new baseline;
+                # no time before it is credited, and the retained trace starts
+                # there. An unavailable sample keeps evidence incomplete.
+                resource_trace = [sample]
+                resource_trace_complete = resources_complete
+                resource_trace_truncated = False
+                last_progress_at = liveness_clock
+            elif resource_trace_truncated:
+                # Keep the bounded prefix and preserve the explicit
+                # incompleteness until progress or a fresh baseline.
+                pass
+            elif len(resource_trace) >= _LIVENESS_RESOURCE_TRACE_MAX_SAMPLES:
+                # Retain bounded artifacts. Once the supporting interval is
+                # truncated, never certify a hang from an incomplete trace;
+                # progress or a new trustworthy baseline starts a new one.
+                resource_trace_truncated = True
+                resource_trace_complete = False
+            else:
+                resource_trace.append(sample)
+
+            made_progress = (
+                event_count > last_event_count
+                or stdout_size > last_stdout_size
+                or stderr_size > last_stderr_size
+            )
+            if made_progress:
+                last_progress_at = liveness_clock
+                cpu_samples.reset()
+                resource_trace = [sample]
+                resource_trace_complete = resources_complete
+                resource_trace_truncated = False
+                # This trace starts at the current sample, so retain the
+                # preceding snapshot needed to verify its first interval.
+                if resource_status != "unknown" and prior_resources is not None:
+                    sample["previous_resources"] = dict(prior_resources)
+            last_event_count = event_count
+            last_stdout_size, last_stderr_size = stdout_size, stderr_size
+            if saw_session_finish and session_finish_at is None:
+                session_finish_at = liveness_clock
+
             cpu_growing = True
-            if cpu_now is not None:
-                baseline_cpu = cpu_samples.add(now, cpu_now)
+            if resource_status == "clear" and cpu_now is not None:
+                baseline_cpu = cpu_samples.add(liveness_clock, cpu_now)
                 if baseline_cpu is not None:
                     cpu_growing = (cpu_now - baseline_cpu) >= _HUNG_CPU_GROWTH_FLOOR_S
+            else:
+                cpu_samples.reset()
 
-            idle_for = now - last_progress_at
+            idle_for = liveness_clock - last_progress_at
             # (B091 round-1 B2) Which bound applies depends on whether this
             # candidate has produced ANY plugin event yet. Before the first
             # one the only thing that can have happened is interpreter
@@ -1513,27 +1662,38 @@ class LivenessRunner:
                 if event_count > 0
                 else self._pre_first_event_within_s
             )
-            hung = (idle_for >= bound and not cpu_growing) or (
+            idle_hang = idle_for >= bound and not cpu_growing
+            finish_hang = (
                 session_finish_at is not None
-                and (now - session_finish_at) >= _HUNG_SESSION_FINISH_GRACE_S
+                and (liveness_clock - session_finish_at) >= _HUNG_SESSION_FINISH_GRACE_S
                 and idle_for >= _HUNG_SESSION_FINISH_GRACE_S
             )
+            hung = resource_trace_complete and (idle_hang or finish_hang)
             if hung:
+                required_idle_s = bound if idle_hang else _HUNG_SESSION_FINISH_GRACE_S
                 self._kill(proc)
                 raise LivenessHungExpired(
                     cmd=list(argv),
                     timeout=timeout,
                     output=_read_bytes(stdout_path),
                     stderr=_read_bytes(stderr_path),
+                    resource_evidence=evidence(
+                        "idle-hang" if idle_hang else "session-finish-hang",
+                        required_idle_s=required_idle_s,
+                    ),
                 )
 
             if timeout is not None and (now - start) >= timeout:
                 self._kill(proc)
-                raise subprocess.TimeoutExpired(
+                exc = subprocess.TimeoutExpired(
                     cmd=list(argv),
                     timeout=timeout,
                     output=_read_bytes(stdout_path),
                     stderr=_read_bytes(stderr_path),
                 )
+                exc.liveness_resource_evidence = evidence(
+                    "configured-budget-expired", required_idle_s=bound
+                )
+                raise exc
 
             self._sleep(self._poll_interval_s)

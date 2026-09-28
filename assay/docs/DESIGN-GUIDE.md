@@ -481,6 +481,34 @@ additive under v11):**
   subclass; every other `process_runner` never raises it, so this code is
   unreachable for R0/R1/R3 and every non-liveness R2 call site.
 
+#### Liveness pressure and resource evidence (B107)
+
+An idle event gap is not enough to call a candidate `hung`: scheduler,
+memory, I/O, or cgroup-quota stalls can produce the same quiet event stream.
+The runner samples process-tree CPU together with cumulative PSI for the
+visible host and candidate cgroup, plus the candidate cgroup's CPU throttle
+counters. These are aggregate counters, not a measurement of this process's
+lost runtime, so the monitor does not prorate them into estimated candidate
+time. A `hung` result requires a complete time-aligned trace and a full
+eligible idle/CPU window with no observed pressure. Any positive pressure or
+throttle delta freezes the liveness and CPU-growth clocks for that poll
+interval. An unreadable source or counter reset also starts a fresh idle
+evidence window at the next usable observation; only unchanged, well-formed
+observations advance it. This intentionally errs toward an
+incomplete candidate instead of allowing host load to choose a functional
+mutation result.
+
+The independent configured per-candidate wall budget still bounds the run.
+If it expires before a clean, complete liveness window is available, the
+candidate is `budget_exceeded` and the mutation lane is incomplete; resource
+pressure cannot turn it into `killed`, `survived`, or `hung`. Each stopped
+candidate retains `liveness_resource_evidence` in its progress and mutation
+state records: the decision, eligible/wall elapsed times, candidate-tree CPU
+samples, counter deltas, and the complete resource snapshots. The trace is
+bounded at 1024 samples; once truncated, that idle interval cannot certify a
+hang, and a configured-budget expiry remains incomplete. Cached `hung`
+records without a structurally valid complete trace are refused and rerun.
+
 #### Liveness process-group cleanup
 
 Each native R2 candidate is launched in its own session/process group. The

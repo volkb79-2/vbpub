@@ -375,6 +375,17 @@ each pid timeline and the largest per-process gap is used. The monitor's own
 candidate pid is the only stamped `session_finish` that arms the finish grace.
 Old, malformed, or mixed records retain the merged legacy interpretation, and
 the worker label is never used as identity.
+
+RG-55/B107 also makes the `hung` decision resource-aware: it records
+time-aligned process-tree CPU, host/cgroup PSI, and cgroup-throttle evidence.
+Because aggregate pressure cannot be converted into this candidate's lost
+runtime, any pressure delta or unavailable/reset counter pauses the liveness
+clock; an unknown/reset observation also restarts the idle evidence window.
+Pressure is never prorated into a verdict. A configured candidate budget
+that expires before a complete clean idle window remains an incomplete
+`budget_exceeded` result, not `killed`, `survived`, or `hung`. See the
+[design rationale](docs/DESIGN-GUIDE.md#liveness-pressure-and-resource-evidence-b107)
+and [consumer guidance](docs/CONSUMERS.md#resource-aware-hung-classification-b107).
 **B073 itself is not resolved**: this is per-test data for one runner
 (pytest) on one rigor tier (R2 candidates + the R1/R0 baseline), driven by a
 plugin assay itself materializes — not the general, per-language,
