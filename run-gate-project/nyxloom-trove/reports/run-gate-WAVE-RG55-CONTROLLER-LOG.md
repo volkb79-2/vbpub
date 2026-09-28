@@ -4634,3 +4634,30 @@ production Pterodactyl game-server container in `wings.slice`; it is not a
 mutation/gate slot and remains untouched. Its process listing exposed
 password arguments in command-line output; do not repeat or store them, and
 advise the operator to rotate those credentials.
+
+### RW-352 — 2026-09-28 04:18:58Z — P6 B106 reuse is eligible only as witness replay; cockpit socket still absent
+
+Read the terminal P6 R2 receipt from exact source tree `6540f877` and its
+history separately. It is schema v13, native/unsharded, and accounts for all
+312 candidates: 301 killed, 10 survived, 1 hung. The 301 native killed-state
+records include B106 execution witnesses. After P6 reconciles P1's source
+repair and the current main tree, Assay B106 may replay only those current
+candidate IDs whose witnesses pass the current baseline; survivors, the hung
+candidate, new/changed IDs, and every uncertain case must run fully. This is
+an acceleration plan, not a pass or a substitute for final exact-tree R2.
+
+The current cockpit has `/run/cgprofile` (mode 0770, owner 0:994), but no
+`/run/cgprofile/ctl.sock`; `/sys/fs/cgroup/dev-gates.slice` is also not
+visible in this namespace. The socket-carrier P3 probe therefore remains
+unavailable from this cockpit as configured. This does not establish the
+host daemon's state; use the authorized host path only after the daemon's
+loaded bounded slice and singleton are verified.
+
+B107's final integrated candidate is clean at `5b79fcd1` in
+`rg55-assay-b107-mainline-20260928`, based on isolated reconciliation merge
+`73075ec2` of local main and the fetched origin tip. Its current-main
+`tester-unified` gate must run on this exact tree before Sol final review.
+The registered invocation launched on the prior integrated tree `52c4a978`;
+this controller has not yet read its terminal result. Do not inspect either
+long-running lane's progress again before its allowed expected-completion
+check.
