@@ -64,6 +64,16 @@ def test_redaction_is_explicit_longest_first_and_recursive():
     assert redact_value(17, ("17",)) == 17
 
 
+def test_runtime_collected_secrets_are_added_once_to_output_redaction_set():
+    output = CliOutput(IDENTITY)
+
+    output.register_secret("")
+    output.register_secret("prompt-secret")
+    output.register_secret("prompt-secret")
+
+    assert output.secrets == ("prompt-secret",)
+
+
 def test_colorized_help_covers_identity_sections_usage_verbs_options_and_tags():
     plain = (
         f"{IDENTITY.headline}\nEXPLORATION\nUsage: tool <verb>\n"

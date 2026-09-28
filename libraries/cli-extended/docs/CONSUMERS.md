@@ -183,6 +183,83 @@ is restricted to the single-command registry form, and `--help` must remain
 side-effect free. The ordinary `assert_cli_contract()` helper assumes bare
 invocation is help, so do not use it unchanged for that deliberate exception.
 
+## Interactive data collection
+
+For a multi-step wizard, collect values with `runtime.prompts`. The shared API
+offers `text`, `password`, `confirm`, `select`, and `checkbox`; it checks both
+injected stdin and stdout before loading or calling a driver. The default
+Questionary driver is imported only on the first prompt. Install it with
+`python3 -m pip install 'cli-extended[interactive]'`, or let a vendored product
+name its own optional extra through `app.run(interactive_extra="product[interactive]")`.
+Help, version, and non-interactive commands do not require the extra.
+
+The prompt layer returns values. The handler owns schema validation,
+confirmation timing, file writes, and rollback. Cancellation raises
+`PromptCancelled`; an uncaught cancellation reaches the CLI boundary as exit
+status `130`. Password prompts are hidden and register their answers for
+ordinary output redaction.
+
+Tests can inject a `PromptDriver` without depending on Questionary or a real
+terminal. TTY-marked streams still exercise the production policy:
+
+```python
+import io
+
+from cli_extended import CliIdentity, CliRegistry, PromptDriver, VerbSpec
+
+
+class TestTTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class FixedPrompts:
+    def text(self, message, *, default=None, required=True):
+        return "demo-project"
+
+    def password(self, message, *, required=True):
+        return "secret-for-test"
+
+    def confirm(self, message, *, default=False):
+        return True
+
+    def select(self, message, choices, *, default=None):
+        return choices[0]
+
+    def checkbox(self, message, choices, *, default=()):
+        return list(default)
+
+
+test_driver: PromptDriver = FixedPrompts()
+
+
+def configure(_args, runtime):
+    name = runtime.prompts.text("Project name")
+    mode = runtime.prompts.select("Mode", ("safe", "full"))
+    # The application validates name/mode and writes its own config here.
+    runtime.output.primary(f"prepared {name} in {mode} mode")
+    return 0
+
+
+identity = CliIdentity("EXAMPLE", "1.0.0", "Example", command="example")
+registry = CliRegistry(identity, prog="example", description="Configure example.")
+registry.register(VerbSpec("configure", description="configure", handler=configure))
+status = registry.build().run(
+    argv=["configure"],
+    prompt_driver=test_driver,
+    stdin=TestTTY(),
+    stdout=TestTTY(),
+    stderr=io.StringIO(),
+)
+```
+
+Implement all five `PromptDriver` methods when a test flow uses other prompt
+kinds. A driver receives the same defaults and choices as the runtime; it must
+return a declared choice, and it may return `None` to signal cancellation.
+Cancellation is distinct from valid answers such as `False` or an empty
+checkbox list. Prompt collection must not write state or decide whether
+collected values satisfy the product schema.
+
 ## Consumer responsibilities
 
 | `cli-extended` guarantees | The adopting CLI must decide and implement |
@@ -190,7 +267,8 @@ invocation is help, so do not use it unchanged for that deliberate exception.
 | identity formatting, `help`/`version`, bare invocation, width-aware grouped help | authoritative version source, product identity, verbs, groups, examples, and valid workflows |
 | parser registration and generated parser/dispatch/help consistency | API/config/file/domain validation and all closed vocabulary values |
 | common diagnostics, severity levels, colour controls, stdout/stderr policy, JSON-mode progress handling | result schemas, tables, pagination/truncation semantics, and provider-specific progress events |
-| common `--yes` option by default for registrations marked `mutating`; `include_confirmation=False` disables the generic flag without removing the mutation label; default-no confirmation helper | decide exactly what changes, validate before prompting, and prompt immediately before the mutation |
+| common `--yes` option by default for registrations marked `mutating`; `confirmation_required` controls that requirement while preserving the mutation label, and `include_confirmation` remains a compatible alias; default-no confirmation helper | decide exactly what changes, validate before prompting, and prompt immediately before the mutation |
+| optional `runtime.prompts` collection API, Questionary adapter, terminal checks, cancellation type, and injectable `PromptDriver` | domain validation, schema conversion, persistence, and whether an answer authorizes a product action |
 | clean Ctrl-C and concise failures for declared expected exceptions | classify expected domain exceptions; unexpected bugs must remain visible as tracebacks |
 | redaction of explicitly registered secrets in output, logging, JSON results, prompts, and progress | identify/provide secret values and avoid leaking them through external subprocesses, files, or messages emitted outside the helper |
 | scoped standard-library logging for the configured logger namespace | put application loggers under that namespace or configure `logging_logger`; retain useful log calls and classify secret-bearing data |
@@ -200,9 +278,9 @@ invocation is help, so do not use it unchanged for that deliberate exception.
 validation before asking for consent. The helper cannot decide whether a
 Netcup firewall update, server reinstall, database migration, or deployment is
 safe, and it does not bypass deny-lists or other domain guards.
-For a multi-step prompt flow, use `runtime.output.is_interactive`; it requires
-both input and output to be TTYs and works with the runtime's injectable test
-streams.
+Use `runtime.output.is_interactive` when deciding whether to offer a multi-step
+flow before entering it. `runtime.prompts` enforces the same requirement before
+loading or calling a driver, using both injected stdin and stdout.
 
 Expected failures should be passed as specific types to `app.run()`:
 
@@ -255,6 +333,9 @@ Also test facts the helper cannot observe:
 - real handler dispatch and each verb's parser options/actions;
 - confirmations occur after validation, default to refusal, and `--yes` skips
   only that prompt;
+- all five prompt methods return the declared value types; invalid choices,
+  empty required input, Escape, Ctrl-C, non-TTY refusal, lazy dependency
+  loading, and password redaction are covered;
 - API/config failures are concise while unexpected exceptions retain tracebacks;
 - JSON stdout remains parseable, including progress and error cases;
 - known secrets are absent from normal diagnostics, logging, JSON, and progress;

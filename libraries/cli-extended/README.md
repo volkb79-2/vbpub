@@ -7,8 +7,9 @@ The library keeps `argparse` and the standard `logging` package familiar while
 owning repetitive shell behavior: identity/version output, grouped help with
 the overall CLI description and aligned verb summaries, parser registration,
 common options, clean cancellation/errors, confirmation
-prompts, output streams, redaction, and progress presentation. It has no
-runtime dependencies.
+prompts, output streams, redaction, and progress presentation. Its base install
+has no runtime dependencies; an optional `interactive` extra provides
+Questionary-backed prompts for multi-step workflows.
 Registered CLIs require exact option spellings by default; long-option prefix
 abbreviations are disabled for both the root command and its verbs.
 
@@ -117,8 +118,12 @@ cannot drift. `OptionSpec` carries argparse's own `action`, `choices`, `type`,
 `nargs`, and related options in `parser_kwargs`; `ArgumentSpec` does the same
 for positionals. Set `OptionSpec.hidden=True` for accepted internal plumbing
 that must stay out of operator help and generated reference tables. A verb may
-set `include_confirmation=False` when it mutates state without taking a generic
-`--yes` acknowledgement; it still appears as mutating in the catalog.
+set `confirmation_required=False` when it mutates state without taking a
+generic `--yes` acknowledgement; it still appears as mutating in the catalog.
+The default `None` keeps the existing rule that mutating verbs require
+confirmation. `True` explicitly requires confirmation and is valid only on a
+mutating verb. Existing consumers may continue using `include_confirmation`;
+when both fields are set, they must agree.
 `VerbSpec.synopsis` is optional: by default the library derives
 the command synopsis from required positionals, required options, and required
 or optional mutually-exclusive option groups. Set it only when a public syntax
@@ -163,6 +168,53 @@ decide whether a firewall, deployment, or account change is safe.
 For multi-prompt flows, `runtime.output.is_interactive` reports whether both
 injected stdin and stdout are TTYs; use it to refuse wizard mode cleanly when
 the invocation is redirected or piped.
+
+### Optional interactive prompts
+
+See the [design guide's prompt boundary](docs/DESIGN-GUIDE.md#optional-interactive-prompts)
+for why terminal mechanics are shared while schema and persistence remain
+consumer-owned.
+
+Use `runtime.prompts` when a command needs to collect several values in a
+terminal. The API returns values and leaves schema validation, domain policy,
+and persistence in the handler:
+
+```python
+def configure(_args, runtime):
+    name = runtime.prompts.text("Project name")
+    mode = runtime.prompts.select("Release mode", ("safe", "full"))
+    approved = runtime.prompts.confirm("Use these settings?", default=False)
+    if not approved:
+        return 0
+    # Validate and persist name/mode in the owning application here.
+    return 0
+
+
+cli = CliRegistry(identity, prog="example", description="Configure a project.")
+cli.register(VerbSpec("configure", description="configure project", handler=configure))
+app = cli.build()
+raise SystemExit(app.run(interactive_extra="example-tool[interactive]"))
+```
+
+Normally `RegisteredCli.run()` handles an uncaught `PromptCancelled` and exits
+with status `130`; catch it only when the command needs cancellation cleanup.
+The five methods are `text`, `password`, `confirm`, `select`, and `checkbox`.
+`select` and `checkbox` require non-empty, unique string choices. A cancel is
+never returned as a valid empty or false answer. Both injected stdin and stdout
+must be TTYs before a driver is loaded or called.
+
+Install Questionary only for the wizard-enabled command surface:
+
+```bash
+python3 -m pip install 'cli-extended[interactive]'
+```
+
+Help, version, and non-interactive commands do not import Questionary. A
+vendored consumer passes its own extra name, such as
+`interactive_extra="nyxloom[interactive]"`, so missing-dependency guidance
+names the package the operator installs. Tests inject a `PromptDriver` through
+`app.run(prompt_driver=...)`; fake drivers still use TTY-marked streams so the
+production terminal policy remains covered.
 
 For a CLI with one command and no verb token, register one `VerbSpec` with
 `CliRegistry(single_command=True)`. That supports transitional tools; a tool

@@ -15,6 +15,7 @@ from typing import Any, TextIO
 from .identity import CliIdentity
 from .output import CliOutput, LogLevel, logging_context
 from .progress import ProgressMode, ProgressRenderer
+from .prompts import PromptAPI, PromptCancelled, PromptDriver
 
 
 def _nargs_display(label: str, nargs: Any) -> str:
@@ -304,6 +305,7 @@ class VerbSpec:
     summary_description: str | None = None
     delegate: RegisteredCli | None = None
     include_confirmation: bool | None = None
+    confirmation_required: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.name or self.name.startswith("-"):
@@ -317,6 +319,23 @@ class VerbSpec:
         if self.delegate is not None and self.handler is not None:
             raise ValueError(
                 f"verb {self.name!r} cannot define both a handler and a delegated CLI"
+            )
+        if self.confirmation_required is not None and not isinstance(
+            self.confirmation_required, bool
+        ):
+            raise TypeError("confirmation_required must be a bool or None")
+        if (
+            self.confirmation_required is not None
+            and self.include_confirmation is not None
+            and self.confirmation_required != self.include_confirmation
+        ):
+            raise ValueError(
+                f"verb {self.name!r} has conflicting confirmation_required and "
+                "include_confirmation values"
+            )
+        if self.confirmation_required is True and not self.mutating:
+            raise ValueError(
+                f"verb {self.name!r} requires confirmation but is not marked mutating"
             )
 
     @property
@@ -333,6 +352,8 @@ class VerbSpec:
     @property
     def confirmation_enabled(self) -> bool:
         """Whether this verb accepts the shared ``--yes`` confirmation option."""
+        if self.confirmation_required is not None:
+            return self.confirmation_required
         if self.include_confirmation is None:
             return self.mutating
         return self.include_confirmation
@@ -1105,6 +1126,18 @@ class CliRuntime:
     progress_mode: ProgressMode = ProgressMode.AUTO
     raw_argv: tuple[str, ...] = ()
     command_argv: tuple[str, ...] = ()
+    prompt_driver: PromptDriver | None = field(default=None, repr=False)
+    interactive_extra: str = "cli-extended[interactive]"
+    prompts: PromptAPI = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.prompts = PromptAPI(
+            stdin=self.output.stdin,
+            stdout=self.output.stdout,
+            driver=self.prompt_driver,
+            interactive_extra=self.interactive_extra,
+            register_secret=self.output.register_secret,
+        )
 
     def confirm(self, prompt: str) -> bool:
         """Ask for a safe default-no confirmation after caller preflight.
@@ -1180,7 +1213,13 @@ class RegisteredCli:
 
         return self.parser.catalog
 
-    def run(self, **kwargs: Any) -> int:
+    def run(
+        self,
+        *,
+        prompt_driver: PromptDriver | None = None,
+        interactive_extra: str = "cli-extended[interactive]",
+        **kwargs: Any,
+    ) -> int:
         """Run this registration with the shared boundary."""
 
         return run_cli(
@@ -1192,6 +1231,8 @@ class RegisteredCli:
             logging_logger=self.logging_logger,
             no_args_action=self.no_args_action,
             delegates=self.delegates,
+            prompt_driver=prompt_driver,
+            interactive_extra=interactive_extra,
             **kwargs,
         )
 
@@ -1407,7 +1448,6 @@ class CliRegistry:
                 self._add_option_specs(
                     command_parser,
                     subcommand_globals,
-                    suppress_defaults=True,
                     force_suppress_defaults=True,
                 )
                 self._add_argument_specs(command_parser, verb.arguments)
@@ -1446,6 +1486,8 @@ def _runtime_from_args(
     secrets: Sequence[str],
     raw_argv: Sequence[str] = (),
     command_argv: Sequence[str] = (),
+    prompt_driver: PromptDriver | None = None,
+    interactive_extra: str = "cli-extended[interactive]",
 ) -> CliRuntime:
     debug_raw = bool(getattr(args, "debug_raw", False))
     quiet = bool(getattr(args, "quiet", False))
@@ -1501,6 +1543,8 @@ def _runtime_from_args(
         progress_mode=progress,
         raw_argv=tuple(raw_argv),
         command_argv=tuple(command_argv),
+        prompt_driver=prompt_driver,
+        interactive_extra=interactive_extra,
     )
 
 
@@ -1584,6 +1628,8 @@ def run_cli(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     stdin: TextIO | None = None,
+    prompt_driver: PromptDriver | None = None,
+    interactive_extra: str = "cli-extended[interactive]",
 ) -> int:
     """Run a conventional CLI while keeping parser and exception policy shared."""
 
@@ -1618,6 +1664,8 @@ def run_cli(
                 stdout=stdout,
                 stderr=stderr,
                 stdin=stdin,
+                prompt_driver=prompt_driver,
+                interactive_extra=interactive_extra,
             )
         if (
             len(command_form) == 2
@@ -1629,6 +1677,8 @@ def run_cli(
                 stdout=stdout,
                 stderr=stderr,
                 stdin=stdin,
+                prompt_driver=prompt_driver,
+                interactive_extra=interactive_extra,
             )
     option_conflict = _common_option_conflict(raw)
     if option_conflict:
@@ -1764,6 +1814,8 @@ def run_cli(
                 if command_form and command_form[0] == verb
                 else raw
             ),
+            prompt_driver=prompt_driver,
+            interactive_extra=interactive_extra,
         )
         if logging_logger is None:
             result = handler(args, runtime)
@@ -1778,6 +1830,9 @@ def run_cli(
             runtime.output.cancelled()  # type: ignore[union-attr]
         except UnboundLocalError:
             help_output.cancelled()
+        return 130
+    except PromptCancelled:
+        runtime.output.cancelled()  # type: ignore[union-attr]
         return 130
     except SystemExit as exc:
         # Domain helpers in adopted projects may still expose their established

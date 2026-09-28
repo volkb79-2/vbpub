@@ -325,6 +325,12 @@ meaningful diagnostic.
 
 The common registration should expose `--yes` only for verbs marked as
 mutating (or a specifically documented mixed verb that has a mutating action).
+`VerbSpec.confirmation_required` controls this independently when needed:
+`None` preserves the default of requiring confirmation for mutating verbs;
+`False` suppresses `--yes` and the generic confirmation wording while keeping
+the mutation label; and `True` requires confirmation and is valid only for a
+mutating verb. The older `include_confirmation` spelling remains a compatible
+alias; a declaration must not set both fields to conflicting values.
 The shared confirmation helper may own default-no prompting, TTY refusal, and
 EOF handling, but the CLI owner must validate the exact target/change first
 and call confirmation immediately before making that change.
@@ -335,6 +341,45 @@ When stdin is not interactive, a command must not attempt a prompt that will
 fail with EOF. It must either have a documented non-interactive default or
 refuse with an actionable message naming `--yes` or the required input. EOF is
 handled as a clean refusal/cancellation, never as an uncaught traceback.
+
+### Interactive data collection
+
+`CliRuntime.prompts` provides shared collection mechanics for multi-step
+interactive flows. The API is optional and does not validate domain schemas,
+write files, persist defaults, or decide whether a collected value is safe to
+apply:
+
+```python
+runtime.prompts.text(message, *, default=None, required=True) -> str
+runtime.prompts.password(message, *, required=True) -> str
+runtime.prompts.confirm(message, *, default=False) -> bool
+runtime.prompts.select(message, choices, *, default=None) -> str
+runtime.prompts.checkbox(message, choices, *, default=()) -> list[str]
+```
+
+Choice lists are non-empty sequences of unique strings. A selection must be a
+member of its declared choices; checkbox results contain only unique declared
+values. Required text rejects whitespace-only answers. Optional text accepts
+the driver's supplied default or an empty string. A required password rejects
+an empty answer; password contents are never printed by the prompt UI and are
+registered for ordinary output redaction.
+
+The default driver uses the optional `questionary` package from the
+`interactive` extra. Import it only when a prompt is actually requested;
+help, version, imports, and non-interactive commands must work without that
+extra. Before importing or calling any driver, the runtime verifies that both
+injected stdin and stdout are TTYs. A caller may inject a `PromptDriver` through
+`RegisteredCli.run(prompt_driver=...)` for tests or another UI, but the same
+TTY rule still applies. Consumers that vendor `cli-extended` may set
+`interactive_extra="product[interactive]"` so a missing-dependency hint names
+their own package extra.
+
+An Escape/cancel result raises `PromptCancelled`; it is not converted into an
+empty, false, or partial answer. `RegisteredCli.run()` handles an uncaught
+`PromptCancelled` as a clean cancellation with status `130`. Questionary's
+Ctrl-C is allowed to remain `KeyboardInterrupt`, which the same CLI boundary
+handles with status `130`. Prompt drivers return values only: callers retain
+domain validation, confirmation policy, and persistence.
 
 Other recurring option groups should be named according to meaning, for
 example:
@@ -364,6 +409,9 @@ The CLI distinguishes expected operator errors from programming failures.
 - Expected failures do not print Python tracebacks.
 - `KeyboardInterrupt` is always handled as intentional cancellation. It prints
   a short cancellation message, never a traceback, and exits `130`.
+- `PromptCancelled` is a clean Escape/question cancellation and exits `130`
+  when it reaches the shared CLI boundary; a consumer may catch it to perform
+  its own cancellation cleanup.
 - An exception that is not handled by the CLI boundary is an unexpected
   programming or environment failure and may print its traceback to stderr.
   This distinction must not be hidden by a broad `except Exception` that turns
@@ -453,13 +501,17 @@ The test suite for every adopted CLI must prove at least:
 6. `--yes` suppresses only the intended confirmation prompt;
 7. expected failures are meaningful and traceback-free;
 8. Ctrl-C at every interactive prompt exits `130` without a traceback;
-9. unexpected exceptions remain distinguishable from handled failures, with
+9. prompt collection validates its declared types/choices, distinguishes
+   cancellation from valid false/empty answers, refuses before driver use when
+   either injected terminal stream is not a TTY, and imports its optional
+   dependency only on a real prompt request;
+10. unexpected exceptions remain distinguishable from handled failures, with
    `--debug` providing additional diagnostics and `--debug-raw` explicitly
    proving the redaction boundary is disabled only when requested;
-10. severity tags, hints, colour/`NO_COLOR`, and each supported log level
+11. severity tags, hints, colour/`NO_COLOR`, and each supported log level
     remain meaningful when output is redirected;
-11. JSON mode keeps stdout machine-readable and diagnostics on stderr; and
-12. help/version paths work without credentials, configuration, network, or
+12. JSON mode keeps stdout machine-readable and diagnostics on stderr; and
+13. help/version paths work without credentials, configuration, network, or
     runtime services.
 
 Tests should exercise the real entrypoint or module invocation, not only helper
