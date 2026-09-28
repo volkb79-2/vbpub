@@ -29,11 +29,18 @@ _CHOICES = {
 _UNSET = "(unset)"
 
 
-def _field_hint(name: str, command: str) -> str:
-    return f"correct {name} and rerun `{command}`; no files were changed"
+def _field_hint(name: str, rerun_command: str) -> str:
+    return f"correct {name} and rerun `{rerun_command}`; no files were changed"
 
 
-def _prompt_text(runtime: Any, name: str, seed: Any, *, required: bool) -> str:
+def _prompt_text(
+    runtime: Any,
+    name: str,
+    seed: Any,
+    *,
+    required: bool,
+    rerun_command: str,
+) -> str:
     default = None if seed is None else str(seed)
     try:
         return runtime.prompts.text(
@@ -47,11 +54,13 @@ def _prompt_text(runtime: Any, name: str, seed: Any, *, required: bool) -> str:
         raise CliFailure(
             f"invalid {name.replace('_', ' ')} answer: {exc.message}",
             exit_code=exc.exit_code,
-            hint=_field_hint(name, "nyxloom backlog new --interactive"),
+            hint=_field_hint(name, rerun_command),
         ) from exc
 
 
-def _prompt_choice(runtime: Any, name: str, seed: Any) -> str | None:
+def _prompt_choice(
+    runtime: Any, name: str, seed: Any, *, rerun_command: str
+) -> str | None:
     choices = (*_CHOICES[name], _UNSET)
     default = seed if seed in _CHOICES[name] else _UNSET
     try:
@@ -64,21 +73,32 @@ def _prompt_choice(runtime: Any, name: str, seed: Any) -> str | None:
         raise CliFailure(
             f"invalid {name.replace('_', ' ')} choice: {exc.message}",
             exit_code=exc.exit_code,
-            hint=_field_hint(name, "nyxloom backlog new --interactive"),
+            hint=_field_hint(name, rerun_command),
         ) from exc
     return None if value == _UNSET else value
 
 
-def collect_values(runtime: Any, seed: Mapping[str, Any]) -> dict[str, Any]:
+def collect_values(
+    runtime: Any,
+    seed: Mapping[str, Any],
+    *,
+    rerun_command: str,
+) -> dict[str, Any]:
     """Collect every editable field before the caller may write anything."""
     values: dict[str, Any] = {
-        "title": _prompt_text(runtime, "title", seed.get("title"), required=True)
+        "title": _prompt_text(
+            runtime, "title", seed.get("title"), required=True,
+            rerun_command=rerun_command,
+        )
     }
     for name in ("type", "severity"):
-        values[name] = _prompt_choice(runtime, name, seed.get(name))
+        values[name] = _prompt_choice(
+            runtime, name, seed.get(name), rerun_command=rerun_command
+        )
 
     raw_priority = _prompt_text(
-        runtime, "priority", seed.get("priority"), required=False
+        runtime, "priority", seed.get("priority"), required=False,
+        rerun_command=rerun_command,
     )
     if raw_priority.strip():
         try:
@@ -87,19 +107,26 @@ def collect_values(runtime: Any, seed: Mapping[str, Any]) -> dict[str, Any]:
             raise CliFailure(
                 f"priority must be an integer, got {raw_priority!r}",
                 exit_code=2,
-                hint=_field_hint("priority", "nyxloom backlog new --interactive"),
+                hint=_field_hint("priority", rerun_command),
             ) from exc
     else:
         values["priority"] = None
 
     for name in ("component",):
-        raw = _prompt_text(runtime, name, seed.get(name), required=False)
+        raw = _prompt_text(
+            runtime, name, seed.get(name), required=False,
+            rerun_command=rerun_command,
+        )
         values[name] = raw if raw.strip() else None
     values["context_estimate"] = _prompt_choice(
-        runtime, "context_estimate", seed.get("context_estimate")
+        runtime, "context_estimate", seed.get("context_estimate"),
+        rerun_command=rerun_command,
     )
     for name in ("folds_into", "provenance", "filed_by", "spec_owner"):
-        raw = _prompt_text(runtime, name, seed.get(name), required=False)
+        raw = _prompt_text(
+            runtime, name, seed.get(name), required=False,
+            rerun_command=rerun_command,
+        )
         values[name] = raw if raw.strip() else None
     return values
 
@@ -115,7 +142,9 @@ def create(
     """Prompt for a complete create candidate and validate before file writes."""
     seeds = dict(values)
     seeds["title"] = title_seed
-    collected = collect_values(runtime, seeds)
+    collected = collect_values(
+        runtime, seeds, rerun_command="nyxloom backlog new --interactive"
+    )
     try:
         return backlog_entries.create_entry(cfg, **collected, body=body)
     except ValueError as exc:
@@ -133,7 +162,9 @@ def edit(cfg: Any, runtime: Any, entry_id: str) -> Any:
     except KeyError as exc:
         raise CliFailure(str(exc.args[0]), exit_code=1) from exc
     seed = {field: entry.raw.get(field) for field in _FORM_FIELDS}
-    collected = collect_values(runtime, seed)
+    collected = collect_values(
+        runtime, seed, rerun_command=f"nyxloom backlog edit {entry_id}"
+    )
     try:
         return backlog_entries.edit_fields(cfg, entry_id, collected)
     except ValueError as exc:

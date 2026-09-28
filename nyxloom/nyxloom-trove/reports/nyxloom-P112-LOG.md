@@ -249,3 +249,17 @@ Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adop
   ```
 
 This closes the final uncovered traceback branch from attempt five. The earlier failed attempts and their causes remain recorded above; they are not counted as final gate evidence. The final implementation commit passed both declared rigor levels, and its isolated wheel proof passed before this documentation-only refreeze.
+
+## Post-gate Codex review and corrections — 2026-09-28
+
+The requested code review ran with `CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"` and `CODEX_HOME="$HOME/.codex2"`, against base `fb9d8f5b1131c7a12c20f457f36c74e0510c1c8e`. It reported three actionable findings:
+
+1. **P1, container build context:** the Nyxloom Dockerfile copies `libraries/cli-extended/src/cli_extended`, but the repository-root `.dockerignore` excluded `libraries/`. Added a narrow whitelist for that package source only. This root-level file is outside the Nyxloom project tree and therefore not in `scope.touch`; it is directly required by O6 and is recorded here under the standing rule allowing necessary additions.
+2. **P2, backlog list on unconfigured projects:** `load_entries()` intentionally returns an empty list when `[backlog_entries]` is absent. `backlog list` therefore falsely presented an unadopted project as an adopted empty backlog. It now refuses with the missing-table diagnostic before rendering or creating files; a regression test checks exit status, output, and no directory creation.
+3. **P2, backlog edit correction hint:** invalid wizard input during `backlog edit` pointed users to the create command, which could create a duplicate entry. Prompt validation now receives its operation-specific rerun command; a regression test checks the edit hint and verifies both the entry and index remain byte-identical.
+
+The reviewer's two local test attempts were environment-limited, not product failures: one ran the project-root-dependent lint test from the monorepo root, and one lacked the declared `rich` dependency. The focused new regression tests passed in the Nyxloom project environment before this review record was written.
+
+Docker validation: `docker buildx build --check --builder mdt-managed -f nyxloom/nyxloomd/Dockerfile .` completed with no warnings. The actual `wheelbuild` target then completed successfully; the exported wheel contains seven `cli_extended/` package files. This confirms the source crosses the root build context and is packaged by the image's wheel stage.
+
+The P112 adoption gate has not yet been repeated for these post-gate review corrections at the time this section was added. The declared `tester-unified` lane runs R0/R1 only. The separate `session-extract` lane declares R0/R1/R2/R3, but no R2/R3 campaign has been run for this adoption; its 413-mutant, 8-hour budget was not started as part of this review follow-up.

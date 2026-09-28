@@ -1,8 +1,11 @@
 # P112 report: adopt cli-extended across Nyxloom's command surfaces
 
 Date: 2026-09-28  
-Result: **DONE** — all seven handoff oracles pass. Implementation and final
-gate are on `nyxloom-cli-adoption`; no merge to `main` was performed.
+Result: **FOLLOW-UP VALIDATION IN PROGRESS** — the original P112 implementation
+passed its declared gate on `75157505`. A post-gate code review found three
+fixes, now implemented; the declared gate has not yet been rerun for them.
+Implementation remains on `nyxloom-cli-adoption`; no merge to `main` was
+performed.
 
 ## Summary
 
@@ -68,6 +71,10 @@ entrypoint/import checks are also recorded in the log.
 
 The implementation diff is against base `fb9d8f5b1131c7a12c20f457f36c74e0510c1c8e`.
 
+The post-gate review follow-up additionally changes repository-root `.dockerignore`
+and `nyxloom/src/nyxloom/{backlog_wizard.py,cli.py}` plus
+`nyxloom/tests/test_backlog_entries.py`.
+
 - Library: `libraries/cli-extended/{README.md,SPEC.md,assay.toml,docs/CONSUMERS.md,docs/DESIGN-GUIDE.md,pyproject.toml,src/cli_extended/__init__.py,src/cli_extended/output.py,src/cli_extended/parser.py,src/cli_extended/prompts.py,tests/test_output.py,tests/test_parser_specs.py,tests/test_prompts.py}`.
 - Nyxloom CLI and domain code: `nyxloom/src/nyxloom/{backlog_entries.py,backlog_wizard.py,capability_map.py,cli.py,cli_ctl.py,cli_harness.py,cli_registry.py,commands.py,control_auth.py,daemon.py,daemon_entrypoint.py,doctor.py,exception_census.py,free_models.py,gate_scaffold.py,intake_bridge.py,migrate_store.py,notify.py,reconcile.py,render.py,resync.py,transport_check.py,types.py,wrapper.py}` and `nyxloom/src/nyxloom/session_extract/README.md`.
 - Nyxloom tests: `nyxloom/tests/{test_backlog_entries.py,test_backlog_items.py,test_cli.py,test_cli_adoption.py,test_cli_extract.py,test_cli_help.py,test_commands.py,test_control_auth.py,test_daemon.py,test_doctor.py,test_events_cmd.py,test_free_models.py,test_gate_scaffold.py,test_intake_bridge.py,test_intake_chat.py,test_lint.py,test_liveness.py,test_liveness_units.py,test_migrate_store.py,test_notify.py,test_reconcile.py,test_resume_guard.py,test_resync.py,test_resync_apply.py,test_route_doctor.py,test_session_extract_edge_contracts.py,test_session_extract_reasonix.py,test_wrapper.py,legacy_planner.py,test_core_characterization.py}`.
@@ -78,6 +85,23 @@ The report, execution log, and handoff `input_revision` were updated after the
 implementation gate as evidence/refreeze metadata; they do not change the
 gated implementation. The handoff's `scope.touch` records the planned file
 inventory, and the log records authorized necessary additions and reasons.
+
+## Post-gate code review follow-up
+
+The requested review found and this worktree now fixes three issues: the
+repository-root `.dockerignore` omitted `libraries/cli-extended` from the
+Nyxloom Docker build context; `backlog list` treated a project without
+`[backlog_entries]` as an adopted empty backlog; and invalid `backlog edit`
+input suggested rerunning the create command. The first issue also blocked the
+image wheel build. The root `.dockerignore` is outside Nyxloom's project tree
+and is not listed in `scope.touch`; it is a necessary O6 fix and is recorded in
+the P112 log under the standing rule permitting directly needed additions.
+
+Two focused regression tests for the backlog behavior passed. Buildx's static
+check passed, and the real Docker `wheelbuild` target completed and exported a
+wheel containing all seven `cli_extended/` package files. The review gate for
+these corrections is still pending; do not treat the earlier `75157505` R0/R1
+result below as evidence for this follow-up.
 
 ## Deviations and resolved gate findings
 

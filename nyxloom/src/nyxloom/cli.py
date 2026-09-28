@@ -2295,6 +2295,10 @@ def cmd_backlog_list(args) -> int:
     if cfg is None:
         print(f"error: {err}", file=sys.stderr)
         return 1
+    if backlog_entries.resolve_dir(cfg) is None:
+        print("error: project has no [backlog_entries] table in nyxloom.toml",
+              file=sys.stderr)
+        return 1
     lines = backlog_entries.render_index(backlog_entries.load_entries(cfg)).splitlines()
     if args.status:
         # header = banner, blank, title, blank, column row, separator (0-5)

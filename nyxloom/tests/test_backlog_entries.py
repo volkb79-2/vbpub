@@ -477,6 +477,16 @@ class TestCli:
         assert rc == 0
         assert "| [CIU-1](" in capsys.readouterr().out
 
+    def test_list_refuses_when_project_has_not_adopted_entries(
+        self, sample_project, capsys
+    ):
+        rc = cli.main(["backlog", "list", "--project-id", "demo"])
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert captured.out == ""
+        assert "no [backlog_entries] table" in captured.err
+        assert not (sample_project.root / "nyxloom-trove" / "backlog").exists()
+
     def test_show_missing_exit_1(self, demo_with_entries):
         cli.main(["backlog", "new", "--project-id", "demo", "an issue"])
         # CIU-1 exists; asking for CIU-9 walks the loop's non-matching arc
@@ -764,14 +774,44 @@ class TestBacklogWizardFailures:
 
         runtime = SimpleNamespace(prompts=Driver())
         call = (
-            lambda: backlog_wizard._prompt_text(runtime, "title", None, required=True)
+            lambda: backlog_wizard._prompt_text(
+                runtime, "title", None, required=True,
+                rerun_command="nyxloom backlog new --interactive",
+            )
             if operation == "text"
-            else backlog_wizard._prompt_choice(runtime, "type", None)
+            else backlog_wizard._prompt_choice(
+                runtime, "type", None,
+                rerun_command="nyxloom backlog new --interactive",
+            )
         )
         with pytest.raises(CliFailure, match="invalid") as raised:
             call()
         assert raised.value.exit_code == 2
         assert "rerun `nyxloom backlog new --interactive`" in raised.value.hint
+
+    def test_edit_field_error_recommends_edit_and_preserves_entry_and_index(
+        self, tmp_path, monkeypatch
+    ):
+        cfg = make_cfg(tmp_path)
+        entry = backlog_entries.create_entry(cfg, "original entry")
+        index = backlog_entries.resolve_dir(cfg) / "INDEX.md"
+        entry_before = entry.read_bytes()
+        index_before = index.read_bytes()
+
+        status, _stdout, stderr = _run_interactive_backlog(
+            monkeypatch,
+            cfg,
+            ["backlog", "edit", "--project-id", "demo", "CIU-1"],
+            _BacklogPromptDriver(
+                text_answers={"title": "candidate edit", "priority": "not an integer"}
+            ),
+        )
+
+        assert status == 2
+        assert "rerun `nyxloom backlog edit CIU-1`" in stderr
+        assert "backlog new --interactive" not in stderr
+        assert entry.read_bytes() == entry_before
+        assert index.read_bytes() == index_before
 
     @pytest.mark.parametrize("operation", ["text", "select"])
     @pytest.mark.parametrize(
@@ -800,9 +840,15 @@ class TestBacklogWizardFailures:
 
         runtime = SimpleNamespace(prompts=Driver())
         call = (
-            lambda: backlog_wizard._prompt_text(runtime, "title", None, required=True)
+            lambda: backlog_wizard._prompt_text(
+                runtime, "title", None, required=True,
+                rerun_command="nyxloom backlog new --interactive",
+            )
             if operation == "text"
-            else backlog_wizard._prompt_choice(runtime, "type", None)
+            else backlog_wizard._prompt_choice(
+                runtime, "type", None,
+                rerun_command="nyxloom backlog new --interactive",
+            )
         )
         with pytest.raises(CliFailure) as raised:
             call()
@@ -816,7 +862,8 @@ class TestBacklogWizardFailures:
 
         cfg = make_cfg(tmp_path)
         monkeypatch.setattr(
-            backlog_wizard, "collect_values", lambda *_args: {"title": "candidate"}
+            backlog_wizard, "collect_values",
+            lambda *_args, **_kwargs: {"title": "candidate"},
         )
 
         def invalid_candidate(*_args, **_kwargs):
