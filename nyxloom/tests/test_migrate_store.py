@@ -8,6 +8,8 @@ and retire the source only after a successful SQLite round-trip check.
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import json
 
 import pytest
@@ -452,7 +454,7 @@ def test_cli_migrate_store_success_prints_migrated(tmp_state, capsys):
     project = "sp02-cli-success"
     _seed_project(project)
 
-    exit_code = cli.main(["migrate-store", project])
+    exit_code = ctl_main(["migrate-store", project])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -467,7 +469,7 @@ def test_cli_migrate_store_already_migrated(tmp_state, capsys):
     _seed_project(project)
     migrate(project)  # first run, out of band
 
-    exit_code = cli.main(["migrate-store", project])
+    exit_code = ctl_main(["migrate-store", project])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -475,7 +477,7 @@ def test_cli_migrate_store_already_migrated(tmp_state, capsys):
 
 
 def test_cli_migrate_store_nothing_to_migrate(tmp_state, capsys):
-    exit_code = cli.main(["migrate-store", "sp02-cli-nothing"])
+    exit_code = ctl_main(["migrate-store", "sp02-cli-nothing"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -489,7 +491,7 @@ def test_cli_migrate_store_error_path_prints_and_exits_1(tmp_state, capsys):
     with src.open("a", encoding="utf-8") as f:
         f.write("not valid json{\n")
 
-    exit_code = cli.main(["migrate-store", project])
+    exit_code = ctl_main(["migrate-store", project])
 
     assert exit_code == 1
     err = capsys.readouterr().err

@@ -7,6 +7,8 @@ directly for source/aggregator/writer/CLI tests, and its OWN internals
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import logging
 from unittest.mock import MagicMock, patch
 
@@ -529,7 +531,7 @@ class TestCliFreeModelsList:
         with patch("nyxloom.free_models.FreeModelsConfig.load", return_value=cfg), \
              patch("nyxloom.free_models._fetch_json",
                    return_value={"data": [{"id": "vendor/m:free", "context_length": 4096}]}):
-            exit_code = cli.main(["free-models", "list"])
+            exit_code = ctl_main(["free-models", "list"])
 
         assert exit_code == 0
         out = capsys.readouterr().out
@@ -543,7 +545,7 @@ class TestCliFreeModelsList:
         })
         with patch("nyxloom.free_models.FreeModelsConfig.load", return_value=cfg), \
              patch("nyxloom.free_models._fetch_json", return_value={"data": []}):
-            exit_code = cli.main(["free-models", "list"])
+            exit_code = ctl_main(["free-models", "list"])
 
         assert exit_code == 0
         assert "no free models discovered" in capsys.readouterr().out
@@ -562,7 +564,7 @@ class TestCliFreeModelsList:
 
         with patch("nyxloom.free_models.FreeModelsConfig.load", return_value=cfg), \
              patch("nyxloom.free_models._fetch_json", side_effect=fake_fetch):
-            exit_code = cli.main(["free-models", "list", "--source", "groq"])
+            exit_code = ctl_main(["free-models", "list", "--source", "groq"])
 
         assert exit_code == 0
         out = capsys.readouterr().out
@@ -570,7 +572,7 @@ class TestCliFreeModelsList:
         assert "or-model" not in out
 
     def test_no_subcommand_prints_help_and_exits_2(self, capsys):
-        exit_code = cli.main(["free-models"])
+        exit_code = ctl_main(["free-models"])
         assert exit_code == 2
 
 
@@ -583,7 +585,7 @@ class TestCliFreeModelsRefresh:
         with patch("nyxloom.free_models.FreeModelsConfig.load", return_value=cfg), \
              patch("nyxloom.free_models._fetch_json",
                    return_value={"data": [{"id": "vendor/m:free"}]}):
-            exit_code = cli.main(["free-models", "refresh"])
+            exit_code = ctl_main(["free-models", "refresh"])
 
         assert exit_code == 0
         out = capsys.readouterr().out
@@ -601,7 +603,7 @@ class TestCliFreeModelsRefresh:
         with patch("nyxloom.free_models.FreeModelsConfig.load", return_value=cfg), \
              patch("nyxloom.free_models._fetch_json",
                    return_value={"data": [{"id": "vendor/m:free"}]}):
-            exit_code = cli.main(["free-models", "refresh", "--dry-run"])
+            exit_code = ctl_main(["free-models", "refresh", "--dry-run"])
 
         assert exit_code == 0
         out = capsys.readouterr().out

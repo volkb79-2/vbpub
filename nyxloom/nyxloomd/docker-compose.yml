@@ -51,13 +51,13 @@ name: nyxloom-nyxloomd
 
 services:
   nyxloomd:
-    # Context is the nyxloom PACKAGE ROOT (..): the Dockerfile is multi-stage and
-    # its first stage builds the nyxloom wheel from src/ + pyproject.toml. Same
+    # Context is the vbpub repository root (../..) so the wheel build can bundle
+    # libraries/cli-extended into the Nyxloom distribution. Same
     # Dockerfile + NYXLOOM_VERSION arg as ../docker-bake.hcl, so this local build
     # and a cmru release build produce the SAME image (one recipe, two drivers).
     build:
-      context: ..
-      dockerfile: nyxloomd/Dockerfile
+      context: ../..
+      dockerfile: nyxloom/nyxloomd/Dockerfile
       args:
         NYXLOOM_VERSION: "0.0.0-dev"
     image: ghcr.io/volkb79-2/nyxloomd:0.0.0-dev
@@ -153,7 +153,7 @@ services:
       # is the pre-rendered copy of). FIRST the original TCP-connect probe
       # against the bind address -- cheap, and still catches "the dashboard
       # thread is not even listening" before spending a python startup on
-      # the second stage. SECOND `nyxloom doctor --liveness`, which reads
+      # the second stage. SECOND `nyxloomctl doctor --liveness`, which reads
       # the store directly (no Daemon constructed, no dependency on the
       # daemon process being responsive) for what a TCP connect cannot see:
       # the durable per-project heartbeat gauge (storage.record_heartbeat,
@@ -172,7 +172,7 @@ services:
       # the findings table is the only thing that says WHICH project is dead
       # and why. An unhealthy container with no reason attached is the same
       # "something is wrong and nothing said what" this package exists to end.
-      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/0.0.0.0/8942' 2>/dev/null && /opt/nyxloom-venv/bin/python -m nyxloom.cli doctor --liveness 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/0.0.0.0/8942' 2>/dev/null && /opt/nyxloom-venv/bin/nyxloomctl doctor --liveness 2>&1 || exit 1"]
       interval: 20s
       timeout: 12s
       retries: 5

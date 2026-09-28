@@ -20,6 +20,8 @@ looping, and NOTHING reported either.
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 from datetime import timedelta
 
 import pytest
@@ -184,7 +186,7 @@ def test_killing_the_daemon_mid_pass_is_detected_through_a_daemon_free_path(
     # The same alarm is reachable through a PLAIN CLI invocation -- the
     # actual escape path an operator or a healthcheck uses. Still no
     # Daemon anywhere in this call.
-    exit_code = cli.main(["doctor", "--liveness"])
+    exit_code = ctl_main(["doctor", "--liveness"])
     assert exit_code == 1
 
 
@@ -230,7 +232,7 @@ def test_breaking_the_notification_transport_is_caught_by_a_second_path(
     assert len(unreachable) == 1
     assert unreachable[0].severity == "critical"
 
-    exit_code = cli.main(["doctor", "--liveness"])
+    exit_code = ctl_main(["doctor", "--liveness"])
     assert exit_code == 1
 
 
@@ -266,7 +268,7 @@ def test_a_daemon_whose_every_pass_raises_is_reported_failing_not_healthy(
     # landing), which is exactly why a SEPARATE detector is required.
     assert "reconcile-deadman" not in kinds
 
-    exit_code = cli.main(["doctor", "--liveness"])
+    exit_code = ctl_main(["doctor", "--liveness"])
     assert exit_code == 1
 
 

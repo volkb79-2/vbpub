@@ -11,6 +11,7 @@ import pytest
 import structlog.contextvars
 
 from nyxloom import cli, log
+from nyxloom.cli_ctl import main as ctl_main
 from nyxloom.config import ProjectConfig
 from nyxloom.types import (
     DoctorFinding, LintFinding, EventType, Actor, ActorKind,
@@ -22,7 +23,7 @@ from nyxloom.types import (
 def _silence_nyxloom_logging():
     """PACKAGE P05c safety net -- see test_backlog_items.py's copy of this
     fixture for the full rationale (byte-unchanged CLI stdout/stderr oracle,
-    docs/plan-logging.md P05c). cli.main() now bootstraps `log.configure()`
+    docs/plan-logging.md P05c). ctl_main() now bootstraps `log.configure()`
     itself (see cli.py's `_bootstrap_logging`), which already routes every
     level to a JSONL file rather than stdout/stderr -- this fixture is
     belt-and-braces on top of that, and load-bearing for any test here that
@@ -61,7 +62,7 @@ def test_project_add(sample_project, tmp_state, capsys):
     from nyxloom import config, paths
     paths.registry_path().unlink()
 
-    exit_code = cli.main(["project", "add", "demo", str(root)])
+    exit_code = ctl_main(["project", "add", "demo", str(root)])
 
     assert exit_code == 0
 
@@ -80,7 +81,7 @@ def test_project_add(sample_project, tmp_state, capsys):
 
 def test_project_list(sample_project, tmp_state, capsys):
     """project list shows registry."""
-    exit_code = cli.main(["project", "list"])
+    exit_code = ctl_main(["project", "list"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -95,7 +96,7 @@ def test_lint_all_clean(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.lint.lint_project", mock_lint_project)
 
-    exit_code = cli.main(["lint"])
+    exit_code = ctl_main(["lint"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "clean" in out
@@ -116,7 +117,7 @@ def test_lint_error(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.lint.lint_project", mock_lint_project)
 
-    exit_code = cli.main(["lint"])
+    exit_code = ctl_main(["lint"])
     assert exit_code == 1
     out = capsys.readouterr().out
     assert "handoff/demo-P01-sample.md:10 L2 error gate not found" in out
@@ -150,7 +151,7 @@ def test_doctor_clean(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.doctor.doctor_project", mock_doctor_project)
 
-    exit_code = cli.main(["doctor"])
+    exit_code = ctl_main(["doctor"])
     assert exit_code == 0
 
 
@@ -168,7 +169,7 @@ def test_doctor_error(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.doctor.doctor_project", mock_doctor_project)
 
-    exit_code = cli.main(["doctor"])
+    exit_code = ctl_main(["doctor"])
     assert exit_code == 1
     out = capsys.readouterr().out
     assert "replay-divergence" in out
@@ -184,7 +185,7 @@ def test_doctor_project_id_filters_the_project_checks(sample_project, tmp_state,
 
     monkeypatch.setattr("nyxloom.doctor.doctor_project", mock_doctor_project)
 
-    exit_code = cli.main(["doctor", "--project-id", "demo"])
+    exit_code = ctl_main(["doctor", "--project-id", "demo"])
 
     assert exit_code == 0
     assert checked == ["demo"]
@@ -201,7 +202,7 @@ def test_doctor_rebuild(sample_project, tmp_state, capsys, monkeypatch):
     monkeypatch.setattr("nyxloom.doctor.doctor_project", mock_doctor_project)
     monkeypatch.setattr("nyxloom.doctor.rebuild", mock_rebuild)
 
-    exit_code = cli.main(["doctor", "--rebuild"])
+    exit_code = ctl_main(["doctor", "--rebuild"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "diffs" in out or "task_id: state" in out
@@ -221,7 +222,7 @@ def test_doctor_rebuild_write(sample_project, tmp_state, capsys, monkeypatch):
     monkeypatch.setattr("nyxloom.doctor.doctor_project", mock_doctor_project)
     monkeypatch.setattr("nyxloom.doctor.rebuild", mock_rebuild)
 
-    exit_code = cli.main(["doctor", "--rebuild", "--write"])
+    exit_code = ctl_main(["doctor", "--rebuild", "--write"])
     assert exit_code == 0
     assert any(call[2] for call in call_log)  # write=True was passed
 
@@ -235,7 +236,7 @@ def test_status_empty(sample_project, tmp_state, capsys):
     byte-unchanged CLI stdout contract: `status`'s new-instrumented
     dependencies (config.py et al, now logging) must add NOTHING to stdout,
     not even whitespace."""
-    exit_code = cli.main(["status"])
+    exit_code = ctl_main(["status"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert out == ""
@@ -258,7 +259,7 @@ def test_status_one_task(sample_project, tmp_state, capsys, make_statefile, monk
     tsf = make_statefile(attempts=[attempt])
     storage.save_state(tsf)
 
-    exit_code = cli.main(["status"])
+    exit_code = ctl_main(["status"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "demo-P01-test" in out
@@ -281,7 +282,7 @@ def test_status_project_filter(sample_project, tmp_state, capsys, make_statefile
     tsf = make_statefile(attempts=[attempt])
     storage.save_state(tsf)
 
-    exit_code = cli.main(["status", "--project-id", "demo"])
+    exit_code = ctl_main(["status", "--project-id", "demo"])
     assert exit_code == 0
 
 
@@ -296,7 +297,7 @@ def test_render(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.render.render_all", mock_render_all)
 
-    exit_code = cli.main(["render"])
+    exit_code = ctl_main(["render"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert str(sentinel_path) in out
@@ -312,7 +313,7 @@ def test_tick(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.daemon.run_once", mock_run_once)
 
-    exit_code = cli.main(["tick"])
+    exit_code = ctl_main(["tick"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "7" in out
@@ -329,7 +330,7 @@ def test_tick_project_id_passes_the_selector_to_daemon(sample_project, tmp_state
 
     monkeypatch.setattr("nyxloom.daemon.run_once", mock_run_once)
 
-    exit_code = cli.main(["tick", "--project-id", "selected"])
+    exit_code = ctl_main(["tick", "--project-id", "selected"])
 
     assert exit_code == 0
     assert calls == ["selected"]
@@ -347,7 +348,7 @@ def test_decide_success(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.decisions.decide", mock_decide)
 
-    exit_code = cli.main(["decide", "demo", "D-002", "--choose", "b", "--note", "why"])
+    exit_code = ctl_main(["decide", "demo", "D-002", "--choose", "b", "--note", "why"])
     assert exit_code == 0
 
     # Check that decide was called
@@ -372,7 +373,7 @@ def test_decide_error(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.decisions.decide", mock_decide)
 
-    exit_code = cli.main(["decide", "demo", "D-002", "--choose", "b"])
+    exit_code = ctl_main(["decide", "demo", "D-002", "--choose", "b"])
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "error:" in err
@@ -393,7 +394,7 @@ def test_discuss(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.decisions.discuss", mock_discuss)
 
-    exit_code = cli.main(["discuss", "demo", "D-002"])
+    exit_code = ctl_main(["discuss", "demo", "D-002"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert cmd_str in out
@@ -407,7 +408,7 @@ def test_reject_success(sample_project, tmp_state, capsys, make_statefile):
     tsf = make_statefile(state=TaskState.MERGE_READY)
     storage.save_state(tsf)
 
-    exit_code = cli.main(["reject", "demo", "demo-P01-test", "--note", "gate re-run failed"])
+    exit_code = ctl_main(["reject", "demo", "demo-P01-test", "--note", "gate re-run failed"])
     assert exit_code == 0
 
     events = list(storage.iter_events("demo"))
@@ -433,7 +434,7 @@ def test_reject_then_requeue(sample_project, tmp_state, make_statefile):
     tsf = make_statefile(state=TaskState.MERGE_READY)
     storage.save_state(tsf)
 
-    assert cli.main(["reject", "demo", "demo-P01-test"]) == 0
+    assert ctl_main(["reject", "demo", "demo-P01-test"]) == 0
 
     states = storage.list_states("demo")
     assert states["demo-P01-test"].state == TaskState.REVIEW_REJECTED
@@ -454,7 +455,7 @@ def test_reject_wrong_state_rejected(sample_project, tmp_state, capsys, make_sta
     tsf = make_statefile(state=TaskState.QUEUED)
     storage.save_state(tsf)
 
-    exit_code = cli.main(["reject", "demo", "demo-P01-test"])
+    exit_code = ctl_main(["reject", "demo", "demo-P01-test"])
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "error:" in err
@@ -469,7 +470,7 @@ def test_reject_unknown_task(sample_project, tmp_state, capsys):
     """Unknown task -> reject exits 1 with a clear error, no event."""
     from nyxloom import storage
 
-    exit_code = cli.main(["reject", "demo", "nonexistent-task"])
+    exit_code = ctl_main(["reject", "demo", "nonexistent-task"])
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "error:" in err
@@ -494,7 +495,7 @@ def test_merge_success_records_real_commit(sample_project, tmp_state, capsys, ma
         capture_output=True, text=True, check=True,
     ).stdout.strip()
 
-    exit_code = cli.main(["merge", "demo", "demo-P01-test"])
+    exit_code = ctl_main(["merge", "demo", "demo-P01-test"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert real_head in out
@@ -521,7 +522,7 @@ def test_merge_explicit_commit_override(sample_project, tmp_state, capsys, make_
     storage.save_state(tsf)
 
     explicit = "a" * 40
-    exit_code = cli.main(["merge", "demo", "demo-P01-test", "--commit", explicit])
+    exit_code = ctl_main(["merge", "demo", "demo-P01-test", "--commit", explicit])
     assert exit_code == 0
 
     states = storage.list_states("demo")
@@ -535,7 +536,7 @@ def test_merge_wrong_state_rejected(sample_project, tmp_state, capsys, make_stat
     tsf = make_statefile(state=TaskState.QUEUED)
     storage.save_state(tsf)
 
-    exit_code = cli.main(["merge", "demo", "demo-P01-test"])
+    exit_code = ctl_main(["merge", "demo", "demo-P01-test"])
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "error:" in err
@@ -564,7 +565,7 @@ def test_merge_blocked_by_failing_pre_merge_gate(
             started=utc_now(), ended=utc_now(), environment="local"),
     )
 
-    exit_code = cli.main(["merge", "demo", "demo-P01-test", "--commit", "f" * 40])
+    exit_code = ctl_main(["merge", "demo", "demo-P01-test", "--commit", "f" * 40])
     assert exit_code == 1
     assert "gate" in capsys.readouterr().err
 
@@ -585,7 +586,7 @@ def test_merge_force_bypasses_gate_entirely(
         raise AssertionError("gate must NOT run under --force")
     monkeypatch.setattr(gate_runner, "run_gate_at_commit", _must_not_run)
 
-    exit_code = cli.main(["merge", "demo", "demo-P01-test", "--force", "--commit", "e" * 40])
+    exit_code = ctl_main(["merge", "demo", "demo-P01-test", "--force", "--commit", "e" * 40])
     assert exit_code == 0
     assert storage.list_states("demo")["demo-P01-test"].state == TaskState.MERGED
 
@@ -594,7 +595,7 @@ def test_pause_project(sample_project, tmp_state, capsys, monkeypatch):
     """Oracle 9: pause <project> creates flag + PAUSE_SET event."""
     from nyxloom import paths, storage
 
-    exit_code = cli.main(["pause", "demo"])
+    exit_code = ctl_main(["pause", "demo"])
     assert exit_code == 0
 
     # Check flag exists
@@ -615,7 +616,7 @@ def test_pause_task(sample_project, tmp_state, capsys, make_statefile, monkeypat
     tsf = make_statefile()
     storage.save_state(tsf)
 
-    exit_code = cli.main(["pause", "demo", "demo-P01-test"])
+    exit_code = ctl_main(["pause", "demo", "demo-P01-test"])
     assert exit_code == 0
 
     # Check flag exists
@@ -642,7 +643,7 @@ def test_resume_project(sample_project, tmp_state, capsys):
     flag_path.parent.mkdir(parents=True, exist_ok=True)
     flag_path.touch()
 
-    exit_code = cli.main(["resume", "demo"])
+    exit_code = ctl_main(["resume", "demo"])
     assert exit_code == 0
 
     # Check flag gone
@@ -666,7 +667,7 @@ def test_resume_task(sample_project, tmp_state, capsys, make_statefile):
     flag_path.parent.mkdir(parents=True, exist_ok=True)
     flag_path.touch()
 
-    exit_code = cli.main(["resume", "demo", "demo-P01-test"])
+    exit_code = ctl_main(["resume", "demo", "demo-P01-test"])
     assert exit_code == 0
 
     # Check flag gone
@@ -689,7 +690,7 @@ def test_leases_empty(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.leases.holder_info", mock_holder_info)
 
-    exit_code = cli.main(["leases"])
+    exit_code = ctl_main(["leases"])
     assert exit_code == 0
 
 
@@ -705,7 +706,7 @@ def test_leases_held(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.leases.holder_info", mock_holder_info)
 
-    exit_code = cli.main(["leases"])
+    exit_code = ctl_main(["leases"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "True" in out
@@ -721,7 +722,7 @@ def test_digest(sample_project, tmp_state, capsys, monkeypatch):
 
     monkeypatch.setattr("nyxloom.notify.digest", mock_digest)
 
-    exit_code = cli.main(["digest", "demo"])
+    exit_code = ctl_main(["digest", "demo"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert digest_text in out
@@ -735,7 +736,7 @@ def test_events_all(sample_project, tmp_state, capsys):
     actor = Actor(kind=ActorKind.OPERATOR, id="test")
     storage.append_event("demo", actor=actor, type=EventType.PAUSE_SET, payload={})
 
-    exit_code = cli.main(["events", "demo"])
+    exit_code = ctl_main(["events", "demo"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "PAUSE_SET" in out
@@ -749,7 +750,7 @@ def test_events_filtered_by_type(sample_project, tmp_state, capsys):
     storage.append_event("demo", actor=actor, type=EventType.PAUSE_SET, payload={})
     storage.append_event("demo", actor=actor, type=EventType.PAUSE_CLEARED, payload={})
 
-    exit_code = cli.main(["events", "demo", "--type", "PAUSE_SET"])
+    exit_code = ctl_main(["events", "demo", "--type", "PAUSE_SET"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "PAUSE_SET" in out
@@ -1079,7 +1080,7 @@ def test_onboard_scaffold_gate_second_run_prints_the_skip_message(tmp_path, caps
 
 
 def test_decide_debug_reraises(sample_project, tmp_state, monkeypatch):
-    """Guidance: --debug flag re-raises exceptions."""
+    """Guidance: --traceback flag re-raises exceptions."""
     from nyxloom import decisions
 
     def mock_decide(cfg, decision_id, choice, note, authority):
@@ -1088,7 +1089,7 @@ def test_decide_debug_reraises(sample_project, tmp_state, monkeypatch):
     monkeypatch.setattr("nyxloom.decisions.decide", mock_decide)
 
     with pytest.raises(decisions.DecisionError):
-        cli.main(["--debug", "decide", "demo", "D-002", "--choose", "b"])
+        ctl_main(["--traceback", "decide", "demo", "D-002", "--choose", "b"])
 
 
 # ==========================================================================
@@ -1128,7 +1129,7 @@ def test_doctor_full_stdout_byte_exact(sample_project, tmp_state, capsys, monkey
         + "\n\ndashboard: http://127.0.0.1:8942  (read-only; loopback on the daemon host)\n"
     )
 
-    exit_code = cli.main(["doctor"])
+    exit_code = ctl_main(["doctor"])
     assert exit_code == 1
     assert capsys.readouterr().out == expected
 
@@ -1149,13 +1150,13 @@ def test_status_full_stdout_byte_exact(sample_project, tmp_state, capsys, make_s
         ["task_id", "state", "since", "route", "cost", "notes"],
     ) + "\n"
 
-    exit_code = cli.main(["status"])
+    exit_code = ctl_main(["status"])
     assert exit_code == 0
     assert capsys.readouterr().out == expected
 
 
 def test_bootstrap_logging_writes_jsonl_not_stdout(sample_project, tmp_state, capsys):
-    """The bootstrap this package adds to cli.main() (_bootstrap_logging)
+    """The bootstrap this package adds to ctl_main() (_bootstrap_logging)
     must be invisible on stdout/stderr -- it should ONLY ever produce a
     nyxloom.jsonl file. Drives `lint` (unmocked -- the fixture handoff has
     pre-existing L7/L11 findings, so exit 1 is the correct, UNCHANGED
@@ -1166,7 +1167,7 @@ def test_bootstrap_logging_writes_jsonl_not_stdout(sample_project, tmp_state, ca
     stdout/stderr leakage even so."""
     from nyxloom import paths
 
-    exit_code = cli.main(["lint"])
+    exit_code = ctl_main(["lint"])
     assert exit_code == 1
     # No raw structlog line (e.g. a bare "logger" key, as an unconfigured
     # PrintLogger/ConsoleRenderer line would carry) ever reached stdout/stderr.
@@ -1224,7 +1225,7 @@ def test_capability_map_refresh_write_path(sample_project, tmp_state, capsys, mo
     routes_path_str = str(paths.routes_path())
     store_path = paths.routes_path().parent / "benchmark-store.toml"
 
-    exit_code = cli.main(["capability-map", "refresh"])
+    exit_code = ctl_main(["capability-map", "refresh"])
 
     assert exit_code == 0
     assert len(catalog_calls) == 1
@@ -1244,9 +1245,10 @@ def test_capability_map_refresh_write_path(sample_project, tmp_state, capsys, mo
 
 
 def test_capability_map_no_subcommand_prints_help(capsys):
-    """Bare `capability-map` (no subcommand) prints help to stderr and returns 2."""
-    exit_code = cli.main(["capability-map"])
-    assert exit_code == 2
+    """Bare delegated groups follow cli-extended's display-only help behavior."""
+    exit_code = ctl_main(["capability-map"])
+    assert exit_code == 0
+    assert "Usage: nyxloomctl capability-map" in capsys.readouterr().out
 
 
 def test_capability_map_refresh_dry_run(sample_project, tmp_state, capsys, monkeypatch):
@@ -1279,7 +1281,7 @@ def test_capability_map_refresh_dry_run(sample_project, tmp_state, capsys, monke
     routes_path_str = str(paths.routes_path())
     store_path = paths.routes_path().parent / "benchmark-store.toml"
 
-    exit_code = cli.main(["capability-map", "refresh", "--dry-run"])
+    exit_code = ctl_main(["capability-map", "refresh", "--dry-run"])
 
     assert exit_code == 0
     assert len(catalog_calls) == 0
@@ -1299,13 +1301,13 @@ def test_capability_map_refresh_dry_run(sample_project, tmp_state, capsys, monke
 
 def test_finding_record_generic_and_list(sample_project, tmp_state, capsys):
     """Record a generic finding, then list it."""
-    exit_code = cli.main(["finding", "record", "--project-id", "demo",
+    exit_code = ctl_main(["finding", "record", "--project-id", "demo",
                           "--kind", "generic", "--title", "hi"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "recorded F-demo-" in out
 
-    exit_code = cli.main(["finding", "list", "--project-id", "demo"])
+    exit_code = ctl_main(["finding", "list", "--project-id", "demo"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "hi" in out
@@ -1315,7 +1317,7 @@ def test_finding_record_pushable_with_fields_and_task_id(sample_project, tmp_sta
     """Record a pushable finding (cost_crossover) with fields and task-id."""
     from nyxloom import findings
 
-    exit_code = cli.main(["finding", "record", "--project-id", "demo",
+    exit_code = ctl_main(["finding", "record", "--project-id", "demo",
                           "--kind", "cost_crossover", "--title", "x",
                           "--field", "cheap_model=deepseek-flash",
                           "--field", "ref_model=gpt-pro",
@@ -1338,39 +1340,41 @@ def test_finding_record_pushable_with_fields_and_task_id(sample_project, tmp_sta
 
 
 def test_finding_malformed_field_exits_2(sample_project, tmp_state, capsys):
-    """--field without = returns exit code 2 and prints KEY=VALUE error."""
-    exit_code = cli.main(["finding", "record", "--project-id", "demo",
+    """Malformed --field syntax is rejected with command help before dispatch."""
+    exit_code = ctl_main(["finding", "record", "--project-id", "demo",
                           "--kind", "generic", "--title", "x",
                           "--field", "noequals"])
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "KEY=VALUE" in err
+    assert "usage: nyxloomctl finding record" in err
 
 
-def test_finding_unknown_kind_exits_1(sample_project, tmp_state, capsys):
-    """Unknown kind exits 1 via the outer try/except, prints error: ..."""
-    exit_code = cli.main(["finding", "record", "--project-id", "demo",
+def test_finding_unknown_kind_is_rejected_by_parser(sample_project, tmp_state, capsys):
+    """Closed kind values fail as usage errors with command help."""
+    exit_code = ctl_main(["finding", "record", "--project-id", "demo",
                           "--kind", "bogus", "--title", "x"])
-    assert exit_code == 1
+    assert exit_code == 2
     err = capsys.readouterr().err
-    assert "error:" in err
+    assert "invalid choice" in err
+    assert "usage: nyxloomctl finding record" in err
 
 
 def test_finding_list_kind_filter(sample_project, tmp_state, capsys):
     """List with --kind filter shows only matching findings."""
     # Record a generic finding
-    cli.main(["finding", "record", "--project-id", "demo",
+    ctl_main(["finding", "record", "--project-id", "demo",
               "--kind", "generic", "--title", "generic-title"])
     capsys.readouterr()  # discard output
 
     # Record a cost_crossover (pushable)
-    cli.main(["finding", "record", "--project-id", "demo",
+    ctl_main(["finding", "record", "--project-id", "demo",
               "--kind", "cost_crossover", "--title", "cost-title",
               "--field", "cheap_model=m1", "--field", "ref_model=m2",
               "--field", "metric=acc", "--field", "ratio=0.5"])
     capsys.readouterr()  # discard output
 
-    exit_code = cli.main(["finding", "list", "--project-id", "demo",
+    exit_code = ctl_main(["finding", "list", "--project-id", "demo",
                           "--kind", "cost_crossover"])
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -1380,7 +1384,7 @@ def test_finding_list_kind_filter(sample_project, tmp_state, capsys):
 
 def test_finding_list_empty(sample_project, tmp_state, capsys):
     """List on a project with no findings prints 'no findings'."""
-    exit_code = cli.main(["finding", "list", "--project-id", "demo"])
+    exit_code = ctl_main(["finding", "list", "--project-id", "demo"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "no findings" in out
@@ -1391,11 +1395,11 @@ def test_finding_list_no_project_enumerates_registry(sample_project, tmp_state, 
     from nyxloom import findings
 
     # Record a finding under "demo"
-    cli.main(["finding", "record", "--project-id", "demo",
+    ctl_main(["finding", "record", "--project-id", "demo",
               "--kind", "generic", "--title", "registry-title"])
     capsys.readouterr()  # discard output
 
-    exit_code = cli.main(["finding", "list"])
+    exit_code = ctl_main(["finding", "list"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "demo" in out
@@ -1403,9 +1407,10 @@ def test_finding_list_no_project_enumerates_registry(sample_project, tmp_state, 
 
 
 def test_finding_no_subcommand_exits_2(capsys):
-    """Bare `finding` (no subcommand) prints help to stderr and returns 2."""
-    exit_code = cli.main(["finding"])
-    assert exit_code == 2
+    """Bare delegated groups follow cli-extended's display-only help behavior."""
+    exit_code = ctl_main(["finding"])
+    assert exit_code == 0
+    assert "Usage: nyxloomctl finding" in capsys.readouterr().out
 
 
 # ==========================================================================
@@ -1434,7 +1439,7 @@ def test_capability_map_emit_findings_records_finding(
         lambda sources: ([cheap, expensive], {}),
     )
 
-    exit_code = cli.main(["capability-map", "refresh", "--emit-findings", "demo"])
+    exit_code = ctl_main(["capability-map", "refresh", "--emit-findings", "demo"])
 
     assert exit_code == 0
     found = findings.load_findings("demo")
@@ -1470,12 +1475,12 @@ def test_capability_map_emit_findings_dedup(
     )
 
     # First run
-    exit_code = cli.main(["capability-map", "refresh", "--emit-findings", "demo"])
+    exit_code = ctl_main(["capability-map", "refresh", "--emit-findings", "demo"])
     assert exit_code == 0
     capsys.readouterr()  # discard
 
     # Second run (same catalog, same detector)
-    exit_code = cli.main(["capability-map", "refresh", "--emit-findings", "demo"])
+    exit_code = ctl_main(["capability-map", "refresh", "--emit-findings", "demo"])
     assert exit_code == 0
 
     found = findings.load_findings("demo")
@@ -1483,10 +1488,10 @@ def test_capability_map_emit_findings_dedup(
     assert len(crossovers) == 1
 
 
-def test_capability_map_emit_findings_dry_run(
+def test_capability_map_emit_findings_dry_run_is_rejected_before_dispatch(
     sample_project, tmp_state, capsys, monkeypatch
 ):
-    """--dry-run --emit-findings records nothing."""
+    """A read-only preview cannot request a finding write."""
     from nyxloom import findings
     from nyxloom.benchmark_sources import BenchmarkRecord
 
@@ -1505,11 +1510,12 @@ def test_capability_map_emit_findings_dry_run(
         lambda sources: ([cheap, expensive], {}),
     )
 
-    exit_code = cli.main([
+    exit_code = ctl_main([
         "capability-map", "refresh", "--dry-run", "--emit-findings", "demo",
     ])
 
-    assert exit_code == 0
+    assert exit_code == 2
+    assert "cannot be combined" in capsys.readouterr().err
     found = findings.load_findings("demo")
     crossovers = [f for f in found if f.kind == "cost_crossover"]
     assert len(crossovers) == 0
@@ -1531,7 +1537,7 @@ def test_capability_map_emit_findings_unregistered_project(
         lambda sources: ([record], {}),
     )
 
-    exit_code = cli.main([
+    exit_code = ctl_main([
         "capability-map", "refresh", "--emit-findings", "nonexistent",
     ])
 

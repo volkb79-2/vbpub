@@ -7,6 +7,8 @@ contract tests in test_adapters.py, which this module reuses verbatim
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import logging
 
 import pytest
@@ -300,7 +302,7 @@ class TestCliRouteDoctor:
         """Mirrors the same unknown-subcommand handling as `gate`/
         `free-models`/`capability-map`/`finding` (see test_cli.py's
         test_gate_no_subcommand_prints_help_and_exits_2)."""
-        exit_code = cli.main(["route"])
+        exit_code = ctl_main(["route"])
         assert exit_code == 2
 
     def test_clean_config_exits_0_and_prints_ok_row(self, tmp_state, capsys):
@@ -308,7 +310,7 @@ class TestCliRouteDoctor:
             'revision = "t"\n\n[routes.r1]\ncli = "fake"\nmodel = "m1"\n', encoding="utf-8",
         )
         with patch("nyxloom.adapters.probe", return_value=(True, "ok")):
-            exit_code = cli.main(["route", "doctor"])
+            exit_code = ctl_main(["route", "doctor"])
         assert exit_code == 0
         out = capsys.readouterr().out
         assert "r1" in out
@@ -320,7 +322,7 @@ class TestCliRouteDoctor:
             'revision = "t"\n\n[routes.r1]\ncli = "nope"\nmodel = "m1"\n', encoding="utf-8",
         )
         with patch("nyxloom.adapters.probe", return_value=(True, "ok")):
-            exit_code = cli.main(["route", "doctor"])
+            exit_code = ctl_main(["route", "doctor"])
         assert exit_code == 1
         out = capsys.readouterr().out
         assert "problem" in out
@@ -331,7 +333,7 @@ class TestCliRouteDoctor:
             'revision = "t"\n\n[routes.r1]\ncli = "fake"\nmodel = "m1"\n', encoding="utf-8",
         )
         with patch("nyxloom.adapters.probe") as mock_probe:
-            exit_code = cli.main(["route", "doctor", "--no-probe"])
+            exit_code = ctl_main(["route", "doctor", "--no-probe"])
         mock_probe.assert_not_called()
         assert exit_code == 0
 
@@ -344,13 +346,13 @@ class TestCliRouteDoctor:
             encoding="utf-8",
         )
         with patch("nyxloom.adapters.probe", return_value=(True, "ok")):
-            exit_code = cli.main(["route", "doctor"])
+            exit_code = ctl_main(["route", "doctor"])
         assert exit_code == 0
         assert "tier-empty" in capsys.readouterr().out
 
     def test_load_failure_exits_1_without_a_per_route_table(self, tmp_state, capsys):
         paths.routes_path().write_text("[unterminated", encoding="utf-8")
-        exit_code = cli.main(["route", "doctor"])
+        exit_code = ctl_main(["route", "doctor"])
         assert exit_code == 1
         out = capsys.readouterr().out
         assert "routes-load-failed" in out
@@ -361,7 +363,7 @@ class TestCliRouteDoctor:
                    'probe = ["fake", "--version"]\n')
         paths.routes_path().write_text(content, encoding="utf-8")
         with patch("nyxloom.adapters.probe", return_value=(True, "ok")):
-            exit_code = cli.main(["route", "doctor"])
+            exit_code = ctl_main(["route", "doctor"])
         assert exit_code == 0
         assert paths.routes_path().read_text(encoding="utf-8") == content
 
@@ -370,6 +372,6 @@ class TestCliRouteDoctor:
         capability_map's managed-block writers, it has no writer at all."""
         content = 'revision = "t"\n\n[routes.r1]\ncli = "nope"\nmodel = "m1"\n'
         paths.routes_path().write_text(content, encoding="utf-8")
-        exit_code = cli.main(["route", "doctor", "--no-probe"])
+        exit_code = ctl_main(["route", "doctor", "--no-probe"])
         assert exit_code == 1
         assert paths.routes_path().read_text(encoding="utf-8") == content

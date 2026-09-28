@@ -9,7 +9,7 @@ the resume by default. Mirrors `test_resync_apply.py`'s own convention: a
 real temporary git repo (via `sample_project`) produces genuine drift
 (a task believed MERGE_READY whose branch was actually merged while the
 project sat paused -- the motivating "paused for days" scenario), and
-`cli.main(["resume", ...])` end-to-end covers the CLI wiring.
+`ctl_main(["resume", ...])` end-to-end covers the CLI wiring.
 
 Task-level resume is deliberately NOT guarded (see `cmd_resume`'s
 docstring in cli.py for the argument); this file's last two tests cover
@@ -17,6 +17,8 @@ both branches of that decision.
 """
 
 from __future__ import annotations
+
+from nyxloom.cli_ctl import main as ctl_main
 
 import json
 import subprocess
@@ -79,7 +81,7 @@ def test_resume_project_blocked_by_drift(sample_project, tmp_state, capsys):
     _make_merged_drift(root, "demo-P50-drift", "feat/demo-P50-drift")
     flag = _pause()
 
-    exit_code = cli.main(["resume", "demo"])
+    exit_code = ctl_main(["resume", "demo"])
 
     assert exit_code != 0
     assert flag.exists()
@@ -93,7 +95,7 @@ def test_resume_project_no_drift_proceeds(sample_project, tmp_state, capsys):
     removed, PAUSE_CLEARED appended once, payload byte-identical ({})."""
     flag = _pause()
 
-    exit_code = cli.main(["resume", "demo"])
+    exit_code = ctl_main(["resume", "demo"])
 
     assert exit_code == 0
     assert not flag.exists()
@@ -111,7 +113,7 @@ def test_resume_project_force_overrides_drift(sample_project, tmp_state, capsys)
     _make_merged_drift(root, "demo-P51-drift", "feat/demo-P51-drift")
     flag = _pause()
 
-    exit_code = cli.main(["resume", "demo", "--force"])
+    exit_code = ctl_main(["resume", "demo", "--force"])
 
     assert exit_code == 0
     assert not flag.exists()
@@ -133,7 +135,7 @@ def test_resume_project_refusal_names_the_drifted_task_and_branch(
     _make_merged_drift(root, "demo-P52-drift", "feat/demo-P52-drift")
     _pause()
 
-    exit_code = cli.main(["resume", "demo"])
+    exit_code = ctl_main(["resume", "demo"])
     assert exit_code != 0
 
     captured = capsys.readouterr()
@@ -156,12 +158,12 @@ def test_resume_project_refusal_is_atomic_and_repeatable(sample_project, tmp_sta
     _make_merged_drift(root, "demo-P53-drift", "feat/demo-P53-drift")
     flag = _pause()
 
-    exit_code_1 = cli.main(["resume", "demo"])
+    exit_code_1 = ctl_main(["resume", "demo"])
     assert exit_code_1 != 0
     assert flag.exists()
     assert list(storage.iter_events("demo")) == []
 
-    exit_code_2 = cli.main(["resume", "demo"])
+    exit_code_2 = ctl_main(["resume", "demo"])
     assert exit_code_2 != 0
     assert flag.exists()
     assert list(storage.iter_events("demo")) == []
@@ -183,7 +185,7 @@ def test_resume_project_scan_failure_refuses_distinguishably_from_clean(
 
     flag = _pause()
 
-    exit_code = cli.main(["resume", "demo"])
+    exit_code = ctl_main(["resume", "demo"])
 
     assert exit_code != 0
     assert flag.exists()
@@ -210,7 +212,7 @@ def test_resume_project_force_through_scan_failure_records_which_override(
 
     _pause()
 
-    exit_code = cli.main(["resume", "demo", "--force"])
+    exit_code = ctl_main(["resume", "demo", "--force"])
 
     assert exit_code == 0
     events = list(storage.iter_events("demo"))
@@ -245,7 +247,7 @@ def test_resume_task_level_skips_the_drift_guard_even_for_the_drifted_task(
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.touch()
 
-    exit_code = cli.main(["resume", "demo", "demo-P01-test"])
+    exit_code = ctl_main(["resume", "demo", "demo-P01-test"])
 
     assert exit_code == 0
     assert not flag.exists()
@@ -273,7 +275,7 @@ def test_resume_task_level_unaffected_by_a_different_drifted_task(
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.touch()
 
-    exit_code = cli.main(["resume", "demo", "demo-P54-other"])
+    exit_code = ctl_main(["resume", "demo", "demo-P54-other"])
 
     assert exit_code == 0
     assert not flag.exists()

@@ -195,11 +195,13 @@ New subcommand group, wired like the existing `finding` group:
 
 | verb | effect |
 |---|---|
-| `new "<title>" [--type --severity --priority --component --provenance --filed-by --spec-owner --body-from <file>]` | allocates next id, scaffolds the entry (body template above; `--body-from` slurps prepared prose), writes file, regenerates INDEX, runs the BLG checks on the result, prints the path |
+| `new "<title>" [--type --severity --priority --component --context-estimate --folds-into --provenance --filed-by --spec-owner --body-from <file>]` | Scriptable create: allocates next id, scaffolds the entry (body template above; `--body-from` slurps prepared prose), validates the complete candidate before writing, regenerates INDEX, and prints the path. |
+| `new --interactive [TITLE] [same metadata options]` | Interactive create using the shared prompt API. TITLE is optional only in this mode; a supplied title and metadata options seed prompts. An empty optional answer clears that field. The body template and `--body-from` behavior remain the same. |
+| `edit <ID>` | Interactively edits title, type, severity, priority, component, context_estimate, folds_into, provenance, filed_by, and spec_owner. It preserves other frontmatter and body bytes, validates the complete candidate before writing, then regenerates INDEX. `status`, `filed_date`, `decisions`, `carved_handoff`, `merge_commit`, and closed-state fields remain owned by their existing transition functions. |
 | `promote <inbox-id>` | inbox item → managed entry: creates the entry carrying over `title/type/component/context_estimate/folds_into`, stamps `promoted_from`, REMOVES the item from the inbox, regenerates INDEX, lints |
 | `note <ID> "text"` | appends a dated paragraph under `## Updates` (the only sanctioned way to file follow-up evidence) |
 | `set-status <ID> <status> [--reason "..."]` | typed transition per the table above; refuses `merged`; stamps/clears `closed_*` |
-| `list [--status S]` | prints INDEX (optionally filtered) |
+| `list [--status S]` | Read-only listing, optionally filtered. If INDEX.md is missing, renders the current view in memory; does not write. |
 | `show <ID>` | prints the entry file |
 | `index` | regenerates INDEX.md |
 
@@ -208,6 +210,13 @@ item's block (bullet+continuations+header for the plain form; the item's
 YAML block-sequence lines for the spine form), never a YAML re-dump. PyYAML
 round-trips destroy comments and formatting; the byte-preserving discipline
 is `tick_merged`'s, reused.
+
+The prompt mechanics come from cli-extended's optional prompt API. Install the
+extra only for interactive use with `python -m pip install
+'nyxloom[interactive]'`; ordinary `nyxloom` commands and scriptable entry
+creation do not import Questionary. Cancellation, non-TTY use, an invalid
+prompt answer, or invalid existing metadata refuses before either the entry
+file or `INDEX.md` changes.
 
 **Merge auto-tick extends to entries**: where `cmd_merge` today calls
 `tick_merged()` against the single-file inbox, it additionally scans
@@ -291,7 +300,9 @@ testable per the docs-sync doctrine:
   transitions incl. refusal paths (missing `--reason`, `merged` target);
   index determinism (two runs byte-equal); entry auto-tick writes only the
   two tokens.
-- CLI: every verb happy path + refusals; `--body-from` missing file.
+- CLI: every verb happy path + refusals; interactive create/edit field and
+  choice coverage, seeding and clearing, `--body-from`, cancellation, non-TTY,
+  schema refusal, and exact body-byte preservation.
 - Lint: BLG2/BLG3 fire and silence conditions; absent-section silence.
 - Docs-sync: every TOML/YAML example in README/CONSUMERS/this spec parses
   with the SHIPPED loader and declares current schema versions; cross-doc

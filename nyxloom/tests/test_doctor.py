@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import json
 import os
 import subprocess
@@ -1020,7 +1022,7 @@ def test_cmd_doctor_liveness_flag_reports_critical_and_exits_nonzero(
     call -- observes a stale heartbeat and exits non-zero."""
     _aged_heartbeat("demo", age_seconds=999)
 
-    exit_code = cli.main(["doctor", "--liveness"])
+    exit_code = ctl_main(["doctor", "--liveness"])
     out = capsys.readouterr().out
 
     assert exit_code == 1
@@ -1029,7 +1031,7 @@ def test_cmd_doctor_liveness_flag_reports_critical_and_exits_nonzero(
 
 def test_cmd_doctor_liveness_flag_healthy_exits_zero(sample_project, tmp_state, capsys):
     _aged_heartbeat("demo", age_seconds=1)
-    exit_code = cli.main(["doctor", "--liveness"])
+    exit_code = ctl_main(["doctor", "--liveness"])
     assert exit_code == 0
 
 
@@ -1045,7 +1047,7 @@ def test_cmd_doctor_liveness_flag_skips_the_other_checks(sample_project, tmp_sta
         return []
     monkeypatch.setattr("nyxloom.doctor.doctor_project", _tripwire_doctor_project)
 
-    cli.main(["doctor", "--liveness"])
+    ctl_main(["doctor", "--liveness"])
     assert called == []
 
 
@@ -1407,7 +1409,7 @@ def test_cmd_doctor_critical_host_finding_forces_nonzero_exit(
     )
     monkeypatch.setattr('nyxloom.doctor.doctor_host', lambda: [host_finding])
 
-    exit_code = cli.main(['doctor'])
+    exit_code = ctl_main(['doctor'])
     out = capsys.readouterr().out
     assert exit_code != 0
     assert 'cgroup-slice-missing' in out
@@ -1421,5 +1423,5 @@ def test_cmd_doctor_no_critical_findings_zero_exit(
     monkeypatch.setattr('nyxloom.doctor.doctor_project', lambda cfg: [])
     monkeypatch.setattr('nyxloom.doctor.doctor_host', lambda: [])
 
-    exit_code = cli.main(['doctor'])
+    exit_code = ctl_main(['doctor'])
     assert exit_code == 0

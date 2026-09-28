@@ -27,7 +27,8 @@ The user directed me to remove the out-of-scope restriction as a blocker and
 authorized the necessary changes. P112 `scope.touch` now includes the Docker
 image/build and Ciu compose inputs listed above, and the worktree procedure
 records the isolated branch base. The amendment and required two-step
-`input_revision` refreeze are being committed before implementation resumes.
+`input_revision` refreeze were committed before implementation resumed
+(`918d2c6d`, then `e00423ee`).
 
 ## Evidence inspected
 
@@ -101,3 +102,34 @@ primary handoff/skill workflow and would be wrong after extraction moves to
 `nyxloom-harness`. The user has authorized the required adoption changes, so
 this exact guide is added to P112 `scope.touch`; the handoff input revision is
 refrozen in the separate follow-up commit as required.
+
+## Removal of the standing out-of-scope edit ban — 2026-09-28
+
+The user explicitly directed removal of Nyxloom's standing prohibition on
+necessary out-of-scope edits. Updated `nyxloom-trove/STANDING.md` so
+`scope.touch` is the planned inventory rather than an exclusive allowlist,
+including the deliverables and Never sections. Protected files, other active
+package ownership, explicit forbids, and unrelated edits remain guarded. The
+STANDING update is commit `03e7942e`; the handoff input revision was refrozen in
+`8c17cda2` after the approved CLI grammar decision commit `c4ba7d92`.
+
+## Parser-audit decision and current evidence — 2026-09-28
+
+D-018 records source-derived grammar refinements: backlog list status choices
+come from `backlog_entries.STATUSES`; finding record/list kind and finding
+record severity choices come from the finding registry; event sequence
+cursors are integers; and malformed finding `--field KEY=VALUE` syntax is
+rejected before dispatch. The reference matrix now has a row for every current
+command-local option, with placement and effect boundaries. A parser-vs-table
+test rejects missing, duplicate, or retired option rows and checks these
+source-derived values.
+
+Focused CLI evidence after these refinements:
+
+- `PYTHONPATH=src:../libraries/cli-extended/src /home/vscode/.venv/bin/python -m pytest -q tests/test_cli_adoption.py tests/test_cli_help.py tests/test_cli.py tests/test_cli_extract.py`: exit 0; every test in these four modules passed.
+- `PYTHONPATH=src:../libraries/cli-extended/src /home/vscode/.venv/bin/python -m nyxloom.cli lint nyxloom-trove/handoffs/nyxloom-P112-cli-extended-adoption.md`: exit 0; stdout `clean`; stderr empty.
+- An installed wheel built into `/tmp/nyxloom-p112-wheel-check` contained `cli_extended` and all four scripts. Installed with the estate venv's pip into `/tmp/nyxloom-p112-installed`; from `/tmp`, with only that target on `PYTHONPATH`, imports resolved to the installed target, root and nested help plus version succeeded, `questionary` was not imported, and the isolated `NYXLOOM_STATE` path was not created. This wheel predates D-018's parser-only changes and will be rebuilt after the implementation commit.
+
+The Nyxloom tester-unified gate has not started. Check the target worktree's
+gate history for an active run before launching it after the implementation
+commit; report each lane and the exact judged commit.

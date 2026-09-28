@@ -5,9 +5,9 @@ per issue). Design authority (WHY it exists, rejected alternatives):
 [`backlog-entries-spec.md`](backlog-entries-spec.md).
 
 The [canonical CLI reference](CLI-REFERENCE.md) records every accepted
-command, positional, option, default, side effect, and current adoption
-finding. Recipes below use the grammar currently shipped by the primary
-nyxloom command.
+command, positional, option, default, side effect, and migration from the old
+single-command surface. Nyxloom ships `nyxloom`, `nyxloom-harness`,
+`nyxloomctl`, and the service-only `nyxloomd` from one wheel.
 
 ## Operator CLI quick path
 
@@ -17,39 +17,64 @@ plan:
     project_id=my-project
     project_root=/path/to/project
     nyxloom --help
-    nyxloom project add "$project_id" "$project_root"
-    nyxloom project list
+    nyxloomctl project add "$project_id" "$project_root"
+    nyxloomctl project list
     nyxloom lint "$project_root/nyxloom-trove/handoffs/P001.md"
-    nyxloom status --project-id "$project_id"
-    nyxloom doctor --project-id "$project_id"
-    nyxloom resync "$project_id"
+    nyxloomctl status --project-id "$project_id"
+    nyxloomctl doctor --project-id "$project_id"
+    nyxloomctl resync "$project_id"
 
 The last command is a dry-run. Add --apply only after reviewing the proposed
 state transitions. The lower-confidence content-merge channel requires both
 --apply and --apply-content-merges. Project-level resume separately dry-runs
 resync and refuses unresolved drift unless --force is supplied.
 
+## Closed command choices
+
+These are the exact values consumers may need to type. `nyxloom --help`,
+`nyxloom-harness --help`, and `nyxloomctl --help` generate the full option
+catalog for the installed version.
+
+| Command option | Accepted values |
+|---|---|
+| Common `--log-level` | `error`, `warn`, `info`, `debug` |
+| `nyxloom onboard --maturity` | `empty`, `partial`, `mature` |
+| `nyxloom onboard --docs` | `present`, `absent` |
+| `nyxloom onboard --mode` | `derive-from-code`, `code-good-docs-absent`, `greenfield-define-it` |
+| `nyxloom backlog new --type` | `feature`, `bugfix` |
+| `nyxloom backlog new --severity` | `low`, `medium`, `high` |
+| `nyxloom backlog new --context-estimate` | `small`, `medium`, `large` |
+| `nyxloom backlog set-status STATUS` | `open`, `carved`, `fixed`, `withdrawn`, `obsolete` (`merged` is written only by merge auto-tick) |
+| `nyxloom backlog list --status` | `open`, `carved`, `merged`, `fixed`, `withdrawn`, `obsolete` |
+| `nyxloom-harness extract* --format` | `claude-code`, `codex`, `opencode`, `reasonix`; `extract-report` supports `claude-code`, `codex`, `opencode` |
+| `nyxloom-harness extract* --profile` | `all`, `operator-review` (`extract` and `extract-debug`) |
+| `nyxloom-harness extract* --gap-marker` | `full`, `inline`, `inline2`, `inline-short`, `none` |
+| `nyxloom-harness extract* --show-timestamps` | `pre`, `post`, `both`, `none` |
+| `nyxloom-harness extract* --extract-metadata` | `pre`, `post`, `both` |
+| `nyxloom-harness extract-report --type` | `report-sheet`, `report-detailed`, `csv` |
+| `nyxloom-harness extract-sessions --recurse` | `true`, `false` |
+| `nyxloomctl intake-bridge poll --transport` | `mmctl`, `rest` |
+| `nyxloomctl finding record/list --kind` | `generic`, `model_near_equivalent`, `cost_crossover` |
+| `nyxloomctl finding record --severity` | `info`, `note`, `important` |
+
 Use discuss for a copyable discussion route and decide to write a response:
 
 Replace these example IDs and choice text with an existing open decision and
 one of its recorded options:
 
-    nyxloom discuss "$project_id" D-001
-    nyxloom decide "$project_id" D-001 --choose option-a --note "Reviewed"
+    nyxloomctl discuss "$project_id" D-001
+    nyxloomctl decide "$project_id" D-001 --choose option-a --note "Reviewed"
 
-For managed backlog entries, `list` and `show` are read operations. The
-approved CLI target keeps `backlog list` read-only by rendering the current
-listing in memory if `INDEX.md` is absent. The shipped command has not changed
-yet and currently creates the missing index; use the explicit generator when
-you want a committed index:
+For managed backlog entries, `list` and `show` are read operations.
+`backlog list` renders the current listing in memory when `INDEX.md` is absent;
+it does not write. Use the explicit generator when you want a committed index:
 
     nyxloom backlog index --project-id "$project_id"
     nyxloom backlog list --project-id "$project_id"
     nyxloom backlog show NL-001 --project-id "$project_id"
 
-The missing-index write is recorded in D-002 and approved for removal. See the
-[CLI reference](CLI-REFERENCE.md#command-and-action-inventory) for the current
-behavior and implementation status.
+The command effects and safeguards are recorded in the
+[CLI reference](CLI-REFERENCE.md#current-command-and-option-contract).
 
 ## Adopt in a project (paste-able)
 
@@ -61,23 +86,38 @@ dir       = "nyxloom-trove/backlog"   # optional; this is the default
 id_prefix = "CIU"                     # your project's issue sequence
 ```
 
-Then:
+Then install the optional prompt support only when you want the interactive
+editor:
+
+```bash
+python -m pip install 'nyxloom[interactive]'
+```
+
+The regular `nyxloom` commands do not require Questionary. From the project
+checkout, lint and create a managed entry either noninteractively or with the
+wizard:
 
 ### Check the installed CLI
 
     nyxloom --version
 
 This prints `nyxloom <version>` on stdout and exits 0 without accessing the
-project registry. Current startup still creates the Nyxloom state log file
-before handling the version flag; cli-extended adoption will make help and
-version paths side-effect-free.
+project registry or creating Nyxloom state. Help and version are display-only
+paths on all three human CLIs.
 
 ```bash
-nyxloom lint                 # BLG2/BLG3 now active (silent before adoption)
+nyxloom lint                 # checks this checkout, including BLG2/BLG3
 nyxloom backlog new "clean leaves instance-scoped networks" \
     --type bugfix --severity medium --provenance "consumer P111 F4"
+nyxloom backlog new --interactive
+nyxloom backlog edit CIU-1
 nyxloom backlog index        # regenerate backlog/INDEX.md (lint enforces freshness)
 ```
+
+The interactive create form accepts the same metadata options as the
+scriptable form; supplied values seed prompts. Empty optional answers clear
+those fields. Edit preserves the entry body and transition-owned metadata,
+validates the full candidate frontmatter, then updates the entry and index.
 
 Commit `backlog/` including `INDEX.md` — it is generated, and `nyxloom lint`
 fails when it is stale, so never hand-edit it.
@@ -87,17 +127,18 @@ backlog-entry lint rule stays silent.
 
 ## Extract a session log
 
-`extract` and `extract-lossless` consume session logs from Claude Code, Codex,
+`nyxloom-harness extract` and `extract-lossless` consume session logs from Claude Code, Codex,
 Reasonix, and opencode. `extract-sessions` discovers Claude Code, Codex, and
 opencode families; `extract-report` supports those same three formats. These
 verbs are separate from nyxloom's registered-project commands:
 `SESSION_LOG` means a session file/store or bare session ID, not a registered
-project ID.
+project ID. These commands do not require project registration or daemon
+availability.
 
 Start with a normal compact brief:
 
 ```bash
-nyxloom extract /path/to/session.jsonl
+nyxloom-harness extract /path/to/session.jsonl
 ```
 
 The default `operator-review` profile selects the newest epoch reported by
@@ -109,7 +150,7 @@ single epoch. To prepare a broad fresh-agent resume with all prose across
 available epochs, use `all`:
 
 ```bash
-nyxloom extract /path/to/session.jsonl --profile all > full-prose.md
+nyxloom-harness extract /path/to/session.jsonl --profile all > full-prose.md
 ```
 
 The `all` profile removes checkpoint, word, time, and compaction stops. It
@@ -121,7 +162,7 @@ source provides, without printing tool
 inputs or results:
 
 ```bash
-nyxloom extract /path/to/session.jsonl --profile all \
+nyxloom-harness extract /path/to/session.jsonl --profile all \
   --show-tool-calls --show-tool-call-intent > full-with-tool-labels.md
 ```
 
@@ -154,8 +195,8 @@ For a specific span, `--epochs` selects a `/clear` epoch or inclusive range;
 checkpoint count is an extraction budget, not a semantic compaction point.
 
 ```bash
-nyxloom extract /path/to/session.jsonl --epochs 2 --max-compactions 1
-nyxloom extract /path/to/session.jsonl --epochs 1:2 --max-time-minutes 180
+nyxloom-harness extract /path/to/session.jsonl --epochs 2 --max-compactions 1
+nyxloom-harness extract /path/to/session.jsonl --epochs 1:2 --max-time-minutes 180
 ```
 
 If you only have the session ID, pass it directly. Resolution succeeds only
@@ -165,8 +206,8 @@ disambiguated. To select an adapter explicitly, `--format` accepts
 detection:
 
 ```bash
-nyxloom extract 019f0890-43a2-75c2-9143-3f8d10ad4484
-nyxloom extract ses_04bd4e9b4ffeBJm48T6v130DS6
+nyxloom-harness extract 019f0890-43a2-75c2-9143-3f8d10ad4484
+nyxloom-harness extract ses_04bd4e9b4ffeBJm48T6v130DS6
 ```
 
 Codex stores rollouts under `CODEX_HOME` (`~/.codex` by default). Bare UUID
@@ -183,7 +224,7 @@ test -n "$session_file" || {
   printf 'Codex rollout not found for %s\n' "$session_id" >&2
   exit 1
 }
-nyxloom extract "$session_file"
+nyxloom-harness extract "$session_file"
 ```
 
 Codex does not reserve IDs separately for each `CODEX_HOME`. New thread IDs
@@ -202,7 +243,7 @@ For an opencode database containing more than one session, use the store path
 and select the row explicitly:
 
 ```bash
-nyxloom extract /path/to/opencode.db --opencode-session ses_04bd4e9b4ffeBJm48T6v130DS6
+nyxloom-harness extract /path/to/opencode.db --opencode-session ses_04bd4e9b4ffeBJm48T6v130DS6
 ```
 
 If only the opencode ID is available, pass it as the positional session
@@ -217,8 +258,8 @@ highlighting by default unless `NO_COLOR` is set; `--color` forces ANSI for
 piped output, and `--no-color` disables ANSI without changing the render mode:
 
 ```bash
-nyxloom extract /path/to/session.jsonl --render-markdown --no-color
-nyxloom extract-lossless /path/to/session.jsonl --highlight --no-color
+nyxloom-harness extract /path/to/session.jsonl --render-markdown --no-color
+nyxloom-harness extract-lossless /path/to/session.jsonl --highlight --no-color
 ```
 
 The text brief defaults to `[HH:mm:ss]` timestamps before each event, with
@@ -233,9 +274,9 @@ the prose), `both`, or `none`. `--extract-metadata` accepts `pre`, `post`, or
 `inline-short`, or `none`; `--blank-lines` defaults to `0`.
 
 ```bash
-nyxloom extract /path/to/session.jsonl --show-timestamps both \
+nyxloom-harness extract /path/to/session.jsonl --show-timestamps both \
   --timestamp-format '%Y-%m-%d %H:%M' --extract-metadata pre
-nyxloom extract /path/to/session.jsonl --show-timestamps none --extract-metadata post
+nyxloom-harness extract /path/to/session.jsonl --show-timestamps none --extract-metadata post
 ```
 
 `--follow` uses the same timestamp format and appends an updated post cursor
@@ -253,13 +294,13 @@ Treat the marker as opaque: ordinal-less Codex rollouts use a namespaced
 event cursors retain numeric values.
 
 ```bash
-nyxloom extract /path/to/session.jsonl > snapshot.md
+nyxloom-harness extract /path/to/session.jsonl > snapshot.md
 # After more activity is written to the same source log:
-nyxloom extract /path/to/session.jsonl --since-file snapshot.md > delta.md
+nyxloom-harness extract /path/to/session.jsonl --since-file snapshot.md > delta.md
 # Or pin an exact historical span using marker values from that source:
-nyxloom extract /path/to/session.jsonl --since 166 --until 240 > span.md
+nyxloom-harness extract /path/to/session.jsonl --since 166 --until 240 > span.md
 # Older ordinal-less Codex rollouts can use a UI-prompt cursor directly:
-nyxloom extract /path/to/rollout.jsonl --since response_item-23 > delta.md
+nyxloom-harness extract /path/to/rollout.jsonl --since response_item-23 > delta.md
 ```
 
 `extract-debug` takes the same profile and selection/rendering flags as
@@ -267,7 +308,7 @@ nyxloom extract /path/to/rollout.jsonl --since response_item-23 > delta.md
 when a specific message appears inside an inline gap:
 
 ```bash
-nyxloom extract-debug /path/to/session.jsonl --profile all --no-color | less
+nyxloom-harness extract-debug /path/to/session.jsonl --profile all --no-color | less
 ```
 
 `extract-report` has three text shapes: `report-sheet` (default) is the
@@ -276,8 +317,8 @@ compact overview, `report-detailed` is a readable one-row-per-call table, and
 report shapes. The old `--detailed` spelling selects CSV.
 
 ```bash
-nyxloom extract-report /path/to/session.jsonl --type report-detailed
-nyxloom extract-report /path/to/session.jsonl --type csv > calls.csv
+nyxloom-harness extract-report /path/to/session.jsonl --type report-detailed
+nyxloom-harness extract-report /path/to/session.jsonl --type csv > calls.csv
 ```
 
 Discover sessions under tool-specific environment roots. Directory scanning
@@ -285,10 +326,10 @@ recurses by default (`--recurse true` is explicit); `--recurse false` limits
 it to direct children.
 
 ```bash
-nyxloom extract-sessions codex
-CODEX_HOME="$HOME/.codex2" nyxloom extract-sessions codex
-nyxloom extract-sessions "$HOME/.codex2/sessions" --recurse false
-nyxloom extract-sessions opencode
+nyxloom-harness extract-sessions codex
+CODEX_HOME="$HOME/.codex2" nyxloom-harness extract-sessions codex
+nyxloom-harness extract-sessions "$HOME/.codex2/sessions" --recurse false
+nyxloom-harness extract-sessions opencode
 ```
 
 Follow a live session after the initial one-shot result. The two verbs keep
@@ -296,7 +337,7 @@ their own semantics: `extract` applies its normal selection rules to new
 records, while `extract-lossless` prints every new prose/thinking block.
 
 ```bash
-nyxloom extract-lossless /path/to/session.jsonl --follow --highlight --bell
+nyxloom-harness extract-lossless /path/to/session.jsonl --follow --highlight --bell
 ```
 
 File-backed follow is incremental for large logs: an advancing file reads its
@@ -317,7 +358,7 @@ For live redaction, use `extract`: its `--redact-pattern` applies to both the
 initial brief and newly streamed phase-two output.
 
 ```bash
-nyxloom extract /path/to/session.jsonl --follow --redact-pattern 'API_KEY=[^ ]+'
+nyxloom-harness extract /path/to/session.jsonl --follow --redact-pattern 'API_KEY=[^ ]+'
 ```
 
 `--strip-stale-wakeups` is only a finished-span transform. The exact
@@ -333,12 +374,12 @@ environment variables supplied by nyxloom. The hook receives one of
 excerpt:
 
 ```bash
-nyxloom extract /path/to/session.jsonl --follow --attention-min-chars 4000 \
+nyxloom-harness extract /path/to/session.jsonl --follow --attention-min-chars 4000 \
   --on-attention 'printf "%s: %s\n" "$NYXLOOM_ATTENTION_REASON" "$NYXLOOM_ATTENTION_EXCERPT" >&2'
 ```
 
 `--notify-project PROJECT_ID` can additionally use the `[notify]` channel of
-an already registered project. It is opt-in; run `nyxloom project list` to
+an already registered project. It is opt-in; run `nyxloomctl project list` to
 choose the project ID. The notification includes the flagged excerpt, unlike
 the ordinary fixed-template nyxloom notifications.
 

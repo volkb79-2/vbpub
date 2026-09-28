@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nyxloom.cli_harness import main as harness_main
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -490,7 +492,7 @@ def test_cli_follow_and_json_flag_edges_return_human_errors(tmp_path, capsys):
         ["--max-time-minutes", "5"],
         ["--extract-metadata", "pre"],
     ):
-        assert cli.main(["extract", str(source), "--follow", *extra]) == 1
+        assert harness_main(["extract", str(source), "--follow", *extra]) == 1
         error = capsys.readouterr().err
         assert "cannot be combined" in error or "cannot keep" in error
 
@@ -499,7 +501,7 @@ def test_cli_follow_and_json_flag_edges_return_human_errors(tmp_path, capsys):
         ["--timestamp-format", "%H:%M"],
         ["--extract-metadata", "pre"],
     ):
-        assert cli.main(["extract", str(source), "--json", *extra]) == 1
+        assert harness_main(["extract", str(source), "--json", *extra]) == 1
         assert "only affect" in capsys.readouterr().err
 
 
@@ -539,9 +541,9 @@ def test_cli_report_conflict_and_detailed_json_paths(tmp_path, capsys):
              "output_tokens": 3,
          }, "content": [{"type": "text", "text": "Found the issue."}]}}]) + "\n")
 
-    assert cli.main(["extract-report", str(source), "--detailed", "--type", "report-detailed"]) == 1
+    assert harness_main(["extract-report", str(source), "--detailed", "--type", "report-detailed"]) == 1
     assert "legacy alias" in capsys.readouterr().err
-    assert cli.main(["extract-report", str(source), "--type", "report-detailed", "--json"]) == 0
+    assert harness_main(["extract-report", str(source), "--type", "report-detailed", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)
 
 
@@ -550,12 +552,12 @@ def test_cli_debug_rejects_missing_cursor_and_unsupported_tool_visibility(tmp_pa
     source.write_text("{}\n")
     no_cursor = tmp_path / "wrong-format-cursor.txt"
     no_cursor.write_text("<!-- nyxloom-extract: format=codex marker=5 -->\n")
-    assert cli.main([
+    assert harness_main([
         "extract-debug", str(source), "--format", "claude-code", "--since-file", str(no_cursor),
     ]) == 1
     assert "produced by the 'codex' adapter" in capsys.readouterr().err
 
-    assert cli.main([
+    assert harness_main([
         "extract-debug", str(source), "--format", "claude-code", "--show-tool-call-intent",
     ]) == 1
     assert "requires --show-tool-calls" in capsys.readouterr().err
@@ -563,7 +565,7 @@ def test_cli_debug_rejects_missing_cursor_and_unsupported_tool_visibility(tmp_pa
     from nyxloom.session_extract import adapters
 
     monkeypatch.setattr(adapters, "detect", lambda _path: SimpleNamespace(name="reasonix"))
-    assert cli.main(["extract-debug", str(source), "--show-tool-calls"]) == 1
+    assert harness_main(["extract-debug", str(source), "--show-tool-calls"]) == 1
     assert "not supported for 'reasonix'" in capsys.readouterr().err
 
 
@@ -573,7 +575,7 @@ def test_cli_extract_rejects_tool_visibility_for_opencode(tmp_path, capsys, monk
     import nyxloom.session_extract as extraction
 
     monkeypatch.setattr(extraction, "extract", lambda *args, **kwargs: SimpleNamespace(format="opencode"))
-    assert cli.main(["extract", str(source), "--format", "opencode", "--show-tool-calls"]) == 1
+    assert harness_main(["extract", str(source), "--format", "opencode", "--show-tool-calls"]) == 1
     assert "not supported for 'opencode'" in capsys.readouterr().err
 
 
@@ -588,7 +590,7 @@ def test_extract_debug_ledger_accepts_claude_and_rejects_codex(tmp_path, capsys)
          "message": {"role": "assistant", "content": [{"type": "text", "text": "I checked it."}]}},
     ]
     claude.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
-    assert cli.main(["extract-debug", str(claude), "--ledger", "--no-color"]) == 0
+    assert harness_main(["extract-debug", str(claude), "--ledger", "--no-color"]) == 0
     assert "I checked it." in capsys.readouterr().out
 
     codex_path = tmp_path / "rollout.jsonl"
@@ -597,7 +599,7 @@ def test_extract_debug_ledger_accepts_claude_and_rejects_codex(tmp_path, capsys)
     }) + "\n" + json.dumps({
         "ordinal": 1, "type": "event_msg", "payload": {"type": "user_message", "message": "check this"},
     }) + "\n", encoding="utf-8")
-    assert cli.main(["extract-debug", str(codex_path), "--ledger"]) == 1
+    assert harness_main(["extract-debug", str(codex_path), "--ledger"]) == 1
     assert "--ledger does not support 'codex'" in capsys.readouterr().err
 
 
@@ -623,15 +625,15 @@ def test_extract_sessions_hints_use_configured_paths_and_reject_conflicting_form
         ("codex", tmp_path / "codex-home" / "sessions", "codex"),
         ("opencode", tmp_path / "configured.db", "opencode"),
     ):
-        assert cli.main(["extract-sessions", hint]) == 0
+        assert harness_main(["extract-sessions", hint]) == 0
         output = capsys.readouterr().out
         assert str(expected) in output
         assert calls[-1] == (expected, fmt, True)
 
-    assert cli.main(["extract-sessions", "claude", "--format", "codex"]) == 1
+    assert harness_main(["extract-sessions", "claude", "--format", "codex"]) == 1
     assert "conflicting with --format" in capsys.readouterr().err
 
     monkeypatch.delenv("OPENCODE_DB")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
-    assert cli.main(["extract-sessions", "opencode"]) == 0
+    assert harness_main(["extract-sessions", "opencode"]) == 0
     assert calls[-1][0] == tmp_path / "xdg" / "opencode" / "opencode.db"
