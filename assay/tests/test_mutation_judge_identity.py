@@ -749,6 +749,13 @@ def test_hung_trace_rejects_unproved_idle_or_intervening_progress():
     assert mutation._valid_hung_resource_evidence(missing) is False
 
 
+def test_hung_trace_rejects_idle_span_shorter_than_claimed():
+    evidence = _hung_evidence()
+    evidence["idle_eligible_s"] = 30.0
+
+    assert mutation._valid_hung_resource_evidence(evidence) is False
+
+
 def test_maximum_complete_hung_trace_fits_mutation_state_record_limit():
     job = _job()
     evidence = _hung_evidence(sample_count=mutation.liveness._LIVENESS_RESOURCE_TRACE_MAX_SAMPLES)
