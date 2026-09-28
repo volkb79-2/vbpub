@@ -4829,3 +4829,50 @@ the current three-container mutation allowance. Do not launch an RG-55 P1/P6
 mutation campaign until one of those campaigns terminates; do not interfere
 with any of the three. The separate RG-55 B107 coverage lane is a non-mutation
 test and remains within its own declared gate resources.
+
+### RW-361 — 2026-09-28 23:13:43Z — B107 review accepted; exact gate evidence still needs reconciliation
+
+A fresh caller-configured `gpt-6-sol` xhigh review ran in isolated worktree
+`.worktrees/rg55-assay-b107-current-main-20260928` (review session
+`01a0ea39-0242-7af2-a5ac-fc6a2257943b`). The reviewer ACCEPTED candidate
+`801fa0332515bb6c34743cf133acc51fc28a2cc1`; its only new commit is the
+review artifact at `415686f50be8d194b8e465fa9a000953878e88da`. The report
+confirms the added cached-idle-span oracle reaches the intended rejection
+branch, the intact cache record is accepted, and the inflated idle span is
+refused. The four production files match the already accepted source.
+
+The reviewer cited controller-supplied focused `tester-unified` and
+changed-area coverage totals (555 tests; 326/326 changed lines and 162/162
+branches), but the receipts were not independently identifiable as clean
+exact-tree evidence during this check. The candidate's
+`assay/.run-gate/history.json` records `rg55-b107-coverage` as exit 0 while
+also recording `dirty=true` and `history_eligible=false`; the available
+coverage artifacts include older runs on a different worktree. Therefore do
+not merge B107 yet. Reproduce the exact candidate's short registered gate and
+100% changed-line/branch judgment from a clean committed tree, retaining the
+actual logs and verdict; then provisionally merge if those are green. The
+reviewer's ACCEPT remains valid and no code repair is requested by that
+review.
+
+P6's new code repair is committed at
+`738bf1f5cb8ea52b751078052d52a551feee485e`: stop-time placement restoration
+now enumerates host-visible survivors, verifies membership, uses the exact
+origin cgroup first, and falls back on `ESRCH` only through the derived
+systemd unit/subgroup. Pre-commit focused tests passed 122/122 with
+`lib/placement.py` at 398/398 statements and 166/166 branches. Registered
+P6 gates, the live move-back/fail-closed probes, a clean current-tree R2, and
+the full gate are still outstanding. P6's branch is based at `4d32bcfe`,
+while shared main is `87c13eff`; reconcile after B107's clean evidence and
+integration. P6's fresh Sol review series starts at round 5 after those gates
+and live probes. The reusable P55 packet and P6 review handoff now make Sol
+route verification the caller's responsibility; the reviewer is not asked
+to self-attest.
+
+At the process inventory timestamp `2026-09-28 22:56:51Z`, all three
+mutation slots remained occupied by other work: PIDs `1573821`, `3330133`,
+and `3351574`, containers
+`run-gate-vbpub-mutation-1573821-1790475805`,
+`run-gate-vbpub-mutation-3330133-1790628741`, and
+`run-gate-vbpub-session-extract-3351574-1790629480`. No RG-55 campaign was
+started; leave those runs untouched and make no routine status observation
+before `23:21:51Z` absent a concrete earlier completion or error.
