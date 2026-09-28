@@ -201,4 +201,20 @@ Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adop
 - Updated `wrapper.launch_detached` to remove a stale PID marker before each launch and retry until it can parse a complete PID or reaches its existing 10-second failsafe. Added a deterministic test that presents a stale value, then an empty marker, then the current PID and verifies that only the current PID is returned.
 - The wrapper and test additions are covered by P112 `scope.touch` and the handoff amendment above, under the user's authorization for necessary scope expansion.
 
-The wrapper-race fix must be committed, then rebuild and verify the isolated wheel and repeat the full gate against that exact implementation revision.
+## Installed-wheel proof for implementation commit d08451bf — 2026-09-28
+
+- Build command: `/home/vscode/.venv/bin/python -m build --wheel --outdir /tmp/nyxloom-p112-wheel-d08451bf`; exit 0 using the isolated PEP 517 environment.
+- Artifact: `/tmp/nyxloom-p112-wheel-d08451bf/nyxloom-0.8.1.dev500+gd08451bf-py3-none-any.whl`.
+- Installed into `/tmp/nyxloom-p112-installed-d08451bf` with the estate venv's pip and `--no-deps`; exit 0. From `/tmp`, `nyxloom` and `cli_extended` both imported from the install target.
+- Metadata exposed exactly `nyxloom`, `nyxloom-harness`, `nyxloomctl`, and `nyxloomd` with their intended callable targets. The three human CLIs passed `--help` and `--version`; `nyxloom-harness extract --help` and `nyxloomctl doctor --help` passed. `questionary` remained unloaded and the isolated state directory was not created.
+
+## Fifth tester-unified attempt — 2026-09-28
+
+Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adoption tester-unified` from `nyxloom/`.
+
+- Judged commit: `d08451bf060d86dea4f7211b0ae9e901ea9607b9`.
+- `tester-unified`: `FAIL/UNCOVERED_BRANCHES`, exit 1 after 268 seconds. Baseline pytest passed. R1 measured all 949/949 executable lines and 133/134 branches, with one uncovered branch at `src/nyxloom/cli.py:1358`: `cmd_discuss` re-raises `DecisionError` when `--traceback` is set.
+- Peak memory was 791 MiB, p90 725 MiB, and memory-full stalls totaled 41.3 seconds. Progress was checked at about 90 seconds; the progress stream showed baseline pytest active at 65 seconds. It finished after 264 seconds and the verdict was written at 268 seconds.
+- Added `test_discuss_traceback_reraises` in `tests/test_cli.py`; focused validation of the new traceback case and the existing ordinary missing-decision error passed: `PYTHONPATH=src:../libraries/cli-extended/src /home/vscode/.venv/bin/python -m pytest -q -ra tests/test_cli.py::test_discuss_traceback_reraises tests/test_cli.py::test_operator_project_selectors_reject_unknown_ids_and_discuss_missing_decision`; exit 0.
+
+The focused branch correction must be committed, then rebuild and verify the isolated wheel and repeat the full gate against that exact revision.

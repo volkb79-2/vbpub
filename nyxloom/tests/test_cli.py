@@ -1092,6 +1092,18 @@ def test_decide_debug_reraises(sample_project, tmp_state, monkeypatch):
         ctl_main(["--traceback", "decide", "demo", "D-002", "--choose", "b"])
 
 
+def test_discuss_traceback_reraises(sample_project, tmp_state, monkeypatch):
+    from nyxloom import decisions
+
+    def mock_discuss(cfg, decision_id):
+        raise decisions.DecisionError("test error")
+
+    monkeypatch.setattr("nyxloom.decisions.discuss", mock_discuss)
+
+    with pytest.raises(decisions.DecisionError):
+        ctl_main(["--traceback", "discuss", "demo", "D-002"])
+
+
 # ==========================================================================
 # PACKAGE P05c (docs/plan-logging.md, logging sweep): the load-bearing
 # byte-unchanged CLI oracle, plus direct coverage of cli.py's own
