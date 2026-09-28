@@ -231,13 +231,113 @@ def test_resume_refuses_changed_source(tmp_path):
         }],
     }), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="predates a source or test change"):
+    with pytest.raises(ValueError, match="predates a product-source change"):
         mutation_campaign._resume_results(
             evidence_path=evidence,
             repo_root=repo,
             resume=True,
             base=previous_head,
             head=head,
+            project_prefix=Path("cmru"),
+            assay_source_commit="assay-commit",
+            test_argv=["pytest", "tests"],
+            jobs=[job],
+            max_mutants=1,
+            timeout_seconds=120,
+        )
+
+
+def test_resume_accepts_only_strictly_additive_test_suites(tmp_path):
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    (project / "src" / "cmru").mkdir(parents=True)
+    tests = project / "tests"
+    tests.mkdir()
+    source = project / "src" / "cmru" / "thing.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    test_file = tests / "test_thing.py"
+    test_file.write_text("def test_ok(): assert True\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "cmru"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+    previous_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    job = _job()
+    previous = {
+        "base": previous_head,
+        "head": previous_head,
+        "project_prefix": "cmru",
+        "assay_source_commit": "assay-commit",
+        "max_mutants": 1,
+        "operators": list(mutation_campaign.OPERATORS),
+        "test_argv": ["pytest", "tests"],
+        "timeout_seconds": 120,
+        "candidate_count": 1,
+        "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
+        "results": [{
+            "path": job.path,
+            "line": job.site.lineno,
+            "operator": job.site.operator,
+            "description": job.site.description,
+            "exit_code": 1,
+            "outcome": "killed",
+        }],
+    }
+    evidence = project / ".assay" / "mutation-cmru.json"
+    evidence.parent.mkdir()
+    evidence.write_text(json.dumps(previous), encoding="utf-8")
+
+    (tests / "test_more_contracts.py").write_text(
+        "def test_more(): assert True\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "cmru/tests"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "add tests"],
+        check=True,
+    )
+    additive_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+
+    resumed = mutation_campaign._resume_results(
+        evidence_path=evidence,
+        repo_root=repo,
+        resume=True,
+        base=previous_head,
+        head=additive_head,
+        project_prefix=Path("cmru"),
+        assay_source_commit="assay-commit",
+        test_argv=["pytest", "tests"],
+        jobs=[job],
+        max_mutants=1,
+        timeout_seconds=120,
+    )
+    assert resumed == [previous["results"][0]]
+
+    test_file.write_text("def test_ok(): assert False\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "cmru/tests"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "rewrite existing test"],
+        check=True,
+    )
+    changed_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    with pytest.raises(ValueError, match="strictly additive test suite"):
+        mutation_campaign._resume_results(
+            evidence_path=evidence,
+            repo_root=repo,
+            resume=True,
+            base=previous_head,
+            head=changed_head,
             project_prefix=Path("cmru"),
             assay_source_commit="assay-commit",
             test_argv=["pytest", "tests"],

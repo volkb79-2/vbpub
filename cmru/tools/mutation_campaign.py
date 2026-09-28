@@ -12,6 +12,7 @@ to CMRU.  The evidence records the resolved Assay version and source commit.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -154,6 +155,57 @@ def _changed_since(repo_root: Path, older: str, newer: str, paths: Sequence[str]
     ).returncode != 0
 
 
+def _campaign_tree_status(repo_root: Path, project_prefix: Path) -> str:
+    paths = [
+        (project_prefix / "src").as_posix(),
+        (project_prefix / "tests").as_posix(),
+        (project_prefix / "pyproject.toml").as_posix(),
+    ]
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", *paths],
+        cwd=repo_root, check=False, text=True, capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"could not inspect mutation source/test state: {result.stderr.strip()}")
+    return result.stdout
+
+
+def _test_manifest(repo_root: Path, project_prefix: Path) -> dict[str, Any]:
+    """Fingerprint the committed tests and pytest config used by candidates."""
+    project_root = repo_root / project_prefix
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--", (project_prefix / "tests").as_posix()],
+        cwd=repo_root, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if listed.returncode != 0:
+        raise RuntimeError(f"could not list mutation test files: {listed.stderr.decode(errors='replace').strip()}")
+    files: dict[str, str] = {}
+    for raw_path in listed.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative = raw_path.decode("utf-8")
+        path = repo_root / relative
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"mutation test must be a regular file: {relative}")
+        files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    pyproject = project_root / "pyproject.toml"
+    if pyproject.is_symlink() or not pyproject.is_file():
+        raise ValueError(f"mutation pytest configuration must be a regular file: {pyproject}")
+    return {
+        "files": files,
+        "pyproject_sha256": hashlib.sha256(pyproject.read_bytes()).hexdigest(),
+    }
+
+
+def _test_manifest_is_superset(previous: Any, current: dict[str, Any]) -> bool:
+    if not isinstance(previous, dict) or not isinstance(previous.get("files"), dict):
+        return False
+    if previous.get("pyproject_sha256") != current["pyproject_sha256"]:
+        return False
+    current_files = current["files"]
+    return all(current_files.get(path) == digest for path, digest in previous["files"].items())
+
+
 def _resume_results(
     *,
     evidence_path: Path,
@@ -188,15 +240,24 @@ def _resume_results(
     ]
     if not isinstance(previous_head, str):
         raise ValueError("mutation resume evidence has no prior head commit")
-    if _changed_since(
-        repo_root=repo_root,
-        older=previous_head,
-        newer=head,
-        paths=[*source_paths, *test_paths],
-    ):
-        # Previously killed candidates remain valid after docs/tooling edits,
-        # but not after a product-source change or a changed/removed test.
-        raise ValueError("mutation resume evidence predates a source or test change")
+    if _changed_since(repo_root, previous_head, head, source_paths):
+        raise ValueError("mutation resume evidence predates a product-source change")
+    if _changed_since(repo_root, previous_head, head, [test_paths[-1]]):
+        raise ValueError("mutation resume evidence predates a pytest configuration change")
+    if _campaign_tree_status(repo_root, project_prefix):
+        raise ValueError("mutation resume requires committed source, tests, and pytest configuration")
+    current_test_manifest = _test_manifest(repo_root, project_prefix)
+    previous_test_manifest = previous.get("test_manifest")
+    if previous_test_manifest is None and previous_head == head:
+        # Legacy evidence is resumable at the identical clean commit only. New
+        # runs persist this fingerprint so additive test files can be proven safe.
+        previous_test_manifest = current_test_manifest
+    if not _test_manifest_is_superset(previous_test_manifest, current_test_manifest):
+        raise ValueError(
+            "mutation resume requires an unchanged or strictly additive test suite"
+        )
+    # Adding tests is monotonic: an old killed candidate still fails the larger
+    # suite. Existing tests, test configuration, and product source must match.
     if (
         previous.get("base") != base
         or previous.get("candidate_count") != len(jobs)
@@ -263,6 +324,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         project_prefix = project_root.relative_to(repo_root)
     except ValueError as exc:
         raise ValueError("--project-root must be inside --repo-root") from exc
+    if _campaign_tree_status(repo_root, project_prefix):
+        raise ValueError("mutation campaign requires committed source, tests, and pytest configuration")
 
     sys.path.insert(0, str(assay_source / "src"))
     from assay import __version__ as assay_version
@@ -338,6 +401,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         "timeout_seconds": args.timeout_seconds,
         "operators": list(OPERATORS),
         "test_argv": test_argv,
+        "test_manifest": _test_manifest(repo_root, project_prefix),
         "candidate_count": len(jobs),
         "baseline_exit_code": baseline.returncode,
         "status": "running",
