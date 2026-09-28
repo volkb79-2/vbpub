@@ -217,4 +217,35 @@ Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adop
 - Peak memory was 791 MiB, p90 725 MiB, and memory-full stalls totaled 41.3 seconds. Progress was checked at about 90 seconds; the progress stream showed baseline pytest active at 65 seconds. It finished after 264 seconds and the verdict was written at 268 seconds.
 - Added `test_discuss_traceback_reraises` in `tests/test_cli.py`; focused validation of the new traceback case and the existing ordinary missing-decision error passed: `PYTHONPATH=src:../libraries/cli-extended/src /home/vscode/.venv/bin/python -m pytest -q -ra tests/test_cli.py::test_discuss_traceback_reraises tests/test_cli.py::test_operator_project_selectors_reject_unknown_ids_and_discuss_missing_decision`; exit 0.
 
-The focused branch correction must be committed, then rebuild and verify the isolated wheel and repeat the full gate against that exact revision.
+The focused branch correction was committed. The isolated wheel was then rebuilt and verified, and the full gate was repeated against that exact revision as recorded below.
+
+## Final installed-wheel proof for implementation commit 75157505 — 2026-09-28
+
+- Build command: `/home/vscode/.venv/bin/python -m build --wheel --outdir /tmp/nyxloom-p112-wheel-75157505`; exit 0 using the isolated PEP 517 build environment.
+- Artifact: `/tmp/nyxloom-p112-wheel-75157505/nyxloom-0.8.1.dev501+g75157505-py3-none-any.whl`.
+- Installed with `/home/vscode/.venv/bin/python -m pip install --target /tmp/nyxloom-p112-installed-75157505 --no-deps <wheel>`; exit 0. Running from `/tmp` with only the install target on `PYTHONPATH` resolved `nyxloom` and `cli_extended` from that installed target.
+- Wheel metadata exposes exactly `nyxloom = nyxloom.cli:main`, `nyxloom-harness = nyxloom.cli_harness:main`, `nyxloomctl = nyxloom.cli_ctl:main`, and `nyxloomd = nyxloom.daemon_entrypoint:main`.
+- `nyxloom`, `nyxloom-harness`, and `nyxloomctl` each passed `--help` and `--version`; `nyxloom-harness extract --help` and `nyxloomctl doctor --help` passed. `questionary` remained unloaded, and the isolated `NYXLOOM_STATE=/tmp/nyxloom-p112-wheel-state-75157505` path was not created.
+
+## Sixth tester-unified attempt — 2026-09-28 — final implementation result
+
+Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adoption tester-unified` from `nyxloom/`.
+
+- Judged commit: `75157505452b017110328b1a7b809378b88abed3`; the worktree was clean and history confirms this exact commit.
+- `tester-unified`: PASS, exit 0. Run-gate history records 274.298 seconds total and a 268-second lane duration. The progress stream shows the pytest command completing at 260.491 seconds and the verdict written at 264.377 seconds.
+- R0: PASS. R1: PASS with 949/949 executable lines and 134/134 branches covered (100%); no missing lines, missing branches, exclusions, or unclassified lines. The gate's changed-line floor is 100% and branch coverage is required.
+- Runtime footprint: 860,864,512-byte peak (821 MiB), 765,255,680-byte p90 (730 MiB), 2.107 average CPU cores, and 40.867 seconds of memory-full stalls; no OOM or limit-drift event.
+- Verdict artifact: `nyxloom/.assay/verdict-tester-unified.json`. It names lane `tester-unified`, commit `75157505452b017110328b1a7b809378b88abed3`, exit 0, and verified R0/R1 PASS claims.
+- Exact output tail captured from run-gate:
+
+  ```text
+  tester-unified: PASS (exit 0)
+    commit: 75157505452b017110328b1a7b809378b88abed3
+    argv: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-branch --cov-report=json:coverage.json
+  run-gate: footprint tester-unified: peak 821 MiB, p90 730 MiB, 2.11 cores avg, 40.9 s stalled on memory (full); history median peak - (0 runs)
+  run-gate: verdict artifact: /workspaces/vbpub/.worktrees/nyxloom-cli-adoption/nyxloom/.assay/verdict-tester-unified.json
+  run-gate: state directory: /workspaces/vbpub/.run-gate/assay-state/.worktrees/nyxloom-cli-adoption/nyxloom
+  run-gate: lane 'tester-unified' exit 0
+  ```
+
+This closes the final uncovered traceback branch from attempt five. The earlier failed attempts and their causes remain recorded above; they are not counted as final gate evidence. The final implementation commit passed both declared rigor levels, and its isolated wheel proof passed before this documentation-only refreeze.
