@@ -143,3 +143,11 @@ Command: `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adop
 - The lane reported peak memory 900 MiB, p90 879 MiB, and 13.9 seconds stalled on memory. The recorded R0 cause is the source import setup and the two ratchets above; R1 also had no usable suite coverage while imports failed.
 - The fix adds the sibling library source to both CLI-related Assay lane environments, classifies the boundary translation, lowers the retired CLI-handler budget, and tests the previously excluded branches. No coverage threshold or exclusion policy is relaxed.
 - Focused regression command after the fixes: `PYTHONPATH=src:../libraries/cli-extended/src /home/vscode/.venv/bin/python -m pytest -q tests/test_exception_census.py tests/test_cli_adoption.py tests/test_cli_help.py tests/test_cli.py`; exit 0. The updated P112 handoff lint also returned exit 0 with stdout `clean` and empty stderr.
+
+## Rebuilt installed-wheel evidence — 2026-09-28
+
+- Implementation commit: `01e50efacff4f6c6f9cd462fb8529e1a90cfc5b0`.
+- Build command: `/home/vscode/.venv/bin/python -m build --wheel --outdir /tmp/nyxloom-p112-wheel-01e50efa`; exit 0 using the isolated PEP 517 environment and the exact pinned build dependencies.
+- Artifact: `/tmp/nyxloom-p112-wheel-01e50efa/nyxloom-0.8.1.dev496+g01e50efa-py3-none-any.whl`.
+- Installed with `/home/vscode/.venv/bin/python -m pip install --target /tmp/nyxloom-p112-installed-01e50efa --no-deps <wheel>`; from `/tmp`, both `nyxloom` and `cli_extended` imported from that target. Metadata listed exactly `nyxloom`, `nyxloom-harness`, `nyxloomctl`, and `nyxloomd` with their intended callable targets.
+- The installed `nyxloom`, `nyxloom-harness`, and `nyxloomctl` each passed `--help` and `--version`; `nyxloom-harness extract --help` and `nyxloomctl doctor --help` passed. An in-process installed-wheel `nyxloom --help` check confirmed `questionary` stayed unloaded and the isolated `NYXLOOM_STATE=/tmp/nyxloom-p112-wheel-state-01e50efa` path was not created.
