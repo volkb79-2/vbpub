@@ -4531,3 +4531,35 @@ P1's empty-`comm` survivor repair at `e55a547cf6eec3a19242e3488fd4aae73e177b28`
 received Sol round-5 `ACCEPT`; the report is committed as `0080eba7` on the
 P1 fix branch. This acceptance covers the repair only. Fresh short gates and
 R2 still need to judge the resulting committed tree before release.
+
+### RW-349 — 2026-09-28 03:22:09Z — P1 R2 attempt stopped after baseline drift narrowed scope
+
+The controller launched the P1 R2 lane on `0080eba7f91128d4df2d50368b7edaf1465f7805`
+in the prepared CIU worktree. At the 90-second check it was healthy under
+`dev-gates.slice` with `NanoCpus=3000000000`, and the baseline completed. Its
+candidate plan unexpectedly selected only five mutants. The separately read
+prior full R2 verdict resolves its base to
+`e5e9b95c5ac8be3452c93f1066f9436347f862fd` and judged 125 mutants. The nested
+clone's `origin/main` had since advanced to `fb9d8f5b` (reflog: fetches at
+2026-09-27 23:45:12Z and 2026-09-28 00:20:44Z), contrary to RW-329/RW-330's
+fixed-base instruction. The new plan consequently measured only a small
+post-base diff and is not a valid replacement for P1's full campaign.
+
+The controller stopped only its exact container
+`run-gate-rg55-p1-r2-isolated-r2-2634647-1790565019`; run-gate history records
+exit 143 on the clean tree, and no final assay verdict file exists. The
+partial baseline/two-candidate progress and profiling artifacts are preserved
+in that worktree and are not mutation evidence. No unrelated container or
+worktree was changed. The isolated clone's remote-tracking ref was restored
+with an old-value-checked ref update to the planned `e5e9b95c` base.
+
+A new CIU worktree `rg55-p1-r2-pinned-20260928` is ready at the same clean
+`0080eba7` tree; both `origin/main` and its merge base resolve to `e5e9b95c`.
+Read-only `assay plan r2` confirms the intended 125 candidates (40 access, 4
+serve, 1 summary, 72 targets, 8 version; operators: 61 compare, 34 boolop, 5
+bool-constant, 25 falsy). The planned campaign is not launched until the
+memory-PSI admission threshold is met; the aborted run ended with host
+`memory full avg10=24.84%` and 1-minute load average 10.06. CIU could not
+allocate its optional per-instance Docker network because the address pools
+are exhausted; the checkout itself is ready and the assay lane does not use
+that network.
