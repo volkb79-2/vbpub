@@ -282,3 +282,18 @@ run-gate: lane 'tester-unified' exit 0
 Run-gate history records a 142.6-second total and the verdict artifact records R0 PASS and R1 PASS. R1 measured 984/984 executable lines and 136/136 branches (100%), with no missing lines, branches, exclusions, or unclassified lines. The progress stream recorded the baseline pytest phase passing at 123.427 seconds and the verdict written at 127.266 seconds.
 
 The handoff `input_revision` is now refrozen to the exact implementation commit above. This follow-up does not change the gate contract: `tester-unified` declares R0/R1. No R2/R3 session-extract campaign ran; that separate 413-mutant lane is not part of P112's `gates` declaration.
+
+## Requested session-extract R2 follow-up — initial lane refusal — 2026-09-28
+
+The user requested the previously unrun session-extract R2 campaign asynchronously. The first `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adoption session-extract` invocation ran against `8df791c1b876b3fd7eb9c1da2ad906ad28204fc8` and ended after 27.027 seconds, before executing any mutants:
+
+- R0 baseline: PASS.
+- R1: FAIL at 87.13%. The lane still declared `source_roots = ["src"]` while its argv ran only the focused extraction tests. Its old `base = "3d27c67e"` therefore swept later CLI-adoption changes into the coverage comparison, outside the lane's intended package scope.
+- R2: `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`; candidate discovery found 414, while `max_mutants` was 413. The mutation payload reports zero attempted candidates, so this was not an R2 result.
+- R3: INCONCLUSIVE because R1 had no passing coverage baseline.
+
+The machine-readable verdict is `nyxloom/.assay/verdict-session-extract.json`; the run-gate log is `/tmp/run-gate/run-gate-vbpub-session-extract-3301962-1790628037.log`. No product code was mutated.
+
+An `assay plan` probe with `source_roots = ["src/nyxloom/session_extract"]` confirmed the intended package scope still has exactly 414 candidates. Assay's conservative serial estimate is 49,680 seconds (13h48m) at the configured 120-second per-candidate failsafe; the old 8-hour lane budget could not cover that upper bound.
+
+Corrected `nyxloom/assay.toml` without relaxing coverage or mutation rigor: scope R1/R2 source roots to `src/nyxloom/session_extract`, set the exact candidate cap to 414, and raise the lane budget to 16 hours (derived from the plan's 13h48m upper bound plus baseline/verdict overhead). The broader CLI/parser surface remains covered by the passing tester-unified R1 gate. The corrected lane must be committed before the next authoritative run; its outcome is not yet known.

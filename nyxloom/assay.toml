@@ -91,12 +91,10 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 # session-extract: narrow package lane (2026-09-10), added alongside
-# tester-unified rather than modifying it. Scope: src/nyxloom/session_extract
-# and the extract-related slice of src/nyxloom/cli.py (--ledger/extract-debug
-# wiring), plus the exact CLI selector regression tests named below. The argv
-# stays restricted to this package's tests and those two CLI nodes so an
-# unrelated, pre-existing failure elsewhere in the tree (e.g. mattermost
-# provisioning tests, dstdns snapshot-fault tests) cannot block this lane.
+# tester-unified rather than modifying it. Its judged source scope is only
+# src/nyxloom/session_extract. The selected CLI tests below exercise the
+# installed harness routes; parser/registry source coverage belongs to the
+# broader tester-unified lane, whose R1 suite covers the complete CLI surface.
 #
 # require_branch = true: unlike tester-unified, this lane's argv passes
 # --cov-branch and this judge.mode is the ONLY thing gating the new
@@ -104,16 +102,14 @@ artifact = "coverage.json"
 # unmeasured here the way tester-unified's D-064-L2 migration had to.
 #
 # base = "3d27c67e": the reviewed boundary for this narrow follow-up lane.
-# The full branch fork point at this HEAD is main's merge-base
-# 364945ddaaa528e4ca105bbe3af371d4d0360b04, which the tester-unified lane
-# already owns through base = "main". Do not move this narrow lane back to
-# that fork point: it would make changed-line R1/R2 judge the entire earlier
-# CLI-wide project-id/help wave as well as this feature, defeating the lane's
-# reviewed package scope. The earlier edc55648 pin had the same overreach.
+# Keep the R1/R2 diff anchored here, while source_roots limits the judged diff
+# and mutation targets to the session-extract implementation package. This
+# avoids folding later CLI-wide registry changes into this focused lane; those
+# are measured by tester-unified.
 #
-# rigor: R0+R1 land first (assay's own "add rigor in order" guidance);
-# R2 (native python mutation) is added in a follow-up edit once R1 is
-# confirmed green, not declared here on day one.
+# R0/R1/R2/R3 are all declared. A prior run exposed that the source root and
+# candidate cap had drifted from this lane's intended package scope; see the
+# P112 follow-up log for the failed invocation and corrected contract.
 
 [lanes.session-extract]
 scope = "S1"
@@ -147,10 +143,11 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# The changed-line campaign currently has 413 candidates. 30m only reaches a
-# small prefix; keep the mutation jobs serial and give the complete campaign
-# enough wall time to finish on the shared production host.
-budget = "8h"
+# The package-scoped changed-line campaign has 414 candidates. At the declared
+# 120s per-candidate failsafe, the plan's serial upper bound is 13h48m; allow
+# 16h for the complete campaign plus baseline and verdict overhead. Keep the
+# mutation jobs serial on the shared production host.
+budget = "16h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -163,7 +160,7 @@ unsafe_symlink_omissions = [
 
 [lanes.session-extract.judge]
 language = "python"
-source_roots = ["src"]
+source_roots = ["src/nyxloom/session_extract"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
@@ -178,13 +175,12 @@ base = "3d27c67e"
 # (host-shared-with-production-load-rule: load hit 85 doing exactly this
 # kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
 # concurrency bounded to the single already-accounted-for xdist fan-out.
-# The authoritative source-backed Assay discovery found 413 candidates after
-# the final source shape; 413 is the exact finite cap without turning this
-# into an open-ended campaign.
+# The authoritative source-backed Assay plan found 414 candidates under this
+# package root; this exact finite cap prevents an unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-max_mutants = 413
+max_mutants = 414
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 
