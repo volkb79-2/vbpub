@@ -4787,3 +4787,32 @@ report. Shared `main` advanced to `9a0d247c` with the Nyxloom session-extract
 merge after the candidate's base `facbacd2`. Do not alter the reviewed
 worktree while that review is active; after the review, reconcile this main
 advance and re-run final-tree evidence before merge.
+
+### RW-359 — 2026-09-28 21:40:22Z — Sol ACCEPT on B107 after repairing CPU-drop evidence
+
+Fresh GPT-6-Sol xhigh final review ACCEPTED the repaired B107 code at commit
+`5a7308d6c1c6d685850a436b86c91f0913b3b8ad`; the report is
+`assay/nyxloom-trove/reports/assay-RG55-B107-SOL-FINAL-REVIEW.md` in that
+candidate. The combined-axis probe found a real false `hung`: a child could
+exit and lower the process-tree CPU sum, letting the earlier higher reading
+be mistaken for a complete quiet window. Live monitoring and cached-evidence
+validation now restart the CPU window on a drop. Resume evidence also must
+derive the idle span from retained samples and show no intervening event or
+output growth; malformed negative counters are unknown. The reviewer committed
+these fixes and their tests/docs, with **224 focused tests passing**, six
+targeted validator/monitor cases passing, and the long virtual CPU-history
+oracle passing. The candidate worktree was clean after that commit.
+
+The pre-review full-suite/coverage result does not cover this repair commit.
+A fresh branch-aware line+branch coverage run is therefore active as
+`rg55-b107-coverage` against that exact HEAD. At the 90-second check its exact
+container was running under `dev-gates.slice`, `NanoCpus=3000000000`, and a
+700 MiB cap, with pytest at 16% and host memory PSI `full avg10=1.98`. The run
+uses a temporary uncommitted lane declaration and is not a release gate or
+history-eligible gate result; its coverage artifact is stored under the
+candidate's ignored `assay/.assay/`. After it finishes, remove only the
+temporary lane declaration, preserve the artifact, and verify 100% changed
+executable lines and branches before provisional merge. The registered
+`tester-unified` gate and the current-tree mutation campaign remain required
+after the provisional merge on a unique CIU worktree; no such RG-55 gate or
+mutation container was started by the reviewer.
