@@ -29,6 +29,19 @@ state transitions. The lower-confidence content-merge channel requires both
 --apply and --apply-content-merges. Project-level resume separately dry-runs
 resync and refuses unresolved drift unless --force is supplied.
 
+## Daemon service entrypoint
+
+The service manager starts the foreground daemon with no arguments. Inspect the
+installed entrypoint safely with `--help` or `--version`; both exit before the
+registry or daemon starts. Unknown arguments are rejected.
+
+```sh
+nyxloomd --help
+nyxloomd --version
+# The service manager invokes this form:
+nyxloomd
+```
+
 ## Closed command choices
 
 These are the exact values consumers may need to type. `nyxloom --help`,

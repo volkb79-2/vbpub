@@ -11,7 +11,7 @@ This is the canonical contract for the four entrypoints shipped in the Nyxloom w
 | `nyxloom` | Project authoring: `init`, `onboard`, project-local `lint`, and managed `backlog` files in the current project checkout. | Works without project registration or a running daemon. |
 | `nyxloom-harness` | Harness skill/user extracting Claude Code, Codex, OpenCode, and Reasonix session files or stores. | Reads the selected harness source; does not initialize Nyxloom host state or require registration/daemon availability. |
 | `nyxloomctl` | Local host operator, administrator, or developer: registry, workflow state, local daemon operation, routes/models, credentials, migrations, and diagnostics. | Calls local Nyxloom modules and state; it is not an HTTP client for remote admin. Most commands work without the daemon. |
-| `nyxloomd` | Service manager starting the resident daemon in the existing container. | Direct installed entrypoint; does not route service startup through a human CLI parser. |
+| `nyxloomd` | Service manager starting the resident daemon in the existing container. | Bare invocation starts the foreground daemon. `--help` and `--version` exit before service initialization; unknown arguments are rejected. |
 
 The dashboard remains the existing HTTP/SSE client. `nyxloom lint` checks the current project or explicit handoff paths; `nyxloomctl lint` scans every registered project. Neither path requires the daemon.
 

@@ -59,6 +59,9 @@ The three user CLIs follow who is working and which files the command targets:
   It is not a remote API client. The dashboard remains the HTTP/SSE client.
 - `nyxloomd` is a service-manager executable that starts the existing daemon
   lifecycle in the current container; it is not another interactive CLI.
+  Its only arguments are side-effect-free `--help` and `--version`; unknown
+  options fail before registry or daemon initialization, so a diagnostic typo
+  cannot accidentally start service work.
 
 The split keeps common skill entrypoints dependable when the daemon is down,
 while making host-wide actions visibly distinct from project-local authoring.

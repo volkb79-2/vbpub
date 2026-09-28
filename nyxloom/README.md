@@ -100,7 +100,7 @@ pasteable workflows are in [CONSUMERS.md](docs/CONSUMERS.md).
 | `nyxloom` | Project-local authoring: `init`, `onboard`, local `lint`, and managed `backlog` files. It works from an unregistered project checkout and does not need the daemon. |
 | `nyxloom-harness` | Session discovery and extraction from supported AI harnesses. It reads harness files/stores and does not initialize Nyxloom host state. |
 | `nyxloomctl` | Local host control, administration, and developer diagnostics, including the project registry, workflow state, routes, models, auth, host-wide lint, and `daemon`. These commands operate locally; remote administration is future work. |
-| `nyxloomd` | Service-manager entrypoint for the daemon container. It is installed with the same wheel and is not a human command interface. |
+| `nyxloomd` | Service-manager entrypoint for the daemon container. Bare `nyxloomd` starts the foreground service; `--help` and `--version` exit without starting it. |
 
 The dashboard remains the daemon's HTTP/SSE client. The wheel does not add a
 remote `nyxloomctl` API client. Project-local authoring and harness extraction
