@@ -104,7 +104,10 @@ def test_parse_shapes(tmp_path):
     # own flattened '"Q"="A"' string verbatim (operator-reported, 2026-09-10)
     qa = next(e for e in events if e.marker == "u4")
     assert qa.kind is EventKind.QA_PAIR
-    assert qa.text == "INTERVIEW: Which host?\n- A\n\nOPERATOR: A"
+    assert qa.text == "INTERVIEW: Which host?\nHeader: Host\n- A: d\n\nOPERATOR: A"
+    prompt = next(e for e in events if e.marker == "a3")
+    assert prompt.kind is EventKind.QA_PAIR
+    assert prompt.text == "INTERVIEW: Which host?\nHeader: Host\n- A: d"
     # /compact is promoted to a lifecycle marker, not plain operator text
     compact_ev = next(e for e in events if e.marker == "u6")
     assert compact_ev.kind is EventKind.LIFECYCLE_MARKER
@@ -462,7 +465,7 @@ def test_askuserquestion_answer_with_non_string_content_is_json_dumped(tmp_path)
     fp = tmp_path / "session.jsonl"
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
     events = claude_code.parse(fp, str(fp), ExtractConfig())
-    qa = next(e for e in events if e.kind is EventKind.QA_PAIR)
+    qa = next(e for e in events if e.kind is EventKind.QA_PAIR and e.marker == "u1")
     assert json.loads(qa.text) == {"answer": "A"}
 
 
@@ -877,7 +880,7 @@ def test_api_error_message_with_no_text_content_still_gets_a_tagged_event(tmp_pa
 # ---------------------------------------------------------------------------
 
 def _q(question, *labels):
-    return {"question": question, "header": "h", "multiSelect": False,
+    return {"question": question, "multiSelect": False,
             "options": [{"label": lbl, "description": ""} for lbl in labels]}
 
 
@@ -905,6 +908,81 @@ def test_format_qa_pairs_multi_question_batch_gets_one_block_each():
         "\n\n"
         "INTERVIEW: Second?\n- x\n- y\n\nOPERATOR: custom free text here"
     )
+
+
+def test_format_qa_pairs_rejected_question_envelope_labels_free_text_and_missing_answer():
+    text = (
+        "The user doesn't want to proceed with this tool use. The tool use was rejected.\n"
+        "The user wants to clarify these questions.\n\n"
+        "Questions asked:\n"
+        '- "Which prompt label should be used?"\n'
+        "  Answer: Something else\n"
+        '- "Should an unanswered row be explicit?"\n'
+        "  (No answer provided)"
+    )
+    out = claude_code._format_qa_pairs(
+        text,
+        [
+            _q("Which prompt label should be used?", "Labeled prose", "Plain prose"),
+            _q("Should an unanswered row be explicit?", "Yes", "No"),
+        ],
+    )
+    assert out == (
+        "INTERVIEW: Which prompt label should be used?\n"
+        "- Labeled prose\n- Plain prose\n\nOPERATOR: Something else\n\n"
+        "INTERVIEW: Should an unanswered row be explicit?\n"
+        "- Yes\n- No\n\nOPERATOR: (No answer provided)"
+    )
+
+
+def test_askuserquestion_prose_preserves_header_option_descriptions_and_multiselect():
+    question = {
+        "question": "Which prompt label should be used?",
+        "header": "Prompt",
+        "multiSelect": True,
+        "options": [
+            {"label": "Labeled prose", "description": "Mark the displayed question."},
+            {"label": "Plain prose", "description": "Plain prose"},
+        ],
+    }
+    expected = (
+        "INTERVIEW: Which prompt label should be used?\n"
+        "Header: Prompt\n"
+        "- Labeled prose: Mark the displayed question.\n"
+        "- Plain prose\n"
+        "Multiple selections are allowed."
+    )
+    assert claude_code._format_askuserquestion_prompt(question) == expected
+    assert claude_code._format_qa_pairs(
+        'The user answered: "Which prompt label should be used?"="Labeled prose".',
+        [question],
+    ) == expected + "\n\nOPERATOR: Labeled prose"
+
+
+def test_format_qa_pairs_rejected_envelope_with_unknown_question_falls_back():
+    text = 'Questions asked:\n- "Changed prompt?"\n  Answer: yes'
+    assert claude_code._format_qa_pairs(text, [_q("Original prompt?", "yes")]) == text
+
+
+def test_format_qa_pairs_rejected_envelope_with_extra_question_falls_back():
+    text = (
+        'Questions asked:\n- "Known prompt?"\n  Answer: yes\n'
+        '- "Unexpected prompt?"\n  Answer: keep this too'
+    )
+    assert claude_code._format_qa_pairs(text, [_q("Known prompt?", "yes")]) == text
+
+
+def test_format_qa_pairs_rejected_envelope_matches_json_escaped_unicode_question():
+    question = "Which caf\u00e9 should we use?"
+    text = 'Questions asked:\n- "Which caf\\u00e9 should we use?"\n  Answer: North'
+    assert claude_code._format_qa_pairs(text, [_q(question, "North", "South")]) == (
+        "INTERVIEW: Which caf\u00e9 should we use?\n- North\n- South\n\nOPERATOR: North"
+    )
+
+
+def test_format_qa_pairs_rejected_envelope_with_unrecognized_bullet_falls_back():
+    text = 'Questions asked:\n- "Known prompt?"\n  Answer: yes\n- unexpected extra row'
+    assert claude_code._format_qa_pairs(text, [_q("Known prompt?", "yes")]) == text
 
 
 def test_format_qa_pairs_falls_back_to_raw_text_when_marker_not_found():
@@ -974,7 +1052,7 @@ def test_format_qa_pairs_skips_a_question_whose_options_is_not_a_list():
     text = 'The user answered: "Pick one?"="A".'
     malformed = {"question": "Pick one?", "header": "h", "multiSelect": False, "options": None}
     out = claude_code._format_qa_pairs(text, [malformed])
-    assert out == "INTERVIEW: Pick one?\n\nOPERATOR: A"
+    assert out == "INTERVIEW: Pick one?\nHeader: h\n\nOPERATOR: A"
 
 
 def test_format_qa_pairs_skips_an_option_with_no_label():
@@ -982,7 +1060,7 @@ def test_format_qa_pairs_skips_an_option_with_no_label():
     q = {"question": "Pick one?", "header": "h", "multiSelect": False,
          "options": [{"description": "no label here"}, {"label": "A", "description": "d"}]}
     out = claude_code._format_qa_pairs(text, [q])
-    assert out == "INTERVIEW: Pick one?\n- A\n\nOPERATOR: A"
+    assert out == "INTERVIEW: Pick one?\nHeader: h\n- A: d\n\nOPERATOR: A"
 
 
 def test_format_qa_pairs_no_questions_returns_text_unchanged():
@@ -1029,7 +1107,10 @@ def test_parse_record_registers_an_askuserquestion_before_its_answer_arrives():
     assert claude_code.parse_record(answer, 0, "line0", config, cold) == []
 
     state = claude_code.StreamState()
-    assert claude_code.parse_record(question, 0, "line0", config, state) == []
+    prompt_events = claude_code.parse_record(question, 0, "line0", config, state)
+    assert len(prompt_events) == 1
+    assert prompt_events[0].kind is EventKind.QA_PAIR
+    assert prompt_events[0].text == "INTERVIEW: Ship it?\n- yes"
     assert "tu1" in state.askuserquestion_inputs
     events = claude_code.parse_record(answer, 1, "line1", config, state)
     assert [e.kind for e in events] == [EventKind.QA_PAIR]
@@ -1037,7 +1118,7 @@ def test_parse_record_registers_an_askuserquestion_before_its_answer_arrives():
     assert "OPERATOR: yes" in events[0].text
 
 
-def test_parse_record_ignores_an_askuserquestion_tool_without_an_id():
+def test_parse_record_surfaces_an_askuserquestion_tool_without_an_id():
     record = _rec(
         type="assistant",
         uuid="no-id",
@@ -1047,12 +1128,15 @@ def test_parse_record_ignores_an_askuserquestion_tool_without_an_id():
             "input": {"questions": [{"question": "Unnamed?"}]},
         }]},
     )
-    assert claude_code.parse_record(
+    events = claude_code.parse_record(
         record, 0, "line0", ExtractConfig(), claude_code.StreamState()
-    ) == []
+    )
+    assert [(event.kind, event.text, event.marker) for event in events] == [
+        (EventKind.QA_PAIR, "INTERVIEW: Unnamed?", "no-id"),
+    ]
 
 
-def test_parse_ignores_an_askuserquestion_tool_without_an_id_in_whole_file_state(
+def test_parse_surfaces_an_askuserquestion_tool_without_an_id_in_whole_file_state(
     tmp_path,
 ):
     fp = tmp_path / "session.jsonl"
@@ -1065,7 +1149,10 @@ def test_parse_ignores_an_askuserquestion_tool_without_an_id_in_whole_file_state
             "input": {"questions": [{"question": "Unnamed?"}]},
         }]},
     )) + "\n", encoding="utf-8")
-    assert claude_code.parse(fp, str(fp), ExtractConfig()) == []
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert [(event.kind, event.text, event.marker) for event in events] == [
+        (EventKind.QA_PAIR, "INTERVIEW: Unnamed?", "no-id"),
+    ]
 
 
 def test_parse_record_uses_the_fallback_marker_only_when_a_record_has_no_uuid():

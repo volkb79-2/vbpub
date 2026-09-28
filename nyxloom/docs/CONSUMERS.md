@@ -190,6 +190,36 @@ rejected for failing to match an option. An ordinary chat response remains
 operator prose without an inferred question link. See the
 [design rationale](DESIGN-GUIDE.md#codex-question-replies).
 
+Claude Code `AskUserQuestion` prompts use the same visible markers. The
+question appears at the assistant tool-call record, even while it is still
+unanswered. When a result has a recognized shape, its record repeats the
+question for context and labels the user's answer. Rejected question batches
+that state `(No answer provided)` keep that status explicit:
+
+```text
+INTERVIEW: Which prompt label should be used?
+Header: Prompt
+- Labeled prose: Mark the displayed question.
+- Plain prose: Keep the bare question.
+
+INTERVIEW: Which prompt label should be used?
+Header: Prompt
+- Labeled prose: Mark the displayed question.
+- Plain prose: Keep the bare question.
+
+OPERATOR: Something else
+
+INTERVIEW: Should an unanswered row be explicit?
+Header: Missing answer
+- Yes: Show that the operator did not answer.
+- No: Leave the answer area blank.
+Multiple selections are allowed.
+
+OPERATOR: (No answer provided)
+```
+
+See the [Claude Code Q&A rationale](DESIGN-GUIDE.md#claude-code-question-replies).
+
 For a specific span, `--epochs` selects a `/clear` epoch or inclusive range;
 `--max-compactions` and `--max-time-minutes` add backward-walk stops. A
 checkpoint count is an extraction budget, not a semantic compaction point.
