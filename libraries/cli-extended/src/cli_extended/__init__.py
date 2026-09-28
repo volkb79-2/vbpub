@@ -29,6 +29,7 @@ from .parser import (
     run_cli,
 )
 from .progress import ProgressMode, ProgressRenderer
+from .prompts import PromptCancelled, PromptDriver
 from .testing import assert_cli_contract
 
 __all__ = [
@@ -46,6 +47,8 @@ __all__ = [
     "OptionSpec",
     "ProgressMode",
     "ProgressRenderer",
+    "PromptCancelled",
+    "PromptDriver",
     "RegisteredCli",
     "UsageError",
     "VerbGroup",
