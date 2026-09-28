@@ -4590,3 +4590,47 @@ because this command lane does not delegate a `{base}` token, so the run will
 use the lane's declared, pinned `origin/main`. At preflight, memory PSI `full
 avg10=0.00`; two run-gate mutation containers were active, leaving the
 operator-authorized third slot available.
+
+### RW-351 — 2026-09-28 03:59:17Z — P1 R2 and current-main B107 gate launched
+
+The first detached P1 launcher returned without creating a run-gate history
+entry, assay progress/verdict, or container; it is not a test result. The
+campaign was restarted under retained command session `79863`. Exact container
+`run-gate-rg55-p1-r2-isolated-r2-2711042-1790567389` started at
+`2026-09-28T03:49:49.712Z`, on the clean pinned tree `0080eba7`, with
+`CGROUP_PARENT=dev-gates.slice` and `NanoCpus=3000000000`. The first health
+check saw the baseline complete at 79.235 seconds, 125 selected candidates,
+and candidate 0 killed after 11.488 seconds. Prior exact 125-candidate P1 R2
+history is 5,534.45 seconds (about 92 minutes); use that as the current
+runtime estimate. Profiling reported that `cgprofile-host-daemon` is down and
+used basic in-lane sampling; this campaign supplies no live-daemon or DAMON
+evidence. Do not inspect its progress again before `2026-09-28T04:16:21Z`
+unless a concrete failure signal appears.
+
+The primary checkout's `ciu worktree inspect` refuses because
+`.worktrees/rg55-p6-r2-ciu/ciu.worktree-instance.json` says branch
+`rg55-p6-r2-ciu` while Git has that checkout detached. It was left untouched.
+An isolated local clone `.worktrees/rg55-assay-b107-isolated` avoided that
+stale-record scan; CIU created `rg55-assay-b107-current` at current local-main
+SHA `9394b460` (fork point recorded exactly). CIU's optional Docker network
+allocation failed because address pools are exhausted, but the checkout is
+`ready`; no application container was started. B107 commits
+`115eb948` and `612843ef` cherry-picked cleanly as `c55147fd` and `52c4a978`.
+The latter tree is clean, preserves current-main B101 P1/P2, and its focused
+resource/liveness/mutation tests pass (228 passed in 34.05 seconds).
+
+The registered `tester-unified` lane is running on exact tree `52c4a978` in
+`run-gate-assay-selfhosted-2732119-17705-1790567817`, started
+`2026-09-28T03:56:57.803Z`. It is under `dev-gates.slice` at 3 CPUs. The
+90-second health check found the wheel build and initial attestation/schema
+phases progressing. It launched when host memory PSI `full avg10=0.61`; that
+rose to `20.22` during the run. The test result must remain independent of
+that external pressure; do not infer a verdict from elapsed time. The previous
+same-lane run took 1,048.61 seconds, so the next joint observation with P1 is
+planned near `04:16:21Z` unless this gate is expected to have finished sooner.
+
+Read-only metadata identified the unrelated UUID-named container as a
+production Pterodactyl game-server container in `wings.slice`; it is not a
+mutation/gate slot and remains untouched. Its process listing exposed
+password arguments in command-line output; do not repeat or store them, and
+advise the operator to rotate those credentials.
