@@ -4816,3 +4816,16 @@ executable lines and branches before provisional merge. The registered
 `tester-unified` gate and the current-tree mutation campaign remain required
 after the provisional merge on a unique CIU worktree; no such RG-55 gate or
 mutation container was started by the reviewer.
+
+### RW-360 — 2026-09-28 21:44:46Z — all three mutation slots are occupied by other work
+
+Correction to RW-358's characterization: the active Nyxloom
+`session-extract` lane is itself a mutation campaign, not an ordinary gate.
+At this check, exact container
+`run-gate-vbpub-session-extract-3351574-1790629480` was still running; its
+saved log showed candidate 102/599 at 2.6 candidates/minute, ETA about 192
+minutes. Together with the two active CMRU mutation campaigns, this occupies
+the current three-container mutation allowance. Do not launch an RG-55 P1/P6
+mutation campaign until one of those campaigns terminates; do not interfere
+with any of the three. The separate RG-55 B107 coverage lane is a non-mutation
+test and remains within its own declared gate resources.
