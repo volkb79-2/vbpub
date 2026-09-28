@@ -1448,7 +1448,6 @@ class CliRegistry:
                 self._add_option_specs(
                     command_parser,
                     subcommand_globals,
-                    suppress_defaults=True,
                     force_suppress_defaults=True,
                 )
                 self._add_argument_specs(command_parser, verb.arguments)

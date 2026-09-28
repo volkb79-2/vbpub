@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import inspect
 import io
 from types import SimpleNamespace
 
@@ -77,6 +78,28 @@ def test_injected_driver_collects_all_five_values_and_forwards_defaults():
     assert driver.calls[3][2] == {"default": "red"}
     assert driver.calls[4][1][1] == ("blue", "red")
     assert driver.calls[4][2] == {"default": ("red",)}
+
+
+def test_prompt_driver_protocol_defaults_and_unimplemented_methods():
+    expected_defaults = {
+        "text": {"default": None, "required": True},
+        "password": {"required": True},
+        "confirm": {"default": False},
+        "select": {"default": None},
+        "checkbox": {"default": ()},
+    }
+    arguments = {
+        "text": ("text?",),
+        "password": ("password?",),
+        "confirm": ("confirm?",),
+        "select": ("select?", ("one",)),
+        "checkbox": ("checkbox?", ("one",)),
+    }
+    for name, defaults in expected_defaults.items():
+        parameters = inspect.signature(getattr(PromptDriver, name)).parameters
+        assert {key: parameters[key].default for key in defaults} == defaults
+        with pytest.raises(NotImplementedError):
+            getattr(PromptDriver, name)(object(), *arguments[name])
 
 
 @pytest.mark.parametrize("kind", ("text", "password", "confirm", "select", "checkbox"))
@@ -162,6 +185,12 @@ def test_confirm_result_and_type_behavior():
         _api(_Driver(confirm=1)).confirm("continue?")
     with pytest.raises(TypeError, match="default must be a bool"):
         _api(_Driver(confirm=True)).confirm("continue?", default=1)
+
+
+def test_confirm_omitted_default_is_false_and_forwarded():
+    driver = _Driver(confirm=False)
+    assert _api(driver).confirm("continue?") is False
+    assert driver.calls[0][2] == {"default": False}
 
 
 def test_select_validates_choices_defaults_and_answers():
@@ -293,6 +322,22 @@ def test_questionary_adapter_calls_unsafe_api_and_passes_streams():
     assert all(call[2]["output"] is output_handle for call in calls)
 
 
+def test_questionary_driver_omitted_defaults_require_input_and_default_no():
+    questionary = _FakeQuestionary()
+    driver = prompts_module._QuestionaryDriver(questionary, object(), object())
+
+    driver.text("required text")
+    driver.password("required password")
+    driver.confirm("decline by default")
+
+    text_call, password_call, confirm_call = questionary.calls
+    assert text_call[2]["validate"](" \t") == (
+        "A non-whitespace value is required."
+    )
+    assert password_call[2]["validate"]("") == "A password is required."
+    assert confirm_call[2]["default"] is False
+
+
 def test_questionary_escape_result_becomes_prompt_cancelled():
     questionary = _FakeQuestionary()
     questionary.answers["text"] = None
@@ -389,6 +434,33 @@ def test_cli_runtime_injects_driver_redacts_password_and_handles_prompt_cancel()
     ) == 130
     assert "Cancelled." in stderr.getvalue()
     assert "Traceback" not in stderr.getvalue()
+
+
+def test_cli_runtime_repr_does_not_expose_injected_prompt_driver():
+    identity = CliIdentity("TEST", "1.0", "Test", command="test-tool")
+    captured = []
+
+    class SensitiveDriver(_Driver):
+        def __repr__(self):
+            return "SensitiveDriver(prompt-secret-marker)"
+
+    registry = CliRegistry(identity, prog="test-tool", description="prompt test")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect runtime",
+            handler=lambda _args, runtime: captured.append(runtime) or 0,
+        )
+    )
+    assert registry.build().run(
+        argv=["inspect"],
+        prompt_driver=SensitiveDriver(),
+        stdout=_TTY(),
+        stderr=io.StringIO(),
+        stdin=_TTY(),
+    ) == 0
+    assert captured
+    assert "prompt-secret-marker" not in repr(captured[0])
 
 
 def test_prompt_ctrl_c_remains_keyboard_interrupt_exit_130():

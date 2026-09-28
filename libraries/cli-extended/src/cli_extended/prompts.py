@@ -34,11 +34,14 @@ class PromptDriver(Protocol):
 
     def text(
         self, message: str, *, default: str | None = None, required: bool = True
-    ) -> str | None: ...
+    ) -> str | None:
+        raise NotImplementedError
 
-    def password(self, message: str, *, required: bool = True) -> str | None: ...
+    def password(self, message: str, *, required: bool = True) -> str | None:
+        raise NotImplementedError
 
-    def confirm(self, message: str, *, default: bool = False) -> bool | None: ...
+    def confirm(self, message: str, *, default: bool = False) -> bool | None:
+        raise NotImplementedError
 
     def select(
         self,
@@ -46,7 +49,8 @@ class PromptDriver(Protocol):
         choices: Sequence[str],
         *,
         default: str | None = None,
-    ) -> str | None: ...
+    ) -> str | None:
+        raise NotImplementedError
 
     def checkbox(
         self,
@@ -54,7 +58,8 @@ class PromptDriver(Protocol):
         choices: Sequence[str],
         *,
         default: Sequence[str] = (),
-    ) -> list[str] | None: ...
+    ) -> list[str] | None:
+        raise NotImplementedError
 
 
 def _is_tty(stream: TextIO) -> bool:
