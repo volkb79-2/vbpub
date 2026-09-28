@@ -306,7 +306,9 @@ the way a project designs for coverage.
 **Case study (assay B105, 2026-09-28).** Assay's whole-source self-qualification
 has 3,760 mutants and a 5,831-test suite. It projected to about 585
 worker-hours, because every mutant repeated the whole suite on a full copy of
-the monorepo. The measured causes were all design facts, not tool facts:
+the monorepo. The largest cause was a tool fact: the runner had no early exit,
+so every killed mutant still ran the whole suite (being fixed as a "cold
+witness"). The other measured causes were design facts:
 - a few slow tests dominated;
 - tests of an installed wheel could never kill a mutant;
 - real-clock waits;
@@ -316,12 +318,17 @@ the monorepo. The measured causes were all design facts, not tool facts:
 
 Evidence and numbers:
 `assay/nyxloom-trove/reports/assay-B110-REUSE-AND-TESTABILITY-2026-09-28.md`
-(Part B) and `assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`.
+(Parts B and C),
+`assay/nyxloom-trove/reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`, and
+the research records
+`assay/nyxloom-trove/reports/b110/research/R9-heavy-tests-structural.md`,
+`R10-snapshot-structural.md` and `R11-dry-libraries.md`. (These files exist
+only on the `assay-b110-landing` branch: merge this change only after it.)
 
 ### Where the cost comes from
 
 ```
-qualifying run ≈ fixed + Σ_mutants (setup + time to first failing test) / workers
+passing run    ≈ fixed + Σ_mutants (setup + time to first failing test) / workers
 find-and-fix   ≈ Σ_iterations survivors × one full suite
 hangs          ≈ hanging mutants × timeout (often several full suites each)
 mutant count   ∝ own tracked code in scope × operator density
@@ -347,21 +354,25 @@ once per mutant?** Typical findings:
 | Every mutant copies the whole repository and its history | Which tests need which files, and which need history at all? | Make the copy boundary the project boundary; shallow or sparse copies; no test pins another project's history |
 | Mutants hang until the timeout | Can a loop fail to advance? | A progress guard makes the mutant a fast kill |
 | Many survivors in flags or config tables | Is the contract stated anywhere a test can check? | One reflective contract test |
-| Collection takes seconds per mutant | Is it compiling and assertion-rewriting test modules that never change? | Reuse the unchanged **test** bytecode (never the mutated source's bytecode), or run with plain asserts |
+| Collection takes seconds per mutant | Is it compiling and assertion-rewriting test modules that never change? | In a fresh-tree-per-mutant design, consider reusing the unchanged **test** bytecode (never the mutated source's): bind it by content digest (pytest checks only mtime and size), and check that no test depends on code-object paths. Or run with plain asserts. Measure first |
 | A per-test fixture spawns processes (e.g. `git init` plus commits) | Is the result identical for every test? | Build a template once per session; copy it per test |
 | Tests are moved out of the per-mutant lane | Does anything still require them to pass on the same commit? | Bind a same-commit release-gate pass into the definition of done; otherwise the move silently drops assurance |
 
 The cheapest mutant is the one the design never makes expensive. Runner
 features (a work queue, early exit, sharding) are still worth having, but
-they cannot remove work that the design adds. In assay's case, test bytecode
-reuse, a shallow project-bounded snapshot and removing mutant-independent tests
-were each worth more per mutant than the planned runner optimizations.
+they cannot remove work that the design adds. In assay's case, early exit at
+the first failing test was by far the largest lever. After it, the estimated
+per-mutant savings from test-bytecode reuse (≈4–5 s, not yet probed), a shallow
+project-bounded snapshot (≈1–2 s, measured) and removing mutant-independent
+tests each exceeded the planned snapshot-copy optimization (≈0.1–0.2 s,
+measured).
 
 **False kills.** Where any non-zero exit counts as a kill, a load-sensitive
 test in the per-mutant suite (an inner subprocess `timeout=`, a pip or network
 step) can turn host pressure into a "kill". Keep such tests out of the
-per-mutant suite. This is a correctness issue, not only a cost issue: time and
-load must never decide a mutant's result.
+per-mutant suite, and fix the time dependence itself (LESSONS L20); moving the
+test only contains it. This is a correctness issue, not only a cost issue: time
+and load must never decide a mutant's result.
 
 ### Guidelines
 
@@ -388,16 +399,22 @@ load must never decide a mutant's result.
    dataclass flags (`frozen`, `kw_only`), enum tables and config key sets.
    Mutants at import time also defeat in-process mutant switching (schemata,
    fork servers).
-7. **State each boundary condition once.** Shared validation helpers mean
-   fewer mutants and fewer equivalent mutants. When verification must be
-   independent, reuse the producer's construction rules rather than
-   re-implementing them (assay's `verify.py` does this).
+7. **State each boundary condition once per trust side.** Shared validation
+   helpers mean fewer mutants and fewer equivalent mutants. Never share logic
+   across an independence boundary: an independent verifier re-derives the
+   relations it checks, and may reuse the producer's data model only for shape
+   or schema conformance. Assay's `verify.py` reconstructs `verdict.py`'s
+   dataclasses for schema conformance but restates the cross-field rules
+   (A-182). That duplication is the price of independence: count it, don't
+   remove it.
 8. **No unreachable defensive code.** A survivor in a dead branch becomes a
    reviewed equivalence entry. Delete the branch or make it testable (see
    "Coverage exclusions: prefer deletion" below).
 9. **Order-independent tests with no shared state.** This is what makes
    tiering, per-file isolation units and parallel mutant jobs sound. Detect
-   order dependence in ordinary CI (random order, repetition).
+   order dependence in ordinary CI (random order, repetition), in a separate,
+   non-gating job with a recorded seed; the gate lane itself stays
+   deterministic.
 10. **Cheap fixtures, scoped to the tests that need them.** A session fixture
     that builds a package or venv is paid once per mutant in a
     fresh-interpreter design.
@@ -422,27 +439,34 @@ tests that spawn the CLI.
 
 **DRY, and libraries of your own.** Collapsing one rule that is written N
 times into one helper is a genuine reduction: the rule is still mutated, once.
-In assay, internal consolidation alone removed an estimated 10–14% of the
-inventory with no change to the claim. Moving code into a separately
+In assay, internal consolidation would remove an estimated 10.5–14% of the
+inventory (static estimate; not done) with no change to the claim. Moving code into a separately
 versioned in-house library only **moves** mutants: it saves work only if the
 library is requalified less often than its consumers. The consumer's claim
-must then name the pinned, independently qualified library version. Never
+must then name the library's pinned content (e.g. its git subtree OID) and its
+own verified qualification verdict. Never
 "reduce" the inventory by rewriting comparisons as lookups, sets or regexes
 that the operators cannot see; that hides decisions without testing them.
 Deliberate duplication, such as an independent verifier re-checking a
 producer's rules, stays.
 
 **Environment levers are smaller than they look.** Measured on this estate
-(assay B110, research R10):
-- **fsync:** git performs no fsync in a typical snapshot/materialization path,
-  so disabling fsync (eatmydata, `core.fsync=none`) saves nothing there.
+(assay B110, `assay/nyxloom-trove/reports/b110/research/R10-snapshot-structural.md`;
+one host, n=3, directional):
+- **fsync:** git performed no fsync in a path that copies packs itself and
+  writes only loose objects and an index, so disabling fsync (eatmydata,
+  `core.fsync=none`) saved nothing there. A `git clone` fsyncs its pack
+  (≈27 ms per fsync measured).
 - **tmpfs:** it is charged to the container's memory cgroup; size it against
   the memory cap times the number of workers.
 - **Copy-on-write** (reflink on XFS/btrfs, ZFS clones) needs a suitable host
   filesystem; overlay mounts need container privileges. A plain copy of a
-  prepared base is no cheaper than a fresh write on ext4/overlay2.
-- **Shallow, project-bounded snapshots** are usually the largest
-  environment-free saving.
+  prepared base was measured no cheaper on this host than a fresh write on
+  ext4/overlay2.
+- **Shallow, project-bounded snapshots** were the largest measured
+  environment-free saving in assay's case.
+
+## Property-based testing and Hypothesis
 
 The "Property/state-machine testing" catalogue row names what it
 establishes: invariants hold over generated values, not just the specific
@@ -651,7 +675,8 @@ gate's own artifacts, not from memory.
       test that would kill a mutant of it early in the declared order. New
       loops over external input advance or raise. Declarative flags have a
       contract test. Tests of installed artifacts go to a release lane, not
-      the per-mutant suite (`## Designing for mutation testability` above).
+      the per-mutant suite, and "done" then requires a same-commit pass of
+      that release lane (`## Designing for mutation testability` above).
 - [ ] **Property coverage for pure/stateful cores.** Where an invariant can
       be stated (round-trip, idempotence, ordering, a state machine's legal
       transitions), a Hypothesis test states it, with `@settings` declared
