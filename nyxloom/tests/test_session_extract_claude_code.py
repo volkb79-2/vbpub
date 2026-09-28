@@ -985,6 +985,35 @@ def test_format_qa_pairs_rejected_envelope_with_unrecognized_bullet_falls_back()
     assert claude_code._format_qa_pairs(text, [_q("Known prompt?", "yes")]) == text
 
 
+def test_format_qa_pairs_rejected_envelope_preserves_multiline_free_text_answers():
+    text = (
+        'Questions asked:\n- "First?"\n  Answer: First paragraph.\n'
+        "Second line.\n\nThird paragraph.\n"
+        '- "Second?"\n  Answer: Final answer.\nLast line.'
+    )
+    assert claude_code._format_qa_pairs(
+        text, [_q("First?", "yes"), _q("Second?", "no")],
+    ) == (
+        "INTERVIEW: First?\n- yes\n\n"
+        "OPERATOR: First paragraph.\nSecond line.\n\nThird paragraph.\n\n"
+        "INTERVIEW: Second?\n- no\n\n"
+        "OPERATOR: Final answer.\nLast line."
+    )
+
+
+def test_format_qa_pairs_rejected_envelope_falls_back_on_ambiguous_answer_bullet():
+    text = 'Questions asked:\n- "Pick?"\n  Answer: First line\n- a user bullet'
+    assert claude_code._format_qa_pairs(text, [_q("Pick?", "yes")]) == text
+
+
+def test_format_qa_pairs_rejected_envelope_falls_back_on_extra_answer_row():
+    text = (
+        'Questions asked:\n- "Pick?"\n  Answer: yes\n'
+        "  Answer: unexpected extra row"
+    )
+    assert claude_code._format_qa_pairs(text, [_q("Pick?", "yes")]) == text
+
+
 def test_format_qa_pairs_falls_back_to_raw_text_when_marker_not_found():
     # A harness rendering this adapter has never seen -- must not raise or
     # silently drop content, just hand back the raw string unmodified.

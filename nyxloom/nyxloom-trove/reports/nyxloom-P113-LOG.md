@@ -70,11 +70,27 @@ exit: 0
 `git diff --check` passed. This is devcontainer diagnostic evidence, not the
 authoritative tester-unified gate.
 
+## Codex review correction — 2026-09-28
+
+Codex review of implementation commit `5eeaa82f30be658fec41cf377c9fcb11561623c3`
+found one P2: the rejected-question parser could stop at an unindented
+continuation and silently omit the remainder of a free-text answer. The parser
+now preserves continuation lines and paragraph breaks, and falls back to the
+raw result when a bullet row or trailing text makes the structure ambiguous.
+Regression tests cover both multiline preservation and the raw fallback. The
+full `tests/test_session_extract_*.py` set passed after this correction.
+
+The follow-up review found a second P2: an unexpected `Answer:` row could be
+absorbed into the preceding free-text answer. It now triggers the raw-text
+fallback, with a regression test. The second review passed with no findings.
+Codex's final focused Claude test run exited 0; the complete
+session-extraction suite also exited 0 after the fix.
+
 ## Pending authoritative evidence
 
 The user's requested session-extract R2 campaign is running separately on the
 `nyxloom-cli-adoption` worktree. No heavy gate was started in parallel. The
-current P113 revision still needs a clean commit and its declared
-tester-unified gate after the active R2 run finishes and any resulting fixes
-are reviewed. Record the exact gate output and final commit in
-`nyxloom-P113-REPORT.md` before calling this work complete.
+current P113 revision needs its declared tester-unified gate after the active
+R2 run finishes and any resulting fixes are reviewed. Record the exact gate
+output and final commit in `nyxloom-P113-REPORT.md` before calling this work
+complete.

@@ -285,33 +285,19 @@ def _split_rejected_qa_pairs(
         while index < len(lines):
             line = lines[index]
             stripped = line.strip()
-            if stripped.startswith('- "') or stripped == "(No answer provided)":
+            if (_rejected_qa_question_text(line) is not None
+                    or stripped == "(No answer provided)"):
                 break
-            if not stripped:
-                if (index + 1 < len(lines)
-                        and lines[index + 1].startswith(("  ", "\t"))
-                        and lines[index + 1].strip()):
-                    answer_lines.append("")
-                    index += 1
-                    continue
-                index += 1
-                break
-            if line.startswith(("  ", "\t")):
-                answer_lines.append(stripped)
-                index += 1
-                continue
-            break
+            if stripped.startswith(("- ", "Answer:")):
+                return None
+            answer_lines.append(stripped)
+            index += 1
         answer = "\n".join(answer_lines).strip()
         if not answer:
             return None
         pairs.append((qtext, answer))
 
-    if any(
-        line.strip().startswith("- ")
-        or line.strip().startswith("Answer:")
-        or line.strip() == "(No answer provided)"
-        for line in lines[index:]
-    ):
+    if any(line.strip() for line in lines[index:]):
         return None
     return pairs or None
 
