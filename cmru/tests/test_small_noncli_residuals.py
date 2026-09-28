@@ -63,9 +63,7 @@ def test_standards_main_unknown_project_is_refused(monkeypatch):
     loaded = (Path("."), {"demo": SimpleNamespace()}, ["demo"])
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: Path("cmru.toml"))
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
-    with pytest.raises(SystemExit) as error:
-        standards.standards_main(["missing"])
-    assert error.value.code == 2
+    assert standards.standards_main(["missing"]) == 2
 
 
 def test_standards_update_requires_project_local_config(monkeypatch):
@@ -85,24 +83,18 @@ def test_standards_atomic_write_cleans_temporary_file_after_replace_failure(monk
 
 
 def test_agent_cli_main_dispatch_fallback_is_explicit(monkeypatch, capsys):
-    class Parser:
-        def parse_args(self, _argv): return SimpleNamespace(log_level="INFO", verb="unknown")
-        def print_help(self): print("help")
-    monkeypatch.setattr(agent_cli, "_build_parser", lambda: Parser())
-    with pytest.raises(SystemExit) as error:
-        agent_cli.main([])
-    assert error.value.code == 1 and "help" in capsys.readouterr().out
+    assert agent_cli.main(["unknown"]) == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
-def test_agent_cli_module_guard_executes_status_entrypoint(monkeypatch, capsys):
-    monkeypatch.setattr("cmru.agent.state.read_node_id", lambda scope: None)
-    monkeypatch.setattr("cmru.agent.state.read_observed", lambda scope: None)
-    monkeypatch.setattr("cmru.agent.state.read_current_generation", lambda scope: None)
+def test_agent_cli_module_guard_refuses_removed_alias(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cmru-agent", "status"])
     with pytest.raises(SystemExit) as error:
         runpy.run_path(str(Path(agent_cli.__file__)), run_name="__main__")
-    assert error.value.code == 0
-    assert "observed:           (none)" in capsys.readouterr().out
+    assert str(error.value) == (
+        "Use the installed 'cmru-agent' command; its module alias is not supported."
+    )
+    assert capsys.readouterr().out == ""
 
 
 def test_ghcr_request_http_error_and_repository_failure_are_explicit(monkeypatch):

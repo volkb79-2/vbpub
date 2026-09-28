@@ -814,6 +814,38 @@ class TestLeaseLifecycle:
 class TestDetach:
     """Oracle 8: launch_detached."""
 
+    def test_launch_waits_for_a_complete_pid_from_this_start(
+        self, tmp_path, monkeypatch
+    ):
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir()
+        pid_file = attempt_dir / "wrapper.pid"
+        pid_file.write_text("111", encoding="utf-8")  # stale resume marker
+        spec = WrapperSpec(
+            project="demo", task_id="demo-P01-sample", attempt_id="att-1",
+            argv=["true"], cwd=str(tmp_path),
+            log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=str(attempt_dir / "receipt.json"),
+            attempt_dir=str(attempt_dir), route_def=OPERATOR_ROUTE,
+        )
+        waitpid_calls = []
+        writes = iter(("", "5678"))
+
+        monkeypatch.setattr(wrapper.os, "fork", lambda: 4321)
+        monkeypatch.setattr(
+            wrapper.os, "waitpid",
+            lambda pid, options: waitpid_calls.append((pid, options)),
+        )
+
+        def publish_next(_seconds):
+            pid_file.write_text(next(writes), encoding="utf-8")
+
+        monkeypatch.setattr(wrapper.time, "sleep", publish_next)
+
+        assert launch_detached(spec) == 5678
+        assert pid_file.read_text(encoding="utf-8") == "5678"
+        assert waitpid_calls == [(4321, 0)]
+
     def test_launch_detached_script(self, tmp_state, tmp_path, fake_cli):
         """Launch detached with 0.5s script."""
         project = "demo"

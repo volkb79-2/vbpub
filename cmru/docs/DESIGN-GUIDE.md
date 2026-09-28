@@ -90,9 +90,127 @@ surface for scripts that probe every first-party estate CLI in the same way; it
 does not create a second version source or change verb dispatch.
 
 The same identity is the first line of every help, usage, and configuration
-diagnostic emitted by the main parser and the installed `cmru-agent` and
-`cmru-controller` dispatchers, including nested verbs. Normal command output is
-unchanged.
+document emitted by the installed `cmru`, `cmru-agent`, and `cmru-controller`
+dispatchers, including nested verbs. CMRU configuration diagnostics put the
+identity first; `cli-extended` usage/refusal diagnostics put the actionable
+message first and then render the matching generated help. Normal command output
+is unchanged.
+
+## One declared CLI grammar
+
+The CMRU wheel installs three operator CLIs: `cmru`, `cmru-agent`, and
+`cmru-controller`. Each uses `cli-extended` registrations as the source for
+argument parsing, option constraints, help, and dispatch. Root `cmru --help`
+stays a short command catalog, while `cmru help VERB` and `cmru VERB --help`
+show that verb's complete grammar. Nested commands delegate their remaining
+argv to their own registered CLI, so root help and child parsing cannot drift
+through a second parser. The shared library provides `--help`; CMRU intentionally
+does not keep a separate `-h` alias.
+
+Invocation-wide options are registered in each CLI grammar and work before or
+after command selection, including across delegated commands. The timestamp
+prefix option is applied by its registered parser action, so CMRU does not
+rewrite argv before dispatch.
+
+`get-py` and `dependencies` are each one canonical verb; the old `get`,
+`dependency-graph`, and `graph` aliases were removed because they added help,
+testing, and compatibility surface without adding a use case. The same review
+removed numeric `init --layout` spellings and the deprecated tag option alias.
+The `handler` verb is the supported route to the project's explicit step
+handlers; `cmru-agent` and `cmru-controller` are separate installed commands,
+not hidden subcommands of `cmru`. The [canonical CLI grammar and semantic
+audit](SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit) inventories their complete option surfaces
+and is updated with every product grammar change.
+
+### Project commands use the transaction's CMRU runtime
+
+A project step that invokes `cmru` must run the same CMRU code that started the
+transaction. Resolving through ambient `PATH` could select an older installed
+wheel and run a different command contract inside a current source checkout.
+Before each step, CMRU creates a temporary launcher using its current Python
+interpreter and module root, puts that launcher first in `PATH`, and checks its
+reported version against the active runtime. The `CMRU_BIN` and `PATH` binding
+is reapplied after project environment setup, so a project setting cannot
+silently redirect a nested gate. A mismatch fails before the step command
+starts. This keeps project contracts portable and avoids requiring each
+consumer to know whether CMRU came from a wheel or source checkout (KI-11).
+
+### Retained build publication names the artifact input explicitly
+
+`cmru build` retains a local build with its source identity and complete digest
+inventory. `cmru publish --build-output ID` validates that record and gives the
+declared push step the retained files explicitly; ordinary `publish` continues
+to use the caller checkout. CMRU does not infer the intended artifact from a
+`dist/` directory or silently couple every build to publication. Built-in
+publishers require existing versioned and `-latest` Release/tag targets; a
+stable version tag must identify the retained source commit. They update
+Release metadata and assets without creating or moving Git refs. Temporary
+copies hold generated sidecars and `latest.json`, leaving the retained record
+unchanged. Custom push steps must consume the protected
+`CMRU_BUILD_OUTPUT_ROOT` input and must not create or move Git refs or promote a
+source branch. Publication refuses a retained record with any tracked or
+untracked source-tree changes: otherwise the artifact could contain edits that
+the recorded source commit and release tag do not identify. Consumers should
+ignore expected, untracked generated build outputs, while keeping source paths
+visible to Git status. Ignore rules do not hide changes to tracked files.
+`cmru release` owns the separate source-first flow.
+See [KI-10](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--publish-retained-build-output-by-id--shipped).
+
+`cmru run` keeps orchestration's configured `default_steps` when no explicit
+step flag is supplied; help names that policy because a default may include
+publishing. Its dry-run resolves the same target, steps, and configured order,
+prints the declared commands and file cleanup, and starts no project command.
+Remote cleanup lives only under `cmru cleanup`: it prints the pending action
+set and asks before changing anything unless `--yes` was supplied. A cleanup
+dry-run stops after that preview. The canonical semantic table records each
+verb's scope, combinations, defaults, writes, network effects, and dry-run
+boundary.
+
+The get.py template is a package resource, not a path inferred from `__file__`.
+Source-checkout execution and installed-wheel execution therefore read the
+same shipped file. KI-26's installed-wheel lane builds the distribution,
+installs it into a fresh venv without system packages, and renders/compiles a
+project installer from outside the checkout. That catches both omitted package
+data and a missing bundled `cli-extended` import.
+
+### Operator commands, adapters, and libraries have separate jobs
+
+Installed console scripts and their registered verbs are the operator
+interface: `cmru`, `cmru-agent`, and `cmru-controller`. They use
+`cli-extended` to define grammar, options, help, and dispatch. CMRU does not
+maintain parallel hand-written parsers for those commands.
+
+`python -m cmru.handlers` is the one supported component CLI. Project step
+contracts use it to invoke registered artifact handlers, and
+`build-initial-standalone.sh` needs it to build the first wheel before the
+installed `cmru` command exists. `python -m cmru.bundle`, `python -m
+cmru.runner`, and module aliases for the three operator scripts are retired;
+they now refuse with a pointer to the supported command or library API.
+
+The reusable `cmru.bundle.run_bundle` and `cmru.runner.run_step` functions
+remain supported Python APIs. PWMCP consumes the bundle API, and MDT consumes
+the runner API. Use `cmru run-step` for a direct operator invocation. CMRU does
+not add a root `cmru bundle` verb until a concrete operator workflow needs one.
+The standalone generated `get.py` remains an independent product and keeps its
+own `argparse` parser because adopters use it without installing CMRU.
+
+`worktree` is a bundled shared library, not another CMRU CLI. It owns neutral
+Git workspace identity, records, leases, and lifecycle primitives; CMRU owns
+release and transaction policy. Its separate consumer guide is the canonical
+place for those APIs and examples.
+
+## Remote cleanup and local transaction abandonment
+
+`cmru cleanup` follows the configured remote policy for GitHub Release records
+and assets, matching tags, and GHCR package versions. A retained candidate is a
+different object: its private branch, worktree, and transaction sidecars exist
+to support inspection or resume. Removing one uses `cmru abandon`, with exact
+branch selection, a dry-run plan, and an explicit confirmation. It refuses
+published, promoted, untagged-publisher, or otherwise ambiguous transactions.
+`--dry-run` only inspects state and renders candidates; no mutation helper is
+called. The separate verbs keep local recovery from silently deleting public
+assets and keep remote asset pruning from appearing to clean a retained source
+transaction.
 
 ## Context comes from the nearest CMRU root
 
@@ -202,19 +320,21 @@ project-relative files/directories and the transaction refuses missing or symlin
 rather than guessing what the gate meant. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
 
-## Why CMRU splits R2 from its Assay lane
+## Why CMRU pins Assay R1 to a release tag and splits R2 out
 
-The release candidate is a snapshot of `origin/main`. CMRU's native Assay
-lane uses `main` as the changed-line base, which is useful for a branch review
-but produces no mutation candidates after the same source has merged. Assay
-correctly reports `NO_MUTANTS` for that release state. CMRU therefore assigns
-R0/R1/R3 to the source-backed Assay lane and R2 to the dedicated release
-mutation lane, which uses the nearest ancestor `cmru-v*` tag. This measures
-the changed CMRU source since its previous release. If that source diff is
-empty, the mutation lane writes its explicit skipped-evidence record. The
-serial campaign caps each candidate at 120 seconds, stops each failed
-candidate at its first failing test (`--maxfail=1`), and resumes from its
-progress stream.
+The release candidate is a snapshot of `origin/main`. Assay resolves a named
+base against the tested commit; once a branch is merged, `main` can resolve to
+the tested commit and leave R1 with no changed lines. CMRU therefore pins R1 to
+the latest ancestor release tag (`cmru-v5.4.1` in the current config), which
+keeps changed-line coverage meaningful after merge. Advance this pinned base
+with each CMRU release. R2 is a separate concern: the release candidate is
+already at `origin/main`, so using `main` as its mutation base would leave no
+mutation candidates. The dedicated mutation lane resolves the nearest
+ancestor `cmru-v*` tag dynamically and mutates CMRU source changed since that
+release. If that source diff is empty, the mutation lane writes its explicit
+skipped-evidence record. The serial campaign uses a 120-second timeout per
+candidate, stops each failed candidate at its first failing test (`--maxfail=1`),
+and resumes from its progress stream.
 
 The mutation and coverage-canary controls use the same disposable CMRU test
 closure. It includes the Topos and nyxloom CMRU manifests read by the estate

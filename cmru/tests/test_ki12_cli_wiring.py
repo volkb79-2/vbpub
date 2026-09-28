@@ -6,8 +6,7 @@ not just that ``version.detect_changed_projects`` supports them.
   tag-at-head relationship (``check_tag_at_head=True``) -- neither has a CLI
   override;
 * ``--allow-tag-ahead-of-head`` (and only that flag) flips
-  ``allow_tag_ahead_of_head``; its deprecated alias ``--allow-tag-at-head``
-  maps to the exact same thing;
+  ``allow_tag_ahead_of_head``;
 * the plan is computed over the run's own scope (a positional ``X``, else every
   orchestrated project) -- not blindly over every orchestrated project
   regardless of what this run will actually touch;
@@ -50,8 +49,9 @@ def _run_release(monkeypatch, tmp_path, extra_args):
     # irrelevant to what this test asserts (the detect_changed_projects call),
     # so it is stubbed out exactly like test_cli_release_final_dispatch.py does.
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
     cli.main(
-        ["release", "--_transaction-child", "--dry-run", "--config", str(config_path)]
+        ["release", "--dry-run", "--config", str(config_path)]
         + extra_args
     )
     return calls
@@ -73,15 +73,6 @@ def test_allow_tag_ahead_of_head_flag_flips_only_that_one_knob(monkeypatch, tmp_
     assert kwargs["require_pushed_baseline"] is True  # unaffected by the flag
     assert kwargs["check_tag_at_head"] is True         # unaffected by the flag
     assert kwargs["allow_tag_ahead_of_head"] is True
-
-
-def test_deprecated_allow_tag_at_head_alias_maps_to_the_same_flag(monkeypatch, tmp_path, capsys):
-    """The old spelling must keep working exactly like the new one -- and
-    warn that it is deprecated, so operators migrate off it."""
-    calls = _run_release(monkeypatch, tmp_path, ["--allow-tag-at-head"])
-    projects, kwargs = calls[0]
-    assert kwargs["allow_tag_ahead_of_head"] is True
-    assert "deprecated" in capsys.readouterr().out.lower()
 
 
 def test_project_scoped_release_plan_only_checks_the_scoped_project(monkeypatch, tmp_path):
@@ -133,10 +124,10 @@ def test_child_side_marks_plan_refused_and_exits_nonzero(monkeypatch, tmp_path, 
     marks = []
     monkeypatch.setattr(transaction, "mark_plan_refused", lambda *args: marks.append(args))
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    exc = cli.main(["release", "--config", str(tmp_path / "cmru.toml")])
 
-    assert exc.value.code != 0
+    assert exc != 0
     assert marks  # mark_plan_refused was called for this transaction
     err = capsys.readouterr().err
     assert "AHEAD of the snapshot commit" in err
@@ -187,10 +178,9 @@ def test_parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure(
         lambda *args: (_ for _ in ()).throw(AssertionError("nothing was ever pushed to delete")),
     )
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
+    exc = cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
 
-    assert exc.value.code == 1
+    assert exc == 1
     assert removed == ["removed"]
     assert forgotten == ["forgotten"]
     output = capsys.readouterr().out

@@ -27,7 +27,7 @@ run_as_gid = 1003
 docker_gid = 994
 
 [nyxloomd.health]
-# CR-16 2026-08-03 (RISK-007): the check now chains a `nyxloom doctor
+# CR-16 2026-08-03 (RISK-007): the check now chains a `nyxloomctl doctor
 # --liveness` python invocation (event-log reads across every registered
 # project, plus a bounded ntfy/webhook reachability probe) after the
 # original TCP probe -- widened from the TCP-only 15s/5s/40s to give that

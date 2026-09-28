@@ -53,13 +53,15 @@ The consequence is easy to miss and there is no warning for it: **`cmru release
 --dry-run` from your branch runs `origin/main`'s cmru, not yours**, and will
 report success while exercising none of your changes.
 
-To integration-test unreleased cmru changes, use the read-only verbs, which run
-in-process:
+To integration-test unreleased cmru changes, install the checkout into the
+active development environment and use the installed operator script. Module
+aliases such as `python -m cmru.cli` are intentionally unsupported:
 
 ```bash
-PYTHONPATH=cmru/src python3 -m cmru.cli status       --config ./cmru.orchestration.toml
-PYTHONPATH=cmru/src python3 -m cmru.cli dependencies --config ./cmru.orchestration.toml
-PYTHONPATH=cmru/src python3 -m cmru.cli tool-deps    --config ./cmru.orchestration.toml
+python3 -m pip install --editable ./cmru
+cmru status       --config ./cmru.orchestration.toml
+cmru dependencies --config ./cmru.orchestration.toml
+cmru tool-deps    --config ./cmru.orchestration.toml
 ```
 
 and call the guarded plan computation directly — see

@@ -141,12 +141,16 @@ class TestOutputContract:
         stream.flush()
         assert raw.getvalue() == "[ERROR] bad\nordinary"
 
-    def test_consume_flags_stops_at_separator_and_propagates_env(self, monkeypatch):
-        import cmru.output as output
-        monkeypatch.delenv("CMRU_LOG_PREFIX_TIME_SHORT", raising=False)
+    def test_registered_timestamp_option_reaches_delegated_grammar(self, monkeypatch):
+        from cmru import cli, output
+
+        monkeypatch.delenv(output._TIME_ENV, raising=False)
         monkeypatch.setattr(output, "configure", lambda value: setattr(output, "_seen", value))
-        assert output.consume_cli_flags(["--log-prefix-time-short", "run", "--", "--log-prefix-time-short"]) == ["run", "--", "--log-prefix-time-short"]
-        assert os.environ["CMRU_LOG_PREFIX_TIME_SHORT"] == "1" and output._seen
+        delegated = cli._build_cli().delegates["versions"]
+        args = delegated.parser.parse_args(["check", "--log-prefix-time-short"])
+
+        assert args.log_prefix_time_short is True
+        assert os.environ[output._TIME_ENV] == "1" and output._seen
 
     def test_colour_is_disabled_for_dumb_or_no_color(self, monkeypatch):
         from cmru.output import _colour_enabled
@@ -205,7 +209,7 @@ class TestTesterGateContracts:
 
 class TestCliExecutionContracts:
     def _args(self, **overrides):
-        values = dict(plan=None, landscape=None, to_tag=None, generation=None,
+        values = dict(plan=None, landscape=None, generation=None,
                       scope="user", node_id=None, token=None, minisign_pubkey=None,
                       release_root=None, consul_addr=None, dry_run=False,
                       log_level="INFO")
@@ -245,7 +249,7 @@ profiles = []
         assert cli.cmd_publish(self._args(plan=str(plan))) == 0
         assert cli.cmd_approve(self._args(plan="p")) == 0
         assert cli.cmd_hold(self._args(plan="p")) == 0
-        assert cli.cmd_rollback(self._args(plan=str(plan), to_tag="old", generation=8)) == 0
+        assert cli.cmd_rollback(self._args(plan=str(plan), generation=8)) == 0
         assert cli.cmd_status(self._args(plan=str(plan))) == 0
         assert events[:3] == ["publish", ("approve", "p"), ("hold", "p")]
         assert '"ok": true' in capsys.readouterr().out

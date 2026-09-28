@@ -16,9 +16,8 @@ def test_cleanup_build_output_unknown_project_refuses_before_deletion(monkeypatc
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
     monkeypatch.setattr(transaction, "delete_retained_build_output", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("delete")))
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["cleanup", "--delete-build-output", "id", "missing", "--dry-run"])
-    assert exc.value.code == 2
+    exc = cli.main(["cleanup", "--delete-build-output", "id", "missing", "--dry-run"])
+    assert exc == 2
     assert "unknown project(s): missing" in capsys.readouterr().err
 
 
@@ -30,7 +29,8 @@ def test_release_child_dry_run_with_no_changes_is_a_noop(monkeypatch, tmp_path, 
     monkeypatch.setattr(version, "detect_changed_projects", lambda *_, **__: [])
     release_calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: release_calls.append(kwargs))
-    cli.main(["release", "--dry-run", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["release", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
     assert release_calls == [{
         "minor": False, "major": False,
         "set_version": None, "dry_run": True,

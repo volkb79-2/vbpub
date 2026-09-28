@@ -176,7 +176,7 @@ def test_transaction_child_args_strip_parent_only_options_and_reject_external_co
     config = tmp_path / "cmru.toml"
     config.write_text("", encoding="utf-8")
     args = cli._child_release_args(
-        ["--resume", "/tmp/w", "--abandon=all-previous", "--config=/old", "demo"],
+        ["--resume", "/tmp/w", "--config=/old", "demo"],
         config, tmp_path,
     )
     assert args == ["demo", "--config", "cmru.toml"]
@@ -199,10 +199,8 @@ def test_main_routes_version_help_and_unknown_verb_without_config(monkeypatch, c
     cli.main(["version"])
     assert "cmru 9.9.9" in capsys.readouterr().out
     cli.main(["--help"])
-    assert "TYPICAL WORKFLOW" in capsys.readouterr().out
-    with pytest.raises(SystemExit) as raised:
-        cli.main(["unknown-verb"])
-    assert raised.value.code == 2
+    assert "GETTING STARTED" in capsys.readouterr().out
+    assert cli.main(["unknown-verb"]) == 2
 
 
 def test_main_worktrees_json_is_a_machine_readable_boundary(tmp_path, monkeypatch, capsys):

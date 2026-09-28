@@ -7,8 +7,11 @@ The library keeps `argparse` and the standard `logging` package familiar while
 owning repetitive shell behavior: identity/version output, grouped help with
 the overall CLI description and aligned verb summaries, parser registration,
 common options, clean cancellation/errors, confirmation
-prompts, output streams, redaction, and progress presentation. It has no
-runtime dependencies.
+prompts, output streams, redaction, and progress presentation. Its base install
+has no runtime dependencies; an optional `interactive` extra provides
+Questionary-backed prompts for multi-step workflows.
+Registered CLIs require exact option spellings by default; long-option prefix
+abbreviations are disabled for both the root command and its verbs.
 
 ## Adopt it
 
@@ -113,7 +116,15 @@ handler map, exposes `--yes` only for the mutating command, scopes standard
 logging to the selected logger, and validates that command/help registration
 cannot drift. `OptionSpec` carries argparse's own `action`, `choices`, `type`,
 `nargs`, and related options in `parser_kwargs`; `ArgumentSpec` does the same
-for positionals. `VerbSpec.synopsis` is optional: by default the library derives
+for positionals. Set `OptionSpec.hidden=True` for accepted internal plumbing
+that must stay out of operator help and generated reference tables. A verb may
+set `confirmation_required=False` when it mutates state without taking a
+generic `--yes` acknowledgement; it still appears as mutating in the catalog.
+The default `None` keeps the existing rule that mutating verbs require
+confirmation. `True` explicitly requires confirmation and is valid only on a
+mutating verb. Existing consumers may continue using `include_confirmation`;
+when both fields are set, they must agree.
+`VerbSpec.synopsis` is optional: by default the library derives
 the command synopsis from required positionals, required options, and required
 or optional mutually-exclusive option groups. Set it only when a public syntax
 shape cannot be represented by those declarations. For example, options that
@@ -124,9 +135,12 @@ and displays `(--config FILE | --config-json JSON)` without a second, drifting
 usage string. Use `VerbSpec.configure` only for genuinely custom parser
 structures such as nested sub-actions.
 
-Put options that apply before command selection (for example, a config-file
-path) in `CliRegistry.global_options`. Put options that belong to one command
-in that verb's `options`; put standard output/debug controls at the appropriate
+Put options that apply to the whole CLI (for example, a config-file path) in
+`CliRegistry.global_options`; the registry accepts them both before and after
+command selection and lists them in root and command help. A command-local
+option with the same complete flag set handles the after-command spelling.
+Put options that
+belong to one command in that verb's `options`; put standard output/debug controls at the appropriate
 level only when they genuinely apply there. Supported common output/debug
 controls work both before and after the selected verb; selectors such as
 `--json` and `--progress` may be unavailable on particular verbs. Root help
@@ -154,6 +168,53 @@ decide whether a firewall, deployment, or account change is safe.
 For multi-prompt flows, `runtime.output.is_interactive` reports whether both
 injected stdin and stdout are TTYs; use it to refuse wizard mode cleanly when
 the invocation is redirected or piped.
+
+### Optional interactive prompts
+
+See the [design guide's prompt boundary](docs/DESIGN-GUIDE.md#optional-interactive-prompts)
+for why terminal mechanics are shared while schema and persistence remain
+consumer-owned.
+
+Use `runtime.prompts` when a command needs to collect several values in a
+terminal. The API returns values and leaves schema validation, domain policy,
+and persistence in the handler:
+
+```python
+def configure(_args, runtime):
+    name = runtime.prompts.text("Project name")
+    mode = runtime.prompts.select("Release mode", ("safe", "full"))
+    approved = runtime.prompts.confirm("Use these settings?", default=False)
+    if not approved:
+        return 0
+    # Validate and persist name/mode in the owning application here.
+    return 0
+
+
+cli = CliRegistry(identity, prog="example", description="Configure a project.")
+cli.register(VerbSpec("configure", description="configure project", handler=configure))
+app = cli.build()
+raise SystemExit(app.run(interactive_extra="example-tool[interactive]"))
+```
+
+Normally `RegisteredCli.run()` handles an uncaught `PromptCancelled` and exits
+with status `130`; catch it only when the command needs cancellation cleanup.
+The five methods are `text`, `password`, `confirm`, `select`, and `checkbox`.
+`select` and `checkbox` require non-empty, unique string choices. A cancel is
+never returned as a valid empty or false answer. Both injected stdin and stdout
+must be TTYs before a driver is loaded or called.
+
+Install Questionary only for the wizard-enabled command surface:
+
+```bash
+python3 -m pip install 'cli-extended[interactive]'
+```
+
+Help, version, and non-interactive commands do not import Questionary. A
+vendored consumer passes its own extra name, such as
+`interactive_extra="nyxloom[interactive]"`, so missing-dependency guidance
+names the package the operator installs. Tests inject a `PromptDriver` through
+`app.run(prompt_driver=...)`; fake drivers still use TTY-marked streams so the
+production terminal policy remains covered.
 
 For a CLI with one command and no verb token, register one `VerbSpec` with
 `CliRegistry(single_command=True)`. That supports transitional tools; a tool

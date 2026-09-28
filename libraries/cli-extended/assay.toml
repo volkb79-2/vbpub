@@ -32,6 +32,7 @@ targets = [
   "src/cli_extended/output.py",
   "src/cli_extended/parser.py",
   "src/cli_extended/progress.py",
+  "src/cli_extended/prompts.py",
   "src/cli_extended/testing.py",
 ]
 fail_under = 100.0

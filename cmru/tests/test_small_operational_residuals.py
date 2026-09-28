@@ -18,9 +18,7 @@ def test_resolve_main_rejects_missing_or_unknown_project(monkeypatch):
     )
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: None)
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
-    with pytest.raises(SystemExit) as error:
-        resolve.resolve_main(["missing"])
-    assert error.value.code == 2
+    assert resolve.resolve_main(["missing"]) == 2
 
 
 def test_resolve_main_uses_project_prefix_and_refuses_missing_owner_or_release(monkeypatch, capsys):
@@ -39,17 +37,13 @@ def test_resolve_main_uses_project_prefix_and_refuses_missing_owner_or_release(m
 
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", Host)
     monkeypatch.setattr(resolve, "resolve", lambda host, prefix, **kwargs: None)
-    with pytest.raises(SystemExit) as error:
-        resolve.resolve_main(["demo"])
-    assert error.value.code == 1
+    assert resolve.resolve_main(["demo"]) == 1
     assert captured == {"owner": "owner", "repo": "repo", "token": "project-token"}
     assert "No releases found" in capsys.readouterr().err
 
     no_owner = loaded[:8] + (SimpleNamespace(owner="", repo="repo", token=None), None)
     monkeypatch.setattr("cmru.cli.load_config", lambda _: no_owner)
-    with pytest.raises(SystemExit) as error:
-        resolve.resolve_main(["demo"])
-    assert error.value.code == 2
+    assert resolve.resolve_main(["demo"]) == 2
     assert "owner/repo unknown" in capsys.readouterr().err
 
 

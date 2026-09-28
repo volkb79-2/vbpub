@@ -13,6 +13,15 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cli_extended import (
+    ArgumentSpec,
+    CliFailure,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
+from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
 def resolve_via_latest_json(
@@ -83,24 +92,52 @@ def format_result(result: Dict[str, Any], fmt: str) -> str:
     return json.dumps(result, indent=2)
 
 
-def resolve_main(argv: Optional[list] = None) -> None:
-    """Entry point for ``cmru resolve``.
+def resolve_cli():
+    """Build the registered grammar for ``cmru resolve``.
 
     The selected CMRU configuration supplies the project prefix plus GitHub identity.
     Tokens retain S2.4's explicit secret-source precedence; owner/repo are not
     guessed from an incomplete environment.
     """
-    from cmru.cli_support import CMRUArgumentParser, TargetSelectionError, select_target_names
-    parser = CMRUArgumentParser(description="Resolve latest release for registered projects (S5)")
-    parser.add_argument(
-        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
-        help="Project target; omitted uses the current project or estate default",
+    registry = CliRegistry(
+        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
+        prog="cmru resolve",
+        description="Resolve the latest published release for configured projects.",
+        single_command=True,
+        no_args_action=True,
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    parser.add_argument("--format", choices=["json", "env", "url"], default="json")
-    parser.add_argument(
-        "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
-    )
-    args = parser.parse_args(argv)
+    registry.register(VerbSpec(
+        "resolve",
+        description="Resolve release version, tag, asset URL and digest.",
+        group=VerbGroup.EXPLORATION.value,
+        arguments=(ArgumentSpec(
+            "target", "project target; omitted uses the current project or estate default",
+            metavar="[all|PROJECT[,PROJECT...]]",
+            parser_kwargs={"nargs": "?", "default": None},
+        ),),
+        options=(
+            OptionSpec(
+                ("--format",), "result format", metavar="FORMAT",
+                parser_kwargs={"choices": ("json", "env", "url"), "default": "json"},
+            ),
+            OptionSpec(
+                ("--config",),
+                f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
+                metavar="FILE", parser_kwargs={"default": None},
+            ),
+        ),
+        include_json=False,
+        include_progress=False,
+        handler=_run_resolve,
+    ))
+    return registry.build()
+
+
+def _run_resolve(args, _runtime) -> int:
+    """Perform one fully parsed resolve invocation."""
+    from cmru.cli_support import TargetSelectionError, select_target_names
 
     from cmru.cli import load_config, _resolve_config
     cfg_path = _resolve_config(args.config)
@@ -126,7 +163,7 @@ def resolve_main(argv: Optional[list] = None) -> None:
             estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
-        parser.error(str(exc))
+        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
 
     # Owner/repo are source facts in the strict config. ``load_config`` has
     # already resolved the one S2.4 credential contract, including a selected
@@ -136,7 +173,11 @@ def resolve_main(argv: Optional[list] = None) -> None:
     repo = github_cfg.repo
 
     if not owner or not repo:
-        parser.error("GitHub owner/repo unknown in the selected CMRU config")
+        raise CliFailure(
+            "GitHub owner/repo unknown in the selected CMRU config",
+            exit_code=2,
+            show_help=True,
+        )
 
     from cmru.hosts.github import GitHubReleaseHost
 
@@ -152,7 +193,7 @@ def resolve_main(argv: Optional[list] = None) -> None:
         result = resolve(host, proj.prefix, gh_releases_url=gh_releases_url)
         if not result:
             print(f"[ERROR] No releases found for project {name!r} (prefix {proj.prefix!r})", file=sys.stderr)
-            sys.exit(1)
+            return 1
         results[name] = result
     if len(results) == 1:
         print(format_result(next(iter(results.values())), args.format))
@@ -168,3 +209,9 @@ def resolve_main(argv: Optional[list] = None) -> None:
             f"===== Resolve Project: {name.upper()} =====\n{format_result(result, 'url')}"
             for name, result in results.items()
         ))
+    return 0
+
+
+def resolve_main(argv: Optional[list] = None) -> int:
+    """Entry point for ``cmru resolve`` when called directly."""
+    return resolve_cli().run(argv=argv)

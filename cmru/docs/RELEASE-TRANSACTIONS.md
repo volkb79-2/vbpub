@@ -67,7 +67,8 @@ and pushed but failed before promoting `origin/main` — aborts, because folding
 an ordinary "unchanged" skip would make an empty release look successful.
 `--allow-tag-ahead-of-head` downgrades only that "ahead" abort — for the deliberate case
 (e.g. re-running before `origin/main` has caught up) — back to a normal skip
-(`--allow-tag-at-head` is a deprecated alias). Any plan-time refusal here is a clean,
+The old `--allow-tag-at-head` spelling was removed; there is no alias or compatibility window.
+Any plan-time refusal here is a clean,
 typed failure: no project's cycle has started yet, so cmru discards the just-created
 worktree exactly like a success would, instead of retaining it the way a genuine
 mid-release failure is retained for inspection.
@@ -100,7 +101,10 @@ The re-execed child inherits the parent transaction lock; it does not try to
 acquire a second lock against its own release.
 
 Failure retains the worktree and prints its path and branch. A **pre-tag** failure
-can be inspected, deliberately corrected, re-gated, and resumed there:
+can be inspected and corrected on that branch. Commit the fixes there before
+resuming; CMRU refuses a dirty candidate so the final tag and artifacts cannot
+silently omit the correction. Resume reruns prepare and the required gate against
+the corrected branch tip, then ships that candidate commit:
 
 ```bash
 cmru release <project> --resume /path/reported/by/cmru
@@ -141,12 +145,22 @@ safe behavior remains: a clean checkout may fast-forward its local `main`, while
 local `main` is left untouched rather than force-moved. A false cleanup result is reported on
 the success, plan-refusal, and child-failure paths, so no path claims that the caller was synced.
 
-`cmru build` uses the same fetched snapshot but stops before every release action. A successful
+`cmru build` uses the same fetched snapshot but stops before source release actions. A successful
 build copies logs into `<project>/logs/<commit-date>_<full-commit>/` and declared artifact
 directories into `<project>/artifacts/<commit-date>_<full-commit>/`, writes a `build.json`
-SHA-256 inventory marked `publication: forbidden`, then removes its
-`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree. It is local consumption evidence, not a candidate that `publish` may consume. A build
-or retention failure keeps that worktree and prints its path; `cmru worktrees` discovers it and
+SHA-256 inventory, then removes its
+`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree. `cmru publish --build-output ID`
+revalidates the record and publishes those exact retained bytes through the declared push step;
+it refuses any record with tracked or untracked source-tree changes, including during dry-run. A
+project must ignore expected untracked generated build outputs while leaving source paths visible
+to Git; ignore rules do not hide modified tracked files.
+It does not rebuild, create Release records/Git refs, or promote a source branch. Built-in
+publishers require existing versioned and `<prefix>-latest` Release/tag targets, verify that a
+stable version tag points at the recorded source commit, and update assets in place. Generated
+sidecars and `latest.json` use temporary copies, so the retained record stays valid. A custom
+publisher must consume files beneath `CMRU_BUILD_OUTPUT_ROOT` and must not create or move Git
+refs. A build or retention failure keeps that
+worktree and prints its path; `cmru worktrees` discovers it and
 `cmru cleanup --discard-build-worktree <path> --yes` removes it after inspection. Rebuilding the
 same commit requires explicit deletion of the existing output record with
 `cmru cleanup <name> --delete-build-output <id> --yes`.
@@ -207,11 +221,22 @@ for operator resolution; the release engine does not claim that source history
 can undo an external publication.
 
 In every case the worktree/branch is retained for inspection and `--resume`.
-Starting a fresh release after an explicit `--abandon all-previous` is also safe:
-`detect_changed_projects` is tag-based, so any project that already fully
-released in the failed attempt shows as unchanged on the next run and is
-skipped — the retained candidate must be handled explicitly before a new
-publication attempt.
+Use the separate local transaction command after reviewing its exact plan:
+
+```sh
+cmru abandon --dry-run
+cmru abandon cmru-release-20260924_120000-example-a1b2c3 --dry-run
+cmru abandon cmru-release-20260924_120000-example-a1b2c3 --yes
+```
+
+The branch argument is an exact managed branch name. Without it, CMRU displays
+the complete retained release set and `--yes` confirms exactly that set. The
+command refuses any transaction with publication/promotion evidence or
+uncertain metadata and never removes a public Release, tag, or GHCR version.
+It removes the candidate worktree and its in-worktree logs/artifacts as well as
+the private candidate ref and sidecars. Run `cmru cleanup --dry-run` separately
+to inspect configured remote asset pruning; `cleanup` does not remove retained
+release worktrees.
 
 ### Worked example: releasing ciu, nyxloom, and modern-debian-tools-python-debug together
 
@@ -327,8 +352,9 @@ List every tracked output in `release.commit_generated`; cmru rejects an
 undeclared write. A prepare step that derives a version writes it to
 `<project>/cmru.vars`, and the project declares `version.strategy =
 "external:VAR"`. cmru then creates the annotated tag after the prepared source
-is gated and integrated. Projects do not create release tags through a build
-script or an implicit GitHub Release API side effect.
+is gated and integrated. The source-first release transaction creates its tag
+explicitly before publication. The retained-build publication path only updates
+existing Release/tag targets and refuses a missing target.
 
 OCI projects must not push while gathering generated provenance. Build privately
 first, commit/promote declared provenance, then run the separate registry push.

@@ -180,6 +180,12 @@ class CliOutput:
         self._identity_written = False
         self._raw_warning_written = False
 
+    def register_secret(self, secret: str) -> None:
+        """Add a runtime-collected secret to the output redaction set."""
+
+        if secret and secret not in self.secrets:
+            self.secrets += (secret,)
+
     @staticmethod
     def _is_tty(stream: TextIO) -> bool:
         try:

@@ -198,6 +198,11 @@ def test_build_output_id_is_source_commit_and_date_derived(tmp_path):
 
 def test_retain_successful_build_outputs_writes_hash_manifest_and_refuses_collision(tmp_path):
     root = _repo(tmp_path)
+    # Generated local evidence and artifacts are ignored so this fixture models
+    # a clean source snapshot whose build products do not pollute git status.
+    (root / ".gitignore").write_text("demo/logs/\ndemo/dist/\n", encoding="utf-8")
+    _git(root, "add", ".gitignore")
+    _git(root, "commit", "-q", "-m", "chore: ignore generated build outputs")
     workspace_path = tmp_path / "child"
     _git(root, "worktree", "add", "-q", "-b", "cmru/build/retain", str(workspace_path), "main")
     (workspace_path / "demo" / "logs").mkdir()
@@ -212,7 +217,7 @@ def test_retain_successful_build_outputs_writes_hash_manifest_and_refuses_collis
     manifests = list((root / "demo" / "artifacts").rglob("build.json"))
     assert manifests
     payload = json.loads(manifests[0].read_text())
-    assert payload["publication"] == "forbidden"
+    assert payload["publication"] == "eligible"
     with pytest.raises(RuntimeError, match="already exists"):
         transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
     _git(root, "worktree", "remove", "--force", str(workspace_path))

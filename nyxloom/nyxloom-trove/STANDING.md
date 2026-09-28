@@ -9,7 +9,8 @@ wrong by construction.)
 
 ## Environment
 
-- Work dir: `/workspaces/vbpub/nyxloom`. Never leave it.
+- Work dir: the assigned task worktree under `/workspaces/vbpub/.worktrees/<branch>`.
+  Do not make task edits in the shared `/workspaces/vbpub` main checkout.
 - Python (DIAGNOSTIC only): the interpreter on `PATH` (currently 3.14; PyYAML,
   jsonschema, hypothesis, pytest installed — install NOTHING). Corrected
   2026-08-02: this line named `/workspaces/vbpub/.venv/bin/python` at "3.13",
@@ -34,22 +35,32 @@ wrong by construction.)
   (and fails) while your work is uncommitted. That is the gate failing closed,
   not a coverage failure; say so explicitly rather than presenting it as green.
 
-## Frozen files — read, NEVER modify
+## Protected files — require explicit package-scoped ownership
 
-`pyproject.toml`, `tests/conftest.py`, `schemas/`, `docs/`, and
+`tests/conftest.py`, `schemas/`, and
 `src/nyxloom/{__init__,types,paths,storage,config,leases}.py`, plus every
-file owned by another package. Your module's stub DOCSTRING is the normative
-interface: implement beneath it, keep the docstring and all public
-signatures EXACTLY as written. If a frozen file or the contract seems wrong,
-insufficient, or impossible: STOP — do not improvise, do not work around —
-write `BLOCKED: <reason>` in your REPORT and final message, and exit.
+file owned by another active package, are protected. `docs/` and
+`pyproject.toml` are not globally protected; change them when they are needed
+to complete the accepted task.
+
+`scope.touch` is the planned file inventory, not an exclusive edit allowlist.
+An agent may change an additional file when it is directly needed to complete
+the accepted task, and must record the path and reason in the task log or
+report. This does not transfer ownership of files owned by another active
+package, authorize unrelated work, or override the protected-file rule or an
+explicit `scope.forbid`. A protected-file change or an explicit-forbid
+override still requires user authorization and a bounded contract amendment
+that names the exact path and explains why acceptance needs it. If that
+authorization is absent, stop only the dependent work and record the specific
+blocker. Your module's stub DOCSTRING is the normative interface: implement
+beneath it, keep the docstring and all public signatures EXACTLY as written.
 
 ### Core-redesign wave exception (CR-00 through CR-16)
 
 The operator-approved core-redesign program in
-`reports/CORE-REDESIGN-IMPLEMENTATION-PLAN-2026-08-02-AMENDMENT.md` supersedes
-the frozen-file list only for a package whose explicit contract names one of
-those files. This is a package-scoped ownership grant, not a general unfreeze:
+`reports/CORE-REDESIGN-IMPLEMENTATION-PLAN-2026-08-02-AMENDMENT.md` grants
+package-scoped exceptions to the protected-file rule only when that package's
+explicit contract names the exact file. This is not general ownership:
 
 - CR-01 may change the declared document/lint surfaces it audits.
 - CR-03 and CR-07 may change `types.py` and their explicitly named schemas.
@@ -59,11 +70,11 @@ those files. This is a package-scoped ownership grant, not a general unfreeze:
   contract names the exact file and explains why the package acceptance cannot
   be met without it.
 
-Files owned by another active package remain frozen. An agent that discovers a
-new frozen-file need must request a bounded contract amendment; it must not
-infer ownership from this exception. Existing live state and nonterminal tasks
-must be preserved through backup plus versioned upcasting. No CR package is
-authorized to delete or silently reset live state.
+Files owned by another active package remain protected. An agent that
+discovers a new protected-file need must request a bounded contract amendment;
+it must not infer ownership from this exception. Existing live state and
+nonterminal tasks must be preserved through backup plus versioned upcasting.
+No CR package is authorized to delete or silently reset live state.
 
 ## Cross-package dependencies
 
@@ -74,8 +85,10 @@ says so. Never import-and-hope; never reimplement another package's logic.
 
 ## Code and test rules
 
-- stdlib + PyYAML + jsonschema (+ hypothesis in tests) only. Type hints on
-  public functions. No dead code, no scaffolding, ASCII only.
+- Runtime and test dependencies must be declared in `pyproject.toml`; optional
+  UI libraries belong in an explicit extra. Do not install undeclared
+  dependencies manually. Type hints on public functions. No dead code, no
+  scaffolding, ASCII only.
 - Use conftest fixtures (`tmp_state`, `sample_project`, `make_handoff`).
   Local fixtures go in YOUR test file, never conftest.
 - No hollow tests: assert observable artifacts (files written, events
@@ -104,7 +117,10 @@ says so. Never import-and-hope; never reimplement another package's logic.
 
 ## Deliverables (all four, or the package is incomplete)
 
-1. Implementation in your owned files only.
+1. Implementation in files owned by this task. `scope.touch` is the planned
+   inventory rather than an exclusive edit allowlist; necessary additions are
+   allowed when the accepted task requires them and must be recorded. The
+   protected-file and other-package ownership rules above still apply.
 2. Tests green under the gate command.
 3. `handoff/reports/P<NN>-REPORT.md`: result (done|BLOCKED), per-oracle
    pass/fail table, files touched, gate output tail (verbatim), deviations
@@ -114,7 +130,11 @@ says so. Never import-and-hope; never reimplement another package's logic.
 
 ## Never
 
-Commit or run any git write command (worktree creation inside tests via the
-fixtures is fine); touch files you don't own; start long-lived daemons that
-outlive your tests; call external networks or AI services; edit this file
-or any handoff.
+Use Git writes only from the assigned task worktree and its feature branch.
+Commits there are allowed and expected when the declared gate requires a clean,
+committed tree for changed-line coverage. Do not stage, commit, reset, rebase,
+or amend from the shared main checkout. Keep the gate's `--worktree` target on
+the assigned task worktree. Also never edit protected files or another active
+package's files without explicit bounded authorization; start long-lived
+daemons that outlive your tests; call external networks or AI services; or edit
+this file or any handoff as an implementation agent.

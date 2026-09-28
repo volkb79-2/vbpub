@@ -15,6 +15,8 @@ event append (RP01 never performs either).
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import subprocess
 from pathlib import Path
 
@@ -389,10 +391,10 @@ def test_git_helper_returns_empty_on_oserror(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# CLI verb: `nyxloom resync <project>` -- prints, never writes
+# CLI verb: `nyxloomctl resync <project>` -- prints, never writes
 
 def test_cli_resync_no_tasks_prints_message(sample_project, tmp_state, capsys):
-    exit_code = cli.main(["resync", "demo"])
+    exit_code = ctl_main(["resync", "demo"])
     assert exit_code == 0
     assert "no tasks" in capsys.readouterr().out
 
@@ -408,7 +410,7 @@ def test_cli_resync_prints_table_for_merged_task(sample_project, tmp_state, caps
 
     storage.save_state(_tsf("demo-P20-cli", TaskState.MERGE_READY))
 
-    exit_code = cli.main(["resync", "demo"])
+    exit_code = ctl_main(["resync", "demo"])
     assert exit_code == 0
 
     out = capsys.readouterr().out
