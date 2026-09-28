@@ -88,9 +88,11 @@ session-extraction suite also exited 0 after the fix.
 
 ## Pending authoritative evidence
 
-The user's requested session-extract R2 campaign is running separately on the
-`nyxloom-cli-adoption` worktree. No heavy gate was started in parallel. The
-current P113 revision needs its declared tester-unified gate after the active
-R2 run finishes and any resulting fixes are reviewed. Record the exact gate
-output and final commit in `nyxloom-P113-REPORT.md` before calling this work
-complete.
+The requested R2 campaign is running on the separate `nyxloom-cli-adoption`
+worktree and evaluates its committed P112 revision; it is not coverage evidence
+for P113's new adapter code. After it completes, inspect survivors and
+backport any required fixes, then run the `session-extract` lane against the
+final P113 revision so this adapter change receives its own R2 evidence. Run
+P113's declared tester-unified gate as well. No heavy gate is started in
+parallel with the active campaign. Record the exact verdicts and commit in
+`nyxloom-P113-REPORT.md` before calling this work complete.
