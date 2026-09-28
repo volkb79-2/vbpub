@@ -4,11 +4,11 @@ Carved 2026-09-28 from the B110 analysis. Nothing here has been dispatched yet.
 
 - **Plan (decisions D1–D10, order, gates, pilot, go/no-go, runbooks):** [`../assay-B110-PLAN-2026-09-28.md`](../assay-B110-PLAN-2026-09-28.md)
 - **Analysis (every measured fact, the cost model, external comparison, citations):** [`../assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`](../assay-B110-RUNTIME-ANALYSIS-2026-09-28.md)
-- **Verbatim research records R0–R8 and probe scripts:** [`research/`](research/)
+- **Verbatim research records R0–R11 and probe scripts:** [`research/`](research/)
 - **Round-1 pre-dispatch review and carver decisions C1–C20:** [`REVIEW-2026-09-28-round1.md`](REVIEW-2026-09-28-round1.md). Verbatim outputs are in [`review-round1/`](review-round1/).
 - **Round-2 review and carver decisions C21–C32:** [`REVIEW-2026-09-28-round2.md`](REVIEW-2026-09-28-round2.md). Verbatim outputs are in [`review-round2/`](review-round2/).
 - **Round-3 (final) review, with the final status of every document and the remaining pre-dispatch preconditions:** [`REVIEW-2026-09-28-round3.md`](REVIEW-2026-09-28-round3.md). Verbatim outputs are in [`review-round3/`](review-round3/).
-- **Post-review reuse and testability review (non-binding proposals RP1–RP6 and S1–S10, guidelines TG1–TG12; Part C summarizes research R9–R11):** [`../assay-B110-REUSE-AND-TESTABILITY-2026-09-28.md`](../assay-B110-REUSE-AND-TESTABILITY-2026-09-28.md), summarized in plan §12.
+- **Post-review reuse and testability review (non-binding proposals RP1–RP6 and S1–S10, guidelines TG1–TG12; Part C summarizes research R9–R11):** [`../assay-B110-REUSE-AND-TESTABILITY-2026-09-28.md`](../assay-B110-REUSE-AND-TESTABILITY-2026-09-28.md), summarized in plan §12. Its review is in [`review-reuse-testability/`](review-reuse-testability/).
 - **Decisions:** `../../decisions.md` A-465–A-474.
 - **Backlog:** `../../4-backlog.md` B110 (umbrella: pilot and go/no-go), B111–B121, B108 phase 1.
 

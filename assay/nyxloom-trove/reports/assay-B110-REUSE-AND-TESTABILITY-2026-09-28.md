@@ -52,7 +52,7 @@ That is about 1.04 MB of plan, analysis, briefs and review summaries [M, `wc -c`
 | P3b cold witness | stop a candidate at its first verified test-call failure | pytest `-x`; PIT and Stryker stop at the first failure by default | Mechanism is standard. The receipt (a failed-call proof plus a prefix manifest digest) is assay's addition. |
 | P1 tiered order | heavy tests move to `tests/zz_slow/`; one declared order shared by R0/R1/R2 | PIT runs the fastest tests first, chosen per mutant | Assay needs one static order because per-candidate reordering changes what is proven (analysis §8; A-470's prefix manifest) |
 | P4 work queue | 3 workers, no joined waves | every tool runs in parallel | Standard and small; fine to own |
-| P5 snapshots | cheaper fresh private repo per candidate | Cosmic Ray rewrites the file in place; mutmut switches mutants inside one process | Needed to keep per-candidate isolation (the stale-pyc false-kill hazard was reproduced) |
+| P5 snapshots | cheaper fresh private repo per candidate | Cosmic Ray rewrites the file in place; mutmut switches mutants inside one process | The fresh-repo design is needed for per-candidate isolation (the stale-pyc false-kill hazard was reproduced); P5 only makes it cheaper and may be deferred (S6) |
 | P0 / P2 / P7 | measured planner; loop guards in assay's source; pilot selection | mostly glue, plus fixes to assay's own code | Needed whatever the design |
 | P6 campaign deadline | persisted deadline; a cut-off candidate is unclassified, never guessed | every tool has timeouts | The "time never classifies" semantics (A-464) are assay's addition |
 | P10 equivalence ledger | reviewed, scope-fingerprinted, audited equivalents | `# pragma: no mutate`, `// Stryker disable`, PIT exclusions | Heavier by design: each entry is reviewed and re-checked |
@@ -95,7 +95,7 @@ Ranked by expected value. None is ratified.
    - **Known gap:** assay's tests run a lot of assay in child processes that the coverage map does not see, because no `COVERAGE_PROCESS_START` is set. The map under-attributes those tests, which only raises the false-survivor rate.
    - **This is the largest saving available in the find-and-fix loop.** It does not touch the qualifying run.
    - **Would need:** a plan §9.1 amendment, a small P7b/P8 extension, and a coverage-context run in the P7b screen mode. It is not a new claim, because the screen is already non-qualifying (A-474).
-2. **Prioritize the packages that carry most of the saving:** P0, P1, P2, P4 and the v14 chain P10a→P3a→P3b (with P6 in its base). The pilot still needs P7, P7b and P8 (plan §8.1.4). P6 and v14 are required for the claim; P5 is a cost package (see S6). P9, P10b and P11 are conditional.
+2. **Prioritize the packages that carry most of the saving:** P0, P1, P2, P4 and the v14 chain P10a→P3a→P3b (with P6 in its base). The pilot-readiness set is unchanged (plan §8.1.4: P0–P8, the whole v14 branch P3a–P3d, and P7b); P5 leaves it only if S6 is decided. P6 and v14 are required for the claim; P5 is a cost package (see S6). P9, P10b and P11 are conditional.
 3. **Defer P9 (distributed evidence) until remote capacity is measured.**
    - It has the heaviest brief after P3b (81 KB).
    - It is built for capacity the plan itself counts as zero.
@@ -242,7 +242,7 @@ Splitting a big module is worth it when it creates a clear layer or unit, not fo
 
 **For assay's own codebase and environment (B105-relevant):**
 1. **After P1, move to a shallow snapshot (A-451)** and move the release-clone fixtures out of the self-qualification lanes. This is already an unowned follow-up in plan §11 item 9, and it is the cheapest `S` saving after P5.
-2. **A reflink-capable `TMPDIR` for tester-unified.** It turns ≈130 MB of copies per candidate into metadata operations. A-184 already allows it; it is an environment item. Only the pack copy benefits unless the optional C4 template copy is built; it needs a new LV on the production host (no loop file); pursue only if the pilot shows I/O matters (Part C, C3).
+2. **A reflink-capable `TMPDIR` for tester-unified.** It would turn the ≈41–62 MB pack copy per candidate into a metadata operation. The worktree is written from `cat-file`, not copied. A-184 already allows it; it is an environment item. Only the pack copy benefits unless the optional C4 template copy is built; it needs a new LV on the production host (no loop file); pursue only if the pilot shows I/O matters (Part C, C3).
 3. **Split the mega test files along the tier line** (`test_cli_run.py`, `test_standalone.py`) so that the fast part stays in the early tier. This is a P1 detail.
 4. **Do not split `runner.py` or `verdict.py` as a standalone refactor now.** It pays only under P11 units or B109 dependency proofs. Decide after the pilot.
 
@@ -257,7 +257,7 @@ Splitting a big module is worth it when it creates a clear layer or unit, not fo
 
 Their probes are in `b110/research/scripts/r10/` and `scripts/r11/`. The timings come from the devcontainer at host load 10–14, so they indicate direction rather than exact gate values. Labels are as in Parts A and B.
 
-**Headline.** The largest savings are **structural**, and none of them needs a new runner feature. Much of each candidate's work cannot depend on the mutant at all. The design questions are: what does this test (or setup step) prove, and must it happen once per mutant?
+**Headline.** The largest savings are **structural**. Most of them need no new runner feature; RC4, S5 and S8 need small product changes plus the decisions listed in C5. Much of each candidate's work cannot depend on the mutant at all. The design questions are: what does this test (or setup step) prove, and must it happen once per mutant?
 
 ## C1. "113 slow tests take 72% of the time. Why, and can we change what they depend on?"
 
@@ -352,10 +352,10 @@ Also: `build_release`'s clones take 2.55 s each from a full snapshot and 0.9 s f
 ## C4. "Can assay itself be made DRY, putting code into its own managed libraries?"
 
 **Yes to DRY, and it needs no library** (R11):
-- **Internal consolidation** removes ≈395–528 of the 3,760 candidates (10.5–14%) with **no claim change and no new decision**. That is ≈27–37 min off each qualifying run on 3 workers [C] (at ≈12.5 s per kill, R11 §5.1; less if C5's scenario holds). The duplication is in repeated idioms, not copy-paste:
+- **Internal consolidation** would remove an estimated ≈395–528 of the 3,760 candidates (10.5–14%; static estimate, not done) with **no claim change and no new claim decision**. That is ≈27–37 min off each qualifying run on 3 workers [C] (at ≈12.5 s per kill, R11 §5.1; less if C5's scenario holds). The duplication is in repeated idioms, not copy-paste:
   - 148 `frozen`/`kw_only` dataclass flags; one shared `@record` decorator plus a reflective test removes ≈144;
   - 122 typed-field checks ("int but not bool" and the like; ≈111 removable through guard helpers);
-  - the R1–R4 "judgment present iff attempted" rule, written four times in `verdict.py:4769-4910` and `verify.py`'s `_raw_claim` (≈20 in verdict.py plus ≈15 in verify.py, R11 §6);
+  - the R1–R4 "judgment present iff attempted" rule, written four times in `verdict.py:4769-4910` and again in `verify.py`'s `_check_judgment_matches_claims` (`verify.py:658-826`). One per-rigor helper per side would remove ≈20 plus ≈15 candidates; R11 §6 proposes a verify-side `_raw_claim` for this;
   - other repeated same-side decisions (≈100).
 - **Duplication that must stay.** 290 of `verify.py`'s 327 candidates re-check producer rules on purpose (A-129, A-182).
 - **A managed library moves candidates; it does not remove them.** It saves only if the library is requalified less often than assay. Over the last 12 releases, 821 candidates sat in files changed at most once (parsers, adapters), while `verdict`, `runner` and `mutation` changed in 6–8 of 12 (`verify.py` in 5).
@@ -387,7 +387,7 @@ That moves the claim-preserving path from "borderline" (analysis §1.7) to comfo
 | S4 | Shallow snapshot for both B105 lanes, right after P1 (plan §11 item 9 gets an owner) | decision note (A-451 default applies); `test_self_lane.py:102`; a drift-proof preflight |
 | S5 | `assay/`-only worktree as a new `snapshot_selection` value | decision amending A-161/A-269 §2; per-test outcome comparison in the pilot |
 | S6 | Once S4 is adopted, defer P5 (C1/C2 + sweep); keep P0's guard tests G1–G5; decouple the assume-unchanged fix | plan §1 and §8.1.4 (drop P5 from "P0–P8"), §2 item 3, §4 and §7; a D8/A-472 note; B116 status |
-| S7 | Test redesign RC5/RC6/RC8 now; RC7 after S8 | P1 scope |
+| S7 | Test redesign RC5/RC6/RC8 now; RC7 after S8 | P1 scope; S1 before RC6's lane move; fresh pre-dispatch review of the P1 brief |
 | S8 | Retain each candidate's failing node IDs (a kill matrix); today the liveness events that hold them are deleted | small P0/P3b extension, stored in a state-record or sidecar field outside the v14 wire (putting node IDs in the v14 `evidence` object would need an A-470 amendment: "An `evidence` object always has all six keys") |
 | S9 | DRY items R11 #1–#4 before the pilot | new small package |
 | S10 | Libraries (R11 #8/#9) only if the pilot still misses 6 h | A-005/A-462 decisions |
