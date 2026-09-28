@@ -28,6 +28,7 @@ all.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import subprocess
@@ -505,12 +506,395 @@ def _record(job, *, judge: str, **overrides) -> dict:
     return payload
 
 
+def _available_resource_snapshot() -> dict:
+    return {
+        "schema_version": 1,
+        "status": "available",
+        "cgroup_identity": "fixture-cgroup",
+        "host_psi": {
+            "cpu": {"some": 0},
+            "memory": {"some": 0, "full": 0},
+            "io": {"some": 0, "full": 0},
+        },
+        "cgroup_psi": {
+            "cpu": {"some": 0},
+            "memory": {"some": 0, "full": 0},
+            "io": {"some": 0, "full": 0},
+        },
+        "cgroup_cpu": {"nr_throttled": 0, "throttled_usec": 0},
+    }
+
+
+def _hung_evidence(*, sample_count: int = 32) -> dict:
+    last_elapsed = float(sample_count - 1)
+    samples = []
+    for elapsed in range(sample_count):
+        samples.append(
+            {
+                "wall_elapsed_s": float(elapsed),
+                "eligible_elapsed_s": float(elapsed),
+                "eligible_interval_s": 0.0 if elapsed == 0 else 1.0,
+                "candidate_cpu_s": 3.0,
+                "event_count": 0,
+                "stdout_bytes": 0,
+                "stderr_bytes": 0,
+                "resource_interval": "unknown" if elapsed == 0 else "clear",
+                "resource_deltas": {},
+                **({"previous_resources": None} if elapsed == 0 else {}),
+                "resources": _available_resource_snapshot(),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "policy": "pressure-adjusted-idle-v1",
+        "decision": "idle-hang",
+        "candidate_pid": 4242,
+        "candidate_cpu_source": "process-tree-cpu-seconds",
+        "wall_elapsed_s": last_elapsed,
+        "eligible_elapsed_s": last_elapsed,
+        "idle_eligible_s": last_elapsed,
+        "required_idle_eligible_s": 15.0,
+        "required_cpu_growth_window_s": 30.0,
+        "required_cpu_growth_floor_s": 1.0,
+        "candidate_session_finish_seen": False,
+        "session_finish_eligible_s": None,
+        "trace_complete": True,
+        "trace_truncated": False,
+        "samples": samples,
+    }
+
+
+def _pressure_then_clean_hung_evidence() -> dict:
+    evidence = _hung_evidence()
+    initial = _available_resource_snapshot()
+    pressured = _available_resource_snapshot()
+    pressured["host_psi"]["memory"]["full"] = 1
+    evidence["samples"][0].update(
+        resource_interval="stalled",
+        resource_deltas={"host_psi.memory.full_us": 1},
+        previous_resources=initial,
+        resources=pressured,
+    )
+    for sample in evidence["samples"][1:]:
+        sample["resources"] = pressured
+    return evidence
+
+
 def _store(tmp_path: Path, job, payload: dict) -> Path:
     root = tmp_path / "state"
     root.mkdir(parents=True, exist_ok=True)
     name = mutation.mutation_state_record_name(mutation.candidate_id(job))
     (root / name).write_text(json.dumps(payload), encoding="utf-8")
     return root
+
+
+def test_hung_record_without_resource_evidence_is_rejected(tmp_path: Path):
+    job = _job()
+    root = _store(
+        tmp_path,
+        job,
+        _record(job, judge="j" * 64, outcome_bucket="hung"),
+    )
+
+    assert (
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation._RECORD_REJECTED
+    )
+
+
+def test_hung_record_with_complete_resource_evidence_resumes(tmp_path: Path):
+    job = _job()
+    root = _store(
+        tmp_path,
+        job,
+        _record(
+            job,
+            judge="j" * 64,
+            outcome_bucket="hung",
+            liveness_resource_evidence=_hung_evidence(),
+        ),
+    )
+
+    record = mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+    assert record is not mutation._RECORD_REJECTED
+    assert record["liveness_resource_evidence"]["decision"] == "idle-hang"
+
+
+def test_session_finish_hang_evidence_needs_a_full_clean_grace(tmp_path: Path):
+    job = _job()
+    evidence = _hung_evidence()
+    evidence.update(
+        decision="session-finish-hang",
+        idle_eligible_s=31.0,
+        required_idle_eligible_s=30.0,
+        candidate_session_finish_seen=True,
+        session_finish_eligible_s=1.0,
+    )
+    root = _store(
+        tmp_path,
+        job,
+        _record(
+            job,
+            judge="j" * 64,
+            outcome_bucket="hung",
+            liveness_resource_evidence=evidence,
+        ),
+    )
+
+    assert (
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        is not mutation._RECORD_REJECTED
+    )
+
+
+@pytest.mark.parametrize("cpu_shape", ["growing", "short-window"])
+def test_session_finish_hang_evidence_requires_a_quiet_complete_cpu_window(
+    cpu_shape: str,
+) -> None:
+    evidence = _hung_evidence()
+    evidence.update(
+        decision="session-finish-hang",
+        idle_eligible_s=31.0,
+        required_idle_eligible_s=30.0,
+        candidate_session_finish_seen=True,
+        session_finish_eligible_s=1.0,
+    )
+    if cpu_shape == "growing":
+        for sample in evidence["samples"]:
+            sample["candidate_cpu_s"] = 3.0 + sample["eligible_elapsed_s"]
+    else:
+        for sample in evidence["samples"][:-2]:
+            sample["candidate_cpu_s"] = None
+
+    assert not mutation._valid_hung_resource_evidence(evidence)
+
+
+@pytest.mark.parametrize("sample_count, accepted", [(32, False), (42, True)])
+def test_finish_hang_cache_cpu_window_restarts_after_tree_sum_drops(
+    sample_count: int, accepted: bool
+) -> None:
+    evidence = _hung_evidence(sample_count=sample_count)
+    evidence.update(
+        decision="session-finish-hang",
+        required_idle_eligible_s=30.0,
+        candidate_session_finish_seen=True,
+        session_finish_eligible_s=1.0,
+    )
+    for sample in evidence["samples"][10:]:
+        sample["candidate_cpu_s"] = 1.0
+
+    assert mutation._valid_hung_resource_evidence(evidence) is accepted
+
+
+def test_idle_hang_evidence_may_also_retain_a_candidate_finish_event():
+    evidence = _hung_evidence()
+    evidence.update(
+        candidate_session_finish_seen=True,
+        session_finish_eligible_s=10.0,
+    )
+
+    assert mutation._valid_hung_resource_evidence(evidence) is True
+
+
+def test_first_retained_clean_interval_carries_its_prior_snapshot():
+    evidence = _hung_evidence()
+    first = evidence["samples"][0]
+    first["resource_interval"] = "clear"
+
+    assert mutation._valid_hung_resource_evidence(evidence) is False
+
+    first["previous_resources"] = _available_resource_snapshot()
+
+    assert mutation._valid_hung_resource_evidence(evidence) is True
+
+
+def test_hung_trace_accepts_pressure_then_a_complete_clean_cpu_window():
+    evidence = _pressure_then_clean_hung_evidence()
+    assert mutation._valid_hung_resource_evidence(evidence) is True
+
+
+def test_hung_trace_rejects_pressure_labeled_as_eligible():
+    evidence = _pressure_then_clean_hung_evidence()
+    evidence["samples"][0]["eligible_interval_s"] = 1.0
+
+    assert mutation._valid_hung_resource_evidence(evidence) is False
+
+
+def test_hung_trace_rejects_mismatched_pressure_delta():
+    evidence = _pressure_then_clean_hung_evidence()
+    evidence["samples"][0]["resource_deltas"]["host_psi.memory.full_us"] = 2
+
+    assert mutation._valid_hung_resource_evidence(evidence) is False
+
+
+def test_hung_trace_rejects_inconsistent_eligible_time():
+    evidence = _hung_evidence()
+    evidence["samples"][1]["eligible_interval_s"] = 2.0
+
+    assert mutation._valid_hung_resource_evidence(evidence) is False
+
+
+def test_hung_trace_rejects_unproved_idle_or_intervening_progress():
+    inflated = _hung_evidence()
+    inflated["samples"] = inflated["samples"][1:]
+    assert mutation._valid_hung_resource_evidence(inflated) is False
+
+    progressed = _hung_evidence()
+    progressed["samples"][15]["event_count"] = 1
+    assert mutation._valid_hung_resource_evidence(progressed) is False
+
+    missing = _hung_evidence()
+    missing["samples"][15].pop("stdout_bytes")
+    assert mutation._valid_hung_resource_evidence(missing) is False
+
+
+def test_hung_trace_rejects_idle_span_shorter_than_claimed():
+    evidence = _hung_evidence()
+    evidence["idle_eligible_s"] = 30.0
+
+    assert mutation._valid_hung_resource_evidence(evidence) is False
+
+
+def test_maximum_complete_hung_trace_fits_mutation_state_record_limit():
+    job = _job()
+    evidence = _hung_evidence(sample_count=mutation.liveness._LIVENESS_RESOURCE_TRACE_MAX_SAMPLES)
+    payload = _record(
+        job,
+        judge="j" * 64,
+        outcome_bucket="hung",
+        liveness_resource_evidence=evidence,
+    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    assert mutation._valid_hung_resource_evidence(evidence) is True
+    assert len(encoded) <= mutation.MUTATION_STATE_RECORD_LIMIT
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda evidence: evidence.update(trace_complete=False),
+        lambda evidence: evidence.update(trace_truncated=True),
+        lambda evidence: evidence.update(idle_eligible_s=1.0),
+        lambda evidence: evidence["samples"][1].update(
+            resource_interval="stalled", eligible_interval_s=1.0
+        ),
+        lambda evidence: evidence["samples"][1]["resources"]["host_psi"][
+            "memory"
+        ].update(full=1),
+        lambda evidence: evidence["samples"][1].update(
+            resource_deltas={"host_psi.memory.full_us": 1}
+        ),
+        lambda evidence: evidence["samples"][-1].update(candidate_cpu_s=4.5),
+        lambda evidence: evidence["samples"].__setitem__(
+            1, {**evidence["samples"][1], "wall_elapsed_s": 2.0}
+        ),
+    ],
+)
+def test_incomplete_or_inconsistent_hung_evidence_is_rejected(
+    tmp_path: Path, damage
+):
+    job = _job()
+    evidence = _hung_evidence()
+    damage(evidence)
+    root = _store(
+        tmp_path,
+        job,
+        _record(
+            job,
+            judge="j" * 64,
+            outcome_bucket="hung",
+            liveness_resource_evidence=evidence,
+        ),
+    )
+
+    assert (
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation._RECORD_REJECTED
+    )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda evidence: evidence.pop("required_cpu_growth_window_s"),
+        lambda evidence: evidence.update(samples=None),
+        lambda evidence: evidence.update(samples=[]),
+        lambda evidence: evidence.update(samples=evidence["samples"] * 33),
+        lambda evidence: evidence["samples"].__setitem__(0, None),
+        lambda evidence: evidence["samples"][1].update(wall_elapsed_s=float("nan")),
+        lambda evidence: evidence["samples"][1].update(resource_interval="pressure"),
+        lambda evidence: evidence["samples"][1].update(resource_interval="unknown"),
+        lambda evidence: evidence["samples"][1].update(
+            resources={"schema_version": 1, "status": "unavailable"}
+        ),
+        lambda evidence: evidence["samples"][0].pop("previous_resources"),
+        lambda evidence: evidence["samples"][0].update(
+            previous_resources=_available_resource_snapshot()
+        ),
+        lambda evidence: evidence["samples"][1].update(
+            previous_resources=None
+        ),
+        lambda evidence: evidence["samples"][1].update(resource_deltas=[]),
+        lambda evidence: evidence["samples"][1].update(resource_deltas={"x": True}),
+        lambda evidence: evidence["samples"][1].update(resource_deltas={"x": 0}),
+        lambda evidence: evidence["samples"][1].update(resource_deltas={"x": 1}),
+        lambda evidence: evidence["samples"][1].update(resource_interval="stalled"),
+        lambda evidence: evidence["samples"][0].update(resource_deltas={"x": 1}),
+        lambda evidence: evidence.update(wall_elapsed_s=30.0),
+        lambda evidence: evidence.update(wall_elapsed_s=32.0),
+        lambda evidence: evidence.update(eligible_elapsed_s=30.0),
+        lambda evidence: evidence.update(eligible_elapsed_s=30.0, idle_eligible_s=30.0),
+        lambda evidence: evidence["samples"][1].update(
+            eligible_elapsed_s=-1.0
+        ),
+        lambda evidence: evidence.update(
+            decision="session-finish-hang",
+            candidate_session_finish_seen=True,
+            session_finish_eligible_s=2.0,
+            required_idle_eligible_s=30.0,
+        ),
+        lambda evidence: evidence.update(
+            decision="session-finish-hang",
+            candidate_session_finish_seen=True,
+            session_finish_eligible_s=-1.0,
+            required_idle_eligible_s=30.0,
+        ),
+        lambda evidence: evidence.update(
+            candidate_session_finish_seen=True,
+            session_finish_eligible_s=-1.0,
+        ),
+        lambda evidence: evidence["samples"].__setitem__(
+            slice(None),
+            [
+                {**sample, "candidate_cpu_s": None}
+                for sample in evidence["samples"]
+            ],
+        ),
+        lambda evidence: evidence["samples"].__setitem__(
+            slice(None),
+            [
+                {**sample, "eligible_elapsed_s": 31.0}
+                for sample in evidence["samples"]
+            ],
+        ),
+        lambda evidence: evidence.update(
+            candidate_session_finish_seen=True,
+            session_finish_eligible_s="invalid",
+        ),
+        lambda evidence: evidence.update(
+            candidate_session_finish_seen=True,
+            session_finish_eligible_s=32.0,
+        ),
+        lambda evidence: evidence.update(candidate_session_finish_seen=None),
+    ],
+)
+def test_hung_evidence_validator_rejects_incomplete_or_inconsistent_trace(damage):
+    evidence = copy.deepcopy(_hung_evidence())
+    damage(evidence)
+
+    assert mutation._valid_hung_resource_evidence(evidence) is False
 
 
 @pytest.mark.parametrize(
