@@ -4563,3 +4563,30 @@ memory-PSI admission threshold is met; the aborted run ended with host
 allocate its optional per-instance Docker network because the address pools
 are exhausted; the checkout itself is ready and the assay lane does not use
 that network.
+
+### RW-350 — 2026-09-28 03:42:51Z — controller resumed; B107 needs current-main integration
+
+The controller resumed from the persisted checkpoint. The shared root checkout is
+at `790e31d3`, locally ahead 38 / behind 5 against its already-present
+`origin/main` ref, with operator-owned `AGENTS.md` edits; that file is preserved.
+Current local main includes Assay B101 P1 (`36f8551c`) and B101 P2
+(`5bf832a4`). B107's replacement registered `tester-unified` run completed
+PASS on `612843ef` (clean and history-eligible, 1,048.61 seconds); the earlier
+RW-348 sentence saying that run remained active is stale. The green receipt is
+for a tree based on `fb9d8f5b`; B107 changes `assay/src/assay/mutation.py`, so
+that receipt and any review of the old tree are not merge evidence for current
+main. Preserve the old tree and integrate B107 into a fresh worktree from
+current main, retaining the B101 changes before review/gates.
+
+P1's prepared CIU worktree is
+`.worktrees/rg55-p1-r2-isolated/.worktrees/rg55-p1-r2-pinned-20260928`, exact
+HEAD `0080eba7f91128d4df2d50368b7edaf1465f7805`, clean, with its nested
+`origin/main` pinned to `e5e9b95c5ac8be3452c93f1066f9436347f862fd`. Its
+`assay.toml` uses `judge.base = "origin/main"`; a read-only plan on the exact
+tree reports the intended 125 candidates. `run-gate.py --dry-run` confirms
+`dev-gates.slice`, `--cpus 3`, the mounted CIU worktree, and the expected assay
+command; no container was started. Passing `--base` is correctly refused
+because this command lane does not delegate a `{base}` token, so the run will
+use the lane's declared, pinned `origin/main`. At preflight, memory PSI `full
+avg10=0.00`; two run-gate mutation containers were active, leaving the
+operator-authorized third slot available.
