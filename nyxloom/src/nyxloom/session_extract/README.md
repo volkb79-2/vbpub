@@ -3,7 +3,7 @@
 > North star: a mechanical, cross-CLI, structured-Q&A-preserving,
 > content-aware checkpoint extractor.
 
-`nyxloom extract <session-log>` turns a coding-agent CLI's raw session
+`nyxloom-harness extract <session-log>` turns a coding-agent CLI's raw session
 transcript into a compact, resumable brief — without an LLM round-trip.
 It is a `/compact` alternative you can run *outside* the model: point it
 at a session log, get back the real operator turns, the structured Q&A,
@@ -38,7 +38,7 @@ simpler design:
 
 ## Current operator contract
 
-Bare `nyxloom extract SESSION` uses `operator-review`: the newest `/clear`
+Bare `nyxloom-harness extract SESSION` uses `operator-review`: the newest `/clear`
 epoch, at most five classifier-detected assistant checkpoints, and a 10,000
 word cap. The 180-character answer-length threshold applies to non-checkpoint
 assistant messages; concrete findings survive at any length. The independent
@@ -102,7 +102,7 @@ JSON output contains no ANSI styling.
 and scripts. The old `--detailed` spelling aliases `csv`. `extract-sessions`
 accepts `claude`, `codex`, or `opencode` to infer environment-aware roots, or
 a path. Directory discovery recurses by default; for example,
-`CODEX_HOME="$HOME/.codex2" nyxloom extract-sessions codex` scans
+`CODEX_HOME="$HOME/.codex2" nyxloom-harness extract-sessions codex` scans
 `~/.codex2/sessions` and its dated subdirectories.
 
 ## Why this exists (design history)
@@ -234,7 +234,7 @@ empty output, no warning; `extract-lossless` was unaffected since
 `lossless.py` never filtered on `isSidechain` at all.
 
 The first fix added an `--include-sidechain` flag. That was itself wrong
-— an operator design critique caught it same day: `nyxloom extract` is a
+— an operator design critique caught it same day: `nyxloom-harness extract` is a
 shared, adapter-agnostic surface, and "sidechain" is Claude-Code-only
 vocabulary that has no meaning for Codex or opencode; "adapters solve the
 CLI specifics," not the shared command. The flag was removed entirely.
@@ -246,7 +246,7 @@ interactive files: 100% non-sidechain; 358/358 dedicated subagent files:
 present has nothing to distinguish sidechain content *from*, so its
 content is kept; a file that does have a primary thread keeps the original
 noise-dropping behavior. **Targeting a specific agent's own conversation
-needs no flag at all** — it's just `nyxloom extract <that agent's own
+needs no flag at all** — it's just `nyxloom-harness extract <that agent's own
 file>`, the same shape as targeting any other adapter's session. See
 `adapters/claude_code.py`'s module docstring for the nested-subagent case
 (a subagent that itself dispatches another subagent) and
@@ -421,11 +421,11 @@ ledger.py       build_ledger(): E-012's mechanical files-touched/commits/
                 branches/test-results ledger, aggregated per prompt
                 boundary. Opt-in via `extract --ledger` (Claude Code only,
                 text mode only today).
-debug_diff.py   render_debug(): `nyxloom extract-debug`'s colored diff
+debug_diff.py   render_debug(): `nyxloom-harness extract-debug`'s colored diff
                 between lossless.py's own dump and a given extract() run --
                 see its own module docstring for the full color-scheme
                 rationale (white/grey/cyan/green).
-sessions.py     list_agents()/render_tree(): `nyxloom extract-sessions`'s
+sessions.py     list_agents()/render_tree(): `nyxloom-harness extract-sessions`'s
                 discovery layer -- "what sessions/sub-agents exist and how
                 do they relate," answered by each adapter's OWN
                 list_agents(path) (real per-CLI schema, not this module's
@@ -685,7 +685,7 @@ loop's idle state.
 ### Delivery
 
 `--bell` writes `\a` to **stderr**, not into the content stream — a bell is
-a notification, and `nyxloom extract --follow | claude` should not carry stray
+a notification, and `nyxloom-harness extract --follow | claude` should not carry stray
 bell bytes into another agent's prompt. `--on-attention '<cmd>'` runs your command with
 `NYXLOOM_ATTENTION_REASON` / `_HARNESS` / `_SESSION_PATH` / `_EXCERPT` (first
 ~100 chars) in its environment — your script decides whether that reaches
@@ -735,7 +735,7 @@ session:
   finds its own resume border for the "snapshot chain" pattern discussed
   in `nyxloom/docs/design-context-lifecycle.md` — an agent iteration
   writes a summary and exits, the *previous* iteration's saved extract
-  output is passed as `--since-file` to the next `nyxloom extract` run,
+  output is passed as `--since-file` to the next `nyxloom-harness extract` run,
   and only the new delta prose comes back, ready to hand to a freshly
   forked session alongside the prior snapshot.
 
@@ -768,7 +768,7 @@ chain two real hops and assert the second returns nothing, not a replay.
 
 ## Lossless dump
 
-`nyxloom extract-lossless` (Claude Code, Codex, Reasonix, and opencode today,
+`nyxloom-harness extract-lossless` (Claude Code, Codex, Reasonix, and opencode today,
 `lossless.py`; a separate verb from `extract` since 2026-09-11 -- see `cli.py`'s
 `cmd_extract_lossless` docstring for why) bypasses classification/windowing
 entirely: it keeps every text/thinking

@@ -725,7 +725,7 @@ class Daemon:
     def __init__(self, registry: dict[str, Path]):
         self.registry = registry
         # CR-15: the control-plane trust root is instance state.  Only the
-        # handle is built here (no I/O in __init__ -- `nyxloom tick` builds a
+        # handle is built here (no I/O in __init__ -- `nyxloomctl tick` builds a
         # Daemon too and never serves HTTP); _start_http bootstraps the file,
         # and every mutation re-reads it so an atomic CLI rotation invalidates
         # the old credential immediately, with no cache to expire.
@@ -3367,14 +3367,14 @@ class Daemon:
         # Crashing the daemon instead would turn "the credential file has the
         # wrong mode" into "the factory stops", which is a worse outcome than
         # a control plane that refuses to be driven -- recover with
-        # `nyxloom auth rotate --force`.
+        # `nyxloomctl auth rotate --force`.
         try:
             self._control_auth.ensure()
         except control_auth.CredentialStoreError as exc:
             log.error(
                 "operator credential unavailable; every control-plane mutation "
                 "will be refused until it is repaired "
-                "(nyxloom auth rotate --force)",
+                "(nyxloomctl auth rotate --force)",
                 reason=str(exc), credential_path=str(self._control_auth.path),
             )
         port, bind = self._chosen_http()

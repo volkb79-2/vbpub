@@ -1465,7 +1465,7 @@ function nyxloomOperatorCredential() {
     var credential = nyxloomCredentialCache || nyxloomStoredCredential();
     if (!credential) {
         credential = window.prompt(
-            'Operator credential (retrieve with: nyxloom auth show)') || '';
+            'Operator credential (retrieve with: nyxloomctl auth show)') || '';
         if (credential) {
             nyxloomCredentialCache = credential;
             nyxloomStoredCredential(credential);

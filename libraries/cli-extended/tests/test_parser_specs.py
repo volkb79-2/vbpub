@@ -581,6 +581,70 @@ def test_mutating_verbs_can_disable_generic_confirmation_option():
     assert "--yes" in app.command_parsers["abandon"]._option_string_actions
 
 
+def test_confirmation_required_is_explicit_while_legacy_field_stays_compatible():
+    registry = CliRegistry(IDENTITY, prog="tool", description="test")
+    registry.register(
+        VerbSpec(
+            "change",
+            description="change state",
+            mutating=True,
+            confirmation_required=True,
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "write",
+            description="write state",
+            mutating=True,
+            confirmation_required=False,
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "legacy",
+            description="legacy mutation",
+            mutating=True,
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+
+    assert "--yes" in app.command_parsers["change"]._option_string_actions
+    assert "--yes" not in app.command_parsers["write"]._option_string_actions
+    assert "--yes" in app.command_parsers["legacy"]._option_string_actions
+    assert "Mutating actions require confirmation" in app.command_parsers["change"].description
+    assert "Mutating actions require confirmation" not in app.command_parsers["write"].description
+    assert "Behavior: mutating" in app.command_parsers["write"].description
+
+
+def test_confirmation_required_rejects_nonmutating_and_conflicting_legacy_setting():
+    with pytest.raises(TypeError, match="confirmation_required must be a bool"):
+        VerbSpec("inspect", description="inspect", confirmation_required=1)
+    with pytest.raises(ValueError, match="not marked mutating"):
+        VerbSpec(
+            "inspect", description="inspect", confirmation_required=True
+        )
+    with pytest.raises(ValueError, match="conflicting confirmation_required"):
+        VerbSpec(
+            "cleanup",
+            description="cleanup",
+            mutating=True,
+            confirmation_required=True,
+            include_confirmation=False,
+        )
+
+    compatible_alias = VerbSpec(
+        "cleanup",
+        description="cleanup",
+        mutating=True,
+        confirmation_required=False,
+        include_confirmation=False,
+    )
+    assert compatible_alias.confirmation_enabled is False
+
+
 def test_registry_global_options_work_before_or_after_command_selection():
     registry = CliRegistry(
         IDENTITY,

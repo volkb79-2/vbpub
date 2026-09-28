@@ -60,7 +60,7 @@ selectable) adds:
   plain-text summary of events with type in digest_classes since since_seq:
   counts per type, tasks merged (ids), total cost recorded in the window,
   decisions open count. Deterministic ordering. (Scheduling a daily digest
-  is an operator cron concern, exposed via CLI 'nyxloom digest'.)
+  is an operator cron concern, exposed via CLI 'nyxloomctl digest'.)
 
 CR-16 2026-08-03 (liveness, channel health, silent-failure detection;
 RISK-007) adds:
@@ -73,7 +73,7 @@ RISK-007) adds:
   exists to catch. 'healthy' | 'unreachable' | 'unconfigured'; NEVER
   raises. This is the SECOND, independent alarm path RISK-007 requires:
   doctor.liveness_findings calls it from a plain function call in a
-  freshly-started `nyxloom doctor` process, and reports the result via
+  freshly-started `nyxloomctl doctor` process, and reports the result via
   DoctorFinding + process exit code -- a channel that has nothing to do
   with ntfy/webhook, so 'the transport that carries the alarm is the
   same transport that just failed' cannot happen here.

@@ -224,7 +224,7 @@ feedback_topic = "feedback"             # decisions + escalation Q&A, bidirectio
 # the same local-mode admin socket the provisioning hook already talks over.
 # `rest` is the interchangeable alternative and needs a PAT plus
 # `[mattermost].enable_user_access_tokens = true`; switch with
-# `transport = "rest"` (or, for one run, `nyxloom intake-bridge poll --transport
+# `transport = "rest"` (or, for one run, `nyxloomctl intake-bridge poll --transport
 # rest`) once `mattermost/README.md`'s enable-PATs recipe has been run.
 #
 # NEITHER credential is here, and neither may ever be: the PAT and the reply

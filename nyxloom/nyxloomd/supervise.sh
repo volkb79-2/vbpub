@@ -40,7 +40,7 @@ PIDFILE="$STATE_DIR/daemon/nyxloomd.pid"
 MAX_RAPID_FAILURES="${NYXLOOM_SUPERVISE_MAX_FAILURES:-3}"
 MIN_HEALTHY_SECS="${NYXLOOM_SUPERVISE_MIN_HEALTHY_SECS:-60}"
 RESPAWN_DELAY="${NYXLOOM_SUPERVISE_RESPAWN_DELAY:-2}"
-DAEMON_CMD="${NYXLOOM_SUPERVISE_DAEMON_CMD:-/opt/nyxloom-venv/bin/python -m nyxloom.cli daemon}"
+DAEMON_CMD="${NYXLOOM_SUPERVISE_DAEMON_CMD:-/opt/nyxloom-venv/bin/nyxloomd}"
 
 log() { echo "nyxloomd-supervise: $*" >&2; }
 

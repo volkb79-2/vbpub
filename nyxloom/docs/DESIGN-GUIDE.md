@@ -16,18 +16,84 @@ the broad lane now has a consistent minimum reach contract.
 Hypothesis remains appropriate for pure CLI and configuration invariants where
 input families are broad. Schemathesis is outside the CLI-only lane because
 Nyxloom does not expose an owned HTTP/OpenAPI contract there.
-## Top-level version compatibility
+## CLI identity, help, and bootstrap
 
-Nyxloom keeps the `version` command for its normal command grouping and adds
-`nyxloom --version` as an identity probe before command dispatch. Both use
-`nyxloom.__version__`; the legacy command prints the bare metadata value,
-while the top-level flag prints `nyxloom <version>` and exits 0.
-The early probe avoids importing command-specific state merely to identify the
-installed CLI and gives estate automation the same top-level contract as the
-other first-party tools.
-At every nested parser depth, help, usage, and configuration diagnostics begin
-with `NYXLOOM <version> — operator CLI` as line 1 before argparse usage text;
-normal command output is unchanged.
+Each human command has one cli-extended registry that owns its parser, help,
+usage, and dispatch. `nyxloom`, `nyxloom-harness`, and `nyxloomctl` report the
+same Nyxloom wheel version with their own executable names. Bare invocation
+prints complete help and exits 0, matching the shared CLI contract. `--help`,
+`help`, `help <verb>`, command help, and version paths do not create host log
+files; `-h` is intentionally absent. Command-local errors include the relevant
+generated help, so examples and accepted syntax share one declaration source.
+
+The parser finishes before logging setup. Local authoring and harness commands
+use an in-memory diagnostic path; `nyxloomctl` uses the host log for actual
+operator work. This keeps `nyxloom lint`, session extraction, and display paths
+usable from a project checkout without creating unrelated host state.
+`--debug` and `--verbose` select debug verbosity, while `--log-level` accepts
+`error`, `warn`, `info`, or `debug`; `NYXLOOM_LOG_LEVEL` supplies the default.
+`--traceback` controls unexpected-exception tracebacks separately.
+
+## CLI grammar and closed values
+
+Parser declarations derive closed values from their owning sources: backlog
+statuses come from the managed-entry model, finding kinds and severities come
+from the finding registry, and notification/event sequence cursors are parsed
+as integers. Finding `--field` values are checked for `KEY=VALUE` syntax with
+a non-empty key before dispatch. This keeps generated help, accepted syntax,
+and domain validation aligned; a typo or malformed value gets a usage error
+with command help instead of looking like an empty result or reaching a
+partially prepared handler. The [CLI reference](CLI-REFERENCE.md#option-declaration-matrix)
+lists each option's effective omission, type, choices, placement, and effects.
+
+## CLI boundaries and safety choices
+
+The three user CLIs follow who is working and which files the command targets:
+
+- `nyxloom` edits one project's trove: `init`, `onboard`, local `lint`, and
+  `backlog`. It can work on an unregistered checkout without a daemon.
+- `nyxloom-harness` reads session files and stores for `extract*` workflows.
+  It does not load the Nyxloom project registry or initialize host state.
+- `nyxloomctl` handles local host operations such as registry, workflow state,
+  routes/models, credentials, all-project lint, and local `daemon` control.
+  It is not a remote API client. The dashboard remains the HTTP/SSE client.
+- `nyxloomd` is a service-manager executable that starts the existing daemon
+  lifecycle in the current container; it is not another interactive CLI.
+
+The split keeps common skill entrypoints dependable when the daemon is down,
+while making host-wide actions visibly distinct from project-local authoring.
+The exact command ownership and old-to-new command map are in the
+[CLI reference](CLI-REFERENCE.md#current-command-and-option-contract).
+
+`nyxloom lint` checks the current checkout, discovered from the working
+directory or explicit file paths. `nyxloomctl lint` preserves the registered
+project scan. A project author therefore does not need to register the project
+with a local daemon host just to validate a handoff.
+
+Mutations keep Nyxloom's existing safeguards as consent: explicit verbs,
+state-transition validation, role checks, `--apply` plus confidence flags,
+and store protections. The registry accurately marks mutating commands but
+disables cli-extended's generic confirmation requirement; adding a second
+prompt would make automation less clear without improving those domain checks.
+Options that were accepted but ignored now fail with a clear usage error, and
+read-only paths such as `backlog list` do not write indexes.
+
+## Interactive backlog authoring
+
+`nyxloom backlog new TITLE` remains scriptable. When users need to create or
+edit a structured entry by hand, `new --interactive [TITLE]` and `edit
+ENTRY_ID` use cli-extended's optional Questionary prompt API. The optional
+`nyxloom[interactive]` extra keeps the core wheel free of UI dependencies;
+ordinary help, lint, harness work, and noninteractive backlog commands work
+without it.
+
+The prompt layer owns TTY checks, cancellation, and typed choices. Nyxloom
+owns metadata meaning, validates the full frontmatter candidate with its
+shipped schema, and performs the file write only after validation. Edit keeps
+metadata outside the form, including transition-owned state, and copies the
+Markdown body bytes unchanged. Creation retains the body template and
+`--body-from`. This reduces hand-written prompt boilerplate without moving
+backlog policy into a generic wizard library.
 
 ## Session extraction selection and boundaries
 

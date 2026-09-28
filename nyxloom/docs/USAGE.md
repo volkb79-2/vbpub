@@ -11,6 +11,14 @@ dispatches cheap implementer agents behind an independent review gate, and
 `nyxloom lint` machine-checks quality so the cost model rests on real carve
 discipline rather than trust.
 
+The wheel installs three human commands by data boundary: `nyxloom` authors a
+project's local trove, `nyxloom-harness` reads harness session stores, and
+`nyxloomctl` performs local host operations. The first two do not require a
+daemon or project registration. `nyxloomd` is the directly executable service
+entrypoint inside the daemon container. See the
+[CLI reference](CLI-REFERENCE.md#current-command-and-option-contract) for the
+complete current grammar.
+
 ---
 
 ## 1. Concepts you need
@@ -57,11 +65,11 @@ S1–S5 cross-consistency rules live in
 ## 2. Adopting nyxloom for a project
 
 ```bash
-# 1. Register the project (records a path in the registry).
-nyxloom project add <project-id> /path/to/repo
+# 1. Register the project with this host's local operator state.
+nyxloomctl project add <project-id> /path/to/repo
 
 # 2. (Recommended) keep it inert until you've onboarded a spine.
-nyxloom pause <project-id>
+nyxloomctl pause <project-id>
 ```
 
 The daemon **caches the registry at startup**, so `project add` is invisible to
@@ -70,8 +78,9 @@ and pause freely; the project only goes live (and only if unpaused) after a
 controlled restart.
 
 Then give the repo a trove (`nyxloom-trove/` with `nyxloom.toml`, `handoffs/`,
-`reports/`, `archive/`) — `nyxloom init <repo>` scaffolds the skeleton from
-bundled templates.
+`reports/`, `archive/`) — from that checkout, `nyxloom init <repo>` scaffolds
+the skeleton from bundled templates. Project-local lint and backlog authoring
+do not require registration or a running daemon.
 
 ---
 
@@ -96,9 +105,9 @@ be onboarded this way.
 
 > **`--check-gate` (GA3 v1, docs/plan-gate-adoption.md §GA3):** an opt-in,
 > deterministic, AI-free follow-on -- reports whether the project declares a
-> usable `[gates.*]` and, if not, prints an offer naming the concrete next step
-> (declare one, then run `nyxloom gate verify`). It does not scaffold a gate
-> (Dockerfile/`[gates.*]`-authoring is a v2 follow-up); combine freely with
+> usable `[gates.*]` and, if not, points to the next step: declare a project
+> gate, then run its lane with `./run-gate.py <lane>`. It does not scaffold a
+> gate (Dockerfile/`[gates.*]` authoring is a v2 follow-up); combine freely with
 > `--scan`/`--questionnaire` in the same call.
 
 ### 3.1 Greenfield (empty repo)
@@ -144,7 +153,8 @@ thinner draft and lose hard-won detail. The migration flow:
    roadmap into `milestones[]`, the backlog into `items[]` (IDs preserved), the
    product doc into `features[]` — **keeping every entry**. Author the
    `1-north-star` from the product's mission, with the user.
-3. `nyxloom lint <project>` until **0 findings** (this enforces S1–S5:
+3. From the project checkout, run `nyxloom lint` until **0 findings** (this
+   enforces S1–S5:
    milestone features exist in the product-definition, `folds_into` resolves,
    ids unique).
 4. Retire the now-migrated source docs (repoint or delete the old
@@ -158,66 +168,69 @@ them as worked examples.
 
 ## 4. CLI reference
 
-| Command | Purpose |
-|---|---|
-| `project add <id> <root>` | Register a project path in the registry. |
-| `project list` | Print the registry table. |
-| `lint [path…]` | Lint registered projects / specific handoff files (the quality gate). |
-| `doctor [--project-id PROJECT_ID] [--rebuild [--write]] [--liveness]` | Integrity findings + dashboard URL (`--liveness`: CR-16 fast healthcheck path). |
-| `status [--project-id PROJECT_ID]` | Per-task state / since / route / cost / notes. |
-| `resync <project> [--apply] [--apply-content-merges]` | Re-baseline state against ground truth (post manual-merge drift). |
-| `render` | Render the read-only `www/` dashboard. |
-| `migrate-store <project>` | Migrate the file-backend event store → SQLite. |
-| `daemon [--foreground]` | Run the resident reconcile daemon. |
-| `auth show \| bootstrap [--operator] \| rotate [--operator] [--force]` | Show / initialize / rotate the daemon's operator-auth store. |
-| `tick [--project-id PROJECT_ID]` | One reconcile pass (degraded/debug mode). |
-| `decide <project> <D-id> --choose [--note]` | Resolve a `D-NNN` product decision. |
-| `discuss <project> <D-id>` | Print the decision-chat command. |
-| `intake <project> <intake_id> <msg>` | Advance a feature-intake chat turn. |
-| `intake-bridge poll <project> [--transport mmctl\|rest]` | B9/nyxloom-P109: poll the Mattermost intake channel **once**, fold any new posts into one `intake` turn, post the reply back, exit. No daemon and no loop — a future scheduled job runs this verb. Exit 1 on a refused ingress (no `NYXLOOM_CHANNEL_OPERATOR_ID`) **and** on any error (a `BridgeError` — unreadable cursor, unparseable payload — reaches `main()`'s catch-all); an unconfigured bridge and an empty channel are both 0, so a 1 means "did not complete", not "refused" specifically. Configured by `[intake_bridge]`; see `mattermost/README.md`. |
-| `reject <project> <task> [--note]` | Merge-gate rejection. |
-| `merge <project> <task> [--commit] [--force]` | Record a manual merge (`--force`: operator override to record it even if the pre-merge gate fails). |
-| `gate` | Reserved namespace, no subcommands today — GA1's `verify` was retired in nyxloom-P98; gate execution now lives entirely in each project's own `run-gate.py`/Assay lane. |
-| `pause` / `resume <project> [task] [--force]` | Set / clear the pause flag (`resume --force`: RP03 operator override to clear a project-level pause despite drift; no effect on task-level resume). |
-| `leases` | Show mutex (flock) holders. |
-| `digest <project> [--since]` | Notification digest. |
-| `events <project> [--since --type --tail --json]` | Dump the event store as JSONL. |
-| `init <project_folder>` | Scaffold a `nyxloom-trove/` from templates. |
-| `onboard <project_folder> [--maturity --docs --mode --scan-path --scan --questionnaire --check-gate --scaffold-gate]` | Guided onboarding (see §3). `--scaffold-gate`: if no gate is declared, write a reviewable gate-runner Dockerfile + `[gates.*]` skeleton — a review skeleton, not a guaranteed-working gate; adopt run-gate+assay after adjusting it. |
-| `free-models list [--source] \| refresh [--source] [--dry-run]` | Discover currently-free models & refresh routes (see §6). |
-| `capability-map refresh [--dry-run] [--emit-findings PROJECT]` | Refresh `routes.toml`'s model catalog from a live capability probe; optionally record `cost_crossover` findings under a registered project. |
-| `route doctor [--no-probe]` | Validate `routes.toml` and live-probe each declared route (`--no-probe`: schema-only, offline-safe). |
-| `finding record --project-id PROJECT_ID --kind KIND --title TITLE [--body BODY] [--field KEY=VALUE]... [--task-id TASK_ID] [--severity SEVERITY] \| list [--project-id PROJECT_ID] [--kind KIND]` | Record / list structured findings against a registered project (FN-4). |
-| `backlog [--project-id PROJECT_ID] new <title> [--type --severity --priority --component --provenance --filed-by --spec-owner --body-from] \| promote <inbox-id> \| note <id> <text> \| set-status <id> <status> [--reason] \| list [--status] \| show <id> \| index` | Managed per-entry backlog (`docs/backlog-entries-spec.md`); `INDEX.md` is generated — always via `index`, never hand-edited. `--project-id` (default: discover from cwd) applies to every subcommand. |
-| `version` | Print the version. |
+Nyxloom installs four commands from one wheel. Each human CLI is generated
+from its own cli-extended registry; use `--help`, `help`, or `help VERB` to
+inspect its current options. Bare invocation prints help and exits 0. The
+short `-h` alias is not accepted.
 
-Against the deployed daemon, run any verb through the container wrapper:
-`python3 exec-nyxloom.py <verb> …` (it `docker exec`s into the running daemon;
-add `-i` for stdin heredocs).
+| Program | Commands and target | Daemon required? |
+|---|---|---|
+| `nyxloom` | `init`, `onboard`, project-local `lint`, and `backlog *`; edits files in the current project checkout. | No |
+| `nyxloom-harness` | `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`; reads AI-harness session files/stores. | No |
+| `nyxloomctl` | Local host operations: `project`, host-wide `lint`, `doctor`, `status`, `resync`, workflow/intake/finding actions, `auth`, `route`, model catalogs, `migrate-store`, and `daemon`. This is a local operator tool, not a remote HTTP client. | Only `daemon` starts it; other commands run directly. |
+| `nyxloomd` | Direct service-manager entrypoint for the daemon lifecycle used by the existing container. | Starts the daemon |
+
+Common tasks:
+
+```bash
+cd /path/to/project
+nyxloom init .
+nyxloom lint
+nyxloom backlog new "describe the issue" --type bugfix
+nyxloom backlog new --interactive
+nyxloom backlog edit CIU-1
+
+nyxloom-harness extract /path/to/session.jsonl --profile all
+
+nyxloomctl project add project-id /path/to/project
+nyxloomctl status --project-id project-id
+nyxloomctl doctor --project-id project-id
+nyxloomctl resync project-id                 # dry-run
+nyxloomctl resync project-id --apply         # apply eligible transitions
+```
+
+`nyxloom lint` checks the current checkout or explicit handoff paths;
+`nyxloomctl lint` checks all registered projects. See the
+[canonical CLI contract](CLI-REFERENCE.md#current-command-and-option-contract)
+for each verb's option semantics, defaults, safeguards, and migration path.
+The container invokes the installed `nyxloomd` executable; the old Python
+module command is not the service interface.
 
 ---
 
 ## 5. Session-log extraction
 
-The `extract-*` family reads a Claude Code, Codex, or opencode session log.
-Use a path or a bare session ID when nyxloom can resolve exactly one matching
-session; pass `--opencode-session ID` when a SQLite store contains several.
+The `nyxloom-harness extract-*` family reads Claude Code, Codex, OpenCode, or
+Reasonix session data. Use a path or a bare session ID when the adapter can
+resolve exactly one match; pass `--opencode-session ID` when a SQLite store
+contains several. Extraction does not need Nyxloom project registration or a
+running daemon.
 
 | Command | Purpose |
 |---|---|
-| `extract SESSION_LOG` | Produce a compact, classified brief with operator text, Q&A pairs, and selected checkpoints. |
-| `extract-lossless SESSION_LOG` | Dump every recoverable prose/thinking block, dropping only tool calls and harness bookkeeping. |
-| `extract-debug SESSION_LOG` | Compare the lossless dump with what `extract` keeps, including drop reasons. |
-| `extract-report SESSION_LOG` | Report tool calls, compactions, and session activity in condensed, detailed, or JSON form. |
-| `extract-sessions SESSION_LOG` | List the root session and discovered subagent transcripts. |
+| `nyxloom-harness extract SESSION_LOG` | Produce a compact, classified brief with operator text, Q&A pairs, and selected checkpoints. |
+| `nyxloom-harness extract-lossless SESSION_LOG` | Dump every recoverable prose/thinking block, dropping only tool calls and harness bookkeeping. |
+| `nyxloom-harness extract-debug SESSION_LOG` | Compare the lossless dump with what `extract` keeps, including drop reasons. |
+| `nyxloom-harness extract-report SESSION_LOG` | Report tool calls, compactions, and session activity in condensed, detailed, or JSON form. |
+| `nyxloom-harness extract-sessions FAMILY` | List the selected family and discovered subagent transcripts. |
 
 `extract` and `extract-lossless` can be bounded with `--since MARKER` and
 `--until MARKER`. Their text and JSON output embed a marker that can be read
 back from a saved file:
 
 ```bash
-nyxloom extract /path/to/session.jsonl --until a1 > brief.txt
-nyxloom extract /path/to/session.jsonl --since-file brief.txt
+nyxloom-harness extract /path/to/session.jsonl --until a1 > brief.txt
+nyxloom-harness extract /path/to/session.jsonl --since-file brief.txt
 ```
 
 The saved marker is checked against the explicit `--format`, or against the
@@ -234,14 +247,14 @@ for pasteable follow, redaction, and hook examples.
 
 ## 6. free-models — dynamic free-model discovery
 
-nyxloom can discover currently-**free** model endpoints across multiple
+`nyxloomctl` can discover currently-**free** model endpoints across multiple
 providers and regenerate `routes.toml`'s `[tiers.free-high]` block, instead of
 hand-curating it.
 
 ```bash
-nyxloom free-models list [--source NAME]              # discover + print, no write
-nyxloom free-models refresh --dry-run                 # compute the plan, write nothing
-nyxloom free-models refresh [--source NAME]           # discover + write the managed block
+nyxloomctl free-models list [--source NAME]              # discover + print, no write
+nyxloomctl free-models refresh --dry-run                 # compute the plan, write nothing
+nyxloomctl free-models refresh [--source NAME]           # discover + write the managed block
 ```
 
 `refresh` writes a delimited **managed block** (`# === nyxloom-free-models:
@@ -290,16 +303,18 @@ account-tier property carried as a per-provider constant.
 
 ## 7. Worked use cases
 
-**Onboard a new microservice (code-only).** `project add svc /repos/svc` →
-`pause svc` → `onboard /repos/svc --maturity mature --docs absent --mode
-derive-from-code --scan --questionnaire` → **review the draft spine with the
-team** → `lint svc` → resume when ready.
+**Onboard a new microservice (code-only).** `nyxloomctl project add svc
+/repos/svc` → `nyxloomctl pause svc` → `cd /repos/svc && nyxloom onboard .
+--maturity mature --docs absent --mode derive-from-code --scan --questionnaire`
+→ **review the draft spine with the team** → `nyxloom lint` →
+`nyxloomctl resume svc` when ready.
 
-**Bring a well-documented project under nyxloom.** `project add app /repos/app`
-→ scaffold the trove → **migrate** the existing roadmap/backlog/product docs
+**Bring a well-documented project under nyxloom.** `nyxloomctl project add app
+/repos/app` → `cd /repos/app && nyxloom init .` → **migrate** the existing roadmap/backlog/product docs
 into the spine (preserve every entry, author the north-star with the owner) →
-`lint app` to 0 findings → retire the old docs. (See dstdns/topos.)
+`nyxloom lint` to 0 findings → retire the old docs. (See dstdns/topos.)
 
 **Add free models and preview a routes refresh.** `export GROQ_API_KEY=…` →
-`nyxloom free-models list` to see what's discovered → `nyxloom free-models
-refresh --dry-run` to preview the managed block → `refresh` to apply.
+`nyxloomctl free-models list` to see what's discovered → `nyxloomctl free-models
+refresh --dry-run` to preview the managed block → `nyxloomctl free-models
+refresh` to apply.
