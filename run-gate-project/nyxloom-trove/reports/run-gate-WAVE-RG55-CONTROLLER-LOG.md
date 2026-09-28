@@ -4484,3 +4484,25 @@ resource-causality question open; do not reinterpret the result or hand-edit
 assay state. P3 remains open: no host singleton/socket is running or mounted
 in this cockpit, and round-4 live probes could not allocate DAMON (`EINVAL`),
 so live DAMON behavior and measured overhead are not yet established.
+
+### RW-347 — 2026-09-28 02:31:50Z — P1 exact-tree R2 completed with one parser survivor
+
+The later registered P1 R2 in the isolated mounted clone completed on exact
+clean tree `cc7e191074a94c53e92023ec4feb75fdf753bae4`. Read the verdict,
+progress stream, and run-gate history separately: all 125 candidates were
+accounted for (124 killed, 1 survived; no equivalent, budget-exceeded,
+crashed, or hung candidates), and the verdict is `FAIL/MUTANTS_SURVIVED`,
+exit 1. History marks this exact-tree run clean and eligible; duration was
+5,534.45 seconds. This is not release-pass evidence.
+
+The survivor is `scripts/cgroup-profiler/lib/targets.py:288`, `Lt->LtE`, in
+`proc_start_time_ticks`. A controller live probe successfully set a child
+process name to the empty string with `PR_SET_NAME`; the kernel exposed its
+stat record as `pid () S ...`. The existing `<` accepts the empty command
+name and parses its start-time field; the mutant rejects it. A new regression
+`test_start_time_accepts_an_empty_process_command_name` was added on a
+separate branch/worktree based on `cc7e1910`. No gate or mutation run has yet
+judged that follow-up tree. Keep the exact `cc7e` R2 artifacts unchanged,
+commit the new test and triage record, then run fresh short gates and R2 on
+the quiet follow-up tree; preserve the Sol round-4 session for fix-verification
+if it remains available.
