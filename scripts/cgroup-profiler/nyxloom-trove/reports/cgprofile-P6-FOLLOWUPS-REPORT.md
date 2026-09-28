@@ -1613,3 +1613,22 @@ tester-unified evidence remains pending. This is not a claim that the live
 systemd move-back probe passed: that probe, final short gates, current-tree
 R2, and full gate remain outstanding. The current P6 branch is based through
 `4d32bcfe`, behind shared main `87c13eff`; reconcile before final evidence.
+
+## Session 20 — current-main reconciliation and B107 gate status
+
+P6 is reconciled through current main 3a8bbe54068d46f34652b2ed52d19a7cddb53dd6
+at merge b53c5ffa1c55415a93f36beac63d320e478ebbfb. The merge retained the
+P6 stop-time restoration contract and main's controller log through RW-362;
+the two interface-contract copies compare byte-identically. The exact P6
+candidate still needs its own final short gates, 100% changed-area line and
+branch coverage, live stop-time restoration/fail-closed probes, and fresh
+Sol review. The old P6 R2 remains non-passing and does not qualify this tree.
+
+B107's registered tester-unified gate is running separately at
+3a8bbe54 from its isolated CIU worktree. At 23:38:31Z, 2m17s after kickoff,
+its exact container run-gate-assay-selfhosted-3634378-21136-1790638575
+was live with NanoCpus=3000000000 and
+CgroupParent=dev-gates.slice; wheel installation and Assay verdict-schema
+validation phases had passed. No final verdict has been read. Comparable
+gates took about 19–21 minutes, so the expected completion window is
+23:55–23:57Z. This gate is not P6 evidence.

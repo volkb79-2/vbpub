@@ -4983,3 +4983,34 @@ registered `tester-unified` full gate in a fresh CIU worktree at the merged
 tree, and preserve its exact logs/verdict; keep the current-tree R2 queued
 until a mutation slot is free. Neither merge nor test start authorizes an
 Assay release or install.
+
+### RW-363 — 2026-09-28 23:38:31Z — reconcile P6 and launch B107's registered full gate
+
+P6 branch rg55-followups-cgprofile-final reconciled current main
+3a8bbe54068d46f34652b2ed52d19a7cddb53dd6 at merge
+b53c5ffa1c55415a93f36beac63d320e478ebbfb. I resolved the contract
+conflict by retaining P6's stronger stop-time behavior: verify host-visible
+survivors, restore to the exact origin or a verified systemd unit/subgroup on
+ESRCH, record successful events, and refuse release/leaf removal while a
+survivor is unresolved. The controller-log conflict keeps P6 RW-333 and the
+newer main entries through RW-362. The root and daemon-side contract copies
+are byte-identical, and the P6 reconciliation merge is committed. The shared
+root AGENTS.md remains untouched.
+
+The first detached B107 gate wrapper disappeared before launching any runner
+or container; all its output files were empty. No verdict was produced. After
+rechecking host PSI and the loaded gate slice, the registered
+assay/run-gate.py tester-unified gate was relaunched at 23:36:14Z from
+isolated CIU worktree
+.worktrees/rg55-b107-ciu-anchor-20260928/.worktrees/rg55-b107-full-gate-20260928,
+exact tree 3a8bbe54068d46f34652b2ed52d19a7cddb53dd6.
+
+At the 23:38:31Z progress check (2m17s after kickoff), its container
+run-gate-assay-selfhosted-3634378-21136-1790638575 was up; exact readback
+confirmed NanoCpus=3000000000 and CgroupParent=dev-gates.slice.
+Wheel installation and successive Assay verdict-schema validation phases
+were progressing. Comparable gate duration is about 19–21 minutes, so the
+expected completion window is 23:55–23:57Z. Do not make routine progress
+observations before that window; then read its verdict and wrapper exit marker
+separately. Other agents' mutation/session-extract containers remain
+untouched.

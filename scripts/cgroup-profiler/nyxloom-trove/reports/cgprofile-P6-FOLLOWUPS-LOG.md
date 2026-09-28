@@ -1433,3 +1433,24 @@ changed-area coverage, then use a fresh caller-configured GPT-6-Sol xhigh
 review (new series starts at round 5). The latest prior R2 remains
 `6540f877` `BUDGET_EXCEEDED/CANDIDATE_HUNG`; it does not qualify the updated
 tree. Current-tree R2 and the registered full gate remain release blockers.
+
+## Session 20 — 2026-09-28 23:38:31Z — reconcile current main and resume gates
+
+The P6 branch now contains current main at
+3a8bbe54068d46f34652b2ed52d19a7cddb53dd6 through merge
+b53c5ffa1c55415a93f36beac63d320e478ebbfb. Conflict resolution retained
+the P6 stop-time restoration behavior and main's controller rulings through
+RW-362. The root and daemon-side RG-55 interface contracts compare
+byte-identically. The prior focused tests and placement coverage predate this
+reconciliation; P6 still needs exact-tip registered gates, changed-area
+line+branch coverage, live probes, fresh Sol review, R2, and the full gate.
+
+The separate B107 tester-unified gate started at 23:36:14Z from CIU worktree
+.worktrees/rg55-b107-ciu-anchor-20260928/.worktrees/rg55-b107-full-gate-20260928
+on exact tree 3a8bbe54. At the 23:38:31Z progress check (2m17s after
+kickoff), container
+run-gate-assay-selfhosted-3634378-21136-1790638575 had a verified 3-CPU
+cap under dev-gates.slice; wheel-install and multiple verdict-schema
+phases were progressing. The gate has not produced a final verdict. Prior
+comparable tester-unified gates took about 19–21 minutes; next observation is
+deferred to its expected completion window near 23:55–23:57Z.

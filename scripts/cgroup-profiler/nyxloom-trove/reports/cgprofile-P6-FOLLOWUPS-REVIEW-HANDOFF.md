@@ -53,7 +53,7 @@ Read, in this order: contract `run-gate-project/nyxloom-trove/
 RG55-INTERFACE-CONTRACT.md` §1–§7 (v1) and **§8 (v1.1 — the spec)** on
 `main`; design of record `DESIGN-2026-09-12-liveness-placement-admission.md`
 §2 (D-17..D-26), A1 (D-27..D-29), A2 (D-30); controller rulings RW-30,
-RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44, RW-45, RW-319..RW-333;
+RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44, RW-45, RW-319..RW-363;
 the implementer handoff `cgprofile-P6-FOLLOWUPS-HANDOFF.md` (C1–C9);
 backlog rows CP-2, CP-4..CP-11; then the diff itself — `lib/serve.py`,
 `lib/placement.py`, `lib/events.py` use, `lib/analyze.py`, `lib/store.py`,
@@ -64,7 +64,7 @@ narratives. Run your OWN sweeps.
 ## Phase 2 — RECONCILE against the implementers' claims
 
 Read `cgprofile-P6-FOLLOWUPS-LOG.md` (incl. every "Decision asks" block),
-`-REPORT.md`, every existing P6 brief through `-BRIEF-12.md`, and prior review
+`-REPORT.md`, every existing P6 brief through `-BRIEF-13.md`, and prior review
 rounds 1–4; check each claim; list what you could not verify. Multiple
 sessions built this — hunt the seams between sessions.
 
