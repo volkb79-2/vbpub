@@ -332,8 +332,8 @@ already at `origin/main`, so using `main` as its mutation base would leave no
 mutation candidates. The dedicated mutation lane resolves the nearest
 ancestor `cmru-v*` tag dynamically and mutates CMRU source changed since that
 release. If that source diff is empty, the mutation lane writes its explicit
-skipped-evidence record. The serial campaign caps each candidate at 120
-seconds, stops each failed candidate at its first failing test (`--maxfail=1`),
+skipped-evidence record. The serial campaign uses a 120-second timeout per
+candidate, stops each failed candidate at its first failing test (`--maxfail=1`),
 and resumes from its progress stream.
 
 The mutation and coverage-canary controls use the same disposable CMRU test
