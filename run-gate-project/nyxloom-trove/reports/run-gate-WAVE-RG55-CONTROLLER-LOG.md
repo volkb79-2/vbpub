@@ -4876,3 +4876,35 @@ and `3351574`, containers
 `run-gate-vbpub-session-extract-3351574-1790629480`. No RG-55 campaign was
 started; leave those runs untouched and make no routine status observation
 before `23:21:51Z` absent a concrete earlier completion or error.
+
+### RW-362 — 2026-09-28 23:20:47Z — B107 coverage reverified; allow provisional integration
+
+The saved branch-aware coverage JSON was generated at exact code commit
+`801fa0332515bb6c34743cf133acc51fc28a2cc1`; the only later candidate commit
+before review was `415686f`, which adds the Sol report and no source/test
+changes. Independently reran the RG-53 branch-aware judge:
+
+```
+python /workspaces/vbpub/run-gate-project/tools/coverage_gate.py \
+  --coverage-json /workspaces/vbpub/.worktrees/rg55-assay-b107-current-main-20260928/assay/.assay/rg55-b107-coverage/coverage.json \
+  --repo /workspaces/vbpub/.worktrees/rg55-assay-b107-current-main-20260928 \
+  --base 87c13eff5b03c65f07733a282c5b1dac24609e54 \
+  --source assay/src/assay
+```
+
+It exited 0: **326/326 changed executable lines and 162/162 changed
+branches**. The lane-history record still says dirty and is not eligible for
+duration/profile history; this explicit coverage judgment is separately
+reproduced against the saved JSON and the exact base. The fresh Sol reviewer
+also reports 44 behavioral and 45 documentation tests passing, plus the
+controller-supplied 555-test focused run. The candidate history does not have
+a `tester-unified` entry, so that aggregate test claim is retained as the
+reviewer's supplied evidence rather than a registered gate receipt.
+
+Per the operator's provisional-integration workflow, the ACCEPT, focused
+behavioral/doc tests, and independently verified 100% changed-area coverage
+are sufficient to merge B107 provisionally and unblock RG-55. Start the
+registered `tester-unified` full gate in a fresh CIU worktree at the merged
+tree, and preserve its exact logs/verdict; keep the current-tree R2 queued
+until a mutation slot is free. Neither merge nor test start authorizes an
+Assay release or install.
