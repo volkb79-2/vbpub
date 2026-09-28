@@ -4677,6 +4677,45 @@ tree and verify each classification. Survivors, hung outcomes, changed/new
 candidate IDs, and all uncertain witness replays execute the full suite.
 Final R2 and full-gate evidence remain required for release.
 
+### RW-356 — 2026-09-28 19:48:49Z — P1 hung result preserved; B107 exact-tree gate running
+
+P1 R2 on clean tree `0080eba7f91128d4df2d50368b7edaf1465f7805` ended
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4, after 6,693.169 seconds. All
+125 candidates are accounted for: 115 killed, 10 hung, and zero survived,
+equivalent, crashed, or budget-exceeded. Every one of the ten hung progress
+records had completed all 1,394 tests before classification; each process
+then remained alive for 134.874–220.231 seconds. This is a repeated
+post-suite shutdown pattern, but does not establish that host contention
+caused it. Preserve the failures as unresolved and rejudge on the B107 tree.
+Container memory-full stall was 242.56 seconds; host memory PSI full avg10
+was 0.00 at both start and end, so the saved profile does not prove a causal
+pressure relationship.
+
+The old registered B107 `tester-unified` gate passed cleanly and
+history-eligible on `52c4a978` (1,424.929 seconds, exit 0). The final
+integrated candidate `5b79fcd1` now has its own registered gate running in
+`run-gate-assay-selfhosted-3227502-21957-1790624585`, started
+`2026-09-28T19:43:05Z`. It is in loaded `dev-gates.slice`, capped at 3 CPUs;
+the 90-second health check found its exact-OID wheel installed and the
+attestation/schema successor phases passing. This is not yet a terminal gate
+verdict; await the next permitted completion observation before review.
+
+The current Assay v13 reader independently verified that P1's old verdict is
+a complete native/unsharded B106 source: 110 killed outcomes have usable
+witnesses, five killed outcomes have no usable witness, and ten hung outcomes
+require full execution. Once B107 is merged into the P1 candidate, inspect
+`assay plan --reuse-from` on that exact tree; no old hung result is to be
+reclassified or carried forward.
+
+Host preflight found `dev-gates.slice` loaded as `/dev.slice/dev-gates.slice`
+with `CPUQuotaPerSecUSec=5s`. An accidental `host-escape --help` invocation
+ran its built-in doctor (then tried to execute a nonexistent host `--help`)
+and restored missing `nsdelegate,memory_recursiveprot,memory_hugetlb_accounting`
+cgroup2 mount flags. The restoration is implemented and documented in the
+existing `modern-debian-tools-python-debug/host-setup` / `customization/mdt`;
+the subsequent read-only host check confirmed the flags present, so no new
+host-setup code change is needed. No other host or Docker object was changed.
+
 ### RW-354 — 2026-09-28 04:22:30Z — P1 R2 advances at a slower-than-prior campaign rate
 
 At the scheduled progress observation, the exact P1 container
