@@ -1,11 +1,14 @@
 # cgprofile-P6-FOLLOWUPS — adversarial review handoff (RG-55 wave, package P6)
 
 **Reviewer:** a genuinely fresh GPT-6-Sol xhigh session, never a fork of any
-implementer or the controller. Confirm the actual route from session metadata;
-do not infer it from this file. **Your job is to BREAK this before provisional
-integration.**
-Three rounds maximum. Fix-verification rounds resume this same live reviewer;
-the controller supplies the repair commit and preserves earlier rounds.
+implementer or the controller. The caller configures and verifies the route;
+the reviewer is not required to self-identify or attest model/effort metadata.
+Proceed with the technical review if that metadata is not exposed. **Your job
+is to BREAK this before provisional integration.** The previous review series
+is preserved in rounds 1–4; this fresh series starts at round 5 and has a
+three-round cap (rounds 5–7). Fix-verification rounds resume this same live
+reviewer; the controller supplies the repair commit and preserves earlier
+rounds.
 Record each verdict at
 `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-round<n>.md`.
 You may make and commit scoped fixes in the isolated P6 worktree, but may not
@@ -26,13 +29,13 @@ primary working directory in the environment reminder.
 ### Controller integration boundary (RW-296; binding)
 
 This is the final adversarial code review for a **provisional `--no-ff`
-integration only**. The controller will dispatch this round only after the
+integration only**. The controller will dispatch this fresh review series only after the
 exact candidate has green registered `r0-r1` and `r3` gates, full changed-line
 and branch coverage, and the live probes required below. The current-tree R2
 and full gate are intentionally allowed to finish asynchronously after
-provisional integration so other RG-55 packages can proceed. The old P6 R2
-receipt at `aae66356bf3a65ef8b3ba7fa04a8042f2feee55c` is
-`BUDGET_EXCEEDED/LANE_TIMEOUT` and is not evidence for this candidate.
+provisional integration so other RG-55 packages can proceed. The latest prior
+P6 R2 receipt at `6540f87761a66ff933c8bb45f81d8ac9117f407b` is
+`BUDGET_EXCEEDED/CANDIDATE_HUNG` and is not evidence for this candidate.
 
 Do not reject solely because the exact-tree R2 or full gate is still pending.
 Do reject any code, safety, contract, documentation, or oracle defect you find.
@@ -61,8 +64,9 @@ narratives. Run your OWN sweeps.
 ## Phase 2 — RECONCILE against the implementers' claims
 
 Read `cgprofile-P6-FOLLOWUPS-LOG.md` (incl. every "Decision asks" block),
-`-REPORT.md`, every `-BRIEF-1..11.md`; check each claim; list what you could
-not verify. Multiple sessions built this — hunt the seams between sessions.
+`-REPORT.md`, every `-BRIEF-1..12.md`, and prior review rounds 1–4; check each
+claim; list what you could not verify. Multiple sessions built this — hunt
+the seams between sessions.
 
 ## Attack surface (minimum; add your own)
 
@@ -107,8 +111,19 @@ not verify. Multiple sessions built this — hunt the seams between sessions.
 4. **Placement (D-20/D-25, §8.3).** Leaf created only under the gates slice;
    `+memory +cpu +pids` written only when absent; caps read back (a
    rounding-write fake must be reported as read, never echoed); late pids
-   migrated on every discovery tick; move-back on stop reads the leaf's own
-   `cgroup.procs`; `rmdir` retry 3× / 3 s; every refusal code
+   migrated on every discovery tick; stop enumerates host-visible survivors
+   from the exact leaf when private-namespace `cgroup.procs` exposes PID 0;
+   verify each survivor is still in that leaf before moving. Try the original
+   scope's guarded `cgroup.procs` first; on `ESRCH`, use
+   `AttachProcessesToUnit` only for the nearest verified systemd unit and
+   subgroup derived from the absolute original cgroup path, then verify
+   membership through the explicit host-proc view and record the successful
+   move in the D-25 event sink. If a survivor cannot be identified/restored,
+   the placement must remain unreleased, the leaf must remain intact, and the
+   response must expose `write-failed:<origin-cgroup.procs>`; it must never
+   claim cleanup succeeded. Cover vanished PIDs, stale membership, missing
+   host-proc view, unsafe/relative origin paths, direct write success, and
+   systemd fallback refusal. `rmdir` retries 3× / 3 s; every refusal code
    (`no-token`, `no-gates-slice`, `over-slice`, `parent-not-gates-slice`,
    `write-failed:<file>`) on a session that STILL starts/samples/stops;
    `placement` null only when never requested; `throttled` reachable only
@@ -166,8 +181,12 @@ template's flags (privileged, private PID/cgroup namespaces, `--network none`,
   diff the JSON; `peer-refused` with an allowlist that excludes your uid;
 - a placed exec-mode probe (80 MiB lane, token set, `--place --memory-high
   64M --memory-max 96M`) → leaf exists during, `applied` read back, pids in
-  the leaf, `throttled` readings when the lane exceeds `memory.high`, leaf
-  gone after `stop`;
+  the leaf, `throttled` readings when the lane exceeds `memory.high`; on stop,
+  verify the surviving host PID is back in the original systemd scope via
+  `/hostproc/<pid>/cgroup`, a successful `cgroup_write` event names the origin
+  path, and only then is the leaf removed. Include a fail-closed probe where
+  mapping or attachment is refused: the leaf remains and stop does not claim
+  success;
 - a watch probe (`sleep` subtree, `--idle-bound 20 --on-stall kill`) →
   `stalled` then `killed` in ≤ 60 s on `ctl watch` over the socket, then
   the same with `--on-stall report`;
@@ -180,7 +199,8 @@ template's flags (privileged, private PID/cgroup namespaces, `--network none`,
 each with file:line evidence and a concrete prescription; non-blocking
 findings (S1..) separately; product calls named as decision asks for the
 controller, never improvised. Claims you could not verify listed as such.
-Write the round file, then return the verdict line first in your message.
+Write the next round file (start with round 5), then return the verdict line
+first in your message.
 
 ## HOST LOAD (binding)
 

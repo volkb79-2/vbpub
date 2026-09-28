@@ -1586,3 +1586,30 @@ in `0a2e0cd8` is not present in this P6 tree, and the eventual P6 candidate
 must reconcile it before final gates and mutation judgment. The isolated P1
 R2 on `1080ac2f` separately passed all 125 candidates; its registered
 short-gate receipts and fresh final Sol review are still pending.
+
+## Session 19 — stop-time restoration under private PID namespaces
+
+Commit `738bf1f5cb8ea52b751078052d52a551feee485e` closes the remaining
+stop-time half of the private-PID placement bridge. Previously, a daemon
+could use host systemd to move a host PID into the lane leaf, but teardown
+read `cgroup.procs` through the daemon's private namespace, where host PIDs
+can appear as zero, and swallowed failures to move survivors back. This
+could strand work while claiming release.
+
+The new implementation requires a verified host-proc view to enumerate
+private-namespace survivors. It revalidates each PID's current cgroup before
+moving it, writes to the exact original cgroup's `cgroup.procs` first, and
+uses `AttachProcessesToUnit` only when that host-PID write returns `ESRCH` and
+the original absolute cgroup path resolves to a safe nearest systemd unit and
+subgroup. The move is verified through host `/proc`; successful systemd
+moves are recorded in the D-25 event sink. Any unresolved survivor or failed
+move keeps the leaf and unreleased state and exposes the origin-path refusal.
+
+Focused verification before commit: `tests/test_serve_placement.py` — **122
+passed**. The measured `lib/placement.py` coverage was **398/398 statements
+and 166/166 branches**. The local broader suite did not collect because the
+cockpit environment lacks optional `pandas` and `matplotlib`; registered
+tester-unified evidence remains pending. This is not a claim that the live
+systemd move-back probe passed: that probe, final short gates, current-tree
+R2, and full gate remain outstanding. The current P6 branch is based through
+`4d32bcfe`, behind shared main `87c13eff`; reconcile before final evidence.

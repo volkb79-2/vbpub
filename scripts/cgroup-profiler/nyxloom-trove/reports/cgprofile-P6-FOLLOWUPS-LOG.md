@@ -1396,3 +1396,40 @@ memory-full stall. No last pytest node or lower-level timeout reason was
 preserved, so the cause remains unresolved; the profile correlation is not
 causal proof. Keep the exact state record and treat the R2 as non-passing.
 P6 must reconcile the P1 repair before its final gates and final R2.
+
+## Session 19 — 2026-09-28 23:08:07Z — repair stop-time survivor restoration
+
+Inspection of the private-PID systemd bridge found an unsafe asymmetry: lane
+PIDs could be moved into the gates leaf through systemd, but `stop` still read
+host PIDs from the daemon's namespace-local `cgroup.procs` and silently
+ignored move-back failures. A stop could therefore claim release and remove
+the leaf while a live process remained stranded or its location was unknown.
+
+Commit `738bf1f5cb8ea52b751078052d52a551feee485e` repairs this path. With a
+verified host-proc view it enumerates the leaf's host-visible tasks, rechecks
+that each task still belongs to the leaf, tries the exact original
+`cgroup.procs` first, and falls back only on `ESRCH` to
+`AttachProcessesToUnit` for the nearest systemd unit/subgroup derived from the
+absolute original cgroup path. It verifies the resulting host-proc membership
+and records successful systemd-mediated cgroup writes. An unresolved task,
+unsafe mapping, or failed move leaves the placement unreleased and leaf
+intact, with the origin write failure exposed; it is not silently certified
+as cleanup.
+
+Pre-commit focused verification passed: `tests/test_serve_placement.py` —
+**122 passed**. Branch-aware coverage of `lib/placement.py` reported **398/398
+statements and 166/166 branches (100%/100%)**. A broader cockpit-venv suite
+could not collect because optional `pandas` and `matplotlib` dependencies are
+absent; this is not registered gate evidence. No registered gate, fresh R2,
+daemon live probe, merge, or release was run in this session.
+
+The branch is now at `738bf1f5`; its merge-base remains `4d32bcfe`, while
+shared main has advanced to `87c13eff`. The stop-time systemd fallback needs
+an exact-tree live probe before provisional integration: verify a surviving
+host PID returns to its original systemd scope, the D-25 event is emitted,
+and the leaf is removed only after membership verification; also verify the
+fail-closed path. Reconcile current main, run exact-tip short gates and full
+changed-area coverage, then use a fresh caller-configured GPT-6-Sol xhigh
+review (new series starts at round 5). The latest prior R2 remains
+`6540f877` `BUDGET_EXCEEDED/CANDIDATE_HUNG`; it does not qualify the updated
+tree. Current-tree R2 and the registered full gate remain release blockers.
