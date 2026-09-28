@@ -543,3 +543,140 @@ def test_catalog_parser_validation_reports_both_drift_directions():
     )
     with pytest.raises(ValueError, match="catalog verbs missing from parser: missing"):
         parser.catalog.validate_parser(parser)
+
+
+def test_hidden_registered_option_is_parsed_but_omitted_from_public_help():
+    registry = CliRegistry(IDENTITY, prog="tool", description="test")
+    internal = OptionSpec(
+        ("--internal-child",), "transaction plumbing", hidden=True,
+        parser_kwargs={"action": "store_true"},
+    )
+    registry.register(VerbSpec(
+        "build", description="build outputs", options=(internal,),
+        handler=lambda *_: 0,
+    ))
+    app = registry.build()
+
+    args = app.parser.parse_args(["build", "--internal-child"])
+
+    assert args.internal_child is True
+    assert "--internal-child" not in app.command_parsers["build"].format_help()
+    assert "--internal-child" not in app.catalog.render_markdown()
+    assert app.catalog.verbs[0].display_synopsis == ""
+
+
+def test_mutating_verbs_can_disable_generic_confirmation_option():
+    registry = CliRegistry(IDENTITY, prog="tool", description="test")
+    registry.register(VerbSpec(
+        "cleanup", description="cleanup outputs", mutating=True,
+        include_confirmation=False, handler=lambda *_: 0,
+    ))
+    registry.register(VerbSpec(
+        "abandon", description="abandon transaction", mutating=True,
+        handler=lambda *_: 0,
+    ))
+    app = registry.build()
+
+    assert "--yes" not in app.command_parsers["cleanup"]._option_string_actions
+    assert "--yes" in app.command_parsers["abandon"]._option_string_actions
+
+
+def test_confirmation_required_is_explicit_while_legacy_field_stays_compatible():
+    registry = CliRegistry(IDENTITY, prog="tool", description="test")
+    registry.register(
+        VerbSpec(
+            "change",
+            description="change state",
+            mutating=True,
+            confirmation_required=True,
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "write",
+            description="write state",
+            mutating=True,
+            confirmation_required=False,
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "legacy",
+            description="legacy mutation",
+            mutating=True,
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+
+    assert "--yes" in app.command_parsers["change"]._option_string_actions
+    assert "--yes" not in app.command_parsers["write"]._option_string_actions
+    assert "--yes" in app.command_parsers["legacy"]._option_string_actions
+    assert "Mutating actions require confirmation" in app.command_parsers["change"].description
+    assert "Mutating actions require confirmation" not in app.command_parsers["write"].description
+    assert "Behavior: mutating" in app.command_parsers["write"].description
+
+
+def test_confirmation_required_rejects_nonmutating_and_conflicting_legacy_setting():
+    with pytest.raises(TypeError, match="confirmation_required must be a bool"):
+        VerbSpec("inspect", description="inspect", confirmation_required=1)
+    with pytest.raises(ValueError, match="not marked mutating"):
+        VerbSpec(
+            "inspect", description="inspect", confirmation_required=True
+        )
+    with pytest.raises(ValueError, match="conflicting confirmation_required"):
+        VerbSpec(
+            "cleanup",
+            description="cleanup",
+            mutating=True,
+            confirmation_required=True,
+            include_confirmation=False,
+        )
+
+    compatible_alias = VerbSpec(
+        "cleanup",
+        description="cleanup",
+        mutating=True,
+        confirmation_required=False,
+        include_confirmation=False,
+    )
+    assert compatible_alias.confirmation_enabled is False
+
+
+def test_registry_global_options_work_before_or_after_command_selection():
+    registry = CliRegistry(
+        IDENTITY,
+        prog="tool",
+        description="test",
+        global_options=(
+            OptionSpec(
+                ("--profile",), "select a profile",
+                parser_kwargs={"default": "safe"},
+            ),
+            OptionSpec(("--time",), "show time", group="OUTPUT CONTROL"),
+        ),
+    )
+    registry.register(VerbSpec("inspect", description="inspect", handler=lambda *_: 0))
+    app = registry.build()
+
+    before = app.parser.parse_args(["--profile", "local", "inspect"])
+    after = app.parser.parse_args(["inspect", "--profile", "local"])
+    defaulted = app.parser.parse_args(["inspect"])
+
+    assert before.profile == after.profile == "local"
+    assert defaulted.profile == "safe"
+    help_text = app.command_parsers["inspect"].format_help()
+    assert "--profile" in help_text
+    assert help_text.count("OUTPUT CONTROL:") == 1
+
+
+def test_mutating_without_generic_confirmation_does_not_claim_it_will_prompt():
+    verb = VerbSpec(
+        "release", description="release a project", mutating=True,
+        include_confirmation=False,
+    )
+
+    assert "mutating" in verb.command_description
+    assert "require confirmation" not in verb.command_description

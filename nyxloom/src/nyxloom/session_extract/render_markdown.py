@@ -18,7 +18,7 @@ are carried deliberately.
 
 Scope is the event's own prose ONLY. render.py applies this per kept event,
 before blocks are joined with the `---` separators, the bracketed gap/
-stop-reason notes, the `<!-- nyxloom-extract: ... -->` footer, and cli.py's
+stop-reason notes, the `<!-- nyxloom-extract: ... -->` cursor comments, and cli.py's
 own `════ TASK ════` banner -- none of which is markdown and all of which a
 whole-output markdown render would mangle (a `---` line is a horizontal
 rule; an HTML comment disappears entirely).

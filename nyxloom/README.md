@@ -33,11 +33,11 @@ side drifts, that test fails until the docs and the config agree again:
   `nyxloomd/docker-compose.yml`; live since 2026-07-21). The file-backed
   `events.jsonl`/statefile design in the table below is the ORIGINAL design;
   CR-04 removes the now-unused file backend and its selector entirely.
-- **Daemon mode: resident.** `nyxloomd` is a long-lived container service
-  (`restart: unless-stopped`), not the stateless cron-driven `nyxloom tick`
-  the table below describes — the 2026-07-15 amendment below built the
-  daemon from the start; `nyxloom tick --once` survives only as a degraded/
-  debug mode.
+- **Daemon mode: resident.** nyxloomd is a long-lived container service
+  (restart: unless-stopped), not the stateless cron-driven schedule the
+  table below describes — the 2026-07-15 amendment below built the daemon
+  from the start. The installed nyxloomctl tick remains a one-cycle
+  operator/debug command.
 - **Merge mode: guarded-automatic.** `nyxloom-trove/nyxloom.toml`
   `[policy].merge_mode` — a real `git merge --no-ff` via a scratch worktree,
   escalating to `NEEDS_OPERATOR` on a genuine conflict, never firing while a
@@ -66,7 +66,7 @@ side drifts, that test fails until the docs and the config agree again:
   daemon restarts, and leases stay flock-based. What residency buys now rather
   than at graduation: immediate exit collection, in-process scheduling, and a
   read-only HTTP/SSE surface serving the rendered dashboard and live log
-  tails. `nyxloom tick --once` is retained as the degraded/debug mode.
+  tails. The installed nyxloomctl tick remains a one-cycle operator/debug command.
   ARCHITECTURE §2's cron/timer scheduling and §9's graduation criteria are
   amended accordingly; ROADMAP M2 builds the daemon, M5's daemon item is moot.
 - 2026-07-15 · Implementation carved as file-disjoint packages
@@ -85,21 +85,50 @@ not a current claim.
 | | Draft 1 | Draft 2 (original design intent — superseded, see above) | Why |
 | --- | --- | --- | --- |
 | Storage | SQLite WAL authoritative; md + JSON sidecar handoffs | Markdown handoff with YAML frontmatter is the single source; append-only `events.jsonl` + per-task statefiles; any DB is a rebuildable index | One contract, one file — no drift surface. Humans and AI sessions read state with zero tooling. (Review F1, F4) |
-| Runtime | Long-lived `nyxloomd` daemon owning subprocesses and leases | Stateless `nyxloom tick` (cron/timer, 2–5 min) + a ~20-line per-attempt wrapper that captures exit/receipt; flock(2) leases released by the kernel on crash | The system's cadence is minutes-to-hours; a dead tick is a missed tick, not an incident. flock beats both marker files and daemon bookkeeping on one host. (F2, F3) |
+| Runtime | Long-lived `nyxloomd` daemon owning subprocesses and leases | One-pass `nyxloomctl tick` (cron/timer, 2–5 min) + a ~20-line per-attempt wrapper that captures exit/receipt; flock(2) leases released by the kernel on crash | The system's cadence is minutes-to-hours; a dead tick is a missed tick, not an incident. flock beats both marker files and daemon bookkeeping on one host. (F2, F3) |
 | Correctness | Generic spec-sufficiency audit prose | **`nyxloom lint`** — the P51–P85 deciding-log lessons as machine-checked carve rules, with the incident corpus as golden tests | The cost model rests on carve quality; make the lessons executable, not archival. (F5) |
 
 ## Components
+
+The installed Nyxloom wheel provides separate commands for project authoring,
+AI-harness session work, and local host operations. The complete grammar,
+effects, and migration map live in the [canonical CLI reference](docs/CLI-REFERENCE.md);
+pasteable workflows are in [CONSUMERS.md](docs/CONSUMERS.md).
+
+| Command | Scope |
+|---|---|
+| `nyxloom` | Project-local authoring: `init`, `onboard`, local `lint`, and managed `backlog` files. It works from an unregistered project checkout and does not need the daemon. |
+| `nyxloom-harness` | Session discovery and extraction from supported AI harnesses. It reads harness files/stores and does not initialize Nyxloom host state. |
+| `nyxloomctl` | Local host control, administration, and developer diagnostics, including the project registry, workflow state, routes, models, auth, host-wide lint, and `daemon`. These commands operate locally; remote administration is future work. |
+| `nyxloomd` | Service-manager entrypoint for the daemon container. It is installed with the same wheel and is not a human command interface. |
+
+The dashboard remains the daemon's HTTP/SSE client. The wheel does not add a
+remote `nyxloomctl` API client. Project-local authoring and harness extraction
+remain usable when the daemon is unavailable.
+
+`nyxloom lint` discovers and checks the current project's configured handoffs;
+`nyxloomctl lint` retains the all-registered-project scan. Managed backlog
+creation remains scriptable and also supports `nyxloom backlog new
+--interactive [TITLE]`; `nyxloom backlog edit ENTRY_ID` edits the supported
+metadata fields through the optional `nyxloom[interactive]` extra. Both
+interactive paths validate the complete frontmatter before writing, and edit
+preserves fields outside the form plus the Markdown body.
+
+Closed backlog and finding values are validated when parsing the command, and
+numeric event cursors reject non-numeric input before any handler runs. The
+[design guide](docs/DESIGN-GUIDE.md#cli-grammar-and-closed-values) explains
+how these choices stay in sync with their owning schemas and registries.
 
 | Component | Responsibility | Uses AI? |
 | --- | --- | --- |
 | `nyxloom lint` | Frontmatter schema + carve-quality rules (SPEC §6); gates the carve commit. Also validates the managed per-entry backlog: entry frontmatter (BLG2) and the generated `backlog/INDEX.md` freshness (BLG3), when a project adopts `[backlog_entries]` | No |
 | `nyxloom backlog` | Managed per-entry issue tracker (`nyxloom-trove/backlog/`, one file per entry): `new`/`promote`/`note`/`set-status`/`list`/`show`/`index`; merge auto-ticks linked entries to `merged`. Design authority: [docs/backlog-entries-spec.md](docs/backlog-entries-spec.md); adoption: [docs/CONSUMERS.md](docs/CONSUMERS.md) | No |
-| `nyxloom extract` family | Mechanical extraction from Claude Code, Codex, and opencode session logs: resumable briefs, lossless dumps, session discovery/reporting, bare session-ID lookup, rendered or syntax-highlighted markdown, and incremental `--follow` streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md) | No |
-| `nyxloom tick` | Reconciler: scan → dispatch/detect/collect → events → render → notify → exit | No |
+| `nyxloom-harness extract` family | Mechanical extraction from Claude Code, Codex, OpenCode, and Reasonix session logs: resumable briefs, lossless dumps, session discovery/reporting, bare session-ID lookup, rendered or syntax-highlighted markdown, and incremental `--follow` streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md) | No |
+| `nyxloomctl tick` | One operator reconcile pass: scan → dispatch/detect/collect → events → render → notify → exit | No |
 | Attempt wrapper | Runs one CLI leg detached; tees log; writes typed receipt with exit code; holds/releases flock leases | Only the launched agent |
 | Route adapters | Per-CLI dispatch/resume/probe/usage-extraction templates, table-driven from `routes.toml` | No |
-| `nyxloom render` | Static HTML dashboard from files (tables, DAG, timeline, drill-down, cost) | No |
-| `nyxloom notify` / `decide` / `pause` / `doctor` / `status` | Operator surface; typed events; decision loop; emergency brake; drift audit | No |
+| `nyxloomctl render` | Static HTML dashboard from files (tables, DAG, timeline, drill-down, cost) | No |
+| `nyxloomctl decide` / `pause` / `doctor` / `status` | Local operator surface; typed events; decision loop; emergency brake; drift audit. Notifications are emitted by reconciliation and optional extraction-follow alerts; there is no standalone notify verb. | No |
 | Frontier roles | Carve, review pass #2, merge, decision prep — unchanged from workflow v2 | Yes |
 
 The standing LLM controller session (Sonnet low + heartbeats) is **retired** at
@@ -110,12 +139,13 @@ the two places they buy quality: carve and review.
 
 ### Session-log extraction
 
-The `extract` family reads raw Claude Code, Codex, and opencode session logs
-without an LLM call. `extract` produces a compact resumable brief;
-`extract-lossless` preserves all prose and thinking blocks;
-`extract-sessions` discovers related sessions; and `extract-report` reports
-cost/timeline data. The `SESSION_LOG` argument accepts either a full path or a
-session ID when nyxloom can resolve exactly one matching file/store. Codex
+`extract` and `extract-lossless` read Claude Code, Codex, Reasonix, and
+opencode session logs without an LLM call. `extract` produces a compact
+resumable brief; `extract-lossless` preserves the adapter's prose and available
+thinking blocks. `extract-sessions` discovers Claude Code, Codex, and opencode
+families; `extract-report` reports cost/timeline data for those formats. The
+`SESSION_LOG` argument accepts either a full path or a session ID when nyxloom
+can resolve exactly one matching file/store. Codex
 rollout lookup follows `CODEX_HOME` (default `~/.codex`) and checks local
 `~/.codex*` profiles for duplicate UUIDs; a repeated UUID fails with all
 candidate paths so the intended rollout can be selected explicitly.
@@ -126,19 +156,43 @@ not assigned a replacement ID, so live shared `sessions` symlinks can merge
 streams. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--2026-09-12--session-log-location-presentation-and-live-following)
 for the source-level verification and process-inspection method.
 
+Bare `extract` uses the `operator-review` profile: a concise review of the
+newest adapter-reported epoch (Claude Code `/clear` boundaries), anchored by
+up to five classifier-detected assistant checkpoints, with a 10,000-word cap.
+`--profile all` walks every epoch the
+adapter can identify and keeps ordinary session prose without checkpoint,
+word, time, or compaction stops. API transport errors, tool calls, thinking,
+and compaction internals remain controlled by separate options.
+Checkpoints are selection anchors, not semantic boundaries at which it is
+safe to compact. Use `--epochs N|A:B|all`, `--max-compactions N`, or
+`--max-time-minutes N` to shape a bounded review. See the
+[selection and rendering rationale](docs/DESIGN-GUIDE.md#session-extraction-selection-and-boundaries)
+and [worked operator examples](docs/CONSUMERS.md#extract-a-session-log).
+Every Codex interactive question is rendered with an `INTERVIEW:` marker and
+its offered choices, including prompts that have no assistant-prose copy.
+Structured replies use `OPERATOR:` and retain both selected choices and
+free-text answers, even when the user replies after later session activity.
+See the [Q&A design](docs/DESIGN-GUIDE.md#codex-question-replies).
+Saved extracts carry source cursors for `--since-file`; Codex prompts in
+ordinal-less rollouts use a `response_item-<position>` cursor while legacy
+event cursors keep their numeric form. See the
+[worked resume examples](docs/CONSUMERS.md#extract-a-session-log).
+
 For example, when a session was created in a separate Codex home, pass the
 same home while locating it, or pass the full rollout path if the UUID is
 present in more than one home:
 
 ```bash
-CODEX_HOME="$HOME/.codex2" nyxloom extract \
+CODEX_HOME="$HOME/.codex2" nyxloom-harness extract \
   "$HOME/.codex2/sessions/2026/09/12/rollout-2026-09-12T23-26-32-019f0890-43a2-75c2-9143-3f8d10ad4484.jsonl"
 ```
 
 For humans, `extract --render-markdown` renders the selected brief. For
-copy-pasteable markdown, `extract` and `extract-lossless` support
-`--highlight`, which preserves the source characters. Both extraction modes
-also support `--follow`/`-f` for incremental live output, with optional
+copy-pasteable markdown, `--highlight` colors Markdown source while preserving
+its characters. Rendering mode and ANSI color are independent: a terminal gets
+highlighting by default, `--color` forces it for a pipe, and `--no-color` keeps
+the chosen rendering mode without ANSI. Both extraction modes also support
+`--follow`/`-f` for incremental live output, with optional
 attention reasons `interview_pending`, `checkpoint_detected`, and `long_block`
 delivered through a terminal bell, an operator hook, or a registered project’s
 notify channel. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--2026-09-12--session-log-location-presentation-and-live-following)
@@ -164,6 +218,8 @@ verbatim and rejects `--redact-pattern`.
 
 ## Documents
 
+- [Primary CLI reference](docs/CLI-REFERENCE.md) — complete installed-command
+  grammar, behavior, side effects, and cli-extended adoption findings.
 - [Architecture](docs/ARCHITECTURE.md) — file layout, tick engine, wrapper,
   leases, routes, cost capture, dashboard, notifications/decision loop,
   daemon graduation criteria. (§1's storage claim is superseded — see
@@ -215,4 +271,4 @@ verb depth. The version is the existing metadata-backed `nyxloom.__version__`.
 The top-level `nyxloom --version` probe prints exactly one `nyxloom <version>`
 line on stdout, exits 0, and writes nothing to stderr. Normal command output
 is unchanged. The rationale is in the
-[design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility).
+[design guide](docs/DESIGN-GUIDE.md#cli-identity-help-and-bootstrap).

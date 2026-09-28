@@ -329,7 +329,7 @@ sends at INFO (never log secret tokens — explicit oracle). **Gate:** full.
 ### P05c — sweep: intake/lint/misc (`intake_chat.py`, `decision_chat.py`, `backlog_items.py`, `lint.py`, `frontmatter.py`, `decisions.py`, `render.py`, `config.py`, `cli.py`) — *depends P01; parallel*
 Per §5. **Critical distinction:** `cli.py`'s **user-facing** `print`s (doctor tables, `status`,
 `show-dispatch`, the dashboard-URL line) **stay `print`** — they are the CLI's stdout contract,
-not diagnostics. Only *daemon-internal* diagnostics become logs. **Oracle:** `nyxloom doctor`
+not diagnostics. Only *daemon-internal* diagnostics become logs. **Oracle:** `nyxloomctl doctor`
 and `status` stdout is byte-unchanged; config load logs a DEBUG on resolve; no secret values
 logged. **Gate:** full.
 

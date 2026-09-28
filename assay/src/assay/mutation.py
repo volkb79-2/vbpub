@@ -1270,6 +1270,248 @@ def _write_mutation_state_record(state_root: Path, payload: Mapping[str, Any]) -
         raise
 
 
+def _valid_hung_resource_evidence(value: Any) -> bool:
+    """Whether a cached ``hung`` bucket retains a complete supporting trace.
+
+    Mutation-state files are resumable evidence. A historical or malformed
+    hang without its time-aligned trace is a cache miss, not a trusted verdict.
+    """
+    if not isinstance(value, Mapping):
+        return False
+    if (
+        type(value.get("schema_version")) is not int
+        or value["schema_version"] != 1
+        or value.get("policy") != "pressure-adjusted-idle-v1"
+        or value.get("decision") not in {"idle-hang", "session-finish-hang"}
+        or type(value.get("candidate_pid")) is not int
+        or value["candidate_pid"] <= 0
+        or value.get("candidate_cpu_source") != "process-tree-cpu-seconds"
+        or value.get("trace_complete") is not True
+        or value.get("trace_truncated") is not False
+    ):
+        return False
+
+    def finite_number(item: Any) -> bool:
+        return type(item) in (int, float) and math.isfinite(item)
+
+    def complete_snapshot(item: Any) -> bool:
+        return (
+            isinstance(item, Mapping)
+            and type(item.get("schema_version")) is int
+            and item["schema_version"] == 1
+            and item.get("status") == "available"
+            and isinstance(item.get("cgroup_identity"), str)
+            and bool(item["cgroup_identity"])
+            and liveness.compare_resource_snapshots(item, item)[0] == "clear"
+        )
+
+    top_fields = (
+        "wall_elapsed_s",
+        "eligible_elapsed_s",
+        "idle_eligible_s",
+        "required_idle_eligible_s",
+        "required_cpu_growth_window_s",
+        "required_cpu_growth_floor_s",
+    )
+    if any(not finite_number(value.get(key)) for key in top_fields):
+        return False
+    if (
+        value["wall_elapsed_s"] < 0
+        or value["eligible_elapsed_s"] < 0
+        or value["eligible_elapsed_s"] > value["wall_elapsed_s"]
+        or value["idle_eligible_s"] < value["required_idle_eligible_s"]
+        or value["idle_eligible_s"] > value["eligible_elapsed_s"]
+        or value["required_idle_eligible_s"] <= 0
+        or value["required_cpu_growth_window_s"] != liveness._HUNG_CPU_WINDOW_S
+        or value["required_cpu_growth_floor_s"] != liveness._HUNG_CPU_GROWTH_FLOOR_S
+    ):
+        return False
+
+    samples = value.get("samples")
+    if (
+        not isinstance(samples, list)
+        or not samples
+        or len(samples) > liveness._LIVENESS_RESOURCE_TRACE_MAX_SAMPLES
+    ):
+        return False
+    previous_wall = -math.inf
+    previous_eligible = -math.inf
+    previous_progress: tuple[int, int, int] | None = None
+    cpu_suffix: list[tuple[float, float]] = []
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, Mapping):
+            return False
+        wall = sample.get("wall_elapsed_s")
+        eligible = sample.get("eligible_elapsed_s")
+        eligible_interval = sample.get("eligible_interval_s")
+        cpu = sample.get("candidate_cpu_s")
+        progress = tuple(
+            sample.get(key)
+            for key in ("event_count", "stdout_bytes", "stderr_bytes")
+        )
+        if (
+            not finite_number(wall)
+            or not finite_number(eligible)
+            or not finite_number(eligible_interval)
+            or wall < 0
+            or eligible < 0
+            or eligible > wall + 0.0011
+            or wall < previous_wall
+            or eligible < previous_eligible
+            or eligible_interval < 0
+            or (cpu is not None and (not finite_number(cpu) or cpu < 0))
+            or any(type(count) is not int or count < 0 for count in progress)
+            or (
+                previous_progress is not None
+                and any(
+                    current > previous
+                    for current, previous in zip(progress, previous_progress)
+                )
+            )
+        ):
+            return False
+        previous_progress = progress
+        prior_wall = previous_wall
+        prior_eligible = previous_eligible
+        previous_wall = wall
+        previous_eligible = eligible
+
+        interval_kind = sample.get("resource_interval")
+        if interval_kind not in {"unknown", "clear", "stalled"}:
+            return False
+        resources = sample.get("resources")
+        if not complete_snapshot(resources):
+            return False
+        if index > 0 and interval_kind == "unknown":
+            return False
+        if interval_kind == "unknown":
+            if "previous_resources" not in sample:
+                return False
+            previous_snapshot = sample["previous_resources"]
+            if previous_snapshot is not None and (
+                not complete_snapshot(previous_snapshot)
+                or liveness.compare_resource_snapshots(
+                    previous_snapshot, resources
+                )[0]
+                != "unknown"
+            ):
+                return False
+            expected_deltas: Mapping[str, int] = {}
+        else:
+            if index == 0:
+                previous_snapshot = sample.get("previous_resources")
+                if not complete_snapshot(previous_snapshot):
+                    return False
+            else:
+                if "previous_resources" in sample:
+                    return False
+                previous_snapshot = samples[index - 1].get("resources")
+            expected_status, expected_deltas = liveness.compare_resource_snapshots(
+                previous_snapshot, resources
+            )
+            if expected_status != interval_kind:
+                return False
+        if interval_kind != "clear" and eligible_interval != 0:
+            return False
+        deltas = sample.get("resource_deltas")
+        if not isinstance(deltas, Mapping):
+            return False
+        if any(type(delta) is not int or delta <= 0 for delta in deltas.values()):
+            return False
+        if (interval_kind == "clear" and deltas) or (
+            interval_kind == "stalled" and not deltas
+        ) or (interval_kind == "unknown" and deltas):
+            return False
+        if dict(deltas) != dict(expected_deltas):
+            return False
+        if index > 0:
+            eligible_delta = eligible - prior_eligible
+            wall_delta = wall - prior_wall
+            if not math.isclose(
+                eligible_delta,
+                eligible_interval,
+                rel_tol=0.0,
+                abs_tol=0.0011,
+            ):
+                return False
+            if interval_kind == "clear" and not math.isclose(
+                wall_delta,
+                eligible_interval,
+                rel_tol=0.0,
+                abs_tol=0.0011,
+            ):
+                return False
+        if interval_kind == "clear" and cpu is not None:
+            # A departed descendant can lower the live process-tree total.
+            # A quiet window cannot span that discontinuity, even if the
+            # final reading is below the older baseline.
+            if cpu_suffix and cpu < cpu_suffix[-1][1]:
+                cpu_suffix.clear()
+            cpu_suffix.append((eligible, float(cpu)))
+        else:
+            cpu_suffix.clear()
+
+    if samples[-1].get("wall_elapsed_s") != value["wall_elapsed_s"]:
+        return False
+    if samples[-1].get("eligible_elapsed_s") != value["eligible_elapsed_s"]:
+        return False
+    # The monitor starts a new trace at each progress event or unknown
+    # resource interval. Its first eligible timestamp is therefore the start
+    # of the claimed idle span; a larger top-level idle value is unproven.
+    if not math.isclose(
+        value["idle_eligible_s"],
+        value["eligible_elapsed_s"] - samples[0]["eligible_elapsed_s"],
+        rel_tol=0.0,
+        abs_tol=0.0011,
+    ):
+        return False
+    finish_seen = value.get("candidate_session_finish_seen")
+    finish_at = value.get("session_finish_eligible_s")
+    if value["decision"] == "session-finish-hang":
+        if (
+            finish_seen is not True
+            or not finite_number(finish_at)
+            or finish_at < 0
+            or finish_at > value["eligible_elapsed_s"]
+        ):
+            return False
+    elif finish_seen is True:
+        if (
+            not finite_number(finish_at)
+            or finish_at < 0
+            or finish_at > value["eligible_elapsed_s"]
+        ):
+            return False
+    elif finish_seen is not False or finish_at is not None:
+        return False
+
+    # Idle/CPU classification is valid only when the retained contiguous
+    # clear-interval CPU samples cover the actual trailing comparison window.
+    cpu_window = liveness._HUNG_CPU_WINDOW_S
+    cpu_floor = liveness._HUNG_CPU_GROWTH_FLOOR_S
+    if len(cpu_suffix) < 2:
+        return False
+    current_eligible, current_cpu = cpu_suffix[-1]
+    baseline_candidates = [
+        (sample_eligible, sample_cpu)
+        for sample_eligible, sample_cpu in cpu_suffix[:-1]
+        if current_eligible - sample_eligible >= cpu_window
+    ]
+    if not baseline_candidates:
+        return False
+    _baseline_eligible, baseline_cpu = baseline_candidates[-1]
+    if current_cpu - baseline_cpu >= cpu_floor:
+        return False
+    if value["decision"] == "session-finish-hang":
+        return (
+            value["eligible_elapsed_s"] - finish_at
+            >= liveness._HUNG_SESSION_FINISH_GRACE_S
+            and value["required_idle_eligible_s"]
+            >= liveness._HUNG_SESSION_FINISH_GRACE_S
+        )
+    return True
+
+
 def _load_validated_state_record(
     state_root: Path, job: MutantJob, *, judge: str
 ) -> Mapping[str, Any] | str | None:
@@ -1398,6 +1640,10 @@ def _load_validated_state_record(
     # not a string is not this run's judge, whatever `judge` happens to be.
     stored = payload.get("judge_sha256")
     if not isinstance(stored, str) or stored != judge:
+        return _RECORD_REJECTED
+    if payload["outcome_bucket"] == "hung" and not _valid_hung_resource_evidence(
+        payload.get("liveness_resource_evidence")
+    ):
         return _RECORD_REJECTED
     return payload
 
@@ -1663,6 +1909,9 @@ class _MutantRun:
     #: (a `0` would claim the plugin ran and genuinely saw no test, which is
     #: a different fact from "liveness never ran here at all").
     tests_completed: int | None = None
+    #: B107: exact CPU/PSI evidence retained when the liveness runner stops
+    #: a candidate. A resource stall never becomes a functional bucket.
+    liveness_resource_evidence: Mapping[str, Any] | None = None
     execution: MutationExecution = MutationExecution(mode="full")
 
 
@@ -2813,6 +3062,7 @@ def _execute_mutation_jobs(
             kill_signal=kill_signal_text,
             elapsed_seconds=elapsed_seconds,
             tests_completed=tests_completed,
+            liveness_resource_evidence=result.liveness_resource_evidence,
         )
         receipt = (
             _read_witness_receipt(receipt_path)
@@ -2958,6 +3208,11 @@ def _execute_mutation_jobs(
                             # already carries that same `None` default
                             # through from `_run_one`.
                             "tests_completed": run.tests_completed,
+                            **(
+                                {"liveness_resource_evidence": run.liveness_resource_evidence}
+                                if run.liveness_resource_evidence is not None
+                                else {}
+                            ),
                         }
                     )
                 if state_root is not None:
@@ -2991,6 +3246,13 @@ def _execute_mutation_jobs(
                                 "description": job_list[position].site.description,
                                 "outcome_bucket": outcome_bucket,
                                 "execution": run.execution.to_dict(),
+                                **(
+                                    {
+                                        "liveness_resource_evidence": run.liveness_resource_evidence
+                                    }
+                                    if run.liveness_resource_evidence is not None
+                                    else {}
+                                ),
                                 **_crash_diagnostic_tails(outcome_bucket, run.result),
                             },
                         )

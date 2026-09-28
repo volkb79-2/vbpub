@@ -292,10 +292,9 @@ def test_release_aborts_before_creating_a_workspace_when_a_released_project_is_d
         )
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
 
-        with pytest.raises(SystemExit) as exc:
-            cli.main(["release", "--config", str(config), "alpha"])
+        exc = cli.main(["release", "--config", str(config), "alpha"])
 
-        assert exc.value.code == 2
+        assert exc == 2
         # It never got as far as fetching origin or creating the isolated worktree.
         assert calls == []
 
@@ -328,10 +327,9 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
             lambda _root: transaction._SyncLocalMainResult(True),
         )
 
-        with pytest.raises(SystemExit) as exc:
-            cli.main(["release", "--config", str(config), "alpha", "--allow-uncommitted"])
+        exc = cli.main(["release", "--config", str(config), "alpha", "--allow-uncommitted"])
 
-        assert exc.value.code == 0
+        assert exc == 0
         assert "ran-child" in calls
 
 
@@ -366,10 +364,9 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
             lambda _root: transaction._SyncLocalMainResult(True),
         )
 
-        with pytest.raises(SystemExit) as exc:
-            cli.main(["release", "--config", str(config), "alpha", "--dry-run"])
+        exc = cli.main(["release", "--config", str(config), "alpha", "--dry-run"])
 
-        assert exc.value.code == 0
+        assert exc == 0
         assert "ran-child" in calls  # never hit the exit(2) uncommitted-changes gate
 
 
@@ -414,13 +411,12 @@ cwd = "alpha"
         lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(True),
     )
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
+    exc = cli.main([
             "release", "--config", str(config), "alpha",
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
 
-    assert exc.value.code == 0
+    assert exc == 0
     assert not any(isinstance(call, tuple) for call in calls)
     assert [
         "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
@@ -482,10 +478,9 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: remove_calls.append("removed"))
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: remove_calls.append("backup-removed"))
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--config", str(config), "alpha"])
+    exc = cli.main(["release", "--config", str(config), "alpha"])
 
-    assert exc.value.code == 1
+    assert exc == 1
     assert "reverted" not in calls
     assert "synced" in calls
     captured = capsys.readouterr()
@@ -540,206 +535,19 @@ cwd = "alpha"
         lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(True),
     )
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--config", str(config), "alpha"])
+    exc = cli.main(["release", "--config", str(config), "alpha"])
 
-    assert exc.value.code == 1
+    assert exc == 1
     assert "reverted" not in calls   # nothing to revert — promotion never landed
     assert "synced" in calls         # local main is still resynced regardless
 
 
-def test_resume_and_abandon_are_mutually_exclusive(tmp_path):
-    config = tmp_path / "cmru.toml"
-    config.write_text("", encoding="utf-8")
-
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
-            "release", "--config", str(config),
-            "--resume", str(tmp_path / "retained"), "--abandon", "all-previous",
-        ])
-
-    assert exc.value.code == 2
+def test_release_rejects_the_removed_abandon_option(tmp_path, capsys):
+    assert cli.main(["release", "--resume", str(tmp_path / "retained"),
+                     "--abandon", "all-previous", "--config", str(tmp_path / "cmru.toml")]) == 2
+    assert "unrecognized arguments: --abandon" in capsys.readouterr().err
 
 
-def test_abandon_all_previous_scopes_to_the_requested_project_then_proceeds(tmp_path, monkeypatch):
-    config = tmp_path / "cmru.toml"
-    config.write_text(
-        """
-[github]
-owner = "octocat"
-repo = "demo"
-owner_type = "user"
-[orchestration]
-project_order = ["alpha", "beta"]
-default_projects = ["alpha", "beta"]
-[project.alpha]
-prefix = "alpha-v"
-cwd = "alpha"
-[project.beta]
-prefix = "beta-v"
-cwd = "beta"
-""",
-        encoding="utf-8",
-    )
-    projects = {"alpha": _project("alpha"), "beta": _project("beta")}
-    loaded = (tmp_path, projects, ["alpha", "beta"], ["alpha", "beta"], [], "project-first", {},
-              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
-    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
-    calls: list[object] = []
-
-    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
-    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
-    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(
-        transaction, "abandon_previous",
-        lambda _root, scope: calls.append(("abandon_previous", list(scope))) or ["cmru/release/old"],
-    )
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
-    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
-    monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
-    monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
-    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
-    monkeypatch.setattr(
-        transaction, "_sync_local_main_result",
-        lambda _root: transaction._SyncLocalMainResult(True),
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
-            "release", "--config", str(config), "alpha", "--abandon", "all-previous",
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
-        ])
-
-    assert exc.value.code == 0
-    # Positional alpha narrows the abandon scope to alpha only, not the full default set.
-    assert ("abandon_previous", ["alpha"]) in calls
-    # Abandoning didn't stop the run — a fresh release still proceeded afterward.
-    assert "ran-child" in calls
-    assert calls.index(("abandon_previous", ["alpha"])) < calls.index("ran-child")
-
-
-def test_abandon_all_previous_defaults_to_full_orchestrated_set_without_project_filter(
-    tmp_path, monkeypatch,
-):
-    config = tmp_path / "cmru.toml"
-    config.write_text(
-        """
-[github]
-owner = "octocat"
-repo = "demo"
-owner_type = "user"
-[orchestration]
-project_order = ["alpha", "beta"]
-default_projects = ["alpha", "beta"]
-[project.alpha]
-prefix = "alpha-v"
-cwd = "alpha"
-[project.beta]
-prefix = "beta-v"
-cwd = "beta"
-""",
-        encoding="utf-8",
-    )
-    projects = {"alpha": _project("alpha"), "beta": _project("beta")}
-    loaded = (tmp_path, projects, ["alpha", "beta"], ["alpha", "beta"], [], "project-first", {},
-              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
-    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
-    calls: list[object] = []
-
-    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
-    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
-    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(
-        transaction, "abandon_previous",
-        lambda _root, scope: calls.append(("abandon_previous", list(scope))) or [],
-    )
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
-    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: 0)
-    monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
-    monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
-    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
-    monkeypatch.setattr(
-        transaction, "_sync_local_main_result",
-        lambda _root: transaction._SyncLocalMainResult(True),
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
-            "release", "--config", str(config), "--abandon", "all-previous",
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
-        ])
-
-    assert exc.value.code == 0
-    assert ("abandon_previous", ["alpha", "beta"]) in calls
-
-
-def test_abandon_specific_worktree_then_proceeds_with_fresh_release(tmp_path, monkeypatch):
-    config = tmp_path / "cmru.toml"
-    config.write_text(
-        """
-[github]
-owner = "octocat"
-repo = "demo"
-owner_type = "user"
-[orchestration]
-project_order = ["alpha"]
-[project.alpha]
-prefix = "alpha-v"
-cwd = "alpha"
-""",
-        encoding="utf-8",
-    )
-    project = _project("alpha")
-    loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
-              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
-    stale_workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "stale", "cmru/release/stale", "b" * 40)
-    fresh_workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "fresh", "cmru/release/fresh", "a" * 40)
-    calls: list[object] = []
-
-    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
-    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
-    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(
-        transaction, "resume_workspace",
-        lambda _root, path: calls.append(("resume_workspace", path)) or stale_workspace,
-    )
-    monkeypatch.setattr(
-        transaction, "abandon_workspace",
-        lambda _root, w: calls.append(("abandon_workspace", w.branch)),
-    )
-    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
-    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: fresh_workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
-    monkeypatch.setattr(transaction, "run_child", lambda ws, args, **kwargs: calls.append(("ran", ws.branch)) or 0)
-    monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
-    monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
-    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
-    monkeypatch.setattr(
-        transaction, "_sync_local_main_result",
-        lambda _root: transaction._SyncLocalMainResult(True),
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
-            "release", "--config", str(config), "--abandon", str(tmp_path / "stale"),
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
-        ])
-
-    assert exc.value.code == 0
-    assert ("resume_workspace", tmp_path / "stale") in calls
-    assert ("abandon_workspace", "cmru/release/stale") in calls
-    # A fresh workspace was created and run — abandoning didn't resume the stale one.
-    assert ("ran", "cmru/release/fresh") in calls
 
 
 def test_local_main_ahead_aborts_before_creating_workspace(tmp_path, monkeypatch):
@@ -943,8 +751,7 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
 
     monkeypatch.setattr(tester_gate, "dind_sidecar", fake_sidecar)
 
-    with pytest.raises(SystemExit):
-        tester_gate.main(["--cwd", "modern-debian-tools-python-debug", "--enable-docker", "--", "true"])
+    assert tester_gate.main(["--cwd", "modern-debian-tools-python-debug", "--enable-docker", "--", "true"]) == 0
 
     assert captured["sidecar_name"] == "cmru-tester-dind-fixedname"
     # Placement comes from the declared gates tier, while the forwarded vars
@@ -983,8 +790,7 @@ def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp
 
     monkeypatch.setattr(tester_gate, "dind_sidecar", fail_if_called)
 
-    with pytest.raises(SystemExit):
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert tester_gate.main(["--cwd", "cmru", "--", "true"]) == 0
 
     assert captured.get("sidecar_name") is None
     # Same image-resolution guard on the non-docker launch path (tester_gate.py:568).
@@ -1018,9 +824,8 @@ def test_tester_gate_main_refuses_when_no_cgroup_parent_declared(monkeypatch, tm
         tester_gate, "_resolve_worktree_context", lambda _cwd, rel: (tmp_path, rel)
     )
 
-    with pytest.raises(SystemExit, match="CMRU_TESTER_CGROUP_PARENT") as exit_info:
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
-    assert exit_info.value.code != 0
+    exit_info = tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert exit_info != 0
 
 
 def test_tester_gate_main_errors_when_no_memory_resolvable(monkeypatch, tmp_path):
@@ -1035,8 +840,7 @@ def test_tester_gate_main_errors_when_no_memory_resolvable(monkeypatch, tmp_path
 
     # KI-17: main aborts up front, at the aggregate preflight, naming the one
     # missing variable and its real source — before any container spin-up.
-    with pytest.raises(SystemExit, match=r"missing required configuration: CMRU_TESTER_MEMORY\b"):
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert tester_gate.main(["--cwd", "cmru", "--", "true"]) != 0
 
 
 def test_tester_gate_main_errors_when_no_memory_swap_resolvable(monkeypatch, tmp_path):
@@ -1049,8 +853,7 @@ def test_tester_gate_main_errors_when_no_memory_swap_resolvable(monkeypatch, tmp
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
 
-    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_MEMORY_SWAP"):
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert tester_gate.main(["--cwd", "cmru", "--", "true"]) != 0
 
 
 def test_tester_gate_main_errors_when_no_cpu_limit_resolvable(monkeypatch, tmp_path):
@@ -1062,8 +865,7 @@ def test_tester_gate_main_errors_when_no_cpu_limit_resolvable(monkeypatch, tmp_p
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not launch Docker")),
     )
 
-    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_CPUS"):
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert tester_gate.main(["--cwd", "cmru", "--", "true"]) != 0
 
 
 def test_tester_gate_main_errors_when_no_probe_image_resolvable(monkeypatch, tmp_path):
@@ -1075,8 +877,7 @@ def test_tester_gate_main_errors_when_no_probe_image_resolvable(monkeypatch, tmp
         lambda *_a: (_ for _ in ()).throw(AssertionError("must not probe without an image")),
     )
 
-    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_CGROUP_PROBE_IMAGE"):
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert tester_gate.main(["--cwd", "cmru", "--", "true"]) != 0
 
 
 def test_tester_gate_main_errors_when_no_dind_image_resolvable(monkeypatch, tmp_path):
@@ -1090,8 +891,7 @@ def test_tester_gate_main_errors_when_no_dind_image_resolvable(monkeypatch, tmp_
 
     # DIND is required by the preflight only under --enable-docker (KI-17),
     # matching where resolve_dind_image is actually reached.
-    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_DIND_IMAGE"):
-        tester_gate.main(["--cwd", "cmru", "--enable-docker", "--", "true"])
+    assert tester_gate.main(["--cwd", "cmru", "--enable-docker", "--", "true"]) != 0
 
 
 def test_tester_gate_forwards_cgroup_parent_dev_background_into_the_container(monkeypatch, tmp_path):
@@ -1189,8 +989,7 @@ def test_tester_gate_main_refuses_to_launch_into_a_missing_slice(monkeypatch, tm
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
 
-    with pytest.raises(SystemExit, match="refusing to launch"):
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert tester_gate.main(["--cwd", "cmru", "--", "true"]) != 0
 
 
 def test_tester_gate_main_refuses_to_launch_without_an_explicit_image(monkeypatch, tmp_path):
@@ -1203,8 +1002,7 @@ def test_tester_gate_main_refuses_to_launch_without_an_explicit_image(monkeypatc
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
 
-    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_UNIFIED_IMAGE"):
-        tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert tester_gate.main(["--cwd", "cmru", "--", "true"]) != 0
 
 
 def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
@@ -1219,10 +1017,23 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
 
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
     assert transaction.run_child(workspace, ["alpha"]) == 17
-    assert observed["command"][-3:] == ["release", "--_transaction-child", "alpha"]
+    assert observed["command"][-2:] == ["release", "alpha"]
+    assert observed["command"][0].endswith("cmru")
     assert observed["cwd"] == workspace.path
     assert observed["env"][transaction.CHILD_ENV] == "1"
     assert observed["env"][transaction.BRANCH_ENV] == workspace.branch
+
+
+def test_resume_requires_operator_fixes_to_be_committed_on_retained_branch():
+    with _OriginAndClone() as h:
+        workspace = h.clone_workspace("cmru/release/resume")
+        (workspace / "README.md").write_text("corrected candidate\n")
+        with pytest.raises(RuntimeError, match="Commit the fixes on that release branch"):
+            transaction.assert_resume_workspace_committed(workspace)
+
+        _git("add", "README.md", cwd=workspace)
+        _git("commit", "-q", "-m", "fix: correct release candidate", cwd=workspace)
+        transaction.assert_resume_workspace_committed(workspace)
 
 
 def test_promote_workspace_fast_forwards_remote_main():
@@ -2088,7 +1899,7 @@ def test_sync_local_main_reports_failure_to_update_non_current_main(monkeypatch)
 
 
 # ---------------------------------------------------------------------------
-# --abandon: scope-marked cleanup of retained release worktrees
+# cmru abandon: scope-marked cleanup of retained release worktrees
 # ---------------------------------------------------------------------------
 
 def test_write_and_read_release_scope_round_trips():
@@ -2482,6 +2293,39 @@ def test_retain_successful_build_outputs_copies_commit_addressed_record(tmp_path
     assert manifest["source_tree_changes"] == [" M alpha/generated.txt"]
     assert (main_project / "logs" / output_id / "cmru" / "run-tests.log").read_text() == "passed\n"
     assert (main_project / "artifacts" / output_id / "dist" / "alpha.whl").read_bytes() == b"wheel bytes"
+    with pytest.raises(RuntimeError, match="source tree changes; only a clean source tree"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+
+    # A clean record can be explicitly modeled to check the remaining
+    # manifest and artifact-integrity refusal paths below.
+    manifest["publication"] = "eligible"
+    manifest["source_tree_changes"] = []
+    (main_project / "artifacts" / output_id / "build.json").write_text(
+        json.dumps(manifest), encoding="utf-8",
+    )
+    validated = transaction.validate_retained_build_output(project, "alpha", output_id)
+    assert validated["manifest"] == manifest
+    manifest_path = main_project / "artifacts" / output_id / "build.json"
+    manifest["source_commit_date"] = "1970-01-02T00:00:00+00:00"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="source date does not match"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+    manifest["source_commit_date"] = "1970-01-01T00:00:00+00:00"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (main_project / "artifacts" / output_id / "dist" / "alpha.whl").write_bytes(b"tampered")
+    with pytest.raises(RuntimeError, match="retained artifact bytes differ"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+    (main_project / "artifacts" / output_id / "dist" / "alpha.whl").write_bytes(b"wheel bytes")
+    manifest["unexpected"] = "ignored?"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="does not authorize publication"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+    manifest.pop("unexpected")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (main_project / "artifacts" / output_id / "dist" / "extra.whl").write_bytes(b"extra")
+    with pytest.raises(RuntimeError, match="retained artifact bytes differ"):
+        transaction.validate_retained_build_output(project, "alpha", output_id)
+    (main_project / "artifacts" / output_id / "dist" / "extra.whl").unlink()
     # Retention copied before worktree removal; a caller-side retention failure
     # can therefore still be debugged from the original source tree.
     assert (child_project / "dist" / "alpha.whl").exists()
@@ -2542,10 +2386,9 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     )
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["build", "--config", str(config), "alpha"])
+    exc = cli.main(["build", "--config", str(config), "alpha"])
 
-    assert exc.value.code == 0
+    assert exc == 0
     assert calls == ["retained", "removed"]
 
 
@@ -2578,10 +2421,9 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     )
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["build", "--config", str(config), "alpha"])
+    exc = cli.main(["build", "--config", str(config), "alpha"])
 
-    assert exc.value.code == 1
+    assert exc == 1
     assert calls == []
 
 
@@ -2602,48 +2444,41 @@ def test_abandon_workspace_removes_worktree_branch_backup_and_scope():
         assert transaction.read_release_scope(h.repo_root, workspace) is None
 
 
-def test_abandon_previous_only_abandons_overlapping_scope():
+
+
+
+
+def test_abandon_keeps_local_evidence_when_remote_candidate_deletion_fails(monkeypatch):
     with _OriginAndClone() as h:
-        ciu_path = h.add_worktree("cmru/release/ciu-attempt", path_name="ciu-attempt")
-        ciu_ws = transaction.ReleaseWorkspace(
-            h.repo_root, ciu_path, "cmru/release/ciu-attempt", _git("rev-parse", "HEAD", cwd=ciu_path),
-        )
-        transaction.write_release_scope(h.repo_root, ciu_ws, ["ciu"])
-
-        pwmcp_path = h.add_worktree("cmru/release/pwmcp-attempt", path_name="pwmcp-attempt")
-        pwmcp_ws = transaction.ReleaseWorkspace(
-            h.repo_root, pwmcp_path, "cmru/release/pwmcp-attempt",
-            _git("rev-parse", "HEAD", cwd=pwmcp_path),
-        )
-        transaction.write_release_scope(h.repo_root, pwmcp_ws, ["pwmcp"])
-
-        unscoped_path = h.add_worktree("cmru/release/unscoped-attempt", path_name="unscoped-attempt")
-
-        abandoned = transaction.abandon_previous(h.repo_root, ["ciu"])
-
-        assert abandoned == ["cmru/release/ciu-attempt"]
-        assert not ciu_path.exists()
-        assert pwmcp_path.exists()       # different scope — left alone
-        assert unscoped_path.exists()    # no recorded scope — left alone
-
-
-def test_abandon_previous_uses_the_shared_record_for_new_cmru_workspaces():
-    with _OriginAndClone() as h:
-        workspace = transaction.create_workspace(
-            h.repo_root,
-            base=_git("rev-parse", "HEAD", cwd=h.repo_root),
-            purpose="release",
-            scope="ciu",
+        workspace_path = h.add_worktree("cmru/release/retained")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/retained", base,
         )
         transaction.write_release_scope(h.repo_root, workspace, ["ciu"])
-        common = transaction._common_git_dir(h.repo_root)
-        assert len(transaction._shared_worktree().list_workspaces(common)) == 1
+        transaction.write_release_progress(h.repo_root, workspace, "b" * 40)
+        transaction.push_backup_branch(workspace)
+        real_run = subprocess.run
 
-        abandoned = transaction.abandon_previous(h.repo_root, ["ciu"])
+        def reject_remote_delete(argv, *args, **kwargs):
+            if list(argv) == ["git", "push", "origin", "--delete", workspace.branch]:
+                return subprocess.CompletedProcess(argv, 1, "", "permission denied")
+            return real_run(argv, *args, **kwargs)
 
-        assert abandoned == [workspace.branch]
-        assert not workspace.path.exists()
-        assert transaction._shared_worktree().list_workspaces(common) == []
+        monkeypatch.setattr(transaction.subprocess, "run", reject_remote_delete)
+
+        with pytest.raises(RuntimeError, match="local worktree and transaction metadata were retained"):
+            transaction.abandon_workspace(h.repo_root, workspace)
+
+        assert workspace_path.is_dir()
+        assert transaction.read_release_scope(h.repo_root, workspace) == ["ciu"]
+        assert transaction.read_release_progress(h.repo_root, workspace) == "b" * 40
+        assert transaction.backup_was_pushed(h.repo_root, workspace)
+        assert not transaction.backup_was_removed(h.repo_root, workspace)
+        assert workspace.branch in _git(
+            "ls-remote", "--heads", "origin", f"refs/heads/{workspace.branch}",
+            cwd=h.repo_root,
+        )
 
 
 def test_cmru_does_not_claim_or_discard_a_foreign_shared_workspace(tmp_path):

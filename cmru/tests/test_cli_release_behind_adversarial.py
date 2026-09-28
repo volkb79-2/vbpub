@@ -41,12 +41,11 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
         cli.transaction, "_sync_local_main_result",
         lambda *args: transaction._SyncLocalMainResult(True),
     )
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
+    exc = cli.main([
             "release", "demo", "--config", str(tmp_path / "cmru.toml"),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
-    assert exc.value.code == 0
+    assert exc == 0
     assert workspace_args == {"base": "b" * 40, "scope": "demo", "source_git_root": tmp_path}
     assert overlays == [[tmp_path / "demo" / "cmru.toml"]]
     output = capsys.readouterr().out
@@ -86,13 +85,12 @@ def test_release_ref_flag_overrides_the_ahead_of_origin_comparison_ref(monkeypat
         cli.transaction, "_sync_local_main_result",
         lambda *args: transaction._SyncLocalMainResult(True),
     )
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
+    exc = cli.main([
             "release", "demo", "--config", str(tmp_path / "cmru.toml"),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
             "--ref", "origin/main",
         ])
-    assert exc.value.code == 0
+    assert exc == 0
     assert seen_refs == ["origin/main"]
 
 
@@ -125,10 +123,9 @@ def test_release_ref_flag_defaults_to_main_when_omitted(monkeypatch, tmp_path):
         cli.transaction, "_sync_local_main_result",
         lambda *args: transaction._SyncLocalMainResult(True),
     )
-    with pytest.raises(SystemExit) as exc:
-        cli.main([
+    exc = cli.main([
             "release", "demo", "--config", str(tmp_path / "cmru.toml"),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
-    assert exc.value.code == 0
+    assert exc == 0
     assert seen_refs == ["main"]

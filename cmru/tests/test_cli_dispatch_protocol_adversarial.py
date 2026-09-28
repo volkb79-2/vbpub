@@ -50,9 +50,8 @@ def test_dependencies_dispatch_writes_and_reports_config_errors(monkeypatch, cap
     output = capsys.readouterr().out
     assert written == [cfg] and json.loads(output[output.index("{"):])["ok"] is True
     forge.orchestration = None
-    with pytest.raises(SystemExit) as error:
-        cli.main(["dependencies", "--config", str(cfg)])
-    assert error.value.code == 2
+    error = cli.main(["dependencies", "--config", str(cfg)])
+    assert error == 2
 
 
 def test_changelog_dispatch_refuses_unknown_or_disabled_project(monkeypatch, capsys, tmp_path):
@@ -60,12 +59,10 @@ def test_changelog_dispatch_refuses_unknown_or_disabled_project(monkeypatch, cap
     disabled = SimpleNamespace(changelog=None, prefix="demo-v")
     monkeypatch.setattr(cli, "_resolve_config", lambda value: cfg)
     monkeypatch.setattr(cli, "load_config", lambda path: _config_tuple(tmp_path, {"demo": disabled}))
-    with pytest.raises(SystemExit) as unknown:
-        cli.main(["changelog", "--config", str(cfg), "missing", "--backfill-tag", "demo-v1"])
-    assert unknown.value.code == 2
-    with pytest.raises(SystemExit) as disabled_error:
-        cli.main(["changelog", "--config", str(cfg), "demo", "--backfill-tag", "demo-v1"])
-    assert disabled_error.value.code == 2
+    unknown = cli.main(["changelog", "--config", str(cfg), "missing", "--backfill-tag", "demo-v1"])
+    assert unknown == 2
+    disabled_error = cli.main(["changelog", "--config", str(cfg), "demo", "--backfill-tag", "demo-v1"])
+    assert disabled_error == 2
     assert "history is explicitly disabled" in capsys.readouterr().err
 
 
@@ -78,10 +75,10 @@ def test_status_dispatch_selects_orchestrated_project_and_forwards_version_flags
     monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     calls = []
     monkeypatch.setattr("cmru.version.status_cmd", lambda root, projects, **kwargs: calls.append((root, projects, kwargs)))
-    cli.main(["status", "--config", str(cfg), "demo", "--major", "--set-version", "2.0.0"])
+    cli.main(["status", "--config", str(cfg), "demo", "--major"])
     assert calls[0][1]["demo"].name == project.name
     assert calls[0][1]["demo"].project_root == tmp_path
-    assert calls[0][2] == {"minor": False, "major": True, "set_version": "2.0.0", "ref": "HEAD"}
+    assert calls[0][2] == {"minor": False, "major": True, "set_version": None, "ref": "HEAD"}
 
 
 def test_status_dispatch_forwards_a_custom_ref(monkeypatch, tmp_path):
@@ -106,7 +103,8 @@ def test_build_transaction_child_dispatches_isolated_phases_without_transaction(
     monkeypatch.setattr(cli, "apply_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_run_isolated_build_projects", lambda root, configs, names: calls.append((root, names)))
     calls = []
-    cli.main(["build", "--config", str(cfg), "demo", "--_transaction-child"])
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    cli.main(["build", "--config", str(cfg), "demo"])
     assert calls == [(tmp_path, ["demo"])]
 
 
@@ -123,12 +121,10 @@ def test_publish_dispatch_refuses_missing_project_credential_before_runner(monke
     assert ran == []
 
 
-def test_release_protocol_rejects_conflicting_resume_abandon_and_missing_child_provenance(monkeypatch, tmp_path):
+def test_release_protocol_rejects_removed_abandon_option_and_checks_child_provenance(monkeypatch, tmp_path):
     cfg = tmp_path / "cmru.toml"; cfg.write_text("[project]\n")
     monkeypatch.setattr(cli, "_resolve_config", lambda value: cfg)
-    with pytest.raises(SystemExit) as error:
-        cli.main(["release", "--config", str(cfg), "--resume", "/tmp/x", "--abandon", "/tmp/y"])
-    assert error.value.code == 2
+    assert cli.main(["release", "--config", str(cfg), "--resume", "/tmp/x", "--abandon", "/tmp/y"]) == 2
     monkeypatch.delenv(transaction.BRANCH_ENV, raising=False)
     monkeypatch.delenv(transaction.BASE_ENV, raising=False)
     with pytest.raises(RuntimeError, match="missing transaction provenance"):

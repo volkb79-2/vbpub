@@ -3,6 +3,8 @@ on merge (P28). Each oracle (O1-O4) is a test case."""
 
 from __future__ import annotations
 
+from nyxloom.cli_ctl import main as ctl_main
+
 import logging
 import textwrap
 from pathlib import Path
@@ -203,7 +205,7 @@ class TestO2TickOnMerge:
         storage.save_state(tsf)
 
         explicit = "b" * 40
-        exit_code = cli.main(["merge", "demo", "demo-P01-test", "--commit", explicit])
+        exit_code = ctl_main(["merge", "demo", "demo-P01-test", "--commit", explicit])
         assert exit_code == 0
 
         items = backlog_items.parse(backlog_path)
@@ -294,7 +296,7 @@ class TestO4UnlinkedNoop:
         tsf = make_statefile(task_id="demo-P01-unlinked", state=TaskState.MERGE_READY)
         storage.save_state(tsf)
 
-        exit_code = cli.main(["merge", "demo", "demo-P01-unlinked", "--commit", "c" * 40])
+        exit_code = ctl_main(["merge", "demo", "demo-P01-unlinked", "--commit", "c" * 40])
         assert exit_code == 0
         assert backlog_path.read_text() == before
 
@@ -317,6 +319,6 @@ class TestO4UnlinkedNoop:
         tsf = make_statefile(state=TaskState.MERGE_READY)
         storage.save_state(tsf)
 
-        exit_code = cli.main(["merge", "demo", "demo-P01-test", "--commit", "d" * 40])
+        exit_code = ctl_main(["merge", "demo", "demo-P01-test", "--commit", "d" * 40])
         assert exit_code == 0
         assert "warning: backlog auto-tick skipped" in capsys.readouterr().err

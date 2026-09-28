@@ -12,9 +12,9 @@ INTERFACE CONTRACT (frozen):
 - launch_detached(spec) -> wrapper pid:
   double-fork + os.setsid so the wrapper leads its own session/pgroup and
   is reparented to init; the intermediate child writes the final pid to
-  <attempt_dir>/wrapper.pid before exiting; parent waits for that file
-  (timeout 10s) and returns the pid. stdout/stderr of the wrapper itself
-  go to <attempt_dir>/wrapper.log.
+  <attempt_dir>/wrapper.pid before exiting; parent removes a stale marker,
+  waits for a complete integer in that file (timeout 10s), and returns the
+  pid. stdout/stderr of the wrapper itself go to <attempt_dir>/wrapper.log.
 - wrapper_main(spec_path) sequence:
     1. Load spec; load statefile; find attempt (by attempt_id) — it exists
        (daemon created it via ATTEMPT_CREATED) in state CREATED/PREFLIGHTING.
@@ -205,6 +205,10 @@ def launch_detached(spec: WrapperSpec) -> int:
     spec_dir.mkdir(parents=True, exist_ok=True)
     spec_path = spec_dir / "spec.json"
     spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+    pid_file = spec_dir / "wrapper.pid"
+    # A resumed attempt reuses its attempt directory. Do not mistake the old
+    # wrapper's pid for the process this call is starting.
+    pid_file.unlink(missing_ok=True)
 
     # Double-fork pattern for detachment
     pid = os.fork()
@@ -232,18 +236,23 @@ def launch_detached(spec: WrapperSpec) -> int:
                 os._exit(rc)
         else:
             # First child writes the grandchild pid and exits
-            pid_file = Path(spec.attempt_dir) / "wrapper.pid"
             pid_file.write_text(str(pid2), encoding="utf-8")
             os._exit(0)
     else:
-        # Parent waits for the pid file to appear
-        pid_file = Path(spec.attempt_dir) / "wrapper.pid"
+        # Path.write_text creates/truncates the file before its contents are
+        # visible. Under load, exists() can therefore be true for an empty
+        # marker; keep waiting until the intermediate child has finished it.
         start = time.monotonic()
         while time.monotonic() - start < 10:
             if pid_file.exists():
-                wrapper_pid = int(pid_file.read_text(encoding="utf-8").strip())
-                os.waitpid(pid, 0)  # Reap the intermediate child
-                return wrapper_pid
+                try:
+                    wrapper_pid = int(
+                        pid_file.read_text(encoding="utf-8").strip())
+                except (OSError, ValueError):
+                    pass  # incomplete or not yet readable; retry until timeout
+                else:
+                    os.waitpid(pid, 0)  # Reap the intermediate child
+                    return wrapper_pid
             time.sleep(0.05)
         # Timeout
         os.waitpid(pid, 0)

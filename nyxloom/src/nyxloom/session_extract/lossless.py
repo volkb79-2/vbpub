@@ -5,8 +5,10 @@ For every user/assistant record: keep every text/thinking content block
 verbatim, drop tool_use/tool_result blocks (machine calls) and every
 non-conversational bookkeeping record type (mode, attachment,
 bridge-session, file-history-*, atis-latch, last-prompt, ai-title,
-queue-operation). No isMeta/task-notification/AskUserQuestion-pairing
-logic at all -- that's exactly the point.
+queue-operation). Codex's structured `request_user_input_async` prompts and
+replies are the exception: they are user-facing question/answer prose, so
+the dump renders them with `INTERVIEW:` / `OPERATOR:` markers and drops an
+identical assistant prose copy.
 
 Two use cases this exists for:
 
@@ -49,13 +51,11 @@ local session files (shape/field-level correctness), not yet against a
 human's own hand-picked "what should have survived" judgment the way
 Claude Code's dump was.
 
-`dump_codex` reuses two small, already-tested pieces of plumbing from
-adapters/codex.py rather than re-deriving them: `is_top_level_record` (the
-event_msg/compacted top-level-type filter that defines codex.py's OWN
-ordinal-fallback marker space -- diverging from it here would silently
-break --since/--until chaining between `nyxloom extract --format codex` and
-`nyxloom extract-lossless --format codex`, exactly the reproducible-
-comparison use case point 1 above names) and `_item_text` (a pure
+`dump_codex` reuses marker plumbing from adapters/codex.py rather than
+re-deriving it: `is_top_level_record` and `_fallback_markers` define the
+same cursor space for `nyxloom extract --format codex` and `nyxloom
+extract-lossless --format codex`, exactly the reproducible-comparison use
+case point 1 above names. `_item_text` is also shared as a pure
 content-block-text extractor, not a classification decision). Everything
 about WHAT counts as prose to
 keep is independently re-derived here, same as `dump_claude_code`.
@@ -83,6 +83,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 _KEEP_BLOCK_TYPES = {"text", "thinking"}
 _BOOKKEEPING_TYPES = {
@@ -137,7 +138,10 @@ def _render_dump(
     return text
 
 
-def claude_code_blocks(rec: dict, fallback_marker: str) -> list[LosslessBlock]:
+def claude_code_blocks(
+    rec: dict, fallback_marker: str, show_tool_calls: bool = False,
+    show_tool_call_intent: bool = False,
+) -> list[LosslessBlock]:
     """Every text/thinking block one raw Claude Code record contributes,
     with the flag tags the header carries -- see dump_claude_code's docstring
     for what each tag means and why all four are surfaced."""
@@ -175,7 +179,20 @@ def claude_code_blocks(rec: dict, fallback_marker: str) -> list[LosslessBlock]:
     blocks: list[LosslessBlock] = []
     if isinstance(content, list):
         for block in content:
-            if not isinstance(block, dict) or block.get("type") not in _KEEP_BLOCK_TYPES:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and show_tool_calls:
+                name = str(block.get("name") or "unknown")
+                intent = ""
+                tool_input = block.get("input")
+                if show_tool_call_intent and isinstance(tool_input, dict):
+                    raw_intent = tool_input.get("description") or tool_input.get("intent")
+                    if isinstance(raw_intent, str):
+                        intent = " ".join(raw_intent.split())[:240]
+                label = f"[tool call: {name}]" + (f" {intent}" if intent else "")
+                blocks.append(LosslessBlock(f"===[{marker} | {ts} | TOOL_CALL]===" , label))
+                continue
+            if block.get("type") not in _KEEP_BLOCK_TYPES:
                 continue
             # A thinking block's prose is under `thinking`, NOT `text` -- a
             # real bug found 2026-09-12: this dumper read `text` for both
@@ -195,14 +212,39 @@ def claude_code_blocks(rec: dict, fallback_marker: str) -> list[LosslessBlock]:
     return blocks
 
 
-def codex_blocks(rec: dict, marker: str) -> list[LosslessBlock]:
+def codex_blocks(
+    rec: dict, marker: str, show_tool_calls: bool = False, show_tool_call_intent: bool = False,
+    state: Any = None,
+) -> list[LosslessBlock]:
     """Every prose block one raw Codex rollout record contributes, both
     schema generations -- see dump_codex's docstring."""
-    from .adapters.codex import _item_text
+    from .adapters.codex import StreamState, _format_question_prompt, _format_question_reply, _item_text
+
+    if state is None:
+        state = StreamState()
 
     ts = rec.get("timestamp", "")
     payload = rec.get("payload", {}) or {}
     ptype = payload.get("type")
+
+    if rec.get("type") == "response_item":
+        if payload.get("type") == "function_call" and payload.get("name") == "request_user_input_async":
+            prompts = state.remember_question_call(payload)
+            return [
+                LosslessBlock(f"===[{marker} | {ts} | INTERVIEW]===", _format_question_prompt(prompt))
+                for prompt in prompts
+            ]
+        if payload.get("type") != "custom_tool_call" or not show_tool_calls:
+            return []
+        name = str(payload.get("name") or "unknown")
+        intent = ""
+        raw_input = payload.get("input")
+        if show_tool_call_intent and isinstance(raw_input, dict):
+            description = raw_input.get("description") or raw_input.get("intent")
+            if isinstance(description, str):
+                intent = " ".join(description.split())[:240]
+        label = f"[tool call: {name}]" + (f" {intent}" if intent else "")
+        return [LosslessBlock(f"===[{marker} | {ts} | TOOL_CALL]===" , label)]
 
     if rec.get("type") == "compacted":
         # See this module's own docstring / stats.py's fuller writeup:
@@ -213,9 +255,20 @@ def codex_blocks(rec: dict, marker: str) -> list[LosslessBlock]:
         return [LosslessBlock(f"===[{marker} | {ts} | LIFECYCLE compacted]===", text)]
     if ptype == "user_message":  # OLD generation
         text = payload.get("message", "")
+        qa_text = _format_question_reply(text, state) if text else None
+        if qa_text is not None:
+            state.clear_pending_prose_copies()
+            return [LosslessBlock(f"===[{marker} | {ts} | QA_PAIR]===", qa_text)]
+        state.clear_pending_prose_copies()
         return [LosslessBlock(f"===[{marker} | {ts} | USER]===", text)] if text else []
     if ptype == "agent_message":  # OLD generation
         text = payload.get("message", "")
+        if text:
+            copy_prompts = state.consume_question_prose_copy(text)
+            if copy_prompts is not None:
+                return [LosslessBlock(
+                    f"===[{marker} | {ts} | INTERVIEW]===", _format_question_prompt(prompt),
+                ) for prompt in copy_prompts]
         return [LosslessBlock(f"===[{marker} | {ts} | ASSISTANT]===", text)] if text else []
     if ptype == "context_compacted":  # OLD generation, content-free
         return [LosslessBlock(
@@ -226,9 +279,20 @@ def codex_blocks(rec: dict, marker: str) -> list[LosslessBlock]:
         itype = item.get("type")
         if itype == "UserMessage":
             text = _item_text(item, "text")
+            qa_text = _format_question_reply(text, state) if text else None
+            if qa_text is not None:
+                state.clear_pending_prose_copies()
+                return [LosslessBlock(f"===[{marker} | {ts} | QA_PAIR]===", qa_text)]
+            state.clear_pending_prose_copies()
             return [LosslessBlock(f"===[{marker} | {ts} | USER]===", text)] if text else []
         if itype == "AgentMessage":
             text = _item_text(item, "text")
+            if text:
+                copy_prompts = state.consume_question_prose_copy(text)
+                if copy_prompts is not None:
+                    return [LosslessBlock(
+                        f"===[{marker} | {ts} | INTERVIEW]===", _format_question_prompt(prompt),
+                    ) for prompt in copy_prompts]
             return [LosslessBlock(f"===[{marker} | {ts} | ASSISTANT]===", text)] if text else []
         if itype == "Reasoning":
             text = "\n".join(item.get("raw_content") or [])
@@ -310,6 +374,8 @@ def dump_claude_code(
     until_marker: str | None = None,
     *,
     block_render: Callable[[str], str] | None = None,
+    show_tool_calls: bool = False,
+    show_tool_call_intent: bool = False,
 ) -> str:
     """Render every text/thinking block in `path` as delimited plain text,
     optionally bounded to (since_marker, until_marker] by the Claude marker
@@ -368,7 +434,7 @@ def dump_claude_code(
                     in_span = True
                 continue
 
-            record_blocks = claude_code_blocks(rec, marker)
+            record_blocks = claude_code_blocks(rec, marker, show_tool_calls, show_tool_call_intent)
             blocks.extend(record_blocks)
             if record_blocks:
                 last_marker = marker
@@ -391,21 +457,23 @@ def dump_codex(
     until_marker: str | None = None,
     *,
     block_render: Callable[[str], str] | None = None,
+    show_tool_calls: bool = False,
+    show_tool_call_intent: bool = False,
 ) -> str:
-    """Render every UserMessage/AgentMessage/Reasoning text block plus every
-    compaction-boundary marker in a Codex rollout `path` as delimited plain
-    text, optionally bounded to (since_marker, until_marker] -- same
+    """Render every UserMessage/AgentMessage/Reasoning text block, every
+    interactive question/reply, plus every compaction-boundary marker in a
+    Codex rollout `path` as delimited plain text, optionally bounded to
+    (since_marker, until_marker] -- same
     since/until semantics and same "raises ValueError for an unresolved
     marker" contract as `dump_claude_code`. Handles BOTH Codex schema
     generations (see adapters/codex.py's own docstring for the full
     pre/post cli_version 0.147.0 shape).
 
     Marker convention is IDENTICAL to adapters/codex.py's own: an integer
-    `ordinal` when present on the record, else its absolute position within
-    the filtered {event_msg, compacted} universe -- `_TOP_LEVEL_TYPES` is
-    reused directly from adapters/codex.py (see this module's own docstring
-    for why that specific piece of plumbing, and not the rest of parse(),
-    is shared).
+    `ordinal` when present on the record, otherwise a stable legacy fallback
+    for event_msg/compacted records or a namespaced fallback for a surfaced
+    response_item. Both the recognized record universe and fallback policy
+    are reused from adapters/codex.py so --since/--until agree exactly.
 
     Unlike `dump_claude_code`, THINKING content (Codex's "Reasoning" item,
     new generation only -- the old generation's `response_item`-layer
@@ -415,7 +483,9 @@ def dump_codex(
     means lossless, `ExtractConfig.include_thinking` plays no part in
     either dumper.
     """
-    from .adapters.codex import is_top_level_record
+    from .adapters.codex import (
+        StreamState, _advance_stream_state, _fallback_markers, is_top_level_record,
+    )
 
     filtered: list[dict] = []
     with Path(path).open("r", errors="ignore") as f:
@@ -431,18 +501,23 @@ def dump_codex(
                 filtered.append(rec)
 
     blocks: list[LosslessBlock] = []
+    state = StreamState()
     in_span = since_marker is None
     found_until = False
     last_marker = since_marker
+    fallback_markers = _fallback_markers(filtered)
 
     for i, rec in enumerate(filtered):
-        marker = str(rec.get("ordinal", i))
+        marker = str(rec.get("ordinal", fallback_markers[i]))
         if not in_span:
+            _advance_stream_state(rec, state, prompt_emitted=False)
             if marker == since_marker:
                 in_span = True
             continue
 
-        record_blocks = codex_blocks(rec, marker)
+        record_blocks = codex_blocks(
+            rec, marker, show_tool_calls, show_tool_call_intent, state=state,
+        )
         blocks.extend(record_blocks)
         if record_blocks:
             last_marker = marker
@@ -452,9 +527,9 @@ def dump_codex(
             break
 
     if since_marker is not None and not in_span:
-        raise ValueError(f"--since marker {since_marker!r} not found as an ordinal in {path}")
+            raise ValueError(f"--since marker {since_marker!r} not found as a source marker in {path}")
     if until_marker is not None and not found_until:
-        raise ValueError(f"--until marker {until_marker!r} not found as an ordinal in {path}")
+            raise ValueError(f"--until marker {until_marker!r} not found as a source marker in {path}")
 
     return _render_dump(blocks, "codex", last_marker, block_render)
 

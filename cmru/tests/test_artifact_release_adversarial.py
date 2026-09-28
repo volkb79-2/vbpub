@@ -66,7 +66,7 @@ class TestBundleBoundaries(unittest.TestCase):
                 "version_env='V'\n[copy]\nfiles='x'\n",
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ValueError, "must be lists"):
+            with self.assertRaisesRegex(ValueError, "array of non-empty strings"):
                 bundle.parse_config(path)
 
     def test_create_archive_requires_version_fact(self):

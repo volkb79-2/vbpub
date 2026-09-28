@@ -15,11 +15,13 @@ environment; handlers do not read a convenience credentials file.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import glob
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -44,6 +46,92 @@ def _require_env(name: str) -> str:
 def _wheel_glob(prefix: str) -> str:
     """Default wheel glob for a project prefix (PEP 503 dist-name normalisation)."""
     return f"{prefix.replace('-', '_')}-*.whl"
+
+
+def _build_output_record(args: argparse.Namespace) -> Optional[dict]:
+    raw_root = os.environ.get("CMRU_BUILD_OUTPUT_ROOT")
+    if not raw_root:
+        return None
+    output_id = os.environ.get("CMRU_BUILD_OUTPUT_ID", "")
+    project_name = os.environ.get("CMRU_BUILD_OUTPUT_PROJECT", "")
+    if not output_id or not project_name:
+        raise RuntimeError("CMRU build-output context is incomplete")
+    artifact_root = Path(raw_root)
+    if artifact_root.name != output_id:
+        raise RuntimeError("CMRU_BUILD_OUTPUT_ROOT does not match CMRU_BUILD_OUTPUT_ID")
+    from cmru.transaction import validate_build_output_tree
+    record = validate_build_output_tree(artifact_root, project_name, output_id)
+    manifest = record["manifest"]
+    if os.environ.get("CMRU_BUILD_SOURCE_COMMIT") != manifest["source_commit"]:
+        raise RuntimeError("CMRU_BUILD_SOURCE_COMMIT does not match the retained build manifest")
+    if os.environ.get("CMRU_BUILD_SOURCE_DATE") != manifest["source_commit_date"]:
+        raise RuntimeError("CMRU_BUILD_SOURCE_DATE does not match the retained build manifest")
+    return record
+
+
+def _build_output_files(
+    args: argparse.Namespace, pattern: str, *, record: Optional[dict] = None,
+) -> list[Path]:
+    record = record if record is not None else _build_output_record(args)
+    if record is None:
+        raise RuntimeError("CMRU build-output context is not active")
+    relative_pattern = Path(pattern)
+    if relative_pattern.is_absolute() or ".." in relative_pattern.parts:
+        raise RuntimeError(f"build-output asset selector must stay inside its record: {pattern!r}")
+    raw_manifest = record["manifest"]
+    matches: list[Path] = []
+    for artifact in raw_manifest["artifacts"]:
+        directory = artifact["directory"]
+        for entry in artifact["files"]:
+            coordinate = Path(directory) / entry["path"]
+            selected = (
+                fnmatch.fnmatchcase(coordinate.as_posix(), pattern)
+                if "/" in pattern
+                else fnmatch.fnmatchcase(coordinate.name, pattern)
+            )
+            if selected:
+                matches.append(record["artifact_root"] / coordinate)
+    return sorted(matches)
+
+
+def _publish_versioned_artifacts(
+    gh: GitHubReleases,
+    *,
+    prefix: str,
+    version: str,
+    asset_path: Path,
+    notes: Optional[str],
+    extra_assets: Optional[list[Path]],
+    build_output: Optional[dict],
+) -> dict:
+    """Publish selected files, isolating retained records from publisher byproducts."""
+    if build_output is None:
+        return publish_versioned(
+            gh, prefix=prefix, version=version, asset_path=asset_path,
+            notes=notes, extra_assets=extra_assets, latest_pointer=True,
+        )
+
+    # The keystone writes checksum sidecars and latest.json beside its inputs.
+    # Stage exact copies so publishing cannot mutate the immutable build record
+    # or make its own digest inventory fail on a later retry.
+    with tempfile.TemporaryDirectory(prefix="cmru-build-publish-") as temporary:
+        staging = Path(temporary)
+        staged_asset = staging / "asset" / asset_path.name
+        staged_asset.parent.mkdir(parents=True)
+        shutil.copy2(asset_path, staged_asset)
+        staged_extras: list[Path] = []
+        for index, extra in enumerate(extra_assets or []):
+            staged_extra = staging / f"extra-{index}" / extra.name
+            staged_extra.parent.mkdir(parents=True)
+            shutil.copy2(extra, staged_extra)
+            staged_extras.append(staged_extra)
+
+        return publish_versioned(
+            gh, prefix=prefix, version=version, asset_path=staged_asset,
+            notes=notes, extra_assets=staged_extras or None, latest_pointer=True,
+            require_existing_targets=True, latest_pointer_recreate=False,
+            expected_tag_commit=build_output["manifest"]["source_commit"],
+        )
 
 
 # ─── wheel commands ───────────────────────────────────────────────────────────
@@ -232,7 +320,17 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     owner = _require_env("GITHUB_USERNAME")
     repo = _require_env("GITHUB_REPO")
 
-    wheel = find_built_wheel(cwd / "dist", args.glob or _wheel_glob(args.prefix))
+    pattern = args.glob or _wheel_glob(args.prefix)
+    build_output = _build_output_record(args)
+    if build_output is not None:
+        matches = _build_output_files(args, pattern, record=build_output)
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"expected one retained wheel matching {pattern!r}, found {len(matches)}"
+            )
+        wheel = matches[0]
+    else:
+        wheel = find_built_wheel(cwd / "dist", pattern)
     version = read_wheel_version(wheel)
     notes = (os.getenv(args.notes_env) if args.notes_env else None) or f"{args.prefix} {version}"
 
@@ -249,18 +347,21 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     # was never uploaded is worse than not publishing.
     extras: list[Path] = []
     for pattern in getattr(args, "extra_asset", None) or []:
-        matched = sorted(Path(item).resolve() for item in glob.glob(pattern))
-        files = [item for item in matched if item.is_file()]
+        if os.environ.get("CMRU_BUILD_OUTPUT_ROOT"):
+            files = _build_output_files(args, pattern, record=build_output)
+        else:
+            matched = sorted(Path(item).resolve() for item in glob.glob(pattern))
+            files = [item for item in matched if item.is_file()]
         if not files:
             raise SystemExit(
-                f"[ERROR] --extra-asset {pattern!r} matched no existing file"
+                f"--extra-asset {pattern!r} matched no existing file"
             )
         extras.extend(files)
 
     gh = GitHubReleases(owner, repo, token)
-    result = publish_versioned(
+    result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=wheel,
-        notes=notes, extra_assets=extras or None, latest_pointer=True,
+        notes=notes, extra_assets=extras or None, build_output=build_output,
     )
     print(f"[INFO] Published {args.prefix} {version}")
     for item in extras:
@@ -294,20 +395,37 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
     token = _require_env("GITHUB_PUSH_PAT")
     owner = _require_env("GITHUB_USERNAME")
     repo = _require_env("GITHUB_REPO")
+    build_output = _build_output_record(args)
 
-    if args.version_file:
+    if args.version_file and build_output is not None:
+        matches = _build_output_files(args, args.version_file, record=build_output)
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"expected one retained version file {args.version_file!r}, found {len(matches)}"
+            )
+        version_path = matches[0]
+        version = version_path.read_text(encoding="utf-8").strip()
+    elif args.version_file:
         version_path = cwd / args.version_file
         version = version_path.read_text(encoding="utf-8").strip()
     else:
         version = _require_env(args.version_env)
 
-    art = find_artifact(cwd / "dist", args.glob)
+    if build_output is not None:
+        matches = _build_output_files(args, args.glob, record=build_output)
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"expected one retained tarball matching {args.glob!r}, found {len(matches)}"
+            )
+        art = matches[0]
+    else:
+        art = find_artifact(cwd / "dist", args.glob)
     notes = (os.getenv(args.notes_env) if args.notes_env else None) or None
 
     gh = GitHubReleases(owner, repo, token)
-    result = publish_versioned(
+    result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=art,
-        notes=notes, latest_pointer=True,
+        notes=notes, extra_assets=None, build_output=build_output,
     )
     print(f"[INFO] Published {args.prefix} {version}")
     print(result)
@@ -383,7 +501,7 @@ def _docker_login() -> None:
 
 
 def cmd_oci_image_build(args: argparse.Namespace) -> None:
-    """Build an OCI image using docker buildx bake, with optional repack."""
+    """Build an OCI image using docker buildx bake; repack fails closed."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
     target = args.target
@@ -406,8 +524,7 @@ def cmd_oci_image_build(args: argparse.Namespace) -> None:
 
 
 def cmd_oci_image_push(args: argparse.Namespace) -> None:
-    """Push an OCI image. Uses the OCI layout from the build step (repack mode)
-    or runs ``docker buildx bake --push`` (non-repack mode)."""
+    """Push an OCI image with ``docker buildx bake --push``."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
     target = args.target
@@ -424,79 +541,103 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
     print("[INFO] OCI image push complete")
 
 
-def main(argv: list | None = None) -> None:
-    from cmru.cli_support import CMRUArgumentParser
-    parser = CMRUArgumentParser(
-        prog="cmru.handlers",
-        description="cmru explicit project-step command library",
+def handlers_cli():
+    from cli_extended import CliRegistry, OptionSpec, VerbGroup, VerbSpec
+    from cmru.cli_support import cmru_identity, cmru_presentation_options
+
+    identity = cmru_identity(command="cmru", long_name="Configurable Multi Release Utility")
+    registry = CliRegistry(
+        identity,
+        prog="cmru handler",
+        description="Explicit project-step command library.",
+        logging_logger="cmru",
+        global_options=cmru_presentation_options(),
     )
-    sub = parser.add_subparsers(
-        dest="cmd", required=True, parser_class=CMRUArgumentParser,
+    required_path = lambda flag, desc: OptionSpec(
+        (flag,), desc, metavar="PATH", parser_kwargs={"required": True},
     )
+    required_name = lambda flag, desc, metavar="NAME": OptionSpec(
+        (flag,), desc, metavar=metavar, parser_kwargs={"required": True},
+    )
+    commands = (
+        ("wheel-build", "Build the project's wheel into dist/.", cmd_wheel_build, (
+            required_path("--cwd", "project directory (holds pyproject.toml)"),
+        )),
+        ("wheel-publish", "Publish the built wheel to GitHub Releases.", cmd_wheel_publish, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+            required_path("--cwd", "project directory (dist/ holds the wheel)"),
+            OptionSpec(("--glob",), "wheel glob (default: <prefix>-*.whl)", metavar="GLOB", parser_kwargs={"default": None}),
+            OptionSpec(("--notes-env",), "environment variable holding release notes", metavar="NAME", parser_kwargs={"dest": "notes_env", "default": None}),
+            OptionSpec(("--extra-asset",), "additional file to attach; repeatable", metavar="PATH", parser_kwargs={"action": "append", "default": []}),
+        )),
+        ("wheel-validate", "Validate the resolved latest wheel release.", cmd_wheel_validate, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+        )),
+        ("tarball-publish", "Publish the built tarball to GitHub Releases.", cmd_tarball_publish, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+            required_path("--cwd", "project directory (dist/ holds the tarball)"),
+            required_name("--glob", "tarball glob", "GLOB"),
+            OptionSpec(("--version-file",), "version file relative to --cwd", metavar="PATH", parser_kwargs={"dest": "version_file", "default": None}, mutually_exclusive_group="version-source", mutually_exclusive_required=True),
+            OptionSpec(("--version-env",), "environment variable containing the version", metavar="NAME", parser_kwargs={"dest": "version_env", "default": None}, mutually_exclusive_group="version-source", mutually_exclusive_required=True),
+            OptionSpec(("--notes-env",), "environment variable holding optional release notes", metavar="NAME", parser_kwargs={"dest": "notes_env", "default": None}),
+        )),
+        ("tarball-validate", "Validate the resolved latest tarball release.", cmd_tarball_validate, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+            OptionSpec(("--artifact-suffix",), "expected artifact file extension", metavar="SUFFIX", parser_kwargs={"dest": "artifact_suffix", "default": ".tar.xz"}),
+        )),
+        ("oci-image-build", "Build an OCI image with docker buildx bake.", cmd_oci_image_build, (
+            required_path("--cwd", "project directory (holds bake file)"),
+            required_path("--bake-file", "path to bake HCL file"),
+            required_name("--target", "bake target name", "NAME"),
+            OptionSpec(("--repack",), "enable OCI repack", parser_kwargs={"action": "store_true", "default": False}),
+        )),
+        ("oci-image-push", "Push an OCI image to its registry.", cmd_oci_image_push, (
+            required_path("--cwd", "project directory (holds bake file)"),
+            required_path("--bake-file", "path to bake HCL file"),
+            required_name("--target", "bake target name", "NAME"),
+            OptionSpec(("--repack",), "repack mode (push already happened during build)", parser_kwargs={"action": "store_true", "default": False}),
+        )),
+    )
+    for name, description, handler, options in commands:
+        mutating = name not in {"wheel-validate", "tarball-validate"}
+        if mutating:
+            options = options + (OptionSpec(
+                ("--dry-run",), "show this handler's inputs without running it",
+                parser_kwargs={"action": "store_true", "default": False},
+            ),)
 
-    p_build = sub.add_parser("wheel-build", help="build the project's wheel into dist/")
-    p_build.add_argument("--cwd", required=True, help="project directory (holds pyproject.toml)")
-    p_build.set_defaults(func=cmd_wheel_build)
+        def dispatch(args, _runtime, fn=handler, command=name):
+            if getattr(args, "dry_run", False):
+                if getattr(args, "repack", False):
+                    _reject_experimental_repack(True)
+                details = {
+                    key: value for key, value in vars(args).items()
+                    if key != "dry_run" and "token" not in key.lower()
+                }
+                print(f"[DRY RUN] Would run cmru handler {command} with {details}")
+                return 0
+            return fn(args)
 
-    p_pub = sub.add_parser("wheel-publish", help="publish the built wheel to GitHub Releases")
-    p_pub.add_argument("--prefix", required=True, help="release prefix, e.g. 'ciu' (no -v)")
-    p_pub.add_argument("--cwd", required=True, help="project directory (dist/ holds the wheel)")
-    p_pub.add_argument("--glob", help="wheel glob (default: <prefix>-*.whl)")
-    p_pub.add_argument("--notes-env", dest="notes_env",
-                       help="env var holding release notes (default notes: '<prefix> <version>')")
-    p_pub.add_argument("--extra-asset", dest="extra_asset", action="append", default=[],
-                       metavar="PATH",
-                       help="additional file to attach to the same release; repeatable")
-    p_pub.set_defaults(func=cmd_wheel_publish)
+        registry.register(VerbSpec(
+            name,
+            description=description,
+            group=(
+                VerbGroup.MODIFICATION.value
+                if mutating else VerbGroup.EXPLORATION.value
+            ),
+            mutating=mutating,
+            include_confirmation=False,
+            options=options,
+            include_json=False,
+            include_progress=False,
+            handler=dispatch,
+        ))
+    return registry.build()
 
-    p_val = sub.add_parser("wheel-validate", help="validate the resolved latest wheel release")
-    p_val.add_argument("--prefix", required=True, help="release prefix, e.g. 'ciu' (no -v)")
-    p_val.set_defaults(func=cmd_wheel_validate)
 
-    p_tpub = sub.add_parser("tarball-publish", help="publish the built tarball to GitHub Releases")
-    p_tpub.add_argument("--prefix", required=True, help="release prefix, e.g. 'tls-edge' (no -v)")
-    p_tpub.add_argument("--cwd", required=True, help="project directory (dist/ holds the tarball)")
-    p_tpub.add_argument("--glob", required=True, help="tarball glob, e.g. 'tls-edge-v*.tar.xz'")
-    _tver = p_tpub.add_mutually_exclusive_group(required=True)
-    _tver.add_argument("--version-file", dest="version_file",
-                       help="path relative to --cwd holding the version string (e.g. VERSION)")
-    _tver.add_argument("--version-env", dest="version_env",
-                       help="env var holding the version string")
-    p_tpub.add_argument("--notes-env", dest="notes_env",
-                        help="env var holding release notes (optional)")
-    p_tpub.set_defaults(func=cmd_tarball_publish)
-
-    p_tval = sub.add_parser("tarball-validate", help="validate the resolved latest tarball release")
-    p_tval.add_argument("--prefix", required=True, help="release prefix, e.g. 'tls-edge' (no -v)")
-    p_tval.add_argument("--artifact-suffix", dest="artifact_suffix", default=".tar.xz",
-                        help="expected artifact file extension (default: .tar.xz)")
-    p_tval.set_defaults(func=cmd_tarball_validate)
-
-    # ── oci-image subcommands ──────────────────────────────────────────────
-    p_ocib = sub.add_parser("oci-image-build",
-                            help="build OCI image with docker buildx bake (optional repack)")
-    p_ocib.add_argument("--cwd", required=True, help="project directory (holds bake file)")
-    p_ocib.add_argument("--bake-file", required=True, help="path to bake HCL file")
-    p_ocib.add_argument("--target", required=True, help="bake target name")
-    p_ocib.add_argument("--repack", action="store_true", help="enable OCI repack")
-    p_ocib.add_argument("--repack-target-size", default="2GB",
-                        help="target size per layer for repack (default: 2GB)")
-    p_ocib.add_argument("--repack-compression", type=int, default=9,
-                        help="compression level 1-22 for repack (default: 9)")
-    p_ocib.set_defaults(func=cmd_oci_image_build)
-
-    p_ocip = sub.add_parser("oci-image-push",
-                            help="push OCI image to registry")
-    p_ocip.add_argument("--cwd", required=True, help="project directory (holds bake file)")
-    p_ocip.add_argument("--bake-file", required=True, help="path to bake HCL file")
-    p_ocip.add_argument("--target", required=True, help="bake target name")
-    p_ocip.add_argument("--repack", action="store_true",
-                        help="repack mode (push already done in build step)")
-    p_ocip.set_defaults(func=cmd_oci_image_push)
-
-    args = parser.parse_args(argv)
-    args.func(args)
+def main(argv: list | None = None) -> int:
+    return handlers_cli().run(argv=argv)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

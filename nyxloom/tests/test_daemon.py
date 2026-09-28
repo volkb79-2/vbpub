@@ -34,6 +34,7 @@ from nyxloom import (
     log, notify, paths, reconcile,
     render, results, snapshot, storage, wrapper,
 )
+from nyxloom.cli_ctl import main as ctl_main
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus, Event,
     EventType, GateResult, Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile,
@@ -289,13 +290,13 @@ def test_nyxloomd_compose_runs_daemon_under_tini_supervisor_not_pid1():
         assert _INIT_DIRECTIVE.search(text), f"{fname} missing `init: true` (tini as PID 1)"
         assert "supervise.sh" in text, f"{fname} must delegate the daemon to supervise.sh"
 
-    # supervise.sh IS the supervisor loop: it runs `nyxloom.cli daemon` in a
+    # supervise.sh IS the supervisor loop: it runs the installed `nyxloomd` in a
     # `while` loop WITHOUT exec'ing it (an exec'd daemon would be PID 1). Only
     # the crash-loop-breaker PARK uses exec (`exec sleep infinity`), never the
     # daemon itself.
     sup = (NYXLOOMD_DIR / "supervise.sh").read_text(encoding="utf-8")
     assert "while" in sup, "supervise.sh missing the supervisor loop"
-    assert "nyxloom.cli daemon" in sup, "supervise.sh must invoke the daemon"
+    assert "/opt/nyxloom-venv/bin/nyxloomd" in sup, "supervise.sh must invoke the installed daemon entrypoint"
     assert "exec $DAEMON_CMD" not in sup and "exec /opt/nyxloom-venv" not in sup, \
         "supervise.sh must NOT exec the daemon (it would become PID 1)"
     # crash-loop breaker: after N rapid failures, PARK for inspection, not flap.
@@ -351,16 +352,16 @@ def test_nyxloomd_compose_drops_host_network_and_binds_bridge_address():
 def test_nyxloomd_healthcheck_chains_the_liveness_probe_after_the_tcp_stage():
     """A TCP connect proves a socket is listening; it proved exactly that for
     ten days while the daemon was `Exited (143)`. Both compose files must run
-    `doctor --liveness` -- which reads the store in a fresh process, with no
+    `nyxloomctl doctor --liveness` -- which reads the store in a fresh process, with no
     Daemon -- as a REQUIRED second stage, and must not discard its output: the
     findings table is the only thing that says which project is dead."""
     for fname in ("ciu.compose.yml.j2", "docker-compose.yml"):
         text = (NYXLOOMD_DIR / fname).read_text(encoding="utf-8")
         line = next(ln for ln in text.splitlines() if ln.lstrip().startswith("test: ["))
-        assert "doctor --liveness" in line, \
+        assert "nyxloomctl doctor --liveness" in line, \
             f"{fname} healthcheck is TCP-only again -- the RISK-007 blind spot"
         assert "&&" in line, f"{fname} healthcheck must REQUIRE the liveness stage"
-        assert ">/dev/null" not in line.split("doctor --liveness")[1], \
+        assert ">/dev/null" not in line.split("nyxloomctl doctor --liveness")[1], \
             f"{fname} discards the liveness findings -- unhealthy with no reason attached"
 
 
@@ -3519,14 +3520,14 @@ def test_reconcile_trace_flush_skipped_when_plan_project_returns_bare_list(
 
 
 # --------------------------------------------------------------------------
-# P38 2026-07-16 Oracle 3: `nyxloom doctor`'s dashboard-URL line reflects
+# P38 2026-07-16 Oracle 3: `nyxloomctl doctor`'s dashboard-URL line reflects
 # reachability -- a bridge bind (0.0.0.0) also names the alias address
 # reachable from a co-networked container (e.g. the devcontainer), not only
 # the host-loopback address a devcontainer operator could never reach.
 
 def test_doctor_dashboard_line_stays_loopback_by_default(tmp_state, sample_project, capsys, monkeypatch):
     monkeypatch.setattr(doctor, "doctor_project", lambda cfg: [])
-    exit_code = cli.main(["doctor"])
+    exit_code = ctl_main(["doctor"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "http://127.0.0.1:" in out
@@ -3539,7 +3540,7 @@ def test_doctor_dashboard_line_names_bridge_alias_when_bind_is_bridged(
     # 2026-07-20: bind is env-sourced now, so drive the bridge case via the env
     # var rather than a (now-ignored) toml http_bind.
     monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
-    exit_code = cli.main(["doctor"])
+    exit_code = ctl_main(["doctor"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "http://nyxloomd:" in out

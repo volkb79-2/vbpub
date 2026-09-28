@@ -119,7 +119,9 @@ _REASONIX_SESSION_RE = re.compile(
 
 
 def _claude_projects_root() -> Path:
-    return Path.home() / ".claude" / "projects"
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    home = Path(configured).expanduser() if configured else Path.home() / ".claude"
+    return home / "projects"
 
 
 def _codex_sessions_root() -> Path:
@@ -166,17 +168,23 @@ def _reasonix_projects_root() -> Path:
 
 
 def _opencode_db_candidates() -> list[Path]:
-    """The canonical default store named in adapters/opencode.py's own
-    module docstring, plus the XDG override when that env var is actually
-    set. Fixed, short list: opencode's storage is one machine-wide DB, so
-    there is no tree to walk here."""
+    """The configured OPENCODE_DB, XDG override, and canonical default store.
+    Fixed, short list: opencode's storage is one machine-wide DB, so there
+    is no tree to walk here."""
     candidates: list[Path] = []
+
+    def add(candidate: Path) -> None:
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    configured_db = os.environ.get("OPENCODE_DB")
+    if configured_db:
+        add(Path(configured_db).expanduser())
     xdg = os.environ.get("XDG_DATA_HOME")
     if xdg:
-        candidates.append(Path(xdg) / "opencode" / "opencode.db")
+        add(Path(xdg) / "opencode" / "opencode.db")
     default = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
-    if default not in candidates:
-        candidates.append(default)
+    add(default)
     return candidates
 
 

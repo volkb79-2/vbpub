@@ -25,10 +25,11 @@ cmru-agent      = "cmru.agent.cli:main"      # new (spec G §4)
 cmru-controller = "cmru.controller.cli:main" # new (spec G §4)
 
 [tool.setuptools.packages.find]
-where = ["src", "../libraries/worktree/src"]
+where = ["src", "../libraries/worktree/src", "../libraries/cli-extended/src"]
 
 [tool.setuptools.package-dir]
 worktree = "../libraries/worktree/src/worktree"
+cli_extended = "../libraries/cli-extended/src/cli_extended"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -44,4 +45,4 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 # `cmru init` scaffolding ships inside the wheel so a plain pip install can
 # generate contracts without the repository present.
 [tool.setuptools.package-data]
-cmru = ["templates/*.toml"]
+cmru = ["templates/*.toml", "templates/*.tmpl"]

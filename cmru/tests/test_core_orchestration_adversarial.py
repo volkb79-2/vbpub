@@ -20,10 +20,9 @@ from cmru import cli, config, runner, transaction
 
 
 def test_cli_main_rejects_unknown_verb_with_machine_exit_code(capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["not-a-cmru-verb"])
-    assert exc.value.code == 2
-    assert "Unknown verb" in capsys.readouterr().err
+    exc = cli.main(["not-a-cmru-verb"])
+    assert exc == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -248,6 +247,6 @@ def test_transaction_run_child_propagates_child_exit_and_transaction_identity(mo
         return SimpleNamespace(returncode=17)
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
     assert transaction.run_child(workspace, ["alpha"], verb="build") == 17
-    assert seen["argv"] == ["/opt/cmru", "build", "--_transaction-child", "alpha"]
+    assert seen["argv"] == ["/opt/cmru", "build", "alpha"]
     assert seen["env"][transaction.CHILD_ENV] == "1"
     assert seen["env"][transaction.BRANCH_ENV] == workspace.branch

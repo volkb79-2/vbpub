@@ -1,11 +1,14 @@
 # CMRU's release-gate test claim.  The outer command in cmru.toml invokes the
 # selected-worktree Assay source installed by run-gate in tester-unified; this lane's command is deliberately
 # the existing project test command, rather than recursively invoking CMRU's
-# tester-gate wrapper.
+# tester-gate wrapper. CLI implementation dependencies are sibling source
+# packages in this monorepo, so they are explicit import roots alongside CMRU.
 #
-# Assay owns R0/R1/R3 here. R2 lives in run-gate.toml's tag-based mutation
-# lane: a release candidate is already at origin/main, so an Assay mutation
-# base of main would find no changed source and refuse with NO_MUTANTS.
+# Assay owns R0/R1/R3 here. R1 uses the latest ancestor CMRU release tag as
+# its changed-line baseline; advance that pinned tag with each CMRU release.
+# R2 lives in run-gate.toml's tag-based mutation lane, which resolves that
+# nearest ancestor tag dynamically. `main` is unsuitable after merge because
+# Assay can resolve it to HEAD and correctly refuse an empty coverage delta.
 # The repository-minus-unsafe-symlinks selection is the
 # estate-approved monorepo boundary: it omits only the three tracked Topos
 # fixture links that cannot be materialised safely, while preserving every
@@ -22,8 +25,9 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--maxfail
 # not ambient conveniences: pytest must import the source snapshot it is
 # judging, and it must not create bytecode there. The separate R2 campaign
 # uses the nearest release tag, fail-fast candidates, and a bounded timeout.
-env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
-env_passthrough = []
+# Source-checkout tests import CMRU's sibling shared libraries explicitly.
+env = { PYTHONPATH = "src:../libraries/cli-extended/src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
 budget = "20m"
 allow_argv_append = false
 
@@ -41,7 +45,7 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "main"
+base = "cmru-v5.4.1"
 
 [lanes.cmru.judge.coverage]
 format = "coverage-py-json"

@@ -1022,9 +1022,7 @@ def test_tool_deps_main_json_output_when_nothing_is_declared_is_still_valid_json
 def test_tool_deps_main_errors_on_an_unknown_project(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("cmru.cli._resolve_config", lambda cfg: tmp_path / "cmru.orchestration.toml")
     monkeypatch.setattr("cmru.cli.load_config", lambda cfg: _cli_config(tmp_path))
-    with pytest.raises(SystemExit) as exc:
-        tool_deps.tool_deps_main(["ghost"])
-    assert exc.value.code == 2
+    assert tool_deps.tool_deps_main(["ghost"]) == 2
 
 
 # --- B2: a single-project load can never resolve a sibling PROVIDER project --
@@ -1038,9 +1036,7 @@ def test_tool_deps_main_refuses_a_single_project_load_that_declares_a_tool_depen
     monkeypatch.setattr(
         "cmru.cli.load_config", lambda cfg: _cli_config(tmp_path, cmru_tool_deps=(_dep(),)),
     )
-    with pytest.raises(SystemExit) as exc:
-        tool_deps.tool_deps_main([])
-    assert exc.value.code == 2
+    assert tool_deps.tool_deps_main([]) == 2
     err = capsys.readouterr().err
     assert "cmru.orchestration.toml" in err
     assert "authenticity" not in err.lower()  # never phrased as a finding about the artifact
@@ -1060,9 +1056,7 @@ def test_tool_deps_main_refresh_also_refuses_a_single_project_load(monkeypatch, 
     monkeypatch.setattr(
         "cmru.cli.load_config", lambda cfg: _cli_config(tmp_path, cmru_tool_deps=(_dep(),)),
     )
-    with pytest.raises(SystemExit) as exc:
-        tool_deps.tool_deps_main(["--refresh", "assay"])
-    assert exc.value.code == 2
+    assert tool_deps.tool_deps_main(["--refresh", "assay"]) == 2
     assert "cmru.orchestration.toml" in capsys.readouterr().err
 
 
@@ -1112,9 +1106,7 @@ def test_tool_deps_main_blocks_on_a_stale_pin_by_default(monkeypatch, tmp_path, 
     )
     monkeypatch.setattr(tool_deps, "_download_asset", lambda *a, **k: b"payload")
 
-    with pytest.raises(SystemExit) as exc:
-        tool_deps.tool_deps_main([])
-    assert exc.value.code == 2
+    assert tool_deps.tool_deps_main([]) == 2
     err = capsys.readouterr().err
     assert "blocking" in err
 
@@ -1181,18 +1173,14 @@ def test_tool_deps_main_json_output(monkeypatch, tmp_path, capsys):
 def test_tool_deps_main_refresh_reports_unknown_provider(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("cmru.cli._resolve_config", lambda cfg: tmp_path / "cmru.orchestration.toml")
     monkeypatch.setattr("cmru.cli.load_config", lambda cfg: _cli_config(tmp_path))
-    with pytest.raises(SystemExit) as exc:
-        tool_deps.tool_deps_main(["--refresh", "ghost"])
-    assert exc.value.code == 2
+    assert tool_deps.tool_deps_main(["--refresh", "ghost"]) == 2
     assert "unknown project" in capsys.readouterr().err
 
 
 def test_tool_deps_main_refresh_reports_no_matching_declaration(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("cmru.cli._resolve_config", lambda cfg: tmp_path / "cmru.orchestration.toml")
     monkeypatch.setattr("cmru.cli.load_config", lambda cfg: _cli_config(tmp_path))
-    with pytest.raises(SystemExit) as exc:
-        tool_deps.tool_deps_main(["--refresh", "assay"])
-    assert exc.value.code == 2
+    assert tool_deps.tool_deps_main(["--refresh", "assay"]) == 2
     assert "no selected project declares" in capsys.readouterr().err
 
 

@@ -13,6 +13,7 @@ subparsers, argument groups, choices, and `Namespace` values while adding the
 repository rules that argparse does not provide:
 
 - no implicit `-h` option;
+- exact long-option spellings, with prefix abbreviation disabled by default;
 - the product identity on help and diagnostics;
 - complete command help after a known-verb parse error; and
 - side-effect-free `help`, `version`, and bare invocation paths.
@@ -72,8 +73,12 @@ a docs page invites drift. `CliRegistry` accepts one `VerbSpec` per public
 command and generates parser registration, grouped help, help lookup, and
 dispatch from those definitions. `ArgumentSpec` and `OptionSpec` carry
 positional/option help, groups, and argparse attributes. A command marked
-`mutating` receives the common `--yes` option and confirmation contract;
-read-only commands do not.
+`mutating` receives the common `--yes` option by default;
+`confirmation_required` can state whether that acknowledgement is required
+without changing the mutation label. Its default preserves current behavior;
+the legacy `include_confirmation` spelling remains accepted for existing
+consumers. `OptionSpec.hidden` keeps internal options parseable without
+advertising them in user help or generated Markdown.
 
 The top-level catalog may need a shorter line than command-specific help.
 `VerbSpec.summary_description` supplies that concise discovery label without
@@ -105,7 +110,10 @@ The consumer still decides the public vocabulary, behavior labels, examples,
 argument constraints, and mutation policy. A registry is a source of truth for
 the interface, not a source of domain truth. `configure(parser)` remains an
 escape hatch for unusual nested parser structures rather than the default
-place for every argument.
+place for every argument. `CliRegistry(..., allow_abbrev=True)` is available
+only for a CLI that deliberately makes partial option spellings part of its
+contract; exact matching avoids silently accepting a retired option as the
+prefix of a different one.
 
 The black-box contract helper checks observable behavior, not just parser
 construction. It rejects the undocumented short `-h` spelling by default,
@@ -163,3 +171,29 @@ validated change. Multi-step prompt flows use the public
 `CliOutput.is_interactive` property, which checks both injectable input and
 output streams; keeping that test in the shared output object avoids consumers
 reaching into terminal-detection internals.
+
+### Optional interactive prompts
+
+Multi-step wizards need the same terminal checks, cancellation behavior, and
+test seam across consumers. `CliRuntime.prompts` supplies five small
+interactions—text, hidden password, confirmation, single choice, and multiple
+choice—through an injectable `PromptDriver`. The default adapter uses
+Questionary because it already provides conventional terminal controls; the
+shared layer pins it in an optional `interactive` extra and imports it only on
+the first prompt. Existing help, version, and automation paths therefore keep
+working with the dependency-free base install.
+
+The runtime checks both injected stdin and stdout before loading or calling a
+driver. Tests can use a fake `PromptDriver` and TTY-marked in-memory streams,
+without starting a terminal or installing Questionary. A canceled prompt raises
+`PromptCancelled`, so cancellation cannot be mistaken for a valid false or
+empty answer. Ctrl-C remains `KeyboardInterrupt` for the common status-130
+boundary.
+
+This boundary intentionally ends at collected values. A consumer still
+validates its schema, decides how an answer affects a plan, asks for any
+required consent after validation, and commits data atomically. That keeps the
+terminal mechanics shared while keeping application policy close to the data
+it governs. A consumer that vendors the library can pass its own extra name to
+`RegisteredCli.run(interactive_extra="product[interactive]")` for an accurate
+missing-dependency hint.

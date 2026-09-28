@@ -1,0 +1,11 @@
+[cmru] 2026-09-25T20:55:14Z step=push project_root=/workspaces/vbpub/.worktrees/cmru-release-20260925_203056-assay-tc7qb1/assay
+[cmru] command label='assay: publish wheel, zipapp, and manifest' argv=['python3', '-m', 'cmru.handlers', 'wheel-publish', '--prefix', 'assay', '--cwd', '.', '--notes-env', 'ASSAY_RELEASE_NOTES', '--extra-asset', 'dist/assay-*.pyz', '--extra-asset', 'dist/assay-*.pyz.sha256', '--extra-asset', 'dist/release-manifest.json', '--extra-asset', 'dist/release-manifest.json.sha256']
+[INFO] Published immutable release assay-v7.1.0 (+ .sha256)
+[INFO] Refreshed thin pointer assay-latest → assay-v7.1.0
+[INFO] Published assay 7.1.0
+[INFO] ASSAY_EXTRA_ASSET=assay-7.1.0.pyz
+[INFO] ASSAY_EXTRA_ASSET=assay-7.1.0.pyz.sha256
+[INFO] ASSAY_EXTRA_ASSET=release-manifest.json
+[INFO] ASSAY_EXTRA_ASSET=release-manifest.json.sha256
+[INFO] ASSAY_WHEEL_SHA256=4a1cf23a970919bbf0c916ca91170a22d48d47976438e227c965100973191493
+[INFO] ASSAY_WHEEL_ASSET_URL=https://github.com/volkb79-2/vbpub/releases/download/assay-v7.1.0/assay-7.1.0-py3-none-any.whl

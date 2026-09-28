@@ -313,9 +313,12 @@ def test_top_level_cli_dispatches_versions_verb(monkeypatch):
     from cmru import cli as cli_module
 
     calls = []
-    monkeypatch.setattr(versions, "main", lambda argv: calls.append(argv) or 7)
+    monkeypatch.setattr(
+        versions, "_run_versions",
+        lambda args, _runtime: calls.append((args.verb, args.json)) or 7,
+    )
     assert cli_module.main(["versions", "check", "--json"]) == 7
-    assert calls == [["check", "--json"]]
+    assert calls == [("check", True)]
 
 
 def test_auth_schema_requires_safe_urls_and_one_credential_shape():
@@ -759,6 +762,18 @@ def test_rolling_oci_resolve_enforces_age_window_and_records_digest(monkeypatch)
     )
     assert result.version == "bookworm-slim"
     assert result.state()["sources"]["oci"]["digest"] == digest
+    assert result.override is False
+
+    cutoff = now - timedelta(days=14)
+    boundary = registry.Candidate(
+        "bookworm-slim", cutoff, "oci-registry-last-modified", "bookworm-slim", digest,
+    )
+    monkeypatch.setattr(versions, "oci_rolling_candidate", lambda _source: boundary)
+    exact_cutoff = versions._resolve_target(
+        "debian", target, age_window_days=14, resolved_at=now, owner="project",
+    )
+    assert exact_cutoff.sources["oci"].released_at == cutoff
+    assert exact_cutoff.override is False
 
     fresh = registry.Candidate(
         "bookworm-slim", now - timedelta(days=2), "oci-image-created-fallback",
@@ -2674,9 +2689,10 @@ def test_versions_main_reports_text_and_maps_domain_failures(monkeypatch, capsys
     monkeypatch.setattr(versions, "load_forge_config", lambda _path: forge)
     monkeypatch.setattr(versions, "_selected_projects", lambda *_args: ["demo"])
     monkeypatch.setattr(versions, "_resolve_all_for_command", lambda *_args, **_kwargs: ({}, {"demo": {}}, {"demo": {}}))
-    with pytest.raises(SystemExit) as missing_action:
-        versions.main([])
-    assert missing_action.value.code == 2
+    assert versions.main([]) == 0
+    overview = capsys.readouterr().out
+    assert "Usage: cmru versions <verb> [options]" in overview
+    assert "check" in overview and "resolve" in overview
     assert versions.main(["check"]) == 0
     assert "No version targets" in capsys.readouterr().out
     monkeypatch.setattr(versions, "_recorded_versions", lambda *_args: [{"z": 1, "a": 2}])
@@ -3360,8 +3376,9 @@ def test_root_and_project_resolved_records_have_their_selected_policy(tmp_path, 
     assert versions.main(["resolve", "all", "--config", str(root_config)]) == 0
     output = capsys.readouterr().out
     assert "root" in output and "demo" in output
-    assert len(calls) == 1
-    command = calls[0][0]
+    operation_calls = [item for item in calls if item[0][0] != "git"]
+    assert len(operation_calls) == 1
+    command = operation_calls[0][0]
     assert "--index-strategy" in command and "first-index" in command
     assert command[command.index("--exclude-newer") + 1] == versions._timestamp(now - timedelta(days=21))
     assert "--output-file" not in command
@@ -3584,6 +3601,13 @@ def test_go_commit_time_and_oci_created_fallback_emit_warnings(capsys):
     assert "Go proxy .info Time (VCS commit time)" in diagnostic
     assert "not proxy publication time" in diagnostic
     assert "publisher-supplied OCI image-created time" in diagnostic
+
+
+def test_age_evidence_warning_returns_none_for_registry_timestamps():
+    candidate = _candidate(
+        "1.0.0", datetime(2026, 8, 1, tzinfo=timezone.utc), "registry-last-modified",
+    )
+    assert versions._age_evidence_warning("demo", "pypi.requests", candidate) is None
 
 
 def test_npm_native_lock_writer_pins_dependencies_and_uses_age_exceptions(tmp_path, monkeypatch):

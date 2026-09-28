@@ -217,7 +217,7 @@ justifies moving the general layer into the tracked, cross-tool `AGENTS.md`.
 
 **Follow-ons deliberately not folded in:** (a) a trove sibling needs a way to mark itself
 *mandatory* reading, so a project can force its environment-critical doc on every agent;
-(b) a `nyxloom doctor` check that the running product's doctrine version matches what in-flight
+(b) a `nyxloomctl doctor` check that the running product's doctrine version matches what in-flight
 handoffs were authored against, so an upgrade that changes AUTHORING rules surfaces loudly instead
 of silently invalidating work.
 

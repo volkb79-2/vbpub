@@ -31,7 +31,7 @@ def _args(**kw):
     values = dict(
         scope="user", node_id=None, landscape=None, token=None,
         minisign_pubkey=None, release_root=None, consul_addr=None,
-        plan=None, to_tag=None, generation=None, dry_run=False,
+        plan=None, generation=None, dry_run=False,
         log_level="INFO",
     )
     values.update(kw)
@@ -291,7 +291,8 @@ class TestCliRefusalAndDispatch:
         parser = _build_parser()
         args = parser.parse_args(["--scope", "system", "once", "--release-root", "/r"])
         assert args.scope == "system" and args.verb == "once"
-        with pytest.raises(SystemExit):
+        from cli_extended import UsageError
+        with pytest.raises(UsageError):
             parser.parse_args(["not-a-verb"])
 
     def test_agent_once_refuses_identity_without_landscape(self, tmp_path, monkeypatch, capsys):
@@ -344,7 +345,11 @@ class TestPlannerAndRolloutBoundaries:
 
     def test_rollout_dry_run_does_not_write_approval_or_hold(self):
         from cmru.controller.rollout import RolloutEngine
+        from cmru.controller.planner import load_plan_json
         b = StubRolloutBackend(); e = RolloutEngine(b, "l", dry_run=True)
+        plan = load_plan_json(json.dumps(self._valid()))
+        e.publish(plan)
+        assert e._wait_for_wave(plan.plan_id, plan.steps[0]) is True
         e.approve("p"); e.hold("p"); e.release_hold("p")
         assert not b.kv
 
@@ -426,5 +431,8 @@ class TestRemainingPublicPaths:
         assert cli.cmd_status(_args(landscape="l")) == 0
         assert "Registered" in capsys.readouterr().out
         from cmru.controller.cli import _build_parser
-        parsed = _build_parser().parse_args(["--dry-run", "rollback", "--plan", "p", "--to", "old", "--generation", "8"])
-        assert parsed.to_tag == "old" and parsed.generation == 8
+        parsed = _build_parser().parse_args(["rollback", "--plan", "p", "--generation", "8", "--dry-run"])
+        assert parsed.generation == 8
+        from cli_extended import UsageError
+        with pytest.raises(UsageError, match="unrecognized arguments: --to old"):
+            _build_parser().parse_args(["rollback", "--plan", "p", "--to", "old"])

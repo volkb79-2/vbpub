@@ -89,19 +89,20 @@ def test_operator_and_qa_always_kept_within_the_walked_span():
     assert {"op0", "qa1", "cp2"} <= markers
 
 
-def test_lifecycle_marker_hard_stops_the_walk():
+def test_compaction_default_does_not_stop_the_walk():
     marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    marker.meta["boundary_type"] = "compaction"
     events = [_op(0), marker, _cp(2)]
     kept = select(events, ExtractConfig(max_checkpoints=5))
     markers = {e.marker for e in kept}
-    assert markers == {"cp2", "lc1"}
-    assert "op0" not in markers
+    assert markers == {"cp2", "lc1", "op0"}
 
 
-def test_max_lifecycle_markers_zero_is_the_default_hard_stop():
+def test_max_compactions_zero_stops_at_first_actual_compaction():
     marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    marker.meta["boundary_type"] = "compaction"
     events = [_op(0), marker, _cp(2)]
-    kept = select(events, ExtractConfig(max_checkpoints=5, max_lifecycle_markers=0))
+    kept = select(events, ExtractConfig(max_checkpoints=5, max_compactions=0))
     markers = {e.marker for e in kept}
     assert markers == {"cp2", "lc1"}
     assert "op0" not in markers
@@ -113,9 +114,11 @@ def test_max_lifecycle_markers_one_walks_past_the_first_and_stops_at_the_second(
     # walking past lc1 but must stop AT lc3 -- op0 (before both markers)
     # never survives.
     lc1 = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    lc1.meta["boundary_type"] = "compaction"
     lc3 = NormalizedEvent(3, "lc3", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    lc3.meta["boundary_type"] = "compaction"
     events = [_op(0), lc1, _op(2, "between the boundaries"), lc3, _cp(4)]
-    kept = select(events, ExtractConfig(max_checkpoints=5, max_lifecycle_markers=1))
+    kept = select(events, ExtractConfig(max_checkpoints=5, max_compactions=1))
     markers = {e.marker for e in kept}
     assert markers == {"cp4", "lc3", "op2", "lc1"}
     assert "op0" not in markers
@@ -128,6 +131,28 @@ def test_max_lifecycle_markers_negative_one_never_stops_on_a_marker():
     kept = select(events, ExtractConfig(max_checkpoints=5, max_lifecycle_markers=-1))
     markers = {e.marker for e in kept}
     assert markers == {"cp4", "lc3", "op2", "lc1", "op0"}
+
+
+def test_clear_and_compact_command_records_are_not_counted_as_compactions():
+    clear = NormalizedEvent(1, "clear", _TS, EventKind.LIFECYCLE_MARKER, "[/clear]")
+    clear.meta["boundary_type"] = "clear"
+    compact_command = NormalizedEvent(3, "command", _TS, EventKind.LIFECYCLE_MARKER, "[/compact]")
+    compact_command.meta["boundary_type"] = "compact_command"
+    events = [_op(0), clear, _op(2), compact_command, _op(4)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, max_compactions=0))
+    assert {event.marker for event in kept} == {"op0", "clear", "op2", "command", "op4"}
+
+
+def test_max_time_minutes_is_relative_to_newest_event_and_requires_all_timestamps():
+    recent = NormalizedEvent(1, "recent", "2026-01-01T12:00:00Z", EventKind.OPERATOR_TEXT, "recent")
+    old = NormalizedEvent(0, "old", "2026-01-01T11:54:59Z", EventKind.OPERATOR_TEXT, "old")
+    kept = select([old, recent], ExtractConfig(max_checkpoints=-1, max_time_minutes=5))
+    assert [event.marker for event in kept] == ["recent"]
+    assert kept[0].meta["walk_stopped_because"] == "max_time_minutes"
+
+    undated = NormalizedEvent(0, "undated", "", EventKind.OPERATOR_TEXT, "undated")
+    with pytest.raises(ValueError, match="every selected event"):
+        select([undated, recent], ExtractConfig(max_checkpoints=-1, max_time_minutes=5))
 
 
 def test_max_lifecycle_markers_negative_one_is_still_bounded_by_max_words():
@@ -298,14 +323,19 @@ def test_walk_stopped_because_absent_when_the_walk_reaches_the_real_start():
     assert all("walk_stopped_because" not in e.meta for e in kept)
 
 
-def test_walk_stopped_because_absent_when_a_lifecycle_marker_is_the_stop():
-    # The marker's own kept text ("[compact boundary]") already explains
-    # the stop -- no redundant tag needed.
+def test_walk_stopped_because_reports_a_compaction_limit_stop():
     marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
     events = [_op(0), marker, _cp(2)]
-    kept = select(events, ExtractConfig(max_checkpoints=5, max_lifecycle_markers=0))
+    kept = select(events, ExtractConfig(max_checkpoints=5, max_compactions=0))
     by_marker = {e.marker: e for e in kept}
-    assert "walk_stopped_because" not in by_marker["lc1"].meta
+    assert by_marker["lc1"].meta.get("walk_stopped_because") == "max_compactions"
+
+
+def test_walk_stop_at_the_oldest_event_does_not_claim_older_content_exists():
+    only = _cp(0)
+    kept = select([only], ExtractConfig(max_checkpoints=1))
+    assert len(kept) == 1
+    assert "walk_stopped_because" not in kept[0].meta
 
 
 def test_decide_matches_the_walk_when_no_stop_condition_can_trip():

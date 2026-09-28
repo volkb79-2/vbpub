@@ -312,7 +312,9 @@ def _previous_project_tag(repo_root: Path, prefix: str, tag: str) -> str | None:
     return previous or None
 
 
-def backfill_release_changelog(repo_root: Path, project: Any, tag: str) -> bool:
+def backfill_release_changelog(
+    repo_root: Path, project: Any, tag: str, *, dry_run: bool = False,
+) -> bool:
     """Catalog an already-published CMRU-tagged release without moving its tag.
 
     This one-time migration helper is intentionally separate from the normal release
@@ -367,6 +369,14 @@ def backfill_release_changelog(repo_root: Path, project: Any, tag: str) -> bool:
             )
         insert_at = marker_index + len(marker)
         new_content = existing[:insert_at] + "\n" + section + existing[insert_at:]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(new_content, encoding="utf-8")
+    if dry_run:
+        import difflib
+
+        print("".join(difflib.unified_diff(
+            existing.splitlines(keepends=True), new_content.splitlines(keepends=True),
+            fromfile=str(path), tofile=f"{path} (planned)",
+        )), end="")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(new_content, encoding="utf-8")
     return True

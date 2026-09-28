@@ -408,6 +408,128 @@ def test_jsonl_source_uses_codex_lossless_and_selected_record_paths(tmp_path):
     selected.close()
 
 
+@pytest.mark.parametrize("lossless_mode", [False, True], ids=["selected", "lossless"])
+@pytest.mark.parametrize("since_marker", [None, "4"], ids=["prefix-prompt", "since-excludes-call"])
+@pytest.mark.parametrize(
+    "answer", ["All", "Keep the current profile after reviewing the constraints."],
+    ids=["choice", "free-text"],
+)
+def test_codex_follow_does_not_repeat_a_prefix_prompt_and_keeps_its_delayed_answer(
+    tmp_path, lossless_mode, since_marker, answer,
+):
+    fp = tmp_path / "rollout-qa.jsonl"
+    question = "Which profile should be the default?"
+    call_id = "follow-question"
+    _append(fp, {
+        "type": "response_item",
+        "timestamp": _TS,
+        "ordinal": 4,
+        "payload": {
+            "type": "function_call",
+            "name": "request_user_input_async",
+            "call_id": call_id,
+            "arguments": json.dumps({"questions": [{
+                "title": "Profile",
+                "question": question,
+                "options": ["Review", "All"],
+            }]}),
+        },
+    })
+    config = ExtractConfig(since_marker=since_marker)
+    source = JsonlSource(fp, "codex", fp.stat().st_size, config, lossless_mode)
+
+    response = f"{question}\n- Review\n- All"
+    reply = "<send_user_message_question_reply>" + json.dumps([{
+        "question": question,
+        "answer": answer,
+        "questionItemId": json.dumps(["request_user_input_async", call_id, 0]),
+    }]) + "</send_user_message_question_reply>"
+    _append(
+        fp,
+        {"type": "event_msg", "timestamp": _TS, "ordinal": 5, "payload": {
+            "type": "item_completed", "item": {
+                "type": "AgentMessage", "content": [{"type": "Text", "text": response}],
+            },
+        }},
+        {"type": "event_msg", "timestamp": _TS, "ordinal": 6, "payload": {
+            "type": "item_completed", "item": {
+                "type": "UserMessage", "content": [{"type": "text", "text": reply}],
+            },
+        }},
+    )
+
+    arrivals = source.poll()
+    source.close()
+    expected = [
+        f"INTERVIEW: Profile\n{question}\n- Review\n- All\n\nOPERATOR: {answer}"
+    ]
+    if since_marker is not None:
+        expected.insert(0, f"INTERVIEW: Profile\n{question}\n- Review\n- All")
+    if lossless_mode:
+        outputs = [block for arrival in arrivals for block in arrival.blocks]
+        assert [block.header.rsplit(" | ", 1)[-1].rstrip("]=") for block in outputs] == [
+            *(["INTERVIEW"] if since_marker is not None else []), "QA_PAIR",
+        ]
+    else:
+        outputs = [event for arrival in arrivals for event in arrival.events]
+        assert [event.kind for event in outputs] == [
+            *([EventKind.QA_PAIR] if since_marker is not None else []), EventKind.QA_PAIR,
+        ]
+
+    assert [output.text for output in outputs] == expected
+
+
+@pytest.mark.parametrize("lossless_mode", [False, True], ids=["selected", "lossless"])
+def test_codex_follow_emits_a_new_prompt_once_when_the_call_arrives_after_the_anchor(
+    tmp_path, lossless_mode,
+):
+    fp = tmp_path / "rollout-new-qa.jsonl"
+    _append(fp, {"type": "session_meta", "timestamp": _TS, "payload": {}})
+    source = JsonlSource(fp, "codex", fp.stat().st_size, ExtractConfig(), lossless_mode)
+    question = "Which profile should be the default?"
+    call_id = "live-question"
+    prompt_copy = f"{question}\n- Review\n- All"
+    reply = "<send_user_message_question_reply>" + json.dumps([{
+        "question": question,
+        "answer": "All",
+        "questionItemId": json.dumps(["request_user_input_async", call_id, 0]),
+    }]) + "</send_user_message_question_reply>"
+
+    _append(
+        fp,
+        {"type": "response_item", "timestamp": _TS, "ordinal": 7, "payload": {
+            "type": "function_call", "name": "request_user_input_async", "call_id": call_id,
+            "arguments": json.dumps({"questions": [{
+                "title": "Profile", "question": question, "options": ["Review", "All"],
+            }]}),
+        }},
+        {"type": "event_msg", "timestamp": _TS, "ordinal": 8, "payload": {
+            "type": "item_completed", "item": {
+                "type": "AgentMessage", "content": [{"type": "Text", "text": prompt_copy}],
+            },
+        }},
+        {"type": "event_msg", "timestamp": _TS, "ordinal": 9, "payload": {
+            "type": "item_completed", "item": {
+                "type": "UserMessage", "content": [{"type": "text", "text": reply}],
+            },
+        }},
+    )
+
+    arrivals = source.poll()
+    source.close()
+    expected = [
+        f"INTERVIEW: Profile\n{question}\n- Review\n- All",
+        f"INTERVIEW: Profile\n{question}\n- Review\n- All\n\nOPERATOR: All",
+    ]
+    if lossless_mode:
+        outputs = [block for arrival in arrivals for block in arrival.blocks]
+        assert [block.text for block in outputs] == expected
+    else:
+        outputs = [event for arrival in arrivals for event in arrival.events]
+        assert [event.kind for event in outputs] == [EventKind.QA_PAIR, EventKind.QA_PAIR]
+        assert [event.text for event in outputs] == expected
+
+
 def test_jsonl_source_skips_non_chat_reasonix_records(tmp_path):
     path = tmp_path / "reasonix.jsonl"
     _append(path, {"role": "developer", "content": "not chat"})
@@ -603,7 +725,9 @@ def test_an_api_error_is_dropped_immediately_not_buffered():
 
 def _follower(fp, out, lossless_mode=False, follow_config=None, config=None, fmt="claude-code",
                bell_out=None):
-    config = config or ExtractConfig()
+    # Most tests below isolate the streaming selector from text decoration.
+    # The CLI's default timestamp/cursor behavior has its own end-to-end case.
+    config = config or ExtractConfig(show_timestamps="none", extract_metadata="pre")
     source = JsonlSource(fp, fmt, fp.stat().st_size, config, lossless_mode)
     return Follower(
         source, harness=fmt, session_path=str(fp), config=config,
@@ -694,6 +818,34 @@ def test_blocks_are_separated_the_same_way_the_one_shot_render_separates_them(tm
     follower.tick()
     assert out.getvalue() == "OPERATOR: first\n\n---\n\nOPERATOR: second"
     follower.close()
+
+
+def test_follow_applies_default_timestamp_and_keeps_saved_cursor_current(tmp_path):
+    from nyxloom.session_extract import read_since_marker
+    from nyxloom.session_extract.render import _metadata_comment
+
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u0", "start"))
+    config = ExtractConfig(show_timestamps="pre", extract_metadata="both")
+    out = io.StringIO()
+    metadata = {"path": str(fp), "name": fp.name, "bytes": "0", "created": "unavailable"}
+    out.write(_metadata_comment("claude-code", "u0", metadata, "pre") + "\n\ninitial prose\n\n")
+    out.write(_metadata_comment("claude-code", "u0", metadata, "post") + "\n")
+    source = JsonlSource(fp, "claude-code", fp.stat().st_size, config, False)
+    follower = Follower(
+        source, harness="claude-code", session_path=str(fp), config=config,
+        follow_config=FollowConfig(), out=out, lossless_mode=False,
+        printed_any=True, source_metadata=metadata,
+    )
+    _append(fp, _user("u1", "new operator input"))
+    assert follower.tick() == 1
+    follower.close()
+
+    rendered = out.getvalue()
+    assert "OPERATOR: [00:00:00] new operator input" in rendered
+    saved = tmp_path / "followed.txt"
+    saved.write_text(rendered, encoding="utf-8")
+    assert read_since_marker(saved) == ("claude-code", "u1")
 
 
 def test_a_subagent_transcript_is_followed_rather_than_filtered_to_nothing(tmp_path):
@@ -1154,9 +1306,10 @@ def test_highlight_preserves_every_markdown_character_in_the_stream(tmp_path):
     fp = tmp_path / "session.jsonl"
     _append(fp, _user("u0", "start"))
     out = io.StringIO()
-    source = JsonlSource(fp, "claude-code", fp.stat().st_size, ExtractConfig(), False)
+    config = ExtractConfig(show_timestamps="none", extract_metadata="pre")
+    source = JsonlSource(fp, "claude-code", fp.stat().st_size, config, False)
     follower = Follower(source, harness="claude-code", session_path=str(fp),
-                         config=ExtractConfig(), follow_config=FollowConfig(), out=out,
+                         config=config, follow_config=FollowConfig(), out=out,
                          lossless_mode=False, printed_any=False,
                          block_render=lambda t: highlight_markdown(t, color=True))
     prose = "## Status\n\nDone -- **bold** and `code` landed."

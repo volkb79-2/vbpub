@@ -10,6 +10,7 @@ import sys
 from collections.abc import Iterable, Mapping
 
 
+
 def cmru_headline() -> str:
     """Return the dynamic headline used by every CMRU parser diagnostic."""
     return f"CMRU {cmru_version()} — Configurable Multi Release Utility"
@@ -31,17 +32,47 @@ def cmru_version() -> str:
     return version
 
 
-class CMRUArgumentParser(argparse.ArgumentParser):
-    """ArgumentParser whose help and argument errors have a stable first line."""
+def cmru_identity(*, command: str, long_name: str) -> CliIdentity:
+    """Build the identity shared by CMRU's installed command entrypoints."""
+    from cli_extended import CliIdentity
 
-    def format_help(self) -> str:
-        return cmru_headline() + "\n" + super().format_help()
+    return CliIdentity(
+        name="CMRU",
+        version=cmru_version(),
+        long_name=long_name,
+        command=command,
+    )
 
-    def error(self, message: str) -> "NoReturn":
-        self._print_message(cmru_headline() + "\n", sys.stderr)
-        self._print_message(self.format_usage(), sys.stderr)
-        self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
-        raise SystemExit(2)
+
+class _ShortTimePrefixAction(argparse.Action):
+    """Apply CMRU's process-wide presentation choice from a registered option."""
+
+    def __init__(self, option_strings, dest, nargs=0, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from cmru.output import enable_short_time_prefix
+
+        setattr(namespace, self.dest, True)
+        enable_short_time_prefix()
+
+
+def cmru_presentation_options():
+    """Shared options for CMRU's main CLI and all of its delegated commands."""
+    from cli_extended import OptionSpec
+
+    return (
+        OptionSpec(
+            ("--log-prefix-time-short",),
+            "prefix severity lines with local HH:MM:SS timestamps",
+            group="OUTPUT CONTROL",
+            parser_kwargs={
+                "action": _ShortTimePrefixAction,
+                "nargs": 0,
+                "default": False,
+            },
+        ),
+    )
 
 
 class TargetSelectionError(ValueError):

@@ -45,6 +45,9 @@ def test_runtime_vocabulary_and_workspace_contract_are_documented():
 
 def test_version_policy_vocabulary_is_documented():
     corpus = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
+    for document in DOCS:
+        normalized = " ".join(document.read_text(encoding="utf-8").lower().split())
+        assert "timestamp exactly at the age cutoff is eligible" in normalized, document
     for source_type in SOURCE_FIELDS:
         assert f".{source_type}" in corpus
     for value in ('mode = "single"', 'mode = "aligned"'):
@@ -69,8 +72,13 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "--maxfail=1" in lane["argv"]
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
+    assert lane["judge"]["base"].startswith("cmru-v")
+    assert lane["env_passthrough"] == ["PATH"]
     assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
+
+    for document in (ROOT / "docs" / "SPEC.md", ROOT / "docs" / "DESIGN-GUIDE.md"):
+        assert f'`{lane["judge"]["base"]}`' in document.read_text(encoding="utf-8")
 
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
     gate_command = " ".join(gate["lanes"]["gate"]["argv"])
