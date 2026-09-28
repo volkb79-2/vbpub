@@ -121,7 +121,9 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_classifier.py",
   "tests/test_session_extract_claude_code.py",
   "tests/test_session_extract_codex.py",
+  "tests/test_session_extract_config_validation.py",
   "tests/test_session_extract_debug_diff.py",
+  "tests/test_session_extract_edge_contracts.py",
   "tests/test_session_extract_init.py",
   "tests/test_session_extract_ledger.py",
   "tests/test_session_extract_mangle.py",
@@ -143,11 +145,11 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# The package-scoped changed-line campaign has 414 candidates. At the declared
-# 120s per-candidate failsafe, the plan's serial upper bound is 13h48m; allow
-# 16h for the complete campaign plus baseline and verdict overhead. Keep the
+# The package-scoped changed-line campaign has 599 candidates. At the declared
+# 120s per-candidate failsafe, the plan's serial upper bound is 19h58m; allow
+# 22h for the complete campaign plus baseline and verdict overhead. Keep the
 # mutation jobs serial on the shared production host.
-budget = "16h"
+budget = "22h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -175,12 +177,13 @@ base = "3d27c67e"
 # (host-shared-with-production-load-rule: load hit 85 doing exactly this
 # kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
 # concurrency bounded to the single already-accounted-for xdist fan-out.
-# The authoritative source-backed Assay plan found 414 candidates under this
-# package root; this exact finite cap prevents an unbounded campaign.
+# The authoritative source-backed Assay plan, with a temporary 1000-candidate
+# discovery cap, found 599 candidates under this package root; this exact
+# finite cap prevents an unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-max_mutants = 414
+max_mutants = 599
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 
