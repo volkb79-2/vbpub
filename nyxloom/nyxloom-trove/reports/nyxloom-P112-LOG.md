@@ -86,3 +86,8 @@ that exercise moved commands:
 `tests/test_liveness.py`, `tests/test_intake_chat.py`, and
 `tests/test_control_auth.py`. The P112 input revision is being refrozen in the
 required follow-up commit before implementation continues.
+
+The same search also found `tests/test_lint.py` exercising the old no-argument
+host-wide lint path, so that existing test surface is included in the same
+scope amendment. Its explicit-path tests remain on `nyxloom lint`; only the
+registered-project scan moves to `nyxloomctl lint`.

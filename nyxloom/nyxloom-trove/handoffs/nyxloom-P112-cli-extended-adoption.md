@@ -20,6 +20,7 @@ scope:
     - "src/nyxloom/daemon_entrypoint.py"
     - "tests/test_cli.py"
     - "tests/test_cli_help.py"
+    - "tests/test_lint.py"
     - "tests/test_cli_extract.py"
     - "tests/test_effects_dispatch.py"
     - "tests/test_backlog_entries.py"
