@@ -1,11 +1,9 @@
 # P112 report: adopt cli-extended across Nyxloom's command surfaces
 
 Date: 2026-09-28  
-Result: **FOLLOW-UP VALIDATION IN PROGRESS** — the original P112 implementation
-passed its declared gate on `75157505`. A post-gate code review found three
-fixes, now implemented; the declared gate has not yet been rerun for them.
-Implementation remains on `nyxloom-cli-adoption`; no merge to `main` was
-performed.
+Result: **DONE** — all seven handoff oracles pass after the review corrections.
+The corrected implementation and gate are on `nyxloom-cli-adoption`; no merge
+to `main` was performed.
 
 ## Summary
 
@@ -35,10 +33,31 @@ additions when their reason is recorded.
 | O3 — migration and safety | PASS | The CLI reference records the old-to-new map. Old extraction and host-control paths are removed from the primary CLI; `gate` and `daemon --foreground` are removed. Existing safeguards remain the consent boundary; parser conflicts are rejected before dispatch. R0 passed. |
 | O4 — boundaries and effects | PASS | Local authoring, extraction, and local operator workflows do not require a daemon or host registry. Project-local `nyxloom lint` and registered-project `nyxloomctl lint` are distinct. Help/version and usage paths are covered as side-effect-free; service liveness now invokes `nyxloomctl`. R0 passed. |
 | O5 — backlog wizard | PASS | Interactive create/edit use cli-extended's optional prompt API and the approved D-016 field set. Candidate frontmatter is validated before writing; edit preserves unrelated metadata and body bytes. Cancellation, invalid input, missing entries, prompt failures, and schema failures are covered by behavioral tests. R0 and R1 passed. |
-| O6 — wheel and service entrypoints | PASS | The exact implementation wheel contains `nyxloom`, `nyxloom-harness`, `nyxloomctl`, and `nyxloomd` scripts with their intended targets and bundled `cli_extended`. Isolated help/version and representative nested help succeeded. `questionary` stayed unloaded; the service supervisor invokes `nyxloomd` directly. |
-| O7 — docs and gate | PASS | README, DESIGN-GUIDE, CONSUMERS, SPEC, USAGE, ARCHITECTURE, runtime-process-model, backlog spec, and CLI reference were updated and reconciled. The CLI reference contains the migration table. The exact declared `tester-unified` lane completed with R0 and R1 PASS; the final input revision and evidence are recorded below. |
+| O6 — wheel and service entrypoints | PASS | The isolated wheel proof on `75157505` verified all four scripts, bundled `cli_extended`, and help/version paths. The review-corrected Docker wheelbuild from the exact e3e5d5a9 source tree contains all four script declarations and all seven `cli_extended` files. `questionary` stayed unloaded; the service supervisor invokes `nyxloomd` directly. |
+| O7 — docs and gate | PASS | README, DESIGN-GUIDE, CONSUMERS, SPEC, USAGE, ARCHITECTURE, runtime-process-model, backlog spec, and CLI reference were updated and reconciled. The CLI reference contains the migration table. The exact declared `tester-unified` lane passed R0 and R1 on corrected implementation commit `e3e5d5a9`; evidence is recorded below. |
 
-## Final gate
+## Final gate after review corrections
+
+The declared gate ran against clean implementation commit
+`e3e5d5a98ac01f718cc42bff3cdaa484d8e6ef47`:
+
+```text
+command: ./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adoption tester-unified
+tester-unified: PASS (exit 0)
+commit: e3e5d5a98ac01f718cc42bff3cdaa484d8e6ef47
+R0: PASS
+R1: PASS — 984/984 measured executable lines and 136/136 branches; 100%; no missing, excluded, or unclassified lines
+pytest: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-branch --cov-report=json:coverage.json
+lane duration: 127.266 seconds; run-gate total: 142.6 seconds
+Assay verdict: nyxloom/.assay/verdict-tester-unified.json
+```
+
+The wrapper returned exit 0 and run-gate history records this exact commit as
+PASS. The progress JSONL shows baseline pytest PASS at 123.427 seconds and the
+R0/R1 verdict written at 127.266 seconds. Peak memory was 993 MiB, p90 986
+MiB, average CPU 2.37 cores, and memory-full stalls 6.7 seconds.
+
+## Initial implementation gate (before review corrections)
 
 The required gate ran against clean implementation commit
 `75157505452b017110328b1a7b809378b88abed3`:
@@ -56,9 +75,10 @@ Assay verdict: nyxloom/.assay/verdict-tester-unified.json
 
 The exact run-gate output tail, including the lane's exit line, is recorded in
 [`nyxloom-P112-LOG.md`](nyxloom-P112-LOG.md). The final implementation wheel
-was built and installed from this same implementation revision before the
-documentation-only report/log/input-revision commit. Its artifact and isolated
-entrypoint/import checks are also recorded in the log.
+was built and installed from this original implementation revision. The
+review-corrected Docker wheelbuild also completed on the exact source tree
+represented by `e3e5d5a9`; its artifact contains all seven `cli_extended`
+modules and all four console-script declarations.
 
 ## Installed-wheel evidence
 
@@ -99,13 +119,13 @@ the P112 log under the standing rule permitting directly needed additions.
 
 Two focused regression tests for the backlog behavior passed. Buildx's static
 check passed, and the real Docker `wheelbuild` target completed and exported a
-wheel containing all seven `cli_extended/` package files. The review gate for
-these corrections is still pending; do not treat the earlier `75157505` R0/R1
-result below as evidence for this follow-up.
+wheel containing all seven `cli_extended/` package files and the four expected
+entrypoints. The corrected R0/R1 gate passed on `e3e5d5a9`; see the final gate
+section above.
 
 ## Deviations and resolved gate findings
 
-Six full-gate attempts were needed. Attempts one through five exposed real
+Six full-gate attempts were needed for the original adoption. Attempts one through five exposed real
 import/contract/coverage issues and two test or runtime defects; each cause and
 repair is documented in the execution log. The final uncovered branch was the
 `cmd_discuss --traceback` re-raise path. A focused regression was added, then
@@ -118,10 +138,9 @@ liveness unit, affected existing CLI tests, and session-extraction guide were
 found to be necessary adoption surfaces. The user authorized these additions;
 the P112 log records each reason. No unrelated project behavior was changed.
 
-## Reviewer suggestions
+## Review disposition
 
-Review the command migration table against the three registry declarations,
-with particular attention to the preserved safeguard boundaries, backlog
-editor validation-before-write behavior, and the installed `nyxloomd` service
-entrypoint. Treat the earlier gate failures as resolved history; the verdict
-for acceptance is the sixth attempt on `75157505`.
+The requested Codex review found three actionable issues; all three were fixed
+and the corrected implementation passed the declared gate. No open findings
+remain from that review. The separate `session-extract` lane's R2/R3 campaign
+was not run; P112 declares only `tester-unified` (R0/R1) as its required gate.

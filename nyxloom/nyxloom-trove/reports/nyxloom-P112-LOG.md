@@ -263,3 +263,22 @@ The reviewer's two local test attempts were environment-limited, not product fai
 Docker validation: `docker buildx build --check --builder mdt-managed -f nyxloom/nyxloomd/Dockerfile .` completed with no warnings. The actual `wheelbuild` target then completed successfully; the exported wheel contains seven `cli_extended/` package files. This confirms the source crosses the root build context and is packaged by the image's wheel stage.
 
 The P112 adoption gate has not yet been repeated for these post-gate review corrections at the time this section was added. The declared `tester-unified` lane runs R0/R1 only. The separate `session-extract` lane declares R0/R1/R2/R3, but no R2/R3 campaign has been run for this adoption; its 413-mutant, 8-hour budget was not started as part of this review follow-up.
+
+## Post-review tester-unified rerun — 2026-09-28
+
+After committing the three review corrections, checked the worktree and run-gate history: the worktree was clean, and no run for this commit was active. Ran the declared gate against exact commit `e3e5d5a98ac01f718cc42bff3cdaa484d8e6ef47`:
+
+```text
+command: ./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-cli-adoption tester-unified
+tester-unified: PASS (exit 0)
+  commit: e3e5d5a98ac01f718cc42bff3cdaa484d8e6ef47
+  argv: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-branch --cov-report=json:coverage.json
+run-gate: footprint tester-unified: peak 993 MiB, p90 986 MiB, 2.37 cores avg, 6.7 s stalled on memory (full); history median peak 821 MiB (1 runs)
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/nyxloom-cli-adoption/nyxloom/.assay/verdict-tester-unified.json
+run-gate: state directory: /workspaces/vbpub/.run-gate/assay-state/.worktrees/nyxloom-cli-adoption/nyxloom
+run-gate: lane 'tester-unified' exit 0
+```
+
+Run-gate history records a 142.6-second total and the verdict artifact records R0 PASS and R1 PASS. R1 measured 984/984 executable lines and 136/136 branches (100%), with no missing lines, branches, exclusions, or unclassified lines. The progress stream recorded the baseline pytest phase passing at 123.427 seconds and the verdict written at 127.266 seconds.
+
+The handoff `input_revision` is now refrozen to the exact implementation commit above. This follow-up does not change the gate contract: `tester-unified` declares R0/R1. No R2/R3 session-extract campaign ran; that separate 413-mutant lane is not part of P112's `gates` declaration.
