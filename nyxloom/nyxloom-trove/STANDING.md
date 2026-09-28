@@ -40,19 +40,19 @@ wrong by construction.)
 `tests/conftest.py`, `schemas/`, and
 `src/nyxloom/{__init__,types,paths,storage,config,leases}.py`, plus every
 file owned by another active package, are protected. `docs/` and
-`pyproject.toml` are not globally protected: a package may change a document
-or packaging file only when that exact path is listed in its `scope.touch`.
-This removes the blanket freeze; it does not grant a package general ownership
-of either tree or file.
+`pyproject.toml` are not globally protected; change them when they are needed
+to complete the accepted task.
 
-Every package may edit only files explicitly listed in its `scope.touch`.
-Listing a path there does not transfer ownership of a file owned by another
-active package and does not override this protected-file rule or an explicit
-`scope.forbid`. A protected-file change requires a bounded contract amendment
-that names the exact path and explains why the package acceptance needs it.
-Until that ownership is granted, do not edit or work around the constraint;
-write `BLOCKED: <reason>` in the REPORT and final message, and stop dependent
-work. Your module's stub DOCSTRING is the normative interface: implement
+`scope.touch` is the planned file inventory, not an exclusive edit allowlist.
+An agent may change an additional file when it is directly needed to complete
+the accepted task, and must record the path and reason in the task log or
+report. This does not transfer ownership of files owned by another active
+package, authorize unrelated work, or override the protected-file rule or an
+explicit `scope.forbid`. A protected-file change or an explicit-forbid
+override still requires user authorization and a bounded contract amendment
+that names the exact path and explains why acceptance needs it. If that
+authorization is absent, stop only the dependent work and record the specific
+blocker. Your module's stub DOCSTRING is the normative interface: implement
 beneath it, keep the docstring and all public signatures EXACTLY as written.
 
 ### Core-redesign wave exception (CR-00 through CR-16)

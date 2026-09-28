@@ -60,8 +60,8 @@ scope:
     - "nyxloom-trove/decisions.md"
     - "nyxloom-trove/reports/nyxloom-P112-LOG.md"
     - "nyxloom-trove/reports/nyxloom-P112-REPORT.md"
-  forbid:
     - "nyxloom-trove/STANDING.md"
+  forbid:
     - "run-gate.toml"
 oracles:
   - id: O1-library-prerequisite
@@ -102,7 +102,7 @@ review_focus:
 escalate_if:
   - "The cli-extended prerequisite has not landed on the implementation base, or its shipped prompt/confirmation API does not satisfy this contract."
   - "The built Nyxloom wheel cannot include cli_extended from the repository's library source without relying on the checkout at runtime or creating an unmaintained second source copy."
-  - "A required owned file is outside scope.touch or an oracle cannot be met without editing another project, the shared gate, or the library package."
+  - "An oracle cannot be met without editing another project, the shared gate, or the library package, and the user has not authorized that cross-boundary change."
   - "The exact declared gate cannot start because of a deterministic environment/governance defect outside Nyxloom's scope."
 ---
 
@@ -149,6 +149,18 @@ No separate `cli-extended` runtime distribution is to be installed by Nyxloom.
 Bundle its package source into the existing Nyxloom wheel. The library remains
 maintained from `libraries/cli-extended`; do not make an unmanaged copy or
 depend on the repository checkout at runtime.
+
+### User-authorized standing-rule change — 2026-09-28
+
+The user directed removal of Nyxloom's hard out-of-scope edit prohibition so
+implementation can make all changes needed to complete its accepted task.
+`scope.touch` remains the planned inventory, not an exclusive allowlist. The
+standing rule now permits directly necessary additional files when the reason
+is recorded in the task log or report. `nyxloom-trove/STANDING.md` is added to
+this handoff's scope so the rule can be updated. Protected files, ownership by
+another active package, explicit forbids, and unrelated work remain guarded;
+the user's authorization to override a protected file or explicit forbid must
+be recorded as a bounded contract amendment.
 
 ## Approved decisions
 
@@ -502,9 +514,8 @@ commit the log in the implementation worktree, and stop dependent work if:
 - the Nyxloom wheel cannot contain the library source without a runtime
   checkout path, a separate `cli-extended` runtime distribution, or an
   unmaintained duplicate;
-- a required implementation/test/documentation path falls outside `scope.touch`;
 - the declared gate has a deterministic environment/governance failure outside
-  this scope.
+  Nyxloom's control.
 
 Do not use BLOCKED for a product decision. If implementation evidence reveals
 an externally visible choice not covered by D-001..D-016, record a proposed
