@@ -1336,6 +1336,7 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
         return False
     previous_wall = -math.inf
     previous_eligible = -math.inf
+    previous_progress: tuple[int, int, int] | None = None
     cpu_suffix: list[tuple[float, float]] = []
     for index, sample in enumerate(samples):
         if not isinstance(sample, Mapping):
@@ -1344,6 +1345,10 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
         eligible = sample.get("eligible_elapsed_s")
         eligible_interval = sample.get("eligible_interval_s")
         cpu = sample.get("candidate_cpu_s")
+        progress = tuple(
+            sample.get(key)
+            for key in ("event_count", "stdout_bytes", "stderr_bytes")
+        )
         if (
             not finite_number(wall)
             or not finite_number(eligible)
@@ -1355,8 +1360,17 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
             or eligible < previous_eligible
             or eligible_interval < 0
             or (cpu is not None and (not finite_number(cpu) or cpu < 0))
+            or any(type(count) is not int or count < 0 for count in progress)
+            or (
+                previous_progress is not None
+                and any(
+                    current > previous
+                    for current, previous in zip(progress, previous_progress)
+                )
+            )
         ):
             return False
+        previous_progress = progress
         prior_wall = previous_wall
         prior_eligible = previous_eligible
         previous_wall = wall
@@ -1428,6 +1442,11 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
             ):
                 return False
         if interval_kind == "clear" and cpu is not None:
+            # A departed descendant can lower the live process-tree total.
+            # A quiet window cannot span that discontinuity, even if the
+            # final reading is below the older baseline.
+            if cpu_suffix and cpu < cpu_suffix[-1][1]:
+                cpu_suffix.clear()
             cpu_suffix.append((eligible, float(cpu)))
         else:
             cpu_suffix.clear()
@@ -1435,6 +1454,16 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
     if samples[-1].get("wall_elapsed_s") != value["wall_elapsed_s"]:
         return False
     if samples[-1].get("eligible_elapsed_s") != value["eligible_elapsed_s"]:
+        return False
+    # The monitor starts a new trace at each progress event or unknown
+    # resource interval. Its first eligible timestamp is therefore the start
+    # of the claimed idle span; a larger top-level idle value is unproven.
+    if not math.isclose(
+        value["idle_eligible_s"],
+        value["eligible_elapsed_s"] - samples[0]["eligible_elapsed_s"],
+        rel_tol=0.0,
+        abs_tol=0.0011,
+    ):
         return False
     finish_seen = value.get("candidate_session_finish_seen")
     finish_at = value.get("session_finish_eligible_s")

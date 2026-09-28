@@ -389,6 +389,10 @@ and [consumer guidance](docs/CONSUMERS.md#resource-aware-hung-classification-b10
 Both hang paths require process-tree CPU to stay below the quiet threshold
 over a complete trailing window; after `session_finish`, that CPU-quiet window
 is required in addition to 30 seconds without event or output growth.
+If a busy descendant exits and lowers the live tree's CPU total, the CPU
+window restarts; the lower total is not evidence that the tree was quiet.
+On resume, cached `hung` evidence must also account for the full idle span
+without an intervening event or output increase.
 Continued CPU work reaches the configured budget instead of being mislabeled
 `hung`.
 **B073 itself is not resolved**: this is per-test data for one runner

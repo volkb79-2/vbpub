@@ -203,6 +203,8 @@ def compare_resource_snapshots(
                     or isinstance(new_value, bool)
                     or not isinstance(old_value, int)
                     or not isinstance(new_value, int)
+                    or old_value < 0
+                    or new_value < 0
                     or new_value < old_value
                 ):
                     return "unknown", {}
@@ -222,6 +224,8 @@ def compare_resource_snapshots(
             or isinstance(new_value, bool)
             or not isinstance(old_value, int)
             or not isinstance(new_value, int)
+            or old_value < 0
+            or new_value < 0
             or new_value < old_value
         ):
             return "unknown", {}

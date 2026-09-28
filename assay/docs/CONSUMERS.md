@@ -2377,6 +2377,11 @@ subtraction or guessed per-candidate delay.
 The post-`session_finish` grace also requires a complete trailing CPU window
 below the quiet threshold; an event-free but CPU-growing process is not
 `hung`.
+A lower process-tree CPU reading can mean a busy child exited. It restarts the
+CPU window, and cached `hung` evidence must show a complete quiet window after
+that drop.
+The retained trace must also show the claimed idle span without any event or
+output-byte increase; an older or malformed cache record is rerun.
 
 If the declared candidate wall budget expires before a complete clean idle
 window exists, the result is `budget_exceeded` and the mutation lane remains

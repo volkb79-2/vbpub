@@ -497,6 +497,14 @@ evidence window at the next usable observation; only unchanged, well-formed
 observations advance it. This intentionally errs toward an
 incomplete candidate instead of allowing host load to choose a functional
 mutation result.
+The live process-tree CPU sum can decrease when a descendant exits. A decrease
+breaks comparison with earlier CPU readings, so both the monitor and cached
+evidence validator restart the trailing CPU window there; subtracting across
+that boundary could falsely certify a busy candidate as quiet.
+The validator also derives idle time from the retained trace's first and last
+eligible timestamps and checks event/output counts throughout. It refuses a
+cached `hung` claim if the trace omits those counts, shows intervening
+progress, or claims more idle time than it retains.
 
 The independent configured per-candidate wall budget still bounds the run.
 If it expires before a clean, complete liveness window is available, the

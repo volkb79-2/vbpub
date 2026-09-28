@@ -1206,6 +1206,11 @@ class _CpuSampleHistory:
 
     def add(self, now: float, cpu_seconds: float) -> float | None:
         """Append a successful CPU reading and return the window baseline."""
+        # The sum of live process-tree CPU can fall when a busy descendant
+        # exits. A lower reading does not prove the tree was quiet: it breaks
+        # comparability with every earlier sample in this window.
+        if self._samples and cpu_seconds < self._samples[-1][1]:
+            self._samples.clear()
         self._samples.append((now, cpu_seconds))
         # Retain the newest sample that is at least one window old. The next
         # sample is also old enough exactly when the oldest one has become

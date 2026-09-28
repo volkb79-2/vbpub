@@ -535,6 +535,9 @@ def _hung_evidence(*, sample_count: int = 32) -> dict:
                 "eligible_elapsed_s": float(elapsed),
                 "eligible_interval_s": 0.0 if elapsed == 0 else 1.0,
                 "candidate_cpu_s": 3.0,
+                "event_count": 0,
+                "stdout_bytes": 0,
+                "stderr_bytes": 0,
                 "resource_interval": "unknown" if elapsed == 0 else "clear",
                 "resource_deltas": {},
                 **({"previous_resources": None} if elapsed == 0 else {}),
@@ -667,6 +670,23 @@ def test_session_finish_hang_evidence_requires_a_quiet_complete_cpu_window(
     assert not mutation._valid_hung_resource_evidence(evidence)
 
 
+@pytest.mark.parametrize("sample_count, accepted", [(32, False), (42, True)])
+def test_finish_hang_cache_cpu_window_restarts_after_tree_sum_drops(
+    sample_count: int, accepted: bool
+) -> None:
+    evidence = _hung_evidence(sample_count=sample_count)
+    evidence.update(
+        decision="session-finish-hang",
+        required_idle_eligible_s=30.0,
+        candidate_session_finish_seen=True,
+        session_finish_eligible_s=1.0,
+    )
+    for sample in evidence["samples"][10:]:
+        sample["candidate_cpu_s"] = 1.0
+
+    assert mutation._valid_hung_resource_evidence(evidence) is accepted
+
+
 def test_idle_hang_evidence_may_also_retain_a_candidate_finish_event():
     evidence = _hung_evidence()
     evidence.update(
@@ -713,6 +733,20 @@ def test_hung_trace_rejects_inconsistent_eligible_time():
     evidence["samples"][1]["eligible_interval_s"] = 2.0
 
     assert mutation._valid_hung_resource_evidence(evidence) is False
+
+
+def test_hung_trace_rejects_unproved_idle_or_intervening_progress():
+    inflated = _hung_evidence()
+    inflated["samples"] = inflated["samples"][1:]
+    assert mutation._valid_hung_resource_evidence(inflated) is False
+
+    progressed = _hung_evidence()
+    progressed["samples"][15]["event_count"] = 1
+    assert mutation._valid_hung_resource_evidence(progressed) is False
+
+    missing = _hung_evidence()
+    missing["samples"][15].pop("stdout_bytes")
+    assert mutation._valid_hung_resource_evidence(missing) is False
 
 
 def test_maximum_complete_hung_trace_fits_mutation_state_record_limit():

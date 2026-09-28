@@ -323,6 +323,17 @@ def test_compare_requires_a_pair_of_complete_same_identity_snapshots() -> None:
     assert compare_resource_snapshots(current, _available()) == ("clear", {})
 
 
+@pytest.mark.parametrize("source", ["host", "throttle"])
+def test_negative_counters_are_not_a_clear_interval(source: str) -> None:
+    snapshot = _available()
+    if source == "host":
+        snapshot["host_psi"]["memory"]["full"] = -1
+    else:
+        snapshot["cgroup_cpu"]["nr_throttled"] = -1
+
+    assert compare_resource_snapshots(snapshot, snapshot) == ("unknown", {})
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

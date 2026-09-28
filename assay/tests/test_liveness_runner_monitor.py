@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from assay import liveness
+from assay import liveness, mutation
 
 
 class _FakeClock:
@@ -236,6 +236,7 @@ def test_hung_result_retains_complete_time_aligned_resource_evidence(
     )
     assert all(sample["resources"]["status"] == "available" for sample in samples)
     assert samples[-1]["candidate_cpu_s"] == 3.0
+    assert mutation._valid_hung_resource_evidence(evidence)
 
 
 def test_progress_reset_retains_prior_snapshot_for_first_trace_interval(
@@ -623,11 +624,11 @@ def test_cpu_growth_floor_is_inclusive_at_the_exact_boundary(tmp_path: Path) -> 
 
 
 def test_cpu_sample_history_matches_full_reverse_scan_over_long_virtual_run() -> None:
-    """B095: trimming keeps the exact newest sample at the window edge.
+    """B095: trimming keeps the exact newest comparable window-edge sample.
 
     This drives 20,000 virtual polls, including missing `/proc` readings,
-    irregular intervals, and CPU deltas on both sides of the growth floor.
-    Each classification is compared with the old unbounded reverse-list
+    irregular intervals, and monotone CPU deltas on both sides of the growth
+    floor. Each classification is compared with an unbounded reverse-list
     search; the deque stays bounded by the 30s window and 250ms minimum step.
     """
     window_s = 30.0
@@ -646,8 +647,9 @@ def test_cpu_sample_history_matches_full_reverse_scan_over_long_virtual_run() ->
             cpu_growing = True
             assert len(history._samples) == previous_size
         else:
-            # Repeated and varying readings exercise the exact >= 1.0 floor.
-            cpu_now = float((index * 7) % 41) / 4.0
+            # Monotone stepped readings retain the full-history oracle while
+            # varying the growth on either side of the 1.0-second floor.
+            cpu_now = float(index // 37 + index // 97) / 4.0
             full_history.append((now, cpu_now))
             baseline = next(
                 (
@@ -755,10 +757,11 @@ def test_session_finish_then_still_alive_is_hung_after_a_full_idle_grace(
                 stream.write(json.dumps({"event": "test", "t": clock.t}) + "\n")
 
     runner._sleep = sleep_and_maybe_write  # type: ignore[assignment]
-    with pytest.raises(liveness.LivenessHungExpired):
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
     assert clock.t == (1.0 if later_event_at is None else later_event_at) + 30.0
     assert proc.waited
+    assert mutation._valid_hung_resource_evidence(excinfo.value.resource_evidence)
 
 
 def test_session_finish_grace_does_not_classify_growing_cpu_as_hung(
@@ -798,6 +801,48 @@ def test_session_finish_grace_does_not_classify_growing_cpu_as_hung(
         evidence["samples"][-1]["candidate_cpu_s"]
         > evidence["samples"][0]["candidate_cpu_s"]
     )
+
+
+def test_finish_after_resource_reset_and_tree_cpu_drop_stays_incomplete(
+    tmp_path: Path,
+) -> None:
+    """A departing busy child can lower the tree sum despite continuing work.
+
+    Combine a finish event, one unavailable resource observation, and a CPU
+    reading that grows before and after a child exits. Neither the resource
+    reset nor the discontinuity may supply a quiet trailing CPU window.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=4251)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: 100.0 + clock.t if clock.t < 32 else clock.t - 32,
+        resource_reader=lambda pid: (
+            {"schema_version": 1, "status": "unavailable", "reason": "fixture"}
+            if clock.t == 10
+            else _clear_resource_snapshot()
+        ),
+        expect_next_event_within_s=600.0,
+    )
+    events_path = runner._events_path_for_cwd(cwd)
+
+    def write_finish(dt: float) -> None:
+        clock.advance(dt)
+        if clock.t == 1:
+            events_path.write_text(
+                '{"event": "session_finish", "exitstatus": 0, "t": 1.0}\n',
+                encoding="utf-8",
+            )
+
+    runner._sleep = write_finish
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=60.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 60.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == "configured-budget-expired"
 
 
 def test_xdist_session_finishes_do_not_hang_a_progressing_candidate(
