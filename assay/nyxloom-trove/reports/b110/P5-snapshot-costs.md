@@ -1,6 +1,13 @@
 # B110-P5: Cheaper per-candidate snapshots (C1 index refresh with a ctime sweep, C2 incremental child-closure bound)
 
-*Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).* This revision applies round-1 findings P5-1..P5-6, round-2 findings P5R2-1..P5R2-5, and carver decisions **C4**, **C15** and **C30**.
+*Revised 2026-09-28 after round-1, round-2 and round-3 reviews (see REVIEW-2026-09-28-round{1,2,3}.md).* This revision applies:
+- round-1 findings P5-1..P5-6;
+- round-2 findings P5R2-1..P5R2-5;
+- round-3 findings:
+  - P5R3-1: C-quoted `--stdin-paths` input through `git._run_raw`, an exact OID-count check, and R5g;
+  - P5R3-2: the sweep reports missing, type-changed and executable-bit-changed tracked paths, and R5b is extended;
+  - minors: the `mutation.py:124` anchor, R4b's 60 s failsafe with a re-check, and the note on consumer checkouts;
+- carver decisions **C4**, **C15** and **C30**.
 
 The C4 addition: after C1 the post-command dirt check becomes stat-based. A same-size, in-place edit made in the same wall-clock second, with its mtime restored, could then pass unseen (P5-1). So C1 now ships together with a **ctime-nanosecond sweep**, and the sweep is gated by a probe (Work step 0).
 
@@ -92,7 +99,10 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
   **What the `-c` pins do and do not cover (P5-5).**
   - They defeat **config-level** weakening only.
   - `core.ignoreStat=false` has no effect on assay's own `status --no-optional-locks`. It is kept only as a pin.
-  - A consumer command can also weaken the **child's index**, by writing assume-unchanged or skip-worktree bits with its own `git update-index`. The `-c` pins cannot stop that. The C4 sweep does, because it compares against a baseline assay recorded itself and ignores index bits.
+  - A consumer command can also weaken the **child's index**, by writing assume-unchanged or skip-worktree bits with its own `git update-index`. The `-c` pins cannot stop that.
+    - Git then skips the lstat entirely for those entries (`run_diff_files`, `refresh_cache_ent`). So `dirty_paths` misses **content edits, deletions, type changes and mode changes** of such paths. That hole already exists today.
+    - The C4 sweep closes all four for tracked regular files and symlinks. It compares against a baseline assay recorded itself and ignores index bits (round-3 P5R3-2).
+  - The pins also reach `dirty_paths` on consumers' **real checkouts** (`git.py:690`, through `_run_raw`). On a repository that set `core.trustctime=false`, the only effect is extra re-hashing, never a wrong answer. The DESIGN-GUIDE paragraph states this (round-3 minor).
 - **C4: the ctime-nanosecond sweep.** It runs in addition to `git.dirty_paths` on every post-command snapshot dirt check. New code in `isolation.py`:
 
   ```python
@@ -100,8 +110,9 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
   class _StatBaseline:
       watermark_ns: int                               # max st_ctime_ns over `regular`, read right after the refresh;
                                                       # 0 when `regular` is empty (vacuous: nothing to compare)
-      regular: Mapping[str, tuple[int, int, str]]     # repo-top-relative POSIX path -> (st_ino, st_size, blob oid);
-                                                      # every REGULAR file this `_build` materialized (see Required flow step 3)
+      regular: Mapping[str, tuple[int, int, str, bool]]  # repo-top-relative POSIX path -> (st_ino, st_size, blob oid, executable);
+                                                      # every REGULAR file this `_build` materialized (see Required flow step 3);
+                                                      # `executable` is True iff the entry mode is 100755
       symlinks: Mapping[str, str]                     # repo-top-relative POSIX path -> expected link target (bytes decoded
                                                       # exactly as `_Entry.target`); every SYMLINK leaf this `_build` materialized
   ```
@@ -109,22 +120,36 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
   - `Snapshot` (`:229`) gains `stat_baseline: _StatBaseline | None = None`. `None` only occurs for snapshots that tests construct directly.
   - `_build` computes the baseline after the refresh and returns it **with** the commit: its return becomes `tuple[str, _StatBaseline]`.
   - `_materialize` (`isolation.py:709-714`), which is where the `Snapshot` is constructed, unpacks that pair and passes `stat_baseline=` (round-2 P5R2-2). `_build` itself never constructs the `Snapshot`.
-  - `def snapshot_content_drift(snapshot: Snapshot, *, remaining: git.Remaining | None) -> tuple[str, ...]` is a module-level function. It returns the sorted repo-top-relative paths whose **content** differs from the baseline OID:
+  - `def snapshot_content_drift(snapshot: Snapshot, *, remaining: git.Remaining | None) -> tuple[str, ...]` is a module-level function. It returns the sorted repo-top-relative paths whose content, existence, type or executable bit differs from the baseline:
     1. If `snapshot.stat_baseline is None`, return `()`.
-    2. Call `os.lstat(root / p)` for each `p` in `regular`. A path that no longer exists, or is no longer a regular file, is **not** reported here, because `dirty_paths` reports deletions and type changes.
-    2b. **Symlinks (round-2 P5R2-5).** For each `p` in `symlinks`, call `os.lstat(root / p)`. If it is still a symlink and `os.readlink(root / p)` differs from the baseline target, report `p`. A missing path or a type change is left to `dirty_paths`, as above.
+    2. Call `os.lstat(root / p)` for each `p` in `regular`. **Report `p` at once** (round-3 P5R3-2) if it:
+       - no longer exists (`FileNotFoundError` or `NotADirectoryError`);
+       - is no longer a regular file (`not stat.S_ISREG(st.st_mode)`);
+       - has an executable bit that differs from the baseline: `bool(st.st_mode & 0o111) != baseline[3]`, matching git's own rule that any x bit means 100755.
+
+       `dirty_paths` normally catches these too. The sweep reports them itself because git skips the lstat for assume-unchanged and skip-worktree entries, which would hide all three. The lstat is already done, so this costs nothing extra.
+    2b. **Symlinks (round-2 P5R2-5; round-3 P5R3-2).** For each `p` in `symlinks`, call `os.lstat(root / p)`. Report `p` if:
+       - it is missing;
+       - it is no longer a symlink;
+       - it is still a symlink but `os.readlink(root / p)` differs from the baseline target.
        - This closes a gap nothing else sees: a same-second unlink-and-symlink with an equal-length new target, a reused inode, and `lutimes` restoring the mtime.
        - This costs one `readlink` per tracked symlink (26 in vbpub) and needs no git process.
-    3. `suspects` are the paths with `st.st_ctime_ns >= watermark_ns` **or** `(st.st_ino, st.st_size) != baseline[:2]`. Use `>=`, not `>`: files written in the same coarse clock tick as the watermark are always re-hashed. There are only a handful.
-    4. If `suspects` is non-empty, hash them in **one** bounded `git hash-object --no-filters --stdin-paths` call, run with `cwd=root` and the snapshot's `.git`, under the P22/`_FIXED_CONFIG` hardening.
+    3. `suspects` are the paths that are still regular files (not reported in step 2) with `st.st_ctime_ns >= watermark_ns` **or** `(st.st_ino, st.st_size) != baseline[:2]`. Use `>=`, not `>`: files written in the same coarse clock tick as the watermark are always re-hashed. There are only a handful.
+    4. If `suspects` is non-empty, hash them in **one** bounded call, `git._run_raw(snapshot.root, "hash-object", "--no-filters", "--stdin-paths", input_bytes=…, remaining=remaining)` (`git.py:656-705`). That route already bounds stdin, applies `_FIXED_CONFIG`, and runs with the snapshot as cwd and its own `.git`. `Snapshot` carries no git executable and `git.py` is scope-locked, so use this existing route (round-3 P5R3-1).
+       - **Stdin encoding is normative (round-3 P5R3-1).** `--stdin-paths` reads one path per line, strips a trailing CR, and C-unquotes any line that starts with `"`. This codebase supports tracked names containing a newline or backslash (`isolation.py:800-808`; `tests/test_isolation.py:1720-1758` replaces `odé\nline\slash.txt`). So write **every** suspect as a C-quoted line: `"` + the raw UTF-8 bytes with `\` → `\\`, `"` → `\"`, and every byte < 0x20 or == 0x7f → `\ooo` (three octal digits) + `"` + `\n`. Never write a raw path line.
+       - `_run_raw` returns the raw `(returncode, stdout, stderr)` and never interprets the exit. A non-zero `returncode` is `GIT_FAILED`.
+       - Require **exactly `len(suspects)`** 40- or 64-hex OID lines back, in order. Any other count or shape is `GIT_FAILED`: a count mismatch would line OIDs up with the wrong paths.
        - Never use `-w`.
        - Never allow filters. Without `--no-filters`, a `.gitattributes` in repo content could invoke a filter driver defined in a consumer-written `.git/config` (A-186).
-    5. Return the sorted union of the regular-file suspects whose computed OID differs from `baseline[2]` and the symlinks reported in step 2b.
+    5. Return the sorted union of:
+       - the regular files reported in step 2 (missing, type-changed or executable-bit-changed);
+       - the suspects whose computed OID differs from `baseline[2]`;
+       - the symlinks reported in step 2b.
   - **Call sites (one line each).** `mutation._snapshot_left_dirt` (`:1859`) and `runner.py:3109` use `git.dirty_paths(snapshot.root, remaining=…)` **or** `isolation.snapshot_content_drift(snapshot, remaining=…)`, and report `DIRTY_TREE` if either is non-empty.
     - The drift paths are added to the reported path set. Keep the existing message and reason pair.
     - **Imports (round-2 P5R2-1):**
       - `runner.py` already imports the `isolation` module (`from . import (… isolation, …)` at `:98-109`), so it needs no import edit.
-      - `mutation.py` needs `snapshot_content_drift`. Add it **on the same line** as the existing `from .isolation import SnapshotRepository, netstring` (`:121`).
+      - `mutation.py` needs `snapshot_content_drift`. Add it **on the same line** as the existing `from .isolation import SnapshotRepository, netstring` (`:124`; `:121` is the `candidate_identity` import).
       - Never add a new import line: any new line above `mutation.py:148` shifts that file's pinned TYPE_CHECKING exclusion lines (148/155/156).
     - Nothing else in `mutation.py` or `runner.py` changes.
   - **The residual,** recorded in A-472 by the controller: the realtime clock stepping **backwards** during a candidate, between the watermark read and a same-size in-place edit that keeps the inode. Rename-replacement is still caught by the inode comparison, and by `status` under `checkStat=default`.
@@ -151,7 +176,7 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
    - **Never** build it from `self._manifest.entries`, which hold the base OIDs. With those, every mutant child would report its own replaced file as drift, and in a small repo every file shares the watermark tick, so every candidate would be falsely `DIRTY_TREE`.
    - **Never** exclude the replaced path. It is the file a command is most likely to edit.
    - Exclude only `self._manifest.omitted` (the skip-worktree leaves, never materialized).
-   - `regular`: every entry with a regular-file mode (`100644`/`100755`), mapped to `(st_ino, st_size)` from `os.lstat(root / path)` and the entry's `oid`.
+   - `regular`: every entry with a regular-file mode (`100644`/`100755`). Map it to `(st_ino, st_size)` from `os.lstat(root / path)`, the entry's `oid`, and `executable = (mode == "100755")`.
    - `symlinks`: every entry with mode `120000`, mapped to its `_Entry.target`.
    - `watermark_ns = max(st_ctime_ns)` over `regular`, or `0` when `regular` is empty. `0` is vacuous: there is nothing to compare, and step 2b still checks symlinks.
    - This is a Python-only pass, with no git process.
@@ -200,7 +225,7 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
 | A consumer command writes `core.checkStat=minimal` / `trustctime=false` / `ignoreStat=true` into the snapshot's `.git/config`, then **rename-replaces** a tracked file with same-size different bytes and the mtime restored (new inode) | `DIRTY_TREE`: `status` under the `-c` pins sees the inode change, and the sweep sees `(ino, size)` changed and a different OID | existing A-195 path |
 | Same hostile config; in-place same-size edit with mtime restored, **after** the wall-clock second has passed the file's ctime second | `DIRTY_TREE`: `trustctime=true` makes `status` see the ctime change; the sweep also sees `ctime_ns >= watermark` | same |
 | **No** config change; in-place same-size edit with mtime restored **in the same wall-clock second** as materialization (P5-1) | `DIRTY_TREE` from the **sweep** (`ctime_ns >= watermark`, OID differs), even if `status` reports clean | same |
-| The consumer sets assume-unchanged / skip-worktree on a tracked file in the child index, then edits it | `DIRTY_TREE` from the sweep, which ignores index bits | same |
+| The consumer sets assume-unchanged / skip-worktree on a tracked file or symlink in the child index, then edits, deletes, `chmod`s or replaces it with another type | `DIRTY_TREE` from the sweep, which ignores index bits and reports content, missing, type and executable-bit changes (round-3 P5R3-2) | same |
 | The suspect's content is unchanged (for example a `touch`) | not dirty (OID equal) | none |
 
 ### Prepared proof and traceability
@@ -213,6 +238,8 @@ Paths are relative to `assay/`. Line numbers were checked at HEAD `db85f747`.
 | C4 sweep | `isolation.snapshot_content_drift` plus the two call sites | R5 (mutation call site, `status` blinded by assume-unchanged), R5b (assume-unchanged), R5d (runner call site, same blinding) | in-place edit after `--assume-unchanged` | drop the sweep → R5's `snapshot_content_drift` returns `()` and the caller-level check reports clean; drop either call site → R5 or R5d is deterministically red |
 | C4 baseline source | `isolation._build` → `_materialize` | R5e | `materialize_replacement` child, watermark forced to 0 | baseline from `self._manifest.entries` → the unedited replaced file is reported; excluding the replaced path → its edit is missed |
 | C4 symlinks | `snapshot_content_drift` | R5f | tracked symlink replaced by an equal-length target | drop the `symlinks` comparison → `()` |
+| C4 odd paths (round-3 P5R3-1) | `snapshot_content_drift` stdin encoding | **R5g** | the `odé\nline\slash.txt` replacement fixture (`tests/test_isolation.py:1720-1758`) | write raw path lines instead of C-quoted ones → `GIT_FAILED` (count mismatch) or a wrong path/OID pairing → R5g red |
+| C4 hidden deletion/type/mode (round-3 P5R3-2) | `snapshot_content_drift` step 2/2b | **R5b** (extended: deletion, chmod, file→dir) | `--assume-unchanged` on the path first, so `dirty_paths` stays blind | leave missing/type/exec-bit changes to `dirty_paths` → the extended R5b cases see `()` from both checks |
 | Pinned exclusion lines | `tests/fixtures/b105-coverage-exclusions.json` (`git.py` entry) | P2's O5b + the preflight exact-inventory check | the real source after the `_FIXED_CONFIG` edit | forget to regenerate → O5b and the preflight fail |
 | C4 no filters | same | R5c | `.gitattributes` naming a filter driver whose command would create a marker file | drop `--no-filters` → the marker file exists |
 | C2 delta walk | `isolation._enforce_child_closure` | R1 | `_root_repo` + second commit | keep the full walk → R1 finds a `rev-list --objects` without `--no-walk`/`--not`, and the batch-check OID count ≠ |delta − base| |
@@ -255,10 +282,14 @@ You may **not**:
    - Run them against the unchanged code and record in `assay-B116-REPORT.md`:
      - which ones fail;
      - R1's **observed "before" subcommand multiset**, obtained by running the recorder on the unchanged code and pinned as a literal in the test, with a comment naming the REPORT section. Do not predict it.
-   - R2, R3, R5, R5d, R5e, R5f and R6, and R1's "no full walk", "exactly one refresh" and "batch-check count" parts, must fail before the change. R5e and R5f fail because `stat_baseline` does not exist yet.
+   - These must fail before the change:
+     - R2, R3, R5, R5d, R5e, R5f, R5g and R6;
+     - R5b's cases (i)–(v);
+     - R1's "no full walk", "exactly one refresh" and "batch-check count" parts.
+   - R5e, R5f and R5g fail because `stat_baseline` does not exist yet.
    - For R4 and R4b, record their state at three points: before C1, after C1 without the hardening, and after the hardening.
 2. Implement **C1** (`isolation.py:860-861`), the **C4** baseline in `_build` (built from the local `entries`, returned with the commit, and attached in `_materialize`), and the **C1 hardening** (`git.py:165-178`). In the same commit, regenerate the `git.py` entry of `tests/fixtures/b105-coverage-exclusions.json` with P2's grep "N and N+1" rule, and run P2's O5b test.
-2b. Implement **C4**: `_StatBaseline` (with `symlinks`), the `Snapshot.stat_baseline` field, `snapshot_content_drift`, the two one-line call-site unions (`mutation.py:1859`, `runner.py:3109`), and the same-line import edit at `mutation.py:121`.
+2b. Implement **C4**: `_StatBaseline` (with `symlinks`), the `Snapshot.stat_baseline` field, `snapshot_content_drift`, the two one-line call-site unions (`mutation.py:1859`, `runner.py:3109`), and the same-line import edit at `mutation.py:124`.
 3. Implement **C2**: `_BaseClosure`, `_compute_base_closure`, the `_closure_oids(exclude=)` parameter, the new `_enforce_child_closure` body.
 3b. **C15.** `_BaseClosure`, `_StatBaseline` and the new `Snapshot` field change the dataclass inventory. Regenerate `tests/fixtures/dataclass-contract.json` with the command P1 (B112) documents in DESIGN-GUIDE, review the diff (exactly the new classes and field), and commit it in the same change.
 4. Update the **five direct `SnapshotRepository(...)` constructions** in tests (Context 6), passing `base_closure=`:
@@ -332,7 +363,8 @@ You may **not**:
 - **R4b: hostile config plus in-place edit after the second boundary** (revised by round-2 P5R2-3). File timestamps come from the kernel's **coarse** clock, which can lag `time.time()` by up to one tick. So the second boundary is established **on the kernel clock**, never by comparing `time.time()` with a ctime.
   - The same hostile config.
   - Let `s0 = os.stat(f).st_ctime_ns // 10**9`.
-  - Repeatedly touch a **probe file** in the same directory (open, write 1 byte, close) until the probe's own `st_ctime_ns // 10**9 > s0`. That is the precondition: the kernel's file clock has passed `f`'s ctime second. Use a 5 s failsafe that fails the test with a message; there is no sleep-based timing.
+  - Repeatedly touch a **probe file** in the same directory (open, write 1 byte, close) until the probe's own `st_ctime_ns // 10**9 > s0`. That is the precondition: the kernel's file clock has passed `f`'s ctime second.
+  - Use a **60 s** failsafe, per §3b-A ("60s, not 3s"), and no sleep-based timing. Before failing on the failsafe, do one more fresh probe write and re-check the condition, so a descheduled loop whose next write would pass is not failed (round-3 minor).
   - Rewrite `f` **in place** (`open(f, "r+b")`, same size, different bytes) and restore the mtime.
   - **Re-check** `os.stat(f).st_ctime_ns // 10**9 > s0`. If a coarse-clock quirk still stamped the old second, **retry** the edit cycle, touching the probe again first, up to 5 times, then fail with a message. The assertion below runs only once the precondition verifiably holds.
   - *Observable:* `git.dirty_paths` reports `f` (the `trustctime=true` pin), and so does the sweep.
@@ -345,9 +377,17 @@ You may **not**:
   - Also assert `git.dirty_paths(child.root)` does **not** report `f`. That checks the fixture: the assume-unchanged bit really blinds `status`.
   - **Deterministic `>=` sub-case (R5-eq).** After the edit, build a `_StatBaseline` from the child's real baseline, but with `watermark_ns` set to `f`'s **post-edit** `st_ctime_ns`, so the edit lands exactly in the watermark tick. Attach it with `dataclasses.replace(child, stat_baseline=…)`, then assert that `snapshot_content_drift` reports `f`.
   - *Negative:* dropping the sweep turns R5 red. Using `>` instead of `>=` turns R5-eq red. Comparing against index stat data turns R5b red.
-- **R5b: assume-unchanged in the child index.** Run `git update-index --assume-unchanged f` in the child (plain subprocess git), then edit `f` in place with the mtime restored.
-  - *Observable:* the sweep reports `f`.
-  - *Negative:* a sweep that consults index bits.
+- **R5b: assume-unchanged in the child index** (extended by round-3 P5R3-2). In each case, first run `git update-index --assume-unchanged <path>` in the child (plain subprocess git). Also assert `git.dirty_paths(child.root)` does **not** report the path, which proves `status` is blind. Then:
+  - **(i) in-place edit:** edit `f` in place with the mtime restored → the sweep reports `f`;
+  - **(ii) deletion:** `os.unlink(f)` → the sweep reports `f`;
+  - **(iii) mode change:** `os.chmod(f, 0o755)` on a `100644` entry → the sweep reports `f`. Also the reverse on a `100755` entry, if the fixture has one;
+  - **(iv) type change:** `os.unlink(f)`, then `os.mkdir(f)` → the sweep reports `f`;
+  - **(v) symlink deletion:** `--assume-unchanged l`, then `os.unlink(l)` → the sweep reports `l`.
+  - *Negative:* a sweep that consults index bits fails (i). A sweep that leaves missing, type or mode changes to `dirty_paths` fails (ii)–(v), because both checks return `()`.
+- **R5g: odd path names (round-3 P5R3-1).** Use the existing replacement fixture whose tracked path is `odé\nline\slash.txt` (`tests/test_isolation.py:1720-1758`), in a yielded child with `watermark_ns=0` attached via `dataclasses.replace`, so every regular file is a suspect and is sent to `hash-object --stdin-paths`.
+  - *Observable 1:* with no edit, `snapshot_content_drift` returns `()`. It is neither `GIT_FAILED` nor a false report.
+  - *Observable 2:* after an in-place same-size edit of that path, it reports exactly that path.
+  - *Negative:* raw, newline-delimited path lines split the name, so the OID count mismatches (`GIT_FAILED`) or OIDs pair with the wrong paths.
 - **R5c: no filters executed.** Commit a `.gitattributes` in the fixture: `data.bin filter=evil`. The child's `.git/config` gets `[filter "evil"] clean = touch <tmp>/FILTER_RAN`. Edit `data.bin` in place.
   - *Observable:* the sweep reports it, and `<tmp>/FILTER_RAN` does not exist.
   - *Negative:* hashing without `--no-filters` creates the marker.
@@ -466,10 +506,12 @@ it is not an oracle yet.
 
 - **DESIGN-GUIDE:** find the P22 section with `rg -n -e "status --porcelain" -e "hash pass" -e "child closure" -e "A-186" docs/DESIGN-GUIDE.md`. In ripgrep `\|` is a literal pipe, so use `-e` (P5-6). Add one paragraph covering:
   - the index is refreshed once per materialization, and that refresh is the content proof;
-  - the post-command sweep re-hashes files touched after the watermark, and ignores index bits;
+  - the post-command sweep, which ignores index bits:
+    - re-hashes files touched after the watermark, feeding their paths to `hash-object` C-quoted;
+    - reports tracked files and symlinks that went missing or changed type or executable bit, cases that git's own lstat skips for assume-unchanged or skip-worktree entries;
   - the residual (a backwards realtime clock step);
   - the child closure is bounded as base ∪ delta, and why that is exact (the subtraction);
-  - the pinned stat-comparison config and its scope (config only, not index bits).
+  - the pinned stat-comparison config and its scope. It covers config only, not index bits. It also applies to `dirty_paths` on consumers' real checkouts, where a repository that set `core.trustctime=false` only sees extra re-hashing, never a wrong answer (round-3 minor).
 
   Cite A-472.
 - **README / CONSUMERS:** no change. There is no user-visible behavior, the refusals are identical, and no key is added. Confirm with `rg -n -e "update-index" -e "closure" README.md docs/CONSUMERS.md`, and edit only if a sentence describes the per-child full walk.
@@ -483,7 +525,7 @@ it is not an oracle yet.
   - `tests/fixtures/b105-coverage-exclusions.json`: **only** its `git.py` entry, regenerated with P2's grep "N and N+1" rule, because the `_FIXED_CONFIG` lines shift the pinned pragma lines (round-2 P5R2-1);
   - `src/assay/mutation.py`: **only**
     - the `git.dirty_paths` line in `_snapshot_left_dirt` (`:1859`), turned into the union with the sweep;
-    - a **same-line** edit of the `from .isolation import …` line (`:121`).
+    - a **same-line** edit of the `from .isolation import …` line (`:124`).
 
     No line may be added or removed above `mutation.py:148`. P4 and P6 have already merged into your base (see Depends on); you rebase onto them;
   - `src/assay/runner.py`: **only** the `post_dirty = …` line at `:3109`, turned into the union. No import edit is needed;

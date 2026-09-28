@@ -992,7 +992,12 @@ This is the canonical list. P3b's signature and P9's `CAMPAIGN-IDENTITY` must ma
 
 **Round-1 revisions (C12):**
 - Import runs inside tester-unified (gate modes `b119-worker`/`b119-import`; the qualifying arm runs `assay state audit-check`).
-- `assay run` refuses a locked store with a whole-lane `BAD_LANE_CONFIG`.
+- `assay run` refuses a store locked by another process with a **pre-run** `BAD_LANE_CONFIG` and writes no verdict. The lock is taken once per process, and the gate never locks.
+- A D7 "yes" would also require a P6 loader change.
+- **Round-3 additions:**
+  - `assay state discard-source` is the only way to drop a disagreeing source.
+  - `audit-check` accepts post-import events from any run segment and requires held records, a pass record, or a discard receipt for every sampled source.
+  - Import writes held records before root records, and `journal-pending` recovery is a byte-matched rollback.
 - The identity file is `CAMPAIGN-IDENTITY`, with no `.json` extension.
 - Non-final buckets are refused per record.
 - Pilot stores are refused.

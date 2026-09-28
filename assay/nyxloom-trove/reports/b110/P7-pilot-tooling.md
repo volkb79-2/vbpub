@@ -1,6 +1,6 @@
 # B110-P7 — Pilot tooling: non-qualifying candidate selection runs, a deterministic selector, and the pilot runbook
 
-*Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).*
+*Revised 2026-09-28 after round-1, round-2 and round-3 reviews (see REVIEW-2026-09-28-round{1,2,3}.md). Round 3 (G3-1): the pilot report template's GO table is renumbered to plan §8.1 criteria 1–4, "screen clean" is relabelled §8.2.1 (Qualifying GO only), the stratum label is operator × size_class (C26), and a survivor-only elapsed p90 column is added for P10's OC17 cap.*
 - Round 1 applied findings P7-1..P7-7 and carver decisions C3 (via P6), C5, C6, C7 and C15.
 - Round 2 applies findings P7R2-1..P7R2-7 and carver decisions C23, C27 (the `glob("*.json")` record assertion) and C31.
 
@@ -724,7 +724,7 @@ tester-unified, 3 CPUs, 2 GiB / 8 GiB mem+swap, `--pilot-jobs 3`; concurrent hos
 | campaign init, then plan + selector (inside the 2 h campaign) | | gate log phases |
 
 ## 3. Per-candidate cost (from P0 fields)
-| Stratum (file × operator) | n | killed | survived | other | elapsed p50 / p90 | materialize p50 | command p50 | started_count p50 / p90 | peak RSS p90 |
+| Stratum (operator × size_class: small ≤10 / medium 11–100 / large >100 candidates per file, C26) | n | killed | survived | other | elapsed p50 / p90 | survivor-only elapsed p90 | materialize p50 | command p50 | started_count p50 / p90 | peak RSS p90 |
 
 ## 4. Outcomes
 cold-kill rate k/n = … (Wilson 95%: … – …); survivors (id, path:line, operator, full-suite wall s); hangs/crashes/budget_exceeded (id, cause).
@@ -734,18 +734,20 @@ Known-hard set: per label, bucket + elapsed (guards from P2 expected to turn sca
 Aggregate peak memory from the run-gate cgroup `memory.peak` … (C19: this is the GO number); per-candidate 1 Hz RSS samples (a lower bound only) …; memory-full stall s … (… % of wall); CPU avg cores ….
 
 ## 6. Projection (3,760 candidates)
-Formula: fixed (coverage baseline + no-cov baseline + R0/R1 + R3 estimate as two suite runs) + Σ_strata (count × p90) / effective workers; also at p50. Strata fall-back: operator × file-size class → operator → all (C19). Result: … h (p90), … h (p50). Assumptions + censoring.
+Formula: fixed (coverage baseline + no-cov baseline + R0/R1 + R3 estimate as two suite runs) + Σ_strata (count × p90) / effective workers; also at p50. Strata fall-back: operator × size_class (small ≤10 / medium 11–100 / large >100 candidates per file) → operator → all (C19, C26). Result: … h (p90), … h (p50). Assumptions + censoring.
 
 ## 7. Shard skew
 Hash shards (N=3) replay of measured durations vs queue: makespan …. (Consolidation cost is not measured by the pilot; it is B119's acceptance, C7.)
 
-## 8. Pilot GO inputs (plan §8, C6)
+## 8. Pilot GO inputs (plan §8.1 criteria 1–4, C6)
 | Criterion | Threshold | Measured | Pass? |
-| 1 screen clean | 0/0/0/0 | Qualifying GO only (C6): not a Pilot GO input | — |
-| 2 projection | ≤ 5 h p90, ≤ 4 h p50 | | |
-| 3 memory | cgroup `memory.peak` ≤ 1.6 GiB, stall ≤ 5 % | | |
-| 4 fixed overhead | ≤ 60 min (incl. preflight + R3 estimate) | | |
-| 5 packages merged/reviewed | P0–P8, v14 (P3a–P3d), P7b | | |
+| 8.1.1 projection | ≤ 5 h p90, ≤ 4 h p50 (strata operator × size_class, C26) | | |
+| 8.1.2 memory | cgroup `memory.peak` ≤ 1.6 GiB, stall ≤ 5 % | | |
+| 8.1.3 fixed overhead | ≤ 60 min (preflight + coverage and no-cov baselines + R3 estimate + consolidation/verify) | | |
+| 8.1.4 readiness | P0–P8, v14 (P3a–P3d), P7b merged, reviewed, gated; P8 analysis reports no evidence error | | |
+| (§8.2.1, Qualifying GO only) screen clean | complete screen at X*, 0/0/0/0 except audited ledger entries | not a Pilot GO input | — |
+
+Section 3's survivor-only elapsed p90 is the source for P10's ledger cap (OC17).
 
 ## 9. Limitations
 1.7 % of the inventory; stratified by file/operator, not by kill difficulty; censored tails; shared host; not qualification evidence.

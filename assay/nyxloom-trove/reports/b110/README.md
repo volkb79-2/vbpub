@@ -7,6 +7,7 @@ Carved 2026-09-28 from the B110 analysis. Nothing here has been dispatched yet.
 - **Verbatim research records R0–R8 and probe scripts:** [`research/`](research/)
 - **Round-1 pre-dispatch review and carver decisions C1–C20:** [`REVIEW-2026-09-28-round1.md`](REVIEW-2026-09-28-round1.md). Verbatim outputs are in [`review-round1/`](review-round1/).
 - **Round-2 review and carver decisions C21–C32:** [`REVIEW-2026-09-28-round2.md`](REVIEW-2026-09-28-round2.md). Verbatim outputs are in [`review-round2/`](review-round2/).
+- **Round-3 (final) review, with the final status of every document and the remaining pre-dispatch preconditions:** [`REVIEW-2026-09-28-round3.md`](REVIEW-2026-09-28-round3.md). Verbatim outputs are in [`review-round3/`](review-round3/).
 - **Decisions:** `../../decisions.md` A-465–A-474.
 - **Backlog:** `../../4-backlog.md` B110 (umbrella: pilot and go/no-go), B111–B121, B108 phase 1.
 
@@ -16,7 +17,7 @@ Carved 2026-09-28 from the B110 analysis. Nothing here has been dispatched yet.
 | P1 | B112 | [P1-suite-scope.md](P1-suite-scope.md) | 2d | P0 (liveness-leak fix), P2 |
 | P2 | B113 | [P2-loop-guards.md](P2-loop-guards.md) | 2d | — |
 | P3a | B114 | [P3a-v14-schema-verify.md](P3a-v14-schema-verify.md) | 2b | P10a accepted |
-| P3b | B114 | [P3b-r2-command-cold-witness.md](P3b-r2-command-cold-witness.md) | 2b | P3a, P1, P6 in the v14 base |
+| P3b | B114 | [P3b-r2-command-cold-witness.md](P3b-r2-command-cold-witness.md) | 2b | P3a, P1, P6 and P4 in the v14 base |
 | P3c | B114 | [P3c-liveness-lane-keys.md](P3c-liveness-lane-keys.md) | 2c | P3a; P2 and P1 in the v14 base |
 | P3d | B114 | [P3d-gate-report-binding.md](P3d-gate-report-binding.md) | 2c | P3b, P0, P6 in the v14 base |
 | P4 | B115 | [P4-work-queue-executor.md](P4-work-queue-executor.md) | 2b | P0 |
@@ -24,9 +25,9 @@ Carved 2026-09-28 from the B110 analysis. Nothing here has been dispatched yet.
 | P6 | B117 | [P6-campaign-deadline.md](P6-campaign-deadline.md) | 2b | — |
 | P7 | B118 | [P7-pilot-tooling.md](P7-pilot-tooling.md) (steps 1–8) | 2c | P0, P6 |
 | P7b | B118 | [P7-pilot-tooling.md](P7-pilot-tooling.md) (step 9: `b110-pilot` / `b110-screen` gate modes) | 2c | P7, P6, v14 merged |
-| P8 | B108 ph. 1 | [P8-campaign-analysis-core.md](P8-campaign-analysis-core.md) | 2c | P0 (P7 before its step 9) |
-| P9 | B119 | [P9-distributed-evidence.md](P9-distributed-evidence.md) | 2a→2b | P8, P3b, P6, P1 (gate mode after P7b) |
-| P10 | B120 | [P10-equivalence-ledger.md](P10-equivalence-ledger.md) | 2a / 2b / 2c | P10a: —; P10b: P3a, P3b, P7 + operator ratification (plan §11.7); P10c (gate mode): P10b, P7b |
+| P8 | B108 ph. 1 | [P8-campaign-analysis-core.md](P8-campaign-analysis-core.md) | 2c | P0, P6 (P7 before its step 9) |
+| P9 | B119 | [P9-distributed-evidence.md](P9-distributed-evidence.md) | 2a→2b | P8, P3b, P6, P1, P7 (gate arms after P7b; carve log first) |
+| P10 | B120 | [P10-equivalence-ledger.md](P10-equivalence-ledger.md) | 2a / 2b / 2c | P10a: —; P10b: P3a, P3b, P3d, P6, P7 + operator ratification (plan §11.7), only if the ledger is non-empty; P10c (gate mode): P10b, P7b |
 | P11 | B121 | [P11-isolation-unit-fallback.md](P11-isolation-unit-fallback.md) | 2a | pilot NO-GO + operator decision |
 
 ## Rules that apply to every package

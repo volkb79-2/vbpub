@@ -1,6 +1,6 @@
 # B110-P9 — Distributed / async evidence: campaign identity, `assay state import`, audit sample, consolidation, worker runbook
 
-*Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md). Round-1: findings P9-1..P9-10 and carver decisions C7, C8, C12, C13, C15. Round-2: findings P9R2-1..P9R2-11 and plan N-2, N-3, N-7, N-8; carver decision C27.*
+*Revised 2026-09-28 after round-1, round-2 and round-3 reviews (see REVIEW-2026-09-28-round{1,2,3}.md). Round 3 adds:<br>• P9R3-1: `assay state discard-source` and the `audit-evidence-missing` completeness rule (O23);<br>• P9R3-2: audit-check accepts a matching `candidate` event from any run segment started after the receipt's `created_at` (O22);<br>• P9R3-3: held records are written before root records, and `journal-pending` recovery is a byte-matched `rollback-journal` (O24);<br>• O3's `len(S1) ≥ 8` fixture precondition. Round-1: findings P9-1..P9-10 and carver decisions C7, C8, C12, C13, C15. Round-2: findings P9R2-1..P9R2-11 and plan N-2, N-3, N-7, N-8; carver decision C27.*
 
 | Field | Value |
 |---|---|
@@ -235,7 +235,26 @@ assay state import <lane> --file <assay.toml> --state-dir <STORE>
 assay state audit-check <lane> --file <assay.toml> --state-dir <STORE>
     --progress <consolidating-run progress.jsonl> --require-campaign-deadline <DEADLINE.json>
     --out <PATH> [--worktree <dir>]
+assay state discard-source <lane> --file <assay.toml> --state-dir <STORE>
+    --receipt-stem <S> --label <L> --out <discard-receipt PATH> [--worktree <dir>]
+assay state rollback-journal <lane> --file <assay.toml> --state-dir <STORE>
+    --out <rollback-receipt PATH> [--worktree <dir>]
 ```
+
+**`discard-source` (round-3 P9R3-1).** This is the only way to drop a source whose audit sample disagreed.
+- "Re-import without it" is **not** an operation: that source's unsampled accepted records are already root records, and re-importing never removes them.
+- It runs under the store lock (OC14) and reads receipt `.assay/<S>.json`.
+- It deletes every root record `STORE/<id>.json` listed in that receipt's `accepted` for label `L` **whose on-disk sha256 equals the receipt's `record_sha256`**. A record whose bytes changed since import (for example, re-executed by consolidation) is left alone and listed as `kept_changed`.
+- It removes `STORE/.import-audit/<S>/<L>/`.
+- It writes the **discard receipt** `--out` (`.assay/discard-<S>-<L>-<UTC>.json`): `{schema_version:1, kind:"assay-state-discard", receipt_stem, label, deleted:[{candidate_id, record_sha256}], kept_changed:[ids], held_removed:n, created_at}`.
+- Exit 0, or exit 2 on a missing receipt, an unknown label, or a held lock.
+- Consolidation then re-executes the deleted candidates.
+
+**`rollback-journal` (round-3 P9R3-3).** Recovery from `journal-pending`, under the lock. For every journaled entry:
+- delete the destination **only if its bytes' sha256 equals the journaled `sha256`**;
+- restore nothing. A replaced stale record is simply gone, and consolidation re-executes the candidate.
+
+Then remove the journal and write a rollback receipt. Entries whose destination bytes differ from the journal are listed and left alone. Exit 0; exit 2 if the lock is held.
 
 - `LABEL` matches `^[A-Za-z0-9._-]{1,64}$` and is unique across `--from`.
 - `--receipt` and `--out` must not exist; publish with the `_write_new` pattern. The gate names both with a UTC timestamp, so a re-invocation never collides (P9R2-11).
@@ -271,7 +290,7 @@ assay state audit-check <lane> --file <assay.toml> --state-dir <STORE>
    - `--state-dir` and every `--from` pass `_resolve_state_dir`.
    - Each `--from` is a directory.
    - Take the **store lock** (OC14); if it is held, exit 2 `store-locked`.
-   - If any `STORE/.import-journal/*.pending` exists, exit 2 `journal-pending`, naming it. The operator inspects it; resume validation remains authoritative.
+   - If any `STORE/.import-journal/*.pending` exists, exit 2 `journal-pending`, naming it. The **only** recovery is `assay state rollback-journal` (below). Never "delete the journal and re-import": root records written before a crash would then be treated as store duplicates, excluded from the audit sample, and never audited (round-3 P9R3-3). Resume validation checks identity, not outcomes, so it is **not** a substitute.
 2. **The store identity.**
    - Load `STORE/CAMPAIGN-IDENTITY`. It is required; if absent, exit 2 `store-identity-missing`.
    - Validate its shape, and recompute `judge_sha256_from_inputs(judge_inputs)`. A mismatch is exit 2 `identity-inconsistent`.
@@ -316,28 +335,48 @@ assay state audit-check <lane> --file <assay.toml> --state-dir <STORE>
    - Draw `audit_nonce = state_import._draw_audit_nonce()` (32 bytes, `secrets.token_bytes(32)`).
    - Select the `k = min(n, max(5, ceil(0.02 × n)))` lowest `blake2b((campaign + ":" + audit_nonce.hex() + ":" + candidate_id).encode("utf-8"), digest_size=32).hexdigest()`.
    - The selected records are **held back**: written to `STORE/.import-audit/<receipt-stem>/<LABEL>/<id>.json` instead of the store root, and listed as `audit_held`. `audit_nonce` (64 hex) goes into the receipt.
-10. **The journal.** Write `STORE/.import-journal/<receipt-basename>.pending`: a JSON list of `{candidate_id, source, sha256, destination}` for every intended write.
-11. **Write.** For each record to write:
-    - **re-read** the source file;
-    - recompute its sha256, which must equal both the `SHA256SUMS` digest and the step-7 digest (else abort: exit 2 `source-changed`, leaving the journal in place);
-    - write with `_write_mutation_state_record(STORE, payload)`, canonical and atomic.
+10. **The journal.** Write `STORE/.import-journal/<receipt-basename>.pending`: a JSON list of `{candidate_id, source, sha256, destination, replaced_stale_sha256}` for every intended write. `replaced_stale_sha256` is the sha256 of the stale record that the write will replace, or `null`.
+    - Write the journal atomically (temp + `os.replace`) and `fsync` it **before** any record write.
+11. **Write (order is normative; round-3 P9R3-3).**
+    - **First write all held records** (every `.import-audit/<stem>/<LABEL>/<id>.json`). **Only then** write any root record.
+    - A crash therefore never leaves unaudited root records from a source whose sample was not yet held.
+    - For each record, in that order:
+      - **re-read** the source file;
+      - recompute its sha256, which must equal both the `SHA256SUMS` digest and the step-7 digest (else abort: exit 2 `source-changed`, leaving the journal in place for `rollback-journal`);
+      - write with `_write_mutation_state_record(STORE, payload)` (root) or the same canonical atomic writer into the held path.
 
     A replaced stale store record is listed in `replaced_stale`. `record_sha256` is the sha256 of the bytes written.
 12. **Finish.** Publish the receipt, remove the journal, and release the lock. Exit 0 if nothing was refused per record, else exit 1.
 
 **`assay state audit-check`.** This runs after the consolidating `assay run` has **exited**, as a separate process in the same gate arm. It takes the store lock itself (OC14); the gate never locks.
 - **When it runs (P9R2-3):** whenever `STORE/.import-audit/` contains at least one held record, regardless of which receipt files exist. The gate arm tests the directory, not the receipts.
-- **Inputs:** every held record under `STORE/.import-audit/<receipt-stem>/<LABEL>/<id>.json`, the receipt `.assay/<receipt-stem>.json` for each stem, the consolidating run's `--progress` stream, and `--require-campaign-deadline`.
+- **Inputs:**
+  - every held record under `STORE/.import-audit/<receipt-stem>/<LABEL>/<id>.json`;
+  - **every** import receipt `.assay/import-*.json` (and the receipt `.assay/<receipt-stem>.json` for each held stem);
+  - every discard receipt `.assay/discard-*.json`;
+  - `.assay/import-audit-done/`;
+  - the consolidating run's `--progress` stream;
+  - `--require-campaign-deadline`.
+- **Evidence completeness (round-3 P9R3-1).** For every import receipt bound to this deadline whose `audit_held` is non-empty, each `(receipt_stem, label)` in `audit_held` must have one of:
+  - its held records present under `.import-audit/<stem>/<label>/`;
+  - a pass record under `.assay/import-audit-done/<stem>/<label>/`;
+  - a discard receipt naming that `(stem, label)`.
+
+  Otherwise the result is `audit-evidence-missing`. Deleting or moving a held directory by hand can therefore no longer skip the audit. This check runs even when `.import-audit/` is empty: the gate arm also runs audit-check whenever any import receipt with a non-empty `audit_held` exists.
 - **For each held record:**
   1. Its receipt must exist; if not, `audit-receipt-missing`.
   2. The receipt's `campaign_deadline_sha256` must equal sha256(DEADLINE); if not, `audit-receipt-deadline-mismatch`.
-  3. The consolidating run's **latest run segment** in `--progress` must contain a `candidate` event for the ID. That proves this run executed it, rather than resuming it; if not, `audit-not-executed`. A root record alone is **not** proof.
-  4. The root record `STORE/<id>.json` must exist with the current store judge, and its `outcome_bucket` must equal both the held record's and that event's. If not, `audit-disagreed`, naming the source.
+  3. **Execution evidence (round-3 P9R3-2).** `--progress` must contain a `candidate` event for the ID in **any run segment whose `run` header `started` is later than the receipt's `created_at`**, with `outcome_bucket` equal to both the root record's and the held record's. If there is none, the result is `audit-not-executed`. A root record alone is **not** proof.
+     - This is sound because, at import time, a held ID never has a root record at the store judge (step 8 dedup). So any root record for it after the receipt was written by a consolidating run, and that run emitted the event.
+     - A consolidation that takes several invocations (deadline cut, C3 unclassified attempts, the C28 OOM rule) therefore still passes. An ID executed in invocation 1 is resumed without an event in invocation 2, but invocation 1's event is found.
+     - The gate appends every invocation to the same progress file (`mutation.py:797`, append mode).
+  4. The root record `STORE/<id>.json` must exist with the current store judge, and its `outcome_bucket` must equal both the held record's and the matching event's. If not, `audit-disagreed`, naming the source.
   5. For `killed`, differing modes are informational.
-- **Closed refusal set:** `store-locked, audit-receipt-missing, audit-receipt-deadline-mismatch, audit-not-executed, audit-disagreed, progress-unreadable`.
+- **Closed refusal set:** `store-locked, audit-receipt-missing, audit-receipt-deadline-mismatch, audit-evidence-missing, audit-not-executed, audit-disagreed, progress-unreadable`.
 - **Output:** writes `--out` `{schema_version:1, kind:"assay-state-audit-check", store_judge_sha256, audit_nonces:{<receipt-stem>: <64hex>}, sources:[{receipt_stem, label, held, agreed, disagreed:[ids], not_executed:[ids]}], refusals:[{receipt_stem, reason}], result}`.
-- **Exit codes:** 0 when every held record agreed; 2 on any refusal, disagreement or not-executed. The disagreeing **source** must be discarded (re-import without it) and consolidation re-run. The gate fails.
-- **Clearing held records:** after an exit-0 audit-check, the gate arm moves `STORE/.import-audit/<receipt-stem>/` to `.assay/import-audit-done/<receipt-stem>/`, so the next consolidation is not audited twice. The root records now exist.
+- **Exit codes:** 0 when every held record agreed and evidence is complete; 2 on any refusal, disagreement, not-executed or missing evidence. The gate fails.
+- **A disagreeing source** is dropped with `assay state discard-source --receipt-stem S --label L` (round-3 P9R3-1), never by "re-importing without it". Consolidation is then re-run.
+- **Clearing held records:** after an exit-0 audit-check, the gate arm moves `STORE/.import-audit/<receipt-stem>/` to `.assay/import-audit-done/<receipt-stem>/`, so the next consolidation is not audited twice. That directory is the pass record the evidence-completeness rule accepts. The root records now exist.
 
 ### Import receipt
 
@@ -399,7 +438,7 @@ coordinator host (inside tester-unified):
     gate arm b119-import  → assay state import … --state-dir STORE --require-campaign-deadline D
     STORE = <project>/.assay/mutation-state-self-qualification  ← ACCEPTED (+ .lock, .import-audit/, .import-journal/)
     gate arm self-qualification → assay run --resume --state-dir STORE --cold-witness --campaign-deadline D  (no --shard)
-                                → assay state audit-check (whenever STORE/.import-audit/ holds a record) → assay verify → report check
+                                → assay state audit-check (whenever STORE/.import-audit/ holds a record OR any import receipt has a non-empty audit_held) → assay verify → report check
 ```
 
 - Receipt paths are absolute inside the container.
@@ -424,7 +463,11 @@ Add two arms. They use the same shared clone/build/venv steps and the same lane 
   - prints `B119_IMPORT_EXIT=` and `B119_IMPORT_RECEIPT=`.
 
 **The qualifying `self-qualification` arm** (a P9 edit, after P3d, P6 and P7b; in either order with P10c):
-- after `assay run` has exited and **before** `assay verify`, if `.assay/mutation-state-self-qualification/.import-audit/` contains any `*.json` at any depth, run `assay state audit-check … --progress <that run's progress file> --require-campaign-deadline <D> --out .assay/audit-check-<commit12>-<UTC yyyymmddThhmmssZ>.json`. The test is on the **directory**, never on receipt files (P9R2-3);
+- after `assay run` has exited and **before** `assay verify`, run `assay state audit-check … --progress <that run's progress file> --require-campaign-deadline <D> --out .assay/audit-check-<commit12>-<UTC yyyymmddThhmmssZ>.json` if **either** of these holds:
+  - `.assay/mutation-state-self-qualification/.import-audit/` contains any `*.json` at any depth (P9R2-3); or
+  - any `.assay/import-*.json` receipt has a non-empty `audit_held` (round-3 P9R3-1).
+
+  The trigger never depends on held **receipt files alone**. Deleting a held directory is caught by the evidence-completeness rule;
 - a non-zero exit fails the lane (exit 2), with the marker `B119_AUDIT_CHECK_EXIT=`;
 - on exit 0, move each audited `<receipt-stem>/` to `.assay/import-audit-done/<receipt-stem>/`.
 
@@ -493,7 +536,13 @@ After a first worker run, compare its `CAMPAIGN-IDENTITY.judge_inputs.runtime_fi
 7. On the coordinator, run **`b119-import`**, once per arriving batch or batches.
    - Exit 1: inspect the `refused` reasons. `judge-mismatch` means that host's environment differs; stop using it.
    - Exit 2 with conflicts: **stop the campaign.** It is a nondeterminism finding; file it and do not pick a side.
-8. Consolidate with the qualifying `self-qualification` arm (plan §9.3). It runs `audit-check` whenever held records exist, and any refusal or disagreement discards that source and fails the gate. Retain every import receipt, its `audit_nonce`, and the audit-check result with the gate evidence.
+8. Consolidate with the qualifying `self-qualification` arm (plan §9.3). It runs `audit-check` whenever held records or held-bearing receipts exist, and any refusal, disagreement or missing evidence fails the gate. Retain every import receipt, its `audit_nonce`, the audit-check result, and every discard or rollback receipt with the gate evidence.
+9. **If audit-check reports `audit-disagreed` for a source:**
+   - run `assay state discard-source … --receipt-stem <S> --label <L>` inside tester-unified, in a `b119-import`-style arm invocation;
+   - retain the discard receipt;
+   - re-run the consolidating arm, which re-executes the deleted candidates;
+   - never delete or move `.import-audit/` by hand.
+10. **If `state import` exits 2 `journal-pending`** (a crash mid-import): run `assay state rollback-journal` inside tester-unified, retain its receipt, then re-run `b119-import` from the still-present inbox. Never delete the journal by hand.
 
 **Never:**
 - share a state directory between hosts (NFS, etc.) or between concurrently running invocations; the lock refuses the latter;
@@ -509,7 +558,7 @@ After a first worker run, compare its `CAMPAIGN-IDENTITY.judge_inputs.runtime_fi
 4. Implement `src/assay/state_import.py`: `import` (flow steps 1-12) and `audit-check`, the receipt model and schema, and CLI registration. Add the module to both target lists.
 5. Write fast unit tests on synthetic stores in `tests/test_state_import.py`.
 6. Write real-run tests in `tests/zz_slow/test_state_import_real_runs.py`: the `_seed_pytest_mutation`-style tiny project, real `runner.run_lane`, `--shard 0/2` / `1/2`, and a fixture deadline file (use P6's `campaign init` in-process).
-7. Add the gate arms `b119-worker` and `b119-import`, the qualifying-arm `audit-check` step (keyed on `.import-audit/`, not on receipts), the `LC_ALL=C` `SHA256SUMS` recipe, and the run-gate lanes. Extend the `tests/test_self_lane.py` pins with `b119-worker`, `b119-import`, `B119_IMPORT_EXIT=`, `B119_AUDIT_CHECK_EXIT=`, `--require-campaign-deadline`, `LC_ALL=C` and `.import-audit`. Also pin that the gate script contains no `flock`.
+7. Add the gate arms `b119-worker` and `b119-import`, the qualifying-arm `audit-check` step (triggered by a non-empty `.import-audit/` **or** any receipt with non-empty `audit_held`), the `LC_ALL=C` `SHA256SUMS` recipe, and the run-gate lanes. The `b119-import` arm also accepts a `discard-source` sub-mode and a `rollback-journal` sub-mode (round-3 P9R3-1, P9R3-3). Extend the `tests/test_self_lane.py` pins with `b119-worker`, `b119-import`, `B119_IMPORT_EXIT=`, `B119_AUDIT_CHECK_EXIT=`, `--require-campaign-deadline`, `LC_ALL=C` and `.import-audit`. Also pin that the gate script contains no `flock`.
    - **P7 test adjustment (C27, P9R2-10).** If P7's C5 test in `tests/test_pilot_candidates_file.py` asserts the pilot state directory's **exact** listing, change that one assertion to `sorted(p.name for p in state_dir.glob("*.json"))` plus a separate `PILOT-STATE` existence check. It now tolerates `.lock` and `CAMPAIGN-IDENTITY`. Change nothing else in that file.
 8. Measure consolidation cost (C7), and record it in the report as diagnostic.
 9. Docs and runbook (Docs sync), the B119 backlog entry, and CHANGES.
@@ -523,7 +572,7 @@ After a first worker run, compare its `CAMPAIGN-IDENTITY.judge_inputs.runtime_fi
 |---|---|---|
 | O1 | For 5 existing judge-identity test vectors, `judge_sha256_from_inputs(judge_identity_inputs(x)) == judge_sha256(x)`. The expected hex values are **captured from the pre-refactor function at HEAD and committed as literals** before the refactor. All `tests/test_mutation_judge_identity*.py` tests stay green unchanged. | Both digests built from the same new dict builder, so they drift together |
 | O2 | After a native-R2 run with a store, `CAMPAIGN-IDENTITY` exists, recomputes to its own `judge_sha256`, and that equals every record's `judge_sha256`. `sorted(state_dir.glob("*.json"))` returns exactly the records, so the existing glob tests stay green. | `campaign-identity.json` breaking `len(glob) == 2` (P9-1) |
-| O3 | **Two shard stores** (real runs). The fixture has **≥ 16 killable sites**, so shard `1/2` yields S1 with **≥ 8 records** (P9R2-7); `k = 5` are held, so ≥ 3 are accepted. Shard `0/2` goes into STORE and shard `1/2` into S1. Add `SHA256SUMS` and import S1 with an injected nonce. The receipt is `accepted` and the counts reconcile. The **consolidating `--resume`**'s `resume` event reports `resumed_total == |STORE shard-0 records| + |S1 accepted|`. Its `candidate` events are **exactly** the held-back IDs, and the tracked process runner sees the baselines plus those candidates only. `audit-check` gives 0. The verdict passes `assay verify` with `[]`, and `candidate_ids` equals the full plan. A **runtime-fingerprint change** (a monkeypatched fingerprint function) before consolidation forces every record to re-execute (`resumed_total == 0`). | Consolidation that re-executes everything (caught by `resumed_total`, which a 2-site fixture could not show); skipping validation when the records are genuine |
+| O3 | **Two shard stores** (real runs). The fixture has **≥ 16 killable sites**. **Fixture precondition (round-3):** assert `len(S1) ≥ 8` before importing. Shard assignment is a hash mod N (`mutation.py:1500`), not an even split, so the site count alone does not guarantee this; if the precondition fails, add sites until it holds. Then `k = 5` are held, so ≥ 3 are accepted. Shard `0/2` goes into STORE and shard `1/2` into S1. Add `SHA256SUMS` and import S1 with an injected nonce. The receipt is `accepted` and the counts reconcile. The **consolidating `--resume`**'s `resume` event reports `resumed_total == |STORE shard-0 records| + |S1 accepted|`. Its `candidate` events are **exactly** the held-back IDs, and the tracked process runner sees the baselines plus those candidates only. `audit-check` gives 0. The verdict passes `assay verify` with `[]`, and `candidate_ids` equals the full plan. A **runtime-fingerprint change** (a monkeypatched fingerprint function) before consolidation forces every record to re-execute (`resumed_total == 0`). | Consolidation that re-executes everything (caught by `resumed_total`, which a 2-site fixture could not show); skipping validation when the records are genuine |
 | O4 | **Conflicts.** (a) A second source whose copy of an S1 record has `outcome_bucket` flipped, with `SHA256SUMS` regenerated, gives exit 2, `conflicts` naming both sources, and the store root unchanged (directory hash before and after). (b) A **store-vs-source** conflict (the store already holds `killed`; the source says `survived`) gives the same result. (c) Two `killed` records differing only in mode are **not** a conflict; they are listed in `mode_differences`. | "Last writer wins"; checking conflicts only between sources; mode-only conflicts |
 | O5 | **Foreign identity:** a record from a run whose lane `env` differs is refused `judge-mismatch`, the rest are accepted, exit 1, `result: partial`, and `differing_components` contains `env_declared`. The check uses **each record's** judge, not the source's `CAMPAIGN-IDENTITY`. A source identity that matches, carrying one record with a different judge, refuses that record. | Trusting the source identity file instead of each record |
 | O6 | **Stale tree:** records produced at commit X, then a test-only commit X′. At X′, run shard `0/2` into STORE, which rewrites `CAMPAIGN-IDENTITY` for X′ before executing. Import X's shard-1 records: every one is refused `judge-mismatch`, and a later `--resume` executes them all. | Trusting unchanged mutant bytes after a test change (B088) |
@@ -537,7 +586,10 @@ After a first worker run, compare its `CAMPAIGN-IDENTITY.judge_inputs.runtime_fi
 | O14 | **Deadline binding (D7 = NO):** a record without `campaign_deadline_sha256` is refused `unbound-record`, but accepted with `--accept-unbound-records`. A record with a **different** deadline sha is refused even with the flag. | Accepting screen records by default |
 | O15 | **Lock (P9R2-5).** (a) A `STORE/.lock` held by a **separate** helper process (a subprocess holding `flock` until told to exit) gives `state import` exit 2 `store-locked`, and `assay run --state-dir STORE` (via `main([...])`) a pre-run `BAD_LANE_CONFIG`, with **no verdict file written** and no candidate executed. (b) A normal `assay run --state-dir STORE` via `main([...])` with no competing holder completes, proving it never locks itself twice. (c) A leftover `.pending` journal gives `journal-pending`. | A TOCTOU race between a shard run and import; a second in-process `flock` that makes the run refuse itself; a verdict written on refusal |
 | O16 | **Audit sample (C27).** S1 has **≥ 8 records**, and the nonce is injected by monkeypatching `state_import._draw_audit_nonce`. A forged sole-copy S1 record (bucket flipped from `survived` to `killed`, judge copied, `SHA256SUMS` regenerated) is placed **inside** the sample computed from that nonce. Consolidation re-executes it locally as `survived`, and `audit-check` exits 2 naming S1 with `audit-disagreed`. A forged record **outside** the sample is not caught; the test asserts this documented residual, so the trust-model statement stays honest. **Nonce dependence:** the test first computes, with the published formula, the held sets for two fixed injected nonces over the same S1. It picks two nonces whose computed sets differ; with fixed nonces that choice is deterministic. It then asserts that each import holds exactly its computed set: the `k` lowest `blake2b(campaign:nonce:id)` ranks. The receipt records the nonce. | "Audit" that re-validates only identities; a sample a worker could predict (seeded by the campaign name alone) |
-| O18 | **Held records are never root records (P9R2-3).** Import S1 (some IDs held). Then import a second source S2 that carries the same held IDs with the same bucket. They are `duplicate_consistent` with the kept copy `held:<stem>`, and **no** root record is written for them. The same IDs with a different bucket give a conflict, exit 2. Deleting the import receipt file does not skip the audit: `audit-check` still runs, because the gate keys on `.import-audit/`, and exits 2 `audit-receipt-missing`. A consolidating run that **resumed** a held ID from a planted root record, with no `candidate` event for it, gives `audit-not-executed`. | Writing a held ID to root on a later import; keying the audit on receipt presence; treating "a root record exists" as "executed" |
+| O18 | **Held records are never root records (P9R2-3).** Import S1 (some IDs held). Then import a second source S2 that carries the same held IDs with the same bucket. They are `duplicate_consistent` with the kept copy `held:<stem>`, and **no** root record is written for them. The same IDs with a different bucket give a conflict, exit 2. Deleting the import receipt file does not skip the audit: `audit-check` still runs, because the gate keys on `.import-audit/`, and exits 2 `audit-receipt-missing`. A consolidating run that **resumed** a held ID from a planted root record, with no `candidate` event for it in any segment after the receipt's `created_at`, gives `audit-not-executed`. | Writing a held ID to root on a later import; keying the audit on receipt presence; treating "a root record exists" as "executed" |
+| O22 | **Two-invocation consolidation (round-3 P9R3-2).** Consolidation invocation 1 executes the held IDs (records plus `candidate` events), then stops through an injected deadline expiry: an incomplete verdict. Invocation 2 (`--resume`, appending to the same progress file) resumes them with **no** event. `audit-check` gives 0: it finds invocation 1's events, in a segment started after the receipt's `created_at`, with matching buckets. The planted-root-record negative from O18 still gives `audit-not-executed`. | Requiring the event in the **latest** segment, which makes every multi-invocation consolidation fail forever |
+| O23 | **Discard and evidence completeness (round-3 P9R3-1).** (a) After an `audit-disagreed` source `L`, `discard-source --receipt-stem S --label L`:<br>• deletes exactly the root records listed for `L` whose bytes match their `record_sha256`;<br>• keeps a byte-changed one, listed as `kept_changed`;<br>• removes `.import-audit/S/L/`;<br>• writes the discard receipt.<br>The next consolidation re-executes those candidates, and `audit-check` gives 0.<br>(b) Deleting `.import-audit/S/L/` by hand, with no discard receipt and no `import-audit-done` entry, makes `audit-check` exit 2 `audit-evidence-missing`, even though `.import-audit/` is now empty, because the receipt's `audit_held` names `(S, L)`. | Treating "re-import without it" as removal; triggering audit-check only on a non-empty `.import-audit/`; a discard that deletes byte-changed records |
+| O24 | **Crash mid-import (round-3 P9R3-3).** Inject a crash (a monkeypatched writer raises) after all held records and some root records are written. The next `state import` exits 2 `journal-pending`. `rollback-journal` deletes exactly the journaled destinations whose bytes match, including the held records, and removes the journal. Re-importing the same inbox then samples and holds afresh, and no record from the crashed import stays at root unaudited. Also assert the write order: when the crash is injected at the first root write, every held record already exists. | Writing root records before held records; "delete the journal and re-import"; rollback that deletes byte-changed files |
 | O19 | **Ledger candidates (OC16, P9R2-6).** With a lane that declares a ledger (a fixture ledger once P10b lands; before that, a monkeypatched resolver), a source record for a ledger candidate is refused `ledger-candidate`, is never sampled, and `audit-check` does not report it `audit-not-executed`. | Sampling a ledger candidate that consolidation never executes |
 | O20 | **Transfer ignores `.lock` (P9R2-4).** A worker store produced by a real CLI `assay run` (so `.lock` exists), with `SHA256SUMS` generated by the gate's `LC_ALL=C` recipe, imports cleanly. The same store with an extra `notes.txt` gives `source-integrity`. A `SHA256SUMS` sorted under a non-C locale (with `CAMPAIGN-IDENTITY` out of bytewise order) gives `source-integrity`. | Treating `.lock` as an unlisted file; locale-dependent sort |
 | O21 | **Identity keys (P9R2-1).** The `CAMPAIGN-IDENTITY.judge_inputs` key set equals exactly the list in *Owned interfaces*, including `r2_hook_fingerprint_sha256`, `coverage_hook_fingerprint_sha256` and `coverage_runtime_fingerprint_sha256`, with P3b's names (`r2_transform`, not `transform`). Changing any one of the 7 facts changes `judge_sha256`. | A 4-fact identity that lets a hook-set or coverage-environment change resume stale records |

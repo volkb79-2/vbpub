@@ -1,6 +1,6 @@
 # B110-P3b — R2 command transform, no-coverage R2 baseline, cold witness producer
 
-*Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md). Round 1: P3B-1..P3B-13 and carver decisions C1, C2, C3 (consistency with P6), C10 and C15. Round 2: P3B2-1..P3B2-9 and carver decisions C21 (the R2-baseline timeout is whole-lane), C22 (declared-survivor proof), C23 (the pinned `run_mutation` order) and C30 (P4 in the v14 base; tests found by name after P1).*
+*Revised 2026-09-28 after round-1, round-2 and round-3 reviews (see REVIEW-2026-09-28-round{1,2,3}.md). Round 3: P3B3-1 (every `LANE_TIMEOUT` source in steps 2–4, including the snapshot-preparation timer, maps to `R2BaselineTimeoutError`), P3B3-2 (the timeout oracle's fake runner raises `TimeoutExpired`, keyed on the manifest env; `deadline=`/`progress_phase=`), and the C22 trust-widening residual. Round 1: P3B-1..P3B-13 and carver decisions C1, C2, C3 (consistency with P6), C10 and C15. Round 2: P3B2-1..P3B2-9 and carver decisions C21 (the R2-baseline timeout is whole-lane), C22 (declared-survivor proof), C23 (the pinned `run_mutation` order) and C30 (P4 in the v14 base; tests found by name after P1).*
 
 | Field | Value |
 |---|---|
@@ -277,6 +277,13 @@ When it is used, set `_ARCHIVE_EXCEPTION_USED = True`. `test_custom_sessionfinis
 
 **Trust widening, to be documented (P3B-12).** The exception is not B105-specific in code. **Any** consumer's `tests/conftest.py` `pytest_sessionfinish`, with those four variables absent, becomes trusted for cold stops **and** for B106 prefix replay. DESIGN-GUIDE (the new cold-witness section) and CONSUMERS must state this, and must state that a consumer whose `tests/conftest.py` `pytest_sessionfinish` changes the session exit status defeats the proof. The mismatched-exit fixture (Luna set) shows the receipt check still refuses the obvious form of that.
 
+**Second trust-widening residual, to be documented with the one above (round-3 C22 note).**
+- The coverage baseline's hook set is **pinned but never vetted**. A declared survivor's proof is hook-fingerprint *equality* with the coverage baseline (C22), and that baseline's set legitimately contains pytest-cov's wrapper.
+- So a hook implementation that is registered only when pytest-cov (`_cov`) is loaded escapes both the R2 trust check and the fingerprint-equality proof.
+- In a qualifying run this can only produce a false **survivor**, which is the safe direction.
+- Through P10's declared-command fallback in the ledger audit, it could let a killable mutant be accepted into the ledger.
+- DESIGN-GUIDE (cold-witness section) and CONSUMERS state this. P10's audit documentation cross-references it.
+
 **Plugin cold stop.** In `pytest_runtest_logreport`, when `_COLD and _TARGET is None`, on the **first failed report of any phase**:
 - if `report.when == "call"`, `_STANDARD_LOOP` holds, there is no earlier/auxiliary/collection failure, `_PREFIX_OK` holds and the node ID is bounded: set `_WITNESS`, `_STOPPED_COLD = True`, `_FAILED_CALL_INDEX = _STARTED - 1`;
 - in **every** case: `_SESSION.shouldfail = "assay stopped at the first failure (cold witness)"`.
@@ -390,7 +397,11 @@ This package adds only the cold parameters and the judge-identity inputs (step 5
      - A payload-free R2 `ERROR/BAD_LANE_CONFIG` beside a passing R0 would fail `assay verify` (`_INDEPENDENT_R2_TERMINALS`), and this package must not produce it.
      - **There is no fallback to a declared-command campaign.**
    - **Deadline expiry or termination during the R2 baseline (P3B-6, revised by C21 / round-2 P3B2-1)** is **not** a proof failure, and it is also **whole-lane**.
-     - When the R2 baseline unit returns `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, or `deadline.remaining()` raises `LANE_TIMEOUT` (including P6's termination path, whose `remaining()` raises on SIGTERM), raise **`R2BaselineTimeoutError(message)`** (`BUDGET_EXCEEDED`/`LANE_TIMEOUT`). Chain it from the original error.
+     - Raise **`R2BaselineTimeoutError(message)`** (`BUDGET_EXCEEDED`/`LANE_TIMEOUT`), chained from the original error, in any of these cases:
+       - the R2 baseline unit returns `BUDGET_EXCEEDED`/`LANE_TIMEOUT`;
+       - `deadline.remaining()` raises `LANE_TIMEOUT`, including P6's termination path, whose `remaining()` raises on SIGTERM;
+       - **any other `AssayError` whose `reason_code is ReasonCode.LANE_TIMEOUT`** is raised inside steps 2–4. This includes the snapshot-preparation timer of `prepared.materialize(timeout=…)` (`isolation.py:699`), which raises `git._p22_timeout` → `AssayError(BUDGET_EXCEEDED, LANE_TIMEOUT)` from `git.py:1168` (raised at :1210/:1310/:1349). Round-3 P3B3-1.
+     - **Implementation shape (normative):** wrap steps 2–4 in **one** `try`. Map every `LANE_TIMEOUT` source listed above to `R2BaselineTimeoutError` in a single place. Every other `AssayError` propagates unchanged.
      - It goes through the same extended 4532 tuple, so `refuse_all` renders a whole-lane `BUDGET_EXCEEDED/LANE_TIMEOUT` on every declared level, the shape `cli.py:1527` already produces for a pre-run deadline refusal.
      - **Never** let it reach the `except AssayError` at ~4542, whose payload-free R2 `LANE_TIMEOUT` beside R0 PASS fails verify. A-432 is about R3 and does not accept that shape.
      - Never map a timeout to `BAD_LANE_CONFIG`.
@@ -403,9 +414,11 @@ This package adds only the cold parameters and the judge-identity inputs (step 5
       - `plan = make_attempt_plan(inject_witness_plugin(r2_plan, …).plan, receipt_path=<dir>/r2-baseline.json, target_node_id=None, manifest_path=<dir>/r2-manifest.txt)`;
       - `wants_coverage=False` and the coverage fields `None`;
       - the plain `process_runner`, not `LivenessRunner`;
-      - `timeout = deadline.remaining()`.
+      - `deadline=deadline, progress_phase="r2-baseline"`. `_execute_snapshot_unit` takes `deadline=`, not `timeout=` (`runner.py:2804`), and `progress_phase=` already exists (:2835).
 
-      Its progress `command_finished` phase is `"r2-baseline"`. Add a keyword if the phase is hard-coded. A `BUDGET_EXCEEDED`/`LANE_TIMEOUT` result raises `R2BaselineTimeoutError`, the whole-lane route above (C21).
+      Its progress `command_finished` phase is `"r2-baseline"`. Only this call passes `manifest_path=`, so only the R2 baseline's env carries `ASSAY_MUTATION_WITNESS_MANIFEST_FILE`; the timeout oracle's fake runner relies on that.
+      - A `BUDGET_EXCEEDED`/`LANE_TIMEOUT` result raises `R2BaselineTimeoutError`, the whole-lane route above (C21).
+      - Steps 2–4 sit in the single `try` that maps every `LANE_TIMEOUT` source (round-3 P3B3-1).
    5. Raise `R2CommandProofError` if:
       - the outcome is `FAIL` or `ERROR` (`R2 no-coverage baseline did not pass`);
       - `r2_facts = receipt_facts(...)` is None;
@@ -521,7 +534,7 @@ _execute_mutation_jobs plugin dir     (its own, 2609-2613; receipts named f"{ind
 | path normalization | plugin | (a) two baselines of the same project materialized under two different temp roots give an equal `hook_fingerprint_sha256`; (b) the same with `sysconfig.get_paths()` monkeypatched to a different `purelib` prefix (a relocated venv) → equal; (c) an unnamed plugin registered twice in two processes → equal (the `<anon>` token) | `tests/test_mutation_witness_unit.py` | use absolute paths → (a)/(b) unequal → red; use the raw pluggy name → (c) unequal → red |
 | collection digest parity | plugin vs `r2_command` | the plugin's `collection_sha256` equals `collection_digest` of the sidecar lines on a project with a **non-ASCII function name** `def test_é(): ...` (node ID `tests/test_u.py::test_é`, byte length ≠ character length). Parametrize IDs are ASCII-escaped by pytest 9.1.1 (`_ascii_escaped_by_config`), so `ids=["é"]` would not exercise this (P3B-2) | same | char-length netstring → red |
 | baseline refusal A5 (C1) | runner | (a) a test that passes only with coverage active (`import coverage; assert coverage.Coverage.current()`); (b) a `conftest.py` `pytest_collection_modifyitems` that reverses the order only when `pytest_cov` is not loaded → collection mismatch; (c) **duplicates:** the lane argv names the same test file twice with `--keep-duplicates` (pytest 9.1.1 renames duplicate parametrize IDs to `a0`/`a1`, so `ids=["a","a"]` cannot produce duplicates, P3B-2) → `collection_duplicates > 0`. Each → a **whole-lane** `ERROR/BAD_LANE_CONFIG` verdict: every declared claim (R0, R1 if declared, R2, R3 if declared) carries that pair, no R2 payload, and the document passes `assay verify` (`[]`) | `tests/test_b110_cold_witness.py` | render it payload-free on R2 beside a passing R0 → `assay verify` fails → red; fall back to a declared campaign → an R2 payload exists → red |
-| R2 baseline timeout (P3B-6, C21, round-2 P3B2-1) | runner | **no wall-clock race** (§3b-A). A fake `process_runner` delegates to the real runner for every call except the one whose progress/phase is `"r2-baseline"`, for which it **returns** a `CommandResult` with `BUDGET_EXCEEDED/LANE_TIMEOUT`. Second case: the fake raises the `LaneDeadline` `LANE_TIMEOUT` `AssayError` for that call, which is what P6's termination path makes `remaining()` do. Each → a **whole-lane** `BUDGET_EXCEEDED/LANE_TIMEOUT` verdict: every declared level carries that pair, there is no R2 payload and no `judgment.r2`, and `assay verify` returns `[]` | `tests/test_b110_cold_witness.py` | let it reach `except AssayError` at ~4542 → payload-free R2 `LANE_TIMEOUT` beside R0 PASS → `assay verify` fails ("disagrees with … (PASS, None)") → red; route it through `R2CommandProofError` → `BAD_LANE_CONFIG` → red |
+| R2 baseline timeout (P3B-6, C21, round-2 P3B2-1, round-3 P3B3-1/P3B3-2) | runner | **No wall-clock race** (§3b-A). A `ProcessRunner` is `(argv, *, env, cwd, timeout) -> subprocess.CompletedProcess` (`runner.py:321-323`). It never sees the progress phase and cannot return a `CommandResult`, because `BUDGET_EXCEEDED/LANE_TIMEOUT` comes only from a raised `subprocess.TimeoutExpired` (`runner.py:1255-1263`). So:<br>• **(a)** the fake `process_runner` raises `subprocess.TimeoutExpired(argv, timeout)` for the call whose `env` carries the R2 baseline's manifest-file variable (`ASSAY_MUTATION_WITNESS_MANIFEST_FILE`; only the R2 baseline sets it). It hands every other call, including R0, to the real runner, so R0 still runs a real pytest;<br>• **(b)** monkeypatch the deadline so that `remaining()` raises the `LaneDeadline` `LANE_TIMEOUT` `AssayError` once the R2 baseline begins, which is what P6's termination path does;<br>• **(c)** patch the **second** `prepared.materialize` call, the R2 baseline's, to raise `git._p22_timeout(...)`, i.e. `AssayError(BUDGET_EXCEEDED, LANE_TIMEOUT)` from the snapshot-preparation timer.<br>The R2 baseline unit is called with `deadline=deadline, progress_phase="r2-baseline"` (`_execute_snapshot_unit` takes `deadline=`, not `timeout=`, :2804; `progress_phase=` exists, :2835).<br>Each case gives a **whole-lane** `BUDGET_EXCEEDED/LANE_TIMEOUT` verdict: every declared level carries that pair, there is no R2 payload and no `judgment.r2`, and `assay verify` returns `[]`.<br>Because R0 runs a real pytest, place this test by P1's tier rules: add it to `tests/zz_slow/test_b110_cold_witness_real_runs.py`. | `tests/zz_slow/test_b110_cold_witness_real_runs.py` | let it reach `except AssayError` at ~4542 → payload-free R2 `LANE_TIMEOUT` beside R0 PASS → `assay verify` fails ("disagrees with … (PASS, None)") → red; route it through `R2CommandProofError` → `BAD_LANE_CONFIG` → red |
 | `--r2-manifest` (P3B-8, round-2 P3B2-9) | cli/runner | without `--cold-witness` → **pre-run `LaneConfigError`**: exit 2, **no verdict file written**, 0 `process_runner` calls; a tracked visible path → the same pre-run refusal; a gitignored path → the file equals the sidecar byte for byte; an unwritable destination directory at write time → whole-lane `ERROR/OUTPUT_WRITE_FAILED` that verifies `[]` | same | write non-atomically / skip the visibility check / emit a verdict for the argument refusal → red |
 | `--cold-witness` + `--shard` (P3B-8) | runner | `--shard 0/2 --cold-witness` → in-shard kills are `witness-cold` with `evidence`, and the verdict verifies | same | refuse the combination → red |
 | A6 recorded R0 (P3B-8) | runner | with `--cold-witness`, the verdict's top-level `argv_appended` contains `-p assay_mutation_witness_plugin`, `env_effective` shows the witness plugin dir on `PYTHONPATH`, and the verdict verifies | same | inject into a copy that R0 never records → red |
@@ -730,7 +743,13 @@ it is not an oracle yet.
 Verify each anchor with `grep -n`.
 
 - **README.md:**
-  - :152-160: the judge-identity inputs gain the cold policy, the effective R2 command, the transform, the R2 collection digest, the runtime fingerprint and the ledger digest;
+  - :152-160: the judge-identity inputs gain exactly A-470's canonical list:
+    - the effective R2 command (`plan=r2_plan`);
+    - `cold_witness_kills`;
+    - the transform id;
+    - the R2 baseline's `collection_sha256`, `hook_fingerprint_sha256` and `runtime_fingerprint_sha256`;
+    - the coverage baseline's `hook_fingerprint_sha256` and `runtime_fingerprint_sha256`;
+    - the ledger sha256, whenever a ledger is declared;
   - :981-988: the B110 "not shipped yet" paragraph becomes the cold-witness explanation, **including its limitation**: a cold kill does not run later tests, which could independently fail, hang or crash, so it is an existential kill witness, not a full-suite receipt.
 - **docs/DESIGN-GUIDE.md:**
   - a new "### Cold witness kills and the R2-only command (B110)" section after the B106 section (the B106 section starts at :1015; insert before the next `###`). It explains:

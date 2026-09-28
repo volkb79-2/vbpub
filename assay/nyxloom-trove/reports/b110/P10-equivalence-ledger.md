@@ -1,6 +1,13 @@
 # B110-P10 — Native Python equivalence ledger with stable site anchors (P10a design, P10b implementation, P10c gate mode)
 
-*Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).*
+*Revised 2026-09-28 after round-1, round-2 and round-3 reviews (see REVIEW-2026-09-28-round{1,2,3}.md).*
+- **Round 3:**
+  - P10R3-1: under `--equivalence-audit` the judge identity is computed unconditionally and before placement, and never skipped (O8, no-`--resume` case).
+  - Minor 1: resolution runs over all adapter sites of the entry's file, not the discovered subset.
+  - Minor 2: the full 4532 tuple is extended, never rewritten.
+  - Minor 3: the cap formula includes fixed cost and a fallback factor, and names the survivor-only p90 source.
+  - Minor 4: every audit invocation's log is retained.
+  - G3-1: P10c's header no longer says "v14 including P10b".
 - Round 1 applied P10-1..P10-10, the wrong anchors, and carver decisions C10 and C15.
 - Round 2 applies P10R2-1..P10R2-9 and carver decisions C23 (the pinned `run_mutation` order) and C24 (the receipt binds `assay_version`, the wheel digest is recorded only, reuse prints `REUSED`, the audit gets `--resume`, and a measured ledger cap).
 - **Plan N-1:** v14 merges back **without** P10b. P10b is cut from `assay-b110-v14` and merged separately, only if the screen leaves ledger candidates.
@@ -190,7 +197,13 @@ The wire anchor is the site's **current** anchor, which equals `entry.anchor` by
 
 **The cap has two parts (C24, P10R2-5):**
 - **Hard cap:** `MAX_LEDGER_ENTRIES = 200`, enforced by the loader. An empty ledger or more than 200 entries is refused at load.
-- **Operational cap:** the P10a design doc records `ledger_cap = min(200, floor(5 h × 3600 × jobs / p90_survivor_s))`, where `p90_survivor_s` is the pilot report's measured p90 full-suite survivor wall time and `jobs` is the lane's committed `jobs`. That is the number of entries whose audit fits **one** 5 h lane invocation.
+- **Operational cap (formula revised by round-3 minor note 3):** the P10a design doc records `ledger_cap = min(200, floor((5 h × 3600 − fixed_s) × jobs / (p90_survivor_s × fallback_factor)))`, where:
+  - `fixed_s` is the audit invocation's fixed cost: both baselines plus R0/R1, taken from the pilot report §2 (`coverage baseline` + `no-cov R2 baseline` rows);
+  - `p90_survivor_s` is the pilot report §3's **survivor-only elapsed p90** column (P7's template, added in round 3), not the per-stratum all-outcome p90;
+  - `fallback_factor = 2`, a conservative allowance for an A2 declared-command fallback, which runs a second full suite;
+  - `jobs` is the lane's committed `jobs`.
+
+  That is the number of entries whose audit fits **one** 5 h lane invocation, including fixed cost and possible fallbacks. `--resume` lets a larger audit finish across invocations, but the cap keeps a single invocation sufficient.
   - The operator ratifies the operational cap (Deliverable 5).
   - The screen runbook refuses to author more entries than that.
   - Because the audit has a judge-bound `--resume` (below), a larger audit still completes over several invocations without starting over. But it is outside what the operator ratified, and needs a new ratification.
@@ -341,15 +354,21 @@ assay run <lane> --cold-witness --equivalence-audit <receipt> …
 1. discovery (`job_list`);
 2. P6's campaign plan-digest check, over the **full** discovered `job_list`, **including** the ledger candidates. The qualifying run always passes `--campaign-deadline`, and that deadline's `plan_sha256` covers the full plan. Removing the ledger candidates before this check would fail it with `CampaignPlanMismatchError` after the baselines;
 3. **ledger placement:**
-   1. Resolve the entries with the strict algorithm against the discovered sites. The resolved `candidate_id` set must equal the receipt's.
+   1. Resolve the entries with the strict algorithm over **all sites the adapter generates for each entry's file**, exactly as in the "Resolution algorithm" section and O3. It is **not** over the (possibly `changed_lines`-filtered) discovered set, because uniqueness and ordinals would otherwise be computed on the wrong set (round-3 minor note 1). The resolved `candidate_id` set must equal the receipt's, and every resolved ID must also be in the discovered `job_list`, else `LedgerBindingError`.
    2. `receipt.judge_sha256` must equal this run's judge identity, and `r2_collection_sha256` and both runtime fingerprints must equal this run's baselines.
+      - **Round-3 P10R3-1:** `run_mutation` today computes the judge identity only `if state_root is not None` (`mutation.py:2353-2364`), and only after the shard step (:2327-2343). `state_root` is set only by `--resume` or `--shard` (`runner.py:4522`), and `--shard` is refused with `--equivalence-audit`. So without `--resume` the identity would not exist at this step, and an `if judge is not None and …` implementation would silently skip the primary OC9 binding.
+      - **Under `--equivalence-audit`, compute the judge identity unconditionally and before placement.** It does not depend on selection or shard. The comparison is **never** skipped.
+      - A missing identity at this point is itself a `LedgerBindingError`.
    3. **Place before resume.** Remove the ledger candidates from the job list and place them in `equivalent`, with execution `{"mode": "ledger", "anchor": "<current anchor>"}` and no `evidence`. Stored state records for those candidate IDs are **ignored**, never resumed, and counted in the existing `resume` progress event as a new key, `superseded_by_ledger: <n>`. Event names stay closed; keys are free.
 4. selection or shard. Both are refused statically with `--equivalence-audit`, so this step is inert here;
 5. resume lookup over the remaining jobs.
 
 Add a comment at the block naming the order, the same one P7 adds: `# C23: discovery → campaign digest (full list) → ledger placement → selection/shard → resume`.
 
-Any failure in steps 3.1–3.2 raises a new `LedgerBindingError(AssayError)` (`ERROR`/`BAD_LANE_CONFIG`). It is re-raised through the **whole-lane refusal path** at `runner.py:4532`, exactly like `InvalidRejudgeIdError` and P3b's `R2CommandProofError` (C1, A-458). Earlier R0/R1 measurements are discarded. An R2-only `BAD_LANE_CONFIG` beside a passing R0 would fail `verify` by design. **No candidate is counted `equivalent`.**
+Any failure in steps 3.1–3.2 raises a new `LedgerBindingError(AssayError)` (`ERROR`/`BAD_LANE_CONFIG`). It is re-raised through the **whole-lane refusal path** at `runner.py:4532`, exactly like `InvalidRejudgeIdError` and P3b's `R2CommandProofError` (C1, A-458).
+- **Extend, never rewrite, the 4532 tuple** (P3B2-7; round-3 minor note 2).
+- In this base it already reads `except (mutation.InvalidRejudgeIdError, <P6's CampaignPlanMismatchError>, mutation.R2CommandProofError, mutation.R2ManifestWriteError, mutation.R2BaselineTimeoutError): raise`.
+- P10b appends `LedgerBindingError`, giving the full tuple `(InvalidRejudgeIdError, CampaignPlanMismatchError, R2CommandProofError, R2ManifestWriteError, R2BaselineTimeoutError, LedgerBindingError)`. Earlier R0/R1 measurements are discarded. An R2-only `BAD_LANE_CONFIG` beside a passing R0 would fail `verify` by design. **No candidate is counted `equivalent`.**
 
 **Additionally:**
 - `judgment.r2.equivalence_ledger = {path, sha256, entry_count, audit_sha256}`, where `audit_sha256` is the sha256 of the receipt bytes.
@@ -367,6 +386,7 @@ Any failure in steps 3.1–3.2 raises a new `LedgerBindingError(AssayError)` (`E
   - the gate log **of the invocation that actually ran the audit**, with its `B110_LEDGER_AUDIT_EXIT=0` marker;
   - the retained audit state dir.
 - **Reuse (C24, P10R2-2).** A later gate invocation that finds an existing accepted receipt prints `B110_LEDGER_AUDIT_REUSED=1` and **never** `B110_LEDGER_AUDIT_EXIT=0`. A reuse marker proves nothing about an in-gate audit, so the qualifying runbook (plan §9.2/§9.3) retains the **original** audit invocation's gate log next to the receipt. A receipt with no retained original `EXIT=0` log is not trusted.
+- **Multi-invocation audits (round-3 minor note 4).** With `--resume`, the invocation that finally prints `EXIT=0` may have executed **no** entries: all were resumed from earlier invocations' records. The runbook therefore retains **every** audit invocation's gate log, not only the last, and cites them all with the receipt.
 - The B105 checker extension re-validates the receipt against source. The qualifying runbook (plan §9.3) retains all of it.
 
 **v14 wire and verifier rules.** **P3a implements these** as rules **X8–X12** in the schema, the model and `verify.py`:
@@ -403,7 +423,7 @@ There is no change to `judge_mutation`:
 | OC14 | Cross-interpreter stability | (a) the `canon` serializer omitting `None`/`[]` fields; (b) pin the authoring interpreter (`python` header, loader refusal); (c) `ast.dump` | (a) **and** (b). (c) is rejected: `ast.dump` output changed in 3.13 | Probe E5 on python3.13 versus python3.14 | no |
 | OC15 | Scope binding (`scope_sha256`) | (a) smallest enclosing def/class node, or the top-level statement at module level; (b) the whole module; (c) none | (a). (b) makes any edit in the file stale; (c) leaves `reason` unbound to the reviewed code | Probe E6 | **yes** (A-465 amendment, C10). **Operator ratification required before P10b dispatch** |
 | OC16 | Receipt re-run policy | (a) `_write_new`; a commit-bound path; the gate mode moves a non-accepted receipt aside and re-runs with `--resume`; it reuses an accepted receipt with the `REUSED` marker, never `EXIT=0` (C24); (b) overwrite | (a) | P10c | no |
-| OC17 | Operational ledger cap (C24) | (a) `min(200, floor(5 h × 3600 × jobs / p90_survivor_s))` from the pilot report; (b) the hard cap of 200 only | (a) | The pilot report's p90 survivor time | **yes** (operator ratification with Deliverable 5) |
+| OC17 | Operational ledger cap (C24) | (a) `min(200, floor((5 h × 3600 − fixed_s) × jobs / (p90_survivor_s × 2)))`, from the pilot report's §2 fixed costs and §3 survivor-only elapsed p90 (round-3 minor note 3); (b) the hard cap of 200 only | (a) | The pilot report's survivor-only elapsed p90 and fixed baseline costs | **yes** (operator ratification with Deliverable 5) |
 
 ### Invariants (any design must keep them)
 
@@ -496,7 +516,8 @@ There is no change to `judge_mutation`:
 - **Config:** `judge.mutation.equivalence_ledger`, as specified in the design.
 - **Runner/mutation plumbing:**
   - the static and dynamic qualifying-consumption flow above;
-  - `LedgerBindingError` added to the `runner.py:4532` whole-lane re-raise tuple, beside `InvalidRejudgeIdError` and `R2CommandProofError`;
+  - `LedgerBindingError` **appended** to the existing `runner.py:4532` whole-lane re-raise tuple (extend, never rewrite). The full tuple is `(InvalidRejudgeIdError, CampaignPlanMismatchError, R2CommandProofError, R2ManifestWriteError, R2BaselineTimeoutError, LedgerBindingError)`;
+  - under `--equivalence-audit`, the judge identity is computed unconditionally and before placement, and the OC9 comparison is never skipped (round-3 P10R3-1);
   - `equivalence_ledger_sha256` passed into the judge identity whenever the lane declares a ledger (P3b's input);
   - ledger placement **before** resume lookup, and `superseded_by_ledger` in the `resume` event.
 - **`tools/b105_report_check.py`** (P3d's version is in the base). When the report's `judgment.r2.equivalence_ledger` is non-null, the checker requires `--ledger-audit PATH` and replaces P3d's `ledger binding not implemented (B110-P10b)` refusal with these checks, each with its own substring:
@@ -558,7 +579,7 @@ There is no change to `judge_mutation`:
 7. Update `tests/fixtures/dataclass-contract.json` with P1's documented regeneration command (C15) for `SiteAnchor`, `LedgerEntry`, `Ledger` and any other new dataclass.
 8. Docs, then gates, then the report.
 
-**P10c** (off the integration line, after v14 including P10b, and P7b, have merged)
+**P10c** (off the integration line, after v14, P10b (merged separately from v14, and only if the ledger is non-empty) and P7b have merged)
 1. Add a `b110-ledger-audit` arm to `tools/self-qualification-gate.sh`'s lane `case`, after the shared clone, build and venv steps, in the same block structure P7b uses for `b110-screen`. It does the following:
    ```bash
    receipt=".assay/ledger-audit-${source_commit:0:12}.json"
@@ -585,7 +606,7 @@ There is no change to `judge_mutation`:
    - The JSON path is the `assay lanes --json` shape at `cli.py:1972-2060`: `lanes` is a **list** of entries with `name`, and `mutation` is `MutationConfig.as_declared()` or `null`. It echoes `equivalence_ledger` only when declared, because P10b adds it to `as_declared`. Pin this in a `tests/test_cli_lanes_json.py` case.
    - It passes no campaign deadline.
    - It always passes `--resume`, so a re-invocation continues from `.assay/b110-audit-state-<commit12>` (C24).
-   - **Runbook (C24).** The controller retains the gate log of the invocation that printed `B110_LEDGER_AUDIT_EXIT=0` next to the receipt, and cites it in the qualifying evidence. A `REUSED` log never replaces it.
+   - **Runbook (C24; round-3 minor note 4).** The controller retains **every** audit invocation's gate log next to the receipt, including the one that printed `B110_LEDGER_AUDIT_EXIT=0` and every earlier `--resume` invocation that executed entries, and cites them in the qualifying evidence. A `REUSED` log never replaces them.
 2. In `run_and_verify_lane`'s `self-qualification` arm, replace P3d's `# B110-P10c:` marker. When the same `assay lanes --json` query yields a non-empty ledger path, append `--equivalence-audit ".assay/ledger-audit-${source_commit:0:12}.json"` to `lane_flags` and pass `--ledger-audit` with the same path to the checker. Otherwise pass neither.
 3. Add a `[lanes.b110-ledger-audit]` run-gate lane, shaped like P7b's `b110-screen`:
    - tester-unified, 3 CPU / 2g / 8g;
@@ -617,7 +638,7 @@ There is no change to `judge_mutation`:
 | O7 | Qualifying run with an accepted receipt: the tracked process runner shows **no** candidate invocation for the ledger candidates; they are in `equivalent` with mode `ledger`; R2 PASS when all others are killed; `assay verify` accepts; `mutation_pct` ignores them | Executing them anyway, or counting them in the score |
 | O7b | Resume interplay: an unaudited screen run in the same state dir wrote `survived` records for the ledger candidates; the audited qualifying `--resume` places them as `ledger` equivalents, reports `superseded_by_ledger: n`, and never resumes those records | Resume before placement |
 | O7c | **C23 with a deadline (P10R2-3).** In-process `campaign init` (P6) over the full plan, then `assay run --cold-witness --equivalence-audit R --campaign-deadline D` → runs, ledger candidates placed, R2 PASS. A second deadline file whose `plan_sha256` was computed over the plan **minus** the ledger candidates → a whole-lane `CampaignPlanMismatchError` refusal, and no candidate is placed or executed | Placement before P6's digest check: the full-plan deadline is refused, and the reduced one is accepted |
-| O8 | Binding negatives, each a **whole-lane** `ERROR`/`BAD_LANE_CONFIG` with zero equivalents and `assay verify` `[]` on the refusal verdict:<br>• static: a receipt from another commit; `result: refused`; `result: incomplete`; a ledger whose `reason` text was edited after the audit (sha changes); `--equivalence-audit` without `--cold-witness`; with `--shard`;<br>• dynamic: a receipt whose `judge_sha256` came from a different lane `env`; a receipt whose `r2_runtime_fingerprint_sha256` differs; a receipt whose candidate set is missing one resolved ID | Weak binding; R2-only refusals that fail verify |
+| O8 | Binding negatives, each a **whole-lane** `ERROR`/`BAD_LANE_CONFIG` with zero equivalents and `assay verify` `[]` on the refusal verdict:<br>• static: a receipt from another commit; `result: refused`; `result: incomplete`; a ledger whose `reason` text was edited after the audit (sha changes); `--equivalence-audit` without `--cold-witness`; with `--shard`;<br>• dynamic: a receipt whose `judge_sha256` came from a different lane `env`; a receipt whose `r2_runtime_fingerprint_sha256` differs; a receipt whose candidate set is missing one resolved ID;<br>• **dynamic, no `--resume` (round-3 P10R3-1):** `assay run --cold-witness --equivalence-audit R` **without** `--resume` or `--state-dir`, where R's `judge_sha256` came from a different lane `env` → still a whole-lane `LedgerBindingError` (the identity is computed unconditionally); a matching R without `--resume` → R2 PASS with the entries placed | Weak binding; R2-only refusals that fail verify; an `if judge is not None` guard that silently skips the OC9 comparison when no state root is set |
 | O9 | Every candidate ledgered → `INCONCLUSIVE`/`ALL_MUTANTS_EQUIVALENT` | A-223d regression |
 | O10 | Lane ledger declared with no audit flag → candidates execute; survivors stay `survived`; `equivalence_ledger: null`; plan event `declared-unaudited` | A silent claim |
 | O11 | `b105_report_check` L1–L5 refuses each of these with its substring:<br>• a ledger sha that differs from the `git show` bytes;<br>• a ledger path differing from the committed lane key;<br>• a missing `review_ref` file at the commit;<br>• a receipt whose bytes differ from `audit_sha256`;<br>• a receipt for a different `assay_version`.<br>A receipt whose `wheel_sha256` differs but everything else matches is **accepted** (C24) | Self-reported ledger; comparing a non-reproducible wheel digest |
