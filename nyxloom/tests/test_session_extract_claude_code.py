@@ -406,6 +406,35 @@ def test_sidechain_records_still_dropped_as_noise_alongside_a_primary_thread(tmp
     assert not any("fan-out noise" in e.text for e in events)
 
 
+def test_sidechain_askuserquestion_reply_keeps_its_question_metadata(tmp_path):
+    records = [
+        _rec(type="assistant", uuid="side-a1", isSidechain=True,
+             timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "side-qa", "name": "AskUserQuestion",
+                 "input": {"questions": [{
+                     "question": "Which sidechain label?",
+                     "options": [{"label": "Yes"}, {"label": "No"}],
+                 }]},
+             }]}),
+        _rec(type="user", uuid="side-u1", isSidechain=True,
+             timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": [{
+                 "type": "tool_result", "tool_use_id": "side-qa",
+                 "content": 'The user answered: "Which sidechain label?"="Yes"',
+             }]}),
+    ]
+    fp = tmp_path / "agent-sidechain.jsonl"
+    fp.write_text("\n".join(json.dumps(record) for record in records) + "\n",
+                  encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    qa = next(event for event in events if event.kind is EventKind.QA_PAIR)
+    assert qa.text == (
+        "INTERVIEW: Which sidechain label?\n- Yes\n- No\n\nOPERATOR: Yes"
+    )
+
+
 def test_is_compact_summary_flag_is_a_lifecycle_marker(tmp_path):
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z", isCompactSummary=True,
