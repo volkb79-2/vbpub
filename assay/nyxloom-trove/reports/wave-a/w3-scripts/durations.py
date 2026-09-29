@@ -10,8 +10,9 @@ from coupling import expected_dir  # noqa: E402
 t = defaultdict(float)
 n = defaultdict(int)
 for tc in ET.parse(sys.argv[1]).getroot().iter("testcase"):
-    f = tc.get("classname", "").split(".")[1] + ".py" if "." in tc.get("classname", "") else ""
-    d = expected_dir(f) or "root"
+    dotted = tc.get("classname") or tc.get("name", "")
+    f = next((part + ".py" for part in dotted.split(".") if part.startswith("test_")), "")
+    d = (expected_dir(f) if f else "") or "root"
     t[d] += float(tc.get("time", 0))
     n[d] += 1
 tot = sum(t.values())
