@@ -8,8 +8,11 @@ vocabulary threading: :func:`~assay.mutation._classify_mutant_result` and
 up.
 
 Kept as a direct UNIT test against the two classifier functions (never a
-real subprocess, never a real mutation sweep -- that belongs to
-`test_cli_run.py`'s real end-to-end fixture) so this module answers exactly
+real subprocess, never a real mutation sweep). The liveness monitor's
+clock/process/resource decisions are covered by deterministic injected
+observations in `test_liveness_runner_monitor.py`; the mutation pipeline's
+bucket and evidence persistence are covered by
+`test_mutation_hung_evidence_persistence.py`. This module answers exactly
 one question: given a `CommandResult`, which bucket name comes out.
 """
 

@@ -1,323 +1,49 @@
-"""Operator CLI. PACKAGE P10.
+"""Domain handlers used by Nyxloom's installed command registries.
 
-Thin argparse wiring over the modules; every state-changing verb appends an
-audited event (actor OPERATOR with $USER). Output is plain aligned text
-tables (no rich/click deps). Exit codes: 0 ok, 1 findings/failures, 2 usage.
-
-INTERFACE CONTRACT (frozen) — subcommands:
-
-  project add <id> <root>     config.register_project + paths.ensure_layout
-                              + PROJECT_REGISTERED event.
-  project list                registry table.
-  lint [path ...]             no args -> lint_project for every registered
-                              project; exit 1 if any has_blocking. Prints
-                              'PATH:LINE RULE SEVERITY MESSAGE' lines.
-  doctor [--project-id PROJECT_ID] [--rebuild [--write]]
-                              findings table; exit 1 on any severity in
-                              {critical, error}. --rebuild prints diffs.
-  status [--project-id PROJECT_ID] per task: id, state, since, attempt route,
-                              cost, notes. Reads statefiles only.
-  resync <project> [--apply] [--apply-content-merges]
-                              PACKAGE RP01 2026-07-21 + RP02 (docs/plan-
-                              state-integrity.md Part B): ground-truth
-                              re-baseline. Reads statefiles + trove handoff
-                              presence + git merge facts (branch --merged
-                              AND a content-check fallback for a squash/
-                              CAS/deleted-branch merge), plans via
-                              resync.resync_plan, prints a table (task,
-                              believed, ground-truth, proposed action,
-                              evidence). Without --apply: PURE READ-ONLY,
-                              unchanged RP01 dry-run (no writes, no
-                              events). With --apply (RP02): emits the
-                              audited transitions via
-                              resync.resync_apply/storage.append_and_apply
-                              (actor RESYNC) for every ACTION_ADVANCE row
-                              backed by a high-confidence `git branch
-                              --merged` hit; a row backed ONLY by the
-                              content-check channel is left flagged unless
-                              --apply-content-merges is ALSO passed (lower-
-                              confidence evidence -- see resync.py's
-                              module docstring). ACTION_NEEDS_OPERATOR rows
-                              are NEVER auto-applied. Idempotent: a second
-                              --apply performs no further writes. Allowed
-                              on a PAUSED project (operator verb, not
-                              daemon dispatch -- resync a project before
-                              resuming it is the whole point).
-  render                      render.render_all(registry); prints www path.
-  migrate-store <project>     PACKAGE SP02 2026-07-21 (docs/plan-state-
-                              integrity.md Part A.3): imports a project's
-                              file-backend events.jsonl into the SQLite
-                              backend (storage_sqlite), verifies ZERO
-                              divergence against the on-disk statefiles,
-                              then retires the source (events.jsonl ->
-                              events.jsonl.pre-sqlite, kept as a backup,
-                              never deleted). Idempotent. See
-                              migrate_store.migrate for the full
-                              contract; only ever run against a live
-                              project at the SP03 cutover (not here).
-  daemon [--foreground]       Daemon(registry).run() (foreground only in
-                              the pilot; systemd/tmux owns daemonization).
-  auth show                   Explicitly print the current HTTP operator
-                              identity and credential from daemon instance
-                              state (never from project config). Exit 1 with
-                              the reason if the store is not trustworthy.
-  auth bootstrap [--operator ID]
-                              Create the 0600 credential store if absent and
-                              print the credential for first dashboard use.
-  auth rotate [--operator ID] [--force]
-                              Atomically issue a new credential. The daemon
-                              reads the store per request, so the old value is
-                              invalid immediately without restart. --force
-                              recovers a store the loader refuses (mode,
-                              owner, corruption) and restarts generation at 1.
-                              Audit trail: nyxloom events _nyxloom-control
-                              NB: this credential governs the HTTP control
-                              plane only. The ntfy feedback topic is a
-                              separate ingress with no verifiable sender, so
-                              its mutating verbs are refused unless the
-                              deployment sets NYXLOOM_CHANNEL_OPERATOR_ID --
-                              see control_auth.channel_operator.
-  tick [--project-id PROJECT_ID] daemon.run_once — one pass, prints action
-                              count. THE debug/fallback mode.
-  decide <project> <D-id> --choose TEXT [--note TEXT]
-                              decisions.decide(authority=$USER) +
-                              DECISION_RESOLVED event (decision_id set).
-  discuss <project> <D-id>    prints decisions.discuss command string.
-  intake <project> <intake_id> <message>
-                              P29 2026-07-16: feature-intake chat verb,
-                              parallel to `discuss` -- advances one
-                              intake_chat.advance_intake turn (launches on
-                              the first call for a given intake_id, resumes
-                              on subsequent calls) and prints the agent's
-                              reply. The programmatic entry point P30's UI
-                              calls.
-  intake-bridge poll <project> [--transport mmctl|rest]
-                              B9 2026-09-09 (nyxloom-P109): ONE poll of the
-                              Mattermost intake channel -> at most one
-                              intake_chat turn -> reply posted via
-                              notify.send() -> exit. No loop, no daemon; a
-                              future scheduled job (B20) runs this verb.
-                              Exit 1 when the ingress is refused (no named
-                              channel operator) AND, via main()'s catch-all,
-                              on any error -- a BridgeError from an
-                              unreadable cursor or an unparseable payload
-                              included. Exit 0 is therefore the only "the
-                              poll decided something", and it covers an
-                              unconfigured bridge and an empty channel too.
-                              A scheduled consumer must not read a 1 as
-                              "refused" specifically. A
-                              separate verb GROUP because `intake` above is
-                              a frozen three-positional contract.
-  reject <project> <task> [--note TEXT]
-                              P17 2026-07-15: merge-gate rejection.
-                              MERGE_READY -> REVIEW_REJECTED via
-                              TASK_TRANSITIONED (actor OPERATOR $USER); the
-                              task not being MERGE_READY -> error, no event
-                              written. Lets a merge authority (human or a
-                              future auto-gate) that rejects AT the gate
-                              route the task back to rework (re-enters
-                              QUEUED the normal REVIEW_REJECTED way) without
-                              a SUPERSEDE + statefile reset.
-  merge <project> <task> [--commit SHA]
-                              P17 2026-07-15: records a manual merge (SPEC
-                              §7: auto-merge disabled). MERGE_READY ->
-                              MERGED + MERGE_RECORDED{merge_commit}; commit
-                              defaults to `git rev-parse HEAD` of the
-                              project root (the REAL merge commit) rather
-                              than a hand-padded placeholder. Prints the
-                              recorded commit.
-  pause <project> [task]      touch pause flag + PAUSE_SET event;
-  resume <project> [task] [--force]
-                              remove + PAUSE_CLEARED. (Project-level pause
-                              writes the flag file; task-level also flows
-                              into the statefile via the event projection.)
-                              PACKAGE RP03 2026-07-27: project-level resume
-                              (no task) first dry-runs the RP01 resync
-                              planner (reused, not reimplemented) and
-                              REFUSES if any task's ground truth has
-                              drifted from its believed state -- printing
-                              the drifted task_id(s)/evidence plus the
-                              exact repair command (`nyxloom resync
-                              <project>` / `--apply`). A refusal writes
-                              NOTHING (no unlink, no event) -- rerunning
-                              without --force refuses identically.
-                              --force resumes anyway and records
-                              `{"forced": true, ...}` on the PAUSE_CLEARED
-                              event. No drift -> resumes silently, exactly
-                              as before RP03. Task-level resume is
-                              DELIBERATELY NOT guarded (see cmd_resume's
-                              docstring for the argument).
-  leases                      leases.holder_info for every mutex declared
-                              by any registered project (project + host).
-  digest <project> [--since SEQ]   prints notify.digest.
-  events <project> [--since SEQ] [--type T] [--tail] [--json]
-                              PACKAGE SP04 2026-07-21 (docs/plan-state-
-                              integrity.md A.3): the greppability bridge --
-                              dumps the event store as JSONL to stdout via
-                              storage.iter_events, which is backend-agnostic
-                              (the SQLite store),
-                              restoring `| jq` / `| lnav` over the event log
-                              regardless of backend. --since/--type filter
-                              (--type unchanged from the original P10 debug
-                              verb); --json is an explicit alias for the
-                              already-JSONL default output (no other output
-                              mode exists); --tail polls for new appends
-                              after the initial dump and follows them
-                              (KeyboardInterrupt during the poll -> clean
-                              exit 0). Reads only -- never writes an event
-                              or a statefile. An unknown/never-written
-                              project is not an error: iter_events yields
-                              nothing for it, so nothing is printed and the
-                              exit code is 0.
-  version                     nyxloom.__version__.
-  free-models list [--source NAME]
-                              D-R12 (docs/routing-model-redesign.md,
-                              src/nyxloom/free_models.py): discover
-                              currently-free models across every ENABLED
-                              pluggable source (OpenRouter + configurable
-                              OpenAI-compatible providers) and print them.
-                              Read-only -- no routes.toml write.
-  free-models refresh [--dry-run] [--source NAME]
-                              D-R12: discover + regenerate routes.toml's
-                              `[tiers.free-high]` + `[routes.auto-*]`
-                              managed block from the same discovery pass.
-                              Never touches other tiers or hand-authored
-                              routes (free_models.write_routes_toml).
-                              --dry-run computes and prints the identical
-                              plan without writing.
-  route doctor [--no-probe]   BACKLOG B1 (src/nyxloom/route_doctor.py):
-                              schema-validate every routes.toml route/tier
-                              and live-probe each route via adapters.probe
-                              (the same probe daemon.py's _provider_ok
-                              memoizes). Read-only -- never writes routes.
-                              toml, never dispatches a task. Prints a
-                              per-route OK/problem table + findings; exits 1
-                              on any critical/error finding (cmd_doctor's
-                              rule). --no-probe restricts to schema
-                              validation only (offline-safe, no subprocess/
-                              network).
-  init <project_folder>       PACKAGE P23. Scaffold nyxloom-trove/ into
-                              <project_folder> from this package's bundled
-                              templates (STANDARD.md + AUTHORING.md copied
-                              verbatim, a fresh nyxloom.toml with [project]
-                              id = basename(<project_folder>)). Refuses
-                              (exit 1) if <project_folder>/nyxloom-trove/
-                              already exists -- never overwrites. Missing
-                              <project_folder> -> exit 2 (argparse usage).
-                              PACKAGE F2: the scaffold itself now lives in
-                              onboarding.scaffold_trove; this verb is a
-                              thin wrapper around it.
-  onboard <project_folder> [--maturity empty|partial|mature]
-          [--docs present|absent] [--mode derive-from-code|
-          code-good-docs-absent|greenfield-define-it]
-          [--scan-path PATH ...]
-                              PACKAGE F2 2026-07-17: the non-AI onboarding
-                              wizard + spine instantiation (docs/nyxloom-
-                              operating-model.md §2, onboarding.py). Ensures
-                              a trove exists (reusing the `init` scaffold
-                              above if none does -- never duplicates it),
-                              then instantiates any MISSING direction-spine
-                              doc (1-north-star.md .. 4-backlog-inbox.md) with
-                              minimal-valid frontmatter, wires any MISSING
-                              nyxloom.toml spine key, and records the wizard
-                              answers to
-                              <trove>/onboarding-answers.json. Idempotent:
-                              an already-present spine doc / already-set
-                              config key is left untouched. Deterministic,
-                              scriptable, no AI/LLM invoked -- the AI scan
-                              (F3, `--scan`) and guided questionnaire (F4b,
-                              `--questionnaire`) are separate flags, below.
-                              `--questionnaire` (PACKAGE F4b 2026-07-17):
-                              requires a STORED assessment (`--scan` this
-                              call or a prior one) -- errors clearly (exit
-                              1, no dispatch) without one. Dispatches the
-                              guided one-shot questionnaire agent, drafts
-                              the direction spine via F4a's spine_writer,
-                              self-lints it, and restores the prior spine
-                              content on any failure (see
-                              onboarding_questionnaire.py).
-
-main(argv=None) -> int. Import module functions lazily inside handlers so
-`nyxloom version` works even if an optional module is broken; handlers
-catch NyxloomError-family exceptions and print 'error: ...' to stderr
-(exit 1), never tracebacks (tracebacks only with --debug global flag).
+The public grammar, generated help, and dispatch live in :mod:`cli_registry`.
+Handlers keep their lazy imports and domain-specific safeguards here.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__
+import argparse
 
 
-def cli_headline() -> str:
-    return f"NYXLOOM {__version__} — operator CLI"
+def _bootstrap_logging(args=None, *, persist: bool = True) -> None:
+    """Configure Nyxloom diagnostics only after a command has parsed.
 
-
-class NyxloomArgumentParser(argparse.ArgumentParser):
-    """Keep every argparse diagnostic tied to the running nyxloom build."""
-
-    def add_subparsers(self, **kwargs):
-        """Use the headline-aware parser at every command depth."""
-        kwargs.setdefault("parser_class", type(self))
-        return super().add_subparsers(**kwargs)
-
-    def format_help(self) -> str:
-        return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
-
-    def format_usage(self) -> str:
-        return f"{cli_headline()}\n{argparse.ArgumentParser.format_usage(self)}"
-
-    def error(self, message: str) -> None:
-        self._print_message(f"{cli_headline()}\n", sys.stderr)
-        self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
-        self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
-        self.exit(2)
-
-
-def _bootstrap_logging() -> None:
-    """PACKAGE P05c: every OTHER module this CLI dispatches into
-    (config/lint/decisions/backlog_items/frontmatter/render/...) now carries
-    `log.debug`/`log.info`/`log.warning` calls. structlog's OWN default (when
-    `log.configure()` has never been called by anyone in the process) is an
-    unfiltered PrintLogger straight to stdout -- see structlog's docs on its
-    pre-configure default. A short-lived `nyxloom` CLI invocation (unlike the
-    persistent daemon, which wires this in `Daemon.run()` via P02's
-    `resolve_level()`) never otherwise calls `log.configure()`, so without
-    this bootstrap the FIRST log call any dispatched command reaches would
-    print a raw structlog line into the middle of this CLI's stdout/stderr --
-    corrupting the exact `doctor`/`status` output contract this package's
-    own byte-unchanged oracle guards (see docs/plan-logging.md P05c). Kept
-    intentionally minimal: `console=False` so nothing but a JSONL file is
-    ever written (the CLI's own stdout/stderr stays exactly the print
-    statements below, untouched); the level honors NYXLOOM_LOG_LEVEL (the
-    same env D-L3/resolve_level's layer 2 the daemon honors) so `nyxloom
-    doctor`/`lint`/etc. share the daemon's one nyxloom.jsonl stream at a
-    consistent verbosity, falling back to INFO on an unset/invalid value.
-    Never imports daemon.py (that would defeat `nyxloom version`'s
-    resilience to a broken optional module -- see this module's own
-    docstring on lazy imports)."""
+    Local authoring and harness commands configure a quiet in-memory logging
+    path so structlog cannot corrupt stdout, but they do not create host state.
+    Operator commands retain the shared host JSONL log. ``--log-level`` wins
+    over the environment default; ``--quiet`` and ``--debug`` follow the
+    cli-extended meanings.
+    """
     from . import log as log_module, paths
 
-    level = os.environ.get("NYXLOOM_LOG_LEVEL", "info")
+    explicit = getattr(args, "log_level", None) if args is not None else None
+    if explicit is not None:
+        level = explicit
+    elif args is not None and bool(getattr(args, "quiet", False)):
+        level = "warning"
+    elif args is not None and (
+        bool(getattr(args, "debug", False))
+        or bool(getattr(args, "debug_raw", False))
+    ):
+        level = "debug"
+    else:
+        level = os.environ.get("NYXLOOM_LOG_LEVEL", "info")
+
+    log_dir = paths.logs_dir() if persist else None
     try:
-        log_module.configure(level=level, log_dir=paths.logs_dir(), console=False)
+        log_module.configure(level=level, log_dir=log_dir, console=False)
     except ValueError:
-        log_module.configure(level=log_module.INFO, log_dir=paths.logs_dir(), console=False)
-    except OSError:  # pragma: no cover -- defensive; needs an unwritable state dir to trigger
-        # Defensive (mirrors this module's own "nyxloom version works even
-        # if an optional module is broken" resilience intent, above): a
-        # state dir that cannot be created/written (read-only HOME, full
-        # disk) must never take the whole CLI down over a diagnostics
-        # side-channel. structlog's own pre-configure default (unfiltered
-        # PrintLogger to stdout) is worse than no file handler at all here,
-        # so fall back to a level-gated, handler-less config: WARNING+ still
-        # risks stdlib's `lastResort` stderr fallback in this one degraded
-        # case, but DEBUG/INFO (this package's own added calls) stay silent.
+        log_module.configure(level=log_module.INFO, log_dir=log_dir, console=False)
+    except OSError:
         log_module.configure(level=log_module.INFO, log_dir=None, console=False)
 
 
@@ -395,18 +121,29 @@ def cmd_project_list(args) -> int:
     return 0
 
 
-def cmd_lint(args) -> int:
-    """lint [path ...]"""
-    from . import config, lint
+def _print_lint_results(all_findings: dict) -> int:
+    has_error = False
+    for relpath in sorted(all_findings):
+        for finding in all_findings[relpath]:
+            line = finding.line if finding.line is not None else "-"
+            print(f"{relpath}:{line} {finding.rule} {finding.severity} {finding.message}")
+            if finding.severity == "error":
+                has_error = True
+    if not all_findings:
+        print("clean")
+    return 1 if has_error else 0
 
-    registry = config.load_registry()
+
+def cmd_lint_local(args) -> int:
+    """Lint explicit handoff paths or the project containing the current cwd."""
+    from . import lint
+
     all_findings = {}
-
-    if args.path:
-        # Lint specific paths - each against ITS OWN owning project's config
-        for path_str in args.path:
+    paths_to_check = list(args.path or [])
+    if paths_to_check:
+        for path_str in paths_to_check:
             path = Path(path_str)
-            cfg = lint.resolve_project_for_path(path, registry)
+            cfg = lint.resolve_project_for_path(path, {})
             if cfg is None:
                 all_findings[path_str] = [lint.unresolved_project_finding(path)]
                 continue
@@ -414,39 +151,34 @@ def cmd_lint(args) -> int:
             if findings:
                 all_findings[path_str] = findings
     else:
-        # Lint all registered projects
-        for pid, root in registry.items():
-            try:
-                cfg = config.ProjectConfig.load(root)
-                findings_dict = lint.lint_project(cfg)
-                all_findings.update(findings_dict)
-            except Exception as exc:
-                # Lint is a ship gate.  A project whose config cannot be
-                # loaded is an error, not an empty set of findings.
-                key = str(root / "nyxloom-trove" / "nyxloom.toml")
-                all_findings[key] = [lint.LintFinding(
-                    rule="L0",
-                    severity="error",
-                    message=(
-                        "project config could not be loaded: "
-                        f"{type(exc).__name__}: {str(exc)[:300]}"
-                    ),
-                    path=key,
-                )]
+        cfg = lint.resolve_project_for_path(Path.cwd(), {})
+        if cfg is None:
+            path = Path.cwd()
+            all_findings[str(path)] = [lint.unresolved_project_finding(path)]
+        else:
+            all_findings = lint.lint_project(cfg)
+    return _print_lint_results(all_findings)
 
-    # Print findings
-    has_error = False
-    for relpath in sorted(all_findings.keys()):
-        for finding in all_findings[relpath]:
-            line = finding.line if finding.line is not None else "-"
-            print(f"{relpath}:{line} {finding.rule} {finding.severity} {finding.message}")
-            if finding.severity == "error":
-                has_error = True
 
-    if not all_findings:
-        print("clean")
+def cmd_lint_registered(args) -> int:
+    """Lint every project registered in the local host registry."""
+    from . import config, lint
 
-    return 1 if has_error else 0
+    all_findings = {}
+    for _project_id, root in config.load_registry().items():
+        try:
+            cfg = config.ProjectConfig.load(root)
+            all_findings.update(lint.lint_project(cfg))
+        except Exception as exc:
+            key = str(root / "nyxloom-trove" / "nyxloom.toml")
+            all_findings[key] = [lint.LintFinding(
+                rule="L0",
+                severity="error",
+                message=("project config could not be loaded: "
+                         f"{type(exc).__name__}: {str(exc)[:300]}"),
+                path=key,
+            )]
+    return _print_lint_results(all_findings)
 
 
 def cmd_doctor(args) -> int:
@@ -455,8 +187,11 @@ def cmd_doctor(args) -> int:
 
     registry = config.load_registry()
 
-    if args.project_id:
-        projects = [args.project_id] if args.project_id in registry else []
+    project_id = getattr(args, "project_id", None)
+    if project_id:
+        if project_id not in registry:
+            raise ValueError(f"unknown registered project id: {project_id}")
+        projects = [project_id]
     else:
         projects = list(registry.keys())
 
@@ -468,7 +203,7 @@ def cmd_doctor(args) -> int:
     # It is still a plain CLI invocation -- no Daemon constructed, no HTTP
     # server started -- which is what makes its own non-zero exit code an
     # alarm path independent of the daemon being alive at all.
-    if args.liveness:
+    if getattr(args, "liveness", False):
         live_findings = []
         # One shared transport-probe cache for the whole invocation: every
         # registered project resolves the same NYXLOOM_NTFY_URL by default, so
@@ -502,7 +237,7 @@ def cmd_doctor(args) -> int:
     all_findings.extend(doctor.doctor_host())
 
     # If rebuild mode, show diffs
-    if args.rebuild:
+    if getattr(args, "rebuild", False):
         for pid in projects:
             replayed, diffs = doctor.rebuild(pid, write=False)
             if diffs:
@@ -510,7 +245,7 @@ def cmd_doctor(args) -> int:
                 for diff in diffs[:50]:  # Cap at 50 diffs per oracle
                     print(f"  {diff}")
 
-        if args.write:
+        if getattr(args, "write", False):
             for pid in projects:
                 replayed, diffs = doctor.rebuild(pid, write=True)
 
@@ -557,8 +292,9 @@ def cmd_status(args) -> int:
 
     projects = []
     if args.project_id:
-        if args.project_id in registry:
-            projects = [args.project_id]
+        if args.project_id not in registry:
+            raise ValueError(f"unknown registered project id: {args.project_id}")
+        projects = [args.project_id]
     else:
         projects = list(registry.keys())
 
@@ -1117,15 +853,6 @@ def cmd_extract(args) -> int:
     from .session_extract import extract
     from .session_extract.events import EventKind
 
-    if args.follow and args.strip_stale_wakeups:
-        print(
-            "error: extract --follow cannot be combined with --strip-stale-wakeups: "
-            "the trailing-run transform requires a fixed, complete span and cannot be "
-            "applied to live output without silently diverging",
-            file=sys.stderr,
-        )
-        return 1
-
     resolved = _resolve_session_log(args)
     if resolved is None:
         return 1
@@ -1140,42 +867,6 @@ def cmd_extract(args) -> int:
     since_marker, err = _resolve_since_marker(args, detected_format)
     if err is not None:
         return err
-
-    if args.json:
-        text_only = []
-        if args.blank_lines is not None:
-            text_only.append("--blank-lines")
-        if args.gap_marker is not None:
-            text_only.append("--gap-marker")
-        if args.min_gap_records is not None:
-            text_only.append("--min-gap-records")
-        if args.show_gap_source:
-            text_only.append("--show-gap-source")
-        if args.task is not None:
-            text_only.append("--task")
-        if args.task_file is not None:
-            text_only.append("--task-file")
-        if args.render_markdown:
-            text_only.append("--render-markdown")
-        if args.highlight:
-            text_only.append("--highlight")
-        if args.show_timestamps is not None:
-            text_only.append("--show-timestamps")
-        if args.timestamp_format is not None:
-            text_only.append("--timestamp-format")
-        if args.extract_metadata is not None:
-            text_only.append("--extract-metadata")
-        if args.color is not None:
-            text_only.append("--color/--no-color")
-        if text_only:
-            print(f"error: {', '.join(text_only)} only affect(s) text-mode rendering -- has no "
-                  f"effect combined with --json", file=sys.stderr)
-            return 1
-
-    flag_error = _validate_render_and_follow_flags(args)
-    if flag_error is not None:
-        print(f"error: {flag_error}", file=sys.stderr)
-        return 1
 
     if args.redact_pattern:
         import re as re_mod
@@ -1208,9 +899,6 @@ def cmd_extract(args) -> int:
         return 1
 
     if args.ledger:
-        if args.json:
-            print("error: --ledger has no JSON equivalent yet -- text mode only", file=sys.stderr)
-            return 1
         if result.format != "claude-code":
             print(f"error: --ledger does not support {result.format!r} yet -- see "
                   f"session_extract/ledger.py's module docstring", file=sys.stderr)
@@ -1296,11 +984,6 @@ def cmd_extract_lossless(args) -> int:
     if resolved is None:
         return 1
     path, session_id = resolved
-
-    flag_error = _validate_render_and_follow_flags(args)
-    if flag_error is not None:
-        print(f"error: {flag_error}", file=sys.stderr)
-        return 1
 
     fmt = args.format or detect(path).name
     since_marker, err = _resolve_since_marker(args, fmt)
@@ -1399,11 +1082,6 @@ def cmd_extract_debug(args) -> int:
         return 1
     path, session_id = resolved
     fmt = args.format or detect(path).name
-
-    flag_error = _validate_render_and_follow_flags(args)
-    if flag_error is not None:
-        print(f"error: {flag_error}", file=sys.stderr)
-        return 1
 
     since_marker, err = _resolve_since_marker(args, fmt)
     if err is not None:
@@ -1504,14 +1182,7 @@ def cmd_extract_report(args) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    if args.detailed and args.report_type not in (None, "csv"):
-        print("error: --detailed is a legacy alias for --type csv and cannot be combined with another --type",
-              file=sys.stderr)
-        return 1
     report_type = args.report_type or ("csv" if args.detailed else "report-sheet")
-    if report_type == "csv" and args.json:
-        print("error: --type csv selects CSV output and cannot be combined with --json", file=sys.stderr)
-        return 1
     if report_type == "report-sheet":
         blocks = stats.build_blocks(rows)
         if args.json:
@@ -1667,7 +1338,7 @@ def cmd_decide(args) -> int:
         )
         return 0
     except decisions.DecisionError as e:
-        if getattr(args, 'debug', False):
+        if getattr(args, 'traceback', False):
             raise
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -1684,7 +1355,7 @@ def cmd_discuss(args) -> int:
         print(cmd_str)
         return 0
     except decisions.DecisionError as e:
-        if getattr(args, 'debug', False):
+        if getattr(args, 'traceback', False):
             raise
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -2037,7 +1708,7 @@ def cmd_resume(args) -> int:
             print(
                 f"error: refusing to resume '{args.project_id}' -- could not "
                 f"verify its state first (the pre-resume drift scan "
-                f"itself failed). Inspect manually: nyxloom resync "
+                f"itself failed). Inspect manually: nyxloomctl resync "
                 f"{args.project_id}; pass --force to resume without a "
                 f"completed scan once you've confirmed it's safe.",
                 file=sys.stderr,
@@ -2061,8 +1732,8 @@ def cmd_resume(args) -> int:
                 file=sys.stderr,
             )
             print(
-                f"inspect: nyxloom resync {args.project_id}   "
-                f"repair: nyxloom resync {args.project_id} --apply",
+                f"inspect: nyxloomctl resync {args.project_id}   "
+                f"repair: nyxloomctl resync {args.project_id} --apply",
                 file=sys.stderr,
             )
             return 1
@@ -2143,7 +1814,7 @@ def cmd_events(args) -> int:
     PACKAGE SP04 2026-07-21 (docs/plan-state-integrity.md A.3 -- the
     greppability bridge). Dumps the event store as JSONL to stdout via
     storage.iter_events, which is backend-agnostic (file or SQLite, per
-    the SQLite store) -- so `nyxloom events P | jq` / `| lnav` works
+    the SQLite store) -- so `nyxloomctl events P | jq` / `| lnav` works
     unchanged regardless of which backend is selected. Each printed line is
     `Event.to_dict()` JSON-encoded, the exact shape storage.py's file
     backend writes to events.jsonl, so a dump round-trips to the same
@@ -2497,6 +2168,35 @@ def cmd_backlog_new(args) -> int:
         print("error: project has no [backlog_entries] table in nyxloom.toml",
               file=sys.stderr)
         return 1
+    if getattr(args, "interactive", False):
+        if args.body_from:
+            try:
+                body = Path(args.body_from).read_text(encoding="utf-8")
+            except OSError as e:
+                print(f"error: --body-from: {e}", file=sys.stderr)
+                return 1
+        else:
+            body = None
+        from . import backlog_wizard
+        path = backlog_wizard.create(
+            cfg,
+            args.runtime,
+            getattr(args, "title", None),
+            {
+                "type": args.type,
+                "severity": args.severity,
+                "priority": args.priority,
+                "component": args.component,
+                "context_estimate": args.context_estimate,
+                "folds_into": args.folds_into,
+                "provenance": args.provenance,
+                "filed_by": args.filed_by,
+                "spec_owner": args.spec_owner,
+            },
+            body=body,
+        )
+        print(path)
+        return 0
     body = None
     if args.body_from:
         try:
@@ -2508,9 +2208,27 @@ def cmd_backlog_new(args) -> int:
         cfg, args.title,
         type=args.type, severity=args.severity,
         priority=args.priority, component=args.component,
+        context_estimate=args.context_estimate,
+        folds_into=args.folds_into,
         provenance=args.provenance, filed_by=args.filed_by,
         spec_owner=args.spec_owner, body=body,
     )
+    print(path)
+    return 0
+
+
+def cmd_backlog_edit(args) -> int:
+    """Interactively edit authorable metadata on one managed entry."""
+    cfg, err = _resolve_backlog_project(args)
+    if cfg is None:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    if cfg.backlog_id_prefix is None:
+        print("error: project has no [backlog_entries] table in nyxloom.toml",
+              file=sys.stderr)
+        return 1
+    from . import backlog_wizard
+    path = backlog_wizard.edit(cfg, args.runtime, args.entry_id)
     print(path)
     return 0
 
@@ -2577,10 +2295,11 @@ def cmd_backlog_list(args) -> int:
     if cfg is None:
         print(f"error: {err}", file=sys.stderr)
         return 1
-    index_path = backlog_entries.resolve_dir(cfg) / backlog_entries.INDEX_NAME
-    if not index_path.exists():
-        backlog_entries.write_index(cfg)
-    lines = index_path.read_text(encoding="utf-8").splitlines()
+    if backlog_entries.resolve_dir(cfg) is None:
+        print("error: project has no [backlog_entries] table in nyxloom.toml",
+              file=sys.stderr)
+        return 1
+    lines = backlog_entries.render_index(backlog_entries.load_entries(cfg)).splitlines()
     if args.status:
         # header = banner, blank, title, blank, column row, separator (0-5)
         kept = [ln for ln in lines
@@ -2712,13 +2431,6 @@ def cmd_route_doctor(args) -> int:
     return 1 if has_critical_or_error else 0
 
 
-def cmd_version(args) -> int:
-    """version"""
-    from . import __version__
-    print(__version__)
-    return 0
-
-
 def _print_operator_credential(record) -> None:
     """THE intentional secret-retrieval surface. Printed to stdout only -- the
     value is never passed to log.*, never written to an event payload, and
@@ -2741,7 +2453,7 @@ def cmd_auth(args) -> int:
     identity or generation forward.
 
     Refusals and rotations are auditable with
-    `nyxloom events _nyxloom-control`."""
+    `nyxloomctl events _nyxloom-control`."""
     from . import control_auth, paths, storage
     from .types import EventType
 
@@ -2762,7 +2474,7 @@ def cmd_auth(args) -> int:
     except control_auth.CredentialStoreError as exc:
         print(f"error: {exc} ({store.path})", file=sys.stderr)
         if args.auth_cmd == "rotate":
-            print("hint: `nyxloom auth rotate --force` replaces an unreadable "
+            print("hint: `nyxloomctl auth rotate --force` replaces an unreadable "
                   "store with a fresh credential", file=sys.stderr)
         return 1
 
@@ -2783,1284 +2495,11 @@ def cmd_auth(args) -> int:
     return 0
 
 
-# --------------------------------------------------------------------------
-# Top-level verb groups for the custom help/usage screen (see
-# _print_top_level_help below) -- argparse's own default subparsers
-# rendering is a flat, unordered, unexplained comma-separated list of all
-# ~32 verb names with no version banner, which is the operator-reported
-# problem this whole block exists to fix.
-#
-# This is a flat group-name -> [verb, ...] mapping, deliberately NOT the
-# source of the verb LIST itself (that's always read back from the real
-# `subparsers.choices` argparse actually registered in _build_parser
-# above) -- only of which group each already-registered verb belongs to.
-# To add a 33rd verb: add its `subparsers.add_parser("new-verb", help=...)`
-# call in _build_parser, then add "new-verb" to exactly one list below.
-# Forgetting the second step fails tests/test_cli_help.py's sync-check
-# loudly (every registered verb must appear in exactly one group, and vice
-# versa) rather than letting the help screen silently drift out of sync
-# with what's actually wired up.
-# --------------------------------------------------------------------------
-
-# Shared verbatim across every extract/extract-lossless/extract-debug/
-# extract-report/extract-sessions SESSION_LOG positional (2026-09-11,
-# operator-reported confusion: this is a raw on-disk file from a CODING
-# AGENT CLI, unrelated to nyxloom's OWN registered "project id" concept
-# used everywhere in the "project & workflow lifecycle"/"knowledge &
-# backlog" verb groups -- the two easily look alike ("a thing you point a
-# command at") but come from entirely different registries). One shared
-# constant so the wording can't drift between the five verbs that repeat it.
-_SESSION_LOG_HELP = (
-    "A session-log FILE on disk from the coding-agent CLI itself -- a "
-    "Claude Code transcript (~/.claude/projects/<project>/<session-id>"
-    ".jsonl, or one of its own subagents/agent-<id>.jsonl sub-agent "
-    "files), a Codex rollout file ($CODEX_HOME/sessions/YYYY/MM/DD/"
-    "rollout-*.jsonl, defaulting to ~/.codex/sessions and checking local"
-    " ~/.codex* profiles for duplicate IDs), a Reasonix primary file"
-    " (~/.reasonix/projects/"
-    "<escaped-cwd>/sessions/<timestamp-model>.jsonl, including "
-    "sessions/subagents/*.jsonl), or an opencode SQLite store (a file, or "
-    "its containing directory). OR just the session's own ID, with no path at "
-    "all -- a Claude Code/Codex session uuid, a Reasonix timestamp/model or "
-    "`sa_...` sub-agent id, a 17-hex-char Claude Code sub-agent agentId, or an "
-    "opencode `ses_...` id -- and the file (or "
-    "store) holding it is located automatically, erroring rather than "
-    "guessing if the id matches nothing or more than one session (see "
-    "session_extract/locate.py). NOT a nyxloom registered project id "
-    "(`nyxloom project list` shows those, an unrelated registry). "
-    "`extract-sessions` lists Claude Code/Codex/opencode families; Reasonix "
-    "path/ID extraction is supported, but its discovery is not yet exposed "
-    "because its source-backed lineage metadata is not established."
-)
-
-# Shared verbatim across every plain "Registered project id" positional/
-# flag in the "project & workflow lifecycle"/"knowledge & backlog" verb
-# groups -- one constant so ~15 call sites can't drift into slightly
-# different wording for the exact same concept.
-_PROJECT_ID_HELP = "Registered project id (see `nyxloom project list`)"
-
-# --opencode-session on the four extract-* verbs that take a SESSION_LOG
-# positional. Verified against real adapter behavior: for Claude Code and
-# Codex, list_sessions(path) is a hard no-op -- this flag has ZERO effect
-# for those formats, since the path alone always identifies the session.
-# It only matters for opencode, whose SQLite store can hold more than one
-# session row. Named --opencode-session (not the more generic --session it
-# used to be) so its scope is obvious from the flag itself, after an
-# operator-reported repro of trying `--session <id>` in place of the
-# required SESSION_LOG positional -- the generic old name invited exactly
-# that misreading.
-_OPENCODE_SESSION_HELP = (
-    "opencode only: which session id within the store to extract "
-    "(required when the store holds more than one). No effect for Claude "
-    "Code or Codex logs -- there, the SESSION_LOG path alone always "
-    "identifies the session. See `nyxloom extract-sessions` if you don't "
-    "know the id."
-)
-
-# Shared verbatim by extract and extract-lossless -- the flag means the same
-# thing on both, and the rich-vs-pygments distinction is the whole reason it
-# is a second flag rather than a mode of --render-markdown.
-_HIGHLIGHT_HELP = (
-    "Syntax-color markdown SOURCE, leaving every markup character in place "
-    "(via pygments) -- for when you want to COPY real markdown back out of "
-    "the terminal, which a running agent CLI's own rendered output can never "
-    "give you. The opposite goal from --render-markdown, which renders the "
-    "markup and consumes it; the two error if combined. Works with or "
-    "without --follow"
-)
-
-# Shared verbatim by extract and extract-lossless: --follow and its
-# attention/delivery flags mean exactly the same thing on both verbs, each
-# keeping its own selection semantics live.
-_FOLLOW_HELP = (
-    "After printing the one-shot result above, keep printing new content as "
-    "the session grows (tail -f, but applying THIS verb's own selection "
-    "rules to each new record). Genuinely incremental: the file's size is "
-    "polled; growth reads the appended payload plus only bounded prefix/tail "
-    "fingerprints as needed for rewrite detection -- never a whole-file "
-    "rescan. Ctrl-C to stop"
-)
-
-
-def _add_follow_flags(parser) -> None:
-    """--follow and its attention/delivery flags, identical on extract and
-    extract-lossless (session_extract/follow.py). Every one of the
-    non---follow flags here errors if passed WITHOUT --follow rather than
-    silently doing nothing."""
-    group = parser.add_argument_group(
-        "follow mode (live tailing)",
-        "Streaming continuation of the one-shot output, plus an optional attention hook for "
-        "when a session needs you. See session_extract/follow.py for the tailing mechanism, "
-        "the checkpoint-scoring lookahead delay, and each attention signal's real basis.")
-    group.add_argument("--follow", "-f", action="store_true", help=_FOLLOW_HELP)
-    group.add_argument("--interval", type=float, default=None, metavar="SECONDS",
-                        help="Poll interval while following (default 1.0). A session log grows "
-                             "in per-turn bursts, so sub-second polling buys nothing")
-    group.add_argument("--bell", action="store_true",
-                        help="Ring a terminal bell (\\a on STDERR, so a piped stream stays clean) "
-                             "whenever an attention signal fires: an "
-                             "unanswered AskUserQuestion (Claude Code only -- no equivalent is "
-                             "known in the Codex/opencode/Reasonix schemas), a detected checkpoint, or "
-                             "--attention-min-chars below. Independent of --on-attention")
-    group.add_argument("--on-attention", metavar="COMMAND",
-                        help="Shell command to run on each attention signal, with "
-                             "NYXLOOM_ATTENTION_REASON (interview_pending|checkpoint_detected|"
-                             "long_block), NYXLOOM_ATTENTION_HARNESS, "
-                             "NYXLOOM_ATTENTION_SESSION_PATH and NYXLOOM_ATTENTION_EXCERPT (the "
-                             "flagged text's first ~100 chars) in its environment. YOUR script "
-                             "decides whether that reaches Telegram/Mattermost/anything -- "
-                             "nyxloom holds no credentials for this")
-    group.add_argument("--notify-project", metavar="PROJECT_ID",
-                        help="Additionally push each attention signal through this registered "
-                             "project's already-configured [notify] channel (`nyxloom project "
-                             "list`). Note: unlike every other nyxloom notification, this body "
-                             "includes the flagged text's excerpt -- a deliberate, documented "
-                             "exception to SPEC 13's template-only rule, see "
-                             "session_extract/follow.py")
-    group.add_argument("--attention-min-chars", type=int, default=None, metavar="N",
-                        help="Additionally fire an attention signal for any new block longer "
-                             "than N characters (off by default). Independent of checkpoint "
-                             "detection")
-
-
-_VERB_GROUPS: dict[str, list[str]] = {
-    "project & workflow lifecycle": [
-        "decide", "discuss", "gate", "leases", "merge", "pause", "project",
-        "reject", "resume", "resync", "status", "tick",
-    ],
-    "session-log extraction (Claude Code / Codex / opencode / Reasonix)": [
-        "extract", "extract-debug", "extract-lossless", "extract-report",
-        "extract-sessions",
-    ],
-    "project data & dashboard": [
-        "digest", "events", "render",
-    ],
-    "intake & onboarding": [
-        "init", "intake", "intake-bridge", "onboard",
-    ],
-    "system & ops": [
-        "auth", "capability-map", "daemon", "doctor", "free-models",
-        "migrate-store", "route",
-    ],
-    "knowledge & backlog": [
-        "backlog", "finding", "lint",
-    ],
-    "misc": [
-        "version",
-    ],
-}
-
-
-def _classify_top_level_invocation(
-    argv: list[str], known_verbs: set[str],
-) -> "tuple[str, str | None]":
-    """Classify a raw argv (top-level only -- never looks past the first
-    command-shaped token) so `main()` can hand a bare invocation, a
-    top-level -h/--help, and an unrecognized command to the custom grouped
-    help screen, while leaving everything else (a known verb, however it
-    then gets parsed -- including its OWN --help/argument errors) to
-    argparse exactly as before.
-
-    Returns (kind, token):
-      ("help", None)     -- -h/--help appears before any command-shaped
-                             token (including when argv is empty of
-                             command tokens but still, say, `--debug -h`).
-      ("bare", None)      -- no -h/--help and no command-shaped token at
-                             all (e.g. `[]` or `["--debug"]`).
-      ("unknown", token)  -- the first command-shaped token isn't a
-                             registered verb.
-      ("dispatch", None)  -- a real known verb, or some other token
-                             (e.g. a lone unrecognized option) that
-                             argparse's own error reporting should own.
-    """
-    for tok in argv:
-        if tok in ("-h", "--help"):
-            return "help", None
-        if tok == "--debug":
-            continue
-        if tok.startswith("-"):
-            return "dispatch", None
-        if tok not in known_verbs:
-            return "unknown", tok
-        return "dispatch", None
-    return "bare", None
-
-
-def _print_top_level_help(parser, subparsers, *, file) -> None:
-    """The custom top-level help/usage screen: a `nyxloom <version>`
-    banner, then every registered verb grouped by purpose (_VERB_GROUPS)
-    and alphabetized within each group, each with its one-line `help=`
-    text. Fires only for a bare invocation, top-level -h/--help, or an
-    unrecognized top-level command (see _classify_top_level_invocation) --
-    per-subcommand help (`nyxloom extract --help`) is untouched.
-
-    Verb help text is read back from argparse's own `_choices_actions`
-    list -- the same (private but long-stable) attribute argparse's own
-    HelpFormatter uses to render a subparsers positional's per-choice help
-    -- rather than a second hand-maintained string table, so the ONE place
-    a verb's one-liner is authored is its own `add_parser(..., help=...)`
-    call in _build_parser."""
-    registered = subparsers.choices  # verb name -> its own subparser
-    verb_help = {a.dest: (a.help or "") for a in subparsers._choices_actions}
-
-    grouped_verbs = {v for verbs in _VERB_GROUPS.values() for v in verbs}
-    ungrouped = sorted(set(registered) - grouped_verbs)
-
-    print(cli_headline(), file=file)
-    print(file=file)
-    print(argparse.ArgumentParser.format_usage(parser).strip(), file=file)
-    print(file=file)
-    print("Commands (grouped by purpose; alphabetical within each group):", file=file)
-
-    width = max((len(v) for v in registered), default=0)
-
-    def _print_group(name: str, verbs: list[str]) -> None:
-        present = sorted(v for v in verbs if v in registered)
-        if not present:
-            return
-        print(file=file)
-        print(f"  {name}:", file=file)
-        for verb in present:
-            print(f"    {verb.ljust(width)}  {verb_help.get(verb, '')}".rstrip(), file=file)
-
-    for group_name, verbs in _VERB_GROUPS.items():
-        _print_group(group_name, verbs)
-    if ungrouped:
-        # A verb registered in _build_parser but missing from _VERB_GROUPS
-        # -- tests/test_cli_help.py fails loudly on this; this branch is
-        # only a rendering fallback so a sync gap degrades gracefully here
-        # rather than crashing the CLI.
-        _print_group("other (ungrouped -- fix _VERB_GROUPS)", ungrouped)
-
-    print(file=file)
-    print("  --debug               Show tracebacks", file=file)
-    print(file=file)
-    print("Run `nyxloom <command> --help` for details on any command.", file=file)
-
-
-def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersAction]":
-    """Construct the full argparse tree (all ~32 top-level verbs + their own
-    sub-subcommands). Split out of `main()` so tests can inspect the REAL
-    registered parser/subparsers directly (`subparsers.choices`, each
-    choice's own `.help` via `subparsers._choices_actions`) instead of
-    hand-maintaining a second list that can drift from what's actually
-    wired up -- see `_VERB_GROUPS` and `_print_top_level_help` below, and
-    tests/test_cli_help.py's sync-check tests."""
-    parser = NyxloomArgumentParser(prog="nyxloom", add_help=False, exit_on_error=False)
-    parser.add_argument("--debug", action="store_true", help="Show tracebacks")
-    parser.add_argument(
-        "--version", action="version", version=f"nyxloom {__version__}"
-    )
-
-    subparsers = parser.add_subparsers(dest="cmd", help="Command")
-
-    # project -- the registry every other "Registered project id" argument
-    # in this CLI refers back to (NOT a filesystem path -- see `root`
-    # below, a separate concept). Registering is the prerequisite step a
-    # first-time user of any project-scoped verb (decide/discuss/digest/
-    # events/gate/leases/merge/pause/reject/resume/resync/tick/backlog/
-    # finding/doctor/status/migrate-store) needs and nothing else in this
-    # tree says explicitly -- this verb's own --help is the one place that
-    # spells it out; every other verb's help text just cross-references it.
-    project_parser = subparsers.add_parser(
-        "project",
-        help="Manage the registered-project registry every other project-scoped "
-             "verb refers to")
-    project_subs = project_parser.add_subparsers(dest="project_cmd")
-
-    add_parser = project_subs.add_parser(
-        "add", help="register a project (prerequisite for every project-scoped verb)")
-    add_parser.add_argument("id", metavar="PROJECT_ID",
-                             help="A short id you choose to refer to this project by in "
-                                  "every other nyxloom command (e.g. 'dstdns') -- your own "
-                                  "label, not derived from the path below")
-    add_parser.add_argument("root", metavar="PROJECT_ROOT",
-                             help="Filesystem path to the project's own repo root (where "
-                                  "its nyxloom-trove/ config lives)")
-
-    list_parser = project_subs.add_parser(
-        "list", help="list every registered project id and its root path")
-
-    # lint
-    lint_parser = subparsers.add_parser(
-        "lint", help="Lint handoff files; exit 1 on any blocking finding")
-    lint_parser.add_argument("path", nargs="*", metavar="HANDOFF_FILE",
-                              help="One or more handoff markdown files to lint. Omit "
-                                   "entirely to lint every REGISTERED project's handoff "
-                                   "files instead (see `nyxloom project list`) -- not the "
-                                   "same as 'no files to check', this is the normal "
-                                   "no-argument invocation")
-
-    # doctor
-    doctor_parser = subparsers.add_parser(
-        "doctor", help="Health-check findings for registered projects")
-    doctor_parser.add_argument("--project-id", metavar="PROJECT_ID",
-                                help="Registered project id (see `nyxloom project list`); "
-                                     "omit to check every registered project")
-    doctor_parser.add_argument("--rebuild", action="store_true", help="Rebuild mode")
-    doctor_parser.add_argument("--write", action="store_true", help="Write changes")
-    # CR-16 (RISK-007): the fast, narrowly-scoped path -- deadman,
-    # TICK_ERROR streak, notify-transport reachability ONLY, skipping the
-    # other 11 (slower, subprocess-touching) checks. See cmd_doctor and
-    # nyxloomd/docker-compose.yml's healthcheck.
-    doctor_parser.add_argument("--liveness", action="store_true",
-                                help="Liveness checks only (deadman, tick-error streak, "
-                                     "notify transport) -- fast path for a healthcheck")
-
-    # status
-    status_parser = subparsers.add_parser(
-        "status", help="Per-task status table from statefiles")
-    status_parser.add_argument("--project-id", metavar="PROJECT_ID",
-                                help="Registered project id (see `nyxloom project list`); "
-                                     "omit to show every registered project")
-
-    # resync
-    resync_parser = subparsers.add_parser(
-        "resync", help="Re-baseline project state (dry-run unless --apply)")
-    resync_parser.add_argument("project_id", metavar="PROJECT_ID",
-                                help="Registered project id (see `nyxloom project list`)")
-    resync_parser.add_argument("--apply", action="store_true",
-                                help="PACKAGE RP02: emit the audited re-baseline "
-                                     "transitions (default: dry-run plan only)")
-    resync_parser.add_argument("--apply-content-merges", action="store_true",
-                                help="PACKAGE RP02 SAFETY opt-in: also apply "
-                                     "ACTION_ADVANCE rows whose ONLY merge evidence "
-                                     "is the (lower-confidence) content-check channel "
-                                     "-- requires --apply")
-
-    # render
-    render_parser = subparsers.add_parser(
-        "render", help="Render the project dashboard site")
-
-    # extract
-    from .session_extract.config import PROFILES
-
-    extract_parser = subparsers.add_parser(
-        "extract", help="Extract a condensed transcript from a session log")
-    extract_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
-    extract_parser.add_argument("--opencode-session", metavar="SESSION_ID",
-                                 help=_OPENCODE_SESSION_HELP)
-    extract_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
-                                 help="Force the adapter instead of auto-detecting from the path")
-    extract_parser.add_argument("--json", action="store_true",
-                                 help="JSON output instead of delimited text")
-
-    selection_group = extract_parser.add_argument_group(
-        "content selection",
-        "What counts as worth keeping, independent of how much survives or where the walk stops "
-        "(see 'stop conditions' below). See session_extract/config.py's ExtractConfig and "
-        "classifier.py for the underlying knobs.")
-    selection_group.add_argument("--profile", choices=sorted(PROFILES),
-                                  help="Use case: operator-review (default: newest reported epoch, "
-                                       "5 assistant-message checkpoints, 180-character answer "
-                                       "length, 10000 words) or all (ordinary prompt, Q&A, and "
-                                       "assistant prose across all reported epochs; no word/"
-                                       "checkpoint/time/compaction stop). API errors, thinking, "
-                                       "tool calls, and compaction content have separate flags. "
-                                       "Explicit flags override profile values.")
-    selection_group.add_argument("--answer-length", "--long-threshold", dest="answer_length",
-                                  type=int, default=None,
-                                  help="Keep a non-checkpoint assistant message when it is "
-                                       "longer than this many characters (default 180; concrete "
-                                       "findings survive at any length). Checkpoints are selected "
-                                       "separately.")
-    selection_group.add_argument("--include-thinking", action="store_true",
-                                  help="Also emit assistant thinking/reasoning content where "
-                                       "the adapter can recover it")
-    selection_group.add_argument("--show-api-errors", action="store_true",
-                                  help="Include upstream API-transport noise (429/rate-limit/"
-                                       "overloaded_error) in the output. Off by default -- "
-                                       "these are dropped from selection entirely, not just "
-                                       "length-filtered, since they're a fact about the "
-                                       "harness's API connection, not about session content.")
-    selection_group.add_argument("--show-compaction-content", action="store_true",
-                                  help="Include source compaction summaries and /compact prompt "
-                                       "payloads. Hidden by default; all-profile still extracts "
-                                       "ordinary prompts and progress prose without these "
-                                       "compaction internals.")
-    selection_group.add_argument("--show-tool-calls", action="store_true",
-                                  help="Include tool-call labels for Claude Code and Codex; tool "
-                                       "inputs and results remain omitted")
-    selection_group.add_argument("--show-tool-call-intent", action="store_true",
-                                  help="Add a short explicit description/intent field to visible "
-                                       "tool-call labels; requires --show-tool-calls")
-
-    stop_group = extract_parser.add_argument_group(
-        "stop conditions (whichever hits first)",
-        "The backward selection walk stops when any enabled limit is reached. A checkpoint is "
-        "a classifier-scored assistant prose message used as an anchor, not a semantic boundary "
-        "or known-safe compaction point. -1 disables a numeric stop condition.")
-    stop_group.add_argument("--max-checkpoints", "--checkpoints", dest="max_checkpoints",
-                             type=int, default=None,
-                             help="Maximum recent classifier-detected assistant-message anchors "
-                                  "(operator-review default 5; -1 disables this stop condition)")
-    stop_group.add_argument("--max-words", type=int, default=None,
-                             help="Hard output word budget -- target length, independent of "
-                                  "--profile (default 10000, or the --profile's own default if "
-                                  "--profile is set and this isn't)")
-    stop_group.add_argument("--max-compactions", "--max-lifecycle-markers",
-                             dest="max_compactions", type=int, default=None,
-                             help="How many actual compaction boundaries the walk may cross "
-                                  "before stopping at the next; default -1 ignores compactions. "
-                                  "/clear is an epoch boundary and is not counted")
-    stop_group.add_argument("--max-time-minutes", type=int, default=None,
-                             help="Stop walking before events older than this many minutes from "
-                                  "the newest source timestamp; default -1 ignores time")
-    stop_group.add_argument("--epochs", metavar="N|A:B|all",
-                             help="Select 1-based source epochs. Claude Code /clear records "
-                                  "create epochs; Codex clears start a new rollout, while "
-                                  "OpenCode/Reasonix currently expose one epoch. Default is "
-                                  "the newest reported epoch; all-profile selects every "
-                                  "reported epoch. A:B is inclusive")
-
-    since_group = extract_parser.add_mutually_exclusive_group()
-    since_group.add_argument("--since",
-                              help="Resume marker from a prior run's last_marker -- only "
-                                   "events after it are considered. The marker is an opaque, "
-                                   "adapter-specific token (a Claude Code record uuid, a Codex "
-                                   "ordinal or response_item-<position> fallback, a Reasonix "
-                                   "line<N> marker, or an opencode "
-                                   "message-table row id) -- not a "
-                                   "timestamp. Copy it from a nyxloom HTML comment in the prior "
-                                   "run's own output ends with: `<!-- nyxloom-extract: "
-                                   "format=... marker=... -->`. In practice --since-file below "
-                                   "is almost always easier than hand-copying this. Example: "
-                                   "for `<!-- nyxloom-extract: format=codex marker=166 -->`, "
-                                   "pass `--since 166`")
-    since_group.add_argument("--since-file",
-                              help="Path to a prior extract run's saved output (text or json); "
-                                   "its embedded marker is read back and used as --since, so you "
-                                   "don't have to hunt down or hand-copy the raw marker string. "
-                                   "Typical delta-extraction usage: `nyxloom extract log.jsonl "
-                                   "> run1.txt`, more session activity happens, then `nyxloom "
-                                   "extract log.jsonl --since-file run1.txt > run2.txt` picks up "
-                                   "exactly where run1.txt left off. Mutually exclusive with "
-                                   "--since (enforced by argparse)")
-    extract_parser.add_argument("--until",
-                                 help="Stop at this marker (inclusive) -- symmetric with --since "
-                                      "above (same opaque marker format, same trailing-comment "
-                                      "source), for pinning a run to a fixed historical span, "
-                                      "e.g. `--since M1 --until M2` reproduces the exact same "
-                                      "extraction on every run instead of drifting as the "
-                                      "session grows. Example: `--since 166 --until 240` uses "
-                                      "source markers copied from nyxloom-extract comments; "
-                                      "the until marker is included")
-    render_group = extract_parser.add_argument_group(
-        "rendering",
-        "Text-mode output shape only -- JSON output is unaffected, always reporting "
-        "full-fidelity data as typed fields regardless of these. Each errors if combined with "
-        "--json rather than silently having no effect.")
-    render_group.add_argument("--ledger", action="store_true",
-                               help="Append a mechanically-extracted files-touched/commits/"
-                                    "branches/tests line after each kept boundary (E-012, "
-                                    "session_extract/ledger.py). Claude Code only -- errors on "
-                                    "any other format")
-    render_group.add_argument("--blank-lines", "--insert-blank-lines", dest="blank_lines",
-                               type=int, default=None,
-                               help="Blank lines padded around each '---' block separator "
-                                    "(default 0). 0 = tight, --- on its own line. 1 = one blank "
-                                    "line each side. -1 = fused, "
-                                    "--- shares the end of the preceding block's own last line "
-                                    "('block ---\\nblock'). N>1 = N blank lines each side, a "
-                                    "plain generalization of 1")
-    render_group.add_argument("--gap-marker",
-                               choices=["full", "inline", "inline2", "inline-short", "none"],
-                               default=None,
-                               help="How a dropped-content gap is surfaced (default 'inline'). "
-                                  "'full': its own "
-                                  "standalone block, '[gap: N records omitted]', separated "
-                                  "like any other block. 'inline': same "
-                                    "text, folded into the separator instead of its own block "
-                                    "-- '--- [gap: N records omitted] ---'. 'inline2': terser "
-                                    "count, '--- ... Nx ... ---'. 'inline-short': no count at "
-                                    "all, just '--- ... ---' (a gap happened, magnitude not "
-                                    "stated). 'none': suppressed entirely -- a reader cannot "
-                                    "tell a gap happened")
-    render_group.add_argument("--min-gap-records", type=int, default=None,
-                               help="Smallest raw-record gap between two kept events worth "
-                                    "surfacing via --gap-marker (default 3, or the --profile's "
-                                    "value); below this, nothing is rendered regardless of "
-                                    "--gap-marker's mode")
-    render_group.add_argument("--show-gap-source", action="store_true",
-                               help="Append the adapter's own opaque marker token to each gap "
-                                    "note ('...raw log continues after marker <marker>') -- the "
-                                    "exact same token --since/--until resolve, a 'go look it up "
-                                    "yourself' pointer into the raw log. Off by default. No "
-                                    "effect under --gap-marker=none")
-    render_group.add_argument("--render-markdown", action="store_true",
-                               help="Render each kept block's markdown for READING (via rich): "
-                                    "bold/headers/code fences actually rendered, the way the CLI "
-                                    "that wrote them showed you live. The markup characters are "
-                                    "consumed in the process, so this is the wrong mode for "
-                                    "copying prose back out -- see --highlight, which colors "
-                                    "markdown while leaving every character in place. Applies to "
-                                    "kept blocks' prose only; separators, gap/stop-reason notes "
-                                    "and the trailing marker comment are untouched")
-    render_group.add_argument("--highlight", action="store_true", help=_HIGHLIGHT_HELP)
-    render_group.add_argument("--show-timestamps", choices=["pre", "post", "both", "none"],
-                               default=None,
-                               help="Place the source event timestamp before/after each prose "
-                                    "block (default pre). The source has one timestamp per event, "
-                                    "so pre/post/both change placement, not the recorded time")
-    render_group.add_argument("--timestamp-format", default=None,
-                               help="Python strftime format for timestamps (default '[%%H:%%M:%%S]')")
-    render_group.add_argument("--extract-metadata", choices=["pre", "post", "both"],
-                               default=None,
-                               help="Place source path/name/size/creation metadata and the "
-                                    "machine-readable cursor marker before, after, or both "
-                                    "(default both); --since-file reads any placement")
-    color_group = extract_parser.add_mutually_exclusive_group()
-    color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
-                              help="Force ANSI color/highlighting even when stdout isn't a "
-                                   "terminal (default: color on a tty unless NO_COLOR is set)")
-    color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
-                              help="Disable ANSI styling while preserving the chosen rendering mode")
-    _add_follow_flags(extract_parser)
-
-    handoff_group = extract_parser.add_argument_group(
-        "handoff to a fresh agent",
-        "Opt-in, best-effort transforms for ONE use case: `nyxloom extract ... | claude` handing "
-        "the rendered brief straight to a new agent as its entire prompt. Applied to the "
-        "post-selection event list before rendering, so --strip-stale-wakeups/--redact-pattern "
-        "work in both --json and text mode; --task/--task-file are text-mode only (errors "
-        "combined with --json). Each is heuristic -- verified against one real session, not a "
-        "labeled corpus -- see session_extract/mangle.py.")
-    handoff_group.add_argument(
-        "--strip-stale-wakeups", action="store_true",
-        help="Collapse a trailing run of 2+ near-duplicate \"stale wakeup, nothing new to do\" "
-             "assistant checkpoints down to just the first of the run. Targets a real, verified "
-             "failure: a ScheduleWakeup/Stop-hook fallback firing again after the task that "
-             "armed it already finished, whose repeated confirmations otherwise sit at the very "
-             "END of the brief -- exactly what a fresh agent reading it anchors its first move "
-             "on (recency bias), even though they're pure repetition. Never touches a lone "
-             "trailing match or one occurring earlier in the span (e.g. genuine "
-             "progress-monitoring prose like 'Confirmed alive, continuing to wait') -- see "
-             "session_extract/mangle.py for the exact rule.")
-    handoff_group.add_argument(
-        "--redact-pattern", action="append", default=None, metavar="REGEX",
-        help="Replace any blank-line-delimited paragraph matching REGEX (case-insensitive, "
-             "repeatable) with a one-line placeholder, in ANY kept event. Built for stripping a "
-             "standing controller directive back out of a brief before handing it to a new "
-             "agent, e.g. --redact-pattern '/goal': a LIFECYCLE_MARKER's own text is always kept "
-             "in full by selection, and a real compaction's own KEEP block restating 'continue "
-             "autonomous...' verbatim is exactly the kind of role-level framing that leads a "
-             "fresh (or forked) agent to assume the controller's own role instead of a narrower "
-             "delegated task. Only the matching paragraph is replaced -- other state packed into "
-             "the same event's text survives untouched")
-    task_group = extract_parser.add_mutually_exclusive_group()
-    task_group.add_argument(
-        "--task",
-        help="Append a clearly-delimited banner AFTER the rendered brief, naming its contents as "
-             "a NEW instruction rather than more transcript. Exists because an LLM handed a raw "
-             "transcript with no explicit task resolves 'what should I do' by pattern-matching "
-             "whatever's most salient in it -- the recency-biased tail, or a standing directive "
-             "-- rather than waiting to be asked. Text-mode only (errors combined with --json)")
-    task_group.add_argument(
-        "--task-file",
-        help="Same as --task, read from a file -- for a task description too long or "
-             "quote-heavy for a shell argument. Mutually exclusive with --task")
-
-    # extract-lossless
-    extract_lossless_parser = subparsers.add_parser(
-        "extract-lossless",
-        help="Raw verbatim text/thinking dump -- no classification or windowing")
-    extract_lossless_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
-    extract_lossless_parser.add_argument("--opencode-session", metavar="SESSION_ID",
-                                          help=_OPENCODE_SESSION_HELP)
-    extract_lossless_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
-                                          help="Force the adapter instead of auto-detecting from "
-                                               "the path")
-    lossless_since_group = extract_lossless_parser.add_mutually_exclusive_group()
-    lossless_since_group.add_argument("--since",
-                                       help="Same meaning as extract's --since -- an opaque, "
-                                            "adapter-specific resume marker (not a timestamp), "
-                                            "read from a prior run's own trailing `<!-- "
-                                            "nyxloom-extract: format=... marker=... -->` comment")
-    lossless_since_group.add_argument("--since-file",
-                                       help="Same meaning as extract's --since-file -- point it "
-                                            "at a prior run's saved output and its embedded "
-                                            "marker is read back and used as --since")
-    extract_lossless_parser.add_argument("--until",
-                                          help="Same meaning as extract's --until -- stop at this "
-                                               "marker (inclusive), symmetric with --since")
-    extract_lossless_parser.add_argument(
-        "--redact-pattern", action="append", default=None, metavar="REGEX",
-        help="Rejected: extract-lossless is a verbatim dump; use extract when redaction is "
-             "required",
-    )
-    extract_lossless_parser.add_argument("--highlight", action="store_true", help=_HIGHLIGHT_HELP)
-    lossless_color_group = extract_lossless_parser.add_mutually_exclusive_group()
-    lossless_color_group.add_argument("--color", dest="color", action="store_const", const=True,
-                                       default=None,
-                                       help="Force ANSI color for --highlight even when stdout "
-                                            "isn't a terminal (default: color iff stdout is a tty)")
-    lossless_color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
-                                       help="Disable ANSI color for --highlight even when stdout "
-                                            "is a terminal")
-    _add_follow_flags(extract_lossless_parser)
-
-    # extract-debug
-    extract_debug_parser = subparsers.add_parser(
-        "extract-debug", help="Colored diff: extract-lossless output vs what extract would keep")
-    extract_debug_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
-    extract_debug_parser.add_argument("--opencode-session", metavar="SESSION_ID",
-                                       help=_OPENCODE_SESSION_HELP)
-    extract_debug_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
-                                       help="Force the adapter instead of auto-detecting from the path")
-    extract_debug_parser.add_argument("--profile", choices=sorted(PROFILES),
-                                       help="Same use-case profile as extract; default "
-                                            "operator-review. Selection and formatting flags "
-                                            "have the same meaning as extract.")
-    extract_debug_parser.add_argument("--max-checkpoints", "--checkpoints", dest="max_checkpoints",
-                                       type=int, default=None, help="Same as extract's --max-checkpoints")
-    extract_debug_parser.add_argument("--answer-length", "--long-threshold", dest="answer_length",
-                                       type=int, default=None, help="Same as extract's --answer-length")
-    extract_debug_parser.add_argument("--max-words", type=int, default=None,
-                                       help="Same as extract's --max-words")
-    extract_debug_parser.add_argument("--include-thinking", action="store_true",
-                                       help="Same as extract's --include-thinking")
-    extract_debug_parser.add_argument("--max-compactions", "--max-lifecycle-markers",
-                                       dest="max_compactions", type=int, default=None,
-                                       help="Same as extract's --max-compactions")
-    extract_debug_parser.add_argument("--max-time-minutes", type=int, default=None,
-                                       help="Same as extract's --max-time-minutes")
-    extract_debug_parser.add_argument("--epochs", metavar="N|A:B|all",
-                                       help="Same as extract's --epochs")
-    extract_debug_parser.add_argument("--show-api-errors", action="store_true",
-                                       help="Same as extract's --show-api-errors")
-    extract_debug_parser.add_argument("--show-compaction-content", action="store_true",
-                                       help="Same as extract's --show-compaction-content")
-    extract_debug_parser.add_argument("--show-tool-calls", action="store_true",
-                                       help="Same as extract's --show-tool-calls")
-    extract_debug_parser.add_argument("--show-tool-call-intent", action="store_true",
-                                       help="Same as extract's --show-tool-call-intent")
-    debug_since_group = extract_debug_parser.add_mutually_exclusive_group()
-    debug_since_group.add_argument("--since", help="Same marker semantics as extract's --since")
-    debug_since_group.add_argument("--since-file", help="Same snapshot-cursor semantics as extract")
-    extract_debug_parser.add_argument("--until", help="Same inclusive upper marker as extract")
-    extract_debug_parser.add_argument("--min-gap-records", type=int, default=None,
-                                       help="Same as extract's --min-gap-records")
-    extract_debug_parser.add_argument("--gap-marker",
-                                       choices=["full", "inline", "inline2", "inline-short", "none"],
-                                       default=None, help="Same as extract's --gap-marker")
-    extract_debug_parser.add_argument("--show-gap-source", action="store_true",
-                                       help="Same as extract's --show-gap-source")
-    extract_debug_parser.add_argument("--blank-lines", "--insert-blank-lines", dest="blank_lines",
-                                       type=int, default=None, help="Same as extract's --blank-lines")
-    extract_debug_parser.add_argument("--show-timestamps", choices=["pre", "post", "both", "none"],
-                                       default=None, help="Same as extract's --show-timestamps")
-    extract_debug_parser.add_argument("--timestamp-format", default=None,
-                                       help="Same as extract's --timestamp-format")
-    extract_debug_parser.add_argument("--extract-metadata", choices=["pre", "post", "both"],
-                                       default=None, help="Same as extract's --extract-metadata")
-    extract_debug_parser.add_argument("--render-markdown", action="store_true",
-                                       help="Same rendered-prose mode as extract")
-    extract_debug_parser.add_argument("--highlight", action="store_true",
-                                       help="Same source-highlighting mode as extract")
-    extract_debug_parser.add_argument("--strip-stale-wakeups", action="store_true",
-                                       help="Same as extract's --strip-stale-wakeups")
-    extract_debug_parser.add_argument("--redact-pattern", action="append", default=None,
-                                       help="Same as extract's repeatable --redact-pattern")
-    extract_debug_parser.add_argument("--ledger", action="store_true",
-                                       help="Same as extract's --ledger")
-    debug_color_group = extract_debug_parser.add_mutually_exclusive_group()
-    debug_color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
-                                    help="Force ANSI color even when stdout isn't a terminal")
-    debug_color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
-                                    help="Disable ANSI color even when stdout is a terminal")
-
-    # extract-report (renamed from session-stats 2026-09-11, operator direction --
-    # consistent extract-* verb family)
-    extract_report_parser = subparsers.add_parser(
-        "extract-report", help="Cost/timeline stats for a session log")
-    extract_report_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
-    extract_report_parser.add_argument("--opencode-session", metavar="SESSION_ID",
-                                        help=_OPENCODE_SESSION_HELP)
-    extract_report_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
-                                        help="Force the adapter instead of auto-detecting from the path")
-    extract_report_parser.add_argument("--type", dest="report_type",
-                                        choices=["report-sheet", "report-detailed", "csv"],
-                                        default=None,
-                                        help="Output shape (default report-sheet): compact "
-                                             "operator overview, readable per-call rows, or CSV "
-                                             "per-call data for spreadsheet/import use")
-    extract_report_parser.add_argument("--detailed", action="store_true",
-                                        help="Legacy alias for --type csv")
-    extract_report_parser.add_argument("--json", action="store_true",
-                                        help="JSON instead of CSV/text")
-
-    # extract-sessions (new 2026-09-11 -- discovery gap identified while
-    # redesigning subagent targeting: E-015 in
-    # docs/design-context-lifecycle-experiments.md)
-    extract_sessions_parser = subparsers.add_parser(
-        "extract-sessions",
-        help="List a project/store's sessions and sub-agents, with lineage")
-    extract_sessions_parser.add_argument(
-        "path", metavar="TOOL_OR_SESSIONS_PATH",
-        help="A tool name (claude, codex, opencode) to use its environment-aware "
-             "default storage path, or a SESSION_LOG/directory path. Claude uses "
-             "CLAUDE_CONFIG_DIR/projects, Codex uses CODEX_HOME/sessions, and "
-             "OpenCode uses OPENCODE_DB or its XDG database path. A session-log path "
-             "shows its whole family; a directory lists discovered families. "
-             "Either a single SESSION_LOG (see extract's --help for that meaning; its "
-             "whole family -- sub-agents included -- is shown either way, whether you "
-             "point at the top-level session or one specific sub-agent's own file) OR "
-             "a DIRECTORY holding MANY sessions: a Claude Code project directory "
-             "(~/.claude/projects/<project>/), a Codex sessions root "
-             "($CODEX_HOME/sessions/, default ~/.codex/sessions), or an opencode SQLite store's directory -- every "
-             "session found is shown, combined into one forest. This is the discovery "
-             "command; when in doubt, point it at a DIRECTORY first. Reasonix "
-             "directories/files are intentionally not accepted here because the supplied "
-             "records do not establish parent/child lineage")
-    extract_sessions_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
-                                          help="Force the adapter instead of auto-detecting from the path")
-    extract_sessions_parser.add_argument("--recurse", nargs="?", const="true",
-                                          choices=["true", "false"], default="true",
-                                          help="Search below the given directory (default true; "
-                                               "bare --recurse also means true)")
-    extract_sessions_parser.add_argument("--json", action="store_true",
-                                          help="JSON list instead of an indented tree")
-
-    # migrate-store
-    migrate_store_parser = subparsers.add_parser(
-        "migrate-store", help="Migrate a project's events to the SQLite backend")
-    migrate_store_parser.add_argument("project_id", metavar="PROJECT_ID",
-                                       help="Registered project id (see `nyxloom project list`)")
-
-    # daemon
-    daemon_parser = subparsers.add_parser(
-        "daemon", help="Run the supervising daemon (foreground)")
-    daemon_parser.add_argument("--foreground", action="store_true", help="Foreground mode")
-
-    # control-plane operator credential
-    auth_parser = subparsers.add_parser(
-        "auth", help="Manage the HTTP control-plane credential")
-    auth_subs = auth_parser.add_subparsers(dest="auth_cmd")
-    auth_subs.add_parser("show", help="print the current operator credential")
-    auth_bootstrap = auth_subs.add_parser(
-        "bootstrap", help="create the credential store if absent")
-    auth_bootstrap.add_argument("--operator", help="Named operator identity")
-    auth_rotate = auth_subs.add_parser("rotate", help="atomically issue a new credential")
-    auth_rotate.add_argument("--operator", help="New named operator identity")
-    auth_rotate.add_argument(
-        "--force", action="store_true",
-        help="Replace a store this loader refuses (resets generation to 1)")
-
-    # tick
-    tick_parser = subparsers.add_parser(
-        "tick", help="Run one daemon dispatch pass (debug/fallback mode)")
-    tick_parser.add_argument("--project-id", metavar="PROJECT_ID",
-                              help=_PROJECT_ID_HELP + "; omit to tick every registered project")
-
-    # decide
-    decide_parser = subparsers.add_parser(
-        "decide", help="Resolve a decision with a chosen option")
-    decide_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    decide_parser.add_argument("decision_id", metavar="DECISION_ID",
-                                help="Decision id from a 'Decision needed: <id>' notification "
-                                     "(see `nyxloom digest`)")
-    decide_parser.add_argument("--choose", required=True, help="Choice")
-    decide_parser.add_argument("--note", help="Note (optional)")
-
-    # discuss
-    discuss_parser = subparsers.add_parser(
-        "discuss", help="Print the CLI command to resume-discuss a decision")
-    discuss_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    discuss_parser.add_argument("decision_id", metavar="DECISION_ID",
-                                 help="Decision id from a 'Decision needed: <id>' notification "
-                                      "(see `nyxloom digest`)")
-
-    # intake
-    intake_parser = subparsers.add_parser(
-        "intake", help="Advance one feature-intake chat turn")
-    intake_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    intake_parser.add_argument("intake_id", metavar="INTAKE_ID",
-                                help="An id you choose to identify this intake conversation -- "
-                                     "first use with a new id starts it, reusing the same id "
-                                     "continues that same conversation")
-    intake_parser.add_argument("message", help="Message to send to the intake agent")
-
-    # intake-bridge (B9 / nyxloom-P109): the Mattermost transport for the
-    # SAME intake_chat engine `intake` above drives by hand.
-    intake_bridge_parser = subparsers.add_parser(
-        "intake-bridge", help="Mattermost <-> feature-intake chat bridge")
-    intake_bridge_subs = intake_bridge_parser.add_subparsers(dest="intake_bridge_cmd")
-    ibp = intake_bridge_subs.add_parser(
-        "poll", help="poll the intake channel once, advance one turn, exit")
-    ibp.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    # The choices come from the schema-side tuple rather than a literal here,
-    # so a transport added to the registry cannot be missing from the CLI.
-    from .config import INTAKE_TRANSPORTS
-    ibp.add_argument("--transport", choices=list(INTAKE_TRANSPORTS), default=None,
-                     help="override [intake_bridge] transport for this poll")
-
-    # reject
-    reject_parser = subparsers.add_parser(
-        "reject", help="Send a MERGE_READY task back to rework")
-    reject_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    reject_parser.add_argument("task", metavar="TASK_ID",
-                                help="Task id (see `nyxloom status`)")
-    reject_parser.add_argument("--note", help="Rejection reason (optional)")
-
-    # merge
-    merge_parser = subparsers.add_parser(
-        "merge", help="Record a manual merge for a task")
-    merge_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    merge_parser.add_argument("task", metavar="TASK_ID",
-                               help="Task id (see `nyxloom status`)")
-    merge_parser.add_argument("--commit", help="Merge commit SHA (optional; default: git rev-parse HEAD)")
-    merge_parser.add_argument("--force", action="store_true",
-                              help="Record the merge even if the pre-merge gate fails (operator override; F).")
-
-    # gate (retains the top-level verb with zero subcommands: GA1's `verify`
-    # was the only one, retired nyxloom-P98 -- gate_runner.py is now the
-    # only gate-execution path, and Assay's own R2/R3 mechanisms supersede
-    # external gate-trustworthiness verification)
-    gate_parser = subparsers.add_parser(
-        "gate", help="Reserved namespace; gate_runner.py owns execution")
-    gate_parser.add_subparsers(dest="gate_cmd")
-
-    # pause
-    pause_parser = subparsers.add_parser(
-        "pause", help="Pause a project or a single task")
-    pause_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    pause_parser.add_argument("task", nargs="?", metavar="TASK_ID",
-                               help="Task id (see `nyxloom status`) -- omit to pause the "
-                                    "whole PROJECT instead of one task")
-
-    # resume
-    resume_parser = subparsers.add_parser(
-        "resume", help="Resume a paused project or task (drift-guarded)")
-    resume_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    resume_parser.add_argument("task", nargs="?", metavar="TASK_ID",
-                                help="Task id (see `nyxloom status`) -- omit to resume the "
-                                     "whole PROJECT instead of one task")
-    resume_parser.add_argument("--force", action="store_true",
-                                help="PACKAGE RP03: resume a project-level pause "
-                                     "even when the pre-resume drift scan finds "
-                                     "(or fails to complete) drift -- recorded on "
-                                     "the PAUSE_CLEARED event (operator override; "
-                                     "no effect on task-level resume, which is "
-                                     "unguarded).")
-
-    # leases
-    leases_parser = subparsers.add_parser(
-        "leases", help="Show mutex lease holders across all projects")
-
-    # digest
-    digest_parser = subparsers.add_parser(
-        "digest", help="Print the notification digest for a project")
-    digest_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    digest_parser.add_argument("--since", metavar="SEQ",
-                                help="Only notifications after this event sequence number "
-                                     "(optional; omit for the full digest)")
-
-    # events
-    events_parser = subparsers.add_parser(
-        "events", help="Dump/tail a registered project's event log as JSONL")
-    events_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    events_parser.add_argument("--since", metavar="SEQ",
-                                help="Only events with sequence number > SEQ (optional; omit "
-                                     "for the full log)")
-    events_parser.add_argument("--type", metavar="EVENT_TYPE",
-                                help="Filter to one event type (optional; see types.EventType "
-                                     "for the full set, e.g. TASK_MERGE_READY)")
-    events_parser.add_argument("--tail", action="store_true",
-                                help="Follow new events as they are appended (Ctrl-C to stop)")
-    events_parser.add_argument("--json", action="store_true",
-                                help="Explicit JSONL output (default; no other output mode exists)")
-
-    # version
-    version_parser = subparsers.add_parser(
-        "version", help="Print the installed nyxloom version")
-
-    # init
-    init_parser = subparsers.add_parser(
-        "init", help="Scaffold a nyxloom-trove into a project folder")
-    init_parser.add_argument("project_folder", metavar="PROJECT_FOLDER",
-                              help="Filesystem path to scaffold a nyxloom-trove/ config into -- "
-                                   "does NOT register the project (see `nyxloom project add`, "
-                                   "a separate step, once this folder has a working config)")
-
-    # onboard (PACKAGE F2). Choices are hardcoded literals here (not
-    # imported from onboarding.py) so parser construction -- which runs for
-    # EVERY subcommand, including `version` -- never depends on importing an
-    # optional module (mirrors main()'s "lazy import inside handlers"
-    # design intent above); onboarding.WizardAnswers re-validates these same
-    # choice sets at construction time regardless.
-    onboard_parser = subparsers.add_parser(
-        "onboard", help="Run the onboarding wizard (spine + optional AI scan)")
-    onboard_parser.add_argument("project_folder", metavar="PROJECT_FOLDER",
-                                 help="Filesystem path to onboard -- a nyxloom-trove/ is "
-                                      "scaffolded here if absent. Does NOT register the "
-                                      "project (see `nyxloom project add`, a separate step)")
-    onboard_parser.add_argument("--maturity", choices=["empty", "partial", "mature"],
-                                 default="empty", help="Project maturity (default: empty)")
-    onboard_parser.add_argument("--docs", choices=["present", "absent"],
-                                 default="absent", help="Whether the project already has real docs (default: absent)")
-    onboard_parser.add_argument("--mode", choices=["derive-from-code", "code-good-docs-absent", "greenfield-define-it"],
-                                 default="greenfield-define-it", help="Onboarding mode (default: greenfield-define-it)")
-    onboard_parser.add_argument("--scan-path", action="append", dest="scan_paths", metavar="SCAN_PATH",
-                                 help="Path (repeatable) for the later AI scan (F3) to read; "
-                                      "default: ['.'] (the CURRENT WORKING DIRECTORY at "
-                                      "invocation time, NOT necessarily PROJECT_FOLDER -- "
-                                      "pass explicitly if they differ)")
-    onboard_parser.add_argument("--scan", action="store_true",
-                                 help="PACKAGE F3: after the non-AI wizard, dispatch the read-only "
-                                      "assessment scan agent (skipped automatically for --maturity empty)")
-    onboard_parser.add_argument("--questionnaire", action="store_true",
-                                 help="PACKAGE F4b: dispatch the guided one-shot questionnaire agent "
-                                      "to draft the direction spine from a STORED assessment (run "
-                                      "--scan first, or pass both --scan --questionnaire together)")
-    onboard_parser.add_argument("--check-gate", action="store_true", dest="check_gate",
-                                 help="PACKAGE GA3 v1: after the non-AI wizard, check (no dispatch, "
-                                      "no subprocess) whether this project declares a usable "
-                                      "verification gate, and print an offer/recommendation if not "
-                                      "(docs/plan-gate-adoption.md §GA3)")
-    onboard_parser.add_argument("--scaffold-gate", action="store_true", dest="scaffold_gate",
-                                 help="PACKAGE GA3 v2: after the non-AI wizard, if no verification "
-                                      "gate is declared, write a reviewable gate-runner Dockerfile "
-                                      "and a `[gates.*]` skeleton into the project's trove -- a "
-                                      "review skeleton (`# nyxloom-scaffold: adjust` markers), not a "
-                                      "guaranteed-working gate; adopt run-gate+assay after "
-                                      "adjusting it (docs/plan-gate-adoption.md §GA3)")
-
-    # free-models (D-R12: pluggable free-model discovery + routes.toml refresh)
-    free_models_parser = subparsers.add_parser(
-        "free-models", help="Discover or refresh free-tier model routes")
-    free_models_subs = free_models_parser.add_subparsers(dest="free_models_cmd")
-
-    fm_list_parser = free_models_subs.add_parser(
-        "list", help="discover currently-free models (read-only)")
-    fm_list_parser.add_argument("--source", help="Restrict to one source name (optional)")
-
-    fm_refresh_parser = free_models_subs.add_parser(
-        "refresh", help="discover + regenerate routes.toml's free-tier block")
-    fm_refresh_parser.add_argument("--source", help="Restrict to one source name (optional)")
-    fm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
-                                    help="Compute the plan without writing routes.toml")
-
-    # capability-map (B20: capability catalog refresh)
-    capability_map_parser = subparsers.add_parser(
-        "capability-map", help="Refresh the model capability catalog in routes.toml")
-    capmap_subs = capability_map_parser.add_subparsers(dest="capability_map_cmd")
-
-    cm_refresh_parser = capmap_subs.add_parser(
-        "refresh", help="rebuild the capability catalog from benchmark sources")
-    cm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
-                                    help="Compute the catalog without writing routes.toml")
-    cm_refresh_parser.add_argument("--emit-findings", dest="emit_findings",
-                                   metavar="PROJECT_ID", default=None,
-                                   help="Record cost_crossover findings under this registered "
-                                        "project id (see `nyxloom project list`)")
-
-    # route (B1: route doctor -- validate routes.toml + live-probe each route)
-    route_parser = subparsers.add_parser(
-        "route", help="Validate routes.toml and live-probe each route")
-    route_subs = route_parser.add_subparsers(dest="route_cmd")
-
-    route_doctor_parser = route_subs.add_parser(
-        "doctor", help="schema-validate + live-probe every route")
-    route_doctor_parser.add_argument("--no-probe", action="store_true", dest="no_probe",
-                                      help="skip live route probing -- schema validation only "
-                                           "(offline-safe)")
-
-    # finding (FN-4: CLI verbs)
-    finding_parser = subparsers.add_parser(
-        "finding", help="Record or list findings for registered projects")
-    finding_subs = finding_parser.add_subparsers(dest="finding_cmd")
-
-    fr = finding_subs.add_parser("record", help="record a finding")
-    fr.add_argument("--project-id", required=True, metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
-    fr.add_argument("--kind", required=True, metavar="KIND",
-                     help="Finding kind -- not argparse-constrained, but "
-                          "findings.FINDING_KINDS registers 'generic' (free-text, "
-                          "dashboard-only) and two typed/pushable kinds, "
-                          "'model_near_equivalent' and 'cost_crossover' (each needs "
-                          "its own required --field keys -- see findings.py)")
-    fr.add_argument("--title", required=True, help="One-line finding title")
-    fr.add_argument("--body", default="", help="Free-text finding body (optional)")
-    fr.add_argument("--field", action="append", default=[],
-                    metavar="KEY=VALUE", help="Typed field for a pushable kind (repeatable) "
-                                               "-- required_fields vary per --kind, see above")
-    fr.add_argument("--task-id", dest="task_id", metavar="TASK_ID", default=None,
-                     help="Associate with a task id (see `nyxloom status`); optional")
-    fr.add_argument("--severity", default="info", metavar="SEVERITY",
-                     help="Free-text severity label (default: info)")
-
-    fl = finding_subs.add_parser("list", help="list findings")
-    fl.add_argument("--project-id", default=None, metavar="PROJECT_ID",
-                     help=_PROJECT_ID_HELP + "; default: all registered projects")
-    fl.add_argument("--kind", default=None, metavar="KIND", help="Filter by kind (optional)")
-
-    # backlog (docs/backlog-entries-spec.md: managed per-entry backlog)
-    backlog_parser = subparsers.add_parser(
-        "backlog", help="Manage the per-entry backlog (new, promote, list, ...)")
-    backlog_subs = backlog_parser.add_subparsers(dest="backlog_cmd")
-
-    def _add_project_arg(p):
-        p.add_argument("--project-id", default=None, metavar="PROJECT_ID",
-                       help=_PROJECT_ID_HELP + " (default: walk up from the current "
-                            "working directory to the nearest nyxloom-trove/nyxloom.toml "
-                            "or .nyxloom/project.toml -- works even if that project was "
-                            "never `nyxloom project add`-ed, unlike every other verb here)")
-
-    bn = backlog_subs.add_parser("new", help="file a new entry")
-    _add_project_arg(bn)
-    bn.add_argument("title", help="One-line entry title")
-    bn.add_argument("--type", choices=["feature", "bugfix"], default=None,
-                     help="Entry type (optional)")
-    bn.add_argument("--severity", choices=["low", "medium", "high"], default=None,
-                     help="Entry severity (optional)")
-    bn.add_argument("--priority", type=int, default=None, help="Entry priority (optional)")
-    bn.add_argument("--component", default=None, help="Owning component (optional)")
-    bn.add_argument("--provenance", default=None,
-                     help="Where this entry came from, e.g. an issue/PR link (optional)")
-    bn.add_argument("--filed-by", dest="filed_by", default=None, help="Filer's name (optional)")
-    bn.add_argument("--spec-owner", dest="spec_owner", default=None,
-                     help="Owning spec's name (optional)")
-    bn.add_argument("--body-from", dest="body_from", default=None, metavar="FILE",
-                    help="Read the entry body from this file instead of the template")
-
-    bp = backlog_subs.add_parser("promote", help="inbox item -> managed entry")
-    _add_project_arg(bp)
-    bp.add_argument("inbox_id", metavar="INBOX_ID", help="Inbox item id to promote")
-
-    bnote = backlog_subs.add_parser("note", help="append a dated update to an entry")
-    _add_project_arg(bnote)
-    bnote.add_argument("entry_id", metavar="ENTRY_ID", help="Backlog entry id (see `nyxloom backlog list`)")
-    bnote.add_argument("text", help="Note text to append")
-
-    bs = backlog_subs.add_parser("set-status", help="typed status transition")
-    _add_project_arg(bs)
-    bs.add_argument("entry_id", metavar="ENTRY_ID", help="Backlog entry id (see `nyxloom backlog list`)")
-    bs.add_argument("status",
-                    choices=["open", "carved", "fixed", "withdrawn", "obsolete"],
-                    help="New status")
-    bs.add_argument("--reason", default=None,
-                    help="Required when status is fixed|withdrawn|obsolete")
-
-    bl = backlog_subs.add_parser("list", help="print the generated INDEX.md")
-    _add_project_arg(bl)
-    bl.add_argument("--status", default=None, metavar="STATUS", help="Filter rows by status (optional)")
-
-    bsh = backlog_subs.add_parser("show", help="print one entry file")
-    _add_project_arg(bsh)
-    bsh.add_argument("entry_id", metavar="ENTRY_ID", help="Backlog entry id (see `nyxloom backlog list`)")
-
-    bix = backlog_subs.add_parser("index", help="regenerate INDEX.md")
-    _add_project_arg(bix)
-
-    # Every subcommand's OWN --help (e.g. `nyxloom extract-report --help`)
-    # is otherwise plain argparse output with no version/name banner --
-    # _print_top_level_help's banner only fires for a bare invocation,
-    # top-level -h/--help, or an unrecognized command (operator-reported
-    # gap, 2026-09-10). `description` is argparse's own mechanism for a
-    # line shown right after the usage block in --help output; it does not
-    # appear in the terse `.error()` usage-only path (missing/bad
-    # argument), which stays a standard one-line message like every other
-    # CLI's argument error.
-    #
-    # Applied recursively (2026-09-11 fix -- the original loop only walked
-    # TOP-level verbs, so `nyxloom project add --help` / `nyxloom backlog
-    # new --help` and every other nested sub-subcommand silently didn't
-    # get the same banner their top-level siblings did; a real, if minor,
-    # 3rd-party-visible inconsistency caught during a full-CLI text
-    # audit). `_SubParsersAction.choices.values()` yields every registered
-    # sub-parser at one level; a parser that itself called
-    # `.add_subparsers()` again exposes that action back via its own
-    # private `_subparsers` attribute (the same kind of long-stable
-    # argparse internal `_print_top_level_help` already relies on for
-    # `_choices_actions`), which is how this walks arbitrarily deep
-    # without hand-listing every nested `_subs` variable above by name.
-    from . import __version__ as _cli_version
-
-    def _set_description_recursively(subparsers_action) -> None:
-        for _sub in subparsers_action.choices.values():
-            _sub.description = f"nyxloom {_cli_version}"
-            nested = getattr(_sub, "_subparsers", None)
-            if nested is not None:
-                for action in nested._group_actions:
-                    if isinstance(action, argparse._SubParsersAction):
-                        _set_description_recursively(action)
-
-    _set_description_recursively(subparsers)
-
-    return parser, subparsers
-
-
 def main(argv: list[str] | None = None) -> int:
-    _bootstrap_logging()
-    parser, subparsers = _build_parser()
+    """Run the local authoring CLI through its cli-extended registry."""
+    from .cli_registry import primary_cli
 
-    # Intercept a bare invocation, a top-level -h/--help, or an unrecognized
-    # top-level command BEFORE handing off to argparse's own parsing --
-    # argparse's default subparsers rendering (used for anything below this
-    # point, e.g. `nyxloom extract --help` or a missing arg on a known
-    # subcommand) is untouched; this replaces ONLY the top-level listing,
-    # which by default is a flat, unordered, unexplained comma list of all
-    # ~32 verb names with no version banner. See _print_top_level_help.
-    invocation = list(argv) if argv is not None else sys.argv[1:]
-    kind, token = _classify_top_level_invocation(invocation, set(subparsers.choices))
-    if kind == "help":
-        _print_top_level_help(parser, subparsers, file=sys.stdout)
-        return 0
-    if kind == "bare":
-        _print_top_level_help(parser, subparsers, file=sys.stderr)
-        return 2
-    if kind == "unknown":
-        print(cli_headline(), file=sys.stderr)
-        print(f"nyxloom: unrecognized command '{token}'\n", file=sys.stderr)
-        _print_top_level_help(parser, subparsers, file=sys.stderr)
-        return 2
-
-    try:
-        args = parser.parse_args(argv)
-    except SystemExit as e:
-        # A KNOWN subcommand's own -h/--help or argparse's own .error() has
-        # ALREADY printed the correct, targeted message by the time this
-        # exception reaches here -- --help to stdout with exit 0, a missing/
-        # bad-argument .error() to stderr with exit 2 -- via the SAME
-        # subparser `nyxloom <verb> --help` would use directly (operator-
-        # reported bug, 2026-09-10: this used to ALSO print the wrong
-        # TOP-LEVEL help on top of that correct output, and `e.code or 2`
-        # corrupted --help's own clean exit 0 into 2 since 0 is falsy).
-        # Nothing to add here; just propagate the real exit code.
-        return e.code if e.code is not None else 0
-    except argparse.ArgumentError:
-        # Only the TOP-level parser can raise this (exit_on_error=False);
-        # a malformed invocation before any subcommand is even identified
-        # (e.g. an unrecognized top-level flag) -- the top-level help IS
-        # the right thing to show here, unlike the SystemExit case above.
-        parser.print_help(sys.stderr)
-        return 2
-
-    # Route to handler
-    try:
-        if args.cmd == "project":
-            if args.project_cmd == "add":
-                return cmd_project_add(args)
-            elif args.project_cmd == "list":
-                return cmd_project_list(args)
-            else:
-                parser.print_help(sys.stderr)
-                return 2
-        elif args.cmd == "lint":
-            return cmd_lint(args)
-        elif args.cmd == "doctor":
-            return cmd_doctor(args)
-        elif args.cmd == "status":
-            return cmd_status(args)
-        elif args.cmd == "resync":
-            return cmd_resync(args)
-        elif args.cmd == "render":
-            return cmd_render(args)
-        elif args.cmd == "extract":
-            return cmd_extract(args)
-        elif args.cmd == "extract-lossless":
-            return cmd_extract_lossless(args)
-        elif args.cmd == "extract-debug":
-            return cmd_extract_debug(args)
-        elif args.cmd == "extract-report":
-            return cmd_extract_report(args)
-        elif args.cmd == "extract-sessions":
-            return cmd_extract_sessions(args)
-        elif args.cmd == "migrate-store":
-            return cmd_migrate_store(args)
-        elif args.cmd == "daemon":
-            return cmd_daemon(args)
-        elif args.cmd == "auth":
-            if args.auth_cmd in {"show", "bootstrap", "rotate"}:
-                return cmd_auth(args)
-            parser.print_help(sys.stderr)
-            return 2
-        elif args.cmd == "tick":
-            return cmd_tick(args)
-        elif args.cmd == "decide":
-            return cmd_decide(args)
-        elif args.cmd == "discuss":
-            return cmd_discuss(args)
-        elif args.cmd == "intake":
-            return cmd_intake(args)
-        elif args.cmd == "intake-bridge":
-            if getattr(args, "intake_bridge_cmd", None) == "poll":
-                return cmd_intake_bridge_poll(args)
-            subparsers.choices["intake-bridge"].print_help(sys.stderr)
-            return 2
-        elif args.cmd == "reject":
-            return cmd_reject(args)
-        elif args.cmd == "merge":
-            return cmd_merge(args)
-        elif args.cmd == "gate":
-            parser.print_help(sys.stderr)
-            return 2
-        elif args.cmd == "pause":
-            return cmd_pause(args)
-        elif args.cmd == "resume":
-            return cmd_resume(args)
-        elif args.cmd == "leases":
-            return cmd_leases(args)
-        elif args.cmd == "digest":
-            return cmd_digest(args)
-        elif args.cmd == "events":
-            return cmd_events(args)
-        elif args.cmd == "free-models":
-            if args.free_models_cmd == "list":
-                return cmd_free_models_list(args)
-            elif args.free_models_cmd == "refresh":
-                return cmd_free_models_refresh(args)
-            else:
-                parser.print_help(sys.stderr)
-                return 2
-        elif args.cmd == "capability-map":
-            if args.capability_map_cmd == "refresh":
-                return cmd_capability_map_refresh(args)
-            else:
-                parser.print_help(sys.stderr)
-                return 2
-        elif args.cmd == "route":
-            if args.route_cmd == "doctor":
-                return cmd_route_doctor(args)
-            else:
-                parser.print_help(sys.stderr)
-                return 2
-        elif args.cmd == "finding":
-            if args.finding_cmd == "record":
-                return cmd_finding_record(args)
-            elif args.finding_cmd == "list":
-                return cmd_finding_list(args)
-            else:
-                parser.print_help(sys.stderr)
-                return 2
-        elif args.cmd == "backlog":
-            handlers = {
-                "new": cmd_backlog_new,
-                "promote": cmd_backlog_promote,
-                "note": cmd_backlog_note,
-                "set-status": cmd_backlog_set_status,
-                "list": cmd_backlog_list,
-                "show": cmd_backlog_show,
-                "index": cmd_backlog_index,
-            }
-            handler = handlers.get(getattr(args, "backlog_cmd", None))
-            if handler is None:
-                subparsers.choices["backlog"].print_help(sys.stderr)
-                return 2
-            return handler(args)
-        elif args.cmd == "version":
-            return cmd_version(args)
-        elif args.cmd == "init":
-            return cmd_init(args)
-        elif args.cmd == "onboard":
-            return cmd_onboard(args)
-        else:
-            parser.print_help(sys.stderr)
-            return 2
-    except Exception as e:
-        if args.debug:
-            raise
-        print(f"error: {e}", file=sys.stderr)
-        return 1
+    return primary_cli().run(argv=argv, interactive_extra="nyxloom[interactive]")
 
 
 if __name__ == "__main__":  # pragma: no cover

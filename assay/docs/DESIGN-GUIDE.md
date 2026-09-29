@@ -481,6 +481,42 @@ additive under v11):**
   subclass; every other `process_runner` never raises it, so this code is
   unreachable for R0/R1/R3 and every non-liveness R2 call site.
 
+#### Liveness pressure and resource evidence (B107)
+
+An idle event gap is not enough to call a candidate `hung`: scheduler,
+memory, I/O, or cgroup-quota stalls can produce the same quiet event stream.
+The runner samples process-tree CPU together with cumulative PSI for the
+visible host and candidate cgroup, plus the candidate cgroup's CPU throttle
+counters. These are aggregate counters, not a measurement of this process's
+lost runtime, so the monitor does not prorate them into estimated candidate
+time. A `hung` result requires a complete time-aligned trace and a full
+eligible idle/CPU window with no observed pressure. Any positive pressure or
+throttle delta freezes the liveness and CPU-growth clocks for that poll
+interval. An unreadable source or counter reset also starts a fresh idle
+evidence window at the next usable observation; only unchanged, well-formed
+observations advance it. This intentionally errs toward an
+incomplete candidate instead of allowing host load to choose a functional
+mutation result.
+The live process-tree CPU sum can decrease when a descendant exits. A decrease
+breaks comparison with earlier CPU readings, so both the monitor and cached
+evidence validator restart the trailing CPU window there; subtracting across
+that boundary could falsely certify a busy candidate as quiet.
+The validator also derives idle time from the retained trace's first and last
+eligible timestamps and checks event/output counts throughout. It refuses a
+cached `hung` claim if the trace omits those counts, shows intervening
+progress, or claims more idle time than it retains.
+
+The independent configured per-candidate wall budget still bounds the run.
+If it expires before a clean, complete liveness window is available, the
+candidate is `budget_exceeded` and the mutation lane is incomplete; resource
+pressure cannot turn it into `killed`, `survived`, or `hung`. Each stopped
+candidate retains `liveness_resource_evidence` in its progress and mutation
+state records: the decision, eligible/wall elapsed times, candidate-tree CPU
+samples, counter deltas, and the complete resource snapshots. The trace is
+bounded at 1024 samples; once truncated, that idle interval cannot certify a
+hang, and a configured-budget expiry remains incomplete. Cached `hung`
+records without a structurally valid complete trace are refused and rerun.
+
 #### Liveness process-group cleanup
 
 Each native R2 candidate is launched in its own session/process group. The
@@ -492,13 +528,15 @@ until the gate cgroup reaches `pids.max`.
 
 #### Liveness session-finish grace
 
-RW-57 guards the post-`session_finish` branch with
-`idle_for >= _HUNG_SESSION_FINISH_GRACE_S`. xdist workers and their
-controller append to one events file; the first worker's finish does not
-mean the candidate finished. Later events or stdout/stderr growth reset
-the idle clock, preserving a progressing worker tail while still expiring
-a process that stops reporting after the full 30 s grace. The calibrated
-idle/CPU branch and elapsed budget retain their existing rules.
+RW-57 permits the post-`session_finish` branch to expire only after the full
+30 s grace has no event or stdout/stderr growth **and** the process tree's
+CPU has stayed below the quiet threshold over the complete trailing CPU
+window. xdist workers and their controller append to one events file; the
+first worker's finish does not mean the candidate finished. Later events or
+output growth reset the idle clock, and CPU growth keeps a candidate
+incomplete even if event/output has stopped. Such a candidate reaches its
+configured budget rather than receiving a false `hung` result. The same
+pressure-aware CPU evidence governs the calibrated idle branch.
 
 #### Liveness process identity and xdist parsing (B097)
 

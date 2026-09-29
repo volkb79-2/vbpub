@@ -579,7 +579,7 @@ mutation score can preserve a wrong specification.
 1. Establish an isolated, fail-closed, commit-addressed gate.
 2. Add branch-aware global coverage and changed-line coverage; prove
    serial/xdist parity.
-3. Run `nyxloom gate verify` at adoption and on a cadence; run `nyxloom doctor`
+3. Run `./run-gate.py tester-unified` at adoption and on a cadence; run `nyxloomctl doctor`
    after image, Docker transport, or cgroup changes.
 4. Add API/message contracts, real fixtures, and independent-channel round trips
    on critical public boundaries; use resettable serialized journeys for

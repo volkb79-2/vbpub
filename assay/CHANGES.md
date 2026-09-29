@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- fix(assay): require time-aligned resource evidence and a CPU-quiet window
+  before classifying an R2 candidate as hung (B107/RW-57)
+- fix(assay): restart the hung CPU window when an exiting descendant lowers
+  the live process-tree CPU total, and reject cached hung traces that cannot
+  prove their idle span or contain malformed counters (B107 final review)
+
 <!-- cmru: release history -->
 
 ## [7.1.0] - 2026-09-25

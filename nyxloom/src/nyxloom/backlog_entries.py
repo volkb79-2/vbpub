@@ -70,6 +70,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import jsonschema
+import yaml
 
 from . import backlog_items
 from .config import ProjectConfig
@@ -155,6 +156,18 @@ def _load_schema() -> dict:
         "backlog-entry.schema.json"
     ).read_text(encoding="utf-8")
     return json.loads(text)
+
+
+def validate_candidate(frontmatter: dict) -> None:
+    """Validate complete candidate frontmatter before a CLI write."""
+    validator = jsonschema.Draft202012Validator(_load_schema())
+    errors = sorted(validator.iter_errors(frontmatter), key=lambda e: list(e.absolute_path))
+    if errors:
+        details = []
+        for error in errors:
+            key = ".".join(str(part) for part in error.absolute_path) or "$"
+            details.append(f"{key}: {error.message}")
+        raise ValueError("candidate backlog frontmatter failed schema: " + "; ".join(details))
 
 
 def parse_entry(path: Path) -> Entry:
@@ -391,12 +404,71 @@ def create_entry(
         body = BODY_TEMPLATE.format(project=cfg.project_id)
     text = "\n".join(fm_lines) + "\n\n" + body.strip() + "\n"
 
+    candidate, _candidate_body, _candidate_line = split_frontmatter(text)
+    validate_candidate(candidate)
+
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{entry_id}-{slug}.md"
     path.write_text(text, encoding="utf-8")
     write_index(cfg)
     log.info("entry created", id=entry_id, path=str(path))
     return path
+
+
+def edit_fields(cfg: ProjectConfig, entry_id: str, values: dict) -> Path:
+    """Update only authorable metadata; validate before writing entry/index.
+
+    The complete old frontmatter mapping is retained, and the Markdown body
+    bytes after the closing delimiter are copied verbatim.
+    """
+    allowed = {
+        "title", "type", "severity", "priority", "component",
+        "context_estimate", "folds_into", "provenance", "filed_by",
+        "spec_owner",
+    }
+    unknown = set(values) - allowed
+    if unknown:
+        raise ValueError("unsupported editable fields: " + ", ".join(sorted(unknown)))
+
+    entry = _find(cfg, entry_id)
+    raw_bytes = entry.path.read_bytes()
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"entry is not valid UTF-8: {exc}") from exc
+    normalized = raw_text.replace("\r\n", "\n")
+    frontmatter, _body, body_start_line = split_frontmatter(normalized)
+    candidate = dict(frontmatter)
+    for key, value in values.items():
+        if key == "title":
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("title must not be blank")
+            candidate[key] = value
+        elif key == "priority":
+            if value in (None, ""):
+                candidate.pop(key, None)
+            elif isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("priority must be an integer or empty")
+            else:
+                candidate[key] = value
+        elif value is None or value == "":
+            candidate.pop(key, None)
+        else:
+            candidate[key] = value
+
+    validate_candidate(candidate)
+
+    # split_frontmatter is the source of the closing delimiter and body
+    # boundary. Slice the raw bytes at the equivalent line so CRLF and body
+    # contents remain byte-for-byte unchanged.
+    raw_lines = raw_bytes.split(b"\n")
+    body_bytes = b"\n".join(raw_lines[body_start_line - 1:])
+    yaml_text = yaml.safe_dump(candidate, sort_keys=False, allow_unicode=True)
+    new_bytes = b"---\n" + yaml_text.encode("utf-8") + b"---\n" + body_bytes
+    entry.path.write_bytes(new_bytes)
+    write_index(cfg)
+    log.info("entry fields edited", id=entry_id, path=str(entry.path))
+    return entry.path
 
 
 # ----- surgical frontmatter token edit (tick/set-status shared) -----
