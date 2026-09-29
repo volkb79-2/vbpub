@@ -4432,6 +4432,7 @@ def _run_prepared_lane(
                     pre_first_event_within_s=(
                         liveness_calibration.pre_first_event_within_s
                     ),
+                    sampler=liveness.tree_sample,
                 )
             else:
                 candidate_process_runner = process_runner
