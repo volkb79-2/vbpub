@@ -69,7 +69,10 @@ def test_agent_cli_enroll_and_status_use_persisted_state(monkeypatch, capsys):
     monkeypatch.setattr("cmru.agent.state.ensure_state_dir", lambda scope: None)
     monkeypatch.setattr("cmru.agent.state.write_node_id", lambda value, scope: state.update(node=value))
     monkeypatch.setattr("cmru.agent.state.write_identity", lambda value, scope: state.update(identity=value))
-    args = SimpleNamespace(node_id="node", landscape="land", token="t", minisign_pubkey="pub", scope="user")
+    args = SimpleNamespace(
+        node_id="node", landscape="land", token="t", minisign_pubkey="pub",
+        scope="user", dry_run=False,
+    )
     assert agent_cli.cmd_enroll(args) == 0 and state["node"] == "node"
     monkeypatch.setattr("cmru.agent.state.read_node_id", lambda scope: "node")
     monkeypatch.setattr("cmru.agent.state.read_observed", lambda scope: None)
