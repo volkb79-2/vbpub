@@ -35,11 +35,39 @@ BLOCKED. The guide's frontmatter section makes the handoff nyxloom-compatible
 
 When a task requires a particular model or reasoning effort, the caller must
 select that route in the invocation and verify it from the invocation or saved
-session metadata. Do not require the worker or reviewer to introspect hidden
-route metadata or block because that metadata is not exposed inside its prompt.
-The caller records the route evidence and corrects or relaunches a mismatched
+session metadata. Never require a Codex agent to verify or attest its own model
+or effort: it cannot reliably inspect authoritative route metadata, and a
+self-verification requirement can incorrectly force the task to BLOCKED. The
+caller records the route evidence and corrects or relaunches a mismatched
 invocation before assigning repository work; an agent's self-report is not the
 route evidence.
+
+For programmatic Codex invocations in this environment, always set
+`CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"`. Also set `CODEX_HOME`
+explicitly to `$HOME/.codex` or `$HOME/.codex2`, exactly as the operator
+directs; do not rely on an inherited value. Ordinary tasks use GPT-6-Luna at
+xhigh when that is the operator's route; programmatic reviews and plans use
+GPT-6-Sol at xhigh when directed. Keep the route, shared session database, and
+Codex home explicit:
+
+```bash
+export CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"
+export CODEX_HOME="$HOME/.codex2"
+printf '%s' "$PROMPT" |
+  codex exec -m gpt-6-sol \
+    -c 'model_reasoning_effort="xhigh"' \
+    -
+```
+
+For a Luna-routed task, use the same stdin form with `-m gpt-6-luna` and
+`-c 'model_reasoning_effort="xhigh"'`; choose `.codex` or `.codex2` as the
+operator directs.
+
+When stdin carries the prompt, pass `-` as the prompt argument and do not also
+pass a positional prompt. Codex appends piped stdin to a positional prompt as a
+`<stdin>` block; some versions can also wait on inherited non-TTY stdin when a
+positional prompt is used. Explicit stdin keeps the invocation predictable in
+Python, Node, CI, and shell callers.
 
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
@@ -116,11 +144,14 @@ silently auto-creates an unlimited transient slice), so any code that accepts
 a slice name should verify it's actually a loaded unit first
 (`systemctl show <slice> --property=LoadState`) rather than trust it blindly.
 
-## Manual tester-unified gate runs — the four traps (estate-wide)
+## Manual tester-unified fallback runs — the four traps (estate-wide)
 
-**For any project with a root `run-gate.py`, the manual recipe below is
-SUPERSEDED: run `./run-gate.py <lane>` — the mechanics are tested code
-(`run-gate-project/SPEC.md`), not doctrine prose.** Adopted estate-wide
+**For any project with a root `run-gate.py`, use `./run-gate.py <lane>` for
+registered gates — the mechanics are tested code (`run-gate-project/SPEC.md`),
+not doctrine prose.** The manual recipe below is only a fallback for projects
+without a root runner or for a narrowly-scoped live acceptance probe that the
+registered lane cannot express; it is not a substitute for registered gate
+evidence. Adopted estate-wide
 2026-08-22 (ciu, cmru, assay, nyxloom, topos, pwmcp,
 shared-ramdisk-depot-manager, plesk-mailbox-create,
 modern-debian-tools-python-debug); projects without an executable test
@@ -160,7 +191,12 @@ every `kind = "assay"` lane, and a gate that calls `assay run` directly (assay's
 own) passes them itself. Both are no-ops on an R0/R1 lane; on a mutation lane
 they are what lets a budget-capped retry continue instead of restarting from
 mutant #1. Resume state and the progress stream live under the git-ignored
-`.assay/`, never in the judged tree. The judge must be assay >= 2.4.1.
+`.assay/`, never in the judged tree. Use the latest released Assay available
+that meets the consuming project's current declared judge floor, verified by
+that project's current preflight (run-gate R-38; `--state-dir` is B066). Do
+not infer today's minimum from historical version numbers in old instructions
+or reports. For in-repo consumers, follow the source-backed installation rule
+below instead of pinning a versioned zipapp.
 
 ## Consuming assay from inside vbpub (estate-wide, 2026-08-27)
 
