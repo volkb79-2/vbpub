@@ -172,7 +172,9 @@ run_and_verify_lane() {
   local verdict_path=".assay/verdict-$lane.json"
   local progress_path=".assay/progress-$lane.jsonl"
   local state_path=".assay/mutation-state-$lane"
+  local plan_path=".assay/plan-$lane.json"
   local -a receipt_args=()
+  local -a plan_args=()
   [[ "$lane" == "self-qualification" ]] && receipt_args=(--tester-unified-receipt "$receipt")
 
   case "$lane" in
@@ -194,6 +196,12 @@ run_and_verify_lane() {
         ASSAY_B105_SOURCE_COMMIT ASSAY_B105_SOURCE_TREE
       ;;
   esac
+
+  if [[ "$expected_rigor" == *R2* ]]; then
+    echo "B105_PHASE=assay-plan-$lane"
+    "$assay_bin" plan "$lane" --file assay.toml > "$plan_path" || return 2
+    plan_args=(--plan-json "$plan_path")
+  fi
 
   echo "B105_PHASE=assay-run-$lane"
   if "$assay_bin" run "$lane" --file assay.toml \
@@ -222,6 +230,7 @@ run_and_verify_lane() {
       --expected-version "$version" \
       --expected-wheel-sha256 "$wheel_digest" \
       --producer-exit "$run_status" \
+      ${plan_args[@]+"${plan_args[@]}"} \
       ${receipt_args[@]+"${receipt_args[@]}"} || return 2
   else
     return "$run_status"

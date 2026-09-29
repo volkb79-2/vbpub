@@ -240,6 +240,29 @@ def test_the_full_qualification_driver_requires_the_same_commit_tester_unified_r
     assert '${receipt_args[@]+"${receipt_args[@]}"}' in script
 
 
+def test_o12_the_driver_plans_before_it_runs_an_r2_lane_and_hands_the_plan_to_the_checker():
+    script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    start = script.index("run_and_verify_lane() {")
+    body = script[start:script.index("\n}\n", start)]
+
+    assert 'local plan_path=".assay/plan-$lane.json"' in body
+    assert '"$assay_bin" plan "$lane" --file assay.toml > "$plan_path" || return 2' in body
+    assert '--plan-json "$plan_path"' in body
+    assert '${plan_args[@]+"${plan_args[@]}"}' in body
+    # Plan first, then run, then the checker that reads the plan.
+    assert (
+        body.index('"$assay_bin" plan "$lane"')
+        < body.index('"$assay_bin" run "$lane"')
+        < body.index("b105_report_check.py")
+        < body.index('${plan_args[@]+"${plan_args[@]}"}')
+    )
+    # Only a lane whose rigor holds R2 plans (the preflight is R0,R1 and passes no plan).
+    condition = 'if [[ "$expected_rigor" == *R2* ]]; then'
+    assert body.index(condition) < body.index('"$assay_bin" plan "$lane"')
+    assert body.index('"$assay_bin" plan "$lane"') < body.index('plan_args=(--plan-json "$plan_path")')
+    assert 'expected_rigor="R0,R1"' in body and 'expected_rigor="R0,R1,R2,R3"' in body
+
+
 def test_the_option_files_the_opt_in_qualification_tests_read_exist():
     """(O9) These two files are skipped in every gate, so nothing else notices when a
     layout change leaves their paths pointing at nothing."""
