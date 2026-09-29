@@ -738,16 +738,31 @@ def _selected_test_events(events_path: "Path | None") -> list[dict[str, Any]]:
     A file without a usable session owner also remains merged because no
     identity may be invented from ``xdist_worker``.
     """
-    records = list(_iter_events(events_path))
-    test_records = [
-        record for record in records if record.get("event") == TEST_EVENT
+    return [
+        record for record in _owner_stream(events_path) if record.get("event") == TEST_EVENT
     ]
+
+
+def _owner_stream(events_path: "Path | None") -> list[dict[str, Any]]:
+    """The `test` and `phase` records, in file order, after the ONE owner
+    rule (:func:`_selected_test_events` and :func:`baseline_phase_durations`
+    both read through it, so they can never select different processes).
+
+    When every `test` record carries a usable pid and the file has a stamped
+    session owner, only that owner's records remain; otherwise the legacy
+    merged view is kept.
+    """
+    records = list(_iter_events(events_path))
+    stream = [
+        record for record in records if record.get("event") in (TEST_EVENT, PHASE_EVENT)
+    ]
+    test_records = [record for record in stream if record.get("event") == TEST_EVENT]
     if not test_records or any(_record_pid(record) is None for record in test_records):
-        return test_records
+        return stream
     owner_pid = _session_owner_pid(records)
     if owner_pid is None:
-        return test_records
-    return [record for record in test_records if _record_pid(record) == owner_pid]
+        return stream
+    return [record for record in stream if _record_pid(record) == owner_pid]
 
 
 def _iter_test_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
@@ -818,6 +833,62 @@ def baseline_test_events(baseline_events_path: Path) -> list[dict[str, Any]]:
         }
         for record in _iter_test_events(baseline_events_path)
     ]
+
+
+def _finite_number(value: Any) -> float | int | None:
+    """*value* when it is a finite int or float (a bool never is), else
+    ``None``. An int too large for a float is not finite for this purpose."""
+    import math
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
+def _phase_duration(record: Mapping[str, Any]) -> float | int | None:
+    duration = _finite_number(record.get("duration_s"))
+    if duration is None or duration < 0:
+        return None
+    return duration
+
+
+def baseline_phase_durations(path: Path | None) -> list[dict[str, float | None]]:
+    """``{"setup_s", "teardown_s"}`` for each event
+    :func:`baseline_test_events` returns, aligned one-to-one and in order.
+
+    Both lists come from :func:`_owner_stream`. Records are paired
+    POSITIONALLY in the owner's stream, never summed per nodeid: a call's
+    ``setup_s`` is the nearest preceding unconsumed ``setup`` phase record for
+    its nodeid (a setup that never reached a call is left unpaired and cannot
+    shift later pairings), and its ``teardown_s`` is the next following
+    ``teardown`` phase record for that nodeid before the nodeid's next call.
+    A missing, non-numeric, bool, negative or non-finite duration is ``None``.
+    """
+    rows: list[dict[str, float | None]] = []
+    setups: dict[Any, float | int | None] = {}
+    awaiting_teardown: dict[Any, dict[str, float | None]] = {}
+    for record in _owner_stream(path):
+        nodeid = record.get("nodeid")
+        is_call = record.get("event") == TEST_EVENT
+        if not isinstance(nodeid, str):
+            if is_call:  # Nothing can pair with a call that has no usable nodeid.
+                rows.append({"setup_s": None, "teardown_s": None})
+            continue
+        if is_call:
+            row: dict[str, float | None] = {
+                "setup_s": setups.pop(nodeid, None),
+                "teardown_s": None,
+            }
+            rows.append(row)
+            awaiting_teardown[nodeid] = row
+        elif record.get("when") == "setup":
+            setups[nodeid] = _phase_duration(record)
+        elif record.get("when") == "teardown" and nodeid in awaiting_teardown:
+            awaiting_teardown.pop(nodeid)["teardown_s"] = _phase_duration(record)
+    return rows
 
 
 def count_test_events(events_path: "Path | None") -> int:

@@ -281,6 +281,68 @@ def test_baseline_test_events_are_forwarded_right_after_plan_never_per_candidate
     assert all(event["event"] != "test" for event in candidate_events)
 
 
+def test_forwarded_baseline_test_events_carry_setup_and_teardown_durations(tmp_path):
+    """(B111 O9) Each forwarded baseline `test` event gains `setup_s` and
+    `teardown_s` from the owner's `phase` records; the event count and the
+    event vocabulary are unchanged."""
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    baseline_events_path = tmp_path / "baseline.ndjson"
+    baseline_events_path.write_text(
+        '{"event": "session_start", "t": 0, "pid": 7}\n'
+        '{"event": "phase", "when": "setup", "nodeid": "t::one", "duration_s": 0.25, "t": 1, "pid": 7}\n'
+        '{"event": "test", "when": "call", "nodeid": "t::one", "outcome": "passed", "duration_s": 0.5, "t": 2, "pid": 7}\n'
+        '{"event": "phase", "when": "teardown", "nodeid": "t::one", "duration_s": 0.125, "t": 3, "pid": 7}\n'
+        '{"event": "session_finish", "exitstatus": 0, "t": 4, "pid": 7}\n',
+        encoding="utf-8",
+    )
+
+    def decide(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            liveness_baseline_events_path=baseline_events_path,
+        )
+    assert result is not None and not isinstance(result, str)
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    forwarded = [
+        {key: value for key, value in event.items() if key not in ("emitted_at", "elapsed_s")}
+        for event in events
+        if event["event"] == "test"
+    ]
+    assert forwarded == [
+        {
+            "event": "test",
+            "phase": "baseline",
+            "nodeid": "t::one",
+            "outcome": "passed",
+            "duration_s": 0.5,
+            "setup_s": 0.25,
+            "teardown_s": 0.125,
+        }
+    ]
+
+
 def test_candidate_progress_event_gains_tests_completed_from_its_own_events_file(
     tmp_path,
 ):

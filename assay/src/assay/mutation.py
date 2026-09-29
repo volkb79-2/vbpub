@@ -2515,10 +2515,18 @@ def run_mutation(
                 # them apart). Right after `plan`, before any candidate
                 # line, so a reader already has the baseline's own per-test
                 # detail before judging any mutant against it.
-                for test_event in liveness.baseline_test_events(
-                    liveness_baseline_events_path
+                for test_event, phase_durations in zip(
+                    liveness.baseline_test_events(liveness_baseline_events_path),
+                    liveness.baseline_phase_durations(liveness_baseline_events_path),
                 ):
-                    write_progress({"event": "test", "phase": "baseline", **test_event})
+                    write_progress(
+                        {
+                            "event": "test",
+                            "phase": "baseline",
+                            **test_event,
+                            **phase_durations,
+                        }
+                    )
         # (B091 round-1 B3) `resolve_run_cwd` travels the SAME lazy-import-
         # then-parameter path `execute_plan` already does (a module-level
         # `from .runner import ...` is circular -- `runner` imports
