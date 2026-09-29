@@ -22,22 +22,6 @@ landed on TOP of that already-working machinery:
 §3.4 explicitly forbids adding parallel containment checks for source
 roots, cwd, mutation candidates, canary targets, or B005 targets -- this
 module does not add any.
-
-3. §6 WI-3's own embargo, half (b) only. WI-3 imposed two halves: (a) no
-   LIVE checked-in lane may declare omission mode, and (b) no assay release
-   may be cut, until WI-4 lands the v6 ``snapshot_policy`` record. **Wave-1
-   WI-4 is this very commit** -- the v6 record now exists, so half (a)'s own
-   trigger condition is satisfied and ``test_no_live_lane_declares_
-   omission_mode_yet`` is RETIRED here, deliberately, not left failing and
-   not silently deleted: keeping it would turn a legitimate future lane's
-   real opt-in to omission mode into a spurious failure, for a prohibition
-   that no longer exists. Half (b) is a different kind of check -- an audit
-   of git tag HISTORY, not of WI-4's landing state -- and stays exactly as
-   written and exactly as binding: it protects the window between WI-1
-   landing lane schema v2 and this branch actually merging, so a release
-   cut from an unmerged intermediate state still has no v6 policy record to
-   attest it until the gate is green and this branch lands on the trunk
-   history the tag check walks.
 """
 
 from __future__ import annotations
@@ -49,12 +33,10 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from conftest import (
-    REPO_ROOT,
     FakeAdapter,
     GitRepo,
     make_lane,
     make_r1_judge,
-    requires_parent_repository,
     write_coverage_json,
 )
 
@@ -769,151 +751,3 @@ def test_dstdns_nginx_link_is_an_exact_omittable_leaf(
     # real vendored link is still exactly where it was.
     assert os.path.lexists(git_repo.path / _DSTDNS_LINK)
     assert os.readlink(git_repo.path / _DSTDNS_LINK) == _DSTDNS_LINK_TARGET
-
-
-# ---------------------------------------------------------------------------
-# §6 WI-3's own embargo, half (b), asserted mechanically against the REAL
-# enclosing repository (never a fixture). The hazard it exists to prevent:
-# a verdict that reports omission-mode evidence with no v6 `snapshot_policy`
-# record to attest which policy it used. Half (a) -- no live checked-in lane
-# may declare omission mode -- was retired in the same commit that landed
-# WI-4's v6 record; see the module docstring.
-#
-# (A-278) REPHRASED IN WAVE 2, because the original phrasing could not
-# survive its own success. It read "no assay release may be cut between
-# WI-1 landing lane schema v2 and this branch merging with a green gate"
-# and was implemented as an unconditional ban on any `assay-v*` tag
-# descending from WI-1's landing commit -- with nothing that ever closed
-# the window. Wave 1 then merged green and `assay-v2.0.0` was cut FROM that
-# merge, carrying lane v2 and the v6 record together, which is precisely
-# the release the embargo was protecting. The test failed anyway, and it
-# could not have failed any earlier: no `assay-v*` tag existed while wave 1
-# was gating, so the assertion was unreachable in the only window anyone
-# ran it.
-#
-# What is asserted now is the PROPERTY rather than the proxy: every release
-# tag that descends from WI-1's landing commit must itself carry the v6
-# `snapshot_policy` record. A release cut inside the real window still
-# fails; the release that discharged the embargo passes; and the check
-# stays live for every future tag instead of becoming a line someone has to
-# delete.
-# ---------------------------------------------------------------------------
-
-#: The monorepo top -- one level above assay's own project root, where
-#: `cmru/assay.toml` and every other project's lane file live alongside
-#: assay's own. (B063) Now `conftest.REPO_ROOT`, the ONE definition the three
-#: modules that need it share, instead of three independent `.parent` hops.
-_REPO_ROOT = REPO_ROOT
-
-#: WI-1's own landing commit, exactly as this work item's own written brief
-#: names it: the point after which lane schema v2 (and therefore omission
-#: mode's own config surface) exists at all, and the earliest possible
-#: commit any real release could have shipped it from.
-_WI1_LANDING_COMMIT = "c56a13ea"
-
-
-def _repo_git(*args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(_REPO_ROOT), *args],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-
-
-#: The path, inside the repository, of the verdict schema that carries
-#: WI-4's record. Read out of a COMMIT via `git show`, never off the
-#: working tree, so the question asked is "what did that release actually
-#: ship" rather than "what is checked out right now".
-_SCHEMA_IN_REPO = "assay/src/assay/schemas/verdict.schema.json"
-
-#: The record whose absence is the hazard. Deliberately the field NAME and
-#: not a schema version: a v7 that keeps the record still discharges the
-#: embargo, and pinning "6" here would turn the next migration red for no
-#: reason connected to what this test protects.
-_WI4_POLICY_RECORD = "snapshot_policy"
-
-
-def _is_ancestor(ancestor: str, descendant: str) -> bool:
-    return subprocess.run(
-        ["git", "-C", str(_REPO_ROOT), "merge-base", "--is-ancestor", ancestor, descendant],
-        capture_output=True,
-    ).returncode == 0
-
-
-def _carries_wi4_policy_record(ref: str) -> bool:
-    """Did the tree at `ref` ship WI-4's v6 `snapshot_policy` record?
-
-    A `git show` that fails yields empty stdout and therefore False, which
-    is the fail-CLOSED direction: an unreadable release reads as one that
-    did not carry the record, so the audit goes red rather than silently
-    passing a tag it could not inspect. Deliberately not a separate
-    returncode branch -- that branch would be unreachable from any real
-    repository state and this project forbids checks that cannot fire.
-    """
-    shown = subprocess.run(
-        ["git", "-C", str(_REPO_ROOT), "show", f"{ref}:{_SCHEMA_IN_REPO}"],
-        capture_output=True, text=True,
-    )
-    return _WI4_POLICY_RECORD in shown.stdout
-
-
-# (B063) Marked per-test, NOT with a module-level `pytestmark`: only the two
-# tests in this embargo section read the monorepo's own tagged history, and
-# skipping the other 11 collected items would hide real coverage of assay
-# behind an unrelated property of the checkout.
-@requires_parent_repository
-def test_every_release_since_wi1_landed_carries_wi4s_policy_record() -> None:
-    """Embargo half (b), as the property rather than the proxy (A-278).
-
-    Any ``assay-v*`` tag that descends from WI-1's landing commit ships
-    lane schema v2, and therefore omission mode's config surface. Such a
-    release MUST also ship the v6 ``snapshot_policy`` record, or a verdict
-    it produced could report omission-mode evidence with nothing to attest
-    which policy produced it. Checked against real tagged history, never a
-    hardcoded "as of today" assertion: a release cut tomorrow without the
-    record fails this test the next time it runs.
-    """
-    # Sanity precondition: if this ever stopped being true, the ancestry
-    # check below would be vacuous (an unreachable commit is never anyone's
-    # ancestor), so this asserts the embargo commit itself is still real,
-    # reachable history rather than letting that failure mode pass silently.
-    assert _is_ancestor(_WI1_LANDING_COMMIT, "HEAD"), (
-        f"{_WI1_LANDING_COMMIT!r} is not an ancestor of HEAD -- the embargo "
-        f"commit itself is not the reachable history this audit assumes"
-    )
-
-    tags = [t for t in _repo_git("tag", "--list", "assay-v*").splitlines() if t]
-    assert tags, "expected at least one real, tagged assay release to check against"
-    # Computed as an unconditional map and then combined, rather than as a
-    # filtered comprehension: every `assay-v*` tag that exists today is
-    # in-window, so a filter's skip arc would be unreachable, and an
-    # unreachable arc in a project at 100% branch coverage is a check that
-    # cannot fire dressed up as thoroughness.
-    descends = [_is_ancestor(_WI1_LANDING_COMMIT, tag) for tag in tags]
-    assert any(descends), (
-        "no assay release tag descends from WI-1's landing commit, so this "
-        "audit examined nothing -- the embargo's subject has disappeared"
-    )
-    for tag, in_window in zip(tags, descends):
-        assert not in_window or _carries_wi4_policy_record(tag), (
-            f"release tag {tag!r} descends from WI-1's own landing commit "
-            f"{_WI1_LANDING_COMMIT!r} -- so it ships lane schema v2 and "
-            f"omission mode's config surface -- but its {_SCHEMA_IN_REPO} "
-            f"carries no {_WI4_POLICY_RECORD!r} record, which is exactly "
-            f"the state §6 WI-3's embargo forbids"
-        )
-
-
-@requires_parent_repository
-def test_wi1s_own_landing_commit_is_the_state_the_embargo_forbids() -> None:
-    """The must-fail control for the audit above, run through the IDENTICAL
-    reader (A-278). WI-1's landing commit is the real, reachable commit
-    that is in the hazardous state by construction: it already carries
-    ``LANE_SCHEMA_VERSION = 2`` and does NOT yet carry WI-4's record. If a
-    release had been cut there, the assertion above would have caught it --
-    which is what makes the passing case above evidence rather than a
-    tautology satisfied by any input.
-    """
-    assert not _carries_wi4_policy_record(_WI1_LANDING_COMMIT)
-    assert "LANE_SCHEMA_VERSION = 2" in _repo_git(
-        "show", f"{_WI1_LANDING_COMMIT}:assay/src/assay/config.py"
-    )

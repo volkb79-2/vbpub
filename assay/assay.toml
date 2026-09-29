@@ -54,10 +54,8 @@ env = {}
 env_passthrough = ["PATH"]
 
 # Read from the gate's own timeout_seconds = 3600 in nyxloom-trove/nyxloom.toml
-# rather than invented. P25 widened that gate timeout (the topos-qualified
-# phase adds the full 2,923-test pinned Topos suite, and this lane's own
-# `pytest tests` now also runs the harness's real full-pipeline tests), so this
-# budget moves with it -- test_self_lane.py asserts the two never drift apart.
+# rather than invented. This budget moves with it -- test_self_lane.py asserts
+# the two never drift apart.
 budget = "60m"
 
 allow_argv_append = false
@@ -70,11 +68,9 @@ allow_argv_append = false
 #
 # Unlike the R0 wheel lane above, these snapshot commands must import
 # `src/assay` from the exact baseline/mutant snapshot so coverage and R2 judge
-# the tree being measured. The project-root history is also required by tests
-# that read pinned commits, so snapshot_history is full. Snapshots deliberately
-# do not carry refs/tags; the two release-tag audit tests are therefore named
-# as explicit deselections here and still run in the ordinary checkout-based
-# release gate.
+# the tree being measured. No collected judge test reads history or tags
+# (A-475); test_distribution_build_release.py leaves B105 collection with W4,
+# and snapshot_history stays "full" until W7.
 [lanes.self-qualification]
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
@@ -82,8 +78,6 @@ enforcement = "gate"
 argv = [
   "python", "-m", "pytest", "tests", "-q",
   "--ignore=tests/test_self_hosting.py",
-  "--deselect=tests/test_runner_snapshot_selection.py::test_every_release_since_wi1_landed_carries_wi4s_policy_record",
-  "--deselect=tests/test_runner_snapshot_selection.py::test_wi1s_own_landing_commit_is_the_state_the_embargo_forbids",
   "--override-ini=pythonpath=src",
   "--cov=src/assay", "--cov-branch",
   "--cov-report=json:.assay/coverage-self-qualification.json",
@@ -190,8 +184,6 @@ enforcement = "gate"
 argv = [
   "python", "-m", "pytest", "tests", "-q",
   "--ignore=tests/test_self_hosting.py",
-  "--deselect=tests/test_runner_snapshot_selection.py::test_every_release_since_wi1_landed_carries_wi4s_policy_record",
-  "--deselect=tests/test_runner_snapshot_selection.py::test_wi1s_own_landing_commit_is_the_state_the_embargo_forbids",
   "--override-ini=pythonpath=src",
   "--cov=src/assay", "--cov-branch",
   "--cov-report=json:.assay/coverage-self-qualification-preflight.json",

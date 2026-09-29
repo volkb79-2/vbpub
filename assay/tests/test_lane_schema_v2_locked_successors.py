@@ -1,6 +1,11 @@
 """B006a/A-269, WI-1 -- nine one-for-one v2 successors for the nine frozen
 carve-asset behaviours that ``LANE_SCHEMA_VERSION = 2`` reddens.
 
+A-475/A-477 note: the P33 originals (``P33/test_acceptance_v5.py``) no longer
+run anywhere (the ``verdict-v5-accepted`` gate phase is retired); only the P26
+originals still execute, and the P26 successors run only in the self-hosted
+lane. The P33 rows below are kept as historical record of what was carried.
+
 Every locked node listed below embeds a literal ``schema_version = 1``
 document (directly, via ``P26/test_acceptance.py::_lane_document``, or via
 ``P33/test_acceptance_v5.py::_load_lane``). Those two helpers are FROZEN

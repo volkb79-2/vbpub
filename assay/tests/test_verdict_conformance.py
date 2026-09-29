@@ -69,7 +69,7 @@ from jsonschema import Draft202012Validator
 
 from assay.cli import main
 from assay.candidate_identity import candidate_id_from_fields
-from assay.verdict import Outcome, rollup
+from assay.verdict import VERDICT_SCHEMA_VERSION, Outcome, rollup
 from assay.verify import cmd_verify, verify_document, verify_text
 
 FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "verdicts"
@@ -1324,22 +1324,24 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
     ]
 
 
-def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
-    """P21/A-170/A-182: v3 is now a foreign version too, and the check runs
-    BEFORE required-field or foreign-shape inspection. A v3 artifact is
-    missing several v4 fields (`exclusion_capability`, `candidate_count`,
-    `canary.target`, `judgment.r2.max_mutants`); reporting those alongside
-    the version would bury the one actionable sentence under a pile of
-    consequences of it."""
+@pytest.mark.parametrize(
+    "version",
+    [0, 3, VERDICT_SCHEMA_VERSION - 1, VERDICT_SCHEMA_VERSION + 1],
+)
+def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(version):
+    """A-475/A-477: the one refusal test for the verdict schema. Every
+    non-current version, older or newer, gets exactly one diagnostic that
+    names the version, and the check runs BEFORE required-field or
+    foreign-shape inspection, so nothing else is reported beside it."""
     document = _load("r1_pass.json")
-    document["schema_version"] = 3
-    for claim in document["claims"]:
-        claim.get("coverage", {}).pop("exclusion_capability", None)
+    document["schema_version"] = version
 
-    failures = verify_document(document)
-
-    assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 13" in failures[0]
+    assert verify_document(document) == [
+        f"schema_version {version} is not this verifier's version "
+        f"{VERDICT_SCHEMA_VERSION}: a verdict artifact is rejected, "
+        f"never upgraded in place -- re-produce it with an assay whose "
+        f"VERDICT_SCHEMA_VERSION is {VERDICT_SCHEMA_VERSION}"
+    ]
 
 
 # ============================================================================

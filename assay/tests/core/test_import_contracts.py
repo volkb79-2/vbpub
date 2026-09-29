@@ -213,10 +213,7 @@ ROOT_PINNED = frozenset(
         "test_distribution_build_release.py",  # path-referenced from build_release.py
         "test_verdict_conformance.py",
         "test_errors.py",  # conformance imports errors (:296); carve-assets/P23 pin
-        # deleted by W1, rewritten by W5, moved by W2 or W4
-        "test_python_qualification.py",
-        "test_gate_qualify_cmru_b006a.py",
-        "test_gate_harness_version_pins.py",
+        # rewritten by W5, moved by W2 or W4
         "test_gate_qualify_dstdns_sql.py",
         "test_analysis.py",
         "test_analysis_json_framer.py",
