@@ -1526,5 +1526,37 @@ byte-identity test passed (1 test). These are local test results only. The
 root and daemon contract mirrors compare byte-identically. Final exact-tip
 registered R0/R1 and R3, changed-area branch-aware coverage, current-tree R2,
 full gate, live probes, measured DAMON overhead, and fresh Sol review remain
-open. The current main rulings after `0eb2686c` still need reconciliation
-before those gates; no merge or release is authorized by these local results.
+open. Current main at `038644c0` was reconciled in merge `9a472dec`; the
+binding RW-379/RW-380 rulings are retained and the branch's colliding gate
+receipt is now a non-ruling evidence note. No merge or release is authorized
+by these local results.
+
+## Session 25 — 2026-09-29 04:48:35Z — reconcile current main and check host gates
+
+P6 repair commit `da066287` was merged with current main `038644c0` at
+`9a472dec`. The only textual conflict was the controller log: the P6 branch
+had used the number RW-379 for its earlier gate receipt, while main assigns
+RW-379 and RW-380 to binding stall-kill policy. The gate receipt is preserved
+as a plain P6 evidence note; main's two rulings remain authoritative. The
+working tree is clean at the merge commit. The root and daemon contract
+mirrors remain byte-identical.
+
+Read-only host checks through `host-escape` verified `dev-gates.slice` is
+loaded from `/etc/systemd/system/dev-gates.slice` at
+`/dev.slice/dev-gates.slice`, with `CPUQuotaPerSecUSec=5s` (500%),
+`MemoryHigh=1048576000`, and `MemoryMax=1610612736`. `cgprofile.slice` is
+loaded from `/etc/systemd/system/cgprofile.slice` at `/cgprofile.slice`, with
+`MemoryHigh=805306368` and `MemoryMax=1073741824`; its CPU quota is unlimited.
+The host system bus socket exists. The host daemon unit probe returned
+inactive, and no `cgprofile-host-daemon` container appeared in the cockpit's
+`docker ps` listing; no existing service/container was started, stopped, or
+internally inspected or changed. At the adjacent host sample, memory
+`full avg10=0.00` and load
+average was 3.05. An existing mutation container and unrelated running
+containers were left untouched.
+
+These facts remove the missing-loaded-slice blocker for a private-namespace
+review probe, but do not themselves constitute a live daemon/carrier/kill or
+DAMON-overhead result. Exact-tip short gates and 100% changed-area coverage
+must run after this checkpoint commit; then perform the live probes, fresh Sol
+review, current-tree R2, and full gate. No provisional merge or release yet.

@@ -1725,3 +1725,24 @@ review. Round 5's live-probe requirement also remains open: the required host
 systemd/cgroup/DAMON facilities are not established by these fake-tree tests.
 P6 R2 and the full gate remain release blockers, and this package is not
 provisionally merged or released.
+
+### Current-main reconciliation and host preflight — 2026-09-29 04:48:35Z
+
+P6 repair commit `da066287` was merged with main `038644c0` at
+`9a472dec`. The controller-log conflict was resolved by preserving the P6
+short-gate receipt as a non-ruling evidence note and retaining binding RW-379
+and RW-380 from main. The worktree is clean at the merge commit and the two
+interface-contract copies remain byte-identical.
+
+Host facts were checked read-only through `host-escape`: `dev-gates.slice` is
+loaded/authored at `/dev.slice/dev-gates.slice`, CPU quota 500%, memory high
+1,000 MiB and max 1,536 MiB; `cgprofile.slice` is loaded/authored at
+`/cgprofile.slice`, memory high 768 MiB and max 1,024 MiB. The host system bus
+socket exists. A direct probe for a `cgprofile-host-daemon` unit returned
+inactive and the cockpit's Docker listing showed no container by that name;
+existing mutation and unrelated containers were not inspected internally or
+modified.
+At the adjacent resource sample memory `full avg10` was 0.00 and load average
+was 3.05. This makes a private-namespace review probe feasible, but it is not
+live enforcement or DAMON-overhead evidence. Exact-tip gates, changed-area
+coverage, live probes, fresh Sol review, P6 R2 and full gate remain open.
