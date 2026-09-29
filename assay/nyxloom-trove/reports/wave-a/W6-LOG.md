@@ -35,8 +35,10 @@ The two real-child liveness tests no longer exist. `liveness.py` timeout-check h
 | O5b exclusion structure | passes | fixture set back to `[376, 377, 1342, 1343]` | red: `git.py:376 is neither a pragma line nor inside a pragma line's block` |
 | O5 preflight | not run (CD44) | | controller |
 
+O4b also refuses a wait on the overflowing child before its group is killed, so the git.py:359 wait-loop mutants (Is->IsNot on 'overflowed is None', And->Or) fail at once instead of idling into liveness 'hung' (REVIEW-W6 W6R-1).
+
 ## Collect-only
-Before (base, my files excluded): 5975. After: 6004 (+29: go 8, javascript 5, sql 8, core 6, O5b 1, errors 1). No test removed.
+Before (base, my files excluded): 5975. After: 6004 (+29: go 8, javascript 5, sql 8, core 6, O5b 1, errors 1). No test removed. After the review fixes (W6R-2): 6007 (+3: go 1, sql 1, core 1).
 
 ## Coverage (full `tests`, serial, nice/ionice): 1 failed, 5983 passed, 21 skipped
 The one failure is the known environmental `test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused` (`/tmp/.git`). TOTAL: 1 missed line, 1 missed branch; both `git.py:459`, i.e. the known environmental line (was 457; my two added drain lines shifted it by +2, checked: it is `raise _git_failed("no .git marker found in any ancestor ...")`). Every other file 100% line and branch, no pragmas added.
@@ -55,4 +57,13 @@ The one failure is the known environmental `test_git_boundary.py::test_no_git_ma
 - Docs: DESIGN-GUIDE paragraph omits the watchdog bullet (CD3); README/CONSUMERS unchanged (no consumer-visible behaviour change).
 - R2 caveat recorded in DESIGN-GUIDE: the guard files kill their own target mutants textually; pilot known-hard set (go.py 292/321/323/330) kills are not a guard measurement.
 
-READY-FOR-GATE f13bf1d0
+## Review fixes (REVIEW-W6, MERGE-WITH-FIXES)
+All mutants and breaks below were applied by hand, observed, and reverted; none committed. Everything ran serially under nice/ionice, focused files only.
+
+- **W6R-1** `f0e2258d`. Positive: core guard file 6 passed (now 7 with W6R-3), 0.3 s. Negative, each applied locally: `git.py:359` `is None` -> `is not None` and `and` -> `or`: O4b fails in about 0.7 s ("waited on the overflowing child before killing its group"), no idle to the failsafe; `git.py:326` assert mutated: fails in about 0.7 s; wrong placement (`if overflowed: break` inside the `for`, failsafe shortened to 10 s locally only): still fails through the failsafe. After each failure `ps` showed no leftover child writer.
+- **W6R-2** `094667f6`. Three tests added. Focused coverage run of the three tests (adapters go, sql, core guard files): `go.py:334`, `go.py:356`, `sql_lex.py:281`, `isolation.py:1406` all executed by ordinary input. 3 passed.
+- **W6R-3** `8bccafdf`. Positive control added; 7 passed. Negative: all four operator names made unknown (generator yields `[]`): the test fails at the positive control; reverted.
+- **W6R-4** `12690707`. Wording in DESIGN-GUIDE and CHANGES as written.
+- **W6R-5** `fa59dad7`. Anchor wording in the Step 1 record corrected.
+
+READY-FOR-GATE 8bccafdf
