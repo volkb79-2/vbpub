@@ -87,6 +87,21 @@ def _systemd_attach_process(
     slice (move into the lane leaf) or the unit owning the original scope
     (move a survivor back).
     """
+    # systemd requires an absolute subcgroup path within the named unit.
+    # A bare rg-token leaf name is refused by the live host bus, leaving
+    # every healthy private-PID placement unplaced. Callers derive a
+    # relative suffix from a verified cgroup path; check it at this
+    # boundary before adding the required leading slash.
+    if not isinstance(subcgroup, str) or (
+        subcgroup
+        and (
+            subcgroup.startswith("/")
+            or any(part in ("", ".", "..") for part in subcgroup.split("/"))
+            or any(ord(char) < 32 or ord(char) == 127 for char in subcgroup)
+        )
+    ):
+        return False
+    absolute_subcgroup = "/" + subcgroup
     busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
     try:
         completed = run(
@@ -100,7 +115,7 @@ def _systemd_attach_process(
                 "AttachProcessesToUnit",
                 "ssau",
                 unit_name,
-                subcgroup,
+                absolute_subcgroup,
                 "1",
                 str(pid),
             ],

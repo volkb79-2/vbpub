@@ -1220,7 +1220,12 @@ class TestMigration:
         assert plc._default_pid_exists(9999) is False
 
 
-def test_systemd_attach_uses_the_narrow_manager_method(monkeypatch):
+@pytest.mark.parametrize(("subcgroup", "expected"), [
+    (LEAF_NAME, "/" + LEAF_NAME),
+    ("", "/"),
+    ("nested/worker", "/nested/worker"),
+])
+def test_systemd_attach_uses_the_narrow_manager_method(monkeypatch, subcgroup, expected):
     calls: List[Any] = []
 
     def fake_run(argv, **kwargs):
@@ -1229,17 +1234,28 @@ def test_systemd_attach_uses_the_narrow_manager_method(monkeypatch):
 
     monkeypatch.setenv("CGPROFILE_BUSCTL", "busctl-test")
     assert placement._systemd_attach_process(
-        "dev-gates.slice", LEAF_NAME, 4242, run=fake_run
+        "dev-gates.slice", subcgroup, 4242, run=fake_run
     ) is True
     assert calls == [(
         [
             "busctl-test", "--system", "call", "org.freedesktop.systemd1",
             "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
-            "AttachProcessesToUnit", "ssau", "dev-gates.slice", LEAF_NAME,
+            "AttachProcessesToUnit", "ssau", "dev-gates.slice", expected,
             "1", "4242",
         ],
         {"check": False, "capture_output": True, "text": True, "timeout": 5.0},
     )]
+
+
+@pytest.mark.parametrize("subcgroup", [
+    "/absolute", "../escape", "nested//worker", "nested/./worker",
+    "nested/../worker", "worker\nother",
+])
+def test_systemd_attach_refuses_unsafe_subcgroup_before_call(subcgroup):
+    assert placement._systemd_attach_process(
+        "dev-gates.slice", subcgroup, 4242,
+        run=lambda *_args, **_kwargs: pytest.fail("unsafe path reached host bus"),
+    ) is False
 
 
 def test_systemd_attach_returns_false_when_busctl_cannot_start():

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -208,23 +209,51 @@ def verify_systemd_slice(
         or any(part in ("", ".", "..") for part in expected_cgroup.split("/")[1:])
     ):
         return False
-    systemctl = shutil.which("systemctl")
-    if not systemctl:
+    # The daemon keeps a private PID namespace.  Even with the host system
+    # bus mounted, systemctl refuses to run when PID 1 is not systemd.  The
+    # same busctl transport used for AttachProcessesToUnit can read the
+    # authoritative unit properties without joining a host namespace.
+    busctl = shutil.which("busctl")
+    if not busctl:
         return False
 
-    properties: Dict[str, str] = {}
-    for name in ("LoadState", "FragmentPath", "ControlGroup"):
+    def query(argv: List[str], signature: str) -> Optional[str]:
         try:
             result = run(
-                [systemctl, "show", unit_name, f"--property={name}", "--value"],
+                [busctl, "--system", *argv],
                 capture_output=True, text=True, check=False, timeout=5,
             )
         except (OSError, ValueError, subprocess.TimeoutExpired):
-            return False
+            return None
         stdout = getattr(result, "stdout", None)
         if getattr(result, "returncode", 1) != 0 or not isinstance(stdout, str):
-            return False
-        properties[name] = stdout.strip()
+            return None
+        try:
+            fields = shlex.split(stdout)
+        except ValueError:
+            return None
+        if len(fields) != 2 or fields[0] != signature:
+            return None
+        return fields[1]
+
+    service = "org.freedesktop.systemd1"
+    manager_path = "/org/freedesktop/systemd1"
+    manager_interface = "org.freedesktop.systemd1.Manager"
+    unit_path = query(
+        ["call", service, manager_path, manager_interface, "GetUnit", "s", unit_name],
+        "o",
+    )
+    if unit_path is None or not unit_path.startswith(manager_path + "/unit/"):
+        return False
+    properties: Dict[str, Optional[str]] = {}
+    for interface, name in (
+        ("org.freedesktop.systemd1.Unit", "LoadState"),
+        ("org.freedesktop.systemd1.Unit", "FragmentPath"),
+        ("org.freedesktop.systemd1.Slice", "ControlGroup"),
+    ):
+        properties[name] = query(
+            ["get-property", service, unit_path, interface, name], "s"
+        )
 
     fragment = properties["FragmentPath"]
     authored_fragment_roots = (
@@ -236,6 +265,7 @@ def verify_systemd_slice(
     )
     if (
         properties["LoadState"] != "loaded"
+        or fragment is None
         or not any(
             fragment.startswith(root + os.sep) for root in authored_fragment_roots
         )

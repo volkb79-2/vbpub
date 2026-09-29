@@ -1614,3 +1614,17 @@ three CPUs. The daemon was down: `r0-r1` used coarse rusage and `r3` basic
 in-lane sampling, not DAMON. These receipts predate this session's review-
 handoff documentation correction, so repeat both short lanes on the final
 handoff/evidence tip. Required live probes and fresh Sol round 6 remain open.
+
+## Round-6 review — 2026-09-29 — mechanical host-unit block
+
+BLOCKED: The private-PID daemon's required live placement, stop restoration,
+and shared-scope watch kill cannot be accepted on this host because the
+authored `dev-gates.slice` reports `Delegate=no`; the host system manager
+refuses `AttachProcessesToUnit` with `Process migration not available on
+non-delegated units.` The required host-unit remedy belongs to
+`modern-debian-tools-python-debug/`, which this review is forbidden to edit.
+The reviewer did not alter the host unit, use a host namespace, or launch a
+mutation campaign. See `cgprofile-P6-FOLLOWUPS-REVIEW-round6.md` for the
+code-side verifier and absolute-subpath repairs, targeted tests, exact
+owned-container cleanup, and evidence limits. The P1 mutation container
+`run-gate-vbpub-mutation-3747550-1790644029` was left untouched.
