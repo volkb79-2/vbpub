@@ -1,6 +1,6 @@
 # W9 LOG (B108 phase 1, `assay analyze campaign`)
 
-Base: `40317e29` (W8 reviewed head). Branch `wave-a-w9-campaign`. STATUS: checkpoint 1 after step J (`814494ac`); see `W9-CONTINUATION.md` for the remaining port and P8 behaviour steps.
+Base: `40317e29` (W8 reviewed head). Branch `wave-a-w9-campaign`. STATUS: checkpoint 2 after the port (`e251f6ef`); see `W9-CONTINUATION.md` for the remaining P8 behaviour steps.
 
 ## Draft sha256 (pre-edit, `reports/wave-a/b108-draft-20260927/`)
 ```
@@ -14,6 +14,7 @@ eb5585414886feba6b05668a708dae12c53907bd5e713d38238abc6e853239cb  tracked-change
 | step | commit | content |
 |---|---|---|
 | J | `814494ac` | J1-J5: `_discover_plan_jobs`/`_PlanDiscovery`, `_plan_rows_from_jobs`, `PlanRow`, `plan_jobs`, `candidate_identity_fields`, four public aliases, `candidates`-event `judge_sha256`; O16a, O20 tests |
+| port | `e251f6ef` | draft ported (edits 1-9); analysis 290 passed; deviations: `ALLOWED_JUDGE_MODULES` +6 modules; draft test :251 inversion deferred to step 3 (needs status row 3); dead code removed from `_run_summary` |
 
 ## Judge oracles (J step)
 Positive: `tests/core/test_cli_plan_jobs.py` 11 passed; `tests/core/test_mutation_candidates_event_judge.py` 2 passed; O21 set (`test_b105_cli_boundaries`, `test_cli_plan_estimate_hint`, `test_mutation_judge_identity*`, `test_mutation_progress_budget_plan`, `test_b106_reuse_and_witness`, `test_cli_provenance_and_request_base`, `test_import_contracts`, `test_cli_run`) 360 passed, 1 skipped, all unmodified.
