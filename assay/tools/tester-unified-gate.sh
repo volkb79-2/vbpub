@@ -640,10 +640,15 @@ finish_registered_gate() {
 }
 
 run_registered_gate() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" names commit tree
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names commit tree
   # (CD32) One `docker ps`, no waiting: another session's gate on this shared host
   # makes this run inconclusive before it captures, clears or builds anything.
-  names="$(docker ps --no-trunc --format '{{.Names}}' | grep '^run-gate-' | paste -sd, -)" || true
+  # A `docker ps` that fails cannot show the host is free, so it is inconclusive too.
+  if ! listing="$(docker ps --no-trunc --format '{{.Names}}')"; then
+    echo 'ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun' >&2
+    exit 3
+  fi
+  names="$(printf '%s\n' "$listing" | grep '^run-gate-' | paste -sd, -)" || true
   if [[ -n "$names" ]]; then
     echo "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: $names" >&2
     exit 3

@@ -1425,6 +1425,33 @@ def test_a_host_running_only_other_containers_proceeds_to_the_tester(
     assert (worktree / RECEIPT_RELATIVE).is_file()
 
 
+def test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    earlier = worktree / RECEIPT_RELATIVE
+    earlier.parent.mkdir(parents=True)
+    earlier.write_bytes(b'{"an earlier": "receipt"}\n')
+    fake_bin = tmp_path / "failing-bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    docker.chmod(0o755)
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo LAUNCHED; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun" in proc.stderr
+    assert "LAUNCHED" not in proc.stdout
+    assert earlier.read_bytes() == b'{"an earlier": "receipt"}\n'
+
+
 def test_the_entry_section_ends_with_run_registered_gate_and_only_the_finisher_says_complete() -> None:
     source = GATE_SCRIPT.read_text(encoding="utf-8")
 

@@ -2019,7 +2019,7 @@ first (`b105_report_check.py --receipt-only`, phase
 report without a matching receipt. The preflight lane needs none. Run
 `./run-gate.py tester-unified` before `./run-gate.py self-qualification`. A
 gate started while another `run-gate-*` container runs exits 3 with
-`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was.
+`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`).
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. This interim budget
