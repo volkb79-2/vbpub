@@ -3,10 +3,11 @@
 
 Everything here runs on a FAKE clock and hand-built readings, which is the
 only way every §8.4 transition gets exercised at all: the real ones take
-five minutes of idle bound each. The end-to-end proof that the daemon wires
-these readings up correctly — a real `sleep` subtree that goes silent, is
-judged `stalled` and is really SIGKILLed — is `test_serve_watch.py`; this
-file is the oracle for what the judgement itself must be.
+five minutes of idle bound each. `test_serve_watch.py` covers the daemon's
+watch wiring and safe refusal when a shared-scope lane has no kill boundary;
+`test_serve_placement.py` checks the cgroup-kill write oracles. Live kernel
+enforcement is a separate acceptance probe, not modeled by this fake-clock
+state-machine suite.
 """
 
 from __future__ import annotations
@@ -710,7 +711,7 @@ class TestEnforcement:
         assert t.kill_requested is True
         t.record_kill([4242, 4243])
         assert t.verdict == "killed"
-        assert "SIGKILL sent to 2 pid(s)" in t.reason
+        assert "cgroup kill enforced for 2 tracked pid(s)" in t.reason
         assert t.kill_requested is False  # enforced: never twice
 
     def test_a_killed_verdict_is_not_rewritten_by_later_ticks(self):

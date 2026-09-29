@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import errno
+import math
 import os
 import shutil
 import subprocess
@@ -56,6 +57,20 @@ RG55_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rg55"
 REGEN_ENV = "CGPROFILE_REGEN_RG55_GOLDENS"
 
 
+@pytest.fixture(autouse=True)
+def _fake_loaded_gates_unit(monkeypatch):
+    """The fake cgroup tree represents an authored, loaded gates unit.
+
+    The real `systemctl show` property contract is tested in `test_access.py`;
+    placement tests must not depend on whichever host unit happens to exist.
+    Individual refusal tests pass an explicit false verifier where needed.
+    """
+    monkeypatch.setattr(
+        access, "verify_systemd_slice",
+        lambda unit, path: unit == "dev-gates.slice" and path == GATES_CGROUP,
+    )
+
+
 # ── fakes ───────────────────────────────────────────────────────────────
 
 def _fake_cgroup_root(
@@ -72,6 +87,7 @@ def _fake_cgroup_root(
     write_cgroup(root, SCOPE_CGROUP, files)
     if gates:
         gates_files = dict(cgroup_files())
+        gates_files["cpu.max"] = "500000 100000"
         gates_files["memory.max"] = "max" if slice_memory_max is None else str(slice_memory_max)
         gates_files["cgroup.subtree_control"] = subtree_control
         write_cgroup(root, "dev.slice/dev-gates.slice", gates_files)
@@ -104,6 +120,7 @@ def _placement(
     root: Path, *, token: Optional[str] = TOKEN, request: Optional[placement.PlacementRequest] = None,
     writes: Optional[List[Any]] = None, rmdir=_fake_rmdir, **kw: Any,
 ) -> placement.LanePlacement:
+    kw.setdefault("slice_unit_verifier", lambda _unit, _cgroup: True)
     return placement.LanePlacement(
         cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=token,
         origin_cgroup="/" + SCOPE_CGROUP,
@@ -117,6 +134,19 @@ def _placement(
 
 def _leaf(root: Path) -> Path:
     return root / "dev.slice" / "dev-gates.slice" / LEAF_NAME
+
+
+def _container_cgroup(root: Path, container_id: str = CONTAINER_ID) -> Path:
+    if container_id == CONTAINER_ID:
+        name = f"docker-{container_id}.scope"
+    else:
+        name = container_id
+    relative = f"dev.slice/dev-gates.slice/{name}"
+    files = dict(cgroup_files())
+    files["cgroup.kill"] = "0"
+    files["cgroup.events"] = "populated 1"
+    write_cgroup(root, relative, files)
+    return root / relative
 
 
 def _host_proc_with_pids(monkeypatch, pids: List[int]) -> None:
@@ -163,7 +193,8 @@ def _server(tmp_path: Path, root: Path, **kw: Any) -> serve.SessionServer:
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"), socket_path=str(tmp_path / "ctl.sock"),
         cgroup_root=str(root), proc_root=str(proc_root), clock=lambda: EPOCH_START,
-        session_id_fn=lambda: SESSION_ID, accept_timeout=0.05, **kw,
+        session_id_fn=lambda: SESSION_ID, accept_timeout=0.05,
+        slice_unit_verifier=lambda _unit, _cgroup: True, **kw,
     )
     server.cgroup_rmdir = _fake_rmdir
     _SERVERS.append(server)
@@ -188,6 +219,17 @@ class TestParseRequest:
         )
         assert req.cap_files() == ["memory.high", "memory.max", "cpu.weight"]
         assert placement.parse_request({"place": True}).cap_files() == []
+
+    @pytest.mark.parametrize("value", [1.5, math.inf, -math.inf, math.nan])
+    @pytest.mark.parametrize("field", ["memory_high", "memory_max"])
+    def test_memory_caps_reject_fractional_and_nonfinite_values(self, field, value):
+        with pytest.raises(placement.CapsError):
+            placement.parse_request({"place": True, field: value})
+
+    @pytest.mark.parametrize("value", [1.5, math.inf, -math.inf, math.nan])
+    def test_cpu_weight_rejects_fractional_and_nonfinite_values(self, value):
+        with pytest.raises(placement.CapsError):
+            placement.parse_request({"place": True, "cpu_weight": value})
 
     def test_zero_memory_bytes_are_a_valid_cap(self):
         request = placement.parse_request({"place": True, "memory_high": 0})
@@ -338,6 +380,246 @@ class TestWriteGuard:
         with pytest.raises(placement.HostWriteError):
             guard.check_write(str(root / SCOPE_CGROUP / "cgroup.procs"), "4242")
 
+    def test_exact_container_kill_is_the_only_extra_whitelisted_write(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        guard = placement.CgroupWriteGuard(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            origin_cgroup=None, leaf_name=None,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+        )
+        guard.check_write(str(target / "cgroup.kill"), "1")
+        with pytest.raises(placement.HostWriteError):
+            guard.check_write(str(target / "cgroup.kill"), "0")
+        with pytest.raises(placement.HostWriteError):
+            guard.check_write(str(target / "memory.max"), "1")
+
+    @pytest.mark.parametrize("name", [
+        CONTAINER_ID,
+        *(f"{runtime}-{CONTAINER_ID}.scope" for runtime in (
+            "docker", "crio", "containerd", "libpod",
+        )),
+    ])
+    def test_runtime_leaf_spellings_must_encode_the_full_container_id(self, name):
+        assert placement.container_cgroup_matches_id("/" + name, CONTAINER_ID)
+        assert not placement.container_cgroup_matches_id("/" + name, "e" * 64)
+
+    def test_container_leaf_rejects_traversal_and_malformed_ids(self):
+        assert not placement.container_cgroup_matches_id(
+            "/dev-gates.slice/../docker-" + CONTAINER_ID + ".scope", CONTAINER_ID,
+        )
+        assert not placement.container_cgroup_matches_id(
+            "/docker-short.scope", CONTAINER_ID,
+        )
+
+    def test_a_leaf_cgroup_kill_only_accepts_the_literal_enforcement_value(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        leaf = _leaf(root)
+        leaf.mkdir()
+        guard = placement.CgroupWriteGuard(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            origin_cgroup=None, leaf_name=LEAF_NAME,
+        )
+        guard.check_write(str(leaf / "cgroup.kill"), "1")
+        with pytest.raises(placement.HostWriteError):
+            guard.check_write(str(leaf / "cgroup.kill"), "0")
+
+    @pytest.mark.parametrize("relative, claimed_id", [
+        (SCOPE_CGROUP, CONTAINER_ID),
+        ("dev.slice/dev-gates.slice/docker-" + "e" * 64 + ".scope", CONTAINER_ID),
+        ("dev.slice/dev-gates.slice", CONTAINER_ID),
+    ])
+    def test_container_kill_guard_refuses_wrong_id_or_out_of_scope_paths(
+        self, tmp_path, relative, claimed_id
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        target = "/" + relative
+        guard = placement.CgroupWriteGuard(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            origin_cgroup=None, leaf_name=None,
+            container_cgroup=target, container_id=claimed_id,
+        )
+        with pytest.raises(placement.HostWriteError):
+            guard.check_write(str(root / relative / "cgroup.kill"), "1")
+
+    def test_symlinked_container_cgroup_cannot_redirect_the_kill(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        other_id = "e" * 64
+        other = _container_cgroup(root, other_id)
+        link = root / "dev.slice" / "dev-gates.slice" / f"docker-{CONTAINER_ID}.scope"
+        shutil.rmtree(link)
+        link.symlink_to(other)
+        guard = placement.CgroupWriteGuard(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            origin_cgroup=None, leaf_name=None,
+            container_cgroup="/dev.slice/dev-gates.slice/" + link.name,
+            container_id=CONTAINER_ID,
+        )
+        assert guard.container_kill_abs is None
+
+
+class TestTargetContainerKill:
+    def test_kills_only_the_exact_container_and_records_the_write(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        unrelated = _container_cgroup(root, "e" * 64)
+        writes = []
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda unit, path: (
+                unit == "dev-gates.slice" and path == GATES_CGROUP
+            ),
+            on_write=lambda path, value: writes.append((path, value)),
+        )
+        assert killer.kill() is True
+        assert (target / "cgroup.kill").read_text() == "1"
+        assert (unrelated / "cgroup.kill").read_text().strip() == "0"
+        assert writes == [
+            ("dev.slice/dev-gates.slice/docker-" + CONTAINER_ID + ".scope/cgroup.kill", "1")
+        ]
+
+    def test_kill_can_succeed_without_an_optional_event_sink(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True,
+        )
+        assert killer.kill() is True
+        assert (target / "cgroup.kill").read_text() == "1"
+
+    def test_event_sink_failure_does_not_erase_a_successful_kernel_kill(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        logs: List[str] = []
+
+        def broken_event_sink(_path, _value):
+            raise OSError("session storage unavailable")
+
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True,
+            on_write=broken_event_sink, log=logs.append,
+        )
+        assert killer.kill() is True
+        assert (target / "cgroup.kill").read_text() == "1"
+        assert logs and "event row could not be recorded" in logs[-1]
+
+    def test_unverified_or_unbounded_gates_slice_refuses_without_writing(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: False,
+        )
+        assert killer.kill() is False
+        assert killer.refusal_reason == "gates-slice-unverified-or-unbounded"
+        assert (target / "cgroup.kill").read_text().strip() == "0"
+
+    def test_an_unbounded_gates_slice_refuses_even_when_the_unit_is_verified(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path, slice_memory_max=None)
+        target = _container_cgroup(root)
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True,
+        )
+        assert killer.kill() is False
+        assert killer.refusal_reason == "gates-slice-unverified-or-unbounded"
+        assert (target / "cgroup.kill").read_text().strip() == "0"
+
+    def test_a_unit_verifier_exception_fails_closed_and_is_logged(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        logs: List[str] = []
+
+        def broken_verifier(_unit, _path):
+            raise OSError("systemd unavailable")
+
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=broken_verifier, log=logs.append,
+        )
+        assert killer.kill() is False
+        assert killer.refusal_reason == "gates-slice-unverified-or-unbounded"
+        assert logs and "gates-slice proof failed" in logs[-1]
+        assert (target / "cgroup.kill").read_text().strip() == "0"
+
+    def test_target_path_must_encode_the_exact_container_id(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root, "e" * 64)
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True,
+        )
+        assert killer.kill() is False
+        assert killer.refusal_reason == "target-not-an-exact-gates-container"
+        assert (target / "cgroup.kill").read_text().strip() == "0"
+
+    def test_missing_exact_target_cgroup_refuses_before_open(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target_cgroup = f"{GATES_CGROUP}/docker-{CONTAINER_ID}.scope"
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup=target_cgroup, container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True,
+        )
+        assert killer.target_abs is not None
+        assert killer.kill() is False
+        assert killer.refusal_reason == "target-cgroup-missing"
+
+    def test_a_cgroup_kill_write_error_is_reported_and_logged(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        (target / "cgroup.kill").unlink()
+        (target / "cgroup.kill").mkdir()
+        logs: List[str] = []
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True, log=logs.append,
+        )
+        assert killer.kill() is False
+        assert killer.refusal_reason == "target-cgroup-kill-write-failed"
+        assert logs and "exact container cgroup.kill refused" in logs[-1]
+
+    @pytest.mark.parametrize("events", ["populated 0", None, "malformed"])
+    def test_empty_or_unreadable_target_is_not_reported_as_killed(
+        self, tmp_path, events,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        event_file = target / "cgroup.events"
+        if events is None:
+            event_file.unlink()
+        else:
+            event_file.write_text(events)
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True,
+        )
+        assert killer.kill() is False
+        assert killer.refusal_reason == "target-cgroup-empty-or-unreadable"
+        assert (target / "cgroup.kill").read_text().strip() == "0"
+
 
 # ── §8.3: apply, read-back, migration, release ──────────────────────────
 
@@ -438,14 +720,56 @@ class TestApply:
         assert plc.error == placement.REFUSED_OVER_SLICE
         assert not _leaf(root).exists()
 
-    def test_an_unlimited_slice_has_no_ceiling_to_exceed(self, tmp_path):
-        """`memory.max: max` reads back as None — an absent ceiling is not a
-        ceiling of zero, and refusing against it would make every placement
-        under an uncapped gates slice impossible."""
+    def test_an_unlimited_slice_is_not_an_admission_capacity_object(self, tmp_path):
+        """A directory with no finite memory ceiling is not trusted as the
+        authored gates capacity object."""
         root = _fake_cgroup_root(tmp_path, slice_memory_max=None)
         plc = _placement(root, request=placement.PlacementRequest(memory_max=SLICE_MAX * 4))
         plc.apply([])
-        assert plc.error is None and plc.applied == {"memory.max": SLICE_MAX * 4}
+        assert plc.error == placement.REFUSED_NO_GATES_SLICE
+        assert plc.leaf_cgroup is None
+
+    def test_an_unbounded_cpu_slice_is_refused(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        gates = root / "dev.slice" / "dev-gates.slice"
+        (gates / "cpu.max").write_text("max 100000")
+        plc = _placement(root)
+        plc.apply([])
+        assert plc.error == placement.REFUSED_NO_GATES_SLICE
+        assert plc.leaf_cgroup is None
+
+    @pytest.mark.parametrize(("memory_max", "cpu_max"), [
+        ("0", "500000 100000"),
+        (str(SLICE_MAX), "0 100000"),
+        (str(SLICE_MAX), "500000 0"),
+        (str(SLICE_MAX), "invalid 100000"),
+        (str(SLICE_MAX), "500000"),
+        (str(SLICE_MAX), None),
+    ])
+    def test_capacity_requires_positive_parseable_memory_and_cpu(
+        self, tmp_path, memory_max, cpu_max,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        gates = root / "dev.slice" / "dev-gates.slice"
+        (gates / "memory.max").write_text(memory_max)
+        cpu_file = gates / "cpu.max"
+        if cpu_max is None:
+            cpu_file.unlink()
+        else:
+            cpu_file.write_text(cpu_max)
+        plc = _placement(root)
+
+        plc.apply([])
+
+        assert plc.error == placement.REFUSED_NO_GATES_SLICE
+        assert plc.leaf_cgroup is None
+
+    def test_directory_without_a_verified_loaded_unit_is_refused(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root, slice_unit_verifier=lambda _unit, _cgroup: False)
+        plc.apply([])
+        assert plc.error == placement.REFUSED_NO_GATES_SLICE
+        assert plc.leaf_cgroup is None
 
     def test_a_symlinked_leaf_is_parent_not_gates_slice(self, tmp_path):
         """D-25's own refusal: something already occupies `rg-<token>` and it
@@ -1589,10 +1913,10 @@ class TestPlacedKill:
         sess.watch.reason = "no activity"
         return root, server, sess
 
-    def test_a_placed_session_dies_by_cgroup_kill_not_by_pid(self, tmp_path):
+    def test_a_placed_session_dies_by_cgroup_kill_not_by_pid(self, tmp_path, monkeypatch):
         """§8.4: one write to the leaf's `cgroup.kill`, which the kernel
         applies atomically — it cannot miss a pid that forked between the
-        resolver's walk and the signal, which the pid loop can. Proved by
+        resolver's walk and enforcement, as a userspace pid list could. Proved by
         the write itself (captured live: an ENFORCED kill now finalizes the
         session in the same call, and finalize's own `placement.release()`
         rmdir's the leaf before this test would otherwise get to re-read
@@ -1604,19 +1928,21 @@ class TestPlacedKill:
         # The fake resolver has no /proc/101 process to migrate, so model a
         # genuinely occupied cgroup explicitly for this cgroup.kill oracle.
         (_leaf(root) / "cgroup.procs").write_text("101\n")
-        sent: List[Any] = []
         written: List[tuple] = []
         real_write = sess.placement._write
         sess.placement._write = lambda path, value: (
             written.append((path, value)), real_write(path, value)
         )[-1]
+        monkeypatch.setattr(
+            serve.os, "kill",
+            lambda *_args: pytest.fail("placed enforcement must not signal a numeric PID"),
+        )
         server._enforce_stall_kill(sess, [os.getpid() + 1])
         assert [item for item in written if item[0].endswith("cgroup.kill")] == [
             (str(_leaf(root) / "cgroup.kill"), "1")
         ]
         assert sess.watch.verdict == liveness.VERDICT_KILLED
         assert "cgroup.kill applied to" in sess.watch.reason
-        assert sent == []
         # The enforced kill finalized the session (this file's own new
         # coverage, mirroring `test_serve_watch.py`'s
         # `finished_before_stop`) — `release()` already ran, so the leaf is
@@ -1624,20 +1950,40 @@ class TestPlacedKill:
         assert sess.finished is True
         assert not _leaf(root).exists()
 
-    def test_an_unplaced_session_still_dies_by_pid(self, tmp_path, monkeypatch):
-        """The fallback is never dead code: a session that was refused
-        placement is killed exactly the way C7 killed it."""
-        root, server, sess = self._stalled_session(tmp_path, place=False)
-        killed: List[int] = []
-        monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
-        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
+    def test_an_unplaced_session_is_reported_without_signalling_a_pid(
+        self, tmp_path, monkeypatch,
+    ):
+        """A private PID namespace makes a numeric host PID an unsafe
+        enforcement target; an unplaced shared lane must remain reported."""
+        root = _fake_cgroup_root(tmp_path, procs="101\n")
+        server = _server(tmp_path, root)
+        started = server._dispatch({
+            "verb": "start",
+            "args": _start_args(place=False, on_stall="report"),
+            "contract": 1,
+        })
+        assert started["ok"] is True
+        sess = server._sessions[SESSION_ID]
+        # Exercise the enforcement refusal after an unplaced report-mode
+        # session exists; the public start path correctly rejects a new
+        # shared-scope kill request without placement.
+        sess.watch.policy = liveness.parse_policy({"on_stall": "kill"})
+        sess.watch.state = liveness.STATE_STALLED
+        sess.watch.reason = "no activity"
+        monkeypatch.setattr(
+            serve.os, "kill",
+            lambda *_args: pytest.fail("daemon must never signal a numeric host PID"),
+        )
         server._enforce_stall_kill(sess, [4242])
-        assert killed == [4242]
-        assert "SIGKILL sent to 1 pid(s)" in sess.watch.reason
+        assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert "kill-refused:unplaced-token-subtree" in sess.watch.reason
+        assert sess.finished is False
 
-    def test_empty_placed_leaf_does_not_certify_a_cgroup_kill(self, tmp_path, monkeypatch):
+    def test_empty_placed_leaf_does_not_certify_a_cgroup_kill(
+        self, tmp_path, monkeypatch,
+    ):
         """A private-PID-namespace migration can leave a capped but empty
-        leaf; writing cgroup.kill there must not certify the lane's death."""
+        leaf; neither cgroup.kill nor a numeric PID signal proves enforcement."""
         root, server, sess = self._stalled_session(tmp_path)
         (_leaf(root) / "cgroup.procs").write_text("")
         written: List[tuple] = []
@@ -1645,57 +1991,90 @@ class TestPlacedKill:
         sess.placement._write = lambda path, value: (
             written.append((path, value)), real_write(path, value)
         )[-1]
-        monkeypatch.setattr(os, "kill", lambda _pid, _sig: (_ for _ in ()).throw(
-            ProcessLookupError(3, "No such process")
-        ))
+        monkeypatch.setattr(
+            serve.os, "kill",
+            lambda *_args: pytest.fail("daemon must never signal a numeric host PID"),
+        )
         server._enforce_stall_kill(sess, [4242])
         assert not any(path.endswith("cgroup.kill") for path, _ in written)
         assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert "kill-refused:lane-leaf-cgroup-kill-refused" in sess.watch.reason
         assert sess.finished is False
 
-    def test_esrch_with_indeterminate_host_proc_is_not_certified(self, tmp_path, monkeypatch):
+    def test_shared_leaf_kill_write_failure_never_falls_back_to_pid(
+        self, tmp_path, monkeypatch,
+    ):
         root, server, sess = self._stalled_session(tmp_path)
-        (_leaf(root) / "cgroup.procs").write_text("")
-        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
+        (_leaf(root) / "cgroup.procs").write_text("101\n")
+        writes: List[tuple] = []
 
-        def kill_lookup_error(_pid, _sig):
-            raise ProcessLookupError(3, "outside the local pid namespace")
+        def fail_kill_write(path: str, value: str) -> None:
+            writes.append((path, value))
+            raise PermissionError(1, "write denied", path)
 
-        def stat_indeterminate(_path):
-            raise OSError(5, "proc view unavailable")
-
-        monkeypatch.setattr(os, "kill", kill_lookup_error)
-        monkeypatch.setattr(serve.os, "stat", stat_indeterminate)
+        sess.placement._write = fail_kill_write
+        monkeypatch.setattr(
+            serve.os, "kill",
+            lambda *_args: pytest.fail("failed cgroup enforcement must not signal a PID"),
+        )
         server._enforce_stall_kill(sess, [4242])
-
+        assert writes == [(str(_leaf(root) / "cgroup.kill"), "1")]
         assert sess.watch.verdict == liveness.VERDICT_REPORTED
-        assert "signalled-0-of-1-pids" in sess.watch.reason
+        assert "kill-refused:lane-leaf-cgroup-kill-refused" in sess.watch.reason
+        assert sess.finished is False
 
-    def test_generic_pid_kill_error_is_not_certified(self, tmp_path, monkeypatch):
-        root, server, sess = self._stalled_session(tmp_path)
-        (_leaf(root) / "cgroup.procs").write_text("")
-        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
+    def test_container_scope_kills_only_its_exact_gates_cgroup(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        unrelated = _container_cgroup(root, "e" * 64)
+        target_cgroup = "/" + target.relative_to(root).as_posix()
+        monkeypatch.setattr(
+            serve.targets_mod, "find_container_cgroup",
+            lambda _container_id, root: target_cgroup,
+        )
+        server = _server(tmp_path, root)
+        started = server._dispatch({
+            "verb": "start",
+            "args": _start_args(
+                scope="container", token=None, place=False, on_stall="kill",
+            ),
+            "contract": 1,
+        })
+        assert started["ok"] is True, started
+        sess = server._sessions[SESSION_ID]
+        sess.watch.state = liveness.STATE_STALLED
+        sess.watch.reason = "no activity"
+        monkeypatch.setattr(
+            serve.os, "kill",
+            lambda *_args: pytest.fail("container enforcement must use its cgroup boundary"),
+        )
 
-        def kill_error(_pid, _sig):
-            raise OSError(1, "operation not permitted")
-
-        monkeypatch.setattr(os, "kill", kill_error)
         server._enforce_stall_kill(sess, [4242])
 
-        assert sess.watch.verdict == liveness.VERDICT_REPORTED
-        assert "signalled-0-of-1-pids" in sess.watch.reason
+        assert (target / "cgroup.kill").read_text() == "1"
+        assert (unrelated / "cgroup.kill").read_text().strip() == "0"
+        assert sess.watch.verdict == liveness.VERDICT_KILLED
+        assert f"cgroup.kill applied to exact target {target_cgroup}" in sess.watch.reason
+        assert sess.finished is True
 
-    def test_a_leaf_that_will_not_take_the_write_falls_back_to_pids(self, tmp_path, monkeypatch):
-        """A kernel without `cgroup.kill` must not be reported as a kill that
-        happened: the write fails, the pid loop runs, the verdict is honest."""
-        root, server, sess = self._stalled_session(tmp_path)
-        _fake_rmdir(str(_leaf(root)))
-        killed: List[int] = []
-        monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
-        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
-        server._enforce_stall_kill(sess, [4242])
-        assert killed == [4242]
-        assert "SIGKILL sent to" in sess.watch.reason
+    def test_container_scope_kill_refuses_a_target_outside_gates(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        server = _server(tmp_path, root)
+        started = server._dispatch({
+            "verb": "start",
+            "args": _start_args(
+                scope="container", token=None, place=False, on_stall="kill",
+            ),
+            "contract": 1,
+        })
+        assert started["ok"] is False
+        assert started["error"]["code"] == "bad-policy"
+        assert "exact target cgroup" in started["error"]["message"]
+        assert server._sessions == {}
 
 
 # ── goldens (§8.3's shapes, frozen for P5) ──────────────────────────────

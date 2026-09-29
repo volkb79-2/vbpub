@@ -644,15 +644,16 @@ class LivenessTracker:
         )
 
     def record_kill(self, pids: List[int], *, via: Optional[str] = None) -> None:
-        """``via`` names HOW the lane was killed, because CP-9 gave the server
-        a second way to do it: a placed session dies by one write to its
-        leaf's ``cgroup.kill`` (atomic), an unplaced one by SIGKILL to each
-        pid the resolver found (the default phrasing). The verdict is
-        ``killed`` either way — the distinction is in the reason a consumer
-        prints, never in what it does."""
+        """``via`` records the exact cgroup boundary used for enforcement.
+
+        The server never signals numeric PIDs: a placed shared lane is killed
+        through its verified token leaf, while an ephemeral container lane is
+        killed through its exact runtime cgroup. The default wording is for
+        tracker-only callers that record an already-enforced kill.
+        """
         self.enforced = True
         self.verdict = VERDICT_KILLED
-        how = via if via is not None else f"SIGKILL sent to {len(pids)} pid(s) of the token subtree"
+        how = via if via is not None else f"cgroup kill enforced for {len(pids)} tracked pid(s)"
         self.reason = f"{self.reason}; {how}"
 
     def record_kill_refused(self, why: str) -> None:

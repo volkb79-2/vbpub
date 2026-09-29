@@ -8,10 +8,10 @@ can make:
 * **the policy is refused before anything exists** — `bad-policy` means
   exit 2 and NO session in the registry, not a session running under a
   policy the daemon had to guess at;
-* **`--on-stall kill` really kills** — a REAL `sleep` subtree, found by its
-  real `RUN_GATE_PROFILE_SESSION` token through real `/proc`, goes silent,
-  is judged `stalled` and is SIGKILLed; the same lane under `report` is
-  still alive at the end of the test and the verdict says `reported`;
+* **`--on-stall kill` never invents a boundary** — an unplaced shared-scope
+  lane is reported without signaling a numeric host PID; the same lane under
+  `report` is still alive at the end of the test and its verdict says
+  `reported`. Exact cgroup-kill writes are checked in `test_serve_placement.py`;
 * **`watch` really streams** — over the socket carrier the connection stays
   open and carries `reading` lines, a `verdict` on the state change and
   exactly one `end`, while OTHER verbs keep being answered on the same
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -31,6 +30,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -112,6 +112,8 @@ class TestPolicyRefusal:
         ({"ceiling": "-4"}, "--ceiling"),
         ({"on_stall": "maim"}, "--on-stall"),
         ({"progress_stream": "progress.ndjson"}, "absolute"),
+        ({"on_stall": "kill", "token": TOKEN}, "--place"),
+        ({"on_stall": "kill", "place": True}, "--token"),
     ])
     def test_an_unparsable_policy_is_bad_policy_and_starts_nothing(
         self, tmp_path, overrides, fragment
@@ -137,7 +139,7 @@ class TestPolicyRefusal:
         )
         resp = server._dispatch({"verb": "start", "args": _start_args(
             token=TOKEN, progress_stream="/run/lane/progress.ndjson", idle_bound="auto",
-            ceiling=1800, on_stall="kill",
+            ceiling=1800, on_stall="report",
         ), "contract": 1})
         assert resp["ok"] is True
         try:
@@ -145,7 +147,7 @@ class TestPolicyRefusal:
                                        "contract": 1})
             watch = status["session"]["watch"]
             assert watch["policy"] == {
-                "idle_bound_s": 300.0, "ceiling_s": 1800.0, "on_stall": "kill",
+                "idle_bound_s": 300.0, "ceiling_s": 1800.0, "on_stall": "report",
                 "progress_stream": "/run/lane/progress.ndjson",
             }
             assert watch["state"] == "ok" and watch["verdict"] == "none"
@@ -155,6 +157,22 @@ class TestPolicyRefusal:
             }
         finally:
             server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
+
+    def test_kill_with_a_refused_placement_starts_no_session(self, tmp_path):
+        server = _server(
+            tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
+            proc_root=str(_fake_proc(tmp_path)),
+        )
+        resp = server._dispatch({"verb": "start", "args": _start_args(
+            token=TOKEN, place=True, on_stall="kill",
+        ), "contract": 1})
+        assert resp["ok"] is False and resp["error"]["code"] == "bad-policy"
+        assert "verified placement leaf" in resp["error"]["message"]
+        assert server._sessions == {} and server._by_target == {}
+        rejected = tmp_path / "sessions" / SESSION_ID / "manifest.json"
+        assert json.loads(rejected.read_text())[
+            "aborted_reason"
+        ] == "required-stall-kill-placement-refused"
 
     def test_the_summary_carries_liveness_and_watch(self, tmp_path):
         server = _server(
@@ -251,25 +269,11 @@ class TestRealSubtreeEnforcement:
                 lane.kill()
                 lane.wait(timeout=10.0)
 
-    def test_a_silent_subtree_is_stalled_and_killed_under_kill(self, tmp_path):
-        out = self._run(tmp_path, on_stall="kill")
-        assert out["state"] == "stalled"
-        assert out["verdict"] == "killed"
-        assert "SIGKILL sent to 1 pid(s)" in out["reason"]
-        # -9: the kernel really delivered SIGKILL to the lane.
-        assert out["returncode"] == -signal.SIGKILL
-        # The daemon's OWN enforcement ends the session — BEFORE this test
-        # calls `stop` itself. Without `_finalize_after_kill`, this was
-        # False: the session stayed "live" forever (a real probe against
-        # the live daemon, RG-55 P6 session 8, watched two more minutes of
-        # `reading` events with no `end` after an identical real kill).
-        assert out["finished_before_stop"] is True
-
     def test_the_same_lane_under_report_is_only_reported(self, tmp_path):
         out = self._run(tmp_path, on_stall="report")
         assert out["state"] == "stalled"
         assert out["verdict"] == "reported"
-        assert "SIGKILL" not in (out["reason"] or "")
+        assert "cgroup.kill" not in (out["reason"] or "")
         # Still running when the watch gave its verdict — `report` killed
         # nothing (the fixture's own `finally` reaps it).
         assert out["returncode"] is None
@@ -281,8 +285,8 @@ class TestRealSubtreeEnforcement:
     def test_unreachable_pid_is_reported_and_the_lane_remains_live(
         self, tmp_path, monkeypatch
     ):
-        """Host-proc discovery can return a PID invisible to the daemon's
-        private PID namespace. A failed signal must not certify a kill."""
+        """Host PIDs are observation-only in the private PID namespace;
+        without placement the daemon must report, never signal."""
         lane = subprocess.Popen(
             ["sleep", "30"], env=dict(os.environ, RUN_GATE_PROFILE_SESSION=TOKEN)
         )
@@ -296,7 +300,7 @@ class TestRealSubtreeEnforcement:
             )
             start = server._dispatch({
                 "verb": "start", "args": _start_args(
-                    token=TOKEN, idle_bound=1000, on_stall="kill"
+                    token=TOKEN, idle_bound=1000, on_stall="report"
                 ), "contract": 1,
             })
             assert start["ok"] is True
@@ -306,19 +310,20 @@ class TestRealSubtreeEnforcement:
             parked.set()
             sess.thread.join(timeout=10)
             assert not sess.thread.is_alive()
+            sess.watch.policy = liveness.parse_policy({"on_stall": "kill"})
             _force_stalled(sess)
 
-            def unreachable(_pid, _sig):
-                raise ProcessLookupError(3, "No such process")
+            def forbidden_signal(*_args):
+                pytest.fail("daemon must never signal a numeric host PID")
 
             with monkeypatch.context() as patch:
-                patch.setattr(serve.os, "kill", unreachable)
+                patch.setattr(serve.os, "kill", forbidden_signal)
                 server._enforce_stall_kill(sess, [lane.pid])
 
             assert lane.poll() is None
             assert sess.watch.state == "stalled"
             assert sess.watch.verdict == "reported"
-            assert "kill-refused:signalled-0-of-1-pids" in sess.watch.reason
+            assert "kill-refused:unplaced-token-subtree" in sess.watch.reason
             assert sess.finished is False
         finally:
             parked.set()
@@ -331,9 +336,8 @@ class TestRealSubtreeEnforcement:
     def test_a_progress_stream_is_read_through_proc_root(self, tmp_path):
         # The lane's stream path is read as `/proc/<pid>/root/<path>`; in
         # this test the lane shares the daemon's mount namespace, so that
-        # resolves back to the real file — which is exactly the production
-        # relationship (the daemon runs --pid=host), just without a
-        # container in the middle.
+        # resolves back to the real file. Production uses the same explicit
+        # process-root view while keeping the daemon's PID namespace private.
         stream = tmp_path / "progress.ndjson"
         stream.write_text(
             json.dumps({"event": "plan", "expect_next_event_within_s": 45}) + "\n"
@@ -447,7 +451,9 @@ class TestKillTargets:
         return serve._Session(**defaults)
 
     def test_a_token_subtree_is_killable(self):
-        pids, refusal = serve.SessionServer._kill_targets(self._session(token=TOKEN), [7, 9])
+        sess = self._session(token=TOKEN)
+        sess.placement = SimpleNamespace(placed=True, error=None)
+        pids, refusal = serve.SessionServer._kill_targets(sess, [7, 9])
         assert pids == [7, 9] and refusal is None
 
     def test_scope_container_without_a_token_is_killable(self):
@@ -463,80 +469,26 @@ class TestKillTargets:
         pids, refusal = serve.SessionServer._kill_targets(self._session(), [7, 9])
         assert pids == [] and refusal == "no-token-in-shared-scope"
 
-    def test_numeric_pid_collision_is_not_a_signal_target(self, tmp_path):
-        proc = _fake_proc(tmp_path)
-        (proc / str(os.getpid())).mkdir()
-        server = _server(
-            tmp_path, cgroup_root=_fake_cgroup_root(tmp_path), proc_root=str(proc),
+    def test_unplaced_token_tree_is_not_a_signal_target(self):
+        pids, refusal = serve.SessionServer._kill_targets(
+            self._session(token=TOKEN), [7, 9]
         )
-        assert server._pid_addressable(os.getpid()) is False
-        server.proc_root = "/proc"
-        assert server._pid_addressable(os.getpid()) is True
-
-    def test_unreadable_pid_identity_is_not_addressable(self, tmp_path, monkeypatch):
-        server = _server(
-            tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
-            proc_root=str(_fake_proc(tmp_path)),
-        )
-
-        def unavailable(_left, _right):
-            raise OSError(5, "proc view unavailable")
-
-        monkeypatch.setattr(serve.os.path, "samefile", unavailable)
-        assert server._pid_addressable(4242) is False
+        assert pids == [] and refusal == "unplaced-token-subtree"
 
     def test_the_refusal_is_recorded_on_the_verdict(self, tmp_path):
         server = _server(
             tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
-            proc_root=str(_fake_proc(tmp_path)), sampler_sleep=lambda _s: time.sleep(0.01),
+            proc_root=str(_fake_proc(tmp_path)),
         )
-        server._dispatch({"verb": "start", "args": _start_args(
-            idle_bound=0.001, on_stall="kill",
-        ), "contract": 1})
-        sess = server._sessions[SESSION_ID]
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline and not sess.watch.enforced:
-            time.sleep(0.02)
-        assert sess.watch.state == "stalled"
+        sess = self._session(tmp_path)
+        sess.watch = liveness.LivenessTracker(
+            liveness.parse_policy({"on_stall": "kill"}),
+            started_at="2026-09-12T10:15:00Z",
+        )
+        _force_stalled(sess)
+        server._enforce_stall_kill(sess, [7, 9])
         assert sess.watch.verdict == "reported"  # never "killed": nothing died
         assert "kill-refused:no-token-in-shared-scope" in sess.watch.reason
-        server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
-
-    def test_pid_1_and_the_daemon_itself_are_never_signalled(self, tmp_path, monkeypatch):
-        server = _server(
-            tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
-            proc_root=str(_fake_proc(tmp_path)),
-        )
-        sent: List[int] = []
-        monkeypatch.setattr(serve.os, "kill", lambda pid, sig: sent.append(pid))
-        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
-        sess = self._session(tmp_path, token=TOKEN)
-        sess.watch = liveness.LivenessTracker(
-            liveness.parse_policy({"on_stall": "kill"}), started_at="2026-09-12T10:15:00Z",
-        )
-        server._enforce_stall_kill(sess, [0, 1, os.getpid(), 4242])
-        assert sent == [4242]
-        assert sess.watch.verdict == "reported"
-        assert "kill-refused:signalled-1-of-4-pids" in sess.watch.reason
-
-    def test_a_pid_that_exits_between_the_walk_and_the_signal_is_not_an_error(
-        self, tmp_path, monkeypatch
-    ):
-        server = _server(
-            tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
-            proc_root=str(_fake_proc(tmp_path)),
-        )
-        def _kill(pid, sig):
-            if pid == 4242:
-                raise ProcessLookupError(3, "No such process")
-        monkeypatch.setattr(serve.os, "kill", _kill)
-        monkeypatch.setattr(server, "_pid_addressable", lambda _pid: True)
-        sess = self._session(tmp_path, token=TOKEN)
-        sess.watch = liveness.LivenessTracker(
-            liveness.parse_policy({"on_stall": "kill"}), started_at="2026-09-12T10:15:00Z",
-        )
-        server._enforce_stall_kill(sess, [4242, 4243])
-        assert "SIGKILL sent to 1 pid(s)" in sess.watch.reason
 
     def test_finalize_after_kill_is_a_no_op_once_the_session_already_finished(
         self, tmp_path
@@ -741,8 +693,14 @@ class TestWatchStream:
 
     def test_the_end_reason_is_killed_after_an_enforced_kill(self, streaming_server):
         server = streaming_server
+        gates_files = dict(cgroup_files())
+        gates_files["memory.max"] = str(6 * 1024 * 1024 * 1024)
+        gates_files["cpu.max"] = "500000 100000"
+        gates_files["cgroup.subtree_control"] = "memory cpu pids"
+        write_cgroup(Path(server.cgroup_root), "dev.slice/dev-gates.slice", gates_files)
+        server.slice_unit_verifier = lambda _unit, _path: True
         server._dispatch({"verb": "start", "args": _start_args(
-            token=TOKEN, idle_bound=1000, on_stall="kill",
+            token=TOKEN, place=True, idle_bound=1000, on_stall="kill",
         ), "contract": 1})
         sess = server._sessions[SESSION_ID]
         reader = _connect(server, _watch_request())

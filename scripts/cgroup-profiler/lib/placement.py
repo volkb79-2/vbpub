@@ -36,6 +36,8 @@ admits exactly:
   and is refused);
 * ``<gates slice>/rg-*/{cgroup.procs, memory.high, memory.max, cpu.weight,
   cgroup.kill}`` — the leaf this daemon made;
+* ``cgroup.kill`` on one exact container-ID cgroup beneath the verified,
+  bounded gates slice (never a parent, sibling, or path chosen by a label);
 * ``mkdir``/``rmdir`` of ``<gates slice>/rg-*``;
 * the ORIGINAL scope's ``cgroup.procs``, for the move-back at ``stop`` and
   nothing else (a pid this daemon moved out is a pid it must be able to put
@@ -55,14 +57,16 @@ every other reader in this package takes.
 from __future__ import annotations
 
 import errno
+import math
 import os
 import posixpath
+import re
 import subprocess
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
-from . import util
+from . import access, util
 
 
 def _systemd_attach_process(
@@ -131,7 +135,7 @@ def _systemd_destination(cgroup: str) -> Optional[tuple[str, str]]:
 #: §8.3: the leaf's name is ``rg-`` plus the lane's token.
 LEAF_PREFIX = "rg-"
 #: The only files the daemon may write inside a leaf (§8.3/D-25).
-LEAF_FILES = ("cgroup.procs", "memory.high", "memory.max", "cpu.weight", "cgroup.kill")
+LEAF_FILES = ("cgroup.procs", "memory.high", "memory.max", "cpu.weight")
 SUBTREE_CONTROL = "cgroup.subtree_control"
 PROCS = "cgroup.procs"
 #: RW-35(a): the controllers the gates slice must delegate, and the exact
@@ -189,6 +193,45 @@ class CapsError(ValueError):
     """
 
 
+def bounded_slice_capacity(cgroup_root: str, gates_cgroup: str) -> bool:
+    """Require finite, positive memory and CPU ceilings on the gates slice."""
+    gates_abs = abs_path(cgroup_root, gates_cgroup)
+    memory_max = util.read_int(os.path.join(gates_abs, "memory.max"))
+    if memory_max is None or memory_max <= 0:
+        return False
+    try:
+        cpu_max = util.read_text(os.path.join(gates_abs, "cpu.max"))
+        if not isinstance(cpu_max, str):
+            return False
+        quota_period = cpu_max.split()
+        if len(quota_period) != 2 or quota_period[0] == "max":
+            return False
+        quota, period = map(int, quota_period)
+    except (OSError, ValueError):
+        return False
+    return quota > 0 and period > 0
+
+
+_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_CONTAINER_SCOPE_PREFIXES = ("docker", "crio", "containerd", "libpod")
+
+
+def container_cgroup_matches_id(cgroup: str, container_id: str) -> bool:
+    """Recognize only the two supported runtime cgroup leaf spellings."""
+    if not isinstance(container_id, str) or not _CONTAINER_ID_RE.fullmatch(container_id):
+        return False
+    if not isinstance(cgroup, str) or not cgroup.startswith("/"):
+        return False
+    parts = cgroup.rstrip("/").split("/")
+    if any(part in ("", ".", "..") for part in parts[1:]):
+        return False
+    name = parts[-1]
+    return name == container_id or any(
+        name == f"{prefix}-{container_id}.scope"
+        for prefix in _CONTAINER_SCOPE_PREFIXES
+    )
+
+
 @dataclass(frozen=True)
 class PlacementRequest:
     """The caps §8.3's four options ask for. ``None`` = not requested."""
@@ -221,6 +264,8 @@ def _parse_bytes(raw: Any, *, option: str) -> Optional[int]:
         return None
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         raise CapsError(f"{option} must be a number of bytes, got {raw!r}")
+    if isinstance(raw, float) and (not math.isfinite(raw) or not raw.is_integer()):
+        raise CapsError(f"{option} must be a finite whole number of bytes, got {raw!r}")
     value = int(raw)
     if value < 0:
         raise CapsError(f"{option} must be >= 0, got {value}")
@@ -243,6 +288,10 @@ def parse_request(args: Dict[str, Any]) -> Optional[PlacementRequest]:
     if weight is not None:
         if isinstance(weight, bool) or not isinstance(weight, (int, float)):
             raise CapsError(f"--cpu-weight must be a number, got {weight!r}")
+        if isinstance(weight, float) and (
+            not math.isfinite(weight) or not weight.is_integer()
+        ):
+            raise CapsError(f"--cpu-weight must be a finite whole number, got {weight!r}")
         weight = int(weight)
         if not CPU_WEIGHT_MIN <= weight <= CPU_WEIGHT_MAX:
             raise CapsError(
@@ -266,18 +315,43 @@ class CgroupWriteGuard:
 
     def __init__(
         self, *, cgroup_root: str, gates_cgroup: str, origin_cgroup: Optional[str],
-        leaf_name: str,
+        leaf_name: Optional[str], container_cgroup: Optional[str] = None,
+        container_id: Optional[str] = None,
     ) -> None:
         self.cgroup_root = cgroup_root
         self.gates_cgroup = gates_cgroup
         self.gates_abs = abs_path(cgroup_root, gates_cgroup)
         self.origin_abs = abs_path(cgroup_root, origin_cgroup) if origin_cgroup else None
         self.leaf_name = leaf_name
+        self.container_kill_abs: Optional[str] = None
+        if container_cgroup is not None and container_id is not None:
+            gates_path = posixpath.normpath(gates_cgroup)
+            target_path = posixpath.normpath(container_cgroup)
+            if (
+                gates_path.startswith("/")
+                and target_path.startswith(gates_path.rstrip("/") + "/")
+                and target_path == container_cgroup
+                and container_cgroup_matches_id(container_cgroup, container_id)
+            ):
+                gates_real = os.path.realpath(self.gates_abs)
+                target_abs = abs_path(cgroup_root, target_path)
+                target_real = os.path.realpath(target_abs)
+                try:
+                    below_gates = os.path.commonpath((gates_real, target_real)) == gates_real
+                except ValueError:
+                    below_gates = False
+                if (
+                    below_gates and target_real != gates_real
+                    and container_cgroup_matches_id(target_real, container_id)
+                ):
+                    self.container_kill_abs = target_real
 
     # -- predicates --------------------------------------------------------
 
     def is_leaf(self, path: str) -> bool:
         """Whether ``path`` is a direct ``rg-*`` child of the gates slice."""
+        if self.leaf_name is None:
+            return False
         real = os.path.realpath(path)
         return real == os.path.join(os.path.realpath(self.gates_abs), self.leaf_name)
 
@@ -289,6 +363,18 @@ class CgroupWriteGuard:
         if parent == os.path.realpath(self.gates_abs) and name == SUBTREE_CONTROL:
             self._check_subtree_control_value(path, value)
             return
+        if name == "cgroup.kill":
+            if value != "1":
+                raise HostWriteError(
+                    f"refusing a non-'1' cgroup.kill value {value!r}: {path!r}"
+                )
+            if (
+                self.container_kill_abs is not None
+                and parent == self.container_kill_abs
+            ):
+                return
+            if self.is_leaf(parent):
+                return
         if name in LEAF_FILES and self.is_leaf(parent):
             return
         if (
@@ -341,6 +427,87 @@ class CgroupWriteGuard:
                 )
 
 
+class TargetContainerKill:
+    """One-shot kill authority for the exact container cgroup under gates.
+
+    This writes only that target's ``cgroup.kill``. It never moves the target
+    out of Docker's cgroup, so the container's existing limits remain intact.
+    The caller separately verifies that ``gates_cgroup`` is an authored,
+    loaded, bounded systemd slice before accepting a successful write.
+    """
+
+    def __init__(
+        self, *, cgroup_root: str, gates_cgroup: str, container_cgroup: str,
+        container_id: str, slice_unit_verifier: Optional[Callable[[str, str], bool]] = None,
+        on_write: Optional[Callable[[str, str], None]] = None,
+        log: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        self.cgroup_root = cgroup_root
+        self.gates_cgroup = gates_cgroup
+        self.container_cgroup = container_cgroup
+        self.container_id = container_id
+        self._slice_unit_verifier = slice_unit_verifier or access.verify_systemd_slice
+        self._on_write = on_write
+        self._log = log
+        self.guard = CgroupWriteGuard(
+            cgroup_root=cgroup_root, gates_cgroup=gates_cgroup,
+            origin_cgroup=None, leaf_name=None,
+            container_cgroup=container_cgroup, container_id=container_id,
+        )
+        self.refusal_reason: Optional[str] = None
+
+    @property
+    def target_abs(self) -> Optional[str]:
+        return self.guard.container_kill_abs
+
+    @property
+    def gates_unit(self) -> str:
+        return os.path.basename(self.gates_cgroup.rstrip("/"))
+
+    def kill(self) -> bool:
+        target = self.target_abs
+        if target is None:
+            self.refusal_reason = "target-not-an-exact-gates-container"
+            return False
+        try:
+            gates_verified = self._slice_unit_verifier(self.gates_unit, self.gates_cgroup)
+            gates_bounded = bounded_slice_capacity(self.cgroup_root, self.gates_cgroup)
+        except Exception as exc:  # fail closed on an unavailable host fact
+            gates_verified = gates_bounded = False
+            if self._log is not None:
+                self._log(f"placement: gates-slice proof failed for container kill: {exc}")
+        if not gates_verified or not gates_bounded:
+            self.refusal_reason = "gates-slice-unverified-or-unbounded"
+            return False
+        if not os.path.isdir(target):
+            self.refusal_reason = "target-cgroup-missing"
+            return False
+        if not _cgroup_is_populated(target):
+            self.refusal_reason = "target-cgroup-empty-or-unreadable"
+            return False
+
+        kill_path = os.path.join(target, "cgroup.kill")
+        try:
+            self.guard.check_write(kill_path, "1")
+            with open(kill_path, "w", encoding="utf-8") as stream:
+                stream.write("1")
+        except (HostWriteError, OSError) as exc:
+            self.refusal_reason = "target-cgroup-kill-write-failed"
+            if self._log is not None:
+                self._log(f"placement: exact container cgroup.kill refused: {exc}")
+            return False
+        if self._on_write is not None:
+            relative = os.path.relpath(kill_path, self.cgroup_root)
+            try:
+                self._on_write(relative, "1")
+            except Exception as exc:  # enforcement already succeeded; preserve that fact
+                if self._log is not None:
+                    self._log(
+                        "placement: exact container cgroup.kill succeeded but its "
+                        f"event row could not be recorded: {exc}"
+                    )
+        return True
+
 def abs_path(cgroup_root: str, cgroup: str) -> str:
     return os.path.join(cgroup_root, cgroup.lstrip("/"))
 
@@ -371,6 +538,7 @@ class LanePlacement:
         systemd_attach: Optional[Callable[[str, str, int], bool]] = None,
         pid_cgroup: Optional[Callable[[int], Optional[str]]] = None,
         pid_exists: Optional[Callable[[int], bool]] = None,
+        slice_unit_verifier: Optional[Callable[[str, str], bool]] = None,
     ) -> None:
         self.cgroup_root = cgroup_root
         self.gates_cgroup = gates_cgroup
@@ -384,6 +552,7 @@ class LanePlacement:
         self._systemd_attach = systemd_attach or _systemd_attach_process
         self._pid_cgroup = pid_cgroup or self._default_pid_cgroup
         self._pid_exists = pid_exists or self._default_pid_exists
+        self._slice_unit_verifier = slice_unit_verifier or access.verify_systemd_slice
         # A cgroup directory is kernfs: `rmdir` on it succeeds even though it
         # "contains" the controller's interface files, which the kernel
         # created and no process may unlink. A fake cgroupfs in a tmp
@@ -482,7 +651,11 @@ class LanePlacement:
             self.error = REFUSED_NO_TOKEN
             return
         gates_abs = abs_path(self.cgroup_root, self.gates_cgroup)
-        if not os.path.isdir(gates_abs):
+        if (
+            not os.path.isdir(gates_abs)
+            or not self._slice_unit_verifier(self.gates_unit, self.gates_cgroup)
+            or not bounded_slice_capacity(self.cgroup_root, self.gates_cgroup)
+        ):
             self.error = REFUSED_NO_GATES_SLICE
             return
         slice_max = util.read_int(os.path.join(gates_abs, "memory.max"))
@@ -658,6 +831,13 @@ class LanePlacement:
         unreadable leaf cannot certify that the lane was killed."""
         leaf_abs = self.leaf_abs
         if leaf_abs is None:  # pragma: no cover - callers check `placed`
+            return False
+        if self.error is not None:
+            if self._log is not None:
+                self._log(
+                    f"placement: cgroup.kill on {self.leaf_cgroup} refused: "
+                    f"placement is incomplete ({self.error})"
+                )
             return False
         if not _read_pids(os.path.join(leaf_abs, PROCS)):
             if self._log is not None:
@@ -836,3 +1016,22 @@ def _read_pids(path: str) -> List[int]:
         except ValueError:
             continue
     return pids
+
+
+def _cgroup_is_populated(path: str) -> bool:
+    """Require positive kernel evidence before claiming a cgroup kill.
+
+    `cgroup.events`'s `populated` field covers descendant cgroups too, unlike
+    `cgroup.procs` on the target alone. Missing, malformed, or empty evidence
+    is a refusal; a successful write to an already-empty cgroup is not proof
+    that the requested lane was killed.
+    """
+    lines = util.read_lines(os.path.join(path, "cgroup.events"))
+    if lines is None:
+        return False
+    values = [
+        parts[1]
+        for line in lines
+        if len(parts := line.split()) == 2 and parts[0] == "populated"
+    ]
+    return values == ["1"]

@@ -38,7 +38,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 CGROUP_ROOT = "/sys/fs/cgroup"
 
@@ -182,6 +182,67 @@ def in_container() -> bool:
     except OSError:
         return False
     return "docker" in text or "containerd" in text
+
+
+def verify_systemd_slice(
+    unit_name: str,
+    expected_cgroup: str,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> bool:
+    """Verify a named slice is loaded from an authored unit at its expected path.
+
+    A cgroup directory alone is insufficient: systemd/Docker can create an
+    unlimited transient slice for an unknown parent. This read-only check is
+    deliberately fail-closed and never stats ``FragmentPath`` in this
+    container's filesystem namespace; systemd's loaded-unit properties are
+    authoritative for that host path.
+    """
+    if (
+        not isinstance(unit_name, str) or not unit_name.endswith(".slice")
+        or not unit_name or unit_name.startswith("-")
+        or unit_name != unit_name.strip() or "/" in unit_name
+        or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in unit_name)
+        or not isinstance(expected_cgroup, str) or not expected_cgroup.startswith("/")
+        or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in expected_cgroup)
+        or any(part in ("", ".", "..") for part in expected_cgroup.split("/")[1:])
+    ):
+        return False
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return False
+
+    properties: Dict[str, str] = {}
+    for name in ("LoadState", "FragmentPath", "ControlGroup"):
+        try:
+            result = run(
+                [systemctl, "show", unit_name, f"--property={name}", "--value"],
+                capture_output=True, text=True, check=False, timeout=5,
+            )
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return False
+        stdout = getattr(result, "stdout", None)
+        if getattr(result, "returncode", 1) != 0 or not isinstance(stdout, str):
+            return False
+        properties[name] = stdout.strip()
+
+    fragment = properties["FragmentPath"]
+    authored_fragment_roots = (
+        "/etc/systemd/system",
+        "/run/systemd/system",
+        "/usr/local/lib/systemd/system",
+        "/usr/lib/systemd/system",
+        "/lib/systemd/system",
+    )
+    if (
+        properties["LoadState"] != "loaded"
+        or not any(
+            fragment.startswith(root + os.sep) for root in authored_fragment_roots
+        )
+        or properties["ControlGroup"] != expected_cgroup
+    ):
+        return False
+    return True
 
 
 # ── docker plumbing ─────────────────────────────────────────────────────────

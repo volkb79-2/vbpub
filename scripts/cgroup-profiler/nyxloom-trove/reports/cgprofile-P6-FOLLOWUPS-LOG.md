@@ -1493,3 +1493,38 @@ test change is committed at `e7bca65e`; main's RW-377 record is integrated at
 `4af3d3c0`. The exact-tip registered R0/R1 and R3, changed-area line/branch
 coverage, live probes, fresh Sol round 5, replacement R2, and full gate remain
 outstanding.
+
+## Session 24 — 2026-09-29 04:41:22Z — repair round-5 blockers
+
+On candidate base `0eb2686c`, round 5 (`cgprofile-P6-FOLLOWUPS-REVIEW-
+round5.md`) rejected six issues. The repair worktree now addresses them:
+
+- B1: stall enforcement no longer signals host PID numbers. Shared-scope
+  enforcement requires the caller's explicit successful placement leaf;
+  container-scope enforcement writes only `cgroup.kill` on the exact runtime
+  cgroup whose full ID matches beneath the verified bounded gates slice.
+- B2: placement and `ctl host` presence require a loaded authored systemd
+  slice at the expected cgroup path and positive finite memory/CPU capacity.
+- B3: the four version-bumped frozen run-gate fixture copies now match the
+  P6 source copies; the run-gate byte-identity oracle passed.
+- B4: empty fields in a configured UID allowlist now fail closed.
+- B5: fractional/non-finite caps and malformed typed wire fields now return
+  `bad-argument` instead of truncating, throwing, or terminating the accept
+  loop.
+- B6: request lines have a size limit and one absolute 25-second deadline;
+  a regression now includes a valid newline delivered after that deadline.
+
+Additional defensive repair: if the exact container `cgroup.kill` write
+succeeds but its subsequent audit-row sink raises, enforcement remains
+reported as successful and the audit failure is logged; it is not converted
+into a session-thread error.
+
+Focused evidence so far: the latest placement/socket-carrier run passed 217
+tests in 16.57s; a prior focused run passed 295 placement/watch/liveness tests;
+another passed 355 access/serve/socket tests with 6 skips. The run-gate golden
+byte-identity test passed (1 test). These are local test results only. The
+root and daemon contract mirrors compare byte-identically. Final exact-tip
+registered R0/R1 and R3, changed-area branch-aware coverage, current-tree R2,
+full gate, live probes, measured DAMON overhead, and fresh Sol review remain
+open. The current main rulings after `0eb2686c` still need reconciliation
+before those gates; no merge or release is authorized by these local results.

@@ -73,6 +73,8 @@ DEFAULT_KEEP_SESSIONS = 200
 DEFAULT_KEEP_DAYS = 14
 DEFAULT_INTERVAL = 1.0
 DISCOVERY_INTERVAL_SECONDS = 2.0
+REQUEST_LINE_TIMEOUT_SECONDS = 25.0
+MAX_REQUEST_LINE_BYTES = 1024 * 1024
 
 # RW-14 (C5): `ctl report` renders the REAL interactive HTML — `analyze.build`
 # + `report_html.render`, which need pandas/plotly. This module stays
@@ -137,7 +139,10 @@ def parse_allow_uids(raw: Optional[str]) -> Optional[List[int]]:
     for part in text.split(","):
         item = part.strip()
         if not item:
-            continue
+            raise ValueError(
+                f"{ALLOW_UIDS_ENV} must be a comma-separated list of uids; "
+                "empty entries are not allowed"
+            )
         try:
             uid = int(item, 10)
         except ValueError:
@@ -303,6 +308,7 @@ class SessionServer:
         observe_slices: Sequence[str] = (),
         max_sessions: int = DEFAULT_MAX_SESSIONS,
         gates_slice_name: str = DEFAULT_GATES_SLICE_NAME,
+        slice_unit_verifier: Optional[Callable[[str, str], bool]] = None,
         allow_uids: Optional[Sequence[int]] = None,
         cgroup_root: str = access.CGROUP_ROOT,
         proc_root: str = access.PROC_ROOT,
@@ -315,6 +321,9 @@ class SessionServer:
         session_id_fn: Optional[Callable[[], str]] = None,
         damon_pool: Optional["damon_mod.KdamondPool"] = None,
         accept_timeout: float = 0.5,
+        request_line_timeout: float = REQUEST_LINE_TIMEOUT_SECONDS,
+        max_request_line_bytes: int = MAX_REQUEST_LINE_BYTES,
+        request_clock: Callable[[], float] = time.monotonic,
         report_python: Optional[str] = None,
         report_script: Optional[str] = None,
         report_timeout: float = DEFAULT_REPORT_TIMEOUT,
@@ -330,6 +339,9 @@ class SessionServer:
         self.observe_slices = list(observe_slices)
         self.max_sessions = max_sessions
         self.gates_slice_name = gates_slice_name
+        self.slice_unit_verifier = slice_unit_verifier or access.verify_systemd_slice
+        self._gates_slice_verification: Optional[Tuple[float, bool]] = None
+        self._gates_slice_verify_lock = threading.Lock()
         # §8.1/§8.6: `None` = no uid allowlist (docker-group trust via the
         # socket mode); a list = SO_PEERCRED uid must be 0 or listed.
         self.allow_uids: Optional[List[int]] = list(allow_uids) if allow_uids is not None else None
@@ -357,6 +369,13 @@ class SessionServer:
             else (lambda event, timeout: event.wait(timeout))
         )
         self.accept_timeout = accept_timeout
+        if request_line_timeout <= 0:
+            raise ValueError("request_line_timeout must be positive")
+        if max_request_line_bytes < 2:
+            raise ValueError("max_request_line_bytes must be at least 2")
+        self.request_line_timeout = request_line_timeout
+        self.max_request_line_bytes = max_request_line_bytes
+        self.request_clock = request_clock
         self._session_id_fn = session_id_fn or self._default_session_id
         self.damon_pool = damon_pool if damon_pool is not None else damon_mod.KdamondPool()
         # RW-14: resolved once at construction (a long-lived daemon's venv,
@@ -645,7 +664,9 @@ class SessionServer:
             raise RequestError("bad-argument", "--scope must be 'container' or 'container-shared'")
         if damon_req not in ("on", "off"):
             raise RequestError("bad-argument", "--damon must be 'on' or 'off'")
-        if token is not None and not _TOKEN_RE.match(token):
+        if token is not None and (
+            not isinstance(token, str) or not _TOKEN_RE.fullmatch(token)
+        ):
             raise RequestError("bad-argument", "--token must match [A-Za-z0-9._-]{8,64}")
         if not isinstance(meta, dict):
             raise RequestError("bad-argument", "--meta must be a JSON object")
@@ -681,6 +702,18 @@ class SessionServer:
         except placement_mod.CapsError as exc:
             raise RequestError("bad-argument", str(exc)) from None
 
+        if policy.on_stall == "kill" and scope == "container-shared":
+            if token is None:
+                raise RequestError(
+                    "bad-policy",
+                    "--on-stall kill for container-shared requires --token and --place",
+                )
+            if place_request is None:
+                raise RequestError(
+                    "bad-policy",
+                    "--on-stall kill for container-shared requires --place",
+                )
+
         with self._lock:
             if token is not None:
                 key = (container_id, token)
@@ -688,6 +721,24 @@ class SessionServer:
                 if existing_id is not None:
                     existing = self._sessions.get(existing_id)
                     if existing is not None and not existing.finished:
+                        if (
+                            existing.scope != scope
+                            or existing.watch is None
+                            or existing.watch.policy != policy
+                        ):
+                            raise RequestError(
+                                "bad-policy",
+                                "a live target/token session already uses a different scope or liveness policy",
+                            )
+                        if policy.on_stall == "kill" and scope == "container-shared" and (
+                            existing.placement is None
+                            or not existing.placement.placed
+                            or existing.placement.error is not None
+                        ):
+                            raise RequestError(
+                                "bad-policy",
+                                "the existing shared-scope session has no verified kill leaf",
+                            )
                         return self._start_response(existing, reused=True)
 
             if self._count_live() >= self.max_sessions:
@@ -700,6 +751,21 @@ class SessionServer:
                 raise RequestError(
                     "target-not-found", f"no cgroup for container {container_id[:12]}"
                 )
+
+            if policy.on_stall == "kill" and scope == "container":
+                target_killer = self._make_container_killer(
+                    container_id=container_id, cgroup=cgroup,
+                )
+                if (
+                    target_killer.target_abs is None
+                    or not os.path.isdir(target_killer.target_abs)
+                    or not self._gates_slice_is_verified(refresh=True)
+                ):
+                    raise RequestError(
+                        "bad-policy",
+                        "--on-stall kill for scope container requires the exact target cgroup "
+                        "under the verified, bounded dev-gates.slice",
+                    )
 
             sess = self._create_session_locked(
                 container_id=container_id, cgroup=cgroup, scope=scope, token=token,
@@ -790,6 +856,43 @@ class SessionServer:
                 self._log(
                     f"start: placement refused for {session_id}: {placement_obj.error}"
                 )
+            if (
+                policy is not None and policy.on_stall == "kill"
+                and scope == "container-shared"
+                and (placement_obj.error is not None or not placement_obj.placed)
+            ):
+                placement_error = placement_obj.error or "place-refused:no-leaf"
+                placement_obj.release()
+                cleanup_error = (
+                    placement_obj.error if placement_obj.placed else None
+                )
+                refusal = {
+                    "session": session_id,
+                    "status": "rejected",
+                    "scope": scope,
+                    "container_id": container_id,
+                    "cgroup": cgroup,
+                    "token": token,
+                    "started_at": started_at,
+                    "ended_at": self._iso(self.clock()),
+                    "interval_seconds": interval,
+                    "aborted_reason": "required-stall-kill-placement-refused",
+                    "placement_error": placement_error,
+                    "placement_cleanup_error": cleanup_error,
+                }
+                try:
+                    rundir.write_manifest(refusal)
+                except OSError as exc:
+                    self._log(
+                        f"start: could not persist placement refusal for {session_id}: {exc}"
+                    )
+                detail = f"--on-stall kill requires a verified placement leaf ({placement_error})"
+                if cleanup_error is not None:
+                    detail += (
+                        f"; cleanup was incomplete ({cleanup_error}); "
+                        f"leaf {placement_obj.leaf_cgroup!r} remains"
+                    )
+                raise RequestError("bad-policy", detail)
 
         limits_flags = limits_mod.mount_flags(proc_root=self.proc_root)
         initial_effective_limits = limits_mod.effective(cgroup, self.cgroup_root, limits_flags)
@@ -940,7 +1043,67 @@ class SessionServer:
             token=token, origin_cgroup=origin_cgroup, request=request,
             on_write=on_write, log=self._log, sleep=self.sampler_sleep,
             rmdir=self.cgroup_rmdir, proc_root=self.proc_root,
+            slice_unit_verifier=self._verify_gates_slice_unit,
         )
+
+    def _make_container_killer(
+        self, *, container_id: str, cgroup: str,
+        rundir: Optional["store.RunDir"] = None,
+    ) -> "placement_mod.TargetContainerKill":
+        """Build the exact-target cgroup.kill writer for an ephemeral lane.
+
+        No Docker API, PID signal, or cgroup migration is involved: D-15
+        authorizes only one kill-file write on the runtime cgroup whose leaf
+        name proves this exact container ID beneath the verified gates slice.
+        """
+        def on_write(relative_path: str, value: str) -> None:
+            if rundir is None:
+                return
+            rundir.append("events", events_mod.Event(
+                t=self.clock(), mono=0.0, kind="cgroup_write", severity="info",
+                target="/" + relative_path,
+                message=f"container enforcement wrote {value!r} to /{relative_path}",
+                data={"file": "/" + relative_path, "value": value},
+            ).to_dict())
+
+        return placement_mod.TargetContainerKill(
+            cgroup_root=self.cgroup_root,
+            gates_cgroup=targets_mod.slice_to_path(self.gates_slice_name),
+            container_cgroup=cgroup, container_id=container_id,
+            slice_unit_verifier=self._verify_gates_slice_unit,
+            on_write=on_write if rundir is not None else None,
+            log=self._log,
+        )
+
+    def _verify_gates_slice_unit(self, unit_name: str, cgroup_path: str) -> bool:
+        expected_path = targets_mod.slice_to_path(self.gates_slice_name)
+        return (
+            unit_name == self.gates_slice_name
+            and cgroup_path == expected_path
+            and self.slice_unit_verifier(unit_name, cgroup_path)
+        )
+
+    def _gates_slice_is_verified(self, *, refresh: bool = False) -> bool:
+        """Require loaded-unit and finite-capacity proof for the gates slice.
+
+        The five-second cache keeps a one-second sampler from spawning
+        `systemctl` on every tick. Placement and public host snapshots refresh
+        before making a consequential decision or presence claim.
+        """
+        now = time.monotonic()
+        with self._gates_slice_verify_lock:
+            cached = self._gates_slice_verification
+            if not refresh and cached is not None and now - cached[0] < 5.0:
+                return cached[1]
+            cgroup_path = targets_mod.slice_to_path(self.gates_slice_name)
+            abs_path = os.path.join(self.cgroup_root, cgroup_path.lstrip("/"))
+            verified = (
+                os.path.isdir(abs_path)
+                and self._verify_gates_slice_unit(self.gates_slice_name, cgroup_path)
+                and placement_mod.bounded_slice_capacity(self.cgroup_root, cgroup_path)
+            )
+            self._gates_slice_verification = (now, verified)
+            return verified
 
     def _start_response(self, sess: _Session, *, reused: bool) -> Dict[str, Any]:
         return {
@@ -1264,127 +1427,74 @@ class SessionServer:
         condition (the other half is host PSI, already in every sample).
         `None` when the slice does not exist on this host, which pauses
         nothing: an absent capacity object is not pressure."""
+        if not self._gates_slice_is_verified():
+            return None
         cgroup_path = targets_mod.slice_to_path(self.gates_slice_name)
         abs_path = os.path.join(self.cgroup_root, cgroup_path.lstrip("/"))
         return util.read_pressure(os.path.join(abs_path, "memory.pressure")).get("full_avg10")
 
     @staticmethod
     def _kill_targets(sess: _Session, pids: List[int]) -> Tuple[List[int], Optional[str]]:
-        """What `--on-stall kill` may kill, or why it may not.
+        """Whether the daemon has an exact cgroup boundary it may kill.
 
-        With a token the subtree IS the lane, and killing it is exactly what
-        §8.4 asks for. Without one, scope `container` still means "the
-        container is the lane" (an ephemeral gate container — everything in
-        that cgroup is the work). Scope `container-shared` WITHOUT a token
-        is the one case the daemon refuses: that cgroup is the whole
-        devcontainer, and "SIGKILL to the token's pid subtree" with no token
-        would mean killing the IDE, the agents and the caller that asked.
-        The refusal is recorded on the verdict, never silently dropped.
+        Private PID namespaces make host PIDs read through ``proc_root``
+        unsuitable as signal targets. A shared-scope token is killable only
+        after successful placement into its dedicated leaf; an unplaced
+        token never falls back to numeric PID signalling.
         """
-        if sess.token is not None or sess.scope == "container":
+        if sess.scope == "container":
             return list(pids), None
-        return [], "no-token-in-shared-scope"
-
-    def _pid_addressable(self, pid: int) -> bool:
-        """A host-proc PID is safe to signal only if local /proc names that
-        same process, not merely an unrelated task with the same number."""
-        try:
-            return os.path.samefile(
-                os.path.join(self.proc_root, str(pid)), f"/proc/{pid}"
-            )
-        except OSError:
-            return False
+        if sess.token is None:
+            return [], "no-token-in-shared-scope"
+        if sess.placement is None or not sess.placement.placed:
+            return [], "unplaced-token-subtree"
+        if sess.placement.error is not None:
+            return [], "placement-incomplete"
+        return list(pids), None
 
     def _enforce_stall_kill(self, sess: _Session, pids: List[int]) -> None:
-        # CP-9 (§8.3/§8.4): a PLACED session is killed with ONE write of "1"
-        # to `<gates slice>/rg-<token>/cgroup.kill`. The kernel applies that
-        # to every pid in the leaf atomically, so — unlike the pid loop below
-        # — it cannot miss a process that forked between the resolver's walk
-        # and the signal. No `_kill_targets` consultation is needed for it
-        # either: the leaf holds THIS lane's pids and nothing else, which is
-        # exactly what `_kill_targets`' shared-scope refusal exists to
-        # protect against. The pid loop stays as the fallback for every
-        # unplaced session (an exec-mode or bare-host lane that was refused
-        # placement, or never asked for it), so it is never dead code.
-        if sess.placement is not None and sess.placement.placed:
-            if sess.placement.kill():
-                with sess.lock:
-                    sess.watch.record_kill(
-                        pids,
-                        via=f"cgroup.kill applied to {sess.placement.leaf_cgroup} "
-                            f"({len(pids)} pid(s) known to the resolver)",
-                    )
-                self._log(
-                    f"watch {sess.session_id}: state {sess.watch.state}, cgroup.kill written "
-                    f"to {sess.placement.leaf_cgroup}"
-                )
-                self._finalize_after_kill(sess)
+        def refused(reason: str) -> None:
+            with sess.lock:
+                sess.watch.record_kill_refused(reason)
+            self._log(
+                f"watch {sess.session_id}: --on-stall kill refused ({reason}); "
+                "no exact, verified lane cgroup was killable"
+            )
+
+        if sess.scope == "container":
+            killer = self._make_container_killer(
+                container_id=sess.container_id, cgroup=sess.cgroup, rundir=sess.rundir,
+            )
+            if not killer.kill():
+                refused(killer.refusal_reason or "target-container-kill-refused")
                 return
-            # The leaf would not take the write (a kernel too old for
-            # `cgroup.kill`, or the leaf already gone). Fall through to the
-            # pid loop rather than report a kill that did not happen.
+            with sess.lock:
+                sess.watch.record_kill(
+                    pids, via=f"cgroup.kill applied to exact target {sess.cgroup}",
+                )
+            self._log(
+                f"watch {sess.session_id}: state {sess.watch.state}, cgroup.kill written "
+                f"to exact target {sess.cgroup}"
+            )
+            self._finalize_after_kill(sess)
+            return
+
         targets, refusal = self._kill_targets(sess, pids)
         if refusal is not None:
-            with sess.lock:
-                sess.watch.record_kill_refused(refusal)
-            self._log(
-                f"watch {sess.session_id}: --on-stall kill refused ({refusal}): "
-                f"a shared-scope session without a token has no subtree to kill"
-            )
+            refused(refusal)
             return
-        killed: List[int] = []
-        unreached = 0
-        own = os.getpid()
-        for pid in targets:
-            # Never pid 1 (the container's own init, whose death takes the
-            # daemon's container with it) and never this daemon.
-            if pid <= 1 or pid == own:
-                unreached += 1
-                continue
-            # The resolver reads HOST pids through proc_root. In a private
-            # PID namespace the same number may name an unrelated local
-            # process. Signal only when both proc views identify the exact
-            # same process (the bind-mount case), never on numeric equality.
-            if not self._pid_addressable(pid):
-                unreached += 1
-                continue
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                # ESRCH also means "outside this daemon's private PID
-                # namespace". The host proc view distinguishes that live
-                # case from a target that actually exited after discovery.
-                try:
-                    os.stat(os.path.join(self.proc_root, str(pid)))
-                except FileNotFoundError:
-                    continue
-                except OSError:
-                    pass  # indeterminate is not proof of exit
-                unreached += 1
-                continue
-            except OSError:
-                unreached += 1
-                continue
-            killed.append(pid)
-        if unreached or not killed:
-            # A host PID obtained through the read-only host proc mount is
-            # not necessarily addressable from this daemon's private PID
-            # namespace. A failed or partial signal must never become a
-            # terminal `killed` verdict while the lane may still be alive.
-            with sess.lock:
-                sess.watch.record_kill_refused(
-                    f"signalled-{len(killed)}-of-{len(targets)}-pids"
-                )
-            self._log(
-                f"watch {sess.session_id}: SIGKILL reached {len(killed)} of "
-                f"{len(targets)} pid(s); kill not certified"
-            )
+        assert sess.placement is not None  # `_kill_targets` proved this boundary.
+        if not sess.placement.kill():
+            refused("lane-leaf-cgroup-kill-refused")
             return
         with sess.lock:
-            sess.watch.record_kill(killed)
+            sess.watch.record_kill(
+                targets,
+                via=f"cgroup.kill applied to {sess.placement.leaf_cgroup}",
+            )
         self._log(
-            f"watch {sess.session_id}: state {sess.watch.state}, SIGKILL sent to "
-            f"{len(killed)} pid(s)"
+            f"watch {sess.session_id}: state {sess.watch.state}, cgroup.kill written "
+            f"to {sess.placement.leaf_cgroup}"
         )
         self._finalize_after_kill(sess)
 
@@ -1534,7 +1644,7 @@ class SessionServer:
         own two-shape union, so a consumer can branch on one key."""
         cgroup_path = targets_mod.slice_to_path(self.gates_slice_name)
         abs_path = os.path.join(self.cgroup_root, cgroup_path.lstrip("/"))
-        if not os.path.isdir(abs_path):
+        if not self._gates_slice_is_verified(refresh=True):
             return {"name": self.gates_slice_name, "present": False}
         leaves = sorted(
             os.path.basename(child)
@@ -1887,6 +1997,10 @@ class SessionServer:
         """
         if not isinstance(req, dict):
             return None, {}, self._error_response("bad-argument", "request must be a JSON object")
+        if any(not isinstance(key, str) for key in req):
+            return None, {}, self._error_response(
+                "bad-argument", "request object keys must be strings"
+            )
         unexpected = sorted(set(req) - _WIRE_KEYS)
         if unexpected:
             return None, {}, self._error_response(
@@ -1895,10 +2009,19 @@ class SessionServer:
                 f"{{\"verb\", \"args\", \"contract\"}} (contract §8.1)",
             )
         contract = req.get("contract", CONTRACT_VERSION)
-        if contract != CONTRACT_VERSION:
+        if (
+            isinstance(contract, bool)
+            or not isinstance(contract, int)
+            or contract != CONTRACT_VERSION
+        ):
             return None, {}, self._error_response(
                 "bad-argument",
                 f"request contract {contract!r}, this daemon speaks contract {CONTRACT_VERSION}",
+            )
+        verb = req.get("verb")
+        if not isinstance(verb, str):
+            return None, {}, self._error_response(
+                "bad-argument", "request 'verb' must be a string"
             )
         args = req.get("args")
         if args is None:
@@ -1907,7 +2030,7 @@ class SessionServer:
             return None, {}, self._error_response(
                 "bad-argument", "request 'args' must be a JSON object"
             )
-        return req.get("verb"), args, None
+        return verb, args, None
 
     @staticmethod
     def _error_response(code: str, message: str) -> Dict[str, Any]:
@@ -2026,7 +2149,6 @@ class SessionServer:
     def _handle_connection(self, conn: socket.socket) -> None:
         handed_off = False
         try:
-            conn.settimeout(25.0)
             uid = self._peer_uid(conn)
             if not self._peer_allowed(uid):
                 named = "unavailable" if uid is None else str(uid)
@@ -2036,16 +2158,45 @@ class SessionServer:
                 )
                 conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
                 return
-            data = b""
-            while not data.endswith(b"\n"):
-                chunk = conn.recv(65536)
+            data = bytearray()
+            deadline = self.request_clock() + self.request_line_timeout
+            while True:
+                if self.request_clock() >= deadline:
+                    return
+                newline = data.find(b"\n")
+                if newline >= 0:
+                    if newline + 1 > self.max_request_line_bytes:
+                        self._send_line(conn, self._error_response(
+                            "bad-argument",
+                            f"request line exceeds {self.max_request_line_bytes} bytes",
+                        ))
+                        return
+                    break
+                if len(data) >= self.max_request_line_bytes:
+                    self._send_line(conn, self._error_response(
+                        "bad-argument",
+                        f"request line exceeds {self.max_request_line_bytes} bytes",
+                    ))
+                    return
+                remaining = deadline - self.request_clock()
+                if remaining <= 0:
+                    return
+                conn.settimeout(remaining)
+                try:
+                    chunk = conn.recv(min(
+                        65536, self.max_request_line_bytes + 1 - len(data)
+                    ))
+                except socket.timeout:
+                    # A partial line is not dispatched. Closing bounds both
+                    # the serial accept-loop occupancy and request memory.
+                    return
                 if not chunk:
                     break
-                data += chunk
+                data.extend(chunk)
             if not data.strip():
                 return
             try:
-                req = json.loads(data.decode("utf-8"))
+                req = json.loads(bytes(data).decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 resp = self._error_response("bad-argument", "request was not valid JSON")
             else:

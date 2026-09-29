@@ -1701,3 +1701,27 @@ Because this session record changes the package documentation tip, repeat
 R0/R1 and R3 on the resulting final review SHA. Fresh Sol round 5, live probes,
 replacement R2, the full gate, and review disposition remain open; nothing in
 this report claims P6 is released or merged.
+
+## Session 24 — 2026-09-29 04:41:22Z — round-5 repairs in progress
+
+Round 5 rejected B1–B6 on candidate `0eb2686c`. The current repair working
+tree implements the prescribed private-PID-safe kill boundary, loaded and
+bounded gates-slice verification, byte-identical version-only fixture copies,
+fail-closed UID allowlist parsing, typed wire/cap validation, and a bounded
+absolute request-line deadline. The deadline regression includes a complete
+request whose newline arrives after the deadline. The exact-container kill
+path also preserves the successful enforcement result if only its subsequent
+audit-row callback fails, while logging that callback failure.
+
+Local test evidence: the final focused placement + socket-carrier run passed
+**217 tests** in 16.57 seconds. Earlier during the same repair, focused
+placement/watch/liveness passed **295 tests**, and access/serve/socket passed
+**355 tests with 6 skipped**; the run-gate golden byte-identity oracle passed
+**1 test**. The interface-contract copies compare byte-for-byte. This is not
+yet final-tree gate evidence: main has advanced beyond this branch base and
+must be reconciled, then registered R0/R1 and R3 plus 100% changed-line and
+branch coverage must pass on the quiet exact candidate before a fresh Sol
+review. Round 5's live-probe requirement also remains open: the required host
+systemd/cgroup/DAMON facilities are not established by these fake-tree tests.
+P6 R2 and the full gate remain release blockers, and this package is not
+provisionally merged or released.

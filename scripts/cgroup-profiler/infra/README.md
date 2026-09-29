@@ -71,7 +71,12 @@ it contains the LANES the daemon profiles and placement's `rg-<token>`
 leaves (C8), not the daemon itself. `ctl host`'s `gates_slice` block reads
 that slice (name configurable via `serve --gates-slice`, default
 `dev-gates.slice`) — this package only READS it, never installs or writes
-its unit. See mdt host-setup's own `README.md`/`AGENTS.md` for that side.
+its unit. `ctl host` reports `gates_slice.present: true` only when systemd
+verifies the expected loaded, non-transient unit and its cgroup has finite
+positive memory and CPU ceilings; a directory by itself reports absent.
+Placement applies the same check and refuses an unverified capacity object
+without failing profiling. See mdt host-setup's own `README.md`/`AGENTS.md`
+for that side.
 
 ## Host system bus
 

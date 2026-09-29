@@ -11,15 +11,32 @@ Docker socket. D-15's no-hidden-mutation boundary remains: cap and migration
 writes exist only through the explicit, opt-in D-20/D-25 placement request.
 That feature creates a token-named `rg-*` leaf under the verified gates slice,
 applies and reads back its caps, moves the lane's processes into it, and moves
-survivors back on stop; explicit `--on-stall kill` may write that leaf's
-`cgroup.kill`. `CgroupWriteGuard` is the program-level allowlist for those
-operations. It is bound to the session's exact token leaf and refuses an
-existing leaf: an orphan or symlink might belong to another lane. The guard
-also covers controller delegation and the original scope's
+survivors back on stop; explicit shared-scope `--on-stall kill` may write
+that leaf's `cgroup.kill`. For `scope=container`, kill instead writes only
+the exact runtime cgroup's `cgroup.kill`, after its leaf name proves the
+requested full container ID and its resolved path is beneath the verified,
+bounded gates slice. It never moves or changes the target's Docker limits.
+`CgroupWriteGuard` is the program-level allowlist for those operations. It is
+bound to the session's exact token leaf or exact target container cgroup and
+refuses an existing leaf: an orphan or symlink might belong to another lane.
+The guard also covers controller delegation and the original scope's
 `cgroup.procs` restoration path. The daemon's host cgroup-v2 bind is therefore
 writable: Linux cgroupfs placement cannot work through a read-only bind. This
 is a deliberate, bounded exception to observation-only operation, not a
 general host-control surface.
+
+Stall enforcement never signals a numeric PID: the daemon keeps a private PID
+namespace, so host PIDs from its read-only proc view are observations, not
+signal handles. For `scope=container`, enforcement also requires
+`cgroup.events` to report `populated 1` for the exact target container
+cgroup; missing, malformed, or empty state is a refusal, not a successful
+kill. A shared-scope kill requires the caller's explicit placement request
+and a verified leaf; placement is never invented solely to enable kill. If
+that boundary is unavailable before start, the daemon refuses the requested
+policy as `bad-policy`; if a cgroup kill later fails, it reports `reported`
+rather than claiming success. For consumers such as run-gate that do not
+already plan placement, the client requests `report` and its own watchdog
+remains the verdict authority (RW-379/RW-380).
 
 PID movement has one namespace-specific seam. A PID read from `/hostproc` is
 not necessarily addressable by a writer in the daemon's private PID namespace;
@@ -43,6 +60,13 @@ appending an unfinished line cannot postpone a stall verdict.
 The exec watch bridge treats a closed socket without exactly one terminal
 `end` as a daemon fault, so a dropped connection cannot masquerade as a
 finished session.
+
+The socket listener is serial until a request is dispatched or `watch` is
+handed to its own thread. Each initial request line is therefore bounded to
+1 MiB and an absolute 25-second wall-clock deadline, so trickle bytes cannot
+monopolize every control verb or grow request memory without limit. After a
+`watch` request is accepted, its stream has no server-side timeout; silence
+between readings is normal.
 
 Host visibility does not require joining host namespaces. The daemon and
 one-shot helper keep private PID/cgroup namespaces; host `/proc` is explicitly
@@ -85,6 +109,13 @@ Docker parent. It asks host systemd for `LoadState`, `FragmentPath`, and
 directory exists. This is necessary because an unknown slice can be silently
 materialized as a transient unit; checking only for a cgroup directory would
 certify the unsafe state the probe is meant to catch.
+
+The long-running daemon applies the same trust principle before placement
+and before claiming `host.gates_slice.present`: it verifies the expected
+loaded, non-transient systemd unit and exact control-group path, then requires
+finite positive memory and CPU ceilings. A bare directory is not a capacity
+object. If proof is absent, the host snapshot reports the slice absent and
+placement refuses it without failing the profiling session.
 
 The DAMON pool treats the `nr_kdamonds` value read at pool creation as an
 ownership boundary. Indices below that baseline are foreign. New sessions use

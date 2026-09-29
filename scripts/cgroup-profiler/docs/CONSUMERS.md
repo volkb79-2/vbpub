@@ -73,6 +73,18 @@ The daemon has no Docker socket and does not accept `--cap`; it writes session
 data under `/var/lib/cgprofile/sessions` and its own DAMON kdamonds under
 sysfs.
 
+Before relying on `host.gates_slice` or requesting `start --place`, install
+the host's authored `dev-gates.slice` unit. The daemon verifies the loaded,
+non-transient unit and finite positive memory and CPU ceilings; an existing
+cgroup directory without that evidence is reported as `present:false`, and
+placement is refused while profiling continues.
+
+For the socket carrier, send one complete newline-terminated JSON request no
+larger than 1 MiB within 25 seconds of connecting. The deadline is absolute:
+periodic trickle bytes do not reset it. The daemon closes an incomplete line
+at the deadline and returns `bad-argument` for an oversized line. After a
+`watch` request is accepted, its streaming connection has no server timeout.
+
 When running the one-shot helper from a cockpit, placement is checked before
 the collector starts. The default verifier is the local `tester-unified:local`
 image; it must contain `systemctl`. If you use another local image with that
@@ -152,6 +164,7 @@ META="$(python3 -c 'import json; print(json.dumps({
 START_JSON="$(docker exec cgprofile-host-daemon cgprofile ctl start \
   --target "containerid:${CONTAINER_ID}" \
   --scope container --token "$PROFILE_TOKEN" --damon on --interval 1.0 \
+  --idle-bound 30 --on-stall kill \
   --meta "$META" --json)"
 SESSION_ID="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["session"])' <<<"$START_JSON")"
 
@@ -175,9 +188,19 @@ work and the summary must report sampled-max memory plus deltas. Use
 counters have the schema-1 semantics documented in the contract.
 For `--progress-stream`, provide a regular NDJSON file path inside the lane;
 the daemon ignores a FIFO, device, or unfinished line. A placement request with an existing
-`rg-<token>` leaf starts unplaced with `placement.error` set. Use a fresh
+`rg-<token>` leaf ordinarily starts unplaced with `placement.error` set. Use a fresh
 token for each new lane attempt; a retry of a live session is reused by the
 server's `(container_id, token)` lookup.
+`--on-stall kill` for this `scope=container` example is limited to that exact
+container's `cgroup.kill`, and is accepted only because the lane container is
+launched beneath the verified gates slice. It does not change Docker's caps.
+For `scope=container-shared`, `kill` additionally requires an explicit
+successful `--place` leaf. Do not request placement solely to enable that
+policy; when the lane's existing resource plan does not place it, request
+`--on-stall report` (or omit the option) and keep the lane-local watchdog as
+verdict authority. No path signals host PIDs. A `bad-policy` start refusal
+means the requested enforcement boundary was not established; a runtime
+`reported` verdict means a requested cgroup kill could not be confirmed.
 When consuming `ctl watch`, require its terminal `end` line. The exec carrier
 exits 3 if the socket closes before that line; treat it as profiling
 unavailable and reconcile the session through `ctl status`/`stop`.

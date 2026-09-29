@@ -265,36 +265,40 @@ Two OPTIONAL, independent `start` upgrades sit on top of section 8's basic
 attach — neither is required to get a Summary, and neither changes what
 `stop`/`report` return when unused.
 
-**Liveness policy** replaces a consumer's own in-process stall watcher (the
-motivation RG-55 exists for — see CP-8): pass `--progress-stream`,
-`--idle-bound`, `--ceiling` and/or `--on-stall kill|report` on `start` and
-the DAEMON judges the lane, not the caller. The daemon outlives the
-caller's own process, so the judgement survives a caller crash — the one
-thing an in-process watcher cannot do. A consumer that wants to observe the
+**Liveness policy** adds a daemon-side stall observation (the motivation
+RG-55 exists for — see CP-8): pass `--progress-stream`, `--idle-bound`,
+`--ceiling` and/or `--on-stall kill|report` on `start`. The daemon outlives
+the caller's own process, so its observation survives a caller crash — the
+one thing an in-process watcher cannot do. A consumer that wants to observe the
 judgement live (rather than poll `ctl status`) holds ONE `ctl watch
 <session>` open per lane — the one verb that streams more than one
 response per connection (`docs/PROTOCOL.md` §1's documented exception to
 "one request per connection, then close"). Three line shapes only:
 `reading` (informational, every `--watch-interval` seconds), `verdict`
 (only on a state change — this is what a consumer acts on:
-`verdict == "killed"` means the daemon already signalled the lane, so the
-caller's own stall-exit path runs as if it had detected the stall itself;
-`verdict == "reported"` is a warning line, nothing was killed, the lane is
-still the caller's to manage), `end` (exactly one, last). An unparsable
-policy value is `bad-policy` — `start` refuses and no session exists, so a
-typo here is caught before the lane runs, not after.
+`verdict == "killed"` means the daemon successfully wrote `cgroup.kill` to
+the authorized boundary; `verdict == "reported"` is a warning line, nothing
+was killed, and the lane remains the caller's to manage), `end` (exactly one,
+last). An unparsable or unenforceable requested policy is `bad-policy` —
+`start` refuses and no session exists, so a typo or missing safe boundary is
+caught before the lane runs, not after.
 
 **Placement** (`--place [--memory-high] [--memory-max] [--cpu-weight]`)
 puts the lane's pid subtree under its OWN cgroup leaf
 (`<gates slice>/rg-<token>`) instead of sharing whatever cgroup the lane
-container/exec session already had — the prerequisite for `--on-stall
-kill` to use `cgroup.kill` (atomic, cannot miss a pid that forked after
-the last discovery tick) instead of walking the resolved pid list one
-SIGKILL at a time. From a consumer's view this is purely additive: `start`
-NEVER fails because of a placement refusal (`place-refused:*` in the
-response's `placement.error`, `leaf: null`) — a consumer that asked for
-`--place` and got refused still has a normal, unplaced session; the only
-thing it loses is the atomicity guarantee on a kill. `applied` in the
+container/exec session already had. For `scope=container-shared`, this is
+the prerequisite for `--on-stall kill` to use `cgroup.kill` atomically; the
+daemon never walks the resolved PID list to send signals. For `scope=container`,
+the exact target container cgroup is the kill boundary when its identity is
+proven beneath the verified gates slice, so no extra lane leaf is needed. At
+enforcement time, `cgroup.events` must also report `populated 1` for that exact
+boundary; missing, malformed, or empty population evidence is reported rather
+than certified as a kill.
+From a consumer's view placement is optional: an ordinary placement refusal
+(`place-refused:*` in `placement.error`, `leaf: null`) still leaves a normal
+unplaced session. If the same request explicitly requires a shared-scope
+kill, however, refusal means `bad-policy` and no live session, since there is
+no safe enforcement boundary. `applied` in the
 response is what the KERNEL reports back after the write, never an echo
 of what was asked for — if a consumer needs to know whether a cap actually
 took, that is the field to read, not its own `--memory-high` argument.

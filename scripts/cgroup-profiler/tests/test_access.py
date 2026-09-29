@@ -27,6 +27,96 @@ def fake_completed(returncode: int = 0, stdout: str = "", stderr: str = "") -> s
     return subprocess.CompletedProcess(args=["docker"], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+class TestVerifySystemdSlice:
+    def test_requires_loaded_authored_unit_at_expected_cgroup(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda name: "/usr/bin/systemctl")
+        values = {
+            "LoadState": "loaded",
+            "FragmentPath": "/etc/systemd/system/dev-gates.slice",
+            "ControlGroup": "/dev.slice/dev-gates.slice",
+        }
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            prop = next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--property="))
+            return subprocess.CompletedProcess(argv, 0, values[prop] + "\n", "")
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run
+        ) is True
+        assert len(calls) == 3
+        assert all(kwargs["timeout"] == 5 and kwargs["check"] is False for _, kwargs in calls)
+
+    @pytest.mark.parametrize(("property_name", "value"), [
+        ("LoadState", "not-found"),
+        ("FragmentPath", "/run/systemd/transient/dev-gates.slice"),
+        ("FragmentPath", "/run/systemd/generator.late/dev-gates.slice"),
+        ("FragmentPath", "/run/systemd/generator.early/dev-gates.slice"),
+        ("ControlGroup", "/dev.slice/unrelated.slice"),
+    ])
+    def test_rejects_unloaded_transient_or_wrong_path(self, monkeypatch, property_name, value):
+        monkeypatch.setattr(access.shutil, "which", lambda name: "/usr/bin/systemctl")
+        values = {
+            "LoadState": "loaded",
+            "FragmentPath": "/etc/systemd/system/dev-gates.slice",
+            "ControlGroup": "/dev.slice/dev-gates.slice",
+        }
+        values[property_name] = value
+
+        def run(argv, **_kwargs):
+            prop = next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--property="))
+            return subprocess.CompletedProcess(argv, 0, values[prop] + "\n", "")
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run
+        ) is False
+
+    def test_missing_or_failed_systemctl_is_unverified(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: None)
+        assert access.verify_systemd_slice("dev-gates.slice", "/dev.slice/dev-gates.slice") is False
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/systemctl")
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice",
+            run=lambda *_args, **_kwargs: fake_completed(returncode=1),
+        ) is False
+
+    @pytest.mark.parametrize("failure", [
+        OSError("systemctl unavailable"),
+        ValueError("invalid process arguments"),
+        subprocess.TimeoutExpired(cmd="systemctl", timeout=5),
+    ])
+    def test_query_errors_fail_closed(self, monkeypatch, failure):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/systemctl")
+
+        def run(*_args, **_kwargs):
+            raise failure
+
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice", run=run
+        ) is False
+
+    def test_malformed_property_output_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: "/usr/bin/systemctl")
+        assert access.verify_systemd_slice(
+            "dev-gates.slice", "/dev.slice/dev-gates.slice",
+            run=lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=None),
+        ) is False
+
+    @pytest.mark.parametrize(("unit", "path"), [
+        ("-bad.slice", "/dev.slice/-bad.slice"),
+        ("bad\x00.slice", "/dev.slice/bad.slice"),
+        ("bad slice.slice", "/dev.slice/bad.slice"),
+        ("dev-gates.slice", "relative"),
+        ("dev-gates.slice", "/dev.slice//bad.slice"),
+        ("dev-gates.slice", "/dev.slice/../bad.slice"),
+        ("dev/child.slice", "/dev.slice/dev-child.slice"),
+    ])
+    def test_rejects_invalid_names_and_paths_without_querying(self, monkeypatch, unit, path):
+        monkeypatch.setattr(access.shutil, "which", lambda _name: pytest.fail("unexpected query"))
+        assert access.verify_systemd_slice(unit, path) is False
+
+
 # ── have_host_cgroup_view ────────────────────────────────────────────────────
 
 class TestHaveHostCgroupView:

@@ -805,7 +805,7 @@ def _build_gates_and_daemon_tree(tmp_path: Path) -> Path:
     shutil.copytree(frame4, root)
     write_cgroup(root, "dev.slice/dev-gates.slice", cgroup_files(
         memory_current=2147483648, memory_max="6442450944", memory_high="4294967296",
-        swap_current=0,
+        cpu_max="500000 100000", swap_current=0,
     ))
     (root / "dev.slice" / "dev-gates.slice" / "rg-b7f3a1c9").mkdir(parents=True)
     (root / "dev.slice" / "dev-gates.slice" / "rg-04d8e2aa").mkdir(parents=True)
@@ -824,6 +824,7 @@ def test_gates_and_daemon_slice_present_match_host_v1_1(tmp_path):
         sessions_dir=str(tmp_path / "sessions"),
         cgroup_root=str(root), proc_root=str(root / "proc"),
         clock=lambda: EPOCH_END,
+        slice_unit_verifier=lambda _unit, _cgroup: True,
     )
     resp = server._dispatch(_wire("host"))
 
@@ -850,6 +851,28 @@ def test_gates_and_daemon_slice_present_match_host_v1_1(tmp_path):
 
     golden = json.loads((RG55_FIXTURES / "host-v1.1.json").read_text())
     assert resp == golden
+
+
+@pytest.mark.parametrize(("memory_max", "cpu_max"), [
+    ("max", "500000 100000"),
+    ("6442450944", "max 100000"),
+])
+def test_gates_slice_directory_without_finite_capacity_reports_absent(
+    tmp_path, memory_max, cpu_max,
+):
+    root = _build_gates_and_daemon_tree(tmp_path)
+    gates = root / "dev.slice" / "dev-gates.slice"
+    (gates / "memory.max").write_text(memory_max)
+    (gates / "cpu.max").write_text(cpu_max)
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        cgroup_root=str(root), proc_root=str(root / "proc"),
+        slice_unit_verifier=lambda _unit, _cgroup: True,
+    )
+
+    assert server._gates_slice_snapshot() == {
+        "name": "dev-gates.slice", "present": False,
+    }
 
 
 def test_gates_slice_absent_when_directory_does_not_exist(tmp_path):
@@ -889,7 +912,10 @@ def test_gates_slice_name_is_configurable(tmp_path):
     # under `dev-gates.slice`) -- picking a name with exactly one hyphen
     # keeps this test's own tree shape (`dev.slice/<name>`) the one
     # `--gates-slice` actually resolves to.
-    write_cgroup(root, "dev.slice/dev-altgates.slice", cgroup_files())
+    write_cgroup(
+        root, "dev.slice/dev-altgates.slice",
+        cgroup_files(memory_max="6442450944", cpu_max="500000 100000"),
+    )
     proc = tmp_path / "proc"
     proc.mkdir()
     (proc / "loadavg").write_text("1 1 1 1/1 1\n")
@@ -903,6 +929,7 @@ def test_gates_slice_name_is_configurable(tmp_path):
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"), cgroup_root=str(root), proc_root=str(proc),
         gates_slice_name="dev-altgates.slice",
+        slice_unit_verifier=lambda _unit, _cgroup: True,
     )
     snapshot = server._host_snapshot()
     assert snapshot["gates_slice"]["name"] == "dev-altgates.slice"

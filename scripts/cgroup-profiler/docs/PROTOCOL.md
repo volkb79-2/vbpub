@@ -45,8 +45,12 @@ socket-carrier consumer should send. The frozen bytes are in
   is a JSON *string* and whose wire form is a JSON *object*.
 * An optional argument the caller did not give travels as an explicit
   `null`; the daemon reads absent and `null` identically.
-* One request per connection, terminated by `\n`. The response is one JSON
-  object plus `\n`, then the daemon closes.
+* One request per connection, terminated by `\n`. The complete request line,
+  including its newline, is limited to 1,048,576 bytes and must arrive within
+  25 seconds of connection acceptance; trickle bytes do not extend that
+  deadline. An oversized line receives `bad-argument`; an incomplete line at
+  the deadline is closed without dispatch. The response is one JSON object
+  plus `\n`, then the daemon closes.
 * **The streaming exception (§8.2, C7).** `watch` — and only `watch` — is
   answered with one JSON object PER LINE until the session ends, on one
   connection that stays open the whole time. Concretely, for a consumer:
@@ -94,6 +98,16 @@ unparsable value is §8.8's **`bad-policy`**: exit 2 and the session is NOT
 started (distinct from `bad-argument`, which never had a session at stake).
 A non-numeric `watch_interval` is a `bad-argument`, not a `bad-policy` —
 it is a request argument, not a stall policy.
+
+`--on-stall kill` uses no numeric PID signals. With `scope=container`, the
+daemon may write `cgroup.kill` only on the exact container cgroup whose leaf
+name proves the requested 64-hex ID, whose path is beneath the verified,
+bounded gates slice, and whose `cgroup.events` reports `populated 1`.
+With `scope=container-shared`, it requires a token and an
+explicit successful `--place` leaf; it never adds placement itself. If the
+requested boundary is unavailable at start, the request is `bad-policy` and
+no live session is created. If the boundary is empty, unreadable, or later
+refuses the write, the watch verdict is `reported`, not `killed`.
 
 `watch`'s lines are §8.2's three shapes, frozen one per file in
 `tests/fixtures/rg55/watch-{reading,verdict,end}.json` (and as the whole

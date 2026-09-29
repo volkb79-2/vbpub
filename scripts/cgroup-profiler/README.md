@@ -197,6 +197,10 @@ The daemon's version response is contract major 1:
   Every verb, response, error code and the `contract` field are identical
   on both — `docs/PROTOCOL.md` documents each verb's `args` names, and
   `tests/fixtures/rg55/socket/` freezes a request/response pair per verb.
+  A complete request line including its newline is limited to 1 MiB and
+  must arrive within 25 seconds; trickle bytes do not extend the deadline.
+  Oversized lines receive `bad-argument`, and an incomplete line is closed
+  without dispatch. `watch` has no timeout after its initial request line.
   - **Host prerequisite:** the directory `/run/cgprofile` on the host is
     created by mdt host-setup's tmpfiles.d entry `mdt-cgprofile.conf`
     (`d /run/cgprofile 0770 root docker -`). **That entry decides who may
@@ -251,7 +255,15 @@ The daemon's version response is contract major 1:
   `max(300, 3 x cadence hint)`), `--ceiling auto|<seconds>` (`auto` = `3 x
   meta.expected.duration_s`, else none), `--on-stall kill|report` (default
   `report`). An unparsable value is `bad-policy` — the session is not
-  started. `docker exec cgprofile-host-daemon cgprofile ctl watch
+  started. `kill` uses only an exact cgroup boundary: `scope=container` may
+  kill the target container cgroup when its ID is proven by the runtime leaf
+  name beneath the verified gates slice and `cgroup.events` confirms it is
+  populated; `scope=container-shared` requires a
+  token and an explicit, successfully verified `--place` leaf. The daemon
+  never signals numeric PIDs or falls back to them. If the requested boundary
+  cannot be established, `start` returns `bad-policy`; an empty or unreadable
+  target or a runtime kill refusal is recorded as `reported`, never `killed`.
+  `docker exec cgprofile-host-daemon cgprofile ctl watch
   <session> --json` streams `reading`/`verdict`/`end` lines on either
   carrier (the one verb where more than one response crosses the wire per
   connection — `docs/PROTOCOL.md` §1's documented exception) until the
@@ -264,16 +276,24 @@ The daemon's version response is contract major 1:
   leaf `<gates slice>/rg-<token>` (default gates slice `dev-gates.slice`
   under `dev.slice`; mdt host-setup's `dev-gates.slice` unit is the
   intended source — `serve --gates-slice <name>` points at a different
-  one) and migrates every pid the token resolver finds into it, moving
+  one). The daemon reports the slice as `present:true` and permits placement
+  only when systemd verifies the expected loaded, non-transient unit and the
+  cgroup has finite positive memory and CPU ceilings; a directory alone is
+  not proof. It migrates every pid the token resolver finds into the
+  verified leaf, moving
   survivors back and removing the leaf on `stop`. `--memory-high
   <bytes>`, `--memory-max <bytes>` (refused as `place-refused:over-slice`
   above the gates slice's own ceiling), `--cpu-weight <1-10000>` cap it;
   applied values are always READ BACK from the kernel, never echoed. Any
   host condition (no gates slice, a write refusal, …) is a
   `place-refused:*` code — the session still starts, unplaced;
-  an existing token leaf is refused rather than reused or modified;
-  `--on-stall kill` then falls back to signalling the pid subtree
-  directly. A malformed cap value is `bad-argument` (exit 2, no session)
+  an existing token leaf is refused rather than reused or modified. This
+  refusal normally leaves profiling available; if the same request requires
+  shared-scope `--on-stall kill`, the daemon rejects it before creating a
+  session because there is no verified kill boundary. Run-gate requests that
+  policy only when its existing resource plan already requested placement;
+  otherwise its local watchdog remains verdict authority. A malformed cap
+  value is `bad-argument` (exit 2, no session)
   — the client typed it wrong, not the host.
 - **Private namespaces, explicit host views.** The daemon and its helper
   keep PID and cgroup namespaces private. Host `/proc` is explicitly bound

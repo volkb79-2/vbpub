@@ -477,6 +477,124 @@ def scenario(tmp_path, monkeypatch, capsys):
 # ── §8.1: one wire shape, nothing else ──────────────────────────────────
 
 class TestWireShape:
+    def test_malformed_json_wire_values_get_bad_argument_and_server_survives(
+        self, tmp_path
+    ):
+        socket_path = str(tmp_path / "run" / "ctl.sock")
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+            accept_timeout=0.05, request_line_timeout=0.4,
+        )
+        thread = threading.Thread(target=server._accept_loop, daemon=True)
+        thread.start()
+        _wait_for_socket(socket_path)
+        bad_requests = [
+            {"verb": ["version"], "args": {}, "contract": 1},
+            {"verb": "version", "args": {}, "contract": True},
+            {"verb": "start", "args": {
+                "target": "containerid:" + "a" * 64, "scope": "container",
+                "token": 12, "damon": "off", "meta": {},
+            }, "contract": 1},
+            {"verb": "start", "args": {
+                "target": "containerid:" + "a" * 64, "scope": "container",
+                "token": "rg55-wire-token", "damon": "off", "meta": {},
+                "place": True, "memory_high": 1.5,
+            }, "contract": 1},
+        ]
+        try:
+            for request in bad_requests:
+                response = _raw_socket_request(socket_path, request)
+                assert response["error"]["code"] == "bad-argument", response
+            assert _raw_socket_request(socket_path, _wire("version"))["ok"] is True
+        finally:
+            server.request_shutdown()
+            thread.join(timeout=5.0)
+
+    def test_trickle_line_has_wall_deadline_and_does_not_block_stop(
+        self, tmp_path
+    ):
+        socket_path = str(tmp_path / "run" / "ctl.sock")
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+            accept_timeout=0.05, request_line_timeout=0.4,
+        )
+        server.handle_stop = lambda _args: server._error_response(
+            "unknown-session", "no session"
+        )
+        thread = threading.Thread(target=server._accept_loop, daemon=True)
+        thread.start()
+        _wait_for_socket(socket_path)
+        slow = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        slow.connect(socket_path)
+        slow.sendall(b'{"verb":')
+        trickle_payload = b'"version","args":{},"contract":1}'
+        position = [0]
+
+        def trickle() -> None:
+            try:
+                while True:
+                    byte = trickle_payload[position[0] % len(trickle_payload)]
+                    slow.sendall(bytes([byte]))
+                    position[0] += 1
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+        trickler = threading.Thread(target=trickle, daemon=True)
+        trickler.start()
+        try:
+            time.sleep(0.08)
+            stopped = _raw_socket_request(
+                socket_path,
+                {"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1},
+            )
+            assert stopped["error"]["code"] == "unknown-session"
+        finally:
+            slow.close()
+            trickler.join(timeout=2.0)
+            server.request_shutdown()
+            thread.join(timeout=5.0)
+
+    def test_deadline_is_absolute_across_successful_receives(self, tmp_path):
+        now = [0.0]
+
+        class _AdvancingConn(_FakeConn):
+            def recv(self, size: int) -> bytes:
+                now[0] += 0.2
+                return super().recv(size)
+
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), request_line_timeout=0.5,
+            request_clock=lambda: now[0],
+        )
+        conn = _AdvancingConn([
+            b'{"verb":', b'"version",', b'"args":{},', b'"contract":1}\n',
+        ])
+        server._handle_connection(conn)
+        assert conn.closed is True
+        assert conn.sent == []
+        assert now[0] == pytest.approx(0.6)
+
+    def test_request_line_size_is_bounded(self, tmp_path):
+        socket_path = str(tmp_path / "run" / "ctl.sock")
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+            accept_timeout=0.05, max_request_line_bytes=64,
+        )
+        thread = threading.Thread(target=server._accept_loop, daemon=True)
+        thread.start()
+        _wait_for_socket(socket_path)
+        try:
+            response = _raw_socket_request(
+                socket_path,
+                {"verb": "version", "args": {"padding": "x" * 100}, "contract": 1},
+            )
+            assert response["error"]["code"] == "bad-argument"
+            assert "exceeds 64 bytes" in response["error"]["message"]
+        finally:
+            server.request_shutdown()
+            thread.join(timeout=5.0)
+
     def test_refuses_the_v1_flat_request_shape(self, tmp_path):
         # The whole point of the migration: a v1 client's `{"verb": "stop",
         # "session": …}` must be REFUSED by name, never quietly read as
@@ -494,6 +612,17 @@ class TestWireShape:
         resp = server._dispatch({"verb": "version", "args": {}, "contract": 2})
         assert resp["error"]["code"] == "bad-argument"
         assert "contract 2" in resp["error"]["message"]
+
+    def test_boolean_is_not_the_integer_contract_version(self, tmp_path):
+        server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+        resp = server._dispatch({"verb": "version", "args": {}, "contract": True})
+        assert resp["error"]["code"] == "bad-argument"
+
+    def test_a_nonstring_verb_is_a_bad_argument(self, tmp_path):
+        server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+        resp = server._dispatch({"verb": ["version"], "args": {}, "contract": 1})
+        assert resp["error"]["code"] == "bad-argument"
+        assert "verb" in resp["error"]["message"]
 
     def test_refuses_a_non_object_args(self, tmp_path):
         server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
@@ -531,7 +660,6 @@ class TestParseAllowUids:
         assert serve.parse_allow_uids(None) is None
         assert serve.parse_allow_uids("") is None
         assert serve.parse_allow_uids("  ") is None
-        assert serve.parse_allow_uids(",,") is None
 
     def test_parses_a_list_and_drops_duplicates(self):
         assert serve.parse_allow_uids("0, 1000 ,1003,1000") == [0, 1000, 1003]
@@ -540,6 +668,11 @@ class TestParseAllowUids:
         with pytest.raises(ValueError) as exc_info:
             serve.parse_allow_uids("1000,vscode")
         assert "vscode" in str(exc_info.value)
+
+    @pytest.mark.parametrize("value", [",,", "1000,", ",1000", "1000,,1001"])
+    def test_empty_entries_in_a_configured_list_raise(self, value):
+        with pytest.raises(ValueError, match="empty entries"):
+            serve.parse_allow_uids(value)
 
     def test_a_negative_uid_raises(self):
         with pytest.raises(ValueError):
@@ -704,7 +837,23 @@ class TestServeCliAllowUids:
         assert captured["allow_uids"] is None
 
     def test_a_malformed_environment_refuses_to_start(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setenv(serve.ALLOW_UIDS_ENV, "1000,nobody")
+        monkeypatch.setenv(serve.ALLOW_UIDS_ENV, "1000,,1001")
+        monkeypatch.setattr(cg.access, "have_host_cgroup_view", lambda _root: True)
+        monkeypatch.setattr(cg.access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(
+            serve, "SessionServer",
+            lambda **kw: pytest.fail("the daemon must not start with a bad allowlist"),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            cg.main(self._serve_argv(tmp_path))
+        assert exc_info.value.code == 2
+        assert "CGPROFILE_ALLOW_UIDS" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("value", [",,", "1000,"])
+    def test_empty_environment_entries_refuse_to_start(
+        self, tmp_path, monkeypatch, capsys, value
+    ):
+        monkeypatch.setenv(serve.ALLOW_UIDS_ENV, value)
         monkeypatch.setattr(cg.access, "have_host_cgroup_view", lambda _root: True)
         monkeypatch.setattr(cg.access, "have_host_proc_view", lambda _root: True)
         monkeypatch.setattr(

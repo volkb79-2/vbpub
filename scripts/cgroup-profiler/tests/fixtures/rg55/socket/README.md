@@ -51,9 +51,10 @@ BOTH sessions' liveness trackers two synthetic readings that cross the idle
 bound (`_force_stalled`), so the stream carries a real `verdict` line and
 the two carriers' `stop` documents still describe the same lane. That is
 also why `stop-response.json`'s Summary says `watch.state: "stalled"` — the
-state machine's own transitions are proven in `tests/test_liveness.py`, and
-the daemon's real enforcement (a real `sleep` subtree, really SIGKILLed) in
-`tests/test_serve_watch.py`.
+state machine's own transitions are proven in `tests/test_liveness.py`, while
+fake-cgroup enforcement write/refusal oracles live in
+`tests/test_serve_placement.py`. This fixture does not claim a live kernel
+kill; that requires a separate acceptance probe.
 
 `../status-v1.1.json` and `../summary-v1.1.json` are the §8.4/§8.7
 documents whole — the v1 goldens under `fixtures/contract/` are still
