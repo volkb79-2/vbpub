@@ -1653,3 +1653,21 @@ branch coverage, a live private-PID start/refusal and stop-restoration probe,
 fresh Sol round 5, replacement R2, and the registered full gate remain
 required. The B107 gate PASS in RW-373 is a separate Assay result, not P6
 evidence.
+
+## Session 22 — 2026-09-29 01:58:10Z — exact-tip R0/R1 found one uncovered diagnostic branch
+
+The registered `run-gate r0-r1` on exact tree
+`e4241e39445ce1c074568b727f0b927a5e6103c7` completed in 140.991 seconds
+with exit 2. Its full suite passed **1,705 tests**, but branch-aware coverage
+failed the 100% threshold: `lib/placement.py` was 401/402 statements and
+167/168 branches, with line 599 missing (the new non-`ESRCH` diagnostic
+logger path). The separate run-gate history record agrees on the tree and
+exit. `cgprofile-host-daemon` was down, so profiling used coarse rusage; that
+does not alter the functional coverage failure.
+
+The regression now injects a log sink and asserts the emitted PID/error
+message. The updated full `test_serve_placement.py` file passed **122 tests**
+in 17.00 seconds. The test change is committed at `e7bca65e`, and the
+controller-log reconciliation is at `4af3d3c0`. Exact-tip registered R0/R1
+and R3, 100% changed-area coverage, live placement/refusal and restoration
+probes, fresh Sol round 5, replacement R2, and the full gate remain required.
