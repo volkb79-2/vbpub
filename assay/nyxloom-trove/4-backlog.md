@@ -11672,7 +11672,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B130 — component boundaries
 
-**Status: OPEN; runs first in Wave A (stage 0, operator 2026-09-29).** Part 1 is research. Part 2 lands the import-contract test and a component-organized judge-test layout that later packages build on. Operator question behind it: "when we test python, the tests for react/go do not run?"
+**Status: Part 1 and Part 2 DONE on branch `wave-a-w3-boundaries` (2026-09-29; report `reports/wave-a/W3-REPORT-component-boundaries.md`); the component-scoped R2 recommendation there awaits an operator decision. Runs first in Wave A (stage 0, operator 2026-09-29).** Part 1 is research. Part 2 lands the import-contract test and a component-organized judge-test layout that later packages build on. Operator question behind it: "when we test python, the tests for react/go do not run?"
 - Map assay's components: core judge, per-language adapters, coverage/mutation/result parsers, analysis, gate tooling.
 - Add import contracts (for example, adapters depend only on core; core reaches adapters only through the registry).
 - Measure cross-component coupling: which tests execute which component's code, including through the registry and subprocesses, and whether any adapter's mutants are killed only by other components' tests.

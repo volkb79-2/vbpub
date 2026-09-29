@@ -1027,6 +1027,10 @@ you're changing assay itself:
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
+Judge tests are organized by component under `tests/core/`, `tests/adapters/<lang>/` and
+`tests/parsers/`, and `tests/core/test_import_contracts.py` enforces the import boundaries between
+components; the rules are in the DESIGN-GUIDE section "Component boundaries and test layout".
+
 ### CLI diagnostics
 
 All parser help, usage, missing-argument, unknown-argument, and configuration

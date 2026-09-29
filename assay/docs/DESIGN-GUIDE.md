@@ -709,7 +709,7 @@ default: a mutation candidate, whose whole signal is whether the suite fails
 control/transform outcome answers "did injecting this defect change the
 judgement" rather than "did the wrapped suite pass"; and the
 `environment_command` probe, which is not the lane command at all.
-`tests/test_result_report_wiring_sweep.py` pins that list mechanically —
+`tests/parsers/result_reports/test_result_report_wiring_sweep.py` pins that list mechanically —
 every call site either passes the argument or carries a written reason for
 not doing so.
 
@@ -2963,6 +2963,43 @@ turns a lane red. See
 for the worked shape, including how to make the companion `pg_dump`
 reproducibility obligation red-on-violation in your own gate rather than
 trusted silently.
+
+### Component boundaries and test layout
+
+The judge (`src/assay`) is one package with named components, and
+`tests/core/test_import_contracts.py` enforces how they may import each other.
+It is a stdlib `ast` walk over every module (module level, function level and
+`TYPE_CHECKING` imports alike), not a linter dependency. The components are
+`core` (everything not listed below, including `assay.adapters` and
+`assay.adapters.base`), one `adapter.<lang>` per language adapter (`python`,
+`javascript`, `go`, `sql`, each with its helper modules), three parser families
+(`parsers.coverage`, `parsers.mutation`, `parsers.result_reports`), the `cli`
+composition root and the temporary `analysis` module. The rules:
+
+- `cli` may import anything; it is where adapters are registered.
+- An adapter may import only the core leaf modules `adapters.base`, `errors`,
+  `mutation`, `safeio`, `statement_attribution`, `records` and `guards`, plus
+  its own component. It never imports another adapter or the rest of core.
+- A parser family may import only `errors`, `vocabulary`, `records` and
+  `guards`, plus its own component.
+- Core imports parsers only through their model surface
+  (`coverage_parsers.model`, `mutation_parsers`, `mutation_parsers.model`,
+  `result_reports`); `assay.coverage` alone dispatches to the individual
+  coverage-format modules.
+- Core never imports an adapter.
+
+Test files live in the folder their name implies: `tests/adapters/<lang>/` for
+tests named `test_adapters_<lang>_*` or naming a language,
+`tests/parsers/coverage/`, `tests/parsers/mutation/` and
+`tests/parsers/result_reports/` for the parser tests, and `tests/core/` for
+everything else. The rule and its explicit exceptions are `expected_dir` in the
+same test file; it also requires unique test basenames and forbids extra
+`__init__.py` or `conftest.py` files (only `tests/conftest.py` exists).
+Fixtures stay in `tests/fixtures/`, and moved tests reach them through
+`TESTS_ROOT` and `PROJECT_ROOT` from `tests/conftest.py`, not through their own
+`__file__`. A temporary list of names still pinned at the `tests/` root shrinks
+as the packages that own them move or remove them. The layout is organization
+only: it claims nothing about which tests kill which mutants.
 
 ## 12. Lane file structure = D7's three questions, literally
 
