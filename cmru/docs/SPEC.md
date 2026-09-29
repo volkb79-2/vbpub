@@ -930,7 +930,9 @@ host-systemd probe-image values (CLI options or the effective `[env]`). `--enabl
 requires a nested-Docker image. `wheel-build` requires `CMRU_WHEEL_BUILDER_IMAGE`; CMRU
 does not fall back to the cockpit's Python environment.
 
-**S2.6a — tester-gate environment preflight (KI-17).** These values are normally supplied by
+### S2.6a — tester-gate environment preflight (KI-17)
+
+These values are normally supplied by
 `cmru.orchestration.toml [env]` and reach a step through `cmru release`; they are NOT usually
 set in the project's own `cmru.toml [env]`. So a step copied out of `cmru.toml` and run by hand
 (what an operator does when a release goes red) would otherwise fail one missing variable at a
