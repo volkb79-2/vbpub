@@ -50,6 +50,18 @@ decide and implement the host-unit change in its own scope, then have a fresh
 review run placement, restoration, and kill probes. No provisional integration
 or release is authorized by this BLOCKED verdict.
 
+**B3 — High, `lib/serve.py:2189-2192`: the partial-request socket timeout
+path has no behavioral oracle in the registered coverage gate.** The first
+post-repair exact-tree `r0-r1` ran 1,811 passing tests but exited 2: two
+statements at that exception handler were missed, leaving total statement
+coverage 99% (6,393 statements, 2 missed; 2,258 branches fully covered).
+The existing trickle tests cover the wall deadline, but they do not exercise
+an idle `recv` timeout. Add a deterministic connection fixture that sends
+an unfinished request, times out on its next receive, confirms no response
+or dispatch for that request, and confirms a subsequent valid request is
+served. The red gate is not a product failure but prevents the declared 100%
+short-gate prerequisite.
+
 ## Traceability and combined-axis attacks
 
 | Contract | Code path and oracle | Round-6 result |

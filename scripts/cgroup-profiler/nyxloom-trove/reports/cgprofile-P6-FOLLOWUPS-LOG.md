@@ -1628,3 +1628,12 @@ mutation campaign. See `cgprofile-P6-FOLLOWUPS-REVIEW-round6.md` for the
 code-side verifier and absolute-subpath repairs, targeted tests, exact
 owned-container cleanup, and evidence limits. The P1 mutation container
 `run-gate-vbpub-mutation-3747550-1790644029` was left untouched.
+
+The first post-repair registered `r0-r1` on clean tree `bfcf6936`
+exited 2 despite 1,811 passing tests: `lib/serve.py:2189-2192` was
+uncovered (6,393 total statements, 2 missed; 2,258 branches fully
+covered). The exact gate container `cgprofile-gate-136173-1790662077`
+read back `NanoCpus=3000000000`, parent `dev-gates.slice`; launch
+memory `full avg10=0.00`. A deterministic partial-request timeout
+oracle was added and passed locally. The registered lanes must be
+rerun on the resulting committed tree; the host-unit block remains.

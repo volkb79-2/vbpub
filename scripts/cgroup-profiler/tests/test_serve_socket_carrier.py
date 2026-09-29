@@ -604,6 +604,31 @@ class TestWireShape:
         assert conn.closed is True
         assert conn.sent == []
 
+    def test_idle_partial_request_timeout_closes_and_next_request_is_served(
+        self, tmp_path
+    ):
+        class _IdleConn(_FakeConn):
+            def recv(self, size: int) -> bytes:
+                if self._chunks:
+                    return super().recv(size)
+                raise socket.timeout()
+
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"),
+            request_clock=lambda: 0.0,
+        )
+        partial = _IdleConn([b'{"verb":'])
+        server._handle_connection(partial)
+
+        assert partial.closed is True
+        assert partial.sent == []
+        assert partial.timeout is not None and partial.timeout > 0
+
+        next_request = _FakeConn([_wire_bytes("version")])
+        server._handle_connection(next_request)
+        assert next_request.closed is True
+        assert next_request.reply()["ok"] is True
+
     def test_oversized_complete_line_is_refused_by_its_newline_length(self, tmp_path):
         server = serve.SessionServer(
             sessions_dir=str(tmp_path / "sessions"), max_request_line_bytes=8,
