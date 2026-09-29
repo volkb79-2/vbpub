@@ -305,3 +305,13 @@ def test_expected_dir_table():
         "test_cli_run.py": "core",
     }
     assert {name: expected_dir(name) for name in table} == table
+
+
+def suffix_style_test_files(rel_paths: list[Path]) -> list[str]:
+    """pytest also collects `*_test.py`; the layout rule is written for `test_*.py` only."""
+    return [p.as_posix() for p in rel_paths if p.suffix == ".py" and p.name.endswith("_test.py")]
+
+
+def test_no_suffix_style_test_files():
+    assert suffix_style_test_files(_tests_files()) == []
+    assert suffix_style_test_files([Path("escape_test.py")]) == ["escape_test.py"]
