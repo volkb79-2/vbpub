@@ -54,3 +54,5 @@ The one failure is the known environmental `test_git_boundary.py::test_no_git_ma
 - O5b was added in the red commit (it passes there), not in step 2.
 - Docs: DESIGN-GUIDE paragraph omits the watchdog bullet (CD3); README/CONSUMERS unchanged (no consumer-visible behaviour change).
 - R2 caveat recorded in DESIGN-GUIDE: the guard files kill their own target mutants textually; pilot known-hard set (go.py 292/321/323/330) kills are not a guard measurement.
+
+READY-FOR-GATE f13bf1d0
