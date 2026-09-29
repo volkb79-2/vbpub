@@ -939,8 +939,6 @@ def validate_build_output_tree(
                 raise RuntimeError(unsafe_coordinate)
             if ".." in relative_path.parts:
                 raise RuntimeError(unsafe_coordinate)
-            if "." in relative_path.parts:
-                raise RuntimeError(unsafe_coordinate)
             if not isinstance(digest, str):
                 raise RuntimeError(unsafe_coordinate)
             if not re.fullmatch(r"[0-9a-f]{64}", digest):

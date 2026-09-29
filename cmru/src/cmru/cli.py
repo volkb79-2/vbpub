@@ -2380,9 +2380,7 @@ def _dispatch(args, runtime):
                 step_config = (project.runner_steps or {}).get(step)
                 if step_config is None:
                     raise RuntimeError(f"{name}: required declared step {step!r} is absent")
-                if not project.cwd:
-                    raise RuntimeError(f"{name}: derived project working directory is absent")
-                project_root = resolve_cwd(repo_root, project.cwd)
+                project_root = resolve_cwd(repo_root, _project_working_directory(project))
                 for line in render_step_plan(step_config, project_root):
                     log_info(f"[DRY RUN] {name}:{step}: {line}")
             return
