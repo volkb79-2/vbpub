@@ -79,8 +79,8 @@ run. `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=host busy — rerun:
 when another `run-gate-*` container is running; exit 3 always means rerun, and the
 receipt is left as it was. No collected judge test
 reads history or tags (A-475), so both lanes use the shallow snapshot default
-(`snapshot_history = "shallow"`, B128; the seed holds the judged commit and
-resolved base only), and snapshot refs/tags are not copied.
+(`snapshot_history = "shallow"`, B128; the lanes declare no `judge.base`, so
+the seed holds only the judged commit), and snapshot refs/tags are not copied.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following
 the separate 60-minute R0/R1 preflight. This interim budget resets on a new
 invocation, so do not use resume/retry to bypass the overall ceiling. B110
