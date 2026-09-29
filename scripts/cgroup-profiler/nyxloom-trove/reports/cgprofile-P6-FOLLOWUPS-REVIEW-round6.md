@@ -110,10 +110,28 @@ for `r0-r1` and `r3` at initial tree `5086c0d9`; the P6 report records
 canaries rejected. The older `6540f877` R2 ended
 `BUDGET_EXCEEDED/CANDIDATE_HUNG`; no current-tree mutation accounting
 exists. The scoped code/test fixes made here invalidate the initial-tree
-short-gate receipts for the resulting commit. The registered short gates
-must be rerun on the final committed review tree; their post-commit receipts
-are in the project's `.run-gate/history.json` and the controller's final
-review return, not presumed by this paragraph.
+short-gate receipts for the resulting commit. They were rerun on clean
+`e48d1d3f79b462dc7409297b166927223dd1aa32`:
+`nice -n 19 ionice -c 3 ./run-gate.py r0-r1` exited 0, with
+1,812 tests passed, **6,393/6,393 statements and 2,258/2,258 branches**;
+`nice -n 19 ionice -c 3 ./run-gate.py r3` exited 0 with **7/7 canaries
+rejected**. Separate `GATE_EXIT=0` markers are in
+`/tmp/cgprofile-p6-round6-r0r1-final.log` and
+`/tmp/cgprofile-p6-round6-r3-final.log`; the independent
+`.run-gate/history.json` rows name that same clean commit, PASS, exit 0.
+Both launches had memory `full avg10=0.00`. The R0/R1 test container
+`cgprofile-gate-139949-1790662297` was independently inspected running
+with `NanoCpus=3000000000` and parent `dev-gates.slice`; R3's unique
+`run-gate-vbpub-r3-142060-1790662431` argv specified that parent and
+`--cpus 3`. R0/R1 used coarse rusage and R3 basic sampling because the
+main daemon is down; R-36h kept both functional verdicts unchanged.
+
+This artifact update changes HEAD once more. The final exact-tip short-lane
+rerun is to be read from `.run-gate/history.json` separately after that
+commit; this paragraph does not preclaim a result that has not run yet.
+Reviewer commits before this update were `bfcf6936` (Busctl/absolute-
+subpath repairs and initial finding) and `e48d1d3f` (the socket-timeout
+oracle). No earlier mutation record applies to either tree.
 
 No public configuration value or user-facing capability was changed by the
 two narrow code fixes. The existing README, DESIGN-GUIDE and CONSUMERS
@@ -122,8 +140,6 @@ backlog row is filed in this forbidden host-setup scope. Full code/diff
 review, full carrier parity, fail-closed move-back, throttling, watch
 kill/report, DAMON overhead, and current-tree R2/full gate remain
 unverified because the named host-unit prerequisite is mechanically blocked.
-
-The previous exact-tree R0/R1 and R3 history entries are PASS at
-`5086c0d9`, but no current-tree R2/full gate exists. The latter are allowed
-to remain pending only for provisional integration under RW-381. Live
-acceptance is incomplete until B1 is repaired and the named probes pass.
+No current-tree R2/full gate exists. Those could remain pending for a
+provisional ACCEPT under RW-381, but the live placement requirement blocks
+one here.

@@ -1637,3 +1637,10 @@ read back `NanoCpus=3000000000`, parent `dev-gates.slice`; launch
 memory `full avg10=0.00`. A deterministic partial-request timeout
 oracle was added and passed locally. The registered lanes must be
 rerun on the resulting committed tree; the host-unit block remains.
+
+On clean `e48d1d3f`, registered `r0-r1` exited 0: 1,812 tests,
+6,393/6,393 statements, 2,258/2,258 branches. Registered `r3` exited
+0 with 7/7 canaries rejected. The independent history rows match that
+commit and clean state. Both gates used the normal R-36h fallback because
+the main daemon is down. The artifact update following these receipts
+changes HEAD, so repeat both short lanes on its exact final tip.
