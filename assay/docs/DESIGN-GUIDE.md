@@ -2012,7 +2012,8 @@ tree are unchanged, `tools/tester-unified-gate.sh` writes
 `assay/.assay/registered-gate/tester-unified.json` (exactly
 `{"schema_version": 1, "lane": "tester-unified", "commit": …, "tree": …}`) and
 prints `ASSAY_REGISTERED_GATE_RECEIPT=<path>`; it removes any old receipt at
-every launch, so a red re-run leaves none. The full lane's driver checks it
+every launch and again on any non-zero exit after launch, so a red run leaves none,
+even one the container wrote itself. The full lane's driver checks it
 first (`b105_report_check.py --receipt-only`, phase
 `require-same-commit-tester-unified-pass`), and the checker refuses a full
 report without a matching receipt. The preflight lane needs none. Run

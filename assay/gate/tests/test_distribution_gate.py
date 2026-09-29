@@ -1323,6 +1323,27 @@ def test_a_red_container_leaves_no_receipt_even_when_a_stale_one_existed(
     assert "ASSAY_REGISTERED_GATE_RECEIPT" not in proc.stdout
 
 
+def test_a_red_container_that_wrote_a_valid_receipt_itself_leaves_none(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """The container has the worktree bind-mounted read-write, so code under test
+    can write a perfectly valid receipt; a red exit must still leave none."""
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    env, log = _docker_stub(tmp_path, "")
+
+    proc = run_bash(
+        'run_registered_tester_container() { write_registered_gate_receipt "$1" '
+        '"$(git -C "$1" rev-parse HEAD)" "$(git -C "$1" rev-parse "HEAD^{tree}")"; return 7; }\n'
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 7, proc.stdout + proc.stderr
+    assert not (worktree / RECEIPT_RELATIVE).exists()
+    assert "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
+
+
 def test_a_green_container_yields_the_receipt_and_exactly_one_complete_marker(
     tmp_path: Path, gate_functions: Path
 ) -> None:

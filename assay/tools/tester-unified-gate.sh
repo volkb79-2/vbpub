@@ -503,6 +503,7 @@ _assay_gate_container_name=""
 _assay_gate_container_launch_attempted=0
 _assay_gate_container_started=0
 _assay_gate_logs_pid=""
+_assay_gate_receipt_to_clear=""
 
 cleanup_assay_gate_container() {
   local result=$?
@@ -524,6 +525,12 @@ cleanup_assay_gate_container() {
     # the named container. Best-effort removal closes that ambiguous window.
     docker rm -f "$_assay_gate_container_name" >/dev/null 2>&1 || true
     _assay_gate_container_launch_attempted=0
+  fi
+  # (B123, S1) After launch, a non-zero exit never leaves a receipt behind: not
+  # one the container itself wrote into the bind-mounted worktree, and not one a
+  # concurrent run wrote after this run's own clear.
+  if [[ $result -ne 0 && -n "$_assay_gate_receipt_to_clear" ]]; then
+    rm -f "$_assay_gate_receipt_to_clear"
   fi
   exit "$result"
 }
@@ -583,7 +590,8 @@ run_registered_tester_container() {
 # tester-unified gate passed at the very commit and tree it judges. That proof is
 # `assay/.assay/registered-gate/tester-unified.json`, written by the HOST script
 # only after the container exits zero and HEAD and its tree are unchanged, and
-# removed at every launch so a red re-run at the same commit leaves no receipt.
+# removed at every launch and again on any non-zero exit after it, so a red run
+# at the same commit leaves no receipt, whoever wrote one during it.
 # The document is exactly {"schema_version": 1, "lane": "tester-unified",
 # "commit": C, "tree": T}: the host script cannot see anything more, and commit
 # plus tree plus the clear-on-launch rule already bind "the latest run passed".
@@ -630,6 +638,8 @@ run_registered_gate() {
   commit="$(git -C "$worktree" rev-parse HEAD)" || die "cannot resolve HEAD of $worktree"
   tree="$(git -C "$worktree" rev-parse 'HEAD^{tree}')" || die "cannot resolve the tree of $worktree"
   clear_registered_gate_receipt "$worktree"
+  _assay_gate_receipt_to_clear="$worktree/assay/.assay/registered-gate/tester-unified.json"
+  trap cleanup_assay_gate_container EXIT
   # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
   # the container's own status, so a red container never reaches the receipt.
   run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
