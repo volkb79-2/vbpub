@@ -24,7 +24,7 @@
 1. Stage 0: W3.
 2. Stage 1: W1, W2.
 3. Stage 2: W6, then W4, then W5. W5 branches only after W4 has merged.
-4. Stage 3: W7 (after W4), W8 (after W2), W9 (after W8).
+4. Stage 3: W7 (after W4), then W8 (after W2 and W7, CD42), then W9 (after W8).
 5. Stage 4: W10.
 6. Then:
    - re-merge main, gate green, merge to main;

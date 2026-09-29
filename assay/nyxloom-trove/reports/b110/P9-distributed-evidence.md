@@ -92,7 +92,8 @@ Paths are relative to `assay/` at HEAD `db85f747`. Line numbers move with P3, P4
    - `src/assay/candidate_identity.py:8` `candidate_id_from_fields`.
 6. `src/assay/analysis.py:1006-1020` `_write_new`: publish without overwriting (the pattern for the receipt).
    - `src/assay/isolation.py:177-185` `SnapshotSpec`: it carries only the commit. `run_mutation` has neither the lane name nor the tree, so `runner.py` must thread `lane` and `git_tree` into `run_mutation` (threading only; P9R2-9). `git_tree` is `git rev-parse HEAD^{tree}`, computed exactly as P6 does. **The verdict does not record `git_tree`.**
-   - After P8: `src/assay/campaign.py`'s local record-shape checks, which P9 replaces with `validate_state_record_shape`.
+   - After P8: `analysis/src/assay_analysis/campaign.py`'s local record-shape checks, which P9 replaces with `validate_state_record_shape`.
+   - `validate_state_record_shape` must be a public judge name (Wave A CD18).
 7. `tools/self-qualification-gate.sh`:
    - the requested-lane `case` at :16-19;
    - the exact-OID clone, build-venv/run-venv and wheel (:49-154);
@@ -710,7 +711,7 @@ it is not an oracle yet.
 - `src/assay/mutation.py`: the identity refactor, `validate_state_record_shape`, the `lane`/`git_tree` keywords on `run_mutation`, and the identity-file write only;
 - `src/assay/runner.py`: **threading only**: pass `lane` and `git_tree` (`HEAD^{tree}`) into `run_mutation`; no behavior change (P9R2-9);
 - `src/assay/cli.py`: registration, plumbing, and the once-per-process store lock in `_cmd_run` after `_resolve_state_dir`;
-- `src/assay/campaign.py` (P8): replace its local record-shape checks with `validate_state_record_shape`; no behavior change;
+- `analysis/src/assay_analysis/campaign.py` (P8): replace its local record-shape checks with `validate_state_record_shape`; no behavior change;
 - `tests/test_pilot_candidates_file.py` (P7): the one directory-listing assertion only, changed to `glob("*.json")` (C27);
 - `src/assay/state_import.py` (new);
 - `src/assay/schemas/state-import-receipt.schema.json` and `…/state-audit-check.schema.json` (new);

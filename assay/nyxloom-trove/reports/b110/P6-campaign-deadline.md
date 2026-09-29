@@ -351,8 +351,6 @@ A mutant that signals its own candidate is still classified normally, because te
 ### Degrees of freedom
 
 - Private names and the internal decomposition of `_cmd_campaign_init`.
-- How the plan-discovery block is extracted from `_cmd_plan` into `_discover_plan_jobs(...)`, as long as `assay plan` output stays byte-identical and a test proves it.
-  - **C29:** this extraction is the **single** planner-jobs helper in the codebase. P8's `cli.plan_jobs()` wraps it, adding digests, and P7's selector and P9 reach it through P8. Give it a stable signature and a docstring saying so.
 
 **Not free:**
 - file fields, CLI spellings, reason codes, exit codes, the conversion formula, and the order of the validation steps;

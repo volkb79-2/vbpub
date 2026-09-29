@@ -68,6 +68,18 @@ Reviews: `REVIEW-waveA-tests-gate.md`, `REVIEW-waveA-code.md` and `REVIEW-waveA-
 | CD37 | **Q4:** unverified hung evidence stays record-only, as W9 specifies. W9 mirrors exactly where the judge re-checks (the state record); it never applies a stricter rule than the judge. |
 | CD38 | **Q5:** W8 (21.1 KB) and W9 (22.6 KB) are accepted, as CD24 and CD33. **CD30 additions:** all additive, so 7.2.0 stands. They are: `assay plan`'s JSON gains `commit`/`tree` (W8); a stderr hint (W8); new subcommands `assay analyze plan-estimate` (W8) and `assay analyze campaign` (W9); four public judge aliases (W9). |
 
+## After the W8/W9 pre-dispatch review (2026-09-29, `review-predispatch/REVIEW-waveA-W8-W9.md`)
+
+Every finding is accepted, with its fix text as written, except where noted below.
+
+| # | Decision |
+|---|---|
+| CD39 | **W9 output shape is closed (W9-1).** It is exactly the review's "Output shape (closed)" text, which is folded into W9 as a new subsection:<br>• the draft's 15 top-level keys plus `qualifying`, `complete_blockers`, `torn_final_record`, `adverse`, `unresolved`, `reclassified`, `state` and `projection`;<br>• `execution_mode_counts` under `campaign`;<br>• without `--verdict`: `verdict`/`evidence.verdict` `null` and `coverage.status "not_judged"` with the listed nulls;<br>• the eight sorted `complete_blockers` strings;<br>• `timing` = P8's ETA object exactly.<br>The draft schema is edited to match. |
+| CD40 | **W9 rule order (W9-2).** In every evidence mode the order is:<br>1. shape validation;<br>2. the C25 current-judge rule;<br>3. unverified-hung removal from the store view;<br>4. only then P8's O4 verdict comparison and reconciliation.<br>A removed record is never an `evidence_error` or `reclassified`. `unverified_hung_records` blocks completion only when a listed candidate has neither a verdict bucket nor a latest-run event. O22 gains the review's Inputs A and B. This is CD37 made operational. |
+| CD41 | **W8-14 adopted.** The B105 checker's plan check also refuses when `plan["commit"]`/`plan["tree"]` differ from `--expected-commit`/`--expected-tree` (`ValueError("plan commit/tree differ from the expected source")`), with one O11 case. |
+| CD42 | **W8 header (W8-11):** W8 runs after W2 **and W7**, because both edit `gate/tests/test_self_lane.py` and `assay.toml`. The stage 3 order is therefore W7, W8, W9. |
+| CD38 (amended, X-1) | Also additive, all named in the release notes:<br>• progress: `candidate` gains `cpu_seconds`, `peak_rss_bytes`, `phase_seconds` and `startup_seconds`; the baseline `test` event gains `setup_s`/`teardown_s`; the `candidates` event gains `judge_sha256`;<br>• the state record gains `resources`; plan rows gain `source_sha256`/`mutated_file_sha256`;<br>• the `<events>.resources.json` sidecar;<br>• `cli.plan_jobs` and `mutation.candidate_identity_fields`.<br>7.2.0 stands. |
+
 **Plan consequences:**
 - W8 now depends on W2 (CD1).
 - W7 edits `gate/tests/test_self_lane.py` (CD12).
