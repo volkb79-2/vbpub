@@ -66,4 +66,22 @@ Run at the FINAL HEAD of the branch: the receipt binds the commit and tree, so a
 5. `python ./run-gate.py self-qualification-preflight` once (O10; no receipt needed, CD9): the checker line `B105_REPORT_ACCEPTED=self-qualification-preflight ... scope=src/assay out_of_scope=analysis/src/assay_analysis:A-478`, R1 100% line and branch. Record collected/passed/skipped for W7's baseline; the lane collects `tests` only: expect 5405 collected (5404 passed and 1 skipped in the local `tests` run, `test_git_boundary` passing in the container). The preflight argv now has no `--override-ini`: confirm the run imported `src/assay` from the snapshot (R1 coverage is non-empty and at 100%).
 6. Decide D6 (the `go_stmtpos.py` stand-in).
 
-READY-FOR-GATE 730f2db7
+## Review fixes (REVIEW-W4, CD48: W4R-1 to W4R-8 all applied)
+Each break below was applied locally with Edit, observed red, and reverted (diff against a scratch backup showed the file restored); no break was committed.
+
+| Finding | Commit | Positive | Deliberate-break negative |
+|---|---|---|---|
+| W4R-1 | `3d51d412` | new `test_a_red_container_that_wrote_a_valid_receipt_itself_leaves_none` green; O7/O7a and the other receipt tests green (15 passed). A container-forged receipt plus exit 7 leaves no receipt, so `--receipt-only` refuses (absent file) | deleted `trap cleanup_assay_gate_container EXIT` in `run_registered_gate`: the new test red (receipt remained) |
+| W4R-8 | `210b45dd` | `test_the_inner_run_refuses_a_head_other_than_the_captured_commit` and the extended docker-argv test green | removed the `-e ASSAY_GATE_EXPECTED_COMMIT` argv line: the argv test red; turned `|| die` into `|| true die`: the new head test red |
+| W4R-2 | `353f8431` | `test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt` green; busy and other-containers tests green | wrapped `docker ps` in `|| true`: the new test red |
+| W4R-3 | `737b7dd3` | `test_self_lane.py` 24 passed | created an empty `assay/pytest.toml`: `test_no_second_pytest_configuration_file_can_shadow_pyproject[pytest.toml]` red (file removed again, never committed) |
+| W4R-4 | `91979dda` | new one-loader test green; `test_self_lane.py`, `tests/core/test_import_contracts.py` and `analysis/tests/test_analysis_package_boundary.py` 48 passed; collect-only `gate/tests` 350, `tests gate/tests` 5755, `gate/tests analysis/tests tests` 5979, `test_self_hosting.py` under `--override-ini=pythonpath=` 7 | made `support.judge` a separate module object: the one-loader test red (the first try, a `copy.copy`, failed at collection only, so I redid it with a fresh module) |
+| W4R-7 | `5aaa9e4c` | 4 parametrized cases green | changed the checker's message `tester-unified receipt commit` to another string: `[other-commit]` red |
+| W4R-5 | `fb784413` | docs-example tests in `tests/` (56 passed, 1 skipped) | docs-only, no oracle in the review |
+| W4R-6 | `f9ba8212` | docs-only | none |
+
+Other checks after the fixes: `bash -n` and `shellcheck` clean on `tools/tester-unified-gate.sh` and `tools/self-qualification-gate.sh`; collect-only `tests` 5405, `gate/tests` 350 (344 + 6 new: W4R-1, -2, -4, -8 one each, W4R-3 two parametrized cases), `analysis/tests` 224, default 5629. One full `gate/tests` run (`nice -n 19 ionice -c3`, serial): **339 passed, 11 skipped, 0 failed** (the skips are the opt-in Go/Node qualification tests, the `ASSAY_SELF_HOSTING_VERDICT` witness check and the A-069 fallback).
+
+The wheel-lane collection is now `tests` 5405 + `gate/tests` 350 = 5755, minus the 7 tests of `test_self_hosting.py` = 5748 (the "For the controller's gate run" item 4 above says 5749/5742; that is superseded). The gate must run at the FINAL HEAD: the receipt binds the commit and tree.
+
+READY-FOR-GATE 5aaa9e4c
