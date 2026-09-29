@@ -36,6 +36,7 @@
 | When | Event |
 |---|---|
 | 2026-09-29 | Briefs carved, reviewed and fixed (`3daf62a7`). W3 implementer dispatched in `.worktrees/wave-a-w3-boundaries`. W5 and W8/W9 fixers were still running. A landing checkpoint gate was queued behind other sessions' gates (log `scratchpad/gate-landing-1e3c8a49.log`). |
+| 2026-09-29 ~03:00Z | W5 brief fixed (`43abf9e8`); CD21 amended, plus CD32 (gate-entry host check, W4 O7a) and CD33. W8/W9 self-contained briefs committed (`ec427945`), with CD34–CD38. The landing checkpoint gate was **cancelled, never started**: W3's gate covers the same commit. Fresh reviews dispatched: W8+W9 round 1 (`scratchpad/REVIEW-waveA-W8-W9.md`) and W5 round 2 (`scratchpad/REVIEW-waveA-W5-round2.md`). W3 has committed Parts 1 and 2 on its branch and is now in its before/after suite comparison and gate. |
 
 ## Per-package loop (controller)
 1. Create the worktree and dispatch a Sonnet implementer with the brief, CARVER-DECISIONS, host rule, edit rule, BLOCKED rule, LOG file, gate command and checkpoint clause.
