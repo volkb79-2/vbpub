@@ -5252,3 +5252,34 @@ specific PID/error diagnostic. Its full containing file passed 122 tests in
 through RW-377 was reconciled into P6 at `4af3d3c0`. R0/R1 must be rerun on
 the resulting quiet tip, followed by R3, fresh Sol round 5, live probes,
 replacement P6 R2, and the full gate. No P6 code has been merged to main.
+
+### RW-379 — 2026-09-29 03:42:02Z — stall-kill requires a kernel-contained lane
+
+Binding B1 ruling, preserving the private PID/cgroup/network namespace design
+and D-15's fail-closed write boundary. A host PID read through the explicit
+host-proc view is not signal authority: remove the cross-namespace `os.kill`
+fallback and never certify PID-number equality as process identity.
+
+`--on-stall kill` is accepted only where the daemon can address one exact
+kernel cgroup boundary. For scope `container`, the target must resolve to the
+container-ID-named cgroup beneath the verified, authored, bounded
+`dev-gates.slice`; enforcement is one `cgroup.kill` write to that exact target
+cgroup, leaving its Docker cgroup membership and limits intact. D-15's
+whitelist is extended only for this exact target's `cgroup.kill`, with no
+ancestor or sibling write authority. For scope `container-shared`, `kill`
+requires a token and an explicitly requested, successfully verified
+`<gates slice>/rg-<token>` placement leaf before the session is accepted; the
+daemon must not move a lane into a leaf only after it stalls. The consumer
+must request that leaf even when it has no memory/CPU cap to apply. A refused
+or unverified containment request rejects `start` as `bad-policy` (no
+session); an enforcement failure after an accepted session remains
+`reported`, never `killed`.
+
+`report` remains available for all valid scopes. The run-gate consumer keeps
+its own stall enforcement/fallback, so inability to start an enforceable
+daemon session is disclosed and cannot change a test verdict. Contract v1.1
+§8.3–§8.4, §8.8–§8.9 and both byte-identical mirrors, P5's shared-scope
+placement request, D-15 documentation/tests, and live acceptance probes must
+implement this ruling before P6 review can pass. The focused live probe must
+show the selected gate lane exits while a different lane and the daemon
+remain alive.
