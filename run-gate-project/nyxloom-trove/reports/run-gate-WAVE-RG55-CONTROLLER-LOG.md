@@ -5005,3 +5005,17 @@ completion notice. During the same host-escape preflight, mdt observed missing
 cgroup2 `memory_recursiveprot` and `memory_hugetlb_accounting` flags and
 restored them from the existing tracked host-setup policy; no host-setup
 source was edited in this session.
+
+### RW-368 — 2026-09-29 00:28:56Z — isolated Sol review active for B107 test repair
+
+A fresh GPT-6-Sol xhigh review is running against candidate
+`ed2c4cfb4941cc5b3b68bd65ff8de298fef396ac` in separate worktree
+`.worktrees/rg55-assay-b107-load-independent-sol-20260929`, branch
+`review/rg55-assay-b107-load-independent-sol-20260929`. Codex session ID is
+`01a0ea8e-cab4-7dd3-9963-b8e3e6f4046a`; the attached execution handle is
+`38034`. Its scope is the timing-dependent test removal and B107 behavioral
+coverage; it cannot start gates, mutate the host, merge, or release. The
+reviewer may make scoped fixes only in that review worktree. The implementation
+worktree remains unchanged after candidate `ed2c4cf`; the 52-test targeted
+iteration result is green, while the exact-tree registered tester-unified
+gate remains pending behind the concurrent Assay gate recorded in RW-367.
