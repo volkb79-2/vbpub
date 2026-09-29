@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from conftest import GitRepo, make_lane, make_r2_judge
 
-from assay import liveness, runner
+from assay import liveness, mutation, runner
 from assay.adapters.python import PythonAdapter
 from assay.config import MutationConfig
 from assay.errors import Outcome
@@ -177,6 +177,67 @@ def test_first_event_times_rejects_a_t_that_is_not_a_finite_number(
         encoding="utf-8",
     )
     assert liveness.first_event_times(events) == (None, None)
+
+
+# --------------------------------------------------------------------------
+# _measured_resources: the startup gaps are exact differences of recorded
+# stamps (hand-written sidecar and events, no clock)
+# --------------------------------------------------------------------------
+
+
+def _startup_fixture(
+    tmp_path: Path, *, sidecar: dict[str, Any] | None, events: list[dict[str, Any]] | None
+) -> Path:
+    events_path = tmp_path / "candidate.ndjson"
+    if sidecar is not None:
+        events_path.with_suffix(liveness.RESOURCE_SIDECAR_SUFFIX).write_text(
+            json.dumps(sidecar), encoding="utf-8"
+        )
+    if events is not None:
+        _write(events_path, events)
+    return events_path
+
+
+_STAMPED_EVENTS = [
+    {"event": "session_start", "t": 100.25, "pid": 9},
+    {"event": "test", "t": 101.5, "pid": 9, "nodeid": "a"},
+]
+
+
+def test_measured_resources_are_the_sidecar_values_and_the_stamp_differences(tmp_path: Path) -> None:
+    path = _startup_fixture(tmp_path, sidecar={**_SIDECAR, "spawned_at": 100.0}, events=_STAMPED_EVENTS)
+    assert mutation._measured_resources(path) == (
+        1.5,
+        1024,
+        {"to_session_start": 0.25, "to_first_test": 1.5},
+    )
+
+
+@pytest.mark.parametrize(
+    ("sidecar", "events"),
+    [
+        (None, _STAMPED_EVENTS),  # no sidecar: no spawn stamp
+        ({**_SIDECAR, "spawned_at": 100.0}, None),  # no events file: no session or test stamp
+        ({**_SIDECAR, "spawned_at": True}, _STAMPED_EVENTS),  # an ill-typed spawn stamp
+    ],
+)
+def test_measured_resources_startup_gaps_are_none_when_an_operand_is_missing(
+    tmp_path: Path, sidecar: dict[str, Any] | None, events: list[dict[str, Any]] | None
+) -> None:
+    _cpu, _rss, startup = mutation._measured_resources(
+        _startup_fixture(tmp_path, sidecar=sidecar, events=events)
+    )
+    assert startup == {"to_session_start": None, "to_first_test": None}
+
+
+def test_measured_resources_refuse_ill_typed_sidecar_values(tmp_path: Path) -> None:
+    path = _startup_fixture(
+        tmp_path,
+        sidecar={**_SIDECAR, "cpu_seconds": True, "peak_rss_bytes": 1024.0},
+        events=_STAMPED_EVENTS,
+    )
+    cpu, rss, _startup = mutation._measured_resources(path)
+    assert (cpu, rss) == (None, None)
 
 
 # --------------------------------------------------------------------------
