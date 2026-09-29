@@ -188,12 +188,14 @@ def test_pytest_ini_options_pin_the_source_paths_and_test_trees():
     """(A-468(c), CD15) The B105 lanes take their import paths from pyproject, so the
     two values are load-bearing. `gate/tests` is deliberately absent from `testpaths`:
     the tester-unified lane names it, and the B105 lanes must not collect it."""
-    ini = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]["ini_options"]
+    pytest_table = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]
+    assert set(pytest_table) == {"ini_options"}  # no pytest 9 native `[tool.pytest]` keys beside it
+    ini = pytest_table["ini_options"]
 
     assert ini == {"pythonpath": ["src", "analysis/src"], "testpaths": ["tests", "analysis/tests"]}
 
 
-@pytest.mark.parametrize("name", ["pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg"])
+@pytest.mark.parametrize("name", ["pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg"])
 def test_no_second_pytest_configuration_file_can_shadow_pyproject(name):
     for directory in (PROJECT_ROOT, PROJECT_ROOT / "tests"):
         assert not (directory / name).exists(), directory / name
