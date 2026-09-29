@@ -5334,7 +5334,7 @@ through RW-377 was reconciled into P6 at `4af3d3c0`. R0/R1 must be rerun on
 the resulting quiet tip, followed by R3, fresh Sol round 5, live probes,
 replacement P6 R2, and the full gate. No P6 code has been merged to main.
 
-### RW-379 — 2026-09-29 02:08:07Z — P6 exact-tip R0/R1 and R3 pass after coverage repair
+### P6 short-gate evidence — 2026-09-29 02:08:07Z (package receipt)
 
 P6 tree `d7603b5292779a227fe9177254668eb50049f147` now passes both registered
 short lanes. `r0-r1` ran 02:01:27–02:03:50Z (143.567s; exit 0): all **1,705
@@ -5359,3 +5359,51 @@ measurement participates in the canary verdict. These results do not replace
 the required live daemon/carrier/placement probes or measured DAMON series.
 The receipts are on `d7603b5`; after recording them in the package report, rerun
 the short lanes on the final documentation tip before Sol round 5.
+
+### RW-379 — 2026-09-29 03:42:02Z — stall-kill requires a kernel-contained lane
+
+Binding B1 ruling, preserving the private PID/cgroup/network namespace design
+and D-15's fail-closed write boundary. A host PID read through the explicit
+host-proc view is not signal authority: remove the cross-namespace `os.kill`
+fallback and never certify PID-number equality as process identity.
+
+`--on-stall kill` is accepted only where the daemon can address one exact
+kernel cgroup boundary. For scope `container`, the target must resolve to the
+container-ID-named cgroup beneath the verified, authored, bounded
+`dev-gates.slice`; enforcement is one `cgroup.kill` write to that exact target
+cgroup, leaving its Docker cgroup membership and limits intact. D-15's
+whitelist is extended only for this exact target's `cgroup.kill`, with no
+ancestor or sibling write authority. For scope `container-shared`, `kill`
+requires a token and an explicitly requested, successfully verified
+`<gates slice>/rg-<token>` placement leaf before the session is accepted; the
+daemon must not move a lane into a leaf only after it stalls. The consumer
+must request that leaf even when it has no memory/CPU cap to apply. A refused
+or unverified containment request rejects `start` as `bad-policy` (no
+session); an enforcement failure after an accepted session remains
+`reported`, never `killed`.
+
+`report` remains available for all valid scopes. The run-gate consumer keeps
+its own stall enforcement/fallback, so inability to start an enforceable
+daemon session is disclosed and cannot change a test verdict. Contract v1.1
+§8.3–§8.4, §8.8–§8.9 and both byte-identical mirrors, P5's shared-scope
+placement request, D-15 documentation/tests, and live acceptance probes must
+implement this ruling before P6 review can pass. The focused live probe must
+show the selected gate lane exits while a different lane and the daemon
+remain alive.
+
+### RW-380 — 2026-09-29 03:55:30Z — do not add placement solely to obtain stall kill
+
+Refinement to RW-379 after applying the estate's performance-invariance
+constraint: a liveness policy must not silently move a lane into a different
+CPU/memory hierarchy just to make daemon enforcement available. For a
+`container-shared` session, `--on-stall kill` still requires an explicit
+`--place` request and a successfully verified leaf; no PID-signal fallback
+is permitted. The run-gate consumer requests `kill` only when its already
+derived placement plan requests a leaf; otherwise it requests `report` and
+keeps its existing lane-local stall watchdog as verdict authority. Do not
+invent a placement request when no declared or measured resource fact
+supports one. A requested placement that is refused makes daemon `start`
+return `bad-policy`; the consumer's profiling fallback must remain
+non-blocking and preserve the lane-local verdict path. Scope `container`
+continues to use the exact target-container `cgroup.kill` under the guards
+from RW-379.
