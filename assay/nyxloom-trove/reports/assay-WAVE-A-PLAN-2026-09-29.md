@@ -18,9 +18,9 @@ It is **not** done by a B105 qualification. B105 still needs the v14 wave and th
 
 | Stage | Pkg | Backlog | What | Touches | Brief |
 |---|---|---|---|---|---|
+| **0** | W3 | B130 | **First (operator, 2026-09-29).** Part 1: component map, import graph, coupling measurement (research). Part 2: a stdlib-only import-contract test plus a component-organized judge-test layout (`tests/<component>/…`) that every later package builds on. Assertions are unchanged. A component-scoped R2 *claim* remains a separate decision informed by Part 1. | `tests/` layout, one new contract test; report | `wave-a/W3-component-boundaries.md` |
 | 1 | W1 | B124 + B125 | Retire cross-project harnesses (Topos, 1.2.5 smoke, CMRU B006(a), dstdns checkout) and the historical schema phases; one refusal check per schema | `tools/tester-unified-gate.sh`, `gate/python/`, tests, carve-asset locks, docs | `wave-a/W1-retire.md` |
 | 1 | W2 | B127 | `assay analyze` → its own package in the same distribution | `src/assay/analysis.py`, `cli.py`, `pyproject.toml`, analysis tests, `assay.toml` targets, B105 checker, docs | `wave-a/W2-analysis-package.md` |
-| 1 | W3 | B130 | Component boundary map, import contracts, coupling measurement (research, read-only, plus a proposal) | none (report only) | `wave-a/W3-component-boundaries.md` |
 | 2 | W4 | B123 | Judge tests vs tooling tests (`gate/tests/`); B105 lanes collect `tests/` only; S1 binding; drop `--override-ini` | tests tree, gate script, `assay.toml`, `run-gate.toml`, B105 checker, docs | `wave-a/W4-test-split.md` |
 | 2 | W5 | B126 | Self-contained SQL qualification | `gate/python/qualify_dstdns_sql.py` (replaced), SQL fixtures, SQL tests | `wave-a/W5-sql-self-contained.md` |
 | 2 | W6 | B113 | P2 loop guards (existing brief, rebased) | `errors.py`, `git.py`, adapters, tests | `b110/P2-loop-guards.md` + `wave-a/REBASE-P0-P2.md` |
@@ -30,6 +30,7 @@ It is **not** done by a B105 qualification. B105 still needs the v14 wave and th
 | 4 | W10 | B129 | DRY consolidation, including the dataclass contract test | `verdict.py`, `verify.py`, other judge modules | `wave-a/W10-dry.md` |
 
 **Ordering rules:**
+- W3 before everything else. Later briefs cite `tests/` paths that W3 may move; implementers re-resolve them by filename.
 - W1 before W4: W4 moves what survives W1.
 - W1 before W7: W7 needs the history reader gone.
 - W2 before W9.
@@ -55,6 +56,7 @@ It is **not** done by a B105 qualification. B105 still needs the v14 wave and th
 - **Known red test on main:** `tests/test_cli_run.py::test_run_liveness_classifies_a_thread_join_hang_as_hung` fails on main itself (B107 regression; the other session's `612843ef` addresses it). Until that lands, a package's gate is acceptable if this is the only failure and the log shows it. Record that in the package LOG.
 - **Edits** through the editor tools, never sed or `write_text` scripts (operator directive).
 - **Docs:** README / DESIGN-GUIDE / CONSUMERS stay in sync within the package (estate rule).
+- **Implementers are Sonnet only** (operator, 2026-09-29). Briefs therefore leave no design choice to the implementer. Anything unsettled is a carver question answered before dispatch.
 - **Review:** a fresh-session adversarial review before merge into landing.
 - **BLOCKED** is a success mode.
 - **Trailer:** `Co-Authored-By: Claude Sonnet <noreply@anthropic.com>`.
