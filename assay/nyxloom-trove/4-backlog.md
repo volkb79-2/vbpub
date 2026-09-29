@@ -11627,7 +11627,7 @@ It changes the declared execution semantics (cross-file order dependence stops c
 
 ## B124 — retire cross-project qualification from assay
 
-**Status: DONE (W1, merge hash pending: the controller fills it at merge; A-475).** Remove:
+**Status: DONE (W1, merge hash pending: the controller fills it at merge; A-475) except the dstdns-checkout item, which closes with B126 (W5).** Remove:
 - the Topos P25 harness, its test file, the `topos-qualified` gate phase and the 1.2.5-wheel smoke, including the release-manifest fixtures used only by them;
 - the CMRU B006(a) harness, its tests and the `cmru-b006a-qualified` phase;
 - the dstdns-checkout dependency of SQL qualification (replaced by B126).
