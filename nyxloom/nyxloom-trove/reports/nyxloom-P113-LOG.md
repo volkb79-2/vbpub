@@ -186,3 +186,31 @@ The same local full-suite diagnostic also encountered host Docker address-pool
 exhaustion and could not import `hypothesis` from the devcontainer venv. Those
 environment-specific results are not attributed to the tester-unified lane;
 the lane's R0 command failure remains to be resolved from a clean rerun.
+
+## Final tester-unified result and session-extract deferral — 2026-09-29
+
+The corrected combined revision passed Nyxloom's declared `tester-unified`
+lane on exact implementation commit
+`29d5cf6ee229f90c637729e8ade3169ccdf01fc3`:
+
+```text
+command: ./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-session-cli-acceptance tester-unified
+start: 2026-09-29T02:27:50Z
+end: 2026-09-29T02:31:01Z
+container: run-gate-vbpub-tester-unified-3918834-1790648862
+tester-unified: PASS (exit 0)
+R0: PASS
+R1: PASS — 127/127 changed executable lines and 62/62 branches; no missing,
+excluded, or unclassified lines
+```
+
+Assay 7.1.1.dev189+g29d5cf6e wrote
+`nyxloom/.assay/verdict-tester-unified.json`; the progress stream records the
+baseline pytest command passing in 192.985 seconds. The earlier failed attempt
+and its test correction remain recorded above; it is not final gate evidence.
+
+The final `session-extract` R2 has not started. At 2026-09-29T03:07Z the
+shared host still had active mutation lanes, so this run was deferred under
+the serialized-gate rule. The exact-cap plan remains 642 candidates, with a
+24-hour lane budget and a 21h24m serial upper bound. Start the R2 only after
+the shared mutation slot is clear; triage its result before the final report.

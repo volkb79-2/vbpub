@@ -17,9 +17,9 @@ test: it inherited pytest's arguments after the new parser was introduced.
 The test now sets `sys.argv` to only `nyxloomd` before running the module.
 
 Codex's follow-up review found no additional code issue. It correctly noted
-that the declared tester-unified gate and final report are still pending; they
-will be completed after the active session-extract R2 campaign releases gate
-resources.
+that the declared tester-unified gate and final report were still pending at
+that review point. The gate has since passed; the session-extract R2 remains
+pending because the shared mutation slot is occupied.
 
 Affected tests passed in the devcontainer:
 
@@ -28,7 +28,26 @@ Affected tests passed in the devcontainer:
 exit: 0
 ```
 
-`git diff --check` passed. This is diagnostic evidence, not the declared
-tester-unified gate. Run that gate after the active session-extract R2 campaign
-completes and add `nyxloom-P114-REPORT.md` with its exact receipt before
-calling this fix complete.
+`git diff --check` passed. This was diagnostic evidence, not the declared
+tester-unified gate.
+
+## Final tester-unified result — 2026-09-29
+
+The combined Nyxloom revision passed its declared gate on exact commit
+`29d5cf6ee229f90c637729e8ade3169ccdf01fc3`:
+
+```text
+command: ./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-session-cli-acceptance tester-unified
+start: 2026-09-29T02:27:50Z
+end: 2026-09-29T02:31:01Z
+container: run-gate-vbpub-tester-unified-3918834-1790648862
+tester-unified: PASS (exit 0)
+R0: PASS
+R1: PASS — 127/127 changed executable lines and 62/62 branches; no missing,
+excluded, or unclassified lines
+```
+
+The run used Assay 7.1.1.dev189+g29d5cf6e. Help/version and invalid-argument
+tests are included in this evidence; the gate's changed-line coverage is
+recorded in the machine verdict. The session-extract R2 and final P114 report
+remain pending.
