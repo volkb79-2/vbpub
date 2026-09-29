@@ -4975,3 +4975,17 @@ loaded with `CPUQuotaPerSecUSec=5s`, and no active tester-unified container;
 the unidentified UUID container was verified as the Pterodactyl server and
 left untouched. The `session-extract` container remained active and untouched.
 Relaunch with `nohup … & disown`; the exact-tree gate is still required.
+
+### RW-366 — 2026-09-29 00:21:20Z — use managed execution session after second no-start
+
+The second repaired-tree launch used `nohup` plus `disown` and wrapper PID
+3683525. At its 90-second check the retry log was again zero bytes, the
+wrapper/run-gate processes were gone, no tester-unified container existed,
+and no run-gate receipt was written. This is a second launch failure, not a
+test result. The execution service is cleaning up shell-backgrounded
+descendants even when disowned; do not spend another cycle on shell
+detachment or move this gate to a host service. Run the canonical gate in a
+tool-managed foreground execution session instead, retain its session handle,
+and capture the exact run-gate exit status from that session. Because this
+entry is documentation-only, the B107 test tree is unchanged; run the gate at
+the resulting clean branch tip.
