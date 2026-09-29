@@ -176,6 +176,7 @@ __all__ = [
     "byte_offset",
     "collect_mutation_sites",
     "candidate_id",
+    "candidate_identity_fields",
     # (B088) The judge half of a resume record's identity -- public for the
     # same reason `candidate_id` is: a consumer inspecting a state directory
     # must be able to re-derive what it is looking at.
@@ -193,6 +194,9 @@ __all__ = [
     "resolve_mutation_targets",
     "run_mutation",
     "select_mutation_shard",
+    # CD18: public for assay_analysis.
+    "execution_from_state_record",
+    "valid_hung_resource_evidence",
 ]
 
 #: (P21/A-183) the adapter-wide capability sentinel, retained from the old
@@ -1020,18 +1024,23 @@ def _progress_event(
     }
 
 
-def candidate_id(job: MutantJob) -> str:
-    """Return the stable digest identity shared by plans, state and shards."""
+def candidate_identity_fields(job: MutantJob) -> dict[str, object]:
+    """The six inputs of :func:`candidate_id_from_fields` for *job* (C13)."""
     original_bytes = job.original_text.encode("utf-8")
     replacement_bytes = job.site.apply(original_bytes)
-    return candidate_id_from_fields(
-        path=job.path,
-        source_sha256=hashlib.sha256(original_bytes).hexdigest(),
-        start_byte=job.site.start_byte,
-        end_byte=job.site.end_byte,
-        mutated_file_sha256=hashlib.sha256(replacement_bytes).hexdigest(),
-        operator=job.site.operator,
-    )
+    return {
+        "path": job.path,
+        "source_sha256": hashlib.sha256(original_bytes).hexdigest(),
+        "start_byte": job.site.start_byte,
+        "end_byte": job.site.end_byte,
+        "mutated_file_sha256": hashlib.sha256(replacement_bytes).hexdigest(),
+        "operator": job.site.operator,
+    }
+
+
+def candidate_id(job: MutantJob) -> str:
+    """Return the stable digest identity shared by plans, state and shards."""
+    return candidate_id_from_fields(**candidate_identity_fields(job))
 
 
 def _tool_version() -> str:
@@ -1512,6 +1521,10 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
     return True
 
 
+# CD18: public for assay_analysis.
+valid_hung_resource_evidence = _valid_hung_resource_evidence
+
+
 def _load_validated_state_record(
     state_root: Path, job: MutantJob, *, judge: str
 ) -> Mapping[str, Any] | str | None:
@@ -1741,6 +1754,10 @@ def _execution_from_state_record(record: Mapping[str, Any]) -> MutationExecution
         prior_node_id=raw.get("prior_node_id"),
         current_node_id=raw.get("current_node_id"),
     )
+
+
+# CD18: public for assay_analysis.
+execution_from_state_record = _execution_from_state_record
 
 
 def select_mutation_shard(candidates: Sequence[str], *, index: int, count: int) -> list[int]:
@@ -2739,6 +2756,7 @@ def run_mutation(
                     "selected_total": len(selected_jobs),
                     "pending_total": len(pending_jobs),
                     "commit": prepared.spec.commit,
+                    **({"judge_sha256": judge} if judge is not None else {}),
                 }
             )
             write_progress(

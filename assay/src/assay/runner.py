@@ -176,6 +176,8 @@ __all__ = [
     "resolve_command_plan",
     "run_lane",
     "write_verdict",
+    # CD18: public for assay_analysis.
+    "resolve_declared_base",
 ]
 
 
@@ -3563,6 +3565,10 @@ def _resolve_declared_base(
     if base is None:
         return None
     return git.resolve_base(repo, base, remaining=remaining)
+
+
+# CD18: public for assay_analysis.
+resolve_declared_base = _resolve_declared_base
 
 
 def _run_prepared_lane(
