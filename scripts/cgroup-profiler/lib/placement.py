@@ -591,9 +591,14 @@ class LanePlacement:
                 # unaddressable from this writer and the kernel reports
                 # ESRCH. Ask host systemd to perform the same move in its
                 # host PID namespace, then verify through the explicit host
-                # proc view. Other failures retain the existing vanished-pid
-                # tolerance; they cannot silently certify placement.
+                # proc view. Any other write failure is not evidence that the
+                # PID vanished and cannot certify placement; fail closed.
                 if exc.errno != errno.ESRCH:
+                    enforcement_failed = True
+                    if self._log is not None:
+                        self._log(
+                            f"placement: direct migration of pid {pid} failed: {exc}"
+                        )
                     continue
                 from . import access
 

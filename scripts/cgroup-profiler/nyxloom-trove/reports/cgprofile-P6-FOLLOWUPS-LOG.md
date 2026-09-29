@@ -1454,3 +1454,23 @@ cap under dev-gates.slice; wheel-install and multiple verdict-schema
 phases were progressing. The gate has not produced a final verdict. Prior
 comparable tester-unified gates took about 19–21 minutes; next observation is
 deferred to its expected completion window near 23:55–23:57Z.
+
+### 2026-09-29 01:49:26Z — fail closed on direct PID migration errors
+
+Reviewing the private-PID migration path found that `LanePlacement.migrate`
+treated every non-`ESRCH` `cgroup.procs` write error as if the process had
+vanished. An `EPERM` therefore skipped systemd fallback (correctly) but also
+left `enforcement_failed` false; an empty leaf could be returned with
+`placement.error=null` and `pids_moved=0`. That collapses a real refusal into
+a successful placement status.
+
+The path now marks non-`ESRCH` write failures as enforcement failures and logs
+the PID/error. The existing `write-failed:<leaf>/cgroup.procs` result then
+causes an empty leaf to be abandoned; `EPERM` is never routed through the
+systemd namespace bridge. `test_non_esrch_write_failure_is_not_sent_to_systemd`
+passed individually (1 passed), and the full `test_serve_placement.py` file
+passed **122 tests** in 17.18s. This is local focused evidence only; exact-tip
+registered short gates, changed-line and branch coverage, a live private-PID
+placement/refusal probe, fresh Sol round 5, current-tree R2, and the full gate
+remain outstanding. The separate B107 Assay tester-unified gate later passed
+as recorded in controller RW-373; that receipt is not P6 evidence.

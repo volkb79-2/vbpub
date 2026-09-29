@@ -636,6 +636,11 @@ class TestMigration:
 
         assert attached == []
         assert plc.block()["pids_moved"] == 0
+        assert plc.error == placement.write_failed(
+            f"{GATES_CGROUP.lstrip('/')}/{LEAF_NAME}/cgroup.procs"
+        )
+        assert plc.block()["leaf"] is None
+        assert not _leaf(root).exists()
 
     def test_failed_systemd_attach_abandons_empty_leaf(self, tmp_path, monkeypatch):
         root = _fake_cgroup_root(tmp_path)

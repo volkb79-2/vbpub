@@ -1632,3 +1632,24 @@ CgroupParent=dev-gates.slice; wheel installation and Assay verdict-schema
 validation phases had passed. No final verdict has been read. Comparable
 gates took about 19–21 minutes, so the expected completion window is
 23:55–23:57Z. This gate is not P6 evidence.
+
+## Session 21 — 2026-09-29 01:49:26Z — fail closed on direct PID migration errors
+
+The private-PID start-migration branch treated all non-`ESRCH` writes to the
+leaf's `cgroup.procs` as vanished-PID tolerance. In particular, `EPERM` was
+not sent to systemd (the correct namespace boundary) but also did not set
+`enforcement_failed`; `apply` could therefore expose an empty leaf with no
+placement error. That status falsely certified placement.
+
+The fix marks every non-`ESRCH` migration write failure as an enforcement
+failure and logs the cause. The existing refusal is surfaced as
+`place-refused:write-failed:<leaf>/cgroup.procs`; if no PID moved,
+`apply` abandons the empty leaf. The regression test asserts the EPERM path
+does not call systemd, reports the exact refusal, and removes the leaf.
+Verification: the focused test passed, then all **122 tests** in
+`test_serve_placement.py` passed in 17.18 seconds. This is local focused
+evidence only. Exact-tip registered short gates, 100% changed-area line and
+branch coverage, a live private-PID start/refusal and stop-restoration probe,
+fresh Sol round 5, replacement R2, and the registered full gate remain
+required. The B107 gate PASS in RW-373 is a separate Assay result, not P6
+evidence.

@@ -9,6 +9,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ## [Unreleased]
 
 ### Fixed
+- fix(cgprofile): fail closed on non-ESRCH lane-PID migration write errors; refuse placement and remove an empty leaf instead of reporting successful placement
 - fix(cgprofile): restore P6 survivors through the verified host-proc/systemd bridge; record successful moves and retain/report a leaf when survivor enumeration or restoration is indeterminate
 - fix(cgprofile): RG-55 P6 review round 3 -- bind D-25 writes to the session's exact leaf, refuse an existing token leaf, prevent FIFO progress-stream blocking and partial-line liveness resets, report truncated watch streams as daemon faults; correct the gates-tier adopter example
 - fix(cgprofile): CP-4 -- widen `new_run_id`'s random suffix 4->8 hex chars, killing the birthday-paradox collision flake (376bb9cb)
