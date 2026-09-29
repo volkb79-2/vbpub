@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.metadata
 import argparse
@@ -143,6 +144,25 @@ def test_b105_coverage_exclusion_inventory_requires_exact_raw_lines():
         }
     }
     _validate_b105_exclusion_inventory(raw, exclusion_map)
+
+
+def test_every_b105_exclusion_line_is_a_pragma_line_or_inside_its_block():
+    fixture = TESTS_ROOT / "fixtures/b105-coverage-exclusions.json"
+    exclusion_map = json.loads(fixture.read_text(encoding="utf-8"))
+    for rel, entry in exclusion_map["files"].items():
+        text = (TESTS_ROOT.parent / rel).read_text(encoding="utf-8")
+        pragma_lines = [n for n, line in enumerate(text.splitlines(), 1) if "pragma: no cover" in line]
+        blocks: dict[int, tuple[int, int]] = {}
+        for node in ast.walk(ast.parse(text)):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body and getattr(node, "lineno", None) in pragma_lines:
+                blocks[node.lineno] = (body[0].lineno, node.end_lineno)
+        for line in entry["lines"]:
+            assert line in pragma_lines or any(
+                first <= line <= last for first, last in blocks.values()
+            ), f"{rel}:{line} is neither a pragma line nor inside a pragma line's block"
+        stale = [n for n in pragma_lines if n not in entry["lines"]]
+        assert not stale, f"{rel}: pragma lines {stale} are not listed in the exclusion map"
 
 
 def test_b105_coverage_exclusion_inventory_refuses_new_or_missing_lines():

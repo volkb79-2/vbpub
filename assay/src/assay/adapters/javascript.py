@@ -173,6 +173,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
 
+from ..errors import require_advance
 from ..mutation import MutationSite
 from .base import Remaining, StatementBlockReport, StatementSpan
 
@@ -255,7 +256,7 @@ def _strip_comments(text: str) -> str | None:
         for index in range(i, end):
             if chars[index] != "\n":
                 chars[index] = " "
-        i = end
+        i = require_advance(i, end)
     return "".join(chars)
 
 

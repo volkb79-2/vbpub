@@ -33,6 +33,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(assay): restart the hung CPU window when an exiting descendant lowers
   the live process-tree CPU total, and reject cached hung traces that cannot
   prove their idle span or contain malformed counters (B107 final review)
+- fix(assay): single-operator mutants of the Go, JavaScript, SQL and go.mod
+  scanners, and of the git tree parser, now fail fast instead of spinning until
+  the per-candidate budget; the `git.py` pipe-drain loop's exit test
+  no longer offers a mutant that blocks forever (B113/A-466)
+
+### Testing
+- test(assay): deterministic mutant-guard tests, one per component, under a
+  line-event budget (B113)
 
 <!-- cmru: release history -->
 
