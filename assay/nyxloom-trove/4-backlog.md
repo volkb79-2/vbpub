@@ -123,6 +123,7 @@ items:
   - {id: B119, title: "B110 P9: distributed/async mutation evidence -- identity-bound record import with conflict refusal, provisional/accepted status, resume consolidation", type: feature, component: mutation, context_estimate: large}
   - {id: B120, title: "B110 P10: native Python equivalence ledger with stable site anchors and a same-commit ledger audit", type: feature, component: mutation, context_estimate: large}
   - {id: B121, title: "B110 P11: isolation-unit execution model for R2 (decision-gated fallback)", type: feature, component: mutation, context_estimate: large}
+  - {id: B122, title: "Pluggable per-candidate scratch provider (write / reflink / filesystem-snapshot backends) with a prepared read-only base, lane declaration and verdict disclosure", type: feature, component: isolation, context_estimate: large}
 ---
 
 # assay — backlog
@@ -11540,3 +11541,58 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 The kill semantics of a unit failure, and whether R1 stays single-process (the carver's recommendation) or combines per-unit coverage, are **open choices** in the P11 design packet. They are not fixed here.
 
 It changes the declared execution semantics (cross-file order dependence stops counting), so it needs its own decision and lane/verdict contract.
+
+## B122 — pluggable per-candidate scratch provider with a prepared read-only base
+
+**Status: OPEN, requirements only (filed 2026-09-29 by operator request). Not scheduled. Decide after the B110 pilot shows how much of the per-candidate cost is still snapshot and fixture setup.**
+
+**Why.** Each native-R2 candidate gets a fresh private git repository written from the commit's objects (`isolation.py` `_build`). After the proposed shallow and `assay/`-only snapshot shapes (B110 reuse report Part C, S4/S5), that costs ≈0.46 s per candidate (research R10 §3.2, one host, n=3). A copy-on-write (CoW) backend would save a further ≈0.3–0.4 s per candidate, which B105 does not need. The larger value is a **warm base**:
+- prepare once per lane: the materialized tree, a private `.git`, and mutant-independent artifacts such as rewritten **test** bytecode or fixture template repositories;
+- clone it per candidate, so collection and fixture costs are not repeated (research R9 RC4–RC6);
+- an immutable filesystem snapshot of the base is itself evidence that no candidate changed it. That could replace part of the per-candidate hash pass.
+
+**Requirements, whatever the backend:**
+1. **One seam in `isolation.py`:**
+   - `prepare_base(commit, lane) -> Base`: build from committed objects only, exactly as today's snapshot;
+   - `fork(base) -> CandidateDir`: a private, writable copy;
+   - `discard(candidate_dir)`.
+
+   Backends:
+   - `write` (today's behavior, the default);
+   - `reflink` (per-file `FICLONE`/`copy_file_range` on a reflink-capable filesystem; unprivileged);
+   - `fs-snapshot` (ZFS or btrfs through a host broker; see 6).
+2. **The base is never executed in.** No command, hook or interpreter runs in the base. It contains **no bytecode of `src`** (the stale-`.pyc` false-kill hazard: fixed mtime plus same-size mutants, analysis §7.2).
+3. **Warm state is declared, mutant-independent and digest-bound.** Only artifacts whose content cannot depend on the mutant may be pre-built into the base: test-module bytecode, template git repositories, downloaded wheels. They are listed in the lane, and their digests are recorded. pytest validates cached rewritten bytecode by source mtime and size only, so the carried set must be bound by content digest, and no test may depend on code-object paths (B110 review finding 5).
+4. **Per-candidate proof stays.**
+   - The candidate tree must equal the base plus exactly one mutation.
+   - With a read-only snapshot base, proof reduces to the mutated file, the child commit and the base snapshot identity.
+   - With `reflink` or `write`, today's hash/verify pass remains.
+   - P0's guard tests G1–G5 apply to every backend.
+5. **Declared, disclosed, fail-closed.**
+   - A lane key, for example `[lanes.X.isolation] scratch = "reflink:/path"`, selects the backend.
+   - The verdict records the backend, its identity (filesystem type, base snapshot name/digest) and the warm-state digests.
+   - A declared backend that is unavailable refuses the lane; there is no silent fallback to `write`.
+6. **No privilege in the gate container.**
+   - `reflink` needs none.
+   - `fs-snapshot` goes through a host broker, never `/dev/zfs` or root in the container. Reuse `nyxloom/tools/remote_mutation_zfs_broker.py`'s model: a Unix socket, a per-run capability token, an opted-in dataset property, an allowlisted prefix. That broker is `jobs=1` today; this needs one dataset per worker, rolled back to the base snapshot between candidates.
+7. **Concurrency and memory.**
+   - W concurrent forks for the B115 work queue.
+   - Disk-backed, not memory-backed: a tmpfs backend would count against the gate's 2 GiB cgroup. At most it is a small-footprint option.
+8. **Environment provisioning** belongs to mdt host-setup, not to assay:
+   - a reflink-capable XFS LV or a ZFS/btrfs dataset;
+   - a mount point bound into the gate containers (run-gate `RUN_GATE_EXTRA_MOUNTS`) and optionally the devcontainer;
+   - I/O under `dev-gates.slice`;
+   - for `fs-snapshot`, a socket-activated broker unit.
+
+   Assay only declares what it needs and verifies what it got.
+
+**Not in scope:**
+- hardlinks, alternates, or tree reuse between candidates without CoW (all forbidden: A-184/A-185, A-472);
+- in-place mutation of a shared tree;
+- overlay mounts inside the unprivileged container.
+
+**Evidence:**
+- `reports/assay-B110-REUSE-AND-TESTABILITY-2026-09-28.md` Part C (C3) and B4;
+- research `reports/b110/research/R10-snapshot-structural.md` §2–§4;
+- `reports/b110/research/R9-heavy-tests-structural.md` RC4–RC6;
+- `nyxloom/reference/TESTING-METHODOLOGY.md` "Host ZFS lifecycle".
