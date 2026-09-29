@@ -5,7 +5,9 @@ anchor stops matching), so those kills are not evidence that the guards work.
 """
 
 import ast
+import contextlib
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -64,14 +66,33 @@ def test_the_git_drain_loop_offers_no_mutation_site_in_its_exit_test():
 
 def test_the_git_drain_stops_after_an_output_overflow_even_without_a_deadline(monkeypatch):
     started: list[subprocess.Popen] = []
+    killed: list[int] = []
     real_popen = subprocess.Popen
+    real_kill = git._kill_owned_group
+
+    def recording_kill(proc):
+        killed.append(proc.pid)
+        real_kill(proc)
 
     def recording_popen(*args, **kwargs):
         proc = real_popen(*args, **kwargs)
+        real_wait = proc.wait
+
+        def wait_only_after_the_group_kill(*a, **k):
+            # The overflowing child never exits by itself: waiting on it before
+            # its group is killed deadlocks on the full pipe and would sit idle
+            # until the failsafe below (git.py wait-loop mutants). Refuse at once.
+            if proc.pid not in killed:
+                raise AssertionError("waited on the overflowing child before killing its group")
+            return real_wait(*a, **k)
+
+        proc.wait = wait_only_after_the_group_kill
         started.append(proc)
         return proc
 
     monkeypatch.setattr(git.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(git, "_kill_owned_group", recording_kill)
+    monkeypatch.setattr(git, "MAX_GIT_OUTPUT_BYTES", 4)  # overflow on the first chunk: minimal work before the verdict
     outcome: list[BaseException] = []
 
     def worker() -> None:
@@ -85,18 +106,25 @@ def test_the_git_drain_stops_after_an_output_overflow_even_without_a_deadline(mo
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
-    thread.join(timeout=120.0)  # failsafe only; never decides pass/fail for a run that returns
-    if thread.is_alive():
+    try:
+        thread.join(timeout=120.0)  # failsafe only; never decides pass/fail for a run that returns
+        if thread.is_alive():
+            pytest.fail("the drain did not stop after an output overflow; the child group was killed")
+        assert len(outcome) == 1 and isinstance(outcome[0], AssayError), outcome
+        assert outcome[0].reason_code is ReasonCode.GIT_FAILED
+        assert "standard output" in str(outcome[0])
+        (child,) = started
+        with pytest.raises(ProcessLookupError):
+            os.killpg(child.pid, 0)
+    finally:
         for proc in started:
-            try:
-                os.killpg(proc.pid, 9)
-            except (ProcessLookupError, PermissionError):
-                pass
+            if proc.poll() is None:  # only a leader that is still ours and unreaped
+                killed.append(proc.pid)
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(proc.pid, signal.SIGKILL)
         thread.join(timeout=60.0)
-        pytest.fail("the drain did not stop after an output overflow; the child group was killed")
-    assert len(outcome) == 1 and isinstance(outcome[0], AssayError)
-    assert outcome[0].reason_code is ReasonCode.GIT_FAILED
-    assert "standard output" in str(outcome[0])
-    (child,) = started
-    with pytest.raises(ProcessLookupError):
-        os.killpg(child.pid, 0)
+        if not thread.is_alive():
+            for proc in started:
+                proc.stdout.close()
+                proc.stderr.close()
+                proc.wait(timeout=60.0)
