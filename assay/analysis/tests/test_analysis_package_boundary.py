@@ -118,6 +118,37 @@ def _analysis_sources() -> dict[str, str]:
     }
 
 
+#: (A-478) The judge modules the analysis package may import. W3's
+#: ``ANALYSIS_DEPS`` pinned this set while analysis lived in ``src/assay``;
+#: adding a module here is a reviewed change.
+ALLOWED_JUDGE_MODULES = frozenset(
+    {"assay", "assay.cli", "assay.errors", "assay.git", "assay.mutation", "assay.verify"}
+)
+
+
+def judge_modules_imported(sources: dict[str, str]) -> set[str]:
+    """Every judge module (``assay`` or ``assay.<module>``) the sources import."""
+    found: set[str] = set()
+    for text in sources.values():
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, ast.Import):
+                found.update(
+                    alias.name
+                    for alias in node.names
+                    if alias.name == "assay" or alias.name.startswith("assay.")
+                )
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                module = node.module or ""
+                if module == "assay" or module.startswith("assay."):
+                    found.add(module)
+                    found.update(
+                        f"{module}.{alias.name}"
+                        for alias in node.names
+                        if _is_judge_module(f"{module}.{alias.name}")
+                    )
+    return found
+
+
 def test_the_private_name_allowlist_is_empty():
     assert ALLOWED_PRIVATE_JUDGE_NAMES == {}
 
@@ -193,6 +224,17 @@ def test_the_analysis_lane_is_a_whole_target_r0_r1_lane_over_every_analysis_sour
         (PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml").read_text(encoding="utf-8")
     )["gates"]["tester-unified"]
     assert lane.budget_seconds == float(gate["timeout_seconds"])
+
+
+def test_analysis_imports_only_the_allowed_judge_modules():
+    assert judge_modules_imported(_analysis_sources()) == ALLOWED_JUDGE_MODULES
+
+
+def test_the_judge_module_checker_sees_a_new_judge_dependency():
+    assert judge_modules_imported({"x.py": "from assay.runner import run\n"}) == {"assay.runner"}
+    assert judge_modules_imported({"x.py": "import assay.config as c\n"}) == {"assay.config"}
+    assert judge_modules_imported({"x.py": "from assay import cli\n"}) == {"assay", "assay.cli"}
+    assert judge_modules_imported({"x.py": "import json\nfrom assay_analysis import evidence\n"}) == set()
 
 
 def test_the_analysis_conftest_never_rebinds_the_judge_conftest_name():
