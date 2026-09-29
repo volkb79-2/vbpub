@@ -74,7 +74,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterator
 
 from .. import safeio
-from ..errors import AssayError, Outcome, ReasonCode
+from ..errors import AssayError, Outcome, ReasonCode, require_advance
 
 __all__ = [
     "MAX_GO_MOD_BYTES",
@@ -390,7 +390,7 @@ def _tokens(text: str, *, source: str) -> Iterator[tuple[str, str]]:
             continue
         if text.startswith("//", index):
             newline = text.find("\n", index)
-            index = length if newline == -1 else newline
+            index = require_advance(index, length if newline == -1 else newline)
             continue
         if text.startswith("/*", index):
             raise _refuse(

@@ -332,7 +332,7 @@ def _run_bounded(argv: list[str], *, remaining: Remaining | None = None, stdin=N
     try:
         selector.register(proc.stdout, selectors.EVENT_READ, "out")
         selector.register(proc.stderr, selectors.EVENT_READ, "err")
-        while selector.get_map() and overflowed is None:
+        while selector.get_map():
             timeout = _sample_remaining(remaining)
             for key, _ in selector.select(timeout):
                 chunk = key.fileobj.read1(65536)
@@ -354,6 +354,8 @@ def _run_bounded(argv: list[str], *, remaining: Remaining | None = None, stdin=N
                     if len(chunk) > room:
                         overflowed = ("standard error", _MAX_GIT_STDERR_BYTES)
                         break
+            if overflowed:
+                break
         while overflowed is None and proc.poll() is None:
             timeout = _sample_remaining(remaining)
             if timeout is None:

@@ -200,7 +200,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Sequence
 
-from ..errors import AssayError, Outcome, ReasonCode
+from ..errors import AssayError, Outcome, ReasonCode, require_advance
 from ..mutation import MutationSite
 from .base import Remaining, StatementBlockReport, StatementSpan
 from .go_modfile import find_module_declaration
@@ -323,7 +323,7 @@ def _strip_comments_and_literals(text: str) -> str | None:
             if end == -1:
                 end = n
             _blank(chars, i, end)
-            i = end
+            i = require_advance(i, end)
             continue
         if two == "/*":
             close = text.find("*/", i + 2)
@@ -331,7 +331,7 @@ def _strip_comments_and_literals(text: str) -> str | None:
                 return None
             end = close + 2
             _blank(chars, i, end)
-            i = end
+            i = require_advance(i, end)
             continue
         ch = text[i]
         if ch == '"':
@@ -353,7 +353,7 @@ def _strip_comments_and_literals(text: str) -> str | None:
             if end is None:
                 return None
             _blank(chars, i, end)
-            i = end
+            i = require_advance(i, end)
             continue
         i += 1
     return "".join(chars)
