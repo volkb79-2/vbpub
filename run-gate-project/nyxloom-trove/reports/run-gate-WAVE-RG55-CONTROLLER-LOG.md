@@ -4908,3 +4908,223 @@ registered `tester-unified` full gate in a fresh CIU worktree at the merged
 tree, and preserve its exact logs/verdict; keep the current-tree R2 queued
 until a mutation slot is free. Neither merge nor test start authorizes an
 Assay release or install.
+
+### RW-363 — 2026-09-28 23:38:31Z — reconcile P6 and launch B107's registered full gate
+
+P6 branch rg55-followups-cgprofile-final reconciled current main
+3a8bbe54068d46f34652b2ed52d19a7cddb53dd6 at merge
+b53c5ffa1c55415a93f36beac63d320e478ebbfb. I resolved the contract
+conflict by retaining P6's stronger stop-time behavior: verify host-visible
+survivors, restore to the exact origin or a verified systemd unit/subgroup on
+ESRCH, record successful events, and refuse release/leaf removal while a
+survivor is unresolved. The controller-log conflict keeps P6 RW-333 and the
+newer main entries through RW-362. The root and daemon-side contract copies
+are byte-identical, and the P6 reconciliation merge is committed. The shared
+root AGENTS.md remains untouched.
+
+The first detached B107 gate wrapper disappeared before launching any runner
+or container; all its output files were empty. No verdict was produced. After
+rechecking host PSI and the loaded gate slice, the registered
+assay/run-gate.py tester-unified gate was relaunched at 23:36:14Z from
+isolated CIU worktree
+.worktrees/rg55-b107-ciu-anchor-20260928/.worktrees/rg55-b107-full-gate-20260928,
+exact tree 3a8bbe54068d46f34652b2ed52d19a7cddb53dd6. At the 23:38:31Z
+progress check (2m17s after kickoff), container
+run-gate-assay-selfhosted-3634378-21136-1790638575 was up; readback confirmed
+NanoCpus=3000000000 and CgroupParent=dev-gates.slice. Other agents' mutation
+and session-extract containers remained untouched.
+
+### RW-364 — 2026-09-29 00:12:06Z — remove B107 test assertions tied to wall deadlines
+
+The registered tester-unified run at exact tree
+3a8bbe54068d46f34652b2ed52d19a7cddb53dd6 ended 2026-09-28 23:50:16Z with
+FAIL/COMMAND_FAILED (841.567s): 5,174 passed, 21 skipped, one failed.
+`test_run_liveness_classifies_a_thread_join_hang_as_hung` expected
+`CANDIDATE_HUNG` but observed `LANE_TIMEOUT` at its fixed 50s candidate
+budget. The gate artifact does not retain a time-aligned candidate resource
+trace, so this ruling does not claim that a specific host-pressure interval
+caused this result. It does establish that the test's asserted bucket depends
+on reaching a liveness threshold before an independent wall deadline; B107's
+contract explicitly forbids any test verdict from depending on wall-clock
+speed. The paired busy-loop integration test similarly asserts a bucket at a
+fixed 35s wall budget and has the same invalid dependency.
+
+Binding disposition: remove these two fixed-deadline end-to-end mutation
+fixtures. Keep the deterministic injected-clock/process/resource monitor
+tests, the real-child liveness probe with virtual time, runner exception-to-
+reason mapping, mutation bucket classification, and evidence persistence.
+No production policy or verdict mapping changes. Preserve the current
+evidence fields required by the merged validator; the older 612843ef proposal
+omitted event/output counts and is not applied wholesale. The isolated repair
+worktree `rg55-assay-b107-load-independent-20260929` is based on main
+3a8bbe54. Its targeted set passed 52 tests in 3.08s; `git diff --check`
+passed. The registered exact-tree tester-unified gate must be rerun after this
+repair and be green before B107 can be considered closed. No Assay release or
+install is authorized by this ruling.
+
+### RW-365 — 2026-09-29 00:18:53Z — detached full-gate launch attempt did not start
+
+The first launch attempt for the repaired exact-tree tester-unified gate
+reported wrapper PID 3679513 but did not survive the noninteractive shell.
+At the required 90-second check its log was zero bytes, the wrapper and
+run-gate processes were absent, no matching container existed, and the
+worktree had no `tester-unified` history record. This is a launch failure,
+not a gate verdict and not evidence that tests ran. Admission preflight at
+00:14:52Z had host memory `full avg10=0.00`, the host `dev-gates.slice`
+loaded with `CPUQuotaPerSecUSec=5s`, and no active tester-unified container;
+the unidentified UUID container was verified as the Pterodactyl server and
+left untouched. The `session-extract` container remained active and untouched.
+Relaunch with `nohup … & disown`; the exact-tree gate is still required.
+
+### RW-366 — 2026-09-29 00:21:20Z — use managed execution session after second no-start
+
+The second repaired-tree launch used `nohup` plus `disown` and wrapper PID
+3683525. At its 90-second check the retry log was again zero bytes, the
+wrapper/run-gate processes were gone, no tester-unified container existed,
+and no run-gate receipt was written. This is a second launch failure, not a
+test result. The execution service is cleaning up shell-backgrounded
+descendants even when disowned; do not spend another cycle on shell
+detachment or move this gate to a host service. Run the canonical gate in a
+tool-managed foreground execution session instead, retain its session handle,
+and capture the exact run-gate exit status from that session. Because this
+entry is documentation-only, the B107 test tree is unchanged; run the gate at
+the resulting clean branch tip.
+
+### RW-367 — 2026-09-29 00:22:30Z — defer B107 full gate behind the active Assay gate
+
+At fresh admission preflight, host memory `full avg10=0.00`; host
+`dev-gates.slice` was loaded with `CPUQuotaPerSecUSec=5s`, and the B107 repair
+worktree was clean at `6725bdaa6b6e0ef465a1d742a77729dae08a975e`. A
+tester-unified container owned by the concurrent Assay work was already up:
+`run-gate-assay-selfhosted-3691746-2518-1790641339`. Per the one-Assay-gate-at-
+a-time coordination, I did not launch a second tester-unified gate. The
+existing gate and session-extract campaign were left untouched; no B107
+container or verdict exists yet. Do not inspect the concurrent gate again
+before 25 minutes from this preflight unless its owner sends an earlier
+completion notice. During the same host-escape preflight, mdt observed missing
+cgroup2 `memory_recursiveprot` and `memory_hugetlb_accounting` flags and
+restored them from the existing tracked host-setup policy; no host-setup
+source was edited in this session.
+
+### RW-368 — 2026-09-29 00:28:56Z — isolated Sol review active for B107 test repair
+
+A fresh GPT-6-Sol xhigh review is running against candidate
+`ed2c4cfb4941cc5b3b68bd65ff8de298fef396ac` in separate worktree
+`.worktrees/rg55-assay-b107-load-independent-sol-20260929`, branch
+`review/rg55-assay-b107-load-independent-sol-20260929`. Codex session ID is
+`01a0ea8e-cab4-7dd3-9963-b8e3e6f4046a`; the attached execution handle is
+`38034`. Its scope is the timing-dependent test removal and B107 behavioral
+coverage; it cannot start gates, mutate the host, merge, or release. The
+reviewer may make scoped fixes only in that review worktree. The implementation
+worktree remains unchanged after candidate `ed2c4cf`; the 52-test targeted
+iteration result is green, while the exact-tree registered tester-unified
+gate remains pending behind the concurrent Assay gate recorded in RW-367.
+
+### RW-369 — 2026-09-29 00:35:37Z — Sol review retry after sandbox startup failure
+
+The first Sol xhigh review session (`01a0ea8e-cab4-7dd3-9963-b8e3e6f4046a`)
+could not run even `pwd` or `git rev-parse`: its workspace-write sandbox
+failed during setup with `bwrap: Can't mount proc on /proc: Operation not
+permitted`. The session made no repository changes, ran no tests, and
+returned no verdict. The isolated review worktree remains clean; it was
+fast-forwarded from `ed2c4cf` to this candidate `6831b8f8` to include the
+latest controller record. Start a fresh caller-selected GPT-6-Sol xhigh
+session with `danger-full-access` sandbox in that review worktree; keep the
+same no-gates/no-host-changes scope. The external Assay tester-unified gate
+from RW-367 remains untouched and must not be checked before its stated
+25-minute window.
+
+### RW-370 — 2026-09-29 00:37:09Z — fresh Sol review relaunched with working execution
+
+Fresh caller-configured GPT-6-Sol xhigh review session
+`01a0ea97-f1dc-7f22-963e-cf173f3004d0` is now active in
+`.worktrees/rg55-assay-b107-load-independent-sol-20260929` at candidate
+`0a6f74f3bceedde6899a4e16a6405b64d637157b`. The prior session is closed
+without a verdict. This retry uses Codex `danger-full-access` because the
+workspace-write bwrap could not initialize; its scope remains isolated to
+review/test files and report, with gates, host changes, release, and merge
+forbidden. Attached execution handle: `11710`. Do not advance or edit the
+review worktree while it is active.
+
+### RW-371 — 2026-09-29 00:43:56Z — Sol ACCEPT; B107 registered gate still pending
+
+The fresh caller-configured Sol xhigh reviewer completed successfully and
+committed an ACCEPT report at
+`.worktrees/rg55-assay-b107-load-independent-sol-20260929/assay/nyxloom-trove/reports/assay-RG55-B107-LOAD-INDEPENDENT-SOL-FINAL-REVIEW-20260929.md`
+(review commit `e0f9db79892b9068cea0bedf65b7e77e371b7e6c`). It found the two
+removed CLI mutation assertions depended on racing fixed candidate wall
+budgets against liveness thresholds; it found no other assertion with that
+classification race. Its local focused checks passed (91 tests, 53 cached
+evidence tests, 1 surviving CLI test, and 9 judge/verify tests). These are
+reviewer-run local checks, not a registered gate receipt. The reviewed
+candidate was `0a6f74f3`; an independent comparison confirmed the repair
+worktree at `7ee9a8ad` has no diff in `assay/`, so the code/test delta is the
+same. The reviewer worktree is clean. No fix-verification round is required.
+
+The exact-tree registered `tester-unified` gate remains mandatory. Its
+read-only dry run returned 0 and resolved the registered command to
+`assay/tools/tester-unified-gate.sh` for the repair worktree. The run-gate
+profile plan is enabled. The cockpit has no `/run/cgprofile/ctl.sock` and no
+`cgprofile` executable in `/home/vscode/.venv`; do not set
+`RUN_GATE_PROFILE=off` to conceal that state. Record the profiler's actual
+graceful outcome during the gate; under R-36h it must not block or change the
+functional verdict.
+
+Process-control disclosure: the controller's general container inventory at
+`00:38:58Z` was earlier than RW-367's stated 25-minute no-check window. It
+showed no matching active container, but this premature observation is not
+used as completion or admission evidence. Make no further check of that
+concurrent Assay gate until `00:47:30Z` absent an owner notification. At or
+after that time, check once; if its slot is free, repeat host-PSI and loaded
+slice preflight and launch the repaired-tree registered gate in a
+tool-managed foreground session, applying the 3-CPU cap to its exact printed
+container name immediately after launch.
+
+### RW-372 — 2026-09-29 00:58:40Z — preserve P1 hung outcomes as unresolved pending B107 rejudge
+
+Read the terminal P1 R2 receipt on exact tree
+`0080eba7f91128d4df2d50368b7edaf1465f7805` in the preserved isolated
+checkout. It is `BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4: 125 candidates
+accounted for, 115 killed and 10 classified hung. Each of the 10 progress
+records says `tests_completed=1394`; the retained candidate records do not
+include a time-aligned host/cgroup resource trace. Therefore the result does
+not establish whether any individual classification came from a genuine
+post-test hang or scheduling/pressure, and none is relabeled or closed here.
+
+The accepted B107 monitor requires complete clear host/candidate resource
+intervals before advancing an idle window; any observed pressure, missing
+source, or counter reset pauses the liveness clock and leaves a wall-budget
+expiry explicitly inconclusive. Once RW-371's exact-tree full gate passes and
+the test-only repair is provisionally merged, P1 must be rejudged on its
+final quiet tree with the B107 monitor. Preserve that run's per-candidate
+evidence and classify each terminal outcome from the actual receipt; do not
+infer pressure causality from this old result.
+
+### RW-373 — 2026-09-29 01:10:10Z — B107 exact-tree registered gate PASS
+
+The registered `tester-unified` gate passed in CIU-managed worktree
+`.worktrees/rg55-b107-ciu-root/.worktrees/rg55-b107-final-gate-20260929` at
+exact tree `7dd3a8cee6504732b7f58588ccae7151f8d94ff1`. Container
+`run-gate-assay-selfhosted-3730117-25109-1790642983` exited 0; the immediately
+applied cap and placement read back as `NanoCpus=3000000000`,
+`CgroupParent=dev-gates.slice`. The independent run-gate history read reports
+PASS, `dirty=false`, `history_eligible=true`, exit 0, and 842.547 seconds
+(00:49:43Z–01:03:45Z). The gate completed its wheel build/install, self-hosted
+Assay lane, Topos qualification, CMRU B006(a) qualification, independent
+self-hosting witness, and pyflakes phase.
+
+R-36h disclosure: `cgprofile-host-daemon` was not running. Run-Gate emitted
+its named warning and used coarse rusage sampling; the functional gate still
+passed, with no profiler token/daemon measurements. `RUN_GATE_PROFILE=off`
+was not set. The B107 code/test delta is unchanged between gated tree `7dd3a8ce`
+and the current repair branch; later commits are controller/review report
+records only. Sol's ACCEPT artifact was cherry-picked onto the repair branch
+as `ad32d14e`. This evidence supports the requested provisional merge; it
+does not authorize an Assay release or install.
+
+The isolated CIU root was necessary because CIU inventory in the primary
+checkout refuses on the unrelated stale P6 identity record; the P6 checkout
+was left untouched. CIU marked the B107 worktree ready, while its optional
+network creation warned that Docker's predefined address pools are exhausted.
+The gate did not use that network (`tester-unified` is launched with network
+disabled), so the warning did not affect this run. No network was removed.
