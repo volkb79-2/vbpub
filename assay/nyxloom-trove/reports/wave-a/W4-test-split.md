@@ -102,7 +102,7 @@ judge = <W2's loader result for PROJECT_ROOT / "tests" / "conftest.py">
 | 2 | Apply P4; add O5 and O6 to `gate/tests/test_b105_report_check.py`, O7 to `gate/tests/test_distribution_gate.py`, O2's AST check to `tests/core/test_import_contracts.py` (section 3, "judge/tooling separation") |
 | 3 | `gate/tests/test_self_lane.py` pins: exact argv per lane; no `-o`/`--override-ini*`/`--ignore*`/`--deselect*`/`-p*` in the B105 lanes; ini keys exactly `pythonpath == ["src", "analysis/src"]` and `testpaths == ["tests", "analysis/tests"]` (`gate/tests` is deliberately absent: the lane names it); no `pytest.ini`/`.pytest.ini`/`tox.ini`/`setup.cfg` in `PROJECT_ROOT` or `tests/`; the P4 driver text; keep the `snapshot_history == "full"` pin (W7 flips it) |
 | 4 | Lint tests: give each synthetic clone a `gate/tests` file; add a planted-finding case and a missing-tree case |
-| 5 | Run the P5 command; update docs, decisions, backlog; `nyxloom.toml:125-137` prose path → `gate/tests/test_self_hosting.py`, `:148-149` "four inner phase markers" → the actual count |
+| 5 | Run the P5 command; update docs, decisions, backlog; `nyxloom.toml:125-137` prose path → `gate/tests/test_self_hosting.py`, `:148-149` "four inner phase markers" → the actual count. **CD43:** update the prose mentions of moved test files: the docstrings and comments in `tests/` (`git grep -nF` the old `tests/<name>.py` paths from `W3-test-moves.tsv`), the runnable command at `tests/core/test_config_snapshot_selection.py:21` and the `pyproject.toml:36` comment. Byte-pinned fixtures stay as they are |
 
 ## Oracles
 Each break is applied locally, observed red, reverted and logged; never committed.

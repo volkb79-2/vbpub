@@ -80,6 +80,14 @@ Every finding is accepted, with its fix text as written, except where noted belo
 | CD42 | **W8 header (W8-11):** W8 runs after W2 **and W7**, because both edit `gate/tests/test_self_lane.py` and `assay.toml`. The stage 3 order is therefore W7, W8, W9. |
 | CD38 (amended, X-1) | Also additive, all named in the release notes:<br>• progress: `candidate` gains `cpu_seconds`, `peak_rss_bytes`, `phase_seconds` and `startup_seconds`; the baseline `test` event gains `setup_s`/`teardown_s`; the `candidates` event gains `judge_sha256`;<br>• the state record gains `resources`; plan rows gain `source_sha256`/`mutated_file_sha256`;<br>• the `<events>.resources.json` sidecar;<br>• `cli.plan_jobs` and `mutation.candidate_identity_fields`.<br>7.2.0 stands. |
 
+## After the W3 review (2026-09-29, `REVIEW-W3.md`)
+
+| # | Decision |
+|---|---|
+| CD43 | **Moved-path prose (W3R-6) and locked consumers.**<br>• W4 updates the prose mentions of moved test files: docstrings and comments in `tests/`, the runnable command at `tests/core/test_config_snapshot_selection.py:21` and the `pyproject.toml:36` comment.<br>• W10 updates the `src/assay` comments that the W4 REPORT list names, since W10 already edits those modules.<br>• Byte-pinned fixtures stay as they are.<br>• The locked P33 suite, which asserts root test paths, stops running when W1 retires `verdict-v5-accepted`. P23's suite is not executed (CD8).<br>• Stale `--deselect` entries cannot survive, because W4's `test_self_lane.py` pins forbid `--deselect*` in the B105 lanes. |
+| CD44 | **The controller owns the registered gate (overrides every brief's Gate section).** Implementers run focused tests and collect-only, never `run-gate.py`. They finish with `READY-FOR-GATE <hash>` in their LOG. The controller runs `tester-unified` (and `self-qualification-preflight` where a brief requires it) serially, one watcher at a time, and hands the verdict and markers back. Oracles that read gate output (for example W4 O8/O10, W8/W9 preflight checks) are completed by a Sonnet fixer after the controller's gate run. |
+| CD45 | **New files under `tests/core/`.** The vbpub root `.gitignore:352` ignores every path named `core`. W3 adds `!/tests/core/` to `assay/.gitignore`. Every implementer checks `git status --short --ignored` for `!!` entries before committing new test files. |
+
 **Plan consequences:**
 - W8 now depends on W2 (CD1).
 - W7 edits `gate/tests/test_self_lane.py` (CD12).
