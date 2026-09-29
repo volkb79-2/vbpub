@@ -13,7 +13,8 @@ from typing import Any
 #: The one source root B105 measures, relative to the assay project directory.
 B105_SOURCE_ROOT = "src/assay"
 #: Source trees that are deliberately outside B105, each with the decision that put
-#: it there. A tracked package that is neither B105's root nor named here is refused.
+#: it there. A tracked top-level entry under ``src/`` other than B105's root is
+#: refused; the packages under ``analysis/src/`` are pinned by the analysis tests.
 OUT_OF_SCOPE_BY_DECISION = {"analysis/src/assay_analysis": "A-478"}
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 

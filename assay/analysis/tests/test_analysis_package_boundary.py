@@ -109,8 +109,10 @@ def private_judge_uses(sources: dict[str, str]) -> list[str]:
 
 
 def _analysis_sources() -> dict[str, str]:
+    """Every analysis source, keyed by its path below ``analysis/src`` (never by
+    basename: two files named ``cli.py`` must both be scanned)."""
     return {
-        path.name: path.read_text(encoding="utf-8")
+        path.relative_to(ANALYSIS_SRC).as_posix(): path.read_text(encoding="utf-8")
         for path in sorted(ANALYSIS_SRC.rglob("*.py"))
         if "__pycache__" not in path.parts
     }
@@ -122,7 +124,11 @@ def test_the_private_name_allowlist_is_empty():
 
 def test_analysis_reaches_no_private_judge_name():
     sources = _analysis_sources()
-    assert set(sources) == {"__init__.py", "cli.py", "evidence.py"}  # guard the guard
+    assert set(sources) == {  # guard the guard
+        "assay_analysis/__init__.py",
+        "assay_analysis/cli.py",
+        "assay_analysis/evidence.py",
+    }
     offenders = [
         use for use in private_judge_uses(sources) if use not in ALLOWED_PRIVATE_JUDGE_NAMES
     ]
@@ -165,9 +171,16 @@ def test_the_checker_allows_privates_of_self_cls_and_the_analysis_siblings():
 
 def test_the_analysis_lane_is_a_whole_target_r0_r1_lane_over_every_analysis_source():
     lane = load_lane_file(PROJECT_ROOT / "assay.toml").lane("analysis")
+    packages = {
+        path.name
+        for path in ANALYSIS_SRC.iterdir()
+        if path.is_dir() and not path.name.endswith(".egg-info") and path.name != "__pycache__"
+    }
+    assert packages == {"assay_analysis"}  # the wheel ships every package under analysis/src
     discovered = sorted(
         path.relative_to(PROJECT_ROOT).as_posix()
-        for path in (ANALYSIS_SRC / "assay_analysis").rglob("*.py")
+        for path in ANALYSIS_SRC.rglob("*.py")
+        if "__pycache__" not in path.parts
     )
 
     assert lane.rigor == ("R0", "R1")
