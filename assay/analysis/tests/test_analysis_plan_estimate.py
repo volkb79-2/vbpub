@@ -29,7 +29,7 @@ def _plan(**overrides):
         "status": "ok", "commit": C, "tree": T, "candidate_count": 4,
         "candidates": [{"id": str(i)} for i in range(4)],
         "estimated_serial_seconds": 240.0, "estimated_wall_seconds": 240.0,
-        "jobs": 1, "budget_per_candidate": None,
+        "jobs": 3, "budget_per_candidate": None,
     }
     document.update(overrides)
     return document
