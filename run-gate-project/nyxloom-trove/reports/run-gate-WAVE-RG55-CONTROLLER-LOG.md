@@ -4787,3 +4787,124 @@ report. Shared `main` advanced to `9a0d247c` with the Nyxloom session-extract
 merge after the candidate's base `facbacd2`. Do not alter the reviewed
 worktree while that review is active; after the review, reconcile this main
 advance and re-run final-tree evidence before merge.
+
+### RW-359 — 2026-09-28 21:40:22Z — Sol ACCEPT on B107 after repairing CPU-drop evidence
+
+Fresh GPT-6-Sol xhigh final review ACCEPTED the repaired B107 code at commit
+`5a7308d6c1c6d685850a436b86c91f0913b3b8ad`; the report is
+`assay/nyxloom-trove/reports/assay-RG55-B107-SOL-FINAL-REVIEW.md` in that
+candidate. The combined-axis probe found a real false `hung`: a child could
+exit and lower the process-tree CPU sum, letting the earlier higher reading
+be mistaken for a complete quiet window. Live monitoring and cached-evidence
+validation now restart the CPU window on a drop. Resume evidence also must
+derive the idle span from retained samples and show no intervening event or
+output growth; malformed negative counters are unknown. The reviewer committed
+these fixes and their tests/docs, with **224 focused tests passing**, six
+targeted validator/monitor cases passing, and the long virtual CPU-history
+oracle passing. The candidate worktree was clean after that commit.
+
+The pre-review full-suite/coverage result does not cover this repair commit.
+A fresh branch-aware line+branch coverage run is therefore active as
+`rg55-b107-coverage` against that exact HEAD. At the 90-second check its exact
+container was running under `dev-gates.slice`, `NanoCpus=3000000000`, and a
+700 MiB cap, with pytest at 16% and host memory PSI `full avg10=1.98`. The run
+uses a temporary uncommitted lane declaration and is not a release gate or
+history-eligible gate result; its coverage artifact is stored under the
+candidate's ignored `assay/.assay/`. After it finishes, remove only the
+temporary lane declaration, preserve the artifact, and verify 100% changed
+executable lines and branches before provisional merge. The registered
+`tester-unified` gate and the current-tree mutation campaign remain required
+after the provisional merge on a unique CIU worktree; no such RG-55 gate or
+mutation container was started by the reviewer.
+
+### RW-360 — 2026-09-28 21:44:46Z — all three mutation slots are occupied by other work
+
+Correction to RW-358's characterization: the active Nyxloom
+`session-extract` lane is itself a mutation campaign, not an ordinary gate.
+At this check, exact container
+`run-gate-vbpub-session-extract-3351574-1790629480` was still running; its
+saved log showed candidate 102/599 at 2.6 candidates/minute, ETA about 192
+minutes. Together with the two active CMRU mutation campaigns, this occupies
+the current three-container mutation allowance. Do not launch an RG-55 P1/P6
+mutation campaign until one of those campaigns terminates; do not interfere
+with any of the three. The separate RG-55 B107 coverage lane is a non-mutation
+test and remains within its own declared gate resources.
+
+### RW-361 — 2026-09-28 23:13:43Z — B107 review accepted; exact gate evidence still needs reconciliation
+
+A fresh caller-configured `gpt-6-sol` xhigh review ran in isolated worktree
+`.worktrees/rg55-assay-b107-current-main-20260928` (review session
+`01a0ea39-0242-7af2-a5ac-fc6a2257943b`). The reviewer ACCEPTED candidate
+`801fa0332515bb6c34743cf133acc51fc28a2cc1`; its only new commit is the
+review artifact at `415686f50be8d194b8e465fa9a000953878e88da`. The report
+confirms the added cached-idle-span oracle reaches the intended rejection
+branch, the intact cache record is accepted, and the inflated idle span is
+refused. The four production files match the already accepted source.
+
+The reviewer cited controller-supplied focused `tester-unified` and
+changed-area coverage totals (555 tests; 326/326 changed lines and 162/162
+branches), but the receipts were not independently identifiable as clean
+exact-tree evidence during this check. The candidate's
+`assay/.run-gate/history.json` records `rg55-b107-coverage` as exit 0 while
+also recording `dirty=true` and `history_eligible=false`; the available
+coverage artifacts include older runs on a different worktree. Therefore do
+not merge B107 yet. Reproduce the exact candidate's short registered gate and
+100% changed-line/branch judgment from a clean committed tree, retaining the
+actual logs and verdict; then provisionally merge if those are green. The
+reviewer's ACCEPT remains valid and no code repair is requested by that
+review.
+
+P6's new code repair is committed at
+`738bf1f5cb8ea52b751078052d52a551feee485e`: stop-time placement restoration
+now enumerates host-visible survivors, verifies membership, uses the exact
+origin cgroup first, and falls back on `ESRCH` only through the derived
+systemd unit/subgroup. Pre-commit focused tests passed 122/122 with
+`lib/placement.py` at 398/398 statements and 166/166 branches. Registered
+P6 gates, the live move-back/fail-closed probes, a clean current-tree R2, and
+the full gate are still outstanding. P6's branch is based at `4d32bcfe`,
+while shared main is `87c13eff`; reconcile after B107's clean evidence and
+integration. P6's fresh Sol review series starts at round 5 after those gates
+and live probes. The reusable P55 packet and P6 review handoff now make Sol
+route verification the caller's responsibility; the reviewer is not asked
+to self-attest.
+
+At the process inventory timestamp `2026-09-28 22:56:51Z`, all three
+mutation slots remained occupied by other work: PIDs `1573821`, `3330133`,
+and `3351574`, containers
+`run-gate-vbpub-mutation-1573821-1790475805`,
+`run-gate-vbpub-mutation-3330133-1790628741`, and
+`run-gate-vbpub-session-extract-3351574-1790629480`. No RG-55 campaign was
+started; leave those runs untouched and make no routine status observation
+before `23:21:51Z` absent a concrete earlier completion or error.
+
+### RW-362 — 2026-09-28 23:20:47Z — B107 coverage reverified; allow provisional integration
+
+The saved branch-aware coverage JSON was generated at exact code commit
+`801fa0332515bb6c34743cf133acc51fc28a2cc1`; the only later candidate commit
+before review was `415686f`, which adds the Sol report and no source/test
+changes. Independently reran the RG-53 branch-aware judge:
+
+```
+python /workspaces/vbpub/run-gate-project/tools/coverage_gate.py \
+  --coverage-json /workspaces/vbpub/.worktrees/rg55-assay-b107-current-main-20260928/assay/.assay/rg55-b107-coverage/coverage.json \
+  --repo /workspaces/vbpub/.worktrees/rg55-assay-b107-current-main-20260928 \
+  --base 87c13eff5b03c65f07733a282c5b1dac24609e54 \
+  --source assay/src/assay
+```
+
+It exited 0: **326/326 changed executable lines and 162/162 changed
+branches**. The lane-history record still says dirty and is not eligible for
+duration/profile history; this explicit coverage judgment is separately
+reproduced against the saved JSON and the exact base. The fresh Sol reviewer
+also reports 44 behavioral and 45 documentation tests passing, plus the
+controller-supplied 555-test focused run. The candidate history does not have
+a `tester-unified` entry, so that aggregate test claim is retained as the
+reviewer's supplied evidence rather than a registered gate receipt.
+
+Per the operator's provisional-integration workflow, the ACCEPT, focused
+behavioral/doc tests, and independently verified 100% changed-area coverage
+are sufficient to merge B107 provisionally and unblock RG-55. Start the
+registered `tester-unified` full gate in a fresh CIU worktree at the merged
+tree, and preserve its exact logs/verdict; keep the current-tree R2 queued
+until a mutation slot is free. Neither merge nor test start authorizes an
+Assay release or install.

@@ -56,7 +56,7 @@ oracles:
     gate: gate-full
 gates: [selftest, assay-r1, assay-r2, assay-r3, gate-full]
 escalate_if:
-  - "the Sol xhigh runtime identity or effort cannot be verified"
+  - "the caller has not selected exactly one supported REVIEW_TARGET"
   - "a named RG-55 contract, settled decision, or package gate cannot be met as specified"
   - "scope requires a forbidden file or an unapproved external checkout"
   - "a live gate cannot produce complete evidence within its declared safety budget"
@@ -99,6 +99,12 @@ placeholder such as `$REVIEW_TARGET`; the reviewer must see the selected
 target in its input. `RG56` is an optional related review of future admission
 work and is not a release approval for RG-55.
 
+The caller owns route selection and verification: launch this task on the Sol
+xhigh route and retain the invocation/session metadata in the controller's
+records. The reviewer must not be asked to establish or self-attest its own
+model or effort. Missing route metadata available to the reviewer is not a
+reason to stop the technical review or return `BLOCKED`.
+
 Copy the remainder of this document into a **genuine fresh Sol xhigh** session,
 once per review target. Do not reuse one Sol session as the “fresh” reviewer
 for two packages. The controller will merge or release only after a real Sol
@@ -107,12 +113,13 @@ ACCEPT for that package and all post-review gates have passed.
 ## Role and authority
 
 You are the final independent adversarial reviewer and, when necessary, the
-repair implementer for `REVIEW_TARGET`. The client must be configured to the
-actual Sol route (model id `gpt-5.6-sol`, effort `xhigh`, or the platform's
-exact equivalent). A normal Codex/GPT-5 route is not a Sol review. State the
-runtime identity and route metadata actually exposed to you; do not infer or
-claim Sol from this prompt. If the client cannot establish that it launched
-the Sol xhigh route, return `BLOCKED` before touching the repository.
+repair implementer for `REVIEW_TARGET`. The caller must configure and verify
+the actual Sol xhigh route before dispatch (currently model id `gpt-6-sol`,
+effort `xhigh`, or the platform's exact equivalent). This is a caller
+responsibility, not a reviewer oracle. Do not self-identify, infer a model
+from this prompt, or block the review because runtime identity/effort metadata
+is unavailable to you. Proceed with the technical review and report the
+target, base, final HEAD, and worktree state.
 
 The operator explicitly authorizes you to make fixes and improvements yourself
 within the scope below. You may edit production code, tests, user-facing docs,
@@ -332,31 +339,24 @@ required final adversarial review.
 
 ### `P6`: cgprofile 1.1.0 follow-ups
 
-Worktree: `.worktrees/rg55-followups-cgprofile`, branch
-`rg55-followups-cgprofile`, current tip `8076246c`. Read:
+Worktree: `.worktrees/rg55-followups-cgprofile-final`, branch
+`rg55-followups-cgprofile-final`; see `cgprofile-P6-FOLLOWUPS-BRIEF-12.md`
+for the exact candidate, stale merge base, and continuation order. The
+candidate includes the P1 daemon and P6 follow-ups, including private-PID
+placement and stop-time survivor restoration. A fresh Sol review series
+starts at round 5 only after current-tip registered `r0-r1`/`r3`, 100%
+changed-line and branch coverage, and the handoff's live probes. Its ACCEPT
+permits provisional integration only. The current-tree R2 and registered
+full gate may run asynchronously after provisional merge; release, tag,
+install, and `ciu up` remain blocked until they pass and all wave close-out
+conditions are met.
 
-```
-scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-HANDOFF.md
-scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-BRIEF-10.md
-scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-HANDOFF.md
-```
-
-Current source candidate: `/workspaces/vbpub/.worktrees/rg55-followups-cgprofile-final`,
-branch `rg55-followups-cgprofile-final`, exact tree `aae66356` at last
-checkpoint. Its R0/R1 and R3 passed on that tree; the focused repair suite
-passed 247 tests with 6 skips. The fresh R2 is running in the separate CIU
-worktree `.worktrees/rg55-p6-r2-ciu`, detached at that exact tree, PID
-`1960695`, container `run-gate-vbpub-r2-1960695-1790233947`. The exact
-container was verified in `dev-gates.slice` and capped at 3 CPUs. Do not
-modify/switch the campaign worktree or poll it more frequently than every 25
-minutes. At review dispatch, verify the live status and terminal marker,
-read the exact-tree verdict and progress separately, then triage all survivors
-and incomplete candidates. Any controller-record-only commit on the source
-branch must be followed by final short gates and a fresh exact-tree R2 if it
-changes the candidate identity. Verify CP-2..CP-12, socket peer credentials,
-watch role, placement guard, `cgprofile.slice`, host-PSI seam,
-kill-finalizes behavior, and both carriers. No release follows from an
-incomplete mutation lane.
+The latest prior P6 R2 is exact tree
+`6540f87761a66ff933c8bb45f81d8ac9117f407b`, terminal
+`BUDGET_EXCEEDED/CANDIDATE_HUNG`; it is not evidence for the updated tree.
+Read the P6 LOG/REPORT, BRIEF-12, review rounds 1–4, and the P6 review handoff.
+The P6 review's new three-round series is rounds 5–7; route selection and
+verification belong to the caller, not reviewer self-attestation.
 
 ### `CMRU`: release-recovery repair encountered during this wave
 
@@ -388,9 +388,10 @@ review.
 
 ## Review and repair procedure
 
-1. Verify the actual Sol xhigh runtime, worktree path, branch, HEAD, status,
-   merge base, and current processes/containers. Save the initial status and
-   diff before editing. If the selected P1/P6 mutation job is alive, stop at
+1. Verify the selected target, worktree path, branch, HEAD, status, merge
+   base, and current processes/containers. The caller is responsible for the
+   Sol xhigh invocation; do not attempt runtime self-verification. Save the
+   initial status and diff before editing. If the selected P1/P6 mutation job is alive, stop at
    inspection of evidence and wait for its mechanical completion marker; do
    not minute-poll or change its tree.
 2. Read the named contract and settled decisions blind. Build a requirement →
@@ -461,7 +462,7 @@ could flip its verdict. If yes, the oracle is not ready.
 Write the review artifact before returning. Use the existing naming convention
 in the selected package's report directory, for example
 `cgprofile-P1-DAEMON-REVIEW-round3.md`,
-`cgprofile-P6-FOLLOWUPS-REVIEW-round3.md`, or the CMRU review's next round.
+`cgprofile-P6-FOLLOWUPS-REVIEW-round5.md`, or the CMRU review's next round.
 The first non-heading line must be exactly one of:
 
 ```
@@ -473,8 +474,9 @@ BLOCKED
 
 The artifact must include:
 
-- actual Sol runtime identity, target, base, final HEAD, worktree status, and
-  whether the initial diff was captured before edits;
+- caller-provided review route if supplied (not reviewer self-attestation),
+  target, base, final HEAD, worktree status, and whether the initial diff was
+  captured before edits;
 - a requirement-to-oracle traceability table and pairwise/combined-axis attack
   fixtures;
 - every blocker as `B<n>` with severity, file:line, observable failure,

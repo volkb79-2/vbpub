@@ -1035,6 +1035,55 @@ def test_rejudge_outcome_disables_prior_witness_replay(
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["outcome_bucket"] = "hung"
     record["execution"] = {"mode": "full"}
+    resource_snapshot = {
+        "schema_version": 1,
+        "status": "available",
+        "cgroup_identity": "fixture-cgroup",
+        "host_psi": {
+            "cpu": {"some": 0},
+            "memory": {"some": 0, "full": 0},
+            "io": {"some": 0, "full": 0},
+        },
+        "cgroup_psi": {
+            "cpu": {"some": 0},
+            "memory": {"some": 0, "full": 0},
+            "io": {"some": 0, "full": 0},
+        },
+        "cgroup_cpu": {"nr_throttled": 0, "throttled_usec": 0},
+    }
+    record["liveness_resource_evidence"] = {
+        "schema_version": 1,
+        "policy": "pressure-adjusted-idle-v1",
+        "decision": "idle-hang",
+        "candidate_pid": 4242,
+        "candidate_cpu_source": "process-tree-cpu-seconds",
+        "wall_elapsed_s": 31.0,
+        "eligible_elapsed_s": 31.0,
+        "idle_eligible_s": 31.0,
+        "required_idle_eligible_s": 15.0,
+        "required_cpu_growth_window_s": 30.0,
+        "required_cpu_growth_floor_s": 1.0,
+        "candidate_session_finish_seen": False,
+        "session_finish_eligible_s": None,
+        "trace_complete": True,
+        "trace_truncated": False,
+        "samples": [
+            {
+                "wall_elapsed_s": float(elapsed),
+                "eligible_elapsed_s": float(elapsed),
+                "eligible_interval_s": 0.0 if elapsed == 0 else 1.0,
+                "candidate_cpu_s": 3.0,
+                "event_count": 0,
+                "stdout_bytes": 0,
+                "stderr_bytes": 0,
+                "resource_interval": "unknown" if elapsed == 0 else "clear",
+                "resource_deltas": {},
+                **({"previous_resources": None} if elapsed == 0 else {}),
+                "resources": resource_snapshot,
+            }
+            for elapsed in range(32)
+        ],
+    }
     record_path.write_text(json.dumps(record), encoding="utf-8")
 
     observed_targets: list[str | None] = []

@@ -775,6 +775,10 @@ class CommandResult:
     stderr_dropped_bytes: int = 0
     started: str
     ended: str
+    #: Native R2 liveness time-series, populated only when the pressure-aware
+    #: candidate watchdog terminates this command. It is carried to the
+    #: per-candidate mutation artifacts, never used as a functional verdict.
+    liveness_resource_evidence: Mapping[str, Any] | None = None
 
 
 def resolve_command_plan(
@@ -1272,6 +1276,9 @@ def _execute_plan_inner(
             stderr_dropped_bytes=stderr_dropped_bytes,
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
+            liveness_resource_evidence=getattr(
+                exc, "resource_evidence", getattr(exc, "liveness_resource_evidence", None)
+            ),
         )
     except OSError:
         return CommandResult(
