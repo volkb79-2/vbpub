@@ -99,6 +99,7 @@ Every finding is accepted, with its fix text as written, except where noted belo
 
 | # | Decision |
 |---|---|
+| CD48 | **W4 review (`REVIEW-W4.md`): all findings applied, including the optional W4R-8.**<br>• The container proves it judged the host-captured commit, at its start and its end (`require_expected_head`).<br>• W4R-4: `gate/tests/support.py` imports W2's one loader (CD31).<br>• W4R-6: `gate/distribution/build_release.py:25` goes to W10, `qualify_dstdns_sql.py:47` to W5.<br>• The reviewer's out-of-scope find is filed as **B135** (the mutation witness ignores `pytest.toml`).<br>• New backlog ids from any package are the next free ones after the highest in `4-backlog.md`; this supersedes the fixed "B134/B135" start in CD28. |
 | CD47 | **W4 P5 stand-in for `go_stmtpos.py` `_staged_helper` (124-171).** The stand-in is **two** judge files: `test_b105_go_stmtpos_boundaries.py` plus `tests/adapters/go/test_adapters_go_stmtpos_invoker.py`. The first file alone leaves line 151 uncovered. The invoker test stays in `tests/`, so both B105 lanes collect it and R1 coverage is unaffected by the split. The P5 purpose is met: no tooling test is the only cover of layout-dependent product code. |
 
 **Plan consequences:**
