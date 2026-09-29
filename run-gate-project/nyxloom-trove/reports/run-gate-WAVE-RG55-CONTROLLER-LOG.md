@@ -5282,3 +5282,34 @@ these are local iteration results, not registered gate evidence. P6 exact-tip
 short gates, changed-line and branch coverage, the live private-PID start and
 stop probes, a fresh Sol round-5 review, replacement R2, and the full gate
 remain outstanding. The code fix has not been merged to main.
+
+### RW-377 — 2026-09-29 01:55:48Z — launch P1 R2 on the correct pre-P1 mutation base
+
+After RW-375, the P1 candidate was rebuilt in the independent CIU root from
+the isolated lineage whose `origin/main` remains `e5e9b95c5ac8be3452c93f1066f9436347f862fd`.
+The exact committed candidate is `dcdcc5d323e16da68f46874eeb34dbfaab7891bd`:
+it contains the P1 reviewed code and Sol-round-4 `proc stat`/explicit-null
+repairs, plus the merged B107 pressure-aware Assay source through
+`76325aa5`; the source under `assay/src/assay` compares equal to current main.
+The candidate has no object alternates, a clean tree, no prior R2 history, and
+`git merge-base origin/main HEAD` resolves to `e5e9b95c`. The expected P1
+mutation scope is therefore present again; the earlier `NO_MUTANTS` receipt
+is not reused.
+
+The registered `run-gate r2` started at `2026-09-29T01:41:52.960Z` in fresh
+CIU worktree `.worktrees/rg55-p1-r2-isolated/.worktrees/rg55-p1-b107-rejudge`.
+Its exact container is
+`run-gate-rg55-p1-r2-isolated-r2-3806635-1790646112`, verified at
+`NanoCpus=3000000000`, `CgroupParent=dev-gates.slice`. At launch host memory
+PSI `full avg10=0.00`, the gates slice was loaded with a 5-CPU quota, and one
+other mutation container was active; this campaign uses the second mutation
+slot. At the required 90-second health check the container was still running
+with the cap in place. The R0 baseline completed 1,394 tests; Assay selected
+125 candidates, and candidate 0 (`access.py:48`, `Is->IsNot`) was recorded
+killed. This is initial progress, not a final result. A prior 125-candidate
+P1 R2 took about 1h44m; given the other active mutation campaign and shared
+5-CPU gates slice, estimate roughly 1h45m–2h45m, subject to observed runtime.
+No further progress inspection before 25 minutes after the 90-second check
+unless an error/completion is expected; next routine observation is no earlier
+than 2026-09-29 02:08Z. Keep this worktree HEAD quiet until the terminal
+verdict is read separately.
