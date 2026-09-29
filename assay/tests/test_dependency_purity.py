@@ -31,10 +31,11 @@ from pathlib import Path
 from conftest import PROJECT_ROOT, Standalone
 
 PACKAGE_DIR = PROJECT_ROOT / "src" / "assay"
+ANALYSIS_PACKAGE_DIR = PROJECT_ROOT / "analysis" / "src" / "assay_analysis"
 
 #: Everything the walk is allowed to see: the standard library of the running
-#: interpreter, plus assay's own name for absolute self-imports.
-ALLOWED_ROOTS = set(sys.stdlib_module_names) | {"assay"}
+#: interpreter, plus the names of the two packages the one distribution holds.
+ALLOWED_ROOTS = set(sys.stdlib_module_names) | {"assay", "assay_analysis"}
 
 TAINTED_MODULE = '''\
 """A module that is deliberately not pure, used to prove the check can fail."""
@@ -147,6 +148,13 @@ def test_the_package_imports_nothing_outside_the_stdlib():
     }
 
 
+def test_the_analysis_package_imports_nothing_outside_the_stdlib_and_assay():
+    files, offenders = scan_package(ANALYSIS_PACKAGE_DIR)
+
+    assert offenders == {}, f"non-stdlib imports found: {offenders}"
+    assert {p.name for p in files} == {"__init__.py", "cli.py", "evidence.py"}
+
+
 def test_every_scanned_file_parses_and_declares_at_least_one_import():
     files, _ = scan_package(PACKAGE_DIR)
     with_imports = [p for p in files if import_roots(p.read_text(encoding="utf-8"))]
@@ -162,6 +170,14 @@ def load_pyproject() -> dict:
 
 def test_pyproject_declares_zero_runtime_dependencies():
     assert load_pyproject()["project"]["dependencies"] == []
+
+
+def test_pyproject_ships_both_packages_from_one_distribution():
+    # A-478: the wheel holds `assay` and `assay_analysis`; without `package-dir`
+    # the egg-info lands at the unignored project root (DIRTY_TREE).
+    setuptools = load_pyproject()["tool"]["setuptools"]
+    assert setuptools["package-dir"] == {"": "src"}
+    assert setuptools["packages"]["find"]["where"] == ["src", "analysis/src"]
 
 
 def test_pyproject_declares_a_test_extra_with_the_validator():
@@ -232,6 +248,16 @@ def test_assay_imports_in_a_venv_that_contains_only_itself(standalone: Standalon
         "assay was imported from outside the venv, so this proves nothing: "
         f"{proc.stdout.strip()}"
     )
+
+
+def test_the_installed_analyze_command_runs_from_the_one_wheel(standalone: Standalone):
+    version = standalone.run("assay", "--version").stdout.split()[1]
+
+    proc = standalone.run("assay", "analyze", "--help")
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines()[0] == f"ASSAY {version} — declared-lane judge"
+    assert "usage: assay analyze" in proc.stdout
 
 
 def test_the_venv_holds_no_third_party_distribution(standalone: Standalone):

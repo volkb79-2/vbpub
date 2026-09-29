@@ -18,8 +18,10 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator, ValidationError
 
-from assay import analysis
-from assay.cli import build_parser, main
+from analysis_support import JUDGE_VERDICT_FIXTURES, PROJECT_ROOT
+from assay.cli import main
+from assay_analysis import cli as analysis_cli
+from assay_analysis import evidence as analysis
 
 
 def cli(*args):
@@ -55,7 +57,7 @@ def recorded(tmp_path, head, tree, exit_code=0):
 
 
 def verdict(tmp_path, head, name="r0_pass"):
-    fixture = Path(__file__).parent / "fixtures" / "verdicts" / (name + ".json")
+    fixture = JUDGE_VERDICT_FIXTURES / (name + ".json")
     document = json.loads(fixture.read_text())
     document["commit"] = head
     path = tmp_path / (name + ".json")
@@ -718,7 +720,7 @@ def test_record_and_receipt_preserve_a_legitimate_empty_argument(repository):
 
 
 @pytest.mark.parametrize("kind", ["verdict", "progress", "manifest", "archive-artifact"])
-def test_nonregular_inputs_refuse_without_waiting_for_a_fifo_writer(tmp_path, kind, standalone):
+def test_nonregular_inputs_refuse_without_waiting_for_a_fifo_writer(tmp_path, kind):
     fifo = tmp_path / "fifo"
     os.mkfifo(fifo)
     if kind in ("verdict", "progress"):
@@ -733,9 +735,13 @@ def test_nonregular_inputs_refuse_without_waiting_for_a_fifo_writer(tmp_path, ki
             (archive / "manifest.json").write_text(json.dumps({"schema_version": 1, "artifacts": {
                 "artifact": {"source": "historical", "sha256": "0" * 64, "bytes": 0}}}))
         arguments = ["check", str(archive)]
-    result = subprocess.run([str(standalone.venv / "bin/python"), "-I",
-                             str(standalone.venv / "bin/assay"), "analyze", *arguments],
-                            capture_output=True, text=True, timeout=10, check=False)
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; from assay.cli import main; raise SystemExit(main(sys.argv[1:]))",
+         "analyze", *arguments],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(
+            [str(PROJECT_ROOT / "src"), str(PROJECT_ROOT / "analysis" / "src")])},
+        capture_output=True, text=True, timeout=10, check=False)
     assert result.returncode == 1 and result.stdout == ""
     assert "not a regular file" in result.stderr and "Traceback" not in result.stderr
 
@@ -990,7 +996,7 @@ def test_personal_excludes_cannot_hide_dirty_sources_or_justify_output(repositor
 
 
 def test_new_cross_document_analysis_anchors_resolve():
-    root = Path(__file__).resolve().parents[1]
+    root = PROJECT_ROOT
     docs = [root / "README.md", root / "docs/DESIGN-GUIDE.md", root / "docs/CONSUMERS.md"]
     count = 0
     for path in docs:
@@ -1003,7 +1009,7 @@ def test_new_cross_document_analysis_anchors_resolve():
 
 
 def test_report_design_anchor_is_linked_from_all_adopter_documents():
-    root = Path(__file__).resolve().parents[1]
+    root = PROJECT_ROOT
     design = root / "docs/DESIGN-GUIDE.md"
     assert "### Bounded live gate snapshot (B100)" in design.read_text()
     expected = "bounded-live-gate-snapshot-b100"
@@ -1059,10 +1065,10 @@ def test_packaged_analysis_schemas_validate_real_outputs_and_reject_false_shapes
 
 
 def test_documented_analysis_commands_parse_with_shipped_cli():
-    root = Path(__file__).resolve().parents[1]
+    root = PROJECT_ROOT
     paths = [root / "README.md", root / "docs/DESIGN-GUIDE.md", root / "docs/CONSUMERS.md",
              root / "docs/INTERNAL-CONSUMERS.md"]
-    parser = build_parser()
+    parser = analysis_cli.build_parser()
     seen = set()
     for path in paths:
         text = path.read_text()
@@ -1074,14 +1080,14 @@ def test_documented_analysis_commands_parse_with_shipped_cli():
                 if not line.startswith("assay analyze "):
                     continue
                 line = line.replace("$REVIEW_HEAD", "a" * 40)
-                args = parser.parse_args(shlex.split(line)[1:])
+                args = parser.parse_args(shlex.split(line)[2:])
                 seen.add(args.analysis_command)
                 file_commands.add(args.analysis_command)
         assert "report" in file_commands, f"{path.name} needs a checked report example"
-    subcommands = parser._subparsers._group_actions[0].choices["analyze"]._subparsers._group_actions[0].choices
+    subcommands = parser._subparsers._group_actions[0].choices
     assert set(subcommands) == seen
     with pytest.raises(SystemExit):
-        parser.parse_args(["analyze", "verdict", "file.json"])  # No invented commit.
+        parser.parse_args(["verdict", "file.json"])  # No invented commit.
 
 
 def _valid_receipt_for_collection(repository, tmp_path):

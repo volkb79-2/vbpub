@@ -1,8 +1,8 @@
 """Component import contracts and test-directory layout (B130, A-478).
 
 Part 1 - import contracts.  The judge (``src/assay``) is one package with named
-components: the core, the four language adapters, three parser families, the
-analysis module (W2 removes it) and the CLI composition root.  This test walks
+components: the core, the four language adapters, three parser families and
+the CLI composition root (the analysis package is outside it, A-478).  This test walks
 every module's imports with ``ast`` (module level, function level and
 ``TYPE_CHECKING``) and refuses any edge that crosses a component boundary the
 rules below do not allow.  It is stdlib-only on purpose: an ``import-linter``
@@ -40,8 +40,6 @@ def component(m: str) -> str:
     ):
         if m == f"assay.{pkg}" or m.startswith(f"assay.{pkg}."):
             return name
-    if m == "assay.analysis":
-        return "analysis"  # W2 removes this row
     if m == "assay.cli":
         return "cli"  # composition root
     return "core"
@@ -64,21 +62,18 @@ CORE_PARSER_SURFACE = {
     "assay.mutation_parsers.model",
     "assay.result_reports",
 }
-ANALYSIS_DEPS = {"assay", "assay.errors", "assay.git", "assay.mutation", "assay.verify"}
 
 
 def allowed(importer: str, imported: str) -> bool:
     ci, ct = component(importer), component(imported)
     if ci == "cli":
         return True
-    if ci == ct and ci != "analysis":
+    if ci == ct:
         return True
     if ci.startswith("adapter."):
         return imported in ADAPTER_DEPS
     if ci.startswith("parsers."):
         return imported in PARSER_DEPS
-    if ci == "analysis":
-        return imported in ANALYSIS_DEPS
     if ct == "parsers.coverage" and importer == "assay.coverage":
         return True  # format dispatcher
     return imported in CORE_PARSER_SURFACE
@@ -144,7 +139,7 @@ def test_allowed_refuses_and_accepts_the_documented_edges():
         ("assay.adapters.go", "assay.adapters.python"),
         ("assay.coverage_parsers.lcov", "assay.runner"),
         ("assay.evaluate", "assay.coverage_parsers.lcov"),
-        ("assay.verdict", "assay.analysis"),
+        ("assay.verdict", "assay.cli"),  # core must not import the composition root
         ("assay.adapters.sql", "assay.config"),
         ("assay.adapters.go", "assay.runner"),
     ]
@@ -218,8 +213,6 @@ ROOT_PINNED = frozenset(
         "test_gate_qualify_cmru_b006a.py",
         "test_gate_harness_version_pins.py",
         "test_gate_qualify_dstdns_sql.py",
-        "test_analysis.py",
-        "test_analysis_json_framer.py",
         "test_distribution_gate.py",
         "test_distribution_release_wheel.py",
         "test_standalone.py",
@@ -345,3 +338,45 @@ def test_test_modules_import_only_test_modules_in_their_own_folder():
         Path("parsers/coverage/test_coverage_y.py"): "z = 1\n",
     }
     assert cross_folder_test_imports(synthetic) == ["adapters/javascript/test_javascript_x.py imports test_coverage_y"]
+
+
+# --------------------------------------------------------------------------
+# Part 3: the one lazy seam to the analysis package (A-478)
+# --------------------------------------------------------------------------
+
+
+def analysis_import_sites(source: str) -> list[str | None]:
+    """The enclosing ``FunctionDef`` name (``None`` at module level) of every import of ``assay_analysis``."""
+    hits: list[str | None] = []
+
+    def visit(node: ast.AST, enclosing: str | None) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            enclosing = node.name
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            names = [node.module or ""]
+        else:
+            names = []
+        hits.extend(enclosing for name in names if name == "assay_analysis" or name.startswith("assay_analysis."))
+        for child in ast.iter_child_nodes(node):
+            visit(child, enclosing)
+
+    visit(ast.parse(source), None)
+    return hits
+
+
+def test_only_cli_run_analyze_imports_assay_analysis():
+    hits = [
+        (path.relative_to(PROJECT_ROOT).as_posix(), site)
+        for path in sorted(PACKAGE_DIR.rglob("*.py"))
+        for site in analysis_import_sites(path.read_text(encoding="utf-8"))
+    ]
+    assert hits == [("src/assay/cli.py", "_run_analyze")]
+
+
+def test_analysis_import_checker_refuses_a_module_level_import():
+    assert analysis_import_sites("import assay_analysis.cli\n") == [None]
+    assert analysis_import_sites("from assay_analysis import cli\n") == [None]
+    assert analysis_import_sites("def f():\n    from assay_analysis.cli import main\n") == ["f"]
+    assert analysis_import_sites("import assay_analysis_other\nimport json\n") == []

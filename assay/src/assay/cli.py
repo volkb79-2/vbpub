@@ -131,7 +131,6 @@ from .output import (
 from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
-from .analysis import build_analyze_parser, cmd_analyze
 
 __all__ = ["build_parser", "main"]
 
@@ -217,7 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"assay {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    build_analyze_parser(subparsers)
+    subparsers.add_parser("analyze", help="collect and inspect existing review artifacts")
 
     lanes = subparsers.add_parser(
         "lanes",
@@ -453,6 +452,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_analyze(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
+    """(A-478) The only place the judge names assay_analysis; imported only for `analyze`."""
+    from assay_analysis.cli import main as analyze_main
+
+    return analyze_main(argv, stdout=stdout, stderr=stderr)
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -467,7 +473,9 @@ def main(
     raw = list(sys.argv[1:] if argv is None else argv)
     # Analysis owns its record-command separator. Lane argv appending belongs
     # to the existing lane commands and must not consume the recorded command.
-    cli_argv, appended = (raw, []) if raw[:1] == ["analyze"] else _split_appended_argv(raw)
+    if raw[:1] == ["analyze"]:
+        return _run_analyze(raw[1:], out, err)
+    cli_argv, appended = _split_appended_argv(raw)
     args = build_parser().parse_args(cli_argv)
     try:
         if args.command == "lanes":
@@ -482,8 +490,6 @@ def main(
             return _cmd_plan(args, out)
         elif args.command == "verify":
             return cmd_verify(args.path, stdin=inp, stderr=err)
-        elif args.command == "analyze":
-            return cmd_analyze(args, stdout=out, stderr=err)
         else:
             raise AssertionError(f"unhandled command {args.command!r}")
     except AssayError as exc:

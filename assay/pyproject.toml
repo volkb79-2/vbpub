@@ -41,8 +41,14 @@ test = ["pytest>=8", "pytest-cov>=5", "jsonschema>=4", "hypothesis>=6.100"]
 [project.scripts]
 assay = "assay.cli:main"
 
+# The wheel holds both packages (`assay` and `assay_analysis`, A-478) and their
+# schemas, and no tests. Without `package-dir` the egg-info lands at the
+# unignored project root (DIRTY_TREE).
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "analysis/src"]
 
 # A-029: consumers validate an artifact against a JSON Schema shipped AS DATA,
 # without importing assay. Without this stanza the schema exists in the source
@@ -96,8 +102,8 @@ fallback_version = "0.1.0"
 # Developer convenience only. Per A-040 a bare-pytest green is explicitly NOT a
 # ship signal; the gate is `tester-unified` and nothing else.
 [tool.pytest.ini_options]
-pythonpath = ["src"]
-testpaths = ["tests"]
+pythonpath = ["src", "analysis/src"]
+testpaths = ["tests", "analysis/tests"]
 
 [tool.coverage.report]
 # B105 measures every executable production line and branch. Replace coverage.py's

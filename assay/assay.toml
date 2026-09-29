@@ -121,7 +121,6 @@ targets = [
   "src/assay/adapters/sql.py",
   "src/assay/adapters/sql_lex.py",
   "src/assay/adjudication.py",
-  "src/assay/analysis.py",
   "src/assay/attestation.py",
   "src/assay/canary.py",
   "src/assay/candidate_identity.py",
@@ -232,7 +231,6 @@ targets = [
   "src/assay/adapters/sql.py",
   "src/assay/adapters/sql_lex.py",
   "src/assay/adjudication.py",
-  "src/assay/analysis.py",
   "src/assay/attestation.py",
   "src/assay/canary.py",
   "src/assay/candidate_identity.py",
@@ -280,3 +278,47 @@ require_branch = true
 [lanes.self-qualification-preflight.judge.coverage]
 format = "coverage-py-json"
 artifact = ".assay/coverage-self-qualification-preflight.json"
+
+# (A-478) The analysis package's own R0+R1 whole-target lane. `assay analyze`
+# lives in `analysis/src/assay_analysis`, outside the B105 source root
+# `src/assay`, and is measured by its own tests only. A lane has one
+# `judge.mode`, so there is no R2 lane (CD17; analysis R2 is B131).
+[lanes.analysis]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = [
+  "python", "-m", "pytest", "analysis/tests", "-q",
+  "--cov=analysis/src/assay_analysis", "--cov-branch",
+  "--cov-report=json:.assay/coverage-analysis.json",
+]
+env = {}
+env_passthrough = ["PATH"]
+budget = "60m"
+allow_argv_append = false
+
+[lanes.analysis.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+snapshot_history = "shallow"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.analysis.judge]
+language = "python"
+source_roots = ["analysis/src/assay_analysis"]
+mode = "whole_target"
+targets = [
+  "analysis/src/assay_analysis/__init__.py",
+  "analysis/src/assay_analysis/cli.py",
+  "analysis/src/assay_analysis/evidence.py",
+]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+
+[lanes.analysis.judge.coverage]
+format = "coverage-py-json"
+artifact = ".assay/coverage-analysis.json"

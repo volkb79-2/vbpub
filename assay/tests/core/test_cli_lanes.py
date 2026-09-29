@@ -31,19 +31,22 @@ def test_parser_help_and_errors_start_with_the_dynamic_headline(capsys):
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--help"])
-    assert capsys.readouterr().out.splitlines()[0] == cli_headline()
+    top_level_help = capsys.readouterr().out
+    assert top_level_help.splitlines()[0] == cli_headline()
+    assert "analyze" in top_level_help
+
 
 def test_nested_parser_help_and_missing_argument_start_with_the_headline(capsys):
     parser = build_parser()
     with pytest.raises(SystemExit) as help_exit:
-        parser.parse_args(["analyze", "collect", "--help"])
+        parser.parse_args(["run", "--help"])
     help_capture = capsys.readouterr()
     assert help_exit.value.code == 0
     assert help_capture.err == ""
     assert help_capture.out.splitlines()[0] == cli_headline()
 
     with pytest.raises(SystemExit) as error_exit:
-        parser.parse_args(["analyze", "collect"])
+        parser.parse_args(["run"])
     error_capture = capsys.readouterr()
     assert error_exit.value.code == 2
     assert error_capture.out == ""
