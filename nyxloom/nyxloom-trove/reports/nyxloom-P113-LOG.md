@@ -124,3 +124,25 @@ container.
 The combined tester-unified and session-extract gates remain pending at this
 log entry. Their exact commits, verdicts, and any named test containers will
 be added after completion.
+
+## Mutation-plan cap correction — 2026-09-29
+
+Correction to the preceding section: the `candidate_count: 600` plan used the
+lane's then-configured cap of 599, so 600 was the `max_mutants + 1` refusal
+sentinel, not the complete candidate total. Raising the committed cap to 600
+then produced 601, another sentinel. Neither result was treated as a complete
+plan for launching R2.
+
+For a complete source-backed count, created a disposable detached worktree at
+P113 source commit `dbc63553`, committed a temporary `max_mutants = 1000`
+ceiling as `4da72fa2`, and ran `assay plan session-extract` there. The plan
+returned 642 candidates: 77 boolean-constant, 208 boolean-operator, 303
+comparison, and 54 falsy-swap. Its serial upper bound is 77,040 seconds
+(21h24m) at 120 seconds per candidate. The temporary worktree was removed.
+
+Updated the final lane to `max_mutants = 642` and a 24-hour budget, leaving
+2h36m above the serial bound for baseline and verdict work. The lane includes
+`tests/test_session_extract_cli_acceptance.py`, so its new complete JSON and
+prose CLI goldens run against the changed session-extraction code. The
+committed exact-cap plan is to be checked before starting R2. No mutation
+campaign or test container has started on the combined P113/P114 revision.
