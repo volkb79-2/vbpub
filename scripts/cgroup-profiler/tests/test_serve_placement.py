@@ -413,6 +413,36 @@ class TestWriteGuard:
             "/docker-short.scope", CONTAINER_ID,
         )
 
+    def test_container_leaf_rejects_malformed_claimed_ids(self):
+        assert not placement.container_cgroup_matches_id(
+            "/docker-" + CONTAINER_ID + ".scope", "short",
+        )
+        assert not placement.container_cgroup_matches_id(
+            "/docker-" + CONTAINER_ID + ".scope", 64,
+        )
+
+    def test_container_leaf_requires_an_absolute_string_path(self):
+        assert not placement.container_cgroup_matches_id(
+            "docker-" + CONTAINER_ID + ".scope", CONTAINER_ID,
+        )
+        assert not placement.container_cgroup_matches_id(None, CONTAINER_ID)
+
+    def test_uncomparable_realpaths_fail_closed(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+
+        def uncomparable(_paths):
+            raise ValueError("paths have incompatible roots")
+
+        monkeypatch.setattr(placement.os.path, "commonpath", uncomparable)
+        guard = placement.CgroupWriteGuard(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            origin_cgroup=None, leaf_name=None,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+        )
+        assert guard.container_kill_abs is None
+
     def test_a_leaf_cgroup_kill_only_accepts_the_literal_enforcement_value(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         leaf = _leaf(root)
@@ -513,6 +543,23 @@ class TestTargetContainerKill:
         assert (target / "cgroup.kill").read_text() == "1"
         assert logs and "event row could not be recorded" in logs[-1]
 
+    def test_event_sink_failure_without_a_log_sink_preserves_kill_result(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+
+        def broken_event_sink(_path, _value):
+            raise OSError("session storage unavailable")
+
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True,
+            on_write=broken_event_sink,
+        )
+        assert killer.kill() is True
+        assert (target / "cgroup.kill").read_text() == "1"
+
     def test_unverified_or_unbounded_gates_slice_refuses_without_writing(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         target = _container_cgroup(root)
@@ -558,6 +605,22 @@ class TestTargetContainerKill:
         assert logs and "gates-slice proof failed" in logs[-1]
         assert (target / "cgroup.kill").read_text().strip() == "0"
 
+    def test_a_unit_verifier_exception_fails_closed_without_a_log_sink(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+
+        def broken_verifier(_unit, _path):
+            raise OSError("systemd unavailable")
+
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID, slice_unit_verifier=broken_verifier,
+        )
+        assert killer.kill() is False
+        assert killer.refusal_reason == "gates-slice-unverified-or-unbounded"
+        assert (target / "cgroup.kill").read_text().strip() == "0"
+
     def test_target_path_must_encode_the_exact_container_id(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         target = _container_cgroup(root, "e" * 64)
@@ -598,6 +661,20 @@ class TestTargetContainerKill:
         assert killer.kill() is False
         assert killer.refusal_reason == "target-cgroup-kill-write-failed"
         assert logs and "exact container cgroup.kill refused" in logs[-1]
+
+    def test_a_cgroup_kill_write_error_without_a_log_sink_is_reported(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        (target / "cgroup.kill").unlink()
+        (target / "cgroup.kill").mkdir()
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True,
+        )
+        assert killer.kill() is False
+        assert killer.refusal_reason == "target-cgroup-kill-write-failed"
 
     @pytest.mark.parametrize("events", ["populated 0", None, "malformed"])
     def test_empty_or_unreadable_target_is_not_reported_as_killed(
@@ -1625,12 +1702,13 @@ class TestRelease:
         root = _fake_cgroup_root(tmp_path)
         slept: List[float] = []
         attempts: List[str] = []
+        logged: List[str] = []
 
         def _refuse(path: str) -> None:
             attempts.append(path)
             raise OSError(16, "Device or resource busy", path)
 
-        plc = _placement(root, rmdir=_refuse, sleep=slept.append)
+        plc = _placement(root, rmdir=_refuse, sleep=slept.append, log=logged.append)
         plc.apply([])
         plc.release()
         assert len(attempts) == placement.RMDIR_ATTEMPTS
@@ -1641,6 +1719,7 @@ class TestRelease:
         # The leaf is still NAMED: it really is on the host, and an operator
         # reading the Summary has to be able to find it.
         assert plc.block()["leaf"] == f"{GATES_CGROUP}/{LEAF_NAME}"
+        assert logged and "could not remove leaf" in logged[-1]
 
     def test_releasing_an_unplaced_placement_is_a_no_op(self, tmp_path):
         plc = _placement(_fake_cgroup_root(tmp_path, gates=False))
@@ -1677,6 +1756,20 @@ class TestLeafReadingsAndKill:
         plc.apply([101])
         assert plc.kill() is True
         assert (_leaf(root) / "cgroup.kill").read_text() == "1"
+
+    def test_incomplete_placement_is_logged_and_never_killed(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        logged: List[str] = []
+        plc = _placement(root, log=logged.append)
+        plc.apply([101])
+        # A real cgroup exposes this controller file even before the first
+        # write; the fake cgroup helper creates it only when requested.
+        (_leaf(root) / "cgroup.kill").write_text("0")
+        plc.error = placement.write_failed("simulated-incomplete-placement")
+
+        assert plc.kill() is False
+        assert (_leaf(root) / "cgroup.kill").read_text() == "0"
+        assert logged and "placement is incomplete" in logged[-1]
 
     def test_a_preexisting_leaf_is_refused_even_without_caps(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -1741,6 +1834,49 @@ class TestLeafReadingsAndKill:
 # ── §8.3 through the daemon: start / status / watch / stop ──────────────
 
 class TestServerPlacement:
+    def test_live_token_session_reuse_rejects_a_policy_change(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path, procs="101\n")
+        server = _server(tmp_path, root)
+        started = server._dispatch({
+            "verb": "start", "args": _start_args(on_stall="report"), "contract": 1,
+        })
+        assert started["ok"] is True
+
+        response = server._dispatch({
+            "verb": "start", "args": _start_args(on_stall="kill"), "contract": 1,
+        })
+
+        assert response["ok"] is False
+        assert response["error"]["code"] == "bad-policy"
+        assert "different scope or liveness policy" in response["error"]["message"]
+
+    @pytest.mark.parametrize("placement_state", ["missing", "released", "incomplete"])
+    def test_shared_kill_reuse_requires_an_eligible_leaf(
+        self, tmp_path, placement_state,
+    ):
+        root = _fake_cgroup_root(tmp_path, procs="101\n")
+        server = _server(tmp_path, root)
+        started = server._dispatch({
+            "verb": "start",
+            "args": _start_args(on_stall="report", place=placement_state != "missing"),
+            "contract": 1,
+        })
+        assert started["ok"] is True
+        sess = server._sessions[SESSION_ID]
+        sess.watch.policy = liveness.parse_policy({"on_stall": "kill"})
+        if placement_state == "released":
+            sess.placement.release()
+        elif placement_state == "incomplete":
+            sess.placement.error = placement.write_failed("simulated-incomplete-leaf")
+
+        response = server._dispatch({
+            "verb": "start", "args": _start_args(on_stall="kill"), "contract": 1,
+        })
+
+        assert response["ok"] is False
+        assert response["error"]["code"] == "bad-policy"
+        assert "no verified kill leaf" in response["error"]["message"]
+
     def test_placement_refusal_is_logged_but_success_is_silent(self, tmp_path, monkeypatch):
         logs: List[str] = []
         monkeypatch.setattr(serve.SessionServer, "_log", staticmethod(logs.append))
@@ -1765,6 +1901,41 @@ class TestServerPlacement:
         )
         assert success.placement.placed is True
         assert logs == []
+
+    def test_shared_kill_refusal_logs_manifest_failure_and_incomplete_cleanup(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path, procs="101\n")
+        logs: List[str] = []
+        real_apply = placement.LanePlacement.apply
+
+        def partial_apply(lane, pids):
+            real_apply(lane, pids)
+            lane.error = placement.write_failed("simulated-partial-placement")
+
+        monkeypatch.setattr(placement.LanePlacement, "apply", partial_apply)
+        monkeypatch.setattr(
+            placement.LanePlacement, "_move_survivors_back",
+            lambda _lane, _leaf: False,
+        )
+        monkeypatch.setattr(
+            serve.store.RunDir, "write_manifest",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+        )
+        monkeypatch.setattr(serve.SessionServer, "_log", staticmethod(logs.append))
+        server = _server(tmp_path, root)
+
+        response = server._dispatch({
+            "verb": "start",
+            "args": _start_args(on_stall="kill"),
+            "contract": 1,
+        })
+
+        assert response["ok"] is False
+        assert response["error"]["code"] == "bad-policy"
+        assert "cleanup was incomplete" in response["error"]["message"]
+        assert server._sessions == {}
+        assert any("could not persist placement refusal" in row for row in logs)
 
     def test_start_places_the_lane_and_every_document_carries_the_block(self, tmp_path):
         root = _fake_cgroup_root(tmp_path, procs="101\n")
@@ -1913,6 +2084,19 @@ class TestPlacedKill:
         sess.watch.reason = "no activity"
         return root, server, sess
 
+    def test_observed_stall_runs_the_requested_enforcement_path(self, tmp_path, monkeypatch):
+        root, server, sess = self._stalled_session(tmp_path)
+        (_leaf(root) / "cgroup.procs").write_text("101\n")
+        monkeypatch.setattr(sess.watch, "observe", lambda _sample: None)
+
+        server._observe_liveness(
+            sess, mono=1.0, record={}, abs_target=str(root / SCOPE_CGROUP),
+            target_metrics={}, host_metrics={}, pids=[101],
+        )
+
+        assert sess.watch.verdict == liveness.VERDICT_KILLED
+        assert sess.finished is True
+
     def test_a_placed_session_dies_by_cgroup_kill_not_by_pid(self, tmp_path, monkeypatch):
         """§8.4: one write to the leaf's `cgroup.kill`, which the kernel
         applies atomically — it cannot miss a pid that forked between the
@@ -2023,6 +2207,22 @@ class TestPlacedKill:
         assert "kill-refused:lane-leaf-cgroup-kill-refused" in sess.watch.reason
         assert sess.finished is False
 
+    def test_incomplete_shared_placement_is_refused_without_pid_fallback(
+        self, tmp_path, monkeypatch,
+    ):
+        _root, server, sess = self._stalled_session(tmp_path)
+        sess.placement.error = placement.write_failed("simulated-incomplete-leaf")
+        monkeypatch.setattr(
+            serve.os, "kill",
+            lambda *_args: pytest.fail("incomplete placement must never signal a PID"),
+        )
+
+        server._enforce_stall_kill(sess, [4242])
+
+        assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert "kill-refused:placement-incomplete" in sess.watch.reason
+        assert sess.finished is False
+
     def test_container_scope_kills_only_its_exact_gates_cgroup(
         self, tmp_path, monkeypatch,
     ):
@@ -2058,6 +2258,39 @@ class TestPlacedKill:
         assert sess.watch.verdict == liveness.VERDICT_KILLED
         assert f"cgroup.kill applied to exact target {target_cgroup}" in sess.watch.reason
         assert sess.finished is True
+
+    def test_container_scope_runtime_kill_refusal_is_reported(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        target_cgroup = "/" + target.relative_to(root).as_posix()
+        monkeypatch.setattr(
+            serve.targets_mod, "find_container_cgroup",
+            lambda _container_id, root: target_cgroup,
+        )
+        server = _server(tmp_path, root)
+        started = server._dispatch({
+            "verb": "start",
+            "args": _start_args(
+                scope="container", token=None, place=False, on_stall="kill",
+            ),
+            "contract": 1,
+        })
+        assert started["ok"] is True
+        sess = server._sessions[SESSION_ID]
+        sess.watch.state = liveness.STATE_STALLED
+        sess.watch.reason = "no activity"
+        (target / "cgroup.events").write_text("populated 0\n")
+        monkeypatch.setattr(
+            serve.os, "kill",
+            lambda *_args: pytest.fail("container refusal must never signal a PID"),
+        )
+
+        server._enforce_stall_kill(sess, [4242])
+
+        assert (target / "cgroup.kill").read_text().strip() == "0"
+        assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert "kill-refused:target-cgroup-empty-or-unreadable" in sess.watch.reason
+        assert sess.finished is False
 
     def test_container_scope_kill_refuses_a_target_outside_gates(
         self, tmp_path, monkeypatch,

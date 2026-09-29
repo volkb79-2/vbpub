@@ -1056,22 +1056,22 @@ class SessionServer:
         authorizes only one kill-file write on the runtime cgroup whose leaf
         name proves this exact container ID beneath the verified gates slice.
         """
-        def on_write(relative_path: str, value: str) -> None:
-            if rundir is None:
-                return
-            rundir.append("events", events_mod.Event(
-                t=self.clock(), mono=0.0, kind="cgroup_write", severity="info",
-                target="/" + relative_path,
-                message=f"container enforcement wrote {value!r} to /{relative_path}",
-                data={"file": "/" + relative_path, "value": value},
-            ).to_dict())
+        on_write = None
+        if rundir is not None:
+            def on_write(relative_path: str, value: str) -> None:
+                rundir.append("events", events_mod.Event(
+                    t=self.clock(), mono=0.0, kind="cgroup_write", severity="info",
+                    target="/" + relative_path,
+                    message=f"container enforcement wrote {value!r} to /{relative_path}",
+                    data={"file": "/" + relative_path, "value": value},
+                ).to_dict())
 
         return placement_mod.TargetContainerKill(
             cgroup_root=self.cgroup_root,
             gates_cgroup=targets_mod.slice_to_path(self.gates_slice_name),
             container_cgroup=cgroup, container_id=container_id,
             slice_unit_verifier=self._verify_gates_slice_unit,
-            on_write=on_write if rundir is not None else None,
+            on_write=on_write,
             log=self._log,
         )
 

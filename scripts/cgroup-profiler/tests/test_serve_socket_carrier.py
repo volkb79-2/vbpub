@@ -477,6 +477,22 @@ def scenario(tmp_path, monkeypatch, capsys):
 # ── §8.1: one wire shape, nothing else ──────────────────────────────────
 
 class TestWireShape:
+    def test_request_line_limits_must_be_usable(self, tmp_path):
+        with pytest.raises(ValueError, match="request_line_timeout must be positive"):
+            serve.SessionServer(
+                sessions_dir=str(tmp_path / "sessions"), request_line_timeout=0,
+            )
+        with pytest.raises(ValueError, match="max_request_line_bytes must be at least 2"):
+            serve.SessionServer(
+                sessions_dir=str(tmp_path / "sessions"), max_request_line_bytes=1,
+            )
+
+    def test_wire_object_keys_must_be_strings(self, tmp_path):
+        server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+        response = server._dispatch({1: "version"})
+        assert response["error"]["code"] == "bad-argument"
+        assert "keys must be strings" in response["error"]["message"]
+
     def test_malformed_json_wire_values_get_bad_argument_and_server_survives(
         self, tmp_path
     ):
@@ -574,6 +590,31 @@ class TestWireShape:
         assert conn.closed is True
         assert conn.sent == []
         assert now[0] == pytest.approx(0.6)
+
+    def test_deadline_expiring_before_recv_closes_without_dispatch(self, tmp_path):
+        readings = iter([0.0, 0.0, 0.5])
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), request_line_timeout=0.5,
+            request_clock=lambda: next(readings),
+        )
+        conn = _FakeConn([_wire_bytes("version")])
+
+        server._handle_connection(conn)
+
+        assert conn.closed is True
+        assert conn.sent == []
+
+    def test_oversized_complete_line_is_refused_by_its_newline_length(self, tmp_path):
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), max_request_line_bytes=8,
+        )
+        conn = _FakeConn([b"12345678\n"])
+
+        server._handle_connection(conn)
+
+        response = conn.reply()
+        assert response["error"]["code"] == "bad-argument"
+        assert "exceeds 8 bytes" in response["error"]["message"]
 
     def test_request_line_size_is_bounded(self, tmp_path):
         socket_path = str(tmp_path / "run" / "ctl.sock")

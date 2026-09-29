@@ -1746,3 +1746,25 @@ At the adjacent resource sample memory `full avg10` was 0.00 and load average
 was 3.05. This makes a private-namespace review probe feasible, but it is not
 live enforcement or DAMON-overhead evidence. Exact-tip gates, changed-area
 coverage, live probes, fresh Sol review, P6 R2 and full gate remain open.
+
+## Session 26 — 2026-09-29 05:11:05Z — coverage repair after exact-tip R0/R1
+
+The registered `r0-r1` on clean tree
+`2d555fe12516fb14d5cd8104d28563f089322056` exited 2 after 108.44 seconds.
+All **1,779 tests passed**, but branch-aware coverage was 99%: 6,351/6,375
+statements covered and 2,233/2,252 branches fully covered (24 missed
+statements and 19 partial branches). The run-gate history record independently
+confirms the exact commit, clean tree, and exit. Misses were in
+`lib/placement.py` lines 222, 224, 341–342, 836–841, and 882, plus partial
+arcs at 477, 496, and 504; and in `lib/serve.py` lines 373, 375, 729–731,
+738–740, 885–887, 1061, 1423, 1452, 1469–1470, 2001–2003, 2169–2173, and
+2183, including a partial branch at 891–894.
+
+The current repair adds focused behavioral cases for those paths and removes
+an unreachable no-session audit-callback branch by defining that callback only
+when a session directory exists. The fake placement fixture now creates the
+`cgroup.kill` interface file before checking that an incomplete placement
+leaves it unchanged. Local iteration of `test_serve_placement.py` and
+`test_serve_socket_carrier.py` passed **236 tests in 21.82 seconds**. This is
+not registered coverage evidence; final clean-tip `r0-r1` and `r3` remain
+required after committing these documentation and test changes.
