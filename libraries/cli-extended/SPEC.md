@@ -518,6 +518,15 @@ Tests should exercise the real entrypoint or module invocation, not only helper
 functions. A controlled bad input must demonstrate that each safety/error
 oracle actually goes red before the fix.
 
+Every adoption MUST keep two contracts distinct: the generated grammar
+inventory and the product's semantic command inventory. The product's
+canonical specification MUST account for every supported leaf verb and
+option, including shared/hidden options, accepted values, defaults and
+omission, selection scope, valid/refused combinations, effects, dry-run and
+confirmation boundaries, and output/status behavior. A registry/help
+synchronization test proves only that the declared syntax is current;
+behavioral tests must prove the declared effects and refusals.
+
 ## 10. Implementation guidance
 
 The standard does not require a particular CLI framework. Python's standard
@@ -578,17 +587,25 @@ repository-root import path would make a standalone CLI work only from this
 checkout.
 
 Existing project-local helpers (`ciu.cli_utils`, `cmru.cli_support`, and
-nyxloom's parser classes) remain useful migration evidence, but keeping three
+nyxloom's parser classes) remain useful migration evidence, but keeping
 independent implementations would recreate the drift this standard is
-intended to prevent. The Debian installer and the three Netcup entrypoints are
-the first adopted consumers; larger CLIs remain follow-on migrations with
-compatibility tests.
+intended to prevent. First-party adopters include the CMRU operator scripts
+and active handler adapter, the Debian installer, and the three Netcup
+entrypoints. Larger CLIs remain follow-on migrations with compatibility
+tests.
 
 ## 11. Further contract areas
 
 The following areas should be covered by the standard or explicitly marked
 tool-specific before a CLI is considered fully adopted:
 
+- **semantic command contract:** each leaf's purpose, selectors, accepted
+  values, defaults/omission, option interactions, effects, confirmation and
+  dry-run behavior, and output/status. Keep the full table in the product's
+  canonical specification; the shared registry cannot infer domain truth;
+- **distributed entrypoints:** installed scripts, active module CLIs,
+  project-step/bootstrap adapters, library APIs, and generated standalone
+  tools, including which ones are supported from the built wheel;
 - **stdin and prompts:** prompt defaults, EOF, non-TTY behavior, and whether
   `--yes` is required or merely optional for each mutation;
 - **configuration precedence:** the documented order among command-line
@@ -613,16 +630,16 @@ tool-specific before a CLI is considered fully adopted:
 
 ## 12. Adoption inventory
 
-This is an adoption plan, not a claim that all current tools already conform.
-The current scoped review covers the Debian installer and the Netcup tools;
-other rows remain future work and were not re-audited here.
+This is an adoption inventory, not a claim that all current tools conform.
+The current scoped reviews cover CMRU, the Debian installer, and the Netcup
+tools; other rows remain future work and were not re-audited here.
 
 | CLI | Main adoption work |
 |---|---|
 | `debian-install-v2.py` | adopted through `cli-extended` for registry, help/version, common options, output, and dispatch; `bootstrap-remote.py` is the documented stdlib-only bootstrap exception |
 | Netcup `scp-api.py`, `install-host.py`, `monitor-task.py` | adopted through `cli-extended` for generated verbs/help, identity/version, common diagnostics, and clean cancellation; Netcup retains API, confirmation, denylist, and install policy |
 | `ciu` | align `help` verb and remove `-h`; retain its strong grouped/help model |
-| `cmru` | scope options to the selected verb; align `help`, `--yes`, and exception behavior |
+| `cmru`, `cmru-agent`, `cmru-controller`, `python -m cmru.handlers` | use the registered grammar and generated help; the CMRU SPEC records the semantic review. The active handler module is a project-step/bootstrap CLI; bundle and runner remain libraries; standalone generated `get.py` intentionally retains argparse. |
 | `nyxloom` | make bare invocation exit `0`; remove flat parser list; align version output and `help` |
 | other `scripts/` CLIs | audit and adopt the same contract when they are user-facing |
 

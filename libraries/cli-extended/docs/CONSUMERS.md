@@ -112,6 +112,57 @@ distinct from `watch`. Keep cancellation in the API-owning CLI if it already
 owns task mutations; do not create two interfaces for the same operation by
 default.
 
+### Review caller surfaces and command semantics
+
+Treat adoption as a product interface review, not a mechanical translation
+of the old parser. `CliRegistry` keeps declared syntax, help, and dispatch in
+sync; it cannot decide which workflows deserve verbs, what a missing option
+means, or which effects a command performs.
+
+Before implementation, inventory every shipped caller surface: installed
+console scripts, supported `python -m` entrypoints, repository or project-step
+adapters, bootstrap commands, public Python APIs, and generated standalone
+tools. Classify each surface by its intended caller, whether it is installed in
+the wheel, and the contract it owns. A module may be a library without being a
+CLI; an active module adapter may be required by project contracts even when
+operators rarely invoke it. Remove a spelling only after confirming that it
+adds no distinct caller workflow, then document the supported replacement.
+
+For each supported CLI and leaf verb, keep a product-owned semantic table in
+the canonical product specification. Record the use case; positional
+selectors; accepted values and defaults; what omission means; selection
+scope; valid and refused option combinations; filesystem, state, network, and
+credential effects; dry-run and confirmation boundaries; output and exit
+status; and the decision behind the public spelling. This semantic record
+complements the registry's generated grammar. It does not belong in a generic
+library because its truth comes from the owning product.
+
+Use `OptionSpec` metadata for constraints argparse can express, such as
+choices and required mutually exclusive alternatives. Conditional rules such
+as “`--dry-run` requires `--update`” need an explicit refusal when the
+condition is false; do not accept an option and then ignore it. Keep domain or
+configuration-dependent checks in the consumer handler, and include the
+condition in help and the semantic table. Override `VerbSpec.synopsis` only
+when the actual syntax cannot be represented by the declared grammar, then
+test both the displayed synopsis and accepted/rejected invocations.
+
+Test effects at the owning boundary. A dry-run oracle should assert the
+complete planned actions and that none of the mutations declared by the
+product contract occurred. State separately whether read-only subprocesses,
+network access, or credential reads are part of plan derivation. Confirmation
+should follow validation and describe that same complete plan; `--yes` should
+bypass only that confirmation. Exercise handlers through the registry so tests receive the
+registered defaults. If a test calls a handler directly, provide the complete
+namespace shape rather than adding fallback reads that hide a mismatch between
+the handler and parser.
+
+Finally, test the built wheel from outside the source checkout. Invoke every
+installed script and supported module CLI, and exercise bootstrap/project-step
+entrypoints in the environment that actually uses them. Test generated
+standalone tools in their own runtime. CMRU's [canonical CLI semantic audit](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
+shows one way to keep the grammar inventory and product-owned behavior review
+together without treating Python libraries as executable commands.
+
 The `show`/`watch` example is the shape used by the Netcup task monitor. The
 Netcup `scp-api.py`, `install-host.py`, and `monitor-task.py` entrypoints now
 use `cli-extended` for parser setup, grouped help, common options, dispatch,

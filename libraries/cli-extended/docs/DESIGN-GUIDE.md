@@ -126,6 +126,40 @@ has distinct operator actions, explicit verbs make those differences
 discoverable and testable rather than hiding them behind a positional UUID or
 mode flag.
 
+## A registry is not the product contract
+
+One registry can make parser constraints, help text, and dispatch agree. It
+cannot determine whether the product has the right verbs, whether a group
+matches the operator's workflow, what omission means, or whether an option's
+help matches its side effects. Those are product decisions, so adoption should
+revisit the public workflow instead of preserving every old spelling by
+default.
+
+Keep the product's semantic CLI inventory beside its normative specification
+and update it with every interface change. That record should state each
+verb's caller and purpose, accepted selectors and defaults, option
+interactions, refused combinations, effects, dry-run and confirmation
+boundaries, and output/status contract. Generated help and a registry
+inventory test prove that the declared grammar is synchronized; behavior
+oracles must still prove that each accepted option does what it claims.
+
+This boundary is especially useful for mixed operations. A syntax library can
+express choices, required values, and mutually exclusive options, but a rule
+such as “preview is meaningful only when an update was selected” is an
+application contract. The consumer must refuse a meaningless combination and
+test the refusal before any side effect. Likewise, the library can provide a
+default-no confirmation prompt, but only the product can build the complete
+plan, validate it, describe it, and ensure `--yes` authorizes exactly that
+plan.
+
+An adoption review should also enumerate all distributed callers before
+removing an interface. Installed console scripts, active module adapters,
+bootstrap and project-step commands, Python libraries, and generated
+standalone tools can have different availability and support contracts. CMRU's
+review kept its active handler adapter and library APIs, removed unused module
+CLI aliases, and retained standalone `get.py` parsing because it runs without
+the CMRU wheel.
+
 ## Prove the shared contract at each rigor level
 
 The package gate separates ordinary behavior and coverage (R0/R1), mutation

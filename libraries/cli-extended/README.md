@@ -302,5 +302,6 @@ cd libraries/cli-extended
 ./run-gate.py gate
 ```
 
-The Debian installer and the Netcup entrypoints are the current first-party
-adopters in this scoped migration.
+CMRU, the Debian installer, and the Netcup entrypoints are current first-party
+adopters. The consumer guide explains how to inventory shipped entrypoints and
+review each product's command semantics before registering its grammar.

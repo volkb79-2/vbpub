@@ -28,3 +28,32 @@ example and contract coverage when implemented.
 primary stdout rendering and currently implements terminal detection in its
 CLI; this surfaced the adoption gap while reviewing whether it could reuse
 cli-extended's existing TTY/`NO_COLOR` policy.
+
+## CLI-EXT-02 — evaluate declarative conditional option constraints
+
+**Status:** Open
+
+**Type:** Feature investigation
+
+**Area:** Grammar metadata and validation
+
+The registry can express choices, required values, and required or optional
+mutually exclusive groups. A consumer may still need rules such as “`--dry-run`
+requires `--update`/`--write`/`--refresh`” or “this option applies only when a
+particular mode is selected.” CMRU's adoption review found several such
+relationships implemented as post-parse handler checks. If an accepted option
+has no effect in an unsupported combination, the parser can be syntactically
+correct while the CLI contract is semantically false.
+
+Evaluate a structured way to declare simple option dependencies and
+forbidden combinations so the registry can reject them consistently and
+reflect them in generated help/reference metadata. Keep rules that depend on
+loaded product configuration, runtime state, or domain data in the consumer.
+Before adding a public API, confirm that the same relationship is needed by
+more than one consumer and define how it composes with optional commands,
+delegated registries, global options, custom parsers, and synopsis generation.
+The consumer still owns the reason for the rule and its user-facing remedy.
+
+**Provenance:** CMRU's semantic audit found selector-gated dry-run options and
+mode-dependent helper inputs; see
+[`CMRU S-CLI.9`](../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
