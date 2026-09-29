@@ -124,6 +124,14 @@ items:
   - {id: B120, title: "B110 P10: native Python equivalence ledger with stable site anchors and a same-commit ledger audit", type: feature, component: mutation, context_estimate: large}
   - {id: B121, title: "B110 P11: isolation-unit execution model for R2 (decision-gated fallback)", type: feature, component: mutation, context_estimate: large}
   - {id: B122, title: "Pluggable per-candidate scratch provider (write / reflink / filesystem-snapshot backends) with a prepared read-only base, lane declaration and verdict disclosure", type: feature, component: isolation, context_estimate: large}
+  - {id: B123, title: "Wave A: judge tests vs tooling tests -- move gate/release/packaging tests to gate/tests/, B105 lanes collect tests/ only, B105 binds a same-commit tester-unified pass (S1), drop --override-ini", type: refactor, component: tests, context_estimate: medium}
+  - {id: B124, title: "Wave A: retire cross-project qualification from assay (Topos P25 harness + 1.2.5 smoke, CMRU B006(a) harness, dstdns checkout dependency)", type: refactor, component: gate, context_estimate: medium}
+  - {id: B125, title: "Wave A: latest schema only -- retire historical verdict/lane schema gate phases and frozen templates; one refusal check per schema", type: refactor, component: gate, context_estimate: small}
+  - {id: B126, title: "Wave A: self-contained SQL/DDL qualification with assay-owned schemas and PostgreSQL container, broader situations, deduplicated cases", type: feature, component: sql, context_estimate: medium}
+  - {id: B127, title: "Wave A: move assay analyze into its own package in assay's distribution, with own tests and lane, outside B105's judge scope", type: refactor, component: analysis, context_estimate: medium}
+  - {id: B128, title: "Wave A: shallow snapshot for both B105 lanes once no test reads repository history", type: refactor, component: isolation, context_estimate: small}
+  - {id: B129, title: "Wave A: DRY consolidation of repeated judge rules (shared record decorator + reflective contract test, guard helpers, per-rigor helpers)", type: refactor, component: core, context_estimate: medium}
+  - {id: B130, title: "Wave A: component boundary map and import contracts; measure cross-component test coupling for a possible component-scoped R2", type: research, component: architecture, context_estimate: small}
 ---
 
 # assay — backlog
@@ -11596,3 +11604,73 @@ It changes the declared execution semantics (cross-file order dependence stops c
 - research `reports/b110/research/R10-snapshot-structural.md` §2–§4;
 - `reports/b110/research/R9-heavy-tests-structural.md` RC4–RC6;
 - `nyxloom/reference/TESTING-METHODOLOGY.md` "Host ZFS lifecycle".
+
+## Wave A (A-479): structure before the next release
+
+**Filed 2026-09-29 by operator decision.** All packages land in `assay-b110-landing`, which merges to main after the B107 fix. Plan and briefs: `reports/assay-WAVE-A-PLAN-2026-09-29.md`.
+
+## B123 — judge tests vs tooling tests, and the same-commit release-gate binding
+
+**Status: OPEN (A-476).**
+- Move tests of the gate script, release builder, installed wheel/zipapp and packaging into `gate/tests/`. The registered gate runs both trees.
+- The B105 lanes collect `tests/` only and lose their `--ignore`/`--deselect` lists, except deselections that still apply to judge tests.
+- B105's definition of done and `tools/b105_report_check.py` require a registered `tester-unified` pass at the same commit.
+- Drop `--override-ini=pythonpath=src` and add a `pyproject.toml` drift test (A-468(c)).
+- This supersedes B112's ignore approach. B112's `zz_slow` tiering is re-decided after the split using P0's setup timings.
+
+## B124 — retire cross-project qualification from assay
+
+**Status: OPEN (A-475).** Remove:
+- the Topos P25 harness, its test file, the `topos-qualified` gate phase and the 1.2.5-wheel smoke, including the release-manifest fixtures used only by them;
+- the CMRU B006(a) harness, its tests and the `cmru-b006a-qualified` phase;
+- the dstdns-checkout dependency of SQL qualification (replaced by B126).
+
+Update the P25/P33 carve-asset locks, the docs, and the decisions they reference (A-205 superseded). Consumers qualify their own assay use.
+
+## B125 — latest schema only
+
+**Status: OPEN (A-477).**
+- Retire the historical gate phases (verdict v5, lane schema v2 successors, the v6–v12 hard cut, the v13 P25/successor checks) and their frozen templates.
+- Keep one refusal test per schema proving that a non-current version is refused.
+- Identify any code path that still accepts or migrates an old version. Remove it if no current consumer needs it, or report it for a decision.
+
+## B126 — self-contained SQL/DDL qualification
+
+**Status: OPEN (A-480).**
+- Replace the dstdns-based SQL evidence with assay-owned schema fixtures (tables, constraints, triggers, indexes, views and functions as the adapter supports) and an assay-managed PostgreSQL container.
+- Cover more mutation situations than the dstdns corpus did.
+- Remove cases that exercise the same operator on the same construct without new information.
+- Record which situations are covered.
+
+## B127 — `assay analyze` as its own package
+
+**Status: OPEN (A-478).**
+- Move `src/assay/analysis.py` and its tests into a separate top-level package with its own folder, tests and lane. It ships in the same wheel and zipapp.
+- Dependency is one-way (analysis → assay). `assay analyze` keeps working through a lazy CLI dispatch.
+- B105's scope and `b105_report_check.py` name the judge package explicitly.
+- B108 phase 1 (P8) is built in this package.
+
+## B128 — shallow snapshot for B105
+
+**Status: OPEN (reuse report S4; after B124 removes the only history reader).**
+- Set `snapshot_history = "shallow"` in both B105 lanes.
+- Update the `test_self_lane.py` pin and the lane comment.
+- Drift proof: one preflight showing the same collected, passed and skipped counts, with the `build_release` cases run, not skipped. If B123 moves those cases to `gate/tests/`, the proof covers the remaining repository-dependent judge tests instead.
+
+## B129 — DRY consolidation of repeated judge rules
+
+**Status: OPEN (reuse report S9; research R11 #1–#4).** Four changes:
+- a shared record decorator for the 148 `frozen`/`kw_only` dataclass flags, plus a reflective contract test (the former A-468(d));
+- per-side guard helpers for typed-field checks;
+- per-rigor "judgment present iff attempted" helpers, one per trust side;
+- the remaining same-side repeated decisions.
+
+Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookups or regexes merely to lower the mutant count is not allowed.
+
+## B130 — component boundaries
+
+**Status: OPEN, research (operator question 2026-09-29: "when we test python, the tests for react/go do not run?").**
+- Map assay's components: core judge, per-language adapters, coverage/mutation/result parsers, analysis, gate tooling.
+- Add import contracts (for example, adapters depend only on core; core reaches adapters only through the registry).
+- Measure cross-component coupling: which tests execute which component's code, including through the registry and subprocesses, and whether any adapter's mutants are killed only by other components' tests.
+- Output: a recommendation on a component-scoped R2 model ("each component's mutants are killed by its own partition"). It would be a declared claim change like B121 and would need its own decision.
