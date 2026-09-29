@@ -53,6 +53,13 @@ Everything else under `tests/**/test_*.py` is judge (C2: the static source sweep
 | `src/assay/vocabulary.py:25` | `tests/test_verdict_schema_is_packaged.py` | `tests/core/test_verdict_schema_is_packaged.py` (the vocabulary half) |
 | `src/assay/vocabulary.py:294`, `:333` | `tests/test_config_statement_attribution_format.py`, `tests/test_adjudication_registry.py` | `tests/core/...` |
 
+Outside `src/assay`, also forbidden to W4 and listed for their owners:
+
+| Where | Names | Now | Owner |
+|---|---|---|---|
+| `gate/distribution/build_release.py:25` | `tests/test_distribution_build_release.py` | `gate/tests/test_distribution_build_release.py` | the next package allowed to touch `gate/distribution/` (W10 list) |
+| `gate/python/qualify_dstdns_sql.py:47` | `tests/test_gate_qualify_dstdns_sql.py` | `gate/tests/test_gate_qualify_dstdns_sql.py` | W5 (replaces this harness) |
+
 ## Anything a later package must know
 - W5 edits `gate/tests/test_gate_qualify_dstdns_sql.py` in place. W7 edits `gate/tests/test_self_lane.py` (the `snapshot_history == "full"` pin is kept) and `assay.toml`. W8 extends `tools/b105_report_check.py` (its CLI now has `--receipt-only` and `--tester-unified-receipt`, and the nine old flags are optional, checked by hand).
 - New tooling tests import from `gate.tests.support` (never `from conftest import` for tooling helpers); the loader is by module name `assay_judge_conftest`.
