@@ -4961,3 +4961,17 @@ worktree `rg55-assay-b107-load-independent-20260929` is based on main
 passed. The registered exact-tree tester-unified gate must be rerun after this
 repair and be green before B107 can be considered closed. No Assay release or
 install is authorized by this ruling.
+
+### RW-365 — 2026-09-29 00:18:53Z — detached full-gate launch attempt did not start
+
+The first launch attempt for the repaired exact-tree tester-unified gate
+reported wrapper PID 3679513 but did not survive the noninteractive shell.
+At the required 90-second check its log was zero bytes, the wrapper and
+run-gate processes were absent, no matching container existed, and the
+worktree had no `tester-unified` history record. This is a launch failure,
+not a gate verdict and not evidence that tests ran. Admission preflight at
+00:14:52Z had host memory `full avg10=0.00`, the host `dev-gates.slice`
+loaded with `CPUQuotaPerSecUSec=5s`, and no active tester-unified container;
+the unidentified UUID container was verified as the Pterodactyl server and
+left untouched. The `session-extract` container remained active and untouched.
+Relaunch with `nohup … & disown`; the exact-tree gate is still required.
