@@ -48,19 +48,17 @@ identity = CliIdentity.from_distribution(
 )
 
 
-def status(args: argparse.Namespace, runtime) -> int:
+def status(args: argparse.Namespace, runtime) -> None:
     result = {"server_id": args.server_id, "filter": args.filter, "state": "ready"}
     runtime.output.primary(result if runtime.json_mode else f"state: {result['state']}")
-    return 0
 
 
-def apply(args: argparse.Namespace, runtime) -> int:
+def apply(args: argparse.Namespace, runtime) -> None:
     # A real handler loads and validates its complete change before consent.
     if not runtime.confirm(f"Apply {args.path} to production?"):
-        return 0
+        return
     # A real handler performs exactly the confirmed domain mutation here.
     runtime.output.info(f"Applied {args.path}.")
-    return 0
 
 
 cli = CliRegistry(
@@ -124,6 +122,10 @@ The default `None` keeps the existing rule that mutating verbs require
 confirmation. `True` explicitly requires confirmation and is valid only on a
 mutating verb. Existing consumers may continue using `include_confirmation`;
 when both fields are set, they must agree.
+Handlers may return `None` for success; `RegisteredCli.run()` converts that to
+process status `0`. Prefer this shared behavior over repeating `return 0` in
+each successful handler. Return a status explicitly only when the command has
+a meaningful non-default outcome.
 `VerbSpec.synopsis` is optional: by default the library derives
 the command synopsis from required positionals, required options, and required
 or optional mutually-exclusive option groups. Set it only when a public syntax

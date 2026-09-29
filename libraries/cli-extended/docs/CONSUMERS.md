@@ -50,6 +50,11 @@ the top-level catalog; it is distinct from each verb's `description`.
 It also checks duplicate command names and catalog/parser consistency. The
 consumer should not separately hand-maintain a command list, parser map, and
 help list.
+Registered handlers may return `None` for success; `RegisteredCli.run()` maps
+that result to process status `0`. Prefer `None` for ordinary successful
+handlers and return an integer when the product defines a meaningful status.
+This keeps successful handlers concise and leaves exit-status conversion at
+the shared CLI boundary.
 Long options must be supplied exactly as declared: the registry disables
 argparse's prefix abbreviations at the root and verb parsers. Set
 `allow_abbrev=True` on `CliRegistry` only if partial spellings are an intentional

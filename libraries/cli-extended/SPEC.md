@@ -436,6 +436,11 @@ are:
 | `2` | invocation, validation, configuration, or safety refusal |
 | `130` | operator cancelled with Ctrl-C |
 
+For a registered command, a handler may return `None` to indicate success;
+`RegisteredCli.run()` normalizes this to process status `0`. A handler may
+return an integer when the product contract defines another status. Consumers
+should not repeat `return 0` solely to restate the shared success default.
+
 Pipelines, wrappers, and background launchers must preserve and report the
 status of the operation being judged, not the status of a pager, logging pipe,
 or wrapper.

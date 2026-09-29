@@ -80,6 +80,12 @@ the legacy `include_confirmation` spelling remains accepted for existing
 consumers. `OptionSpec.hidden` keeps internal options parseable without
 advertising them in user help or generated Markdown.
 
+The shared handler boundary treats `None` as success and returns process
+status `0`. Consumers can use that default instead of repeating `return 0` in
+every successful handler; an integer return remains available when a product
+has a deliberate status contract. Keep that normalization at one boundary so
+each handler does not reimplement shell status plumbing.
+
 Mutation and generic confirmation answer different questions. `mutating`
 describes the command's effect; `confirmation_required` says whether the
 shared `--yes` acknowledgement is part of its consent contract. An application
