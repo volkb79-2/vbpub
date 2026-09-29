@@ -33,7 +33,7 @@ Other prose that still names retired items and was left alone as history: `nyxlo
 - `tests/test_b105_report_check.py`: `cwd=REPO_ROOT` and `--repo REPO_ROOT`; HEAD only (tooling checker, W4).
 - `tests/test_self_hosting.py:122`: `git -C PROJECT_ROOT rev-parse HEAD`; HEAD only.
 - `tests/test_gate_qualify_dstdns_sql.py:93`: reads `/workspaces/dstdns` when present (W5).
-- `tests/qualification/test_go_r1_real.py`: `--repo _REPO_ROOT` into `build_release` plus a docker inspect of `/workspaces/vbpub`; environment-gated real-toolchain test, not part of the registered gate collection (`tests/qualification/`).
+- `tests/qualification/test_go_r1_real.py`: `--repo _REPO_ROOT` into `build_release` plus a docker inspect of `/workspaces/vbpub`; environment-gated real-toolchain test: collected by the registered gate and both B105 lanes but skipped unless ASSAY_GO_QUALIFICATION=1 (module pytestmark, test_go_r1_real.py:79); W4 moves it to gate/tests/qualification/.
 - `tests/conftest.py:218,280-332`: defines `REPO_ROOT` and `requires_parent_repository` (helpers).
 - Not readers (paths inside `assay/` or literals only): `test_self_lane.py`, `test_distribution_gate.py`, `test_cgroup_parent.py` (read scripts/config in `assay/`), `test_standalone.py`, `test_dependency_purity.py`, `test_verdict_schema_is_packaged.py`, `test_go_helper_is_packaged.py`, `test_distribution_release_wheel.py`, and the `/workspaces/...` strings in docstrings and env fixtures.
 
