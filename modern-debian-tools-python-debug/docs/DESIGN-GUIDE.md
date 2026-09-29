@@ -37,6 +37,21 @@ MDT has no owned HTTP/OpenAPI contract. Hypothesis is used for pure
 configuration invariants where generated values are meaningful; Schemathesis
 would add no evidence to this product.
 
+## Bootstrap uses the source filesystem type
+
+Devcontainer bind-mount syntax declares a source and target but has no
+source-kind field. Names and suffixes do not identify a missing source's type:
+`.gitconfig` is usually a file, while `.ssh` is a directory, and custom dotfiles
+can be either. The host bootstrap checks existing host sources by their actual
+filesystem type, regardless of name or suffix. For missing sources, the
+`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` setting controls whether MDT creates
+the path or refuses it. The shipped default, `create-by-spelling`, interprets a
+trailing `/` as a directory and no trailing `/` as an empty regular file. The
+`fail` option requires every `$HOME` source managed by the bootstrap to exist
+before Docker starts. The marker is an MDT bootstrap convention, not Docker
+mount metadata; the shipped template marks every directory source with `/`. See the
+[consumer example](CONSUMERS.md#optional-git-config-mount).
+
 ## Release relationship
 
 The `release` run-gate lane contains the image release-flow tests and is the

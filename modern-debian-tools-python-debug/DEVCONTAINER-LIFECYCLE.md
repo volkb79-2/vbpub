@@ -21,12 +21,18 @@ their project-specific notes.
 > `initialize_container_environment.py`) and one **baked-in** script you just call (finalize).
 
 ### Pre script — `initialize_container_environment.py` (host)
-Runs on the host so every bind-mount **source** exists with sane permissions *before* Docker starts
-(a missing source makes Docker fail, or silently create it as root → the container user can't write its
-own `~/.codex` etc.). Design: stdlib-only, idempotent, best-effort (always exits 0). It parses the
-sibling `devcontainer.json`, finds every `type=bind` source under `$HOME`, and creates it as a **real
-dir** with the right mode. Secret dirs (`.ssh`/`.gnupg`/`.minisign`) get `0700`; `tmp` gets `1777`;
-everything else `0755`.
+Runs on the host before Docker starts and prepares `$HOME` bind-mount sources. It is stdlib-only and
+idempotent. It parses the sibling `devcontainer.json` and inspects every `type=bind` source under
+`$HOME` by its actual filesystem type. Existing regular files and directories are accepted without
+name or suffix heuristics. Under the default policy, MDT creates its known directory sources as
+**real dirs** with the right mode: secret dirs (`.ssh`/`.gnupg`/`.minisign`) get `0700`, `tmp` gets `1777`, and other directories
+get `0755`. For missing custom directories, a trailing `/` on the source is an MDT bootstrap hint
+that selects directory creation under the default `create-by-spelling` policy; a missing source
+without `/` becomes an empty regular file (`0600`). The host-setup wizard can select
+`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` to require every `$HOME` source managed by the
+bootstrap to exist first. Keep the trailing slash on every directory source in the JSON; Docker
+itself does not interpret it as a source-kind setting. See the
+[consumer example](docs/CONSUMERS.md#optional-git-config-mount).
 
 ### Post script — `finalize_container_environment.py` (container, baked into mdt)
 Lives in the mdt image at `/usr/local/bin/finalize_container_environment.py`; a consuming repo wires
@@ -69,7 +75,7 @@ Devcontainer-persisted state is grouped under a single host parent so a rebuild 
 | Source (host) | Target (container) | Notes |
 |---|---|---|
 | `~/mdt--mounted-folders/.ssh` | `/home/vscode/.ssh` (ro) | container-persisted ssh state |
-| `~/mdt--mounted-folders/.claude` `.claudelink` `.codex` `.config` `.gnupg` `.minisign` `.openclaw` `.pi` `.reasonix` | matching `/home/vscode/*` | agent/tool state; secret dirs `0700`; ClaudeLink and Pi are whole-directory mounts; Pi sessions are under `~/.pi/agent/sessions/` |
+| `~/mdt--mounted-folders/.claude` `.claudelink` `.codex` `.codex2` `.config` `.gnupg` `.minisign` `.openclaw` `.pi` `.reasonix` | matching `/home/vscode/*` | agent/tool state; `.codex2` is an optional second Codex profile; secret dirs `0700`; ClaudeLink and Pi are whole-directory mounts; Pi sessions are under `~/.pi/agent/sessions/` |
 | `~/mdt--mounted-folders/.local` | `/home/vscode/.local` | user-local CLI installs and state; the nested OpenCode path has its own mount |
 | `~/mdt--mounted-folders/opencode-data` | `/home/vscode/.local/share/opencode` | OpenCode auth, sessions, logs, and runtime state |
 | `~/mdt--mounted-folders/.claude.json` | `/home/vscode/.claude.json` | Claude Code auth/page-state (file-level mount) |
@@ -240,7 +246,7 @@ check, or `docker cp` is an error to investigate before rebuilding.
    the broader `.local` mount:
    ```
    mkdir -p ~/mdt--mounted-folders
-   for d in .claude .claudelink .codex .config .gnupg .local .minisign .openclaw .pi .reasonix; do
+   for d in .claude .claudelink .codex .codex2 .config .gnupg .local .minisign .openclaw .pi .reasonix; do
      [ -d ~/"$d" ] && mkdir -p ~/mdt--mounted-folders/"$d" && cp -a ~/"$d"/. ~/mdt--mounted-folders/"$d"/
    done
    [ -d ~/.local/share/opencode ] && mkdir -p ~/mdt--mounted-folders/opencode-data && cp -a ~/.local/share/opencode/. ~/mdt--mounted-folders/opencode-data/

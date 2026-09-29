@@ -299,6 +299,7 @@ duplicating secrets. Supported keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 
 To survive rebuilds, keep these persistent (the shipped mount layout already does):
 the workspace root, `/home/vscode/.claude`, `/home/vscode/.claudelink`, `/home/vscode/.codex`,
+`/home/vscode/.codex2` (optional second Codex profile),
 `/home/vscode/.config`, `/home/vscode/.local`, `/home/vscode/.minisign`,
 `/home/vscode/.openclaw`, `/home/vscode/.pi`, `/home/vscode/.reasonix`, and
 `/home/vscode/.local/share/opencode`.
@@ -306,14 +307,24 @@ the workspace root, `/home/vscode/.claude`, `/home/vscode/.claudelink`, `/home/v
 The template's Pi mount preserves the whole `~/.pi` root, including `~/.pi/agent/sessions/`.
 Its ClaudeLink mount preserves the whole `~/.claudelink` root, including `nexus.db`, scheduler
 state/logs, and related runtime files. Their grouped host sources are
-`${localEnv:HOME}/mdt--mounted-folders/.pi` and
-`${localEnv:HOME}/mdt--mounted-folders/.claudelink`. The host bootstrap creates empty sources;
+`${localEnv:HOME}/mdt--mounted-folders/.pi/` and
+`${localEnv:HOME}/mdt--mounted-folders/.claudelink/`. These are directory sources; the bootstrap
+does not migrate their data. Existing custom bind sources are identified as files or directories
+from the host filesystem. For a missing source, the default `create-by-spelling` policy creates a
+directory when its source ends in `/` and an empty regular file when it does not. The MDT host-setup
+wizard can set `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` to require every `$HOME` source
+managed by the bootstrap to exist.
 OpenCode's `/home/vscode/.local/share/opencode` target is backed by the grouped
 `opencode-data` source. For the one-time migration from an existing host install, follow
 the [running-container migration runbook](DEVCONTAINER-LIFECYCLE.md#migrating-a-running-devcontainer-before-adopting-the-mounts)
 first when state is still in a devcontainer; otherwise use
 [the template migration recipe](templates/README.md#migrate-existing-pi-claudelink-and-opencode-state-once)
 and then rebuild the container.
+
+Consuming repos can add file mounts with any filename. Existing sources use their actual host type;
+missing sources follow the configured policy and source spelling. See the
+[consumer example](docs/CONSUMERS.md#optional-git-config-mount) and the
+[design rationale](docs/DESIGN-GUIDE.md#bootstrap-uses-the-source-filesystem-type).
 
 ### Canonical manifest
 

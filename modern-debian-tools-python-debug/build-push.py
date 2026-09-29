@@ -29,7 +29,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
-sys.path.insert(0, str(REPO_ROOT / "cmru" / "src"))
+# Load CMRU and its shared libraries from this monorepo snapshot. The package
+# metadata declares these sibling source roots, but direct imports from this
+# release script do not run the editable-install path setup.
+for source_root in (
+    REPO_ROOT / "libraries" / "cli-extended" / "src",
+    REPO_ROOT / "libraries" / "worktree" / "src",
+    REPO_ROOT / "cmru" / "src",
+):
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
 
 from cmru import exit_codes  # noqa: E402
 from cmru.ghcr import GitHubPackages  # noqa: E402

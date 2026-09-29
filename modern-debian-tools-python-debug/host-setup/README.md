@@ -167,6 +167,19 @@ closed vocabulary: `terminate` (default) removes an unapproved BuildKit worker;
 `report-only` detects and logs it without removal. Missing or invalid policy
 configuration stops the guard rather than weakening the boundary.
 
+The wizard also configures `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` for the
+host-side `initialize_container_environment.py` that runs before a devcontainer
+starts. Its default, `create-by-spelling`, creates a missing source ending in
+`/` as a directory and a missing source without `/` as an empty file with mode
+`0600`.
+The `fail` option refuses every missing `$HOME` source managed by the bootstrap.
+Existing sources are classified from the host filesystem; filenames and suffixes
+do not select their type. Keep
+the trailing `/` on directory sources in `devcontainer.json` so the bootstrap
+can create the intended kind. Docker itself does not interpret this MDT marker.
+Change the value by running `sudo ./install.sh --wizard` from this directory on
+the Docker host; the bootstrap reads the saved host config at its next run.
+
 The wizard is slice-first. For every governed slice it asks `MemoryMin`,
 `MemoryLow`, `MemoryHigh`, and `MemoryMax`; an operator may enter an explicit
 empty value where that slice should omit a directive. It explains `MemoryMin`

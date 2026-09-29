@@ -110,30 +110,36 @@
     "source=/sys/kernel/debug,target=/sys/kernel/debug,type=bind,readonly",
 
     // ── Host ssh keys (readonly, dual-use: native keys + in-container), owned by host ─────────
-    "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh-host,type=bind,consistency=cached,readonly",
+    "source=${localEnv:HOME}/.ssh/,target=/home/vscode/.ssh-host,type=bind,consistency=cached,readonly",
 
     // ── PERSISTENT STATE (~/mdt--mounted-folders/) — survives rebuilds, owned by container ────────
+    // MDT host bootstrap defaults DEVCONTAINER_MISSING_BIND_SOURCE_POLICY to
+    // `create-by-spelling` (configurable in the host-setup wizard). A trailing
+    // `/` marks a missing source as a directory; no `/` marks it as an empty
+    // regular file. Set the policy to `fail` to require every $HOME source to exist.
+    // This marker is MDT bootstrap policy; Docker itself only sees a bind path.
     // Directory mounts (alphabetical by subdir name)
-    "source=${localEnv:HOME}/mdt--mounted-folders/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.claude/,target=/home/vscode/.claude,type=bind,consistency=cached",
     // ClaudeLink durable hub state: nexus.db, scheduler state/logs, and related runtime files.
-    "source=${localEnv:HOME}/mdt--mounted-folders/.claudelink,target=/home/vscode/.claudelink,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.config,target=/home/vscode/.config,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.gnupg,target=/home/vscode/.gnupg,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.local,target=/home/vscode/.local,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.minisign,target=/home/vscode/.minisign,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw,target=/home/vscode/.openclaw,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.claudelink/,target=/home/vscode/.claudelink,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.codex/,target=/home/vscode/.codex,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.codex2/,target=/home/vscode/.codex2,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.config/,target=/home/vscode/.config,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.gnupg/,target=/home/vscode/.gnupg,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.local/,target=/home/vscode/.local,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.minisign/,target=/home/vscode/.minisign,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw/,target=/home/vscode/.openclaw,type=bind,consistency=cached",
     // Pi config and session root: sessions live below ~/.pi/agent/sessions/.
-    "source=${localEnv:HOME}/mdt--mounted-folders/.pi,target=/home/vscode/.pi,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix,target=/home/vscode/.reasonix,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/opencode-data,target=/home/vscode/.local/share/opencode,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.pi/,target=/home/vscode/.pi,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix/,target=/home/vscode/.reasonix,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.ssh/,target=/home/vscode/.ssh,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/opencode-data/,target=/home/vscode/.local/share/opencode,type=bind,consistency=cached",
     // File-level state mounts (not inside a subdirectory)
     "source=${localEnv:HOME}/mdt--mounted-folders/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached",
     // "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix.toml,target=/home/vscode/.reasonix.toml,type=bind,consistency=cached",
 
     // ── Persisted host-backed /tmp (mode 1777) ─────────────────────────────────
-    "source=${localEnv:HOME}/mdt--mounted-folders/tmp,target=/tmp,type=bind,consistency=cached"
+    "source=${localEnv:HOME}/mdt--mounted-folders/tmp/,target=/tmp,type=bind,consistency=cached"
     // NOTE: caches (~/.cache, ~/.npm) are intentionally NOT persisted.
 
     // ── Sibling-repo workspace mounts (multi-root workspace) ───────────────────
