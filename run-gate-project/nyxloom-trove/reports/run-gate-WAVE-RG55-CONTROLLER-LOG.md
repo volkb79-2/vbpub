@@ -5079,3 +5079,23 @@ after that time, check once; if its slot is free, repeat host-PSI and loaded
 slice preflight and launch the repaired-tree registered gate in a
 tool-managed foreground session, applying the 3-CPU cap to its exact printed
 container name immediately after launch.
+
+### RW-372 — 2026-09-29 00:58:40Z — preserve P1 hung outcomes as unresolved pending B107 rejudge
+
+Read the terminal P1 R2 receipt on exact tree
+`0080eba7f91128d4df2d50368b7edaf1465f7805` in the preserved isolated
+checkout. It is `BUDGET_EXCEEDED/CANDIDATE_HUNG`, exit 4: 125 candidates
+accounted for, 115 killed and 10 classified hung. Each of the 10 progress
+records says `tests_completed=1394`; the retained candidate records do not
+include a time-aligned host/cgroup resource trace. Therefore the result does
+not establish whether any individual classification came from a genuine
+post-test hang or scheduling/pressure, and none is relabeled or closed here.
+
+The accepted B107 monitor requires complete clear host/candidate resource
+intervals before advancing an idle window; any observed pressure, missing
+source, or counter reset pauses the liveness clock and leaves a wall-budget
+expiry explicitly inconclusive. Once RW-371's exact-tree full gate passes and
+the test-only repair is provisionally merged, P1 must be rejudged on its
+final quiet tree with the B107 monitor. Preserve that run's per-candidate
+evidence and classify each terminal outcome from the actual receipt; do not
+infer pressure causality from this old result.
