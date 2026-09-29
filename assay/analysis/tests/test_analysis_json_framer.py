@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from assay import analysis
+from assay_analysis import evidence as analysis
 
 
 @pytest.mark.parametrize(

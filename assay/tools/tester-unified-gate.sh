@@ -144,10 +144,17 @@ run_lint_phase() {
   )
   [[ ${#test_sources[@]} -gt 0 ]] \
     || die 'lint phase found no test sources to lint -- the tests/ tree is missing from the clone'
+  local -a analysis_sources
+  mapfile -d '' -t analysis_sources < <(
+    find -H "$scratch/clone/assay/analysis" -type f -name '*.py' -print0
+  )
+  [[ ${#analysis_sources[@]} -gt 0 ]] \
+    || die 'lint phase found no analysis sources to lint -- the analysis/ tree is missing from the clone'
   "$scratch/lint-venv/bin/python" -m pyflakes \
     "$scratch/clone/assay/src/assay" \
     "${test_sources[@]}" \
-    || die 'pyflakes reported findings in src/assay or tests/ (see the lines above)'
+    "${analysis_sources[@]}" \
+    || die 'pyflakes reported findings in src/assay, tests/ or analysis/ (see the lines above)'
   echo 'ASSAY_GATE_PHASE=pyflakes-clean'
 }
 
@@ -361,6 +368,26 @@ run_self_hosted_lane() {
   echo 'ASSAY_GATE_PHASE=self-hosted-lane-passed'
 }
 
+# (A-478) The analysis package's own R0+R1 lane (`assay.toml` [lanes.analysis]),
+# run with the same installed assay as the self-hosted lane (PATH is already
+# exported by run_self_hosted_lane). No `require_emitted_*` here:
+# `--require-judge-provenance` binds this verdict.
+run_analysis_lane() {
+  local worktree="$1" scratch="$2"
+  cd "$worktree/assay"
+  if ! assay run analysis --file assay.toml --require-judge-provenance \
+      --resume --progress "$scratch/progress-analysis.jsonl" \
+      --verdict-json "$scratch/verdict-analysis.json"; then
+    echo 'ASSAY_GATE_DIAGNOSTIC=analysis-lane-red; inspecting its captured verdict' >&2
+    assay analyze verdict "$scratch/verdict-analysis.json" \
+      --expected-commit "$(git -C "$worktree" rev-parse HEAD)" --format text >&2 \
+      || echo 'ASSAY_GATE_DIAGNOSTIC=captured-verdict-unavailable-or-invalid' >&2
+    return 1
+  fi
+  assay verify "$scratch/verdict-analysis.json" || die 'assay verify refused the analysis lane verdict'
+  echo 'ASSAY_GATE_PHASE=analysis-lane-passed'
+}
+
 run_independent_witness() {
   local scratch="$1" run_venv_site="$2"
   PYTHONPATH="$run_venv_site" ASSAY_SELF_HOSTING_VERDICT="$scratch/verdict.json" \
@@ -452,6 +479,7 @@ run_inner() {
   echo 'ASSAY_GATE_PHASE=attestation-hardened'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version" "$wheel"
+  run_analysis_lane "$worktree" "$scratch"
 
   run_independent_witness "$scratch" "$run_venv_site"
 

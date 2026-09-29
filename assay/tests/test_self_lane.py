@@ -13,6 +13,7 @@ enforces it is a fact split across two files with nothing holding it together.
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import tomllib
@@ -25,6 +26,17 @@ from assay.cli import main
 from assay.config import load_lane_file
 
 SELF_LANE_FILE = PROJECT_ROOT / "assay.toml"
+
+
+def _load_b105_checker():
+    spec = importlib.util.spec_from_file_location(
+        "b105_report_check_for_self_lane", PROJECT_ROOT / "tools" / "b105_report_check.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
 GATE_ID = "tester-unified"
 QUALIFICATION_ID = "self-qualification"
@@ -37,7 +49,7 @@ def test_assays_own_lane_file_loads():
 
     assert lane_file.schema_version == 2
     assert lane_file.project_root == PROJECT_ROOT
-    assert list(lane_file.lanes) == [GATE_ID, QUALIFICATION_ID, PREFLIGHT_ID]
+    assert list(lane_file.lanes) == [GATE_ID, QUALIFICATION_ID, PREFLIGHT_ID, "analysis"]
 
 
 def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
@@ -87,6 +99,7 @@ def test_assay_lanes_lists_assays_own_lane(monkeypatch):
     assert GATE_ID in out.getvalue()
     assert QUALIFICATION_ID in out.getvalue()
     assert PREFLIGHT_ID in out.getvalue()
+    assert "analysis  scope=S1  rigor=R0,R1" in out.getvalue()
     assert "judge=none" in out.getvalue()
 
 
@@ -121,6 +134,13 @@ def test_self_qualification_is_full_source_r0_through_r3():
     assert deselected == set()
     assert not any(a == "--deselect" or a.startswith("--deselect") for a in lane.argv)
 
+    checker = _load_b105_checker()
+    packages = {
+        path.name
+        for path in (PROJECT_ROOT / "src").iterdir()
+        if path.is_dir() and not path.name.endswith(".egg-info") and path.name != "__pycache__"
+    }
+    assert packages == {"assay"}
     declared = set(lane.judge.targets or ())
     discovered = {
         path.relative_to(PROJECT_ROOT).as_posix()
@@ -129,6 +149,9 @@ def test_self_qualification_is_full_source_r0_through_r3():
     }
     assert declared == discovered
     assert tuple(lane.judge.targets or ()) == tuple(sorted(declared))
+    for out_of_scope in checker.OUT_OF_SCOPE_BY_DECISION:
+        assert not any(target.startswith(out_of_scope) for target in declared)
+        assert (PROJECT_ROOT / out_of_scope).is_dir()
 
 
 def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():

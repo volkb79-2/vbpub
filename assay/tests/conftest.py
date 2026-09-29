@@ -1444,7 +1444,8 @@ def standalone(tmp_path_factory) -> Standalone:
     So the install runs with a clean environment and ``--no-index``: nothing to
     fetch from, nothing to leak in.
 
-    The copied source tree is deliberately ``pyproject.toml`` + ``src/`` only,
+    The copied source tree is deliberately ``pyproject.toml`` + ``src/`` +
+    ``analysis/src/`` only,
     with no MANIFEST and no VCS plugin available, so a data file reaches the
     wheel ONLY if ``[tool.setuptools.package-data]`` puts it there. That is what
     makes the packaging oracle able to fail.
@@ -1456,6 +1457,13 @@ def standalone(tmp_path_factory) -> Standalone:
     shutil.copytree(
         PROJECT_ROOT / "src",
         source / "src",
+        ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"),
+    )
+    # (A-478) The wheel holds the analysis package too: pyproject's
+    # `where = ["src", "analysis/src"]` reads it from here.
+    shutil.copytree(
+        PROJECT_ROOT / "analysis" / "src",
+        source / "analysis" / "src",
         ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"),
     )
 

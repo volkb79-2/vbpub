@@ -227,6 +227,7 @@ def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
         "wheel-installed",
         "attestation-hardened",
         "self-hosted-lane-passed",
+        "analysis-lane-passed",
         "independent-self-hosting-passed",
         "pyflakes-clean",
     ):
@@ -254,8 +255,9 @@ def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
     inner = source.split("run_inner() {", 1)[1].split("# --- entry points", 1)[0]
     attestation = inner.index("ASSAY_GATE_PHASE=attestation-hardened")
     self_hosted = inner.index('run_self_hosted_lane "$worktree"')
+    analysis = inner.index('run_analysis_lane "$worktree"')
     witness = inner.index('run_independent_witness "$scratch"')
-    assert attestation < self_hosted < witness
+    assert attestation < self_hosted < analysis < witness
 
     for required in (
         "--network=none",
@@ -459,6 +461,51 @@ def test_self_hosted_lane_failure_is_never_laundered_into_success(
     assert proc.returncode != 0
     assert "ASSAY_GATE_PHASE=self-hosted-lane-passed" not in proc.stdout
     assert "ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red" in proc.stderr
+
+
+def _run_analysis_lane(tmp_path: Path, gate_functions: Path, *, stub_body: str):
+    stub_dir = tmp_path / "stubs"
+    stub_dir.mkdir(parents=True)
+    stub_assay = stub_dir / "assay"
+    stub_assay.write_text("#!/usr/bin/env bash\n" + stub_body)
+    stub_assay.chmod(0o755)
+    worktree = tmp_path / "worktree"
+    (worktree / "assay").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    return run_bash(
+        f'run_analysis_lane "{worktree}" "{scratch}"',
+        gate_functions=gate_functions,
+        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+    )
+
+
+def test_analysis_lane_failure_is_never_laundered_into_success(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    proc = _run_analysis_lane(
+        tmp_path, gate_functions, stub_body="echo 'stub assay: deliberately failing' >&2\nexit 7\n"
+    )
+    assert proc.returncode != 0
+    assert "ASSAY_GATE_PHASE=analysis-lane-passed" not in proc.stdout
+    assert "ASSAY_GATE_DIAGNOSTIC=analysis-lane-red" in proc.stderr
+
+
+def test_analysis_lane_marker_needs_the_lane_and_the_verifier_to_pass(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    # `assay run analysis` passes; `assay verify` then refuses the verdict.
+    refused = _run_analysis_lane(
+        tmp_path / "refused",
+        gate_functions,
+        stub_body='[ "$1" = verify ] && exit 9\nexit 0\n',
+    )
+    assert refused.returncode != 0
+    assert "ASSAY_GATE_PHASE=analysis-lane-passed" not in refused.stdout
+
+    accepted = _run_analysis_lane(tmp_path / "accepted", gate_functions, stub_body="exit 0\n")
+    assert accepted.returncode == 0, accepted.stderr
+    assert accepted.stdout.count("ASSAY_GATE_PHASE=analysis-lane-passed") == 1
 
 
 def test_self_hosted_lane_requires_the_emitted_version_to_match_the_installed_one(
@@ -786,7 +833,18 @@ def _seed_clean_tests_tree(scratch: Path) -> Path:
     (tests / "test_seed.py").write_text(
         "def test_seed() -> None:\n    assert True\n", encoding="utf-8"
     )
+    _seed_clean_analysis_tree(scratch)
     return tests
+
+
+def _seed_clean_analysis_tree(scratch: Path) -> Path:
+    """(A-478) The lint phase also lints `analysis/` and refuses a clone that has
+    none. Returns the seeded source file so a caller can plant into it."""
+    analysis = scratch / "clone" / "assay" / "analysis" / "src" / "assay_analysis"
+    analysis.mkdir(parents=True)
+    seed = analysis / "cli.py"
+    seed.write_text("def main() -> int:\n    return 0\n", encoding="utf-8")
+    return seed
 
 
 def test_a_planted_unused_import_reddens_the_lint_phase(
@@ -872,6 +930,48 @@ def test_a_planted_unused_import_in_a_TEST_module_reddens_the_lint_phase(
     assert "test_seed.py" in planted.stdout + planted.stderr
 
 
+def test_a_planted_unused_import_in_the_analysis_package_reddens_the_lint_phase(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """(A-478) `analysis/` is inside the lint scope: the identical plant, in
+    `analysis/src/assay_analysis` instead of `src/assay`, reddens the phase."""
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    _seed_clean_tests_tree(scratch)
+    seed = scratch / "clone" / "assay" / "analysis" / "src" / "assay_analysis" / "cli.py"
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    clean = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert clean.returncode == 0, clean.stderr
+    assert clean.stdout.count("ASSAY_GATE_PHASE=pyflakes-clean") == 1
+
+    seed.write_text("import os\n\n\ndef main() -> int:\n    return 0\n", encoding="utf-8")
+    planted = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert planted.returncode != 0
+    assert "ASSAY_GATE_PHASE=pyflakes-clean" not in planted.stdout
+    assert "'os' imported but unused" in planted.stdout + planted.stderr
+    assert "assay_analysis/cli.py" in planted.stdout + planted.stderr
+
+
+def test_a_clone_with_no_analysis_tree_refuses_rather_than_linting_nothing(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    _seed_clean_tests_tree(scratch)
+    shutil.rmtree(scratch / "clone" / "assay" / "analysis")
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert proc.returncode != 0
+    assert "lint phase found no analysis sources to lint" in proc.stdout + proc.stderr
+    assert "ASSAY_GATE_PHASE=pyflakes-clean" not in proc.stdout
+
+
 def test_the_fixtures_tree_is_pruned_and_an_unparseable_fixture_stays_green(
     tmp_path: Path, gate_functions: Path, lint_venv: Path
 ) -> None:
@@ -936,6 +1036,7 @@ def test_the_shipped_source_tree_is_pyflakes_clean(
     (scratch / "clone" / "assay" / "src").mkdir(parents=True)
     (scratch / "clone" / "assay" / "src" / "assay").symlink_to(PROJECT_ROOT / "src" / "assay")
     (scratch / "clone" / "assay" / "tests").symlink_to(PROJECT_ROOT / "tests")
+    (scratch / "clone" / "assay" / "analysis").symlink_to(PROJECT_ROOT / "analysis")
     shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
 
     proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions, timeout=180)

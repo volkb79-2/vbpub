@@ -10,6 +10,91 @@ import sys
 from pathlib import Path
 from typing import Any
 
+#: The one source root B105 measures, relative to the assay project directory.
+B105_SOURCE_ROOT = "src/assay"
+#: Source trees that are deliberately outside B105, each with the decision that put
+#: it there. A tracked top-level entry under ``src/`` other than B105's root is
+#: refused; the packages under ``analysis/src/`` are pinned by the analysis tests.
+OUT_OF_SCOPE_BY_DECISION = {"analysis/src/assay_analysis": "A-478"}
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+
+
+def _ls_tree(repo_root: Path, commit: str, *args: str, paths: tuple[str, ...]) -> list[str]:
+    """Names git tracks in *commit* under *paths* (never the working tree)."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-tree", *args, commit, "--", *paths],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"cannot list tracked files: {result.stderr.strip()}")
+    return result.stdout.splitlines()
+
+
+def verify_scope(document: dict, *, repo_root: Path, expected_commit: str) -> None:
+    """Refuse a verdict whose measured scope is not exactly the tracked ``src/assay``."""
+    try:
+        prefix = PROJECT_DIR.relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        raise ValueError(f"checker project {PROJECT_DIR} is not inside repo root {repo_root}") from None
+    under = "" if prefix == "." else prefix + "/"
+
+    judgment = document.get("judgment")
+    judgment = judgment if isinstance(judgment, dict) else {}
+    resolved = judgment.get("resolved")
+    source_roots = resolved.get("source_roots") if isinstance(resolved, dict) else None
+    if source_roots != [B105_SOURCE_ROOT]:
+        raise ValueError(
+            f"judgment.resolved.source_roots {source_roots!r} != {[B105_SOURCE_ROOT]!r}"
+        )
+
+    top_level = sorted(
+        line.rsplit("/", 1)[-1]
+        for line in _ls_tree(repo_root, expected_commit, "--name-only", paths=(f"{under}src/",))
+    )
+    if top_level != ["assay"]:
+        unclassified = [name for name in top_level if name != "assay"] or top_level
+        raise ValueError(f"unclassified package under src/: {', '.join(unclassified)}")
+
+    for path in OUT_OF_SCOPE_BY_DECISION:
+        if not _ls_tree(repo_root, expected_commit, "--name-only", paths=(f"{under}{path}/__init__.py",)):
+            raise ValueError(f"stale out-of-scope declaration: {path}")
+
+    for tier in ("r1", "r2", "r3"):
+        block = judgment.get(tier)
+        targets = block.get("targets") if isinstance(block, dict) else None
+        for target in targets if isinstance(targets, list) else []:
+            for path, decision in OUT_OF_SCOPE_BY_DECISION.items():
+                if target == path or str(target).startswith(path + "/"):
+                    raise ValueError(
+                        f"judgment.{tier}.targets names {target}, out of B105 scope by decision {decision}"
+                    )
+            if tier == "r3" and not str(target).startswith(B105_SOURCE_ROOT + "/"):
+                raise ValueError(f"judgment.r3.targets names {target}, not under {B105_SOURCE_ROOT}/")
+
+    tracked = sorted(
+        line[len(under):]
+        for line in _ls_tree(
+            repo_root, expected_commit, "-r", "--name-only", paths=(f"{under}{B105_SOURCE_ROOT}/",)
+        )
+        if line.endswith(".py")
+    )
+    for tier in ("r1", "r2"):
+        block = judgment.get(tier)
+        if tier == "r2" and block is None:
+            continue
+        targets = block.get("targets") if isinstance(block, dict) else None
+        targets = targets if isinstance(targets, list) else []
+        if targets != tracked:
+            missing = sorted(set(tracked) - set(targets))
+            extra = sorted(set(targets) - set(tracked))
+            raise ValueError(
+                f"judgment.{tier}.targets differ from the tracked {B105_SOURCE_ROOT} sources: "
+                f"missing {missing}, extra {extra}"
+                + ("" if missing or extra else ", or are not sorted")
+            )
+
 
 def verify_report_document(
     document: Any,
@@ -59,6 +144,7 @@ def verify_report_document(
         raise ValueError(
             f"captured commit tree {actual_tree!r} != {expected_tree!r}"
         )
+    verify_scope(document, repo_root=repo_root, expected_commit=expected_commit)
 
     if document.get("outcome") != "PASS":
         raise ValueError(f"verdict outcome is {document.get('outcome')!r}, expected PASS")
@@ -140,9 +226,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"B105_REPORT_REJECTED={exc}", file=sys.stderr)
         return 2
 
+    out_of_scope = ",".join(f"{path}:{decision}" for path, decision in OUT_OF_SCOPE_BY_DECISION.items())
     print(
         f"B105_REPORT_ACCEPTED={args.expected_lane}"
         f" commit={args.expected_commit} tree={args.expected_tree}"
+        f" scope={B105_SOURCE_ROOT} out_of_scope={out_of_scope}"
     )
     return 0
 
