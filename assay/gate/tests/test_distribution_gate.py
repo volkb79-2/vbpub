@@ -169,6 +169,7 @@ def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
         "DOCKER_CALLS": str(calls_path),
         "DOCKER_WAIT_STATUS": "17",
         "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
+        "ASSAY_GATE_EXPECTED_COMMIT": HEX40,
     }
 
     proc = run_bash(
@@ -189,6 +190,7 @@ def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
     assert "--init" in run
     assert "--cgroup-parent=dev-gates.slice" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
+    assert f"ASSAY_GATE_EXPECTED_COMMIT={HEX40}" in run
     assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in run
     assert "--network=none" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
@@ -1342,6 +1344,15 @@ def test_a_red_container_that_wrote_a_valid_receipt_itself_leaves_none(
     assert proc.returncode == 7, proc.stdout + proc.stderr
     assert not (worktree / RECEIPT_RELATIVE).exists()
     assert "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
+
+
+def test_the_inner_run_refuses_a_head_other_than_the_captured_commit(tmp_path: Path, gate_functions: Path) -> None:
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    ok = run_bash(f'ASSAY_GATE_EXPECTED_COMMIT="{commit}" require_expected_head "{worktree}"', gate_functions=gate_functions)
+    bad = run_bash(f'ASSAY_GATE_EXPECTED_COMMIT="{HEX40}" require_expected_head "{worktree}"', gate_functions=gate_functions)
+    assert ok.returncode == 0, ok.stderr
+    assert bad.returncode != 0
+    assert "worktree HEAD is not the commit the host captured" in bad.stderr
 
 
 def test_a_green_container_yields_the_receipt_and_exactly_one_complete_marker(

@@ -404,9 +404,20 @@ run_independent_witness() {
   echo 'ASSAY_GATE_PHASE=independent-self-hosting-passed'
 }
 
+# (B123, S1) The host binds the receipt to the HEAD it captured before launch;
+# the container proves it judged that same commit, at its start and at its end.
+require_expected_head() {
+  local worktree="$1"
+  if [[ -n "${ASSAY_GATE_EXPECTED_COMMIT:-}" ]]; then
+    [[ "$(git -C "$worktree" rev-parse HEAD)" == "$ASSAY_GATE_EXPECTED_COMMIT" ]] \
+      || die "worktree HEAD is not the commit the host captured ($ASSAY_GATE_EXPECTED_COMMIT)"
+  fi
+}
+
 run_inner() {
   local worktree="$1"
   validate_worktree "$worktree"
+  require_expected_head "$worktree"
 
   # The self-hosted lane below judges the ORIGINAL worktree, so its clean-tree
   # precondition requires the reviewed source to be committed. Refuse before
@@ -497,6 +508,7 @@ run_inner() {
   # reviewer actually needs. Its closure is built here, next to its only use.
   build_lint_venv "$scratch" "$distribution"
   run_lint_phase "$scratch"
+  require_expected_head "$worktree"
 }
 
 _assay_gate_container_name=""
@@ -554,6 +566,7 @@ run_registered_tester_container() {
     --init \
     --cgroup-parent="$cgroup_parent" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    -e "ASSAY_GATE_EXPECTED_COMMIT=${ASSAY_GATE_EXPECTED_COMMIT:-}" \
     "${forwarded_env[@]}" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
@@ -642,7 +655,7 @@ run_registered_gate() {
   trap cleanup_assay_gate_container EXIT
   # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
   # the container's own status, so a red container never reaches the receipt.
-  run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
+  ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
   finish_registered_gate "$worktree" "$commit" "$tree"
 }
 
