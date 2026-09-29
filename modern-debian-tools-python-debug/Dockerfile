@@ -138,7 +138,7 @@ RUN set -euo pipefail; \
 # unprivileged vscode install layers below.
 RUN set -euo pipefail; \
     chmod -R a+rX /tmp/pip /tmp/requirements; \
-    chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py
+    chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py /tmp/mdt_cli.py
 
 # Core system packages
 RUN set -euo pipefail; \

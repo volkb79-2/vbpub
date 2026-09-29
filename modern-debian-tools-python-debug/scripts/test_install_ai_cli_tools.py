@@ -217,7 +217,7 @@ def test_user_mode_sets_user_owned_npm_prefix(
     assert os.environ["PATH"].startswith("/home/vscode/.local/bin:")
 
 
-def test_version_file_is_user_readable_and_cleaned_after_returning_to_root() -> None:
+def test_build_inputs_are_user_readable_and_cleaned_after_returning_to_root() -> None:
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
     root_stage = dockerfile.split("USER root", 1)[1].split("USER vscode", 1)[0]
     user_layer = dockerfile.split("USER vscode", 1)[1].split("USER root", 1)[0]
@@ -228,7 +228,9 @@ def test_version_file_is_user_readable_and_cleaned_after_returning_to_root() -> 
         "/tmp/ai-tool-versions.env;"
     ) in root_stage
     assert "chmod -R a+rX /tmp/pip /tmp/requirements" in root_stage
-    assert "chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py" in root_stage
+    assert (
+        "chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py /tmp/mdt_cli.py"
+    ) in root_stage
     assert "rm -f /tmp/ai-tool-versions.env" not in user_layer
     assert "rm -f /tmp/install_ai_cli_tools.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env" in root_layer
 
