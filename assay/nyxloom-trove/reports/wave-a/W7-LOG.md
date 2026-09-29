@@ -67,6 +67,7 @@ Each leg accounts for 1 failed + 5437 passed + 1 skipped; the skip is the module
 
 - README was not edited: it describes only the generic shallow default and never the B105 lanes' snapshot mode.
 - Step 0's test text was applied exactly as specified.
+- Follow-up (REVIEW-W7 W7R-4): the step-0 root-layout regex also admits a directory named `*_support.py`; add `and (TESTS_ROOT / name).is_file() and not (TESTS_ROOT / name).is_symlink()` to its filter in a later package (after W5 and W7 have both merged, so the identical step-0 hunks do not conflict). A collectable test inside such a directory is already refused by `test_every_test_file_is_in_its_component_folder`.
 
 ## BLOCKED
 
