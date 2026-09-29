@@ -5232,3 +5232,23 @@ No further progress inspection before 25 minutes after the 90-second check
 unless an error/completion is expected; next routine observation is no earlier
 than 2026-09-29 02:08Z. Keep this worktree HEAD quiet until the terminal
 verdict is read separately.
+
+### RW-378 — 2026-09-29 01:58:10Z — P6 coverage gate found the new refusal-log branch uncovered
+
+P6's registered `run-gate r0-r1` on exact tree
+`e4241e39445ce1c074568b727f0b927a5e6103c7` finished with exit 2 after
+140.991s. All 1,705 tests passed, but the RG-53 branch-aware coverage judge
+found one uncovered line and one partial branch in `lib/placement.py` line
+599: the newly added diagnostic logger path for non-`ESRCH` migration write
+errors. Project totals were 6,167/6,168 statements and 2,147/2,148 branches
+(99%, below the required 100%). This is a coverage failure, not a functional
+test failure. Run-gate history was read separately and confirms the exact
+tree/exit. The profiler daemon was down, so the gate used coarse rusage under
+R-36h; this does not affect the coverage result.
+
+The same behavioral regression now provides a log sink and asserts the
+specific PID/error diagnostic. Its full containing file passed 122 tests in
+17.00s. The test change is committed in P6 at `e7bca65e`; controller log
+through RW-377 was reconciled into P6 at `4af3d3c0`. R0/R1 must be rerun on
+the resulting quiet tip, followed by R3, fresh Sol round 5, live probes,
+replacement P6 R2, and the full gate. No P6 code has been merged to main.
