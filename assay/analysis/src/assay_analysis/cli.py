@@ -11,7 +11,17 @@ from typing import TextIO
 from assay.cli import AssayArgumentParser
 from assay.errors import AssayError
 
-from assay_analysis import evidence
+from assay_analysis import evidence, plan_estimate
+
+
+def _workers(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= 64:
+        raise argparse.ArgumentTypeError("--workers must be an integer from 1 to 64")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,6 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     progress = commands.add_parser("progress", help="summarize matching runs in appended progress JSONL")
     progress.add_argument("path", type=Path)
     progress.add_argument("--expected-commit", required=True)
+    estimate = commands.add_parser(
+        "plan-estimate",
+        help="project campaign hours from an assay plan and a measured baseline (diagnostic)")
+    estimate.add_argument("--plan-json", type=Path, required=True, metavar="PLAN")
+    estimate.add_argument("--progress", type=Path, required=True, metavar="PROGRESS")
+    estimate.add_argument("--workers", type=_workers, default=1, metavar="N")
     return parser
 
 
@@ -110,6 +126,8 @@ def cmd_analyze(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> 
                 return code
         elif args.analysis_command == "progress":
             result = evidence.inspect_progress(args.path, args.expected_commit)
+        elif args.analysis_command == "plan-estimate":
+            result = plan_estimate.plan_estimate(args.plan_json, args.progress, workers=args.workers)
         else:
             result = evidence.receipt(args.worktree, args.expected_head, args.recorded,
                                       args.tester_run, args.verdict, args.progress)
@@ -120,7 +138,7 @@ def cmd_analyze(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> 
     except (OSError, ValueError, RecursionError, KeyError, TypeError,
             AttributeError, AssayError, subprocess.CalledProcessError) as exc:
         print(f"assay analyze: {exc}", file=stderr)
-        return 2 if args.analysis_command == "report" else 1
+        return 2 if args.analysis_command in ("report", "plan-estimate") else 1
     print(json.dumps(result, indent=2, sort_keys=True), file=stdout)
     return code
 

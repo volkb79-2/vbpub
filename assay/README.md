@@ -54,11 +54,17 @@ needs nothing extra:
   verdicts and progress to the current clean worktree's exact HEAD and tree.
 - `launcher` inspects an existing `tester-unified/run` evidence directory,
   including historical runs, at its explicitly expected commit.
+- `plan-estimate` projects a campaign's hours from an `assay plan` JSON file
+  and a progress stream that holds a completed baseline (a preflight or an R0/R1
+  run at the same commit). It is a measured, advisory projection: it never
+  classifies a candidate, and `assay plan` itself keeps its declared-budget
+  estimate and prints a stderr line pointing here.
 
 <!-- assay-analysis-example -->
 ```bash
 assay analyze verdict .assay/verdict-r2.json --expected-commit "$REVIEW_HEAD" --format text
 assay analyze progress .assay/progress-r2.jsonl --expected-commit "$REVIEW_HEAD"
+assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-self-qualification-preflight.jsonl --workers 3
 assay analyze report --expected-commit "$REVIEW_HEAD" \
   --verdict r2 .assay/verdict-r2.json \
   --progress r2 .assay/progress-r2.jsonl --log r2 "$GATE_LOG" --format text
