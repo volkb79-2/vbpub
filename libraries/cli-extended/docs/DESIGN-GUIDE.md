@@ -80,6 +80,16 @@ the legacy `include_confirmation` spelling remains accepted for existing
 consumers. `OptionSpec.hidden` keeps internal options parseable without
 advertising them in user help or generated Markdown.
 
+Mutation and generic confirmation answer different questions. `mutating`
+describes the command's effect; `confirmation_required` says whether the
+shared `--yes` acknowledgement is part of its consent contract. An application
+may already require a specific `--apply` choice, role check, reviewed state
+transition, or other operation-specific authorization. Preserve that domain
+guard and disable generic confirmation only when it would be redundant or
+misleading. Tests must show both that the generic option is unavailable and
+that the product guard still refuses an unauthorized mutation. `--yes` is not
+a substitute for the product's authorization rules.
+
 The top-level catalog may need a shorter line than command-specific help.
 `VerbSpec.summary_description` supplies that concise discovery label without
 discarding the full `description` shown for the verb itself.
@@ -105,6 +115,25 @@ Help-bearing invocation failures put the concise error first, then a blank
 line, then the normal product identity and complete command help. This gives
 operators the reason before the longer discovery content without weakening
 the required identity header on help/version output.
+
+## Keep service startup behind argument handling
+
+A CLI entrypoint may also be the command a service manager runs. Keep module
+imports and registry construction free of service startup, state writes,
+credential reads, and network connections. Put daemon construction in the
+selected handler so `--help`, `--version`, and malformed arguments can return
+before service work begins. If the documented operation is intentionally a
+no-argument service action, `single_command=True` with
+`no_args_action=True` expresses that contract while preserving the normal
+help/version paths.
+
+The library cannot undo work the consumer performs before calling
+`app.run()`. A Nyxloom service launcher initially started the daemon before
+processing `--help`; its fix moved argument handling before daemon and registry
+imports. Keep the handler lazy and test the installed executable with a
+startup sentinel: help, version, and invalid syntax must not set it, while the
+valid no-argument service invocation must reach the handler. See the
+[Nyxloom adoption record](../../../nyxloom/nyxloom-trove/reports/nyxloom-P114-LOG.md).
 
 The consumer still decides the public vocabulary, behavior labels, examples,
 argument constraints, and mutation policy. A registry is a source of truth for

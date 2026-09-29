@@ -57,3 +57,29 @@ The consumer still owns the reason for the rule and its user-facing remedy.
 **Provenance:** CMRU's semantic audit found selector-gated dry-run options and
 mode-dependent helper inputs; see
 [`CMRU S-CLI.9`](../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
+
+## CLI-EXT-03 — assess a lazy service-entrypoint pattern
+
+**Status:** Open
+
+**Type:** Feature investigation
+
+**Area:** Entrypoint lifecycle
+
+A daemon CLI may intentionally start its service on a valid no-argument
+invocation, while `--help`, `--version`, and malformed arguments must remain
+side-effect free. The current registry accepts callable handlers, so consumers
+can keep service imports inside a lightweight handler and use
+`single_command=True, no_args_action=True`. Nyxloom's `nyxloomd --help` was
+initially handled after daemon startup and needed a pre-runtime argument path.
+
+Document and validate the lazy-handler pattern first. If multiple adopters
+cannot use it cleanly, evaluate a public lazy-handler or service-entrypoint
+helper that preserves the shared parser contract without requiring a second
+parser. Keep daemon lifecycle, credentials, and state ownership in the
+consumer. Any API proposal must prove that help/version/errors do not invoke
+the service and that the valid no-argument invocation does.
+
+**Provenance:** Nyxloom P114 found and fixed service startup before argument
+handling; see
+[`P114 execution log`](../../nyxloom/nyxloom-trove/reports/nyxloom-P114-LOG.md).

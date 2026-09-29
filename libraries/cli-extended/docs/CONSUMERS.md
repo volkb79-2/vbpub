@@ -151,10 +151,49 @@ complete planned actions and that none of the mutations declared by the
 product contract occurred. State separately whether read-only subprocesses,
 network access, or credential reads are part of plan derivation. Confirmation
 should follow validation and describe that same complete plan; `--yes` should
-bypass only that confirmation. Exercise handlers through the registry so tests receive the
-registered defaults. If a test calls a handler directly, provide the complete
-namespace shape rather than adding fallback reads that hide a mismatch between
-the handler and parser.
+bypass only that confirmation. Exercise handlers through the registry so
+tests receive the registered defaults. If a test calls a handler directly,
+provide the complete namespace shape rather than adding fallback reads that
+hide a mismatch between the handler and parser.
+
+### Service entrypoints and side-effect-free discovery
+
+For an executable that normally starts a daemon or other long-running process,
+make its entrypoint parse the invocation before constructing that process.
+Keep module-level imports and registry construction inert; a lightweight
+handler can import the service implementation only when valid arguments reach
+it. If the service's documented invocation has no verb, use
+`CliRegistry(single_command=True, no_args_action=True)` rather than making
+bare invocation accidentally start work. The parser still owns `--help`,
+`--version`, and malformed-argument exits.
+
+Prove the boundary through the installed executable, not only a parser unit
+test. Use a startup sentinel or fake service factory and assert that help,
+version, and invalid arguments do not start the service, read credentials,
+connect to a provider, or create state. Assert that the valid no-argument
+invocation reaches the service handler. Nyxloom found that its `nyxloomd
+--help` path started the daemon before arguments were handled; see its
+[P114 execution record](../../../nyxloom/nyxloom-trove/reports/nyxloom-P114-LOG.md).
+
+### Package the same library revision that was tested
+
+When a consumer bundles or vendors `cli-extended` from a sibling source tree,
+verify each boundary independently: its package-discovery metadata must include
+the library, the test lane must import the library from the selected worktree,
+and the container build context must contain the source after `.dockerignore`
+rules are applied. A successful local wheel build does not prove that a
+Dockerfile can see the same files. Build the real wheel or image target,
+inspect the artifact for the library package and console-script metadata, then
+install and invoke it from outside the checkout without a repository
+`PYTHONPATH`. Nyxloom's adoption review caught a root `.dockerignore` rule that
+silently excluded the library source from its Docker wheel build; the fix and
+acceptance evidence are recorded in its
+[P112 report](../../../nyxloom/nyxloom-trove/reports/nyxloom-P112-REPORT.md).
+
+In source-mode tests, point both the consumer and library imports at the same
+selected worktree. Keep that path explicit rather than inheriting a `PYTHONPATH`
+from the main checkout; otherwise the test can pass or fail against a different
+library revision than the one being adopted.
 
 Finally, test the built wheel from outside the source checkout. Invoke every
 installed script and supported module CLI, and exercise bootstrap/project-step
@@ -329,6 +368,11 @@ collected values satisfy the product schema.
 validation before asking for consent. The helper cannot decide whether a
 Netcup firewall update, server reinstall, database migration, or deployment is
 safe, and it does not bypass deny-lists or other domain guards.
+When an explicit product safeguard is the consent boundary, declare the verb
+as `mutating=True, confirmation_required=False`; this preserves the mutation
+label without advertising a generic `--yes` that does not authorize the
+operation. Test both that `--yes` is rejected and that a failed role or state
+guard leaves the product unchanged.
 Use `runtime.output.is_interactive` when deciding whether to offer a multi-step
 flow before entering it. `runtime.prompts` enforces the same requirement before
 loading or calling a driver, using both injected stdin and stdout.

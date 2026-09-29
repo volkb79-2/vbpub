@@ -283,7 +283,10 @@ default, and verifies that selected known-verb errors include the complete
 verb help rather than only a usage line. Set `allow_short_help=True` only for
 a documented compatibility exception. The consumer must also assert that
 help/version cause no API calls, credential reads, or filesystem changes using
-its own fakes or state probes.
+its own fakes or state probes. For service entrypoints, keep startup behind
+argument parsing and command dispatch; see the
+[consumer guide](docs/CONSUMERS.md#service-entrypoints-and-side-effect-free-discovery)
+for the single-command pattern and its installed-executable oracle.
 
 See [`SPEC.md`](SPEC.md) for the complete behavioral contract;
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for install, migration, and
