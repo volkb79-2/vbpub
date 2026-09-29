@@ -315,3 +315,33 @@ def suffix_style_test_files(rel_paths: list[Path]) -> list[str]:
 def test_no_suffix_style_test_files():
     assert suffix_style_test_files(_tests_files()) == []
     assert suffix_style_test_files([Path("escape_test.py")]) == ["escape_test.py"]
+
+
+def cross_folder_test_imports(sources: dict[Path, str]) -> list[str]:
+    """`from test_x import ...` resolves only when test_x's folder is on sys.path (pytest's prepend
+    import mode inserts each collected file's folder), so it passes in a full run and fails in a
+    one-folder run unless both files share a folder."""
+    folder_of = {rel.stem: rel.parent for rel in sources}
+    bad = []
+    for rel, source in sorted(sources.items()):
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                if name.startswith("test_") and folder_of.get(name) != rel.parent:
+                    bad.append(f"{rel.as_posix()} imports {name}")
+    return bad
+
+
+def test_test_modules_import_only_test_modules_in_their_own_folder():
+    files = [p for p in _tests_files() if p.name.startswith("test_") and p.suffix == ".py"]
+    assert cross_folder_test_imports({p: (TESTS_ROOT / p).read_text(encoding="utf-8") for p in files}) == []
+    synthetic = {
+        Path("adapters/javascript/test_javascript_x.py"): "def test_a():\n    from test_coverage_y import z\n",
+        Path("parsers/coverage/test_coverage_y.py"): "z = 1\n",
+    }
+    assert cross_folder_test_imports(synthetic) == ["adapters/javascript/test_javascript_x.py imports test_coverage_y"]
