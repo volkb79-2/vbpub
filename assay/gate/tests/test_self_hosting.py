@@ -64,7 +64,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT_ROOT, Standalone, _build_backend_home, _clean_env, why_invalid
+from gate.tests.support import PROJECT_ROOT, Standalone, _build_backend_home, _clean_env, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.verdict import VERDICT_SCHEMA_VERSION
@@ -82,8 +82,9 @@ DECLARED_LANE_ARGV = [
     "-m",
     "pytest",
     "tests",
+    "gate/tests",
     "-q",
-    "--ignore=tests/test_self_hosting.py",
+    "--ignore=gate/tests/test_self_hosting.py",
     "--override-ini=pythonpath=",
 ]
 

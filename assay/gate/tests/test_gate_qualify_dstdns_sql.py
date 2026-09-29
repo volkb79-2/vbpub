@@ -46,7 +46,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT_ROOT
+from gate.tests.support import PROJECT_ROOT
 
 _MODULE_PATH = PROJECT_ROOT / "gate" / "python" / "qualify_dstdns_sql.py"
 _SPEC = importlib.util.spec_from_file_location("qualify_dstdns_sql", _MODULE_PATH)

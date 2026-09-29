@@ -193,20 +193,108 @@ def verify_report_document(
             )
 
 
+#: The lane whose receipt the full B105 qualification requires (S1, B123).
+RECEIPT_LANE = "tester-unified"
+#: The lane that requires it: only the full qualification, not the preflight (CD9).
+RECEIPT_REQUIRED_FOR = "self-qualification"
+_RECEIPT_KEYS = frozenset({"schema_version", "lane", "commit", "tree"})
+#: The full-mode flags, each required unless `--receipt-only`.
+_FULL_FLAGS = (
+    "report",
+    "repo_root",
+    "expected_commit",
+    "expected_tree",
+    "expected_lane",
+    "expected_rigor",
+    "expected_version",
+    "expected_wheel_sha256",
+    "producer_exit",
+)
+
+
+def verify_tester_unified_receipt(document: Any, *, expected_commit: str, expected_tree: str) -> None:
+    """Refuse unless ``document`` is exactly the registered gate's receipt for this commit and tree.
+
+    The document is the four-key object ``finish_registered_gate`` writes after a
+    green ``tester-unified`` run. Commit and tree are compared exactly, so neither
+    uppercase hex nor a longer digest of the right prefix matches.
+    """
+    if not isinstance(document, dict):
+        raise ValueError("tester-unified receipt is not a JSON object")
+    if set(document) != _RECEIPT_KEYS:
+        raise ValueError(f"tester-unified receipt keys {sorted(document)} != {sorted(_RECEIPT_KEYS)}")
+    version = document["schema_version"]
+    if type(version) is not int or version != 1:
+        raise ValueError(f"tester-unified receipt schema_version {version!r} != 1")
+    if document["lane"] != RECEIPT_LANE:
+        raise ValueError(f"tester-unified receipt lane {document['lane']!r} != {RECEIPT_LANE!r}")
+    if document["commit"] != expected_commit:
+        raise ValueError(f"tester-unified receipt commit {document['commit']!r} != {expected_commit!r}")
+    if document["tree"] != expected_tree:
+        raise ValueError(f"tester-unified receipt tree {document['tree']!r} != {expected_tree!r}")
+
+
+def _read_receipt(path: Path, *, expected_commit: str, expected_tree: str) -> None:
+    verify_tester_unified_receipt(
+        json.loads(path.read_text(encoding="utf-8")),
+        expected_commit=expected_commit,
+        expected_tree=expected_tree,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument("--repo-root", type=Path, required=True)
-    parser.add_argument("--expected-commit", required=True)
-    parser.add_argument("--expected-tree", required=True)
-    parser.add_argument("--expected-lane", required=True)
-    parser.add_argument("--expected-rigor", required=True)
-    parser.add_argument("--expected-version", required=True)
-    parser.add_argument("--expected-wheel-sha256", required=True)
-    parser.add_argument("--producer-exit", type=int, required=True)
+    parser.add_argument("--report", type=Path)
+    parser.add_argument("--repo-root", type=Path)
+    parser.add_argument("--expected-commit")
+    parser.add_argument("--expected-tree")
+    parser.add_argument("--expected-lane")
+    parser.add_argument("--expected-rigor")
+    parser.add_argument("--expected-version")
+    parser.add_argument("--expected-wheel-sha256")
+    parser.add_argument("--producer-exit", type=int)
+    parser.add_argument("--receipt-only", action="store_true")
+    parser.add_argument("--tester-unified-receipt", type=Path)
     args = parser.parse_args(argv)
 
+    if args.receipt_only:
+        extra = [f"--{name.replace('_', '-')}" for name in _FULL_FLAGS if name not in ("expected_commit", "expected_tree") and getattr(args, name) is not None]
+        if extra:
+            parser.error(f"--receipt-only takes no other flag than the receipt, commit and tree: {', '.join(extra)}")
+        missing = [
+            flag
+            for flag, value in (
+                ("--tester-unified-receipt", args.tester_unified_receipt),
+                ("--expected-commit", args.expected_commit),
+                ("--expected-tree", args.expected_tree),
+            )
+            if value is None
+        ]
+        if missing:
+            parser.error(f"--receipt-only requires {', '.join(missing)}")
+        try:
+            _read_receipt(args.tester_unified_receipt, expected_commit=args.expected_commit, expected_tree=args.expected_tree)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            print(f"B105_REPORT_REJECTED={exc}", file=sys.stderr)
+            return 2
+        print(f"B105_TESTER_UNIFIED_PASS=commit={args.expected_commit} tree={args.expected_tree}")
+        return 0
+
+    missing = [f"--{name.replace('_', '-')}" for name in _FULL_FLAGS if getattr(args, name) is None]
+    if missing:
+        parser.error(f"the following arguments are required: {', '.join(missing)}")
+
     try:
+        if args.expected_lane == RECEIPT_REQUIRED_FOR:
+            if args.tester_unified_receipt is None:
+                raise ValueError(f"lane {args.expected_lane} requires --tester-unified-receipt")
+            _read_receipt(
+                args.tester_unified_receipt,
+                expected_commit=args.expected_commit,
+                expected_tree=args.expected_tree,
+            )
+        elif args.tester_unified_receipt is not None:
+            raise ValueError(f"lane {args.expected_lane} takes no --tester-unified-receipt")
         document = json.loads(args.report.read_text(encoding="utf-8"))
         rigor = tuple(args.expected_rigor.split(","))
         if not rigor or any(not item for item in rigor):

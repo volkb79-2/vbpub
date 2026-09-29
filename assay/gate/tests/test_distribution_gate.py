@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT_ROOT
+from gate.tests.support import PROJECT_ROOT
 
 GATE_SCRIPT = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
 DISTRIBUTION = PROJECT_ROOT / "gate" / "distribution"
@@ -811,6 +811,8 @@ def test_the_lint_closure_is_a_third_venv_and_never_the_build_or_run_venv() -> N
     assert "$scratch/clone/assay/tests" in run_fn
     assert "$scratch/clone/assay/tests/fixtures" in run_fn
     assert "-prune" in run_fn
+    # (B123) `gate/tests` is its own array, so an empty expansion is refused.
+    assert "$scratch/clone/assay/gate/tests" in run_fn
 
 
 def test_the_lint_phase_runs_after_the_suite_and_marks_itself() -> None:
@@ -834,7 +836,18 @@ def _seed_clean_tests_tree(scratch: Path) -> Path:
         "def test_seed() -> None:\n    assert True\n", encoding="utf-8"
     )
     _seed_clean_analysis_tree(scratch)
+    _seed_clean_gate_tests_tree(scratch)
     return tests
+
+
+def _seed_clean_gate_tests_tree(scratch: Path) -> Path:
+    """(B123) The lint phase also lints `gate/tests/` and refuses a clone that has
+    none. Returns the seeded file so a caller can plant into it."""
+    gate_tests = scratch / "clone" / "assay" / "gate" / "tests"
+    gate_tests.mkdir(parents=True)
+    seed = gate_tests / "test_gate_seed.py"
+    seed.write_text("def test_gate_seed() -> None:\n    assert True\n", encoding="utf-8")
+    return seed
 
 
 def _seed_clean_analysis_tree(scratch: Path) -> Path:
@@ -955,6 +968,48 @@ def test_a_planted_unused_import_in_the_analysis_package_reddens_the_lint_phase(
     assert "assay_analysis/cli.py" in planted.stdout + planted.stderr
 
 
+def test_a_planted_unused_import_in_a_gate_tests_module_reddens_the_lint_phase(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """(B123) `gate/tests/` is inside the lint scope: the identical plant, in
+    `gate/tests` instead of `tests`, reddens the phase."""
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    _seed_clean_tests_tree(scratch)
+    seed = scratch / "clone" / "assay" / "gate" / "tests" / "test_gate_seed.py"
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    clean = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert clean.returncode == 0, clean.stderr
+    assert clean.stdout.count("ASSAY_GATE_PHASE=pyflakes-clean") == 1
+
+    seed.write_text("import os\n\n\ndef test_gate_seed() -> None:\n    assert True\n", encoding="utf-8")
+    planted = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert planted.returncode != 0
+    assert "ASSAY_GATE_PHASE=pyflakes-clean" not in planted.stdout
+    assert "'os' imported but unused" in planted.stdout + planted.stderr
+    assert "test_gate_seed.py" in planted.stdout + planted.stderr
+
+
+def test_a_clone_with_no_gate_tests_tree_refuses_rather_than_linting_nothing(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    _seed_clean_tests_tree(scratch)
+    shutil.rmtree(scratch / "clone" / "assay" / "gate")
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert proc.returncode != 0
+    assert "lint phase found no gate/tests sources to lint" in proc.stdout + proc.stderr
+    assert "ASSAY_GATE_PHASE=pyflakes-clean" not in proc.stdout
+
+
 def test_a_clone_with_no_analysis_tree_refuses_rather_than_linting_nothing(
     tmp_path: Path, gate_functions: Path, lint_venv: Path
 ) -> None:
@@ -1072,3 +1127,274 @@ def test_the_self_hosted_lane_is_invoked_with_resume_and_progress() -> None:
     assert source.count("assay run tester-unified") == 1, source.count(
         "assay run tester-unified"
     )
+
+
+# --- S1: the same-commit receipt and the gate-entry host check (B123, CD32) ----
+
+RECEIPT_RELATIVE = Path("assay") / ".assay" / "registered-gate" / "tester-unified.json"
+HEX40 = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _receipt_worktree(tmp_path: Path) -> tuple[Path, str, str]:
+    """A throwaway git worktree with one commit: (path, commit, tree)."""
+    worktree = tmp_path / "wt"
+    (worktree / "assay").mkdir(parents=True)
+    (worktree / "assay" / "file.txt").write_text("one\n", encoding="utf-8")
+    _git_commit(worktree, "one", init=True)
+    return worktree, _rev(worktree, "HEAD"), _rev(worktree, "HEAD^{tree}")
+
+
+def _git_commit(worktree: Path, message: str, *, init: bool = False) -> None:
+    identity = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Assay",
+        "GIT_AUTHOR_EMAIL": "assay@example.invalid",
+        "GIT_COMMITTER_NAME": "Assay",
+        "GIT_COMMITTER_EMAIL": "assay@example.invalid",
+    }
+    if init:
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=worktree, check=True, timeout=30)
+    subprocess.run(["git", "add", "-A"], cwd=worktree, check=True, timeout=30)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", message], cwd=worktree, env=identity, check=True, timeout=30
+    )
+
+
+def _rev(worktree: Path, spec: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", spec], check=True, capture_output=True, text=True, timeout=30
+    ).stdout.strip()
+
+
+def _docker_stub(tmp_path: Path, ps_output: str) -> tuple[dict[str, str], Path]:
+    """A PATH stub `docker`: it logs its argv, and `ps` prints ``ps_output``.
+    Anything but `ps` is a hard failure, so a test sees a stray call."""
+    fake_bin = tmp_path / "stub-bin"
+    fake_bin.mkdir()
+    log = tmp_path / "docker-calls.log"
+    stub = fake_bin / "docker"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$DOCKER_STUB_LOG"\n'
+        'if [[ "$1" == ps ]]; then printf "%s" "$DOCKER_STUB_PS"; exit 0; fi\n'
+        "exit 91\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DOCKER_STUB_LOG": str(log),
+        "DOCKER_STUB_PS": ps_output,
+    }
+    return env, log
+
+
+def test_the_receipt_is_the_exact_four_key_document_with_mode_0644(tmp_path: Path, gate_functions: Path) -> None:
+    worktree = tmp_path / "wt"
+    tree = "f" * 64  # a sha256-format object name is accepted too
+
+    proc = run_bash(
+        f'write_registered_gate_receipt "{worktree}" "{HEX40}" "{tree}"', gate_functions=gate_functions
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    receipt = worktree / RECEIPT_RELATIVE
+    assert receipt.read_text(encoding="utf-8") == (
+        f'{{"schema_version": 1, "lane": "tester-unified", "commit": "{HEX40}", "tree": "{tree}"}}\n'
+    )
+    assert json.loads(receipt.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "lane": "tester-unified",
+        "commit": HEX40,
+        "tree": tree,
+    }
+    assert (receipt.stat().st_mode & 0o777) == 0o644
+    assert sorted(p.name for p in receipt.parent.iterdir()) == ["tester-unified.json"]
+
+
+@pytest.mark.parametrize(
+    ("commit", "tree"),
+    [
+        (HEX40.upper(), HEX40),
+        (HEX40, HEX40.upper()),
+        (HEX40[:39], HEX40),
+        (HEX40, HEX40[:39]),
+        (HEX40 + "0" * 23, HEX40),
+        (HEX40, HEX40 + "0" * 25),
+        ("", HEX40),
+        ("main", HEX40),
+    ],
+)
+def test_a_malformed_object_id_writes_no_receipt(tmp_path: Path, gate_functions: Path, commit: str, tree: str) -> None:
+    worktree = tmp_path / "wt"
+
+    proc = run_bash(
+        f'write_registered_gate_receipt "{worktree}" "{commit}" "{tree}"', gate_functions=gate_functions
+    )
+
+    assert proc.returncode != 0
+    assert not (worktree / "assay").exists()
+
+
+def test_clearing_the_receipt_removes_it_and_tolerates_none(tmp_path: Path, gate_functions: Path) -> None:
+    worktree = tmp_path / "wt"
+    receipt = worktree / RECEIPT_RELATIVE
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text("stale\n", encoding="utf-8")
+
+    first = run_bash(f'clear_registered_gate_receipt "{worktree}"', gate_functions=gate_functions)
+    second = run_bash(f'clear_registered_gate_receipt "{worktree}"', gate_functions=gate_functions)
+
+    assert first.returncode == 0 and second.returncode == 0
+    assert not receipt.exists()
+
+
+def test_finishing_a_green_gate_writes_the_receipt_then_one_complete_marker(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+
+    proc = run_bash(f'finish_registered_gate "{worktree}" "{commit}" "{tree}"', gate_functions=gate_functions)
+
+    assert proc.returncode == 0, proc.stderr
+    receipt = worktree / RECEIPT_RELATIVE
+    assert json.loads(receipt.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "lane": "tester-unified",
+        "commit": commit,
+        "tree": tree,
+    }
+    assert proc.stdout.splitlines() == [
+        f"ASSAY_REGISTERED_GATE_RECEIPT={receipt}",
+        "ASSAY_REGISTERED_GATE_COMPLETE=1",
+    ]
+
+
+def test_finishing_after_head_moved_writes_no_receipt_and_no_complete_marker(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    (worktree / "assay" / "file.txt").write_text("two\n", encoding="utf-8")
+    _git_commit(worktree, "two")
+
+    proc = run_bash(f'finish_registered_gate "{worktree}" "{commit}" "{tree}"', gate_functions=gate_functions)
+
+    assert proc.returncode != 0
+    assert "HEAD changed during the registered gate; no receipt" in proc.stderr
+    assert not (worktree / RECEIPT_RELATIVE).exists()
+    assert "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
+    assert "ASSAY_REGISTERED_GATE_RECEIPT" not in proc.stdout
+
+
+def test_finishing_with_a_different_tree_at_the_same_head_is_refused(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, commit, _tree = _receipt_worktree(tmp_path)
+
+    proc = run_bash(f'finish_registered_gate "{worktree}" "{commit}" "{HEX40}"', gate_functions=gate_functions)
+
+    assert proc.returncode != 0
+    assert not (worktree / RECEIPT_RELATIVE).exists()
+    assert "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
+
+
+def test_a_red_container_leaves_no_receipt_even_when_a_stale_one_existed(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    stale = worktree / RECEIPT_RELATIVE
+    stale.parent.mkdir(parents=True)
+    stale.write_text("a receipt from an earlier green run\n", encoding="utf-8")
+    env, log = _docker_stub(tmp_path, "")
+
+    proc = run_bash(
+        "run_registered_tester_container() { return 7; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 7, proc.stdout + proc.stderr
+    assert not stale.exists()
+    assert "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
+    assert "ASSAY_REGISTERED_GATE_RECEIPT" not in proc.stdout
+
+
+def test_a_green_container_yields_the_receipt_and_exactly_one_complete_marker(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    env, log = _docker_stub(tmp_path, "")
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo stubbed-tester; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    receipt = worktree / RECEIPT_RELATIVE
+    assert json.loads(receipt.read_text(encoding="utf-8"))["commit"] == commit
+    assert proc.stdout.splitlines() == [
+        "stubbed-tester",
+        f"ASSAY_REGISTERED_GATE_RECEIPT={receipt}",
+        "ASSAY_REGISTERED_GATE_COMPLETE=1",
+    ]
+
+
+def test_a_busy_host_makes_the_gate_inconclusive_before_anything_else_happens(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """CD32: one `docker ps`, no waiting. The receipt from an earlier green run is
+    untouched (it is cleared only once this run really starts), the tester never
+    launches, and no other docker call is made."""
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    earlier = worktree / RECEIPT_RELATIVE
+    earlier.parent.mkdir(parents=True)
+    earlier.write_bytes(b'{"an earlier": "receipt"}\n')
+    before = earlier.read_bytes()
+    env, log = _docker_stub(tmp_path, "run-gate-x\nrun-gate-y\nsome-other-container\n")
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo LAUNCHED; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: run-gate-x,run-gate-y" in proc.stderr
+    assert earlier.read_bytes() == before
+    assert "LAUNCHED" not in proc.stdout
+    assert "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+
+
+def test_a_host_running_only_other_containers_proceeds_to_the_tester(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    env, log = _docker_stub(tmp_path, "other-container\nnot-run-gate-x\n")
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo LAUNCHED; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LAUNCHED" in proc.stdout
+    assert (worktree / RECEIPT_RELATIVE).is_file()
+
+
+def test_the_entry_section_ends_with_run_registered_gate_and_only_the_finisher_says_complete() -> None:
+    source = GATE_SCRIPT.read_text(encoding="utf-8")
+
+    assert source.rstrip().splitlines()[-1] == 'run_registered_gate "$worktree" "$host_repo_root" "$cgroup_parent"'
+    assert source.count("echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'") == 1
+    finisher = source.split("finish_registered_gate() {", 1)[1].split("\n}\n", 1)[0]
+    assert "echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'" in finisher

@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 
 import pytest
 
+from gate.tests.support import PROJECT_ROOT
+
 
 @pytest.mark.parametrize("analysis_exit", [0, 1])
 def test_red_lane_stays_red_when_diagnostic_inspection_succeeds_or_fails(tmp_path, analysis_exit):
-    driver = Path(__file__).resolve().parents[1] / "tools" / "tester-unified-gate.sh"
+    driver = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
     source = driver.read_text()
     start = source.index("run_self_hosted_lane() {")
     end = source.index("\n}\n", start) + 3

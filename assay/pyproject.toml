@@ -33,7 +33,7 @@ dependencies = []
 # input rather than chosen examples — an identity that silently collides is
 # the one defect class chosen examples are worst at finding. It is a test
 # authoring tool, never imported by `assay` itself, and the one module that
-# uses it (`tests/test_mutation_judge_identity_properties.py`) skips cleanly
+# uses it (`tests/core/test_mutation_judge_identity_properties.py`) skips cleanly
 # when it is absent, so this declaration widens the test closure without
 # widening the standalone claim A-005 is about.
 test = ["pytest>=8", "pytest-cov>=5", "jsonschema>=4", "hypothesis>=6.100"]
@@ -101,6 +101,14 @@ fallback_version = "0.1.0"
 
 # Developer convenience only. Per A-040 a bare-pytest green is explicitly NOT a
 # ship signal; the gate is `tester-unified` and nothing else.
+#
+# `pythonpath = ["src", "analysis/src"]` and `testpaths = ["tests",
+# "analysis/tests"]` are pinned and load-bearing (A-468(c), B123): the B105 lanes
+# in assay.toml rely on them instead of a `--override-ini`, because
+# `mutation_witness.py` treats any `-o` token as witness-ineligible. Only the
+# `tester-unified` lane overrides `pythonpath` (to test the installed wheel), and
+# it names `gate/tests` explicitly: the tooling tests are not in `testpaths`.
+# `gate/tests/test_self_lane.py` pins both values.
 [tool.pytest.ini_options]
 pythonpath = ["src", "analysis/src"]
 testpaths = ["tests", "analysis/tests"]

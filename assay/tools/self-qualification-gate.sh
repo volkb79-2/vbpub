@@ -59,6 +59,20 @@ git -C "$scratch/source" checkout --quiet --detach "$source_commit"
 [[ "$(git -C "$scratch/source" rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
   || die "private clone tree differs from selected source tree"
 
+# S1 (B123): the full lane needs the registered tester-unified gate to have passed
+# at this exact commit and tree. `./run-gate.py tester-unified` writes this receipt
+# only after a green run; the preflight lane does not require it (CD9).
+receipt="$project/.assay/registered-gate/tester-unified.json"
+if [[ "$requested_lane" == "self-qualification" ]]; then
+  echo "B105_PHASE=require-same-commit-tester-unified-pass"
+  "$tester_python" "$scratch/source/assay/tools/b105_report_check.py" \
+    --receipt-only \
+    --tester-unified-receipt "$receipt" \
+    --expected-commit "$source_commit" \
+    --expected-tree "$source_tree" \
+    || die "no registered tester-unified pass at $source_commit; run ./run-gate.py tester-unified first"
+fi
+
 distribution="$project/gate/distribution"
 base_prefix="$("$tester_python" -c 'import sys; print(sys.base_prefix)')"
 "$base_prefix/bin/python3" -m venv "$scratch/build-venv"
@@ -158,6 +172,8 @@ run_and_verify_lane() {
   local verdict_path=".assay/verdict-$lane.json"
   local progress_path=".assay/progress-$lane.jsonl"
   local state_path=".assay/mutation-state-$lane"
+  local -a receipt_args=()
+  [[ "$lane" == "self-qualification" ]] && receipt_args=(--tester-unified-receipt "$receipt")
 
   case "$lane" in
     self-qualification-preflight)
@@ -205,7 +221,8 @@ run_and_verify_lane() {
       --expected-rigor "$expected_rigor" \
       --expected-version "$version" \
       --expected-wheel-sha256 "$wheel_digest" \
-      --producer-exit "$run_status" || return 2
+      --producer-exit "$run_status" \
+      ${receipt_args[@]+"${receipt_args[@]}"} || return 2
   else
     return "$run_status"
   fi

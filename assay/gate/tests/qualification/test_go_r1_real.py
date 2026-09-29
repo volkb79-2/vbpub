@@ -51,7 +51,9 @@ from pathlib import Path
 
 import pytest
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from gate.tests.support import PROJECT_ROOT
+
+_PROJECT_ROOT = PROJECT_ROOT
 _REPO_ROOT = _PROJECT_ROOT.parent
 _IMAGE = "tester-unified-go:local"
 

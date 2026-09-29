@@ -76,7 +76,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-from conftest import (
+from gate.tests.support import (
     GitRepo,
     PROJECT_ROOT,
     Standalone,

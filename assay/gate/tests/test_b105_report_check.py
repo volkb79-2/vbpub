@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import PROJECT_ROOT, REPO_ROOT
+from gate.tests.support import PROJECT_ROOT, REPO_ROOT
 from assay.verify import verify_document
 
 CHECKER = PROJECT_ROOT / "tools" / "b105_report_check.py"
@@ -102,6 +102,14 @@ def _verify_with_assay_cli(tmp_path: Path, document: dict) -> None:
     assert result.returncode == 0, result.stderr
 
 
+_AUTO_RECEIPT = object()
+
+
+def _receipt(commit: str, tree: str) -> dict:
+    """The exact document the registered gate writes after a green run."""
+    return {"schema_version": 1, "lane": "tester-unified", "commit": commit, "tree": tree}
+
+
 def _run_checker(
     tmp_path: Path,
     document: dict,
@@ -112,10 +120,27 @@ def _run_checker(
     producer_exit: int = 0,
     checker: Path = CHECKER,
     repo_root: Path = REPO_ROOT,
+    receipt: object = _AUTO_RECEIPT,
 ) -> subprocess.CompletedProcess[str]:
+    """Run the checker in full mode.
+
+    ``receipt``: by default the lane ``self-qualification`` gets the matching
+    same-commit receipt and every other lane none; ``None`` passes no flag; a
+    ``Path`` is passed as is; anything else is written as the receipt's JSON.
+    """
     report_path = tmp_path / "verdict.json"
     report_path.write_text(json.dumps(document), encoding="utf-8")
     commit = _git_value("-C", str(repo_root), "rev-parse", "HEAD")
+    tree = expected_tree or _git_value("-C", str(repo_root), "rev-parse", "HEAD^{tree}")
+    if receipt is _AUTO_RECEIPT:
+        receipt = _receipt(commit, tree) if lane == "self-qualification" else None
+    receipt_flags: list[str] = []
+    if isinstance(receipt, Path):
+        receipt_flags = ["--tester-unified-receipt", str(receipt)]
+    elif receipt is not None:
+        receipt_path = tmp_path / "tester-unified.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        receipt_flags = ["--tester-unified-receipt", str(receipt_path)]
     return subprocess.run(
         [
             sys.executable,
@@ -127,7 +152,8 @@ def _run_checker(
             "--expected-commit",
             commit,
             "--expected-tree",
-            expected_tree or _git_value("-C", str(repo_root), "rev-parse", "HEAD^{tree}"),
+            tree,
+            *receipt_flags,
             "--expected-lane",
             lane,
             "--expected-rigor",
@@ -374,3 +400,172 @@ def test_a_committed_source_missing_from_the_declared_targets_is_named(tmp_path)
 
     assert result.returncode == 2
     assert "missing ['src/assay/new.py']" in result.stderr
+
+
+# --- S1: the same-commit tester-unified receipt (B123) --------------------------
+
+COMMIT = "a" * 40
+TREE = "b" * 40
+
+
+def _run_receipt_only(tmp_path: Path, receipt: object, *, commit: str = COMMIT, tree: str = TREE, extra=()):
+    """``--receipt-only`` on a receipt file (or on the named path when a ``Path``)."""
+    if isinstance(receipt, Path):
+        path = receipt
+    else:
+        path = tmp_path / "tester-unified.json"
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+    return subprocess.run(
+        [
+            sys.executable,
+            str(CHECKER),
+            "--receipt-only",
+            "--tester-unified-receipt",
+            str(path),
+            "--expected-commit",
+            commit,
+            "--expected-tree",
+            tree,
+            *extra,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_the_receipt_only_mode_accepts_the_exact_receipt(tmp_path):
+    result = _run_receipt_only(tmp_path, _receipt(COMMIT, TREE))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"B105_TESTER_UNIFIED_PASS=commit={COMMIT} tree={TREE}\n"
+    assert result.stderr == ""
+
+
+def test_the_receipt_only_mode_accepts_sha256_length_object_names(tmp_path):
+    commit, tree = "c" * 64, "d" * 64
+
+    result = _run_receipt_only(tmp_path, _receipt(commit, tree), commit=commit, tree=tree)
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("label", "receipt"),
+    [
+        ("other commit", _receipt("1" * 40, TREE)),
+        ("other tree", _receipt(COMMIT, "2" * 40)),
+        ("uppercase hex of the right commit", _receipt(COMMIT.upper(), TREE)),
+        ("right commit plus 24 extra hex digits", _receipt(COMMIT + "0" * 24, TREE)),
+        ("right tree plus 24 extra hex digits", _receipt(COMMIT, TREE + "0" * 24)),
+        ("another lane", {**_receipt(COMMIT, TREE), "lane": "self-qualification"}),
+        ("schema_version True", {**_receipt(COMMIT, TREE), "schema_version": True}),
+        ("schema_version 2", {**_receipt(COMMIT, TREE), "schema_version": 2}),
+        ("an extra key", {**_receipt(COMMIT, TREE), "assay_version": "7.2.0"}),
+        ("a missing key", {"schema_version": 1, "lane": "tester-unified", "commit": COMMIT}),
+        ("a non-object", [_receipt(COMMIT, TREE)]),
+        ("null", None),
+    ],
+)
+def test_the_receipt_only_mode_refuses_anything_but_the_exact_receipt(tmp_path, label, receipt):
+    result = _run_receipt_only(tmp_path, receipt)
+
+    assert result.returncode == 2, label
+    assert result.stderr.startswith("B105_REPORT_REJECTED="), result.stderr
+    assert result.stdout == ""
+
+
+def test_the_receipt_only_mode_refuses_a_missing_file(tmp_path):
+    result = _run_receipt_only(tmp_path, tmp_path / "absent.json")
+
+    assert result.returncode == 2
+    assert result.stderr.startswith("B105_REPORT_REJECTED=")
+    assert "absent.json" in result.stderr
+
+
+def test_the_receipt_only_mode_refuses_text_that_is_not_json(tmp_path):
+    path = tmp_path / "tester-unified.json"
+    path.write_text("COMPLETE=1\n", encoding="utf-8")
+
+    result = _run_receipt_only(tmp_path, path)
+
+    assert result.returncode == 2
+    assert result.stderr.startswith("B105_REPORT_REJECTED=")
+
+
+def test_the_receipt_only_mode_takes_no_report_flags(tmp_path):
+    result = _run_receipt_only(tmp_path, _receipt(COMMIT, TREE), extra=("--expected-lane", "self-qualification"))
+
+    assert result.returncode == 2
+    assert "--expected-lane" in result.stderr
+    assert "B105_TESTER_UNIFIED_PASS" not in result.stdout
+
+
+def test_the_full_mode_names_every_missing_flag(tmp_path):
+    result = subprocess.run(
+        [sys.executable, str(CHECKER), "--report", str(tmp_path / "verdict.json")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    for flag in (
+        "--repo-root", "--expected-commit", "--expected-tree", "--expected-lane",
+        "--expected-rigor", "--expected-version", "--expected-wheel-sha256", "--producer-exit",
+    ):
+        assert flag in result.stderr
+    assert "--report," not in result.stderr
+
+
+SELF_QUALIFICATION = "self-qualification"
+SELF_QUALIFICATION_RIGOR = ("R0", "R1", "R2", "R3")
+
+
+def _own_commit_and_tree() -> tuple[str, str]:
+    return _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD"), _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD^{tree}")
+
+
+@pytest.mark.parametrize("receipt_kind", ["other-commit", "other-tree", "no-flag", "missing-file"])
+def test_a_valid_full_report_is_refused_without_this_commits_receipt(tmp_path, receipt_kind):
+    """S1: the report is exactly valid (the same one the accepting test uses), so
+    only the receipt can be what refuses it."""
+    document = _verifier_valid_report(SELF_QUALIFICATION, SELF_QUALIFICATION_RIGOR)
+    _verify_with_assay_cli(tmp_path, document)
+    commit, tree = _own_commit_and_tree()
+    receipt = {
+        "other-commit": _receipt("1" * 40, tree),
+        "other-tree": _receipt(commit, "2" * 40),
+        "no-flag": None,
+        "missing-file": tmp_path / "absent.json",
+    }[receipt_kind]
+
+    result = _run_checker(tmp_path, document, lane=SELF_QUALIFICATION, rigor=SELF_QUALIFICATION_RIGOR, receipt=receipt)
+
+    assert result.returncode == 2
+    assert result.stderr.startswith("B105_REPORT_REJECTED="), result.stderr
+    assert "B105_REPORT_ACCEPTED" not in result.stdout
+
+
+def test_the_receipt_is_checked_before_the_report(tmp_path):
+    """A report that would itself be refused is reported as the receipt's refusal:
+    the S1 requirement is not something a good report can talk its way past."""
+    document = _verifier_valid_report(SELF_QUALIFICATION, SELF_QUALIFICATION_RIGOR)
+    document["outcome"] = "FAIL"
+
+    result = _run_checker(tmp_path, document, lane=SELF_QUALIFICATION, rigor=SELF_QUALIFICATION_RIGOR, receipt=None)
+
+    assert result.returncode == 2
+    assert "requires --tester-unified-receipt" in result.stderr
+
+
+def test_the_preflight_lane_takes_no_receipt(tmp_path):
+    lane, rigor = PREFLIGHT, PREFLIGHT_RIGOR
+    document = _verifier_valid_report(lane, rigor)
+    _verify_with_assay_cli(tmp_path, document)
+    commit, tree = _own_commit_and_tree()
+
+    result = _run_checker(tmp_path, document, lane=lane, rigor=rigor, receipt=_receipt(commit, tree))
+
+    assert result.returncode == 2
+    assert "takes no --tester-unified-receipt" in result.stderr

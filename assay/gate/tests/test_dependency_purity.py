@@ -28,7 +28,7 @@ import tomllib
 import zipfile
 from pathlib import Path
 
-from conftest import PROJECT_ROOT, Standalone
+from gate.tests.support import PROJECT_ROOT, Standalone
 
 PACKAGE_DIR = PROJECT_ROOT / "src" / "assay"
 ANALYSIS_PACKAGE_DIR = PROJECT_ROOT / "analysis" / "src" / "assay_analysis"
