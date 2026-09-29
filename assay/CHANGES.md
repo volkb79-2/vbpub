@@ -5,6 +5,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
+- chore(assay): assay's own two B105 self-qualification lanes now use the
+  shallow snapshot (`snapshot_history = "shallow"`, the A-451 default) instead of
+  full history, since no collected judge test reads history; a new test proves a
+  shallow snapshot has no `HEAD~1`. Assay-internal: no consumer-facing change
+  (B128)
 - refactor(assay): judge tests (`tests/`) and tooling tests (`gate/tests/`, for
   the gate script, checker, wheel and zipapp, packaging and lane-config drift)
   are separate trees; `tester-unified` runs both, the B105 lanes collect

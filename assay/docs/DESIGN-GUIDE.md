@@ -2002,8 +2002,11 @@ pyproject's own `pythonpath = ["src", "analysis/src"]` and carry no
 `--override-ini` (a `-o` token makes a lane ineligible for the mutation
 witness); `gate/tests/test_self_lane.py` pins the exact argv of every lane.
 No collected judge test
-reads history or tags (A-475); the lane keeps full snapshot history until
-B128, and snapshot refs and tags are intentionally not copied.
+reads history or tags (A-475), so both B105 lanes use the shallow snapshot
+default (`snapshot_history = "shallow"`, B128): the seed carries the judged
+commit and resolved base only, and `tests/core/test_snapshot_history_shallow.py`
+proves `HEAD~1` is absent in a shallow snapshot. Snapshot refs and tags are
+intentionally not copied.
 
 **S1: the same-commit `tester-unified` receipt.** The full lane refuses to
 start unless the registered `tester-unified` gate passed at the very commit and
