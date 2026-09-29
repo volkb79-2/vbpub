@@ -636,9 +636,13 @@ def _shard(index=0, count=2, ids=None, **overrides):
         ([_shard(schema_version=999)], "unsupported shard schema_version"),
         (
             [_shard(schema_version=mutation.MUTATION_STATE_SCHEMA_VERSION - 1)],
-            "unsupported shard schema_version",
+            f"unsupported shard schema_version {mutation.MUTATION_STATE_SCHEMA_VERSION - 1}; "
+            f"expected {mutation.MUTATION_STATE_SCHEMA_VERSION}$",
         ),
-        ([_shard(schema_version=0)], "unsupported shard schema_version"),
+        (
+            [_shard(schema_version=0)],
+            f"unsupported shard schema_version 0; expected {mutation.MUTATION_STATE_SCHEMA_VERSION}$",
+        ),
         ([_shard(lane="")], "lane and commit must be non-empty"),
         ([_shard(commit=None)], "lane and commit must be non-empty"),
         ([_shard(shard_index=True)], "shard index and count must be integers"),
