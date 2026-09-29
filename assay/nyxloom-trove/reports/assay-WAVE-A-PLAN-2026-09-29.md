@@ -41,10 +41,11 @@ It is **not** done by a B105 qualification. B105 still needs the v14 wave and th
 
 ## 3. W7 (small enough to specify here)
 
-- In both `[lanes.self-qualification.isolation]` and `[lanes.self-qualification-preflight.isolation]`, set `snapshot_history = "shallow"` (A-451 default). Keep the two lanes identical (`tests/test_self_lane.py`).
-- Update the pin in `tests/test_self_lane.py` (`snapshot_history == "full"`) and the rationale comment in `assay.toml`.
-- **Drift proof:** run `./run-gate.py self-qualification-preflight` once, host permitting. Compare collected, passed and skipped counts with the last full-history preflight. Any repository-dependent judge test that newly skips or fails is a finding, not a pass.
-- **Negative:** a lane with `snapshot_history = "shallow"` plus a test that reads `HEAD~1` must fail visibly. Add a tiny fixture test if none exists.
+W7 runs after W4 (CD12).
+- In both `[lanes.self-qualification.isolation]` and `[lanes.self-qualification-preflight.isolation]`, set `snapshot_history = "shallow"` (A-451 default). Keep the two lanes identical (`gate/tests/test_self_lane.py`, moved there by W4).
+- Update the pin in `gate/tests/test_self_lane.py` (`snapshot_history == "full"` → `"shallow"`) and the rationale comment in `assay.toml`.
+- **Drift proof:** on the W7 branch, run `./run-gate.py self-qualification-preflight` twice, host permitting: first with the lane still at `"full"`, then with `"shallow"`, on the same commit apart from that one value. Collected, passed and skipped counts must be identical. Any test that newly skips or fails is a finding, not a pass.
+- **Negative:** add `tests/core/test_snapshot_history_shallow.py` (W3 layout). It builds a two-commit repository with the existing `git_repo` fixture, materializes a shallow snapshot through the isolation API, and asserts that `git rev-parse HEAD~1` inside the snapshot fails. It must fail if the snapshot were full.
 
 ## 4. Rules for every package
 
@@ -55,7 +56,7 @@ It is **not** done by a B105 qualification. B105 still needs the v14 wave and th
   - never the full `self-qualification` lane;
   - remove containers by exact name only.
 - **Gate:** `cd <worktree>/assay && python ./run-gate.py tester-unified`. Read the markers in a separate step.
-- **Known red test on main:** `tests/test_cli_run.py::test_run_liveness_classifies_a_thread_join_hang_as_hung` fails on main itself (B107 regression; the other session's `612843ef` addresses it). Until that lands, a package's gate is acceptable if this is the only failure and the log shows it. Record that in the package LOG.
+- **Every gate failure is real** (CD29). The former B107 known-red test was removed on main (`35adca38`), and landing merged that (`1e3c8a49`).
 - **Edits** through the editor tools, never sed or `write_text` scripts (operator directive).
 - **Docs:** README / DESIGN-GUIDE / CONSUMERS stay in sync within the package (estate rule).
 - **Implementers are Sonnet only** (operator, 2026-09-29). Briefs therefore leave no design choice to the implementer. Anything unsettled is a carver question answered before dispatch.
