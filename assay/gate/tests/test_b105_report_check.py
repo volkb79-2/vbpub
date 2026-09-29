@@ -545,6 +545,13 @@ def test_a_valid_full_report_is_refused_without_this_commits_receipt(tmp_path, r
     assert result.returncode == 2
     assert result.stderr.startswith("B105_REPORT_REJECTED="), result.stderr
     assert "B105_REPORT_ACCEPTED" not in result.stdout
+    reason = {
+        "other-commit": "tester-unified receipt commit",
+        "other-tree": "tester-unified receipt tree",
+        "no-flag": "requires --tester-unified-receipt",
+        "missing-file": "absent.json",
+    }[receipt_kind]
+    assert reason in result.stderr, result.stderr
 
 
 def test_the_receipt_is_checked_before_the_report(tmp_path):
