@@ -78,4 +78,17 @@ None. Additive surfaces named for docs/CHANGES: `candidate` keys `cpu_seconds`/`
 ## Residuals
 - None for W8. Owed to the review: the fresh adversarial review the brief requires (including the torn-tail `run` at another commit attack).
 
-READY-FOR-GATE 2d3a0e58
+## Review fixes (REVIEW-W8, MERGE-WITH-FIXES)
+All applied with the exact review text, in order, one commit each. `git diff -- src` was empty after every controlled break (all reverted with Edit).
+
+- **W8R-1** `602ff951` (test). Five new `_measured_resources` cases pass. Positive: 20 passed in `test_mutation_resource_evidence.py`. Negative, all 7 mutants applied by hand and killed (red), then reverted: `mutation.py:1931` `or {}` to `and {}`; `:1941` `spawned_at is not None`, `session_start is not None`, `or` to `and`; `:1944` the same three on `first_test`. The controlled break for the LOG (`:1941` `spawned_at is not None`) sent `test_measured_resources_are_the_sidecar_values_and_the_stamp_differences` red.
+- **W8R-2** `5835f56a` (test). O8 resume leg now asserts the `resume` event is `(resumed_total, rejected_total) == (2, 0)` and no `candidate` events. Negative: `if "resources" in payload: return _RECORD_REJECTED` after the `judge_sha256` check in `_load_validated_state_record` goes red (`assert [(0, 2)] == [(2, 0)]`); reverted, green (20 passed).
+- **W8R-3** `3df040e7` (fix). `plan_estimate` refuses a non-finite projection. Positive: 61 passed. Negative: with the guard weakened to `math.isnan`, the new `1e308` test is red (1 failed, 60 passed).
+- **W8R-4** `1359762c` (fix). CD41 check runs when only `expected_tree` is given. Positive: `test_b105_report_check_real_plan.py` and `test_b105_report_check.py` 75 passed. Negative: with the old condition the extended O14 is red.
+- **W8R-5** `30a38b93` (docs). CONSUMERS and DESIGN-GUIDE text replaced as written. `test_docs_examples_and_vocabulary.py` plus `analysis/tests/test_analysis.py`: 208 passed.
+- **W8R-6** `80926dbb` (test). `_plan` fixture `jobs` is 3. Positive: 61 passed. Negative: `worker_hours / workers / plan.get("jobs", 1)` turns `test_op1_*` and `test_the_workers_bounds_are_inclusive` red (2 failed); reverted, green.
+- **W8R-7** `7e83bcab` (test). Both O7 tests parametrized over `_ROWS`. Positive: `test_liveness_runner_monitor.py` 50 passed. Negative: narrowing `liveness.py:1713` to `except OSError:` turns the 3 non-serializable rows red (3 failed, 47 passed); reverted.
+
+Final checks: `analysis/tests` with `--cov=analysis/src/assay_analysis --cov-branch`: 285 passed, 100% line and branch on all four modules. `mutation.py` focused run (`test_mutation_resource_evidence.py`, `test_mutation_progress_budget_plan.py`, `test_liveness_runner_monitor.py`, 122 passed, `--cov=src/assay --cov-branch`, report limited to `mutation.py`): the file is partial by construction (64%), but no missing line falls in `_measured_resources` (1925-1950), so no new miss from this work.
+
+READY-FOR-GATE 7e83bcab
