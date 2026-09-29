@@ -4989,3 +4989,19 @@ tool-managed foreground execution session instead, retain its session handle,
 and capture the exact run-gate exit status from that session. Because this
 entry is documentation-only, the B107 test tree is unchanged; run the gate at
 the resulting clean branch tip.
+
+### RW-367 — 2026-09-29 00:22:30Z — defer B107 full gate behind the active Assay gate
+
+At fresh admission preflight, host memory `full avg10=0.00`; host
+`dev-gates.slice` was loaded with `CPUQuotaPerSecUSec=5s`, and the B107 repair
+worktree was clean at `6725bdaa6b6e0ef465a1d742a77729dae08a975e`. A
+tester-unified container owned by the concurrent Assay work was already up:
+`run-gate-assay-selfhosted-3691746-2518-1790641339`. Per the one-Assay-gate-at-
+a-time coordination, I did not launch a second tester-unified gate. The
+existing gate and session-extract campaign were left untouched; no B107
+container or verdict exists yet. Do not inspect the concurrent gate again
+before 25 minutes from this preflight unless its owner sends an earlier
+completion notice. During the same host-escape preflight, mdt observed missing
+cgroup2 `memory_recursiveprot` and `memory_hugetlb_accounting` flags and
+restored them from the existing tracked host-setup policy; no host-setup
+source was edited in this session.
