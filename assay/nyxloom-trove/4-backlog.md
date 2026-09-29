@@ -11701,3 +11701,11 @@ That PostgreSQL rejects the mutated DDL is reasoned, not measured. If it does, o
 - drop-check also rewrites `CREATE POLICY … WITH CHECK`.
 
 Fix the labels or the behaviour, whichever the SQL design intends, and update the docs' operator table.
+
+## B134 — the git-marker refusal test depends on the host's `/tmp`
+
+**Status: OPEN (found 2026-09-29 during Wave A W3–W6).**
+
+`tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused` creates `tmp_path/a/b/c` and expects `_nearest_git_marker` to find no `.git` in any ancestor. On a host with a stray `/tmp/.git`, the walk finds that marker and the test fails. On this devcontainer the stray marker is an empty directory created 2026-09-28 22:17 by an unknown process. The failure is local only: gate containers have their own `/tmp`. But `git.py`'s refusal line (`:457`, `:459` after W6) is covered only by this test, so a local B105 coverage run misses it for an environmental reason.
+
+Fix: make the test hermetic. Give it an ancestor chain it controls: either stop the walk at a boundary the test passes in, or seam the root the walk ends at. Keep the refusal assertion exact. Also find out whether any assay test can create `.git` outside its own `tmp_path`.
