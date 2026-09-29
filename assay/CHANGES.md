@@ -7,10 +7,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Changed
 - refactor(assay): move `assay analyze` into a second top-level package,
   `assay_analysis`, shipped in the same wheel and zipapp; `assay analyze`
-  behaviour, exit codes and schema paths are unchanged, the undocumented
-  `import assay.analysis` is removed, the package has its own R0+R1 lane, and
-  the B105 report checker now names its scope (`src/assay` only; analysis out
-  of scope by A-478) (B127)
+  behaviour, exit codes and schema paths are unchanged (a usage error for
+  unrecognized arguments now prints the `assay analyze` usage line and prefix),
+  the undocumented `import assay.analysis` is removed, an editable install
+  made before this change must be re-run so `assay analyze` finds the new
+  package, the package has its own R0+R1 lane, and the B105 report checker
+  now names its scope (`src/assay` only; analysis out of scope by A-478)
+  (B127)
 
 ### Fixed
 - fix(assay): require time-aligned resource evidence and a CPU-quiet window
