@@ -5128,3 +5128,27 @@ was left untouched. CIU marked the B107 worktree ready, while its optional
 network creation warned that Docker's predefined address pools are exhausted.
 The gate did not use that network (`tester-unified` is launched with network
 disabled), so the warning did not affect this run. No network was removed.
+
+### RW-374 — 2026-09-29 01:17:55Z — P1 R2 launch refused shared-clone object alternates
+
+The first P1 R2 attempt was started in CIU worktree
+`.worktrees/rg55-b107-ciu-root/.worktrees/rg55-p1-r2-20260929` at exact
+commit `4e418154863ab2563a01712567bce8f0ccbace5a`, with `origin/main` updated
+to that same SHA. The registered lane launched container
+`run-gate-vbpub-r2-3756694-1790644522` with `--cpus 3` in `dev-gates.slice`,
+then exited 2. Its separately read Assay verdict is `ERROR/GIT_FAILED`: the
+isolated root had been created with `git clone --shared`, leaving
+`.git/objects/info/alternates`; Assay correctly refuses a source snapshot
+whose object bytes are not local. Progress contains only the run-start and
+error-verdict events (`candidate_total=null`), so **zero mutation candidates
+ran**. This is a failed launch, not mutation evidence. Preserve its verdict,
+progress, run-gate history, and worktree unchanged.
+
+At the launch admission check one other mutation container,
+`run-gate-vbpub-mutation-3747550-1790644029`, was active and left untouched;
+this attempt used the second allowed mutation slot. Host memory `full avg10`
+was 0.00 and `dev-gates.slice` was loaded at 5 CPUs. `host-escape`/mdt
+restored the tracked cgroup2 mount options; no host-setup source was edited.
+The retry must use a fresh independent clone (no object alternates), verify
+that fact before creating its CIU worktree, then repeat the normal admission
+check. Do not convert or delete this failed checkout.
