@@ -351,8 +351,6 @@ A mutant that signals its own candidate is still classified normally, because te
 ### Degrees of freedom
 
 - Private names and the internal decomposition of `_cmd_campaign_init`.
-- How the plan-discovery block is extracted from `_cmd_plan` into `_discover_plan_jobs(...)`, as long as `assay plan` output stays byte-identical and a test proves it.
-  - **C29:** this extraction is the **single** planner-jobs helper in the codebase. P8's `cli.plan_jobs()` wraps it, adding digests, and P7's selector and P9 reach it through P8. Give it a stable signature and a docstring saying so.
 
 **Not free:**
 - file fields, CLI spellings, reason codes, exit codes, the conversion formula, and the order of the validation steps;
@@ -379,6 +377,7 @@ A mutant that signals its own candidate is still classified normally, because te
 6. Add the C3 handling in `mutation._run_attempt` (Interfaces 7), with reservations closed before every raise. Add the C28 OOM check (Interfaces 9) and the `oom_guard` key in the `plan` event.
 7. Add C8: the record key on write, the loader check, and the `init` refusal (Interfaces 8).
 8. Extract `_cmd_plan`'s discovery (`cli.py:1648-1765`) into `_discover_plan_jobs(...)`. This is the single planner-jobs extraction (C29). Prove `assay plan` output is unchanged: the existing plan tests must pass unmodified.
+   Wave A W9 extracts `_discover_plan_jobs` (CD20/CD26); P6 consumes the extracted helper.
 9. Add the `campaign init` subcommand, `--campaign-deadline`, Flow 1–7 (with the C23 comment at the digest check), the main-thread-only signal wrapper with the pinned names and SIGHUP (Flow 8), and the label-grace `honors_termination=False`.
 10. Gate script and run-gate.toml (Flow 11–13), including the process-tree probe. Extend `tests/test_self_lane.py`'s gate-script substring pins (`:176-200`) with `campaign init`, `--campaign-deadline`, `B105_CAMPAIGN_DEADLINE=`, `B105_CAMPAIGN_INIT_REFUSED`, `B105_TIMEOUT_FAILSAFE`, and the ≥ 124 status test.
 11. **C15.** `LaneDeadline` gains a field, so regenerate `tests/fixtures/dataclass-contract.json` with the command P1 (B112) documents in DESIGN-GUIDE. If P1 has not merged yet, the fixture does not exist; note that in the REPORT, because P1 then generates it including this field. Commit the regenerated fixture in the same change.
