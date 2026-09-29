@@ -29,6 +29,9 @@ O6 detail. The one failure, `tests/core/test_git_boundary.py::test_no_git_marker
 ## Deviations (successor)
 - D6 The docs put the `### Package boundary (A-478)` section at the end of DESIGN-GUIDE (last subsection of "Review evidence analysis") rather than near :3406, because that Appendix is a rejected-arguments table and the analysis section is the file's last one.
 - D7 O3's T8 negative was not exercised (see the O3 row).
+- D8 (review W2R-4) O1 covered help, bare and exit-code paths. One stderr path is not byte-identical: a usage error for unrecognized arguments (e.g. `assay analyze collect --output x -- y`) now prints the `assay analyze` usage line and `assay analyze: error:` prefix instead of the top-level `assay` ones, because the analysis parser is now the top-level parser for `analyze`. Exit code 2 is unchanged; no documented surface changes (CD30).
+- D9 (review W2R-8) The analysis->judge module set is pinned in T3 (`ALLOWED_JUDGE_MODULES`), replacing W3's deleted `ANALYSIS_DEPS`; it now includes the composition root `assay.cli` (brief step 3). Carver question: analysis uses two unprefixed judge names absent from their module's `__all__` (`assay.git.ignore_rule_source`, `assay.cli.AssayArgumentParser`). T3 treats "public" as "no leading underscore"; if CD18's "public judge name" means `__all__` membership, adding them touches `git.py`, a judge module W2 may not edit. (Carver decision for the fix pass: "public" means no leading underscore; `__all__` membership is not required; `git.py` and `cli.py` are not edited.)
+- D10 (review W2R-6) `nyxloom-trove/nyxloom.toml:107` still says `pythonpath = ["src"]`; the brief forbids touching that file, so it is left for the controller.
 - No editing slips in this session: every file change used the Edit tool.
 
 ## Commits
@@ -53,7 +56,7 @@ O6 detail. The one failure, `tests/core/test_git_boundary.py::test_no_git_marker
 - D3 `verify_scope` message details the brief left open: (b) reports the non-`assay` names, or all names if only `assay` is missing; (a), (d), (e) messages are `judgment.resolved.source_roots ... != ['src/assay']`, `judgment.<tier>.targets names <t>, out of B105 scope by decision A-478` (r3 outside `src/assay/`: `... not under src/assay/`), and `judgment.<tier>.targets differ from the tracked src/assay sources: missing [...], extra [...]` (`, or are not sorted` when the sets are equal). The r1 targets are read from `judgment.r1.targets`, r2 from `judgment.r2.targets` (skipped when there is no r2), r3 from `judgment.r3.targets`. The T9 positive fixture takes its targets from `assay.toml`.
 - D4 T10 additions beyond the brief: two behavioural tests for `run_analysis_lane` (failure never laundered; marker needs both the lane and `assay verify`).
 - D5 Process slips (no effect on content): two files (`tests/core/test_import_contracts.py` T6.3 tail, `tests/test_b105_report_check.py` T9 tail) were appended with a shell heredoc `cat >>` instead of the Edit tool; the content is what git shows. One stray `sed -i` on `/dev/null` (no-op, failed).
-- No consumer-visible change beyond CD30's list found so far: `assay analyze` help/exit codes byte-identical (O1); `import assay.analysis` gone (CD19).
+- No consumer-visible change beyond CD30's list found so far: `assay analyze` help output and exit codes byte-identical (O1); unrecognized-argument usage errors now name `assay analyze` (D8); `import assay.analysis` gone (CD19).
 
 ## For the controller's gate run (so far)
 - `tester-unified`: `ASSAY_GATE_PHASE=analysis-lane-passed` (new), `pyflakes-clean` (now also lints `analysis/`), `ASSAY_GATE_CONTAINER_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`.
@@ -62,4 +65,21 @@ O6 detail. The one failure, `tests/core/test_git_boundary.py::test_no_git_marker
 - The `analysis` lane (`assay.toml`) needs `pythonpath = ["src","analysis/src"]` from pyproject; the `tester-unified` lane uses `--override-ini=pythonpath=` (installed wheel).
 - Consumer-visible changes (CD30): none to a documented CLI, schema path or lane key. Removed undocumented `import assay.analysis` (CD19); second top-level package `assay_analysis` in the wheel/zipapp. 7.2.0 stands.
 
-READY-FOR-GATE 4f2fd892
+## Review fixes (REVIEW-W2, fix pass)
+
+Breaks were applied locally, observed red, reverted; none committed. Collect-only default run: 6007 (6004 + 1 W2R-1 guard + 2 W2R-8 tests). `analysis/tests` with `--cov=analysis/src/assay_analysis --cov-branch`: 224 passed, 930 stmts / 492 branches, 100%.
+
+| Finding | Commit | Positive | Negative |
+|---|---|---|---|
+| W2R-1 (MAJOR) packages + on-demand loader | `c84bdd7d` | collect-only: `tests analysis/tests` 6005, `analysis/tests tests` 6005, `tests` 5783, `analysis/tests` 222, `--import-mode=append` 6005. A temporary judge test (`from conftest import GitRepo` + `isinstance(git_repo, GitRepo)`) passed in default `-k` and in both orders (223 passed each) and alone; file removed, not committed. Wheel built locally (`python -m build --no-isolation -x`, scratchpad, nice/ionice): top levels `assay`, `assay_analysis`, dist-info; 64 members; `assay_analysis/{__init__,cli,evidence}.py`; nothing from `analysis/` or tests | `sys.modules["conftest"] = sys.modules[__name__]` added to the analysis conftest: `test_the_analysis_conftest_never_rebinds_the_judge_conftest_name` red (1 failed), and the combined run with the identity test errors at collection; reverted |
+| W2R-3 path-keyed sources, package pin | `34651582` | boundary tests + `tests/test_b105_report_check.py` 26 passed | planted `analysis/src/assay_analysis/campaign/cli.py` (`from assay.mutation import _x`): 2 failed (private-name test, lane test); planted `analysis/src/other/__init__.py` (`import requests`): 2 failed; both removed |
+| W2R-8 `ALLOWED_JUDGE_MODULES` | `1b1c66b2` | boundary file 8 passed | `import assay.runner` appended to analysis `cli.py`: `test_analysis_imports_only_the_allowed_judge_modules` red; `git checkout` revert |
+| W2R-2 zipapp under `-S` | `6d3cf1bd` | `test_the_zipapp_runs_analyze_from_the_one_archive` passed (built from committed HEAD) | the test builds the committed HEAD, so a break cannot be committed. Instead I built a zipapp from the local wheel with `build_release.build_zipapp` and a copy with every `assay_analysis/` member removed: real archive origin check rc 0 and `analyze --help` rc 0; stripped archive origin rc 1 (no module) and `analyze --help` rc 1 |
+| W2R-7 lint refusal message | `194cf74a` | `-k no_analysis_tree` passed | the `die` message in `tools/tester-unified-gate.sh` changed to another text: 1 failed; `git checkout` revert |
+| W2R-4 O1 wording | `b3b24838` (CHANGES); D8 and the O1 line here | docs only | n/a |
+| W2R-5 stale editable install | `617d1055` | docs only | n/a |
+| W2R-6 doc drift | `141ac746` (DESIGN-GUIDE, `assay.toml` comment, B127 status); D10 here for `nyxloom.toml:107` | `tests/core/test_docs_examples_and_vocabulary.py` + `tests/test_self_lane.py` 59 passed | n/a |
+
+Process note: two temporary breaks/plants (W2R-3 plants, W2R-8 `import assay.runner`) were written with shell `printf` rather than the Edit tool; all were removed/reverted and no such content was committed.
+
+READY-FOR-GATE 194cf74a
