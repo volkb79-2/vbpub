@@ -49,7 +49,7 @@ from typing import Callable, ContextManager, Iterator, Mapping, Sequence
 
 from . import git as _git
 from .config import IsolationConfig
-from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .errors import AssayError, LaneConfigError, Outcome, ReasonCode, require_advance
 
 __all__ = [
     "DEFAULT_SNAPSHOT_LIMITS",
@@ -1403,7 +1403,7 @@ def _parse_tree(raw: bytes, oid: str) -> tuple[tuple[str, bytes, str], ...]:
         except UnicodeDecodeError as exc:
             raise _git_failed(f"tree {oid} has a non-ASCII mode {mode_bytes!r}") from exc
         records.append((mode, name, raw[oid_start:oid_end].hex()))
-        index = oid_end
+        index = require_advance(index, oid_end)
     return tuple(records)
 
 
