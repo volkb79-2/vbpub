@@ -5045,3 +5045,37 @@ workspace-write bwrap could not initialize; its scope remains isolated to
 review/test files and report, with gates, host changes, release, and merge
 forbidden. Attached execution handle: `11710`. Do not advance or edit the
 review worktree while it is active.
+
+### RW-371 — 2026-09-29 00:43:56Z — Sol ACCEPT; B107 registered gate still pending
+
+The fresh caller-configured Sol xhigh reviewer completed successfully and
+committed an ACCEPT report at
+`.worktrees/rg55-assay-b107-load-independent-sol-20260929/assay/nyxloom-trove/reports/assay-RG55-B107-LOAD-INDEPENDENT-SOL-FINAL-REVIEW-20260929.md`
+(review commit `e0f9db79892b9068cea0bedf65b7e77e371b7e6c`). It found the two
+removed CLI mutation assertions depended on racing fixed candidate wall
+budgets against liveness thresholds; it found no other assertion with that
+classification race. Its local focused checks passed (91 tests, 53 cached
+evidence tests, 1 surviving CLI test, and 9 judge/verify tests). These are
+reviewer-run local checks, not a registered gate receipt. The reviewed
+candidate was `0a6f74f3`; an independent comparison confirmed the repair
+worktree at `7ee9a8ad` has no diff in `assay/`, so the code/test delta is the
+same. The reviewer worktree is clean. No fix-verification round is required.
+
+The exact-tree registered `tester-unified` gate remains mandatory. Its
+read-only dry run returned 0 and resolved the registered command to
+`assay/tools/tester-unified-gate.sh` for the repair worktree. The run-gate
+profile plan is enabled. The cockpit has no `/run/cgprofile/ctl.sock` and no
+`cgprofile` executable in `/home/vscode/.venv`; do not set
+`RUN_GATE_PROFILE=off` to conceal that state. Record the profiler's actual
+graceful outcome during the gate; under R-36h it must not block or change the
+functional verdict.
+
+Process-control disclosure: the controller's general container inventory at
+`00:38:58Z` was earlier than RW-367's stated 25-minute no-check window. It
+showed no matching active container, but this premature observation is not
+used as completion or admission evidence. Make no further check of that
+concurrent Assay gate until `00:47:30Z` absent an owner notification. At or
+after that time, check once; if its slot is free, repeat host-PSI and loaded
+slice preflight and launch the repaired-tree registered gate in a
+tool-managed foreground session, applying the 3-CPU cap to its exact printed
+container name immediately after launch.
