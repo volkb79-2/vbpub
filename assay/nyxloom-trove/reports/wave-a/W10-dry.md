@@ -144,7 +144,7 @@ Make one commit per step, with its focused tests green.
 4. **I3.**
 5. **I4.**
 6. **`test_trust_boundary.py`.**
-7. **Bookkeeping and docs.**
+7. **Bookkeeping and docs.** Also (CD43): update the `src/assay` comments that name moved test paths, as listed in W4's REPORT (`adjudication.py:50`, `canary.py:190`, `cli.py:575`, `config.py:918`, `result_reports/vitest_json.py:71`, `verify.py:2499`, `vocabulary.py:294,333`, and any others it lists), to the paths after W3 and W4. Change comments only.
 8. **Final inventory.** Re-run step 0 into `/tmp/w10-after/`. Record in the LOG the per-operator totals, the per-file deltas and the residual T1 union.
 
 ## Oracles
