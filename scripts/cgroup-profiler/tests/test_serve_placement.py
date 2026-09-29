@@ -615,6 +615,7 @@ class TestMigration:
     def test_non_esrch_write_failure_is_not_sent_to_systemd(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         attached: List[Any] = []
+        logged: List[str] = []
 
         class _PrivateNamespace(placement.LanePlacement):
             def _write(self, abs_target: str, value: str) -> None:
@@ -631,6 +632,7 @@ class TestMigration:
             ) or True,
             pid_exists=lambda _pid: True,
             pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
+            log=logged.append,
         )
         plc.apply([101])
 
@@ -641,6 +643,11 @@ class TestMigration:
         )
         assert plc.block()["leaf"] is None
         assert not _leaf(root).exists()
+        assert any(
+            "direct migration of pid 101 failed" in message
+            and "write refused" in message
+            for message in logged
+        )
 
     def test_failed_systemd_attach_abandons_empty_leaf(self, tmp_path, monkeypatch):
         root = _fake_cgroup_root(tmp_path)
