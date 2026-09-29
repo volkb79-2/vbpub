@@ -414,6 +414,13 @@ def test_o8_every_candidate_carries_resource_evidence_in_progress_and_state(
 
     # A resumed run reuses the state records (the loader accepts `resources`)
     # and classifies identically.
-    resumed = judge_lane()
+    resumed_progress = tmp_path / "resumed.jsonl"
+    resumed = judge_lane(progress_artifact=resumed_progress)
     assert resumed.outcome is Outcome.PASS
     assert resumed.to_dict()["claims"] == verdict.to_dict()["claims"]
+    resumed_events = [
+        json.loads(line) for line in resumed_progress.read_text(encoding="utf-8").splitlines()
+    ]
+    resume = [event for event in resumed_events if event["event"] == "resume"]
+    assert [(event["resumed_total"], event["rejected_total"]) for event in resume] == [(2, 0)]
+    assert [event for event in resumed_events if event["event"] == "candidate"] == []
