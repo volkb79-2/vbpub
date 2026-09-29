@@ -4027,6 +4027,12 @@ in temporary container environments. `analyze` is part of that CLI, not a
 separately injected tool. These operations accept explicit files and paths,
 require no lane configuration, and add no runtime dependencies.
 
+The analysis code is a second top-level package, `assay_analysis`, shipped in
+the same wheel and zipapp and loaded only when `assay analyze` runs. The
+`assay analyze` command line, exit codes and schema paths are unchanged. The
+undocumented `import assay.analysis` no longer exists; use the CLI. A source
+checkout needs `analysis/src` on the path as well as `src` for `analyze`.
+
 ### Take one gate snapshot with `assay analyze report` (B100)
 
 When a long gate's terminal buffer is too small, give `report` the exact

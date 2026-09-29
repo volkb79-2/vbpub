@@ -63,7 +63,8 @@ argv = ["bash", "-c",
 
 ## Read one live gate snapshot (B100)
 
-The same worktree-installed CLI includes `assay analyze report`. Use it when a
+The same worktree-installed CLI includes `assay analyze report` (its code is
+the separate `assay_analysis` package in the same wheel). Use it when a
 registered gate is still running or its full output no longer fits the
 controller's terminal buffer. Set `WORKTREE` to the checkout, `REVIEW_HEAD` to
 the agreed full commit, and `GATE_LOG` to the retained output file. The command

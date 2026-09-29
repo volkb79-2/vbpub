@@ -26,8 +26,14 @@ linking against assay itself.
 ## Review evidence analysis
 
 `assay analyze` reduces the scripts needed to create and consume review
-evidence. It ships in the wheel and standalone zipapp alongside `assay run`
-and `assay verify`, and adds no runtime dependencies:
+evidence. It ships in the same wheel and standalone zipapp as `assay run`
+and `assay verify`, and adds no runtime dependencies. The code lives in its own
+top-level package, `assay_analysis` (`analysis/src/assay_analysis/`), which the
+CLI loads only when you run `assay analyze`; the judge (`src/assay`) never
+imports it, and B105 scores only `src/assay`. The analysis package has its own
+R0+R1 lane and tests (`analysis/tests/`). A source checkout needs both `src`
+and `analysis/src` on the path for `analyze`; an installed wheel or zipapp
+needs nothing extra:
 
 - `record` captures an explicit command, before/after Git identities and
   cleanliness, merged job output, and the actual job exit.

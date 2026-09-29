@@ -3580,3 +3580,33 @@ Runtime checks remain stdlib domain checks; no JSON-Schema engine is injected
 into the runtime dependency closure.
 
 **Parser identity.** The root and subcommand parsers share one versioned diagnostic formatter. This ties copied help or refusal output to the metadata-backed Assay build without coupling Assay to another estate tool.
+
+### Package boundary (A-478)
+
+`assay analyze` lives in its own top-level package, `assay_analysis`
+(`analysis/src/assay_analysis/`: `cli.py`, `evidence.py`), shipped in the same
+wheel and zipapp as `assay`. Analysis reads evidence and never judges: it
+never decides ACCEPT or REJECT, and it was 317 of the 3,760 B105 mutation
+candidates, so scoring it as judge code inflated the judge's own cost without
+protecting any verdict.
+
+- **Dependency is one way.** `assay_analysis` imports `assay` public names;
+  `assay` never imports `assay_analysis` except inside `cli._run_analyze`,
+  which loads it lazily when `argv` starts with `analyze`. Every other
+  `assay` command runs without the package loaded. A contract test pins that
+  `_run_analyze` is the only importer.
+- **Private-name rule.** Analysis may not use a private (underscore) judge
+  name. The allowlist, `ALLOWED_PRIVATE_JUDGE_NAMES`, exists and stays empty
+  (CD18): anything analysis needs becomes a public judge name.
+- **B105 scope is named.** `tools/b105_report_check.py::verify_scope`
+  refuses a report whose source roots are not exactly `src/assay`, whose
+  R1/R2/R3 targets are not the tracked `src/assay` sources, or that names an
+  analysis target; an accepted report says
+  `scope=src/assay out_of_scope=analysis/src/assay_analysis:A-478`.
+- **Own lane, no R2.** Analysis has an R0+R1 whole-target lane
+  (`analysis`, tests in `analysis/tests/`, 100% line and branch). R2 for
+  analysis is deliberately not claimed in this change; it is a follow-up
+  (B131).
+- **Schemas** stay in `src/assay/schemas/`; documented paths do not move.
+- The undocumented `import assay.analysis` is removed. A source checkout
+  needs both `src` and `analysis/src` on `PYTHONPATH`.
