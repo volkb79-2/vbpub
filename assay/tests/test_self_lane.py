@@ -118,12 +118,8 @@ def test_self_qualification_is_full_source_r0_through_r3():
         for argument in lane.argv
         if argument.startswith("--deselect=")
     }
-    assert deselected == {
-        "tests/test_runner_snapshot_selection.py::"
-        "test_every_release_since_wi1_landed_carries_wi4s_policy_record",
-        "tests/test_runner_snapshot_selection.py::"
-        "test_wi1s_own_landing_commit_is_the_state_the_embargo_forbids",
-    }
+    assert deselected == set()
+    assert not any(a == "--deselect" or a.startswith("--deselect") for a in lane.argv)
 
     declared = set(lane.judge.targets or ())
     discovered = {
@@ -243,6 +239,7 @@ def test_preflight_measures_the_same_complete_source_inventory_before_r2():
         for argument in preflight.argv
     ) == qualification.argv
     assert preflight.isolation == qualification.isolation
+    assert not any(a == "--deselect" or a.startswith("--deselect") for a in preflight.argv)
     assert preflight.judge.mutation is None
     assert preflight.judge.canary is None
     b105_coverage_env = {

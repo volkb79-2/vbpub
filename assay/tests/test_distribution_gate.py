@@ -223,35 +223,39 @@ def test_gate_script_passes_shellcheck_when_available() -> None:
 
 def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
     source = GATE_SCRIPT.read_text(encoding="utf-8")
-    for marker in (
-        "ASSAY_GATE_PHASE=wheel-installed",
-        "ASSAY_GATE_PHASE=self-hosted-lane-passed",
-        "ASSAY_GATE_PHASE=independent-self-hosting-passed",
-        "ASSAY_GATE_PHASE=verdict-v13-p25-successors-verified",
-        "ASSAY_GATE_PHASE=verdict-v13-successors-verified",
+    for phase in (
+        "wheel-installed",
+        "attestation-hardened",
+        "self-hosted-lane-passed",
+        "independent-self-hosting-passed",
+        "pyflakes-clean",
     ):
+        marker = f"ASSAY_GATE_PHASE={phase}"
         assert f"echo '{marker}'" in source, f"missing required phase marker: {marker}"
     assert "echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'" in source
 
-    v12_cut = source.index("ASSAY_GATE_PHASE=verdict-v6-v12-hard-cut-verified")
-    v13_p25 = source.index("W9/test_acceptance_v13.py")
-    v13_successors = source.index("test_verdict_v13_successors.py")
-    v13_suite = source.index("test_b106_reuse_and_witness.py")
-    v13 = source.index("ASSAY_GATE_PHASE=verdict-v13-successors-verified")
-    self_hosted = source.index('run_self_hosted_lane "$worktree"')
-    assert v12_cut < v13_p25 < v13_successors < v13_suite < v13 < self_hosted
-    historical_suites = source[source.index("for locked in \\", source.index("# Wave-1:")) : v12_cut]
-    for suite in (
-        "carve-assets/W7/test_acceptance_v11.py",
-        "carve-assets/W8/test_acceptance_v12.py",
+    # A-475/A-477: the cross-project and historical-schema phases are retired.
+    # Bare substrings, anywhere in the script, not only `echo '...'` lines.
+    for retired in (
+        "topos-qualified",
+        "cmru-b006a-qualified",
+        "verdict-v5-accepted",
+        "verdict-v6-v12-hard-cut-verified",
+        "verdict-v13-p25-successors-verified",
+        "verdict-v13-successors-verified",
+        "lane-schema-v2-successors-verified",
+        "qualify_topos.py",
+        "qualify_cmru_b006a.py",
+        "carve-assets/P33",
+        "carve-assets/W",
     ):
-        assert suite in historical_suites
-    for frozen_generation in ('("W7", 11)', '("W8", 12)'):
-        assert frozen_generation in source
-    assert "verdict-v12-successors-verified" not in source
-    assert "from assay.verdict import VERDICT_SCHEMA_VERSION" in source
-    assert "assert VERDICT_SCHEMA_VERSION == 13" in source
-    assert 'f"{VERDICT_SCHEMA_VERSION}: a "' in source
+        assert retired not in source, f"retired gate reference reappeared: {retired}"
+
+    inner = source.split("run_inner() {", 1)[1].split("# --- entry points", 1)[0]
+    attestation = inner.index("ASSAY_GATE_PHASE=attestation-hardened")
+    self_hosted = inner.index('run_self_hosted_lane "$worktree"')
+    witness = inner.index('run_independent_witness "$scratch"')
+    assert attestation < self_hosted < witness
 
     for required in (
         "--network=none",

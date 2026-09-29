@@ -988,7 +988,8 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
             )
 
 
-def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_path):
+@pytest.mark.parametrize("delta", [1000, -1])
+def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_path, delta):
     """(B021) The other half of the corrected disposition: `schema_version`
     is the one required key NOT folded into the candidate id, so it is the
     only one that can legitimately mismatch without the record being
@@ -1033,7 +1034,7 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
 
     stale_path = next(state_root.glob("*.json"))
     stale = json.loads(stale_path.read_text(encoding="utf-8"))
-    stale["schema_version"] = stale["schema_version"] + 1000
+    stale["schema_version"] = stale["schema_version"] + delta
     stale_path.write_text(json.dumps(stale), encoding="utf-8")
 
     calls: list[str] = []

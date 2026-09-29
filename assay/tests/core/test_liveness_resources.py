@@ -315,6 +315,9 @@ def test_compare_requires_a_pair_of_complete_same_identity_snapshots() -> None:
         {},
     )
     assert compare_resource_snapshots(
+        current, {**current, "schema_version": RESOURCE_SNAPSHOT_SCHEMA_VERSION - 1}
+    ) == ("unknown", {})
+    assert compare_resource_snapshots(
         current, {**current, "status": "unavailable"}
     ) == ("unknown", {})
     assert compare_resource_snapshots(

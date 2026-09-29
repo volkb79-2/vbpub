@@ -64,10 +64,9 @@ qualification is required. It runs in the dedicated `tester-unified`
 environment, uses the exact selected worktree source, resumes native R2 from
 gitignored state, and verifies its verdict before it can report success.
 The pytest command resolves `src/` inside each isolated snapshot so R1 coverage
-and R2 mutations apply to the snapshot being judged. It carries full commit
-history for tests that name older commits. Snapshot refs/tags are not copied;
-the two release-tag audit tests are explicitly deselected here and remain part
-of the ordinary checkout-based release gate.
+and R2 mutations apply to the snapshot being judged. No collected judge test
+reads history or tags (A-475); the lane keeps full commit history until B128,
+and snapshot refs/tags are not copied.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following
 the separate 60-minute R0/R1 preflight. This interim budget resets on a new
 invocation, so do not use resume/retry to bypass the overall ceiling. B110

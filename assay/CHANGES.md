@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Changed
+- chore(assay): the registered gate retires the Topos and CMRU qualification
+  harnesses and the historical schema phases; one refusal test per schema
+  remains (A-475/A-477, B124/B125). Nothing in the product changes.
+
 ### Fixed
 - fix(assay): require time-aligned resource evidence and a CPU-quiet window
   before classifying an R2 candidate as hung (B107/RW-57)

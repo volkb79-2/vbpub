@@ -69,7 +69,7 @@ from jsonschema import Draft202012Validator
 
 from assay.cli import main
 from assay.candidate_identity import candidate_id_from_fields
-from assay.verdict import Outcome, rollup
+from assay.verdict import VERDICT_SCHEMA_VERSION, Outcome, rollup
 from assay.verify import cmd_verify, verify_document, verify_text
 
 FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "verdicts"
@@ -1324,22 +1324,39 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
     ]
 
 
-def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
-    """P21/A-170/A-182: v3 is now a foreign version too, and the check runs
-    BEFORE required-field or foreign-shape inspection. A v3 artifact is
-    missing several v4 fields (`exclusion_capability`, `candidate_count`,
-    `canary.target`, `judgment.r2.max_mutants`); reporting those alongside
-    the version would bury the one actionable sentence under a pile of
-    consequences of it."""
+@pytest.mark.parametrize(
+    "version",
+    [0, 3, VERDICT_SCHEMA_VERSION - 1, VERDICT_SCHEMA_VERSION + 1],
+)
+def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(version):
+    """A-475/A-477: the one refusal test for the verdict schema. Every
+    non-current version, older or newer, gets exactly one diagnostic that
+    names the version, and the check runs BEFORE required-field or
+    foreign-shape inspection, so nothing else is reported beside it."""
     document = _load("r1_pass.json")
-    document["schema_version"] = 3
-    for claim in document["claims"]:
-        claim.get("coverage", {}).pop("exclusion_capability", None)
+    document["schema_version"] = version
 
-    failures = verify_document(document)
+    assert verify_document(document) == [
+        f"schema_version {version} is not this verifier's version "
+        f"{VERDICT_SCHEMA_VERSION}: a verdict artifact is rejected, "
+        f"never upgraded in place -- re-produce it with an assay whose "
+        f"VERDICT_SCHEMA_VERSION is {VERDICT_SCHEMA_VERSION}"
+    ]
 
-    assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 13" in failures[0]
+
+#: A-477: exactly one verdict schema is supported, so its bytes are frozen per
+#: version. An edit to `verdict.schema.json` without a VERDICT_SCHEMA_VERSION
+#: bump fails here; a bump fails with a KeyError until its digest is added.
+#: Carries forward the retired W9 gate phase's
+#: `test_shipped_schema_is_byte_identical_to_the_locked_v13_asset`.
+_VERDICT_SCHEMA_SHA256 = {
+    13: "ade21cf0313d798b6b0ba9e41871bdcb310a33101c1b66317d1dbfc569e68734",
+}
+
+
+def test_the_shipped_verdict_schema_is_frozen_for_its_version():
+    shipped = (PROJECT_ROOT / "src" / "assay" / "schemas" / "verdict.schema.json").read_bytes()
+    assert hashlib.sha256(shipped).hexdigest() == _VERDICT_SCHEMA_SHA256[VERDICT_SCHEMA_VERSION]
 
 
 # ============================================================================

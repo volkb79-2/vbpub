@@ -9,10 +9,12 @@ O1's stated negative.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from conftest import R0_LANE, R1_LANE, Project, drop_key, set_key
 
-from assay.config import REQUIRED_LANE_FIELDS, load_lane_file
+from assay.config import LANE_SCHEMA_VERSION, REQUIRED_LANE_FIELDS, load_lane_file
 from assay.errors import LaneConfigError, Outcome, ReasonCode
 
 
@@ -118,11 +120,19 @@ def test_missing_schema_version_is_rejected(project: Project):
         load_lane_file(path)
 
 
-def test_unknown_schema_version_is_rejected(project: Project):
-    # B006a/A-269: LANE_SCHEMA_VERSION bumped 1 -> 2, so the "unknown version"
-    # probe moves to the next integer the loader still refuses.
-    path = project.write(set_key(R0_LANE, "schema_version", "3"))
-    with pytest.raises(LaneConfigError, match="schema_version = 3"):
+@pytest.mark.parametrize(
+    "version",
+    [0, LANE_SCHEMA_VERSION - 1, LANE_SCHEMA_VERSION + 1],
+)
+def test_a_non_current_lane_schema_version_is_refused(project: Project, version: int):
+    # A-475/A-477: the one refusal test for the lane-file schema; older and
+    # newer versions are both refused, never migrated.
+    path = project.write(set_key(R0_LANE, "schema_version", str(version)))
+    message = (
+        f"declares schema_version = {version}; this assay understands "
+        f"schema_version = {LANE_SCHEMA_VERSION}"
+    )
+    with pytest.raises(LaneConfigError, match=re.escape(message)):
         load_lane_file(path)
 
 

@@ -10740,6 +10740,10 @@ qualification evidence.
       `pyproject.toml` `pythonpath = ["src"]`. Heavy tests are collected last
       from `tests/zz_slow/`. The drift test pins the exact `--ignore` and
       `--deselect` sets.
+      **Amended 2026-09-29 (A-475, Wave A W1):** the deselections are gone
+      because the two release-tag audit tests were removed, and
+      `tests/test_python_qualification.py` is deleted, so the A-468 `--ignore`
+      above never lands and no lane runs that file.
 - [ ] R2 runs native mutation over the full declared source target and
       produces a complete, verifier-accepted candidate inventory and outcomes.
       Deterministic shards may execute the fixed inventory, but missing or
@@ -11623,7 +11627,7 @@ It changes the declared execution semantics (cross-file order dependence stops c
 
 ## B124 — retire cross-project qualification from assay
 
-**Status: OPEN (A-475).** Remove:
+**Status: DONE (W1, merge hash pending: the controller fills it at merge; A-475) except the dstdns-checkout item, which closes with B126 (W5).** Remove:
 - the Topos P25 harness, its test file, the `topos-qualified` gate phase and the 1.2.5-wheel smoke, including the release-manifest fixtures used only by them;
 - the CMRU B006(a) harness, its tests and the `cmru-b006a-qualified` phase;
 - the dstdns-checkout dependency of SQL qualification (replaced by B126).
@@ -11632,7 +11636,7 @@ Update the P25/P33 carve-asset locks, the docs, and the decisions they reference
 
 ## B125 — latest schema only
 
-**Status: OPEN (A-477).**
+**Status: DONE (W1, merge hash pending: the controller fills it at merge; A-477).** The old-version acceptance paths that remain (`reuse.py` v12 cold start, ciu provenance schema 1) are reported in `reports/wave-a/W1-REPORT.md` and deferred to the v14 wave.
 - Retire the historical gate phases (verdict v5, lane schema v2 successors, the v6–v12 hard cut, the v13 P25/successor checks) and their frozen templates.
 - Keep one refusal test per schema proving that a non-current version is refused.
 - Identify any code path that still accepts or migrates an old version. Remove it if no current consumer needs it, or report it for a decision.

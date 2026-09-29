@@ -687,6 +687,17 @@ def test_finish_hang_cache_cpu_window_restarts_after_tree_sum_drops(
     assert mutation._valid_hung_resource_evidence(evidence) is accepted
 
 
+@pytest.mark.parametrize("version", [0, 2])
+def test_hung_resource_evidence_with_a_non_current_schema_version_is_refused(version):
+    """A-477: the one refusal test for the persisted hung-evidence record
+    (`liveness.py` writes `schema_version: 1`; resume re-reads it through
+    `_valid_hung_resource_evidence`). A non-current version is never trusted."""
+    evidence = _hung_evidence()
+    assert mutation._valid_hung_resource_evidence(evidence) is True
+    evidence["schema_version"] = version
+    assert mutation._valid_hung_resource_evidence(evidence) is False
+
+
 def test_idle_hang_evidence_may_also_retain_a_candidate_finish_event():
     evidence = _hung_evidence()
     evidence.update(
