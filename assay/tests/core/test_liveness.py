@@ -578,7 +578,13 @@ def test_unconfigure_exits_with_the_assigned_status_after_sessionfinish_ran(
     import os as os_module
 
     plugin = _load_materialized_plugin(tmp_path)
-    plugin.pytest_sessionfinish(session=None, exitstatus=3)
+    leak_guard = tmp_path / "sessionfinish.ndjson"
+    with monkeypatch.context() as scoped:
+        scoped.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(leak_guard))
+        plugin.pytest_sessionfinish(session=None, exitstatus=3)
+    assert [json.loads(line)["event"] for line in leak_guard.read_text().splitlines()] == [
+        "session_finish"
+    ]
     assert plugin._EXIT_STATUS == 3
     monkeypatch.setenv(liveness.ASSAY_LIVENESS_EXIT_ENV, "1")
     calls: list[int] = []
@@ -598,7 +604,13 @@ def test_unconfigure_stays_a_noop_when_the_exit_env_var_is_unset(
     import os as os_module
 
     plugin = _load_materialized_plugin(tmp_path)
-    plugin.pytest_sessionfinish(session=None, exitstatus=0)
+    leak_guard = tmp_path / "sessionfinish.ndjson"
+    with monkeypatch.context() as scoped:
+        scoped.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(leak_guard))
+        plugin.pytest_sessionfinish(session=None, exitstatus=0)
+    assert [json.loads(line)["event"] for line in leak_guard.read_text().splitlines()] == [
+        "session_finish"
+    ]
     monkeypatch.delenv(liveness.ASSAY_LIVENESS_EXIT_ENV, raising=False)
     calls: list[int] = []
     monkeypatch.setattr(os_module, "_exit", lambda code: calls.append(code))
@@ -653,7 +665,6 @@ def test_materialized_plugin_writes_valid_json_events(tmp_path: Path, monkeypatc
     spec.loader.exec_module(plugin)
 
     events_path = tmp_path / "events.ndjson"
-    monkeypatch.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(events_path))
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
 
     # (B091 round-1 B2) `when="setup"` is now RECORDED, as a `phase` event
@@ -665,14 +676,24 @@ def test_materialized_plugin_writes_valid_json_events(tmp_path: Path, monkeypatc
     # A `None` duration (a real, if rare, `TestReport.duration` value) must
     # round-trip through `json.dumps` as JSON `null`, never the bare Python
     # token `None` the old `%r` formatting produced.
-    plugin.pytest_configure(config=None)
-    plugin.pytest_runtest_logreport(_FakeReport(when="setup", nodeid="x", outcome="passed", duration=0.1))
-    plugin.pytest_runtest_logreport(
-        _FakeReport(when="call", nodeid="pkg/test_mod.py::test_it", outcome="passed", duration=0.0125)
-    )
-    plugin.pytest_runtest_logreport(_FakeReport(when="call", nodeid="y", outcome="failed", duration=None))
-    plugin.pytest_runtest_logreport(_FakeReport(when="teardown", nodeid="y", outcome="passed", duration=0.2))
-    plugin.pytest_sessionfinish(session=None, exitstatus=0)
+    with monkeypatch.context() as scoped:
+        scoped.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(events_path))
+        plugin.pytest_configure(config=None)
+        plugin.pytest_runtest_logreport(
+            _FakeReport(when="setup", nodeid="x", outcome="passed", duration=0.1)
+        )
+        plugin.pytest_runtest_logreport(
+            _FakeReport(
+                when="call", nodeid="pkg/test_mod.py::test_it", outcome="passed", duration=0.0125
+            )
+        )
+        plugin.pytest_runtest_logreport(
+            _FakeReport(when="call", nodeid="y", outcome="failed", duration=None)
+        )
+        plugin.pytest_runtest_logreport(
+            _FakeReport(when="teardown", nodeid="y", outcome="passed", duration=0.2)
+        )
+        plugin.pytest_sessionfinish(session=None, exitstatus=0)
 
     import json as _json
 
@@ -800,11 +821,12 @@ def test_materialized_plugin_append_does_not_mutate_or_reuse_identity_fields(
 ) -> None:
     plugin = _load_materialized_plugin(tmp_path)
     events_path = tmp_path / "append.ndjson"
-    monkeypatch.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(events_path))
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     record = {"event": "test", "pid": 999, "xdist_worker": "stale"}
-    plugin._append(record)
-    plugin._append(record)
+    with monkeypatch.context() as scoped:
+        scoped.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(events_path))
+        plugin._append(record)
+        plugin._append(record)
     assert record == {"event": "test", "pid": 999, "xdist_worker": "stale"}
     records = [json.loads(line) for line in events_path.read_text().splitlines()]
     assert len(records) == 2
