@@ -2,8 +2,9 @@
 # Registered Assay gate driver. The outer mode derives the host bind source,
 # verifies the configured gates cgroup through cgroup-parent.sh, launches
 # tester-unified with the network disabled, and emits the final receipt marker
-# only after Docker returns zero. The inner mode is invoked only inside that
-# container.
+# only after Docker returns zero AND the SQL qualification phase (W5, A-480)
+# has passed on the host, against a real PostgreSQL the tester container cannot
+# reach. The inner mode is invoked only inside that container.
 #
 # P24 (A-198-A-201): the wheel this gate self-hosts through is no longer built
 # from the bind-mounted worktree with an ambient-setuptools PYTHONPATH shim.
@@ -516,10 +517,20 @@ _assay_gate_container_launch_attempted=0
 _assay_gate_container_started=0
 _assay_gate_logs_pid=""
 _assay_gate_receipt_to_clear=""
+_assay_sql_container_name=""
+_assay_sql_scratch=""
 
 cleanup_assay_gate_container() {
   local result=$?
   trap - EXIT
+  # (W5) The SQL phase's throwaway PostgreSQL container and clone. Nothing may
+  # run before `local result=$?` / `trap - EXIT` above: any command resets `$?`.
+  if [[ -n "$_assay_sql_container_name" ]]; then
+    docker rm -f -v "$_assay_sql_container_name" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$_assay_sql_scratch" ]]; then
+    rm -rf -- "$_assay_sql_scratch" || true
+  fi
   if [[ -n "$_assay_gate_logs_pid" ]]; then
     kill "$_assay_gate_logs_pid" >/dev/null 2>&1 || true
     wait "$_assay_gate_logs_pid" >/dev/null 2>&1 || true
@@ -639,6 +650,39 @@ finish_registered_gate() {
   echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'
 }
 
+# --- the SQL qualification phase (W5, A-480) ----------------------------------
+#
+# Real-PostgreSQL evidence the tester container cannot produce (it has no Docker
+# socket). It runs on the HOST, only after a green tester container (a red one
+# already ended the script under `set -e`), from a private exact-OID clone of the
+# gated commit, with the host `python3` (>= 3.11) and one throwaway container in
+# the gates cgroup. Reads the caller's `worktree` (bash dynamic scope).
+# Exit 3 from the harness means the environment could not answer: the gate passes
+# it through as exit 3 (no receipt, no COMPLETE); every other failure is real.
+run_sql_qualification() {
+  local commit="$1" cgroup="$2" out rc=0
+  _assay_sql_scratch="$(mktemp -d)" || die 'cannot create the SQL scratch directory'
+  make_exact_oid_clone "$worktree" "$_assay_sql_scratch"
+  [[ "$(git -C "$_assay_sql_scratch/clone" rev-parse HEAD)" == "$commit" ]] \
+    || die "SQL clone is not the gated commit $commit"
+  _assay_sql_container_name="run-gate-assay-sql-${BASHPID}-$(date +%s)"
+  out="$(nice -n 19 python3 -I "$_assay_sql_scratch/clone/assay/gate/python/qualify_sql.py" \
+    --scratch "$_assay_sql_scratch/sql" \
+    --container-name "$_assay_sql_container_name" \
+    --cgroup-parent "$cgroup")" || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo 'ASSAY_GATE_DIAGNOSTIC=sql-qualification-inconclusive'
+    printf 'ASSAY_GATE_INCONCLUSIVE=sql-qualification — rerun\n' >&2
+    exit 3
+  fi
+  [[ $rc -eq 0 ]] || die "SQL qualification failed (exit $rc)"
+  [[ "$out" == 'ASSAY_SQL_QUALIFIED=1' ]] || die 'SQL qualification printed no exact marker'
+  rm -rf -- "$_assay_sql_scratch"
+  _assay_sql_scratch=""
+  _assay_sql_container_name=""
+  echo 'ASSAY_GATE_PHASE=sql-qualified'
+}
+
 run_registered_gate() {
   local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names commit tree
   # (CD32) One `docker ps`, no waiting: another session's gate on this shared host
@@ -661,6 +705,7 @@ run_registered_gate() {
   # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
   # the container's own status, so a red container never reaches the receipt.
   ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
+  run_sql_qualification "$commit" "$cgroup_parent"
   finish_registered_gate "$worktree" "$commit" "$tree"
 }
 

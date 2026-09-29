@@ -1363,6 +1363,7 @@ def test_a_green_container_yields_the_receipt_and_exactly_one_complete_marker(
 
     proc = run_bash(
         "run_registered_tester_container() { echo stubbed-tester; }\n"
+        "run_sql_qualification() { :; }\n"  # W5: the SQL phase has its own tests (test_qualify_sql.py, T7)
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1415,6 +1416,7 @@ def test_a_host_running_only_other_containers_proceeds_to_the_tester(
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,

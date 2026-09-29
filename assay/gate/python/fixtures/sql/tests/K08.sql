@@ -1,0 +1,10 @@
+BEGIN;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM CAST(0 AS posint);
+  EXCEPTION WHEN check_violation THEN RETURN;
+  END;
+  RAISE EXCEPTION 'K08';
+END $$;
+ROLLBACK;

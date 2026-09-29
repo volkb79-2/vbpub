@@ -354,7 +354,7 @@ def test_a_source_import_shadowing_an_installed_distribution_is_refused(tmp_path
     `.dist-info`. Reporting the installed wheel's digest there would name a
     build that never contained the running code: not an absent record but a
     false one, which is strictly worse than the absence this module otherwise
-    prefers. `gate/python/qualify_dstdns_sql.py` invokes the CLI in exactly
+    prefers. `gate/python/qualify_sql.py` invokes the CLI in exactly
     this shape, so it is a live configuration, not a hypothetical."""
     installed = tmp_path / "site-packages"
     elsewhere = tmp_path / "checkout" / "src"

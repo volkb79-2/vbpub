@@ -242,7 +242,7 @@ def identify_judge(
 
     # The distribution being FINDABLE is not evidence that it is the code
     # running. `sys.path.insert(0, ".../assay/src")` beside an installed
-    # assay -- which is exactly how `gate/python/qualify_dstdns_sql.py`
+    # assay -- which is exactly how `gate/python/qualify_sql.py`
     # invokes the CLI, and how any developer with an editable install and a
     # checkout runs it -- imports the SOURCE while
     # `importlib.metadata.distribution` still answers with the INSTALLED
