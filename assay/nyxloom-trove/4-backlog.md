@@ -132,6 +132,9 @@ items:
   - {id: B128, title: "Wave A: shallow snapshot for both B105 lanes once no test reads repository history", type: refactor, component: isolation, context_estimate: small}
   - {id: B129, title: "Wave A: DRY consolidation of repeated judge rules (shared record decorator + reflective contract test, guard helpers, per-rigor helpers)", type: refactor, component: core, context_estimate: medium}
   - {id: B130, title: "Wave A: component boundary map and import contracts; measure cross-component test coupling for a possible component-scoped R2", type: research, component: architecture, context_estimate: small}
+  - {id: B131, title: "R2 for the analysis package (own lane, own suite), after the v14 cold witness", type: feature, component: analysis, context_estimate: small}
+  - {id: B132, title: "SQL adapter emits mutants for constructs PostgreSQL may refuse (UNIQUE DEFERRABLE / NULLS NOT DISTINCT / INCLUDE / USING INDEX; FK MATCH FULL / DEFERRABLE / SET NULL (col)) -- measure on W5's harness", type: bug, component: sql, context_estimate: small}
+  - {id: B133, title: "SQL operator labels misdescribe their effect (NOT IN 'widening' narrows; drop-check also rewrites CREATE POLICY ... WITH CHECK)", type: bug, component: sql, context_estimate: small}
 ---
 
 # assay — backlog
@@ -11674,3 +11677,23 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 - Add import contracts (for example, adapters depend only on core; core reaches adapters only through the registry).
 - Measure cross-component coupling: which tests execute which component's code, including through the registry and subprocesses, and whether any adapter's mutants are killed only by other components' tests.
 - Output: a recommendation on a component-scoped R2 model ("each component's mutants are killed by its own partition"). It would be a declared claim change like B121 and would need its own decision.
+
+## B131 — R2 for the analysis package
+
+**Status: OPEN, after the v14 wave (Wave A CD17).** The analysis package (A-478) gets an R0+R1 whole-target lane in Wave A. Add a mutation lane over its own suite once cold-witness kills make that cheap. Its ≈317 candidates then have their own evidence instead of none.
+
+## B132 — SQL constructs PostgreSQL may refuse
+
+**Status: OPEN (found by the W5 carve, 2026-09-29).** The SQL adapter generates mutation sites for:
+- `UNIQUE … DEFERRABLE`, `NULLS NOT DISTINCT`, `INCLUDE` and `USING INDEX` constraints;
+- FK clauses with `MATCH FULL`, `DEFERRABLE` or `SET NULL (col)`.
+
+That PostgreSQL rejects the mutated DDL is reasoned, not measured. If it does, one such construct on a changed line turns a consumer's lane into `ERROR`. Measure each construct on W5's harness, then either stop generating the site or classify the refusal explicitly.
+
+## B133 — SQL operator labels misdescribe their effect
+
+**Status: OPEN (found by the W5 carve).** Two operators do something other than their label says:
+- the `NOT IN` "widening" operator actually narrows the list;
+- drop-check also rewrites `CREATE POLICY … WITH CHECK`.
+
+Fix the labels or the behaviour, whichever the SQL design intends, and update the docs' operator table.

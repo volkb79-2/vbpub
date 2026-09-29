@@ -33,7 +33,9 @@ It is **not** done by a B105 qualification. B105 still needs the v14 wave and th
 - W3 before everything else. Later briefs cite `tests/` paths that W3 may move; implementers re-resolve them by filename.
 - W1 before W4: W4 moves what survives W1.
 - W1 before W7: W7 needs the history reader gone.
-- W2 before W9.
+- W2 before W8 and W9 (CD1, CD20).
+- Stage 2 merges in the order W6, W4, W5. Stage 3 merges W8 before W9.
+- Carver answers to the writers' questions: `wave-a/CARVER-DECISIONS.md` (CD1–CD24).
 - W10 last, because it touches the most judge modules.
 - Within a stage, packages may run in parallel only in separate short-lived worktrees branched from `assay-b110-landing`. They merge back serially with `--no-ff`, and each worktree and branch is deleted right after its merge.
 
