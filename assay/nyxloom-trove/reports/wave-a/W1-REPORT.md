@@ -6,7 +6,8 @@ Branch `wave-a-w1-retire`, base `762b500d`. No `src/assay` or `carve-assets/**` 
 - Deleted: `gate/python/qualify_topos.py`, `gate/python/fixtures/P25/` (7 files), `gate/python/release/P25/` (wheel + manifest), `gate/python/qualify_cmru_b006a.py`, and the tests `test_python_qualification.py`, `test_gate_qualify_cmru_b006a.py`, `test_gate_harness_version_pins.py`.
 - `tools/tester-unified-gate.sh`: seven phases removed; order is now `wheel-installed`, `attestation-hardened`, `run_self_hosted_lane`, `run_independent_witness`, lint. P26 command and its 8 `--deselect`s unchanged, comments rewritten.
 - `assay.toml`: four `--deselect` lines and two comments. `nyxloom.toml`: P25 comment replaced.
-- Tests: embargo section removed from `test_runner_snapshot_selection.py`; marker test rewritten; `test_self_lane.py` pins no `--deselect` for both B105 lanes; one refusal test per assay-owned schema (verdict, lane, shard, state record, resource snapshot; the analysis manifest one is W2's).
+- Tests: embargo section removed from `test_runner_snapshot_selection.py`; marker test rewritten; `test_self_lane.py` pins no `--deselect` for both B105 lanes; one refusal test per assay-owned schema (verdict, lane, shard, state record, resource snapshot, hung-evidence record (liveness evidence schema 1); the analysis manifest one is W2's).
+- A-477 schema freeze: test_the_shipped_verdict_schema_is_frozen_for_its_version pins the v13 schema digest (carried forward from the retired W9 phase).
 - `ROOT_PINNED` in `tests/core/test_import_contracts.py` lost the three deleted names.
 - Docs, decisions (A-475: A-202..A-206, A-278, A-435, A-269 WI-5 only; A-477: A-222, A-224, A-226, A-229, A-318) and backlog updated. B124/B125 say `DONE (W1, merge hash pending)`: the controller must fill in the merge hash.
 
@@ -26,6 +27,8 @@ Decision rows that still mention a deleted path or retired marker and were **not
 - A-468 (its `--ignore=tests/test_python_qualification.py`; the brief says that `--ignore` never landed).
 
 Other prose that still names retired items and was left alone as history: `nyxloom-trove/W1-*`, `W3-CARVE-*`, `WAVE-*` prompts, `handoffs/`, `4-backlog.md` older sections, and the dstdns SQL harness/test docstrings (W5).
+
+- Anchor shift for later briefs: tools/tester-unified-gate.sh lost 247 lines after :452. W4's :791-821 is now :544-574; W5's :756-765 is now :509-518. Earlier anchors are unchanged.
 
 ## Residual history/outside-`assay/` readers (Work 13)
 `git grep -nE "PROJECT_ROOT|REPO_ROOT|/workspaces/" -- tests/`, classified (only hits that run git on the real repository or read outside `assay/`):
