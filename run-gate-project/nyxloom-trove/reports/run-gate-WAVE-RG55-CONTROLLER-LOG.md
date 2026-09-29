@@ -4908,3 +4908,56 @@ registered `tester-unified` full gate in a fresh CIU worktree at the merged
 tree, and preserve its exact logs/verdict; keep the current-tree R2 queued
 until a mutation slot is free. Neither merge nor test start authorizes an
 Assay release or install.
+
+### RW-363 — 2026-09-28 23:38:31Z — reconcile P6 and launch B107's registered full gate
+
+P6 branch rg55-followups-cgprofile-final reconciled current main
+3a8bbe54068d46f34652b2ed52d19a7cddb53dd6 at merge
+b53c5ffa1c55415a93f36beac63d320e478ebbfb. I resolved the contract
+conflict by retaining P6's stronger stop-time behavior: verify host-visible
+survivors, restore to the exact origin or a verified systemd unit/subgroup on
+ESRCH, record successful events, and refuse release/leaf removal while a
+survivor is unresolved. The controller-log conflict keeps P6 RW-333 and the
+newer main entries through RW-362. The root and daemon-side contract copies
+are byte-identical, and the P6 reconciliation merge is committed. The shared
+root AGENTS.md remains untouched.
+
+The first detached B107 gate wrapper disappeared before launching any runner
+or container; all its output files were empty. No verdict was produced. After
+rechecking host PSI and the loaded gate slice, the registered
+assay/run-gate.py tester-unified gate was relaunched at 23:36:14Z from
+isolated CIU worktree
+.worktrees/rg55-b107-ciu-anchor-20260928/.worktrees/rg55-b107-full-gate-20260928,
+exact tree 3a8bbe54068d46f34652b2ed52d19a7cddb53dd6. At the 23:38:31Z
+progress check (2m17s after kickoff), container
+run-gate-assay-selfhosted-3634378-21136-1790638575 was up; readback confirmed
+NanoCpus=3000000000 and CgroupParent=dev-gates.slice. Other agents' mutation
+and session-extract containers remained untouched.
+
+### RW-364 — 2026-09-29 00:12:06Z — remove B107 test assertions tied to wall deadlines
+
+The registered tester-unified run at exact tree
+3a8bbe54068d46f34652b2ed52d19a7cddb53dd6 ended 2026-09-28 23:50:16Z with
+FAIL/COMMAND_FAILED (841.567s): 5,174 passed, 21 skipped, one failed.
+`test_run_liveness_classifies_a_thread_join_hang_as_hung` expected
+`CANDIDATE_HUNG` but observed `LANE_TIMEOUT` at its fixed 50s candidate
+budget. The gate artifact does not retain a time-aligned candidate resource
+trace, so this ruling does not claim that a specific host-pressure interval
+caused this result. It does establish that the test's asserted bucket depends
+on reaching a liveness threshold before an independent wall deadline; B107's
+contract explicitly forbids any test verdict from depending on wall-clock
+speed. The paired busy-loop integration test similarly asserts a bucket at a
+fixed 35s wall budget and has the same invalid dependency.
+
+Binding disposition: remove these two fixed-deadline end-to-end mutation
+fixtures. Keep the deterministic injected-clock/process/resource monitor
+tests, the real-child liveness probe with virtual time, runner exception-to-
+reason mapping, mutation bucket classification, and evidence persistence.
+No production policy or verdict mapping changes. Preserve the current
+evidence fields required by the merged validator; the older 612843ef proposal
+omitted event/output counts and is not applied wholesale. The isolated repair
+worktree `rg55-assay-b107-load-independent-20260929` is based on main
+3a8bbe54. Its targeted set passed 52 tests in 3.08s; `git diff --check`
+passed. The registered exact-tree tester-unified gate must be rerun after this
+repair and be green before B107 can be considered closed. No Assay release or
+install is authorized by this ruling.
