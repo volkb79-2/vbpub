@@ -16,6 +16,7 @@ from assay.errors import (
     LaneConfigError,
     Outcome,
     ReasonCode,
+    require_advance,
 )
 
 #: DESIGN-GUIDE §6, "Six outcomes", transcribed.
@@ -175,3 +176,10 @@ def test_lane_config_error_is_error_bad_lane_config():
     assert err.reason_code is ReasonCode.BAD_LANE_CONFIG
     assert err.exit_code == 2
     assert "budget" in str(err)
+
+
+def test_require_advance_returns_a_strictly_advanced_cursor_and_refuses_the_rest():
+    assert require_advance(3, 4) == 4
+    for stalled in (3, 2, -1):
+        with pytest.raises(AssertionError, match="scanner cursor did not advance"):
+            require_advance(3, stalled)
