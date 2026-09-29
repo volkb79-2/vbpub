@@ -3,10 +3,9 @@
 ``gate/`` and ``gate/tests/`` are packages, so pytest imports this tree's
 ``conftest.py`` as ``gate.tests.conftest`` and never rebinds
 ``sys.modules["conftest"]``: that name stays the judge's ``tests/conftest.py``
-in every collection order. The judge conftest is loaded only on demand here,
-under the unique module name ``assay_judge_conftest`` (never ``conftest``), by
-the same mechanism ``analysis/tests/conftest.py`` uses (W2, CD13): the module is
-loaded once and shared through ``sys.modules``.
+in every collection order. The judge conftest is loaded through W2's one loader,
+``analysis.tests.conftest.load_judge_conftest`` (CD31), under the unique module
+name ``assay_judge_conftest`` (never ``conftest``), once per process.
 
 The helpers only the tooling tests use (the parent-repository guard and the
 wheel-installing ``Standalone``) live here; they left ``tests/conftest.py`` with
@@ -15,7 +14,6 @@ the tests that use them.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import subprocess
 import sys
@@ -24,33 +22,17 @@ from pathlib import Path
 
 import pytest
 
+from analysis.tests.conftest import load_judge_conftest
+
 #: The `assay/` project directory (`gate/tests/<this file>`).
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 assert (PROJECT_ROOT / "pyproject.toml").is_file(), f"no pyproject.toml at {PROJECT_ROOT}"
 #: The monorepo checkout above `assay/`.
 REPO_ROOT = PROJECT_ROOT.parent
 
-_JUDGE_NAME = "assay_judge_conftest"
-
-
-def _load_judge_conftest():
-    """The judge's ``tests/conftest.py`` as ``assay_judge_conftest``, loaded once."""
-    loaded = sys.modules.get(_JUDGE_NAME)
-    if loaded is not None:
-        return loaded
-    path = PROJECT_ROOT / "tests" / "conftest.py"
-    spec = importlib.util.spec_from_file_location(_JUDGE_NAME, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[_JUDGE_NAME] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        del sys.modules[_JUDGE_NAME]
-        raise
-    return module
-
-
-judge = _load_judge_conftest()
+#: The judge's `tests/conftest.py`, loaded once as `assay_judge_conftest` by the one
+#: loader W2 owns (CD31); importing it pulls only `pathlib` from the analysis tree.
+judge = load_judge_conftest()
 
 GitRepo = judge.GitRepo
 why_invalid = judge.why_invalid

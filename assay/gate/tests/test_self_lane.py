@@ -17,6 +17,7 @@ import importlib.util
 import io
 import json
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -199,6 +200,19 @@ def test_pytest_ini_options_pin_the_source_paths_and_test_trees():
 def test_no_second_pytest_configuration_file_can_shadow_pyproject(name):
     for directory in (PROJECT_ROOT, PROJECT_ROOT / "tests"):
         assert not (directory / name).exists(), directory / name
+
+
+def test_the_tooling_tree_shares_the_one_judge_conftest_loader():
+    """(CD31) One loader, one module object; the judge's `conftest` name is never rebound."""
+    import sys
+
+    from analysis.tests.conftest import load_judge_conftest
+    from gate.tests import support
+
+    assert load_judge_conftest() is support.judge is sys.modules["assay_judge_conftest"]
+    assert Path(support.judge.__file__).resolve() == PROJECT_ROOT / "tests" / "conftest.py"
+    bound = sys.modules.get("conftest")
+    assert bound is None or Path(bound.__file__).resolve() == PROJECT_ROOT / "tests" / "conftest.py"
 
 
 def test_the_full_qualification_driver_requires_the_same_commit_tester_unified_receipt():
