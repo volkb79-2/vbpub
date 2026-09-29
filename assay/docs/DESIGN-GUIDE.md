@@ -1985,11 +1985,9 @@ Assay CLI and child `assay` commands with real `judge_provenance`; the pytest
 command separately imports `src/assay` from the isolated baseline or mutant
 snapshot, rather than from the wheel in the invoking worktree. Otherwise
 coverage could be empty and mutants would not be the code the suite loaded.
-The lane requests full
-snapshot history because the suite reads pinned older commits. Snapshot refs
-and tags are intentionally not copied, so the two tests that audit real release
-tags are explicitly deselected in this lane and remain exercised by the
-ordinary release gate on the checkout's actual refs.
+No collected judge test
+reads history or tags (A-475); the lane keeps full snapshot history until
+B128, and snapshot refs and tags are intentionally not copied.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. This interim budget
@@ -3143,32 +3141,15 @@ opacity being removed.
 
 ## 13. Adoption order, and what each consumer proves
 
-Before consumer migration, P25 qualifies the versioned installed wheel P24
-produces (§14) against a disposable current Topos tree and its independent
-changed-line gate (A-162). That is evidence that an existing Python project
-can obtain the same R1 answer, not a claim that Topos has adopted Assay. The
-real adoption package is carved later in Topos's own trove, after its active
-wave permits a stable input revision.
-
-**The qualification found a real adoption precondition rather than hiding it.**
-Pinned Topos commits three absolute `/etc/passwd` symlinks as security-test
-fixtures. Assay's A-186 committed-object boundary must refuse those paths for
-every higher-rigor lane; filtering them inside Assay would weaken the product's
-escape boundary. P25 therefore deletes exactly those three links only in its
-disposable prospective consumer baseline, retains all five contained relative
-links, and proves the full 2,923-test answer is unchanged. Actual adoption must
-make that Topos-owned change (prefer constructing the hostile links under
-`tmp_path`) before enabling Assay. Thus P25 proves Python/R1 and installed-wheel
-compatibility for the exact prospective state while explicitly proving that the
-unmodified current Topos tree is not directly adoptable (A-202).
-
-P25 also keeps two wheel roles separate (A-205): the gate's current P24-built
-run-venv wheel runs the full suite so later Assay changes remain externally
-qualified, while a reproducible clean-tagged `1.2.5` fixture exercises P24's
-release-manifest and pip hash path on a targeted smoke. The copied Topos
-evaluator receives the exact bounded coverage bytes Assay consumed inside its
-otherwise-ephemeral snapshot; it never consumes an expectation derived from
-Assay's verdict (A-204).
+Each consumer qualifies its own use of assay in its own gate, and assay's
+gate tests assay only (A-475). Assay's registered gate no longer runs any
+other project's tree: the Topos P25 harness and the CMRU B006(a) harness are
+retired, so nothing here claims that a consumer has adopted assay. Adoption
+packages live in each consumer's own trove, after its active wave permits a
+stable input revision. Pinned Topos still commits three absolute `/etc/passwd`
+symlinks as security-test fixtures, which the A-186 committed-object boundary
+refuses for every higher-rigor lane; that precondition is Topos-owned (prefer
+constructing the hostile links under `tmp_path`).
 
 | # | Consumer | Proves |
 |---|---|---|
@@ -3302,65 +3283,13 @@ is an explicit `find` file list, and the phase **refuses** an empty one:
 otherwise a renamed or absent `tests/` would silently shrink the scope back
 while still emitting the clean marker.
 
-## 15. Real Python-project qualification harness (P25)
+## 15. Cross-project qualification belongs to the consumer (A-475)
 
-§13 states the product claim (qualification, not adoption) and the exact
-three-symlink adoption precondition; this section is the mechanism that
-proves it. `gate/python/qualify_topos.py` runs inside the registered gate,
-between `run_self_hosted_lane` and `run_independent_witness`, against the
-CURRENT run-venv wheel `run_self_hosted_lane` already proved.
-
-**One disposable baseline, reconstructed per scenario, never the real
-checkout.** `git archive --format=tar` exports only the pinned commit's
-`.gitignore` and `topos/` tree into a fresh scratch directory; the exact
-three absolute `/etc/passwd` symlinks are verified present and deleted, the
-five relative contained symlinks are verified retained, and the exact
-966-minus-3 tracked set is `git add -f`'d (never ordinary `add`, which
-silently drops four tracked-but-ignored Docker fixtures under the carried
-root `.gitignore`) to a fixed-identity, fixed-date commit. That commit is
-`base`; the scenario's own probe/test/wrapper/`assay.toml` land in one more
-commit on top, which is `HEAD`. Same content plus the same fixed identity
-reproduces the identical baseline OID regardless of which scenario runs on
-top of it — a real, checked property, not an assumption.
-
-**Two Assay owners, never conflated.** The gate's own `current_assay`
-(`$scratch/run-venv/bin/assay`) runs the full 2,923-test suite plus every
-integrity negative, so future Assay changes stay externally qualified. A
-separate, hash-installed, clean-tagged `1.2.5` release venv — built the same
-way `install_locked_release` proves any consumer could — runs one targeted
-smoke. Neither route ever selects a wheel by glob, rebuilds one at runtime,
-or substitutes for the other.
-
-**Three independent witnesses per common-semantics scenario.** Installed
-Assay emits its own v4 verdict; a bounded, non-interpreting wrapper copies
-the exact coverage bytes Assay consumed inside its ephemeral snapshot to an
-external path *after* pytest exits zero (Assay's own snapshot is destroyed
-before an outside process could read it otherwise); and the unmodified,
-committed `topos/tools/coverage_gate.py` parses that same copy against the
-identical `base..HEAD` diff. That third witness is compared by its NUMBERS
-against the carver-owned hand manifest, never by its `passed` flag alone:
-Topos defines `pct = 100.0` whenever `changed_executable == 0`, so a scenario
-that measured nothing would "agree" with a truthful 5/5 run on the boolean —
-and the release smoke, which carries no complete-artifact template, is exactly
-where that would have gone unnoticed. `compare_complete_artifact` then does ONE
-whole-document equality check against a locked template, normalizing only
-the fields whose real value it already checked separately (version, commit,
-base, timestamps, the declared/effective environment, the witness/log
-paths) — never a status-only or field-by-field comparison a forged-but-
-self-consistent artifact could pass.
-
-**The integrity matrix runs for real, not as a checklist.** Each frozen
-terminal — a missing coverage profile, a dirty consumer, a symbolic base
-that resolves to HEAD, a lane command that leaves tracked dirt or commits
-inside its own snapshot, a wrong-but-existing source root, and a forged
-universal-PASS artifact — is exercised against the real pinned Topos tree
-and the real installed Assay, and each check is its own oracle: it raises
-unless the observed terminal (or comparator rejection) exactly matches the
-frozen expectation. One asymmetry is deliberately never treated as a
-mismatch: Topos cannot express exclusion provenance, so `allow_excluded =
-false` correctly produces Assay `FAIL/EXCLUDED_LINES` against a Topos
-`PASS` — recorded as the expected capability gap, not compared as a
-terminal.
+Consumers qualify their own use of assay in their own gates; assay's gate
+tests assay only (A-475). The P25 Topos harness, its 1.2.5 release-wheel
+smoke and the B006(a) CMRU harness are retired and no longer executed. Their
+historical carve assets stay in `nyxloom-trove/carve-assets/` as history
+(A-477), and nothing in the product changed.
 
 ---
 

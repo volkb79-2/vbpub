@@ -989,8 +989,7 @@ you're changing assay itself:
   baseline or coverage floor. Both lanes build the selected commit as a
   wheel, while each qualification snapshot imports its own source tree. The
   full lane judges code imported from each
-  isolated snapshot; two tag-ref audit tests remain in the ordinary release
-  gate because snapshots do not carry refs. See the
+  isolated snapshot. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
   The full-source attempt is currently unqualified: the latest run stopped at

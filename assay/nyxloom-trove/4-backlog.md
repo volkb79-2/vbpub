@@ -10731,6 +10731,8 @@ qualification evidence.
       It explicitly deselects only the two release-tag audit tests, because
       snapshots do not carry refs/tags; the ordinary checkout-based R0 release
       gate continues to run those tests. A drift test pins these exclusions.
+      **Amended 2026-09-29 (A-475, Wave A W1):** the deselections are gone
+      because the two release-tag audit tests were removed.
       **Amended 2026-09-28 (A-468):** both self-qualification lanes also
       `--ignore=tests/test_python_qualification.py`. That file exercises only
       the unmutated PATH wheel and the committed 1.2.5 release wheel, never
@@ -11623,7 +11625,7 @@ It changes the declared execution semantics (cross-file order dependence stops c
 
 ## B124 — retire cross-project qualification from assay
 
-**Status: OPEN (A-475).** Remove:
+**Status: DONE (W1, merge hash pending: the controller fills it at merge; A-475).** Remove:
 - the Topos P25 harness, its test file, the `topos-qualified` gate phase and the 1.2.5-wheel smoke, including the release-manifest fixtures used only by them;
 - the CMRU B006(a) harness, its tests and the `cmru-b006a-qualified` phase;
 - the dstdns-checkout dependency of SQL qualification (replaced by B126).
@@ -11632,7 +11634,7 @@ Update the P25/P33 carve-asset locks, the docs, and the decisions they reference
 
 ## B125 — latest schema only
 
-**Status: OPEN (A-477).**
+**Status: DONE (W1, merge hash pending: the controller fills it at merge; A-477).** The old-version acceptance paths that remain (`reuse.py` v12 cold start, ciu provenance schema 1) are reported in `reports/wave-a/W1-REPORT.md` and deferred to the v14 wave.
 - Retire the historical gate phases (verdict v5, lane schema v2 successors, the v6–v12 hard cut, the v13 P25/successor checks) and their frozen templates.
 - Keep one refusal test per schema proving that a non-current version is refused.
 - Identify any code path that still accepts or migrates an old version. Remove it if no current consumer needs it, or report it for a decision.
