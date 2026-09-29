@@ -1784,3 +1784,19 @@ leaves the fake `cgroup.kill` value unchanged. Both logger-present and
 logger-absent cases pass locally (**2 passed, 179 deselected**); this is not a
 registered gate result. Re-run exact-tip `r0-r1` and `r3` after committing the
 test and evidence update.
+
+## Session 28 — 2026-09-29 05:36:02Z — short lanes green on f4872603
+
+On clean exact tree `f487260365d61dfb807bf9cedcd57bbc313831ef`, registered
+`r0-r1` passed: **1,799 tests**, four warnings, **6,375/6,375 statements and
+2,252/2,252 branches**. Pytest took 110.22s; the separate run-gate history
+receipt records exit 0 and 115.22s total duration. Its test container
+`cgprofile-gate-79262-1790659181` was capped at 3 CPUs under `dev-gates.slice`.
+
+On the same clean tree, registered `r3` passed in 10.393s; all seven
+canaries were rejected and none survived. Its container
+`run-gate-vbpub-r3-82699-1790659370` was placed under `dev-gates.slice` with
+three CPUs. The daemon was down: `r0-r1` used coarse rusage and `r3` basic
+in-lane sampling, not DAMON. These receipts predate this session's review-
+handoff documentation correction, so repeat both short lanes on the final
+handoff/evidence tip. Required live probes and fresh Sol round 6 remain open.

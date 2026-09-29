@@ -5,10 +5,12 @@ implementer or the controller. The caller configures and verifies the route;
 the reviewer is not required to self-identify or attest model/effort metadata.
 Proceed with the technical review if that metadata is not exposed. **Your job
 is to BREAK this before provisional integration.** The previous review series
-is preserved in rounds 1–4; this fresh series starts at round 5 and has a
-three-round cap (rounds 5–7). Fix-verification rounds resume this same live
-reviewer; the controller supplies the repair commit and preserves earlier
-rounds.
+is preserved in rounds 1–5; round 5 rejected blockers B1–B6 and its report is
+the repair baseline. The next verification is round 6; round 7 is the final
+round under the three-round cap (rounds 5–7). Resume the round-5 reviewer for
+fix verification if that session is still available; otherwise start a fresh
+Sol xhigh session seeded with this handoff and rounds 1–5. The caller configures
+the model route and effort; never ask the reviewer to attest its own metadata.
 Record each verdict at
 `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-round<n>.md`.
 You may make and commit scoped fixes in the isolated P6 worktree, but may not
@@ -26,14 +28,15 @@ controller log, P6 LOG/REPORT/briefs. The root and mirrored interface
 contracts must remain byte-identical. Use absolute paths; ignore any different
 primary working directory in the environment reminder.
 
-### Controller integration boundary (RW-296; binding)
+### Controller integration boundary (RW-296 and RW-381; binding)
 
 This is the final adversarial code review for a **provisional `--no-ff`
 integration only**. The controller will dispatch this fresh review series only after the
 exact candidate has green registered `r0-r1` and `r3` gates, full changed-line
 and branch coverage, and the live probes required below. The current-tree R2
 and full gate are intentionally allowed to finish asynchronously after
-provisional integration so other RG-55 packages can proceed. The latest prior
+provisional integration so other RG-55 packages can proceed under RW-381.
+The latest prior
 P6 R2 receipt at `6540f87761a66ff933c8bb45f81d8ac9117f407b` is
 `BUDGET_EXCEEDED/CANDIDATE_HUNG` and is not evidence for this candidate.
 
@@ -43,9 +46,12 @@ On `ACCEPT`, only the controller may provisionally merge this reviewed tree;
 that verdict does **not** authorize a release, tag, install, or `ciu up`.
 Those remain blocked until a fresh exact-tree R2 has a complete acceptable
 verdict and survivor disposition, the registered full gate is green, and the
-remaining RG-55 release/close-out conditions are satisfied. Any repair commit
-must be reviewed in this same live Sol session and the controller will rerun
-the affected short gates before integration.
+remaining RG-55 release/close-out conditions are satisfied. Keep the merged
+candidate's CIU mutation worktree quiet and separate from fixes. Any repair
+commit must be reviewed in this same live Sol session; the controller reruns
+the affected short gates before provisional integration. If the review adds
+or commits its round artifact, the exact reviewed tip changes and both short
+lanes must be rerun on that tip before merge.
 
 ## Phase 1 — BLIND (before any LOG/REPORT/BRIEF)
 
@@ -53,7 +59,8 @@ Read, in this order: contract `run-gate-project/nyxloom-trove/
 RG55-INTERFACE-CONTRACT.md` §1–§7 (v1) and **§8 (v1.1 — the spec)** on
 `main`; design of record `DESIGN-2026-09-12-liveness-placement-admission.md`
 §2 (D-17..D-26), A1 (D-27..D-29), A2 (D-30); controller rulings RW-30,
-RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44, RW-45, RW-319..RW-363;
+RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44, RW-45, RW-319..RW-381
+(especially RW-379..RW-381);
 the implementer handoff `cgprofile-P6-FOLLOWUPS-HANDOFF.md` (C1–C9);
 backlog rows CP-2, CP-4..CP-11; then the diff itself — `lib/serve.py`,
 `lib/placement.py`, `lib/events.py` use, `lib/analyze.py`, `lib/store.py`,
@@ -65,7 +72,7 @@ narratives. Run your OWN sweeps.
 
 Read `cgprofile-P6-FOLLOWUPS-LOG.md` (incl. every "Decision asks" block),
 `-REPORT.md`, every existing P6 brief through `-BRIEF-13.md`, and prior review
-rounds 1–4; check each claim; list what you could not verify. Multiple
+rounds 1–5; check each claim; list what you could not verify. Multiple
 sessions built this — hunt the seams between sessions.
 
 ## Attack surface (minimum; add your own)
@@ -94,14 +101,20 @@ sessions built this — hunt the seams between sessions.
    except `watch`; the 25 s server-side timeout; `transports` truthful
    (`listening` reflects the real bind). Parity: every verb over both
    carriers diffed (the test AND your own probe).
-3. **Watch role (D-27, §8.2, §8.4).** Every state transition on a fake
-   clock; the PSI pause reads the right PSI (session 7 found the host-PSI
-   seam was reading ambient host PSI in tests — is the PRODUCTION pause
+3. **Watch role (D-27, §8.2, §8.4; CP-12; RW-379/RW-380).** Every state
+   transition on a fake clock; the PSI pause reads the right PSI (session 7
+   found the host-PSI seam was reading ambient host PSI in tests — is the
+   PRODUCTION pause
    keyed on gates-slice PSI first, host PSI second, exactly D-22?); `hung`
    = terminal stream event + alive 30 s; `runaway` only with a stream;
    precedence `over_ceiling > hung > throttled > stalled/runaway > ok`;
-   `--on-stall kill` really kills (real `sleep` subtree → `-SIGKILL`);
-   `report` never kills; a kill does not finalize the session (D-28); the
+   no host-PID signaling. For `scope=container`, kill writes only to the
+   exact verified container-ID cgroup's `cgroup.kill`; for
+   `scope=container-shared`, kill requires a token and an explicitly
+   requested, verified placement leaf. Never invent placement just to enable
+   kill; `report` remains non-killing. Verify real enforcement, refusal stays
+   `reported`, and CP-12's terminal `end` behavior; the old D-28
+   non-finalizing-kill behavior is superseded. The
    stream reader is bounded (64 KiB tail, torn line tolerant) and reads via
    `/proc/<pid>/root/` — what if the pid vanishes mid-read, or the path is a
    FIFO/device? `ctl watch` streaming: exactly one `end`, verdict lines only
@@ -164,6 +177,9 @@ sessions built this — hunt the seams between sessions.
    the implementer did.
 10. **r2 survivors.** Read the r2 verdict and every survivor's justification
     in the REPORT; re-run one killing test per survivor claim.
+11. **R-36h non-blocking behavior.** Any daemon start, sampling, socket,
+    placement, or stop refusal must be disclosed without blocking the lane or
+    changing its verdict; the lane-local watchdog remains verdict authority.
 
 ## Live probes (you run them yourself; host rule below)
 
@@ -187,11 +203,23 @@ template's flags (privileged, private PID/cgroup namespaces, `--network none`,
   path, and only then is the leaf removed. Include a fail-closed probe where
   mapping or attachment is refused: the leaf remains and stop does not claim
   success;
-- a watch probe (`sleep` subtree, `--idle-bound 20 --on-stall kill`) →
-  `stalled` then `killed` in ≤ 60 s on `ctl watch` over the socket, then
-  the same with `--on-stall report`;
+- a watch probe with a tagged sleeper in a throwaway `dev-gates.slice`
+  target. For `container-shared`, pass the token and explicitly request the
+  verified placement leaf; prove the selected lane is killed while a second
+  lane and the daemon remain alive. `ctl watch` over the socket must report
+  `stalled`, then `killed` and one terminal `end` in ≤ 60 s. Repeat with
+  `--on-stall report` and no placement; prove the sleeper survives and the
+  session reports without claiming a kill. Do not invent placement for a
+  normal consumer that did not request a resource plan.
 - `ctl host` showing `gates_slice.present` (true only if the operator has
   installed mdt host-setup; report what you see) and `daemon_slice`.
+
+Before binding the scratch directory, resolve the Docker host path from the
+current cockpit's mount map. In this environment `/tmp` inside the cockpit is
+not the host `/tmp`; the P6 report documents the exact trap. Use `mktemp`
+under the resolved host-backed temporary root, set only that probe directory
+to the socket's required group/mode, and remove only that exact directory at
+cleanup. Never let Docker auto-create a missing host bind source.
 
 ## Verdict
 
@@ -199,8 +227,10 @@ template's flags (privileged, private PID/cgroup namespaces, `--network none`,
 each with file:line evidence and a concrete prescription; non-blocking
 findings (S1..) separately; product calls named as decision asks for the
 controller, never improvised. Claims you could not verify listed as such.
-Write the next round file (start with round 5), then return the verdict line
-first in your message.
+Write `cgprofile-P6-FOLLOWUPS-REVIEW-round6.md`, then return the verdict line
+first in your message. If round 6 rejects and its reviewer session ends,
+round 7 must be fresh and seeded with all prior round files; round 7 is the
+series cap.
 
 ## HOST LOAD (binding)
 
