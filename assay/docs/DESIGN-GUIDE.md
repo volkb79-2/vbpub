@@ -3600,8 +3600,9 @@ protecting any verdict.
   (CD18): anything analysis needs becomes a public judge name.
 - **B105 scope is named.** `tools/b105_report_check.py::verify_scope`
   refuses a report whose source roots are not exactly `src/assay`, whose
-  R1/R2/R3 targets are not the tracked `src/assay` sources, or that names an
-  analysis target; an accepted report says
+  R1 (and R2) targets are not exactly the tracked `src/assay` sources, whose
+  R3 targets lie outside `src/assay/`, or that names an analysis target; an
+  accepted report says
   `scope=src/assay out_of_scope=analysis/src/assay_analysis:A-478`.
 - **Own lane, no R2.** Analysis has an R0+R1 whole-target lane
   (`analysis`, tests in `analysis/tests/`, 100% line and branch). R2 for

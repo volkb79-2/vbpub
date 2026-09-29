@@ -11647,7 +11647,7 @@ Update the P25/P33 carve-asset locks, the docs, and the decisions they reference
 
 ## B127 — `assay analyze` as its own package
 
-**Status: DONE on branch `wave-a-w2-analysis` (2026-09-29, A-478; report `reports/wave-a/W2-LOG.md`); awaiting the controller's gate run and merge. Analysis R2 is B131.**
+**Status: IMPLEMENTED on branch `wave-a-w2-analysis` (2026-09-29, A-478; report `reports/wave-a/W2-LOG.md`); DONE after the controller's registered tester-unified PASS, the fresh review and the merge. Analysis R2 is B131.**
 - Move `src/assay/analysis.py` and its tests into a separate top-level package with its own folder, tests and lane. It ships in the same wheel and zipapp.
 - Dependency is one-way (analysis → assay). `assay analyze` keeps working through a lazy CLI dispatch.
 - B105's scope and `b105_report_check.py` name the judge package explicitly.

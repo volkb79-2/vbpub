@@ -28,7 +28,7 @@ enforcement = "gate"
 # PATH -- the scratch venv the gate builds+installs assay's OWN wheel into,
 # never a source-tree PYTHONPATH shadow (see the `env` table's own comment).
 # `--override-ini=pythonpath=` cancels pyproject.toml's OWN
-# `[tool.pytest.ini_options] pythonpath = ["src"]` (a developer convenience,
+# `[tool.pytest.ini_options] pythonpath = ["src", "analysis/src"]` (a developer convenience,
 # DESIGN-GUIDE §9's last paragraph) for exactly this run -- confirmed
 # empirically that ini option inserts "src" at sys.path[0] regardless of
 # PATH/PYTHONPATH, which would silently re-shadow the installed wheel with
