@@ -95,6 +95,12 @@ Every finding is accepted, with its fix text as written, except where noted belo
 | CD46 | **"Public judge name" (CD18) means no leading underscore**, which is T3's rule. `__all__` membership is not required. `assay.git.ignore_rule_source` and `assay.cli.AssayArgumentParser` stay as they are in Wave A, and W2 does not edit `git.py`. The analysis-to-judge module set is pinned by T3's `ALLOWED_JUDGE_MODULES` (W2R-8). Adding a module there is a reviewed change. |
 | CD31 (amended by W2R-1) | The shared fixture loader is realized as the review specifies: `analysis/` and `analysis/tests/` are packages, and the judge `tests/conftest.py` is loaded on demand under the module name `assay_judge_conftest`. There is no module `__getattr__` proxy. W4's `gate/tests/support.py` reuses that loader. |
 
+## After the W4 implementation (2026-09-29)
+
+| # | Decision |
+|---|---|
+| CD47 | **W4 P5 stand-in for `go_stmtpos.py` `_staged_helper` (124-171).** The stand-in is **two** judge files: `test_b105_go_stmtpos_boundaries.py` plus `tests/adapters/go/test_adapters_go_stmtpos_invoker.py`. The first file alone leaves line 151 uncovered. The invoker test stays in `tests/`, so both B105 lanes collect it and R1 coverage is unaffected by the split. The P5 purpose is met: no tooling test is the only cover of layout-dependent product code. |
+
 **Plan consequences:**
 - W8 now depends on W2 (CD1).
 - W7 edits `gate/tests/test_self_lane.py` (CD12).
