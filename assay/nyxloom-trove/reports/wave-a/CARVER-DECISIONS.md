@@ -50,6 +50,14 @@ Reviews: `REVIEW-waveA-tests-gate.md`, `REVIEW-waveA-code.md` and `REVIEW-waveA-
 | CD31 | W4 moves `test_gate_qualify_dstdns_sql.py` whole into `gate/tests/`, with path-rule edits only; it is tooling, since it runs containers. W5 then replaces it there (CD21, CD28). The shared fixture loader's module name is `assay_judge_conftest`, created by W2 in `analysis/tests/conftest.py` and reused by W4's `gate/tests/support.py`. |
 | CD30 | **Consumer-visible list for the release (A-479).** Candidates:<br>• the second top-level package `assay_analysis` in the wheel;<br>• removed gate phases (not consumer-facing);<br>• removed `import assay.analysis` (undocumented, CD19);<br>• the B105 checker's new receipt requirement (assay-internal);<br>• W5's new SQL fixtures (tests only).<br>None of these changes a documented consumer surface, so 7.2.0 stands, unless an implementer reports a change to a documented CLI, schema path or lane key. That report goes to the carver before the release. |
 
+## Additions after the W5 fix pass (2026-09-29)
+
+| # | Decision |
+|---|---|
+| CD21 (amended) | Wording per review W5-6 as adapted by CD28. The PostgreSQL container belongs to the same registered gate run and uses its slot. Rules: it starts only after a **green** tester (a red tester ends the script first); it is named `run-gate-assay-sql-<pid>-<epoch>`; it runs in `$cgroup_parent` with `--cpus 1 --memory 512m`. The harness never polls or waits for other sessions' gates. It runs one `docker ps` check right before `docker run`: if any `run-gate-*` container is present, it exits 3 with `ASSAY_SQL_INCONCLUSIVE=host busy — rerun: <names>` (visible and inconclusive, never green). |
+| CD32 | **Gate-entry host check (W4).** `run_registered_gate` begins with the same one-shot check, before capturing C/T, clearing the receipt or building anything: `docker ps --no-trunc --format '{{.Names}}'`. If any name starts with `run-gate-`, it prints stderr `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names, comma-joined>` and exits 3. The receipt stays untouched, and there is no waiting or polling. Its oracle is in W4 (O7a). This makes the host-load rule a mechanism, so a Wave A gate no longer runs the tester for 30–60 minutes only to stop at W5's pre-PostgreSQL check. |
+| CD33 | **W5 brief size (26.5 KB) accepted**, as CD24: about 6.3 KB is exact text (schema, matrix, probes, scripts). The W5-local decision to keep `carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json` follows CD8. The one-line MANIFEST notes in the old carve-asset directories W3 and W5–W8 are the only carve-asset edits W5 may make. These are the historical B-wave carve directories, not Wave A packages. |
+
 **Plan consequences:**
 - W8 now depends on W2 (CD1).
 - W7 edits `gate/tests/test_self_lane.py` (CD12).

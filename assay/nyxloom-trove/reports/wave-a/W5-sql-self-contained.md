@@ -3,20 +3,21 @@
 | Field | Value |
 |---|---|
 | Backlog / decision | **B126** / **A-480**; A-279…A-289 (`decisions.md:632-642`) stay binding |
-| Branch | `wave-a-w5-sql` from `assay-b110-landing` after **W3, W1**; own worktree; `--no-ff` |
-| Order | Parallel with W4, **merges after W4** (`gate.tests.support`, `finish_registered_gate`); SQL tests in `tests/adapters/sql/` (W3) |
+| Branch | `wave-a-w5-sql` from `assay-b110-landing` **after W3, W1, W2, W6 and W4 have merged** (CD28; stage 2 merges W6→W4→W5); own worktree; `--no-ff` |
+| Builds on | W4: `gate/tests/` package, `gate.tests.support`, `finish_registered_gate` and its captured commit, `run_bash` in `gate.tests.test_distribution_gate`. W3: `tests/adapters/sql/`. Re-resolve paths by file name |
 | Class / implementer | **2b** / **Sonnet**, fresh (operator rule) |
 
-**Why.** The gate never ran real PostgreSQL (tester container has no Docker socket, `tools/tester-unified-gate.sh:756-765`). The tag now means 18.6. The corpus's 171 sites are 13 classes (rule below), all rows here, plus 11 new. Read: the old harness (`ThrowawayPostgres` 504-630, O4 811-857, witness 880-1133), its `schema-gate.sh` and tests, `src/assay/adapters/sql.py:1-90`.
+**Why.** The gate never ran real PostgreSQL (the tester has no Docker socket, `tools/tester-unified-gate.sh:756-765`); the tag now means 18.6. The dstdns corpus's 171 sites form 13 classes, each represented below; 11 rows are new. **Carver questions, Decided (CD21, CD22):** an outer gate phase after a green tester; the local 18.6 digest, never pulled; host `python3` ≥3.11 on the clone's `src/`; out of scope → B132/B133.
 
-**Carver questions (assumed "yes").** Q1 real-DB evidence is an outer gate phase after the tester exits. Q2 pin the local 18.6 digest. Q3 that phase uses host `python3` ≥3.11 and the clone's `src/`. Q4 out-of-scope: follow-up.
+## Context to read first
+**`wave-a/CARVER-DECISIONS.md`** (CD8, CD21, CD22, CD28, CD29); `review-predispatch/REVIEW-waveA-sql-plan.md` §1 (folded in; this brief wins); `W4-test-split.md` P2, P4; old `gate/python/qualify_dstdns_sql.py` (`_run` 176-201, `ThrowawayPostgres` 501-627, O3/O4 705-858, witness 880-1133), its `schema-gate.sh` and tests; `mutation.py` `_classify_mutant_result_with_equivalence`.
 
 ## Implementation packet (normative)
-**Files** (`F` = `gate/python/fixtures`). `git mv`: `gate/python/qualify_dstdns_sql.py` → `gate/python/qualify_sql.py`; `F/dstdns-sql/schema-gate.sh` → `F/sql/schema-gate.sh`; `tests/test_gate_qualify_dstdns_sql.py` → `gate/tests/test_qualify_sql.py`. `git rm`: `F/dstdns-sql/corpus/`, `tests/fixtures/mutation/sql/dstdns-21-create-workflow-corpus.sql`, `carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json`. New in `F/sql/`: `run-assertions.sh`, `matrix.json` (`[{"id","line","operator","expected"}]`), `tests/K*.sql` (21), `expected/sql-r2-witness.json`.
+**Files** (`F` = `gate/python/fixtures`). `git mv`: `gate/python/qualify_dstdns_sql.py` → `gate/python/qualify_sql.py`; `F/dstdns-sql/schema-gate.sh` → `F/sql/schema-gate.sh`; `test_gate_qualify_dstdns_sql.py` → `gate/tests/test_qualify_sql.py`. `git rm` after Work 0b: `F/dstdns-sql/corpus/`, `tests/fixtures/mutation/sql/dstdns-21-create-workflow-corpus.sql`. **Keep** `carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json` (Decided CD8: history, frozen at v13). New in `F/sql/`: `run-assertions.sh`, `matrix.json`, `tests/K*.sql` (21), `expected/sql-r2-witness.json`.
 
-**Dedupe rule.** Keep a case only if it differs from every kept one in replacement form, span shape (recogniser branch; text after it), enclosing object (table, domain, index, partial index, view, constraint trigger), lexical context (top, executed/inert `DO`), catalog effect (A-289) or bucket; names, types, trigger timing do not count. So no K12 (`ALTER … ADD … UNIQUE (a)` = K11), no plain `AFTER` trigger (= K21).
+**Dedupe rule** (for the docs). A case is kept only if it differs from every kept one in replacement form, span shape (recogniser branch; text after it), enclosing object, lexical context (top, executed/inert `DO`), catalog effect (A-289) or bucket (only one deliberate survivor per replacement branch); names, types, trigger timing do not count.
 
-**`tests/fixtures/mutation/sql/qualification/01-schema.sql`** (verbatim, 76 lines; sha256 `b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1`):
+**`tests/fixtures/mutation/sql/qualification/01-schema.sql`** (verbatim, 76 lines, every line LF-terminated including the last; sha256 `b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1`):
 ```sql
 -- assay SQL qualification schema (A-480). [Knn] tags name matrix rows.
 -- Trap: ON DELETE RESTRICT, NOT NULL, CHECK (x), UNIQUE in a comment.
@@ -95,73 +96,139 @@ GRANT REFERENCES ON parent TO PUBLIC;
 COMMENT ON TABLE parent IS 'NOT NULL CHECK (x) UNIQUE REFERENCES parent (id) ON DELETE RESTRICT';
 CREATE TABLE "Trap Table" ("NOT NULL" text, "UNIQUE" text);
 ```
-Carver-run: 24 sites, one per tag, none on trap lines {2,3,15,29,32,50,52,74,75,76}; all pass `collect_mutation_sites`.
+Carver-run, re-measured by the review: 24 sites, one per tag, none on trap lines {2,3,15,29,32,50,52,74,75,76}; all pass `collect_mutation_sites`. **Tag rule:** a line's tags name its sites left to right by ascending `start_byte` (lines 11, 13, 19, 38 carry two).
 
-**Matrix.** All `killed` except **K02 survived** (DEFAULT hides it), **K25 survived** (no realistic test inserts `__assay_widened__`), **K09 equivalent** (inert guard). `id line op | probe | condition`; ops: nn/ck/uq/fk = drop-not-null/-check/-unique/-foreign-key, wd weaken-delete-action, tg drop-trigger, wi widen-check-in. `P` = `INSERT INTO parent (id,label) VALUES (1,'p')`; `c(…)` = `INSERT INTO child (id,parent_id,owner_id,slot,qty) VALUES (…)`; `pa(x)` = `INSERT INTO parent (id,label,x)`.
+**Matrix** → `matrix.json` = `json.dumps(rows, indent=2) + "\n"`, rows sorted by id like `{"id": "K01", "line": 9, "operator": "sql:drop-not-null", "expected": "killed"}`. Ops: nn/ck/uq/fk = `sql:drop-not-null`/`-check`/`-unique`/`-foreign-key`, wd `sql:weaken-delete-action`, tg `sql:drop-trigger`, wi `sql:widen-check-in`. All `killed` except K02, K25 `survived` (DEFAULT hides K02; no realistic test inserts `__assay_widened__`), K09 `equivalent` (inert guard). Statements split at `; `; the **last** is the probe, the rest setup. Macros: `P` = `INSERT INTO parent (id,label) VALUES (1,'p')`; `C(v)` = `INSERT INTO child (id,parent_id,owner_id,slot,qty) VALUES (v)`; `A(col,v)` = `INSERT INTO parent (id,label,col) VALUES (v)` (col ends at the first comma).
 ```
 K01  9 nn | INSERT INTO parent (id,label) VALUES (1,NULL) | not_null_violation
 K02 10 nn | -
-K03 27 nn | c(1,NULL,NULL,NULL,NULL) | not_null_violation
+K03 27 nn | C(1,NULL,NULL,NULL,NULL) | not_null_violation
 K04  5 nn | PERFORM CAST(NULL AS posint) | not_null_violation
-K05 13 ck | pa(priority) VALUES (1,'a',9) | check_violation
-K06 11 ck | pa(kind) VALUES (1,'a','gamma') | check_violation
-K07 28 ck | c(1,NULL,NULL,NULL,0) | check_violation
+K05 13 ck | A(priority,1,'a',9) | check_violation
+K06 11 ck | A(kind,1,'a','gamma') | check_violation
+K07 28 ck | C(1,NULL,NULL,NULL,0) | check_violation
 K08  6 ck | PERFORM CAST(0 AS posint) | check_violation
 K09 44 ck | -
-K10 14 uq | pa(code) VALUES (1,'a','c') then (2,'b','c') | unique_violation
-K11 23 uq | P; c(1,1,NULL,5,1); c(2,1,NULL,5,1) | unique_violation
-K13 30 uq | parents (1,'d') then (2,'d') | unique_violation
-K14 31 uq | P; c(1,NULL,1,NULL,200); c(2,NULL,1,NULL,300) | unique_violation
-K15 19 fk | c(1,999,NULL,NULL,1) | foreign_key_violation
-K16 24 fk | c(1,NULL,999,NULL,1) | foreign_key_violation
+K10 14 uq | A(code,1,'a','c'); A(code,2,'b','c') | unique_violation
+K11 23 uq | P; C(1,1,NULL,5,1); C(2,1,NULL,5,1) | unique_violation
+K13 30 uq | INSERT INTO parent (id,label) VALUES (1,'d'); INSERT INTO parent (id,label) VALUES (2,'d') | unique_violation
+K14 31 uq | P; C(1,NULL,1,NULL,200); C(2,NULL,1,NULL,300) | unique_violation
+K15 19 fk | C(1,999,NULL,NULL,1) | foreign_key_violation
+K16 24 fk | C(1,NULL,999,NULL,1) | foreign_key_violation
 K17 38 fk | INSERT INTO shipment VALUES (1,999) | foreign_key_violation
-K18 25 wd | P; c(1,NULL,1,NULL,1); DELETE FROM parent WHERE id=1 | foreign_key_violation
-K19 19 wd | P; c(1,1,NULL,NULL,1); DELETE FROM parent WHERE id=1 | foreign_key_violation
-K20 38 wd | c(1,NULL,NULL,NULL,1); shipment (1,1); DELETE FROM child WHERE id=1 | foreign_key_violation
+K18 25 wd | P; C(1,NULL,1,NULL,1); DELETE FROM parent WHERE id=1 | foreign_key_violation
+K19 19 wd | P; C(1,1,NULL,NULL,1); DELETE FROM parent WHERE id=1 | foreign_key_violation
+K20 38 wd | C(1,NULL,NULL,NULL,1); INSERT INTO shipment VALUES (1,1); DELETE FROM child WHERE id=1 | foreign_key_violation
 K21 57 tg | P; UPDATE parent SET label='q' WHERE id=1 | raise_exception
-K22 64 tg | P; c(1,1,NULL,NULL,1); require (SELECT count(*) FROM audit)=1
-K23 72 tg | INSERT INTO parent_labels VALUES (1,'v'); require EXISTS (SELECT 1 FROM parent WHERE id=1)
-K24 13 wi | pa(priority) VALUES (1,'a',4) | check_violation
+K22 64 tg | P; C(1,1,NULL,NULL,1) | require (SELECT count(*) FROM audit)=1
+K23 72 tg | INSERT INTO parent_labels VALUES (1,'v') | require EXISTS (SELECT 1 FROM parent WHERE id=1)
+K24 13 wi | A(priority,1,'a',4) | check_violation
 K25 11 wi | -
 ```
-Probe `tests/Knn.sql`: `BEGIN; DO $$ BEGIN <setup>; BEGIN <probe>; EXCEPTION WHEN <condition> THEN RETURN; END; RAISE EXCEPTION 'Knn'; END $$; ROLLBACK;` (K22/K23: `IF NOT (<check>) THEN RAISE EXCEPTION 'Knn'; END IF;`). All pass unmutated.
+**Probes, verbatim (Decided CD28):** `F/sql/tests/<id>.sql` per killed row, LF endings; sha256 of all 21 concatenated in id order `12f564d919d9575c71c2cee44b7f762f47cc00a7153a7c06e33f31afe14d0ce0` (4673 bytes). Form A (a condition), shown for K11; single-statement rows have no setup lines:
+```sql
+BEGIN;
+DO $$
+BEGIN
+  INSERT INTO parent (id,label) VALUES (1,'p');
+  INSERT INTO child (id,parent_id,owner_id,slot,qty) VALUES (1,1,NULL,5,1);
+  BEGIN
+    INSERT INTO child (id,parent_id,owner_id,slot,qty) VALUES (2,1,NULL,5,1);
+  EXCEPTION WHEN unique_violation THEN RETURN;
+  END;
+  RAISE EXCEPTION 'K11';
+END $$;
+ROLLBACK;
+```
+Form C (`require`: K22, K23), one per line: `BEGIN;`, `DO $$`, `BEGIN`, `  <stmt>;` per statement, `  IF NOT (<check>) THEN RAISE EXCEPTION '<id>'; END IF;`, `END $$;`, `ROLLBACK;`.
 
-**Out of scope (Q4; one backlog item).** Emitted, reasoned PostgreSQL-refused (→ `crashed`): `UNIQUE … DEFERRABLE`/`NULLS NOT DISTINCT`/`INCLUDE`/`USING INDEX`, FK `MATCH FULL`/`DEFERRABLE`/`SET NULL (col)`; unknown: `NOT NULL` on IDENTITY/serial/PK, string widen on an enum. Mislabels: widened `NOT IN`; drop-check on `POLICY … WITH CHECK`. Unreached: generated expressions, `EVENT` triggers, quoted FK targets, triggers in `DO`.
+**dstdns class map (Decided CD28).** Per corpus file: `lex = lex_sql(data)`; sites over all lines, seven operators, `limit=500`; key `(operator, re.sub(r"widened with \d+", "widened with <int>", description), "body" if any(a <= start_byte < b for a, b in lex.dollar_bodies) else "top", x)`, `x` = `"default"` for nn if `re.match(rb"\s*DEFAULT\b", lex.mask[end_byte:], re.I)`, `"named"` for ck if `re.search(rb"CONSTRAINT\s+\w+\s+\Z", lex.mask[max(0, start_byte - 200):start_byte], re.I)`, else `""`. Carver-measured class (count) → row: nn (38) K01; nn default (36) K02; ck (28) K06; ck named (11) K05; wi string (20) K25; wi `<int>` (2) K24; uq `UNIQUE` (12) K11; uq partial `CREATE UNIQUE INDEX` (1) K14; fk `REFERENCES` (11) K15; fk `FOREIGN KEY` top (1) K16, body (3) K17; wd body (2) K20; tg (6) K21. New: K03 K04 K07 K08 K09 K10 K13 K18 K19 K22 K23.
 
-**Harness (`qualify_sql.py`).** CLI `--scratch DIR` (absent) `--container-name NAME [--cgroup-parent SLICE] [--witness-out PATH] [--fixture-root DIR]`; stdout exactly `ASSAY_SQL_QUALIFIED=1`. Exit 0; 1 `QualificationError`; 3 `InconclusiveError` (docker/image missing, readiness failsafe, `budget_exceeded`, `hung`, `LANE_TIMEOUT`); Python <3.11 → `parser.error`. Import `VERDICT_SCHEMA_VERSION`.
-- Image `postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2`; absent from `docker image inspect` → exit 3 naming `docker pull`; never pull.
-- `docker run -d --pull=never --network none --name NAME --cpus 1 --memory 512m --memory-swap 512m --pids-limit 256 --mount type=tmpfs,destination=/var/lib/postgresql,tmpfs-size=268435456 -e POSTGRES_HOST_AUTH_METHOD=trust [--cgroup-parent=SLICE] IMAGE`, no `--rm`. Ready when `docker exec NAME psql -h 127.0.0.1 -U postgres -tAc 'SELECT 1'` prints `1` (init server is socket-only); failsafe 300 × 1 s. Always `docker rm -f -v NAME`.
-- Flow: (1) `SqlAdapter` sites == matrix, each on its tagged line. (2) Baseline, `SCHEMA_GATE_TEST_CMD='sh /run-assertions.sh'`, exits 0. (3) Per row, fresh DB, `derive_bucket`: no dump → crashed (error); dump equal → equivalent; exit 0 → survived; id in `ASSAY_SQL_FAILED` → killed; else error; == `expected`. (4) Old O4 on K01, O5, M11 (`, '__assay_widened__')` at K24, refused). (5) `assay run` as old `capture_witness`: lane `sql_qualification`, `source_roots = ["db/schema"]`, seven operators, `max_mutants` = rows, `budget = "60m"`; base commit `.gitignore` + `db/tests/`; head adds schema, wrapper (copies `db/schema`→`/corpus`, `db/tests`→`/tests`), `assay.toml`. Buckets == `expected`; killed signals hold their id; `FAIL`/`MUTANTS_SURVIVED`; normalized verdict == witness.
-- `schema-gate.sh`: apply `[0-9][0-9]-*.sql`; kill signal `schema test command failed (exit <rc>): <last ASSAY_SQL_FAILED= line>`; keep A-279/NB-6. `run-assertions.sh`: `psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$SCHEMA_GATE_DBNAME" -f` each `$SCHEMA_GATE_ASSERT_DIR/K*.sql`; failures → print `ASSAY_SQL_FAILED=<ids>`, exit 1.
+**Out of scope (Decided CD22, CD28).** B132 (PostgreSQL-refused constructs) gets appended: unknown — `NOT NULL` on IDENTITY/serial/PK, string widen on an enum; unreached — generated expressions, `EVENT` triggers, quoted FK targets, triggers in `DO`; "needs an ad-hoc-construct mode of this harness". B133 holds the mislabels. Other new findings take ids from **B134**.
 
-**Gate wiring.** Above `# --- entry points`: `run_sql_qualification <scratch> <name> <cgroup>` runs `nice -n 19 python3 -I "$scratch/clone/assay/gate/python/qualify_sql.py" --scratch "$scratch/sql" --container-name "$name" --cgroup-parent "$cgroup"`, dies unless stdout is the marker, echoes `ASSAY_GATE_PHASE=sql-qualified`. Global `_assay_sql_container_name=""`, `rm -f -v`'d first by the cleanup trap. Entry: `run_registered_tester_container … || tester_status=$?`; `mktemp -d`; `make_exact_oid_clone`; name `assay-sqlq-${BASHPID}-${RANDOM}-$(date +%s)`; the phase; `exit "$tester_status"` if non-zero; `finish_registered_gate`.
+**Harness (`qualify_sql.py`).** `IMAGE` = `postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2`; `RESTRICT_KEY` kept; schema read from `tests/fixtures/mutation/sql/qualification/01-schema.sql`; imports `VERDICT_SCHEMA_VERSION`, `LANE_SCHEMA_VERSION`. Docstring: the witness lane strips `DOCKER_HOST` and relies on `/var/run/docker.sock` reaching the same daemon.
+- **CLI:** `--scratch DIR` (absent) `--container-name NAME` (fullmatch `run-gate-assay-sql-[0-9]+-[0-9]+`) `--cgroup-parent SLICE` (non-empty) `[--witness-out PATH] [--fixture-root DIR]` (default `F/sql`); a violation or Python <3.11 → `parser.error`. Exit 0 with stdout exactly `ASSAY_SQL_QUALIFIED=1`; 1 `QualificationError`; 3 `InconclusiveError`, stderr `ASSAY_SQL_INCONCLUSIVE=<reason>`, for exactly (Decided W5-local; visible, never skipped or green): `docker unavailable` (`docker version` fails, or no `docker`); `image absent: docker pull IMAGE` (`docker image inspect IMAGE` fails; never pull); `host busy — rerun: <names>`; the readiness failsafe; a `_run` `TimeoutExpired`; `hung`/`budget_exceeded` entries or `LANE_TIMEOUT` in the verdict.
+- **Host load (Decided CD28):** once, right before `docker run`: `docker ps --no-trunc --format '{{.Names}}'`; any `run-gate-*` name → `host busy — rerun: <names, comma-joined>`, no `docker run` (the gate's own tester has exited). Never poll or wait.
+- **Container:** exactly one `docker run -d --pull=never --network none --name NAME --cgroup-parent=SLICE --cpus 1 --memory 512m --memory-swap 512m --pids-limit 256 --mount type=tmpfs,destination=/var/lib/postgresql,tmpfs-size=268435456 -e POSTGRES_HOST_AUTH_METHOD=trust IMAGE postgres -c max_wal_size=64MB -c min_wal_size=32MB` (no `--rm`). Ready when `docker exec NAME psql -h 127.0.0.1 -U postgres -tAc 'SELECT 1'` prints `1`; failsafe 300 × `_sleep(1)` (module seam `_sleep = time.sleep`). `docker cp` the fixture root's `schema-gate.sh`, `run-assertions.sh`, `tests/` to `/`. After an attempted `docker run`, `finally` logs `docker exec NAME df -Pk /var/lib/postgresql` to stderr, then `docker rm -f -v NAME` (last `_run`; both `check=False`, failures printed). `main` installs `signal.signal(SIGTERM, lambda *_: sys.exit(3))` (so SIGTERM → `SystemExit(3)`) and restores the old handler in `finally`.
+- **Databases (Decided CD28):** each scenario: `psql -v ON_ERROR_STOP=1 -U postgres -c 'DROP DATABASE IF EXISTS qual;'`, separately `-c 'CREATE DATABASE qual;'`, afterwards `-c 'DROP DATABASE qual;'`; `rm -f /dump.sql /kill.txt` before each run. One ≈8 MB database plus WAL ≤ `max_wal_size` fits the 256 MiB tmpfs within 512 MiB.
+- **A run:** old `replace_corpus`, then `docker exec NAME env SCHEMA_GATE_INIT_SCRIPTS_DIR=/corpus SCHEMA_GATE_DBNAME=qual SCHEMA_GATE_DUMP_PATH=/dump.sql SCHEMA_GATE_KILL_SIGNAL_PATH=/kill.txt SCHEMA_GATE_RESTRICT_KEY=<key> SCHEMA_GATE_TEST_CMD='sh /run-assertions.sh' SCHEMA_GATE_ASSERT_DIR=/tests sh /schema-gate.sh`; read dump and signal with `docker exec NAME cat` if `test -f`, else `None`.
+- `parse_failed_ids(signal) -> frozenset[str]`: `None` → empty; else, minus one trailing LF, fullmatch `schema test command failed \(exit [1-9][0-9]*\): ASSAY_SQL_FAILED=(none|K[0-9]{2}(,K[0-9]{2})*)` or raise `QualificationError`; `none` → empty.
+- `derive_bucket(row_id, *, exit_code, dump, baseline_dump, failed_ids) -> str`, first match: (1) `dump is None` → `crashed`; (2) `dump == baseline_dump` → `equivalent` (even with exit ≠ 0, as `_classify_mutant_result_with_equivalence`); (3) `exit_code == 0` → `survived`; (4) `row_id in failed_ids` → `killed`; (5) raise `QualificationError(f"{row_id}: test failed without naming {row_id}")`. A bucket ≠ `expected` raises `f"{row_id}: derived {bucket}, expected {expected}"`, so `crashed` never passes.
+- **Flow.** (1) `check_sites(schema_text, matrix)`: sites (all lines, seven operators, limit 500) mapped by the tag rule equal each row's `(line, operator)`; errors name the ids or the untagged line. (2) Checks; start; copy. (3) Baseline: exit 0, dump present, no signal → `baseline_dump`; O5: two `pg_dump --schema-only --no-owner -U postgres -d qual` **without** `--restrict-key` differ. (4) Rows in id order (`MutationSite.apply`); bucket == `expected`. (5) Controls, each `crashed`: **O4-residue** (Decided CD28) — on one `qual`, the unmutated apply exits 0, then the K01 mutant exits ≠ 0 with no dump (`type "posint" already exists`: the non-idempotent assay schema turns the dstdns-era residue premise into a loud failure); **M11** — K24's site with replacement `b", '__assay_widened__')"`. (6) Witness. (7) `SELECT string_agg(datname, ',' ORDER BY datname) FROM pg_database` = `postgres,template0,template1`, else `QualificationError("database residue")`. Stderr receipt: `ASSAY_SQL_ROW=<id>:<bucket>`; `ASSAY_SQL_CONTROL=o4-residue:crashed`/`m11:crashed`/`o5:differs`.
+- **Witness (6)**, as old `capture_witness`: lane `sql_qualification`, `schema_version = LANE_SCHEMA_VERSION`, `source_roots = ["db/schema"]`, seven operators, `jobs = 1`, `max_mutants = 24`, `budget = "60m"`, same artifacts. Base: `.gitignore` (`.assay/`), `db/tests/` (probes). Head adds `db/schema/01-schema.sql`, `assay.toml`, `tools/witness-gate.sh` (old wrapper: database `witness`; `db/schema`→`/corpus`, `db/tests`→`/tests`; `-e SCHEMA_GATE_ASSERT_DIR=/tests`; TEST_CMD `sh /run-assertions.sh`; `DROP DATABASE witness;` just before `exit $rc`). `assay run` failsafe 3900 s. Require R0 PASS, outcome `FAIL`, reason `MUTANTS_SURVIVED`, then `cross_check(verdict, matrix)`: key `(lineno, operator)` over the R2 claim's `mutation.{killed,survived,equivalent,crashed,hung,budget_exceeded}`; each row in exactly one list, == `expected`; no unmatched entry; each killed `parse_failed_ids(kill_signal)` holds its id. Then `compare_with_witness` against `F/sql/expected/sql-r2-witness.json`, or with `--witness-out` write the normalized verdict (`json.dumps(v, indent=2, sort_keys=True) + "\n"`) instead of that comparison.
+
+**`schema-gate.sh`**: the old file with an assay-owned header (A-480; keep the A-279 ordering and NB-6 text), the loop `for sql_file in "$SCRIPT_DIR"/[0-9][0-9]-*.sql` without the 95-/99- case, dumps unchanged, step 3 exactly:
+```sh
+out="$(mktemp)"
+set +e
+sh -c "$TEST_CMD" >"$out" 2>&1
+rc=$?
+set -e
+cat "$out"
+if [ "$rc" -ne 0 ]; then
+    line="$(grep '^ASSAY_SQL_FAILED=' "$out" | tail -n 1)"
+    printf 'schema test command failed (exit %s): %s\n' "$rc" "${line:-ASSAY_SQL_FAILED=none}" > "$KILL_SIGNAL_PATH"
+fi
+rm -f "$out"
+exit "$rc"
+```
+**`run-assertions.sh`** exactly (so a signal reads `schema test command failed (exit 1): ASSAY_SQL_FAILED=K05,K24`):
+```sh
+#!/bin/sh
+# assay SQL qualification probes (A-480): one file per killed matrix row.
+set -u
+LC_ALL=C
+export LC_ALL
+: "${SCHEMA_GATE_DBNAME:?}" "${SCHEMA_GATE_ASSERT_DIR:?}"
+failed=""
+for probe in "$SCHEMA_GATE_ASSERT_DIR"/K*.sql; do
+    [ -f "$probe" ] || { echo "no probes in $SCHEMA_GATE_ASSERT_DIR" >&2; exit 2; }
+    id="$(basename "$probe" .sql)"
+    psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$SCHEMA_GATE_DBNAME" -f "$probe" || failed="${failed:+$failed,}$id"
+done
+[ -z "$failed" ] || { echo "ASSAY_SQL_FAILED=$failed"; exit 1; }
+```
+
+**Gate wiring (Decided CD28, W5-local)**, outer mode, above `# --- entry points`. Globals `_assay_sql_container_name=""`, `_assay_sql_scratch=""`; `cleanup_assay_gate_container` first runs, for each non-empty one, `docker rm -f -v "$_assay_sql_container_name" >/dev/null 2>&1 || true` and `rm -rf -- "$_assay_sql_scratch"`. `run_sql_qualification <commit> <cgroup>` (`local out rc=0`):
+1. `_assay_sql_scratch="$(mktemp -d)"`; `make_exact_oid_clone "$worktree" "$_assay_sql_scratch"`; `die "SQL clone is not the gated commit $commit"` unless its `rev-parse HEAD` = `$commit`.
+2. `_assay_sql_container_name="run-gate-assay-sql-${BASHPID}-$(date +%s)"`.
+3. `out="$(nice -n 19 python3 -I "$_assay_sql_scratch/clone/assay/gate/python/qualify_sql.py" --scratch "$_assay_sql_scratch/sql" --container-name "$_assay_sql_container_name" --cgroup-parent "$cgroup")" || rc=$?`.
+4. rc 3 → `echo 'ASSAY_GATE_DIAGNOSTIC=sql-qualification-inconclusive'`, `die 'SQL qualification inconclusive; rerun'`; other rc ≠ 0 → `die "SQL qualification failed (exit $rc)"`; `$out` ≠ `ASSAY_SQL_QUALIFIED=1` → `die 'SQL qualification printed no exact marker'`.
+5. `rm -rf -- "$_assay_sql_scratch"`; clear both globals; `echo 'ASSAY_GATE_PHASE=sql-qualified'`.
+
+Entry: W4's tester call → `run_sql_qualification "<W4's captured commit>" "$cgroup_parent"` → W4's `finish_registered_gate`. A red tester already ends the script (`set -e`): never PostgreSQL after a red tester.
 
 ## Work
-1. Moves, removals, schema (checksum), 21 probes, `matrix.json`; `qualify_sql.py`, `schema-gate.sh`, `run-assertions.sh`.
-2. `gate/tests/test_qualify_sql.py`: port the old pure tests, add T1–T6. **No test starts a container** (stub `_run`).
-3. `tests/adapters/sql/`: `FIXTURE_PATH` → new schema; the three `test_real_dstdns_fixture_*` tests become: weaken lines [19, 25, 38]; no site on trap lines; 24 jobs, seven operators. Lexer: line 2's `ON DELETE RESTRICT` masked, line 38's kept in the one `dollar_bodies` span holding `FOREIGN KEY`. Reword dstdns docstrings (and `test_path.py:29`).
+0. **Measure PostgreSQL first (Decided CD28).** `docker ps` (no `run-gate-*`). In the session scratchpad, the fixtures above plus a throwaway driver (never committed) using the harness's `docker run` argv and a `run-gate-assay-sql-$$-$(date +%s)` name. Record baseline (exit 0, 21 probes pass); per row the apply exit, dump absent/equal/different, `ASSAY_SQL_FAILED`, `derive_bucket`; O4-residue, M11, O5; `df -Pk` use. Remove the container by exact name. Table → `wave-a/W5-REPORT.md` §Step 0. BLOCKED if a bucket differs from the matrix, the residue re-apply exits 0, or tmpfs use exceeds 50%.
+0b. **Class map (Decided CD28)**, before any `git rm`: `W5-REPORT.md` §dstdns classes, one row per class (key, count, three `file:line`, row) plus the new rows. BLOCKED unless exactly the 13 classes and counts above.
+1. Moves, removals, fixtures, `qualify_sql.py`, both scripts.
+2. `gate/tests/test_qualify_sql.py` (via `gate.tests.support`). **Port:** `normalize_verdict` ×6, `compare_with_witness` ×2, witness-is-current-schema, `_require_witness_commit_matches` ×2, `_assay_argv` ×2, wrapper-script ×4 (adapted), `_run` ×3, `main` scratch refusal, `_wait_ready` ×2, `_remove` no-op, `__main__` dispatch. **Drop:** `verify_pinned_inputs` ×8, corpus list/export/write ×4, blob pins, scenario-site tests, `create_role` ×2, every `docker`/`dstdns_checkout` fixture test (they skipped silently in the socketless tester). Add T0–T6. No test starts a container (`_run`, `_sleep` stubbed) or skips on Docker absence.
+3. `tests/adapters/sql/`: `FIXTURE_PATH` → the new schema; the three `test_real_dstdns_fixture_*` tests become: weaken lines [19, 25, 38]; no site on trap lines; 24 jobs, seven operators. Lexer: line 2's `ON DELETE RESTRICT` masked, line 38's kept in the one `dollar_bodies` span holding `FOREIGN KEY`. Reword dstdns docstrings (and `test_adapters_sql_test_path.py:29`).
 4. Stale refs: `src/assay/provenance.py:245` (comment; sole `src` edit), `test_cli_provenance_and_request_base.py:357`, `test_runner_result_report.py:573`.
-5. Wiring, T7. `docker ps`; CLI with `--witness-out`, then without; review each witness row. Docs, backlog, gate.
+5. Wiring, T7. `docker ps`; CLI with `--witness-out`, review each row, then without. Docs, decisions, backlog, gate.
 
-## Oracles
-- **T1** sites == matrix; negative: a schema copy plus `x integer NOT NULL,` → red naming it.
-- **T2** unique ids; tags ↔ rows; every operator has a killed row; probe iff killed; negative: drop a probe → red.
-- **T3** `derive_bucket`: all five outcomes, each error named.
-- **T4** cross-check refuses a bucket mismatch and a signal without its id; compare refuses K05 as survived.
-- **T5** stubbed `_run`: exact argv; `rm -f -v` on every exit path; missing image → exit 3 naming the pull.
-- **T6** no `/workspaces/dstdns`, `dstdns-sql`, `qualify_dstdns`, `dstdns-21-create`, `151cda0d`, `113154e6`, `820d4c3c`, `88de912d`, `fc1a694d`, `e188053a`, `d4b394ad`, `84b043f6` in `src tests gate tools` (minus `tests/fixtures/verdicts/`; tokens concatenated); negative: a one-token string is found.
-- **T7** `run_bash`: fake harness → marker once; failing/wrong-output fake → non-zero, no marker; cleanup `rm -f -v`; phase between tester and `finish_registered_gate`.
-- **R1** CLI exit 0, witness equal; logged break: `--fixture-root` copy with `tests/K05.sql` probe `SELECT 1` → exit 1 naming K05.
-- **R2** gate log: `ASSAY_GATE_PHASE=sql-qualified`, W4's completion markers.
+## Oracles (each negative applied, seen red, reverted, logged)
+- **T0** sha256: schema `b7b07e97…3af1`; 21 probes concatenated `12f564d9…0ce0`. Negative: one extra byte in a tmp copy → red.
+- **T1** `check_sites` passes. Negatives: `x integer NOT NULL,` added → red naming that line; line 14 without `UNIQUE` → red naming K10; K06/K25 operators swapped in a matrix copy → red naming both.
+- **T2** unique ids and `(line, operator)`; tags ↔ rows; each operator has a killed row; probe file iff killed, both ways. Negatives: remove `K05.sql`; add `K02.sql`.
+- **T3** `derive_bucket` five branches; equal dump with exit 1 → `equivalent`; exit 1 with `{K24}` for K05 → raises. `parse_failed_ids`: `none`, two ids, malformed → raises.
+- **T4** `cross_check` accepts a built verdict; refuses a bucket mismatch, K05 as survived, a killed signal without its id, K01/K02 swapped (per row, not counts), a `hung` entry (exit 3).
+- **T5** stubbed `_run`/`_sleep`: exact `docker run` argv; inspect argv has `@sha256:d3e1620b…`; `docker rm -f -v NAME` last on the readiness-failsafe, `QualificationError` and SIGTERM (`signal.raise_signal` in the stub) paths, old handler restored; image absent, no `docker`, a `run-gate-x` name from `docker ps` → exit 3 with that reason and no `docker run`; bad `--container-name` or empty `--cgroup-parent` → `parser.error`.
+- **T6** none of `/workspaces/dstdns`, `dstdns-sql`, `qualify_dstdns`, `dstdns-21-create`, `151cda0d`, `113154e6`, `820d4c3c`, `88de912d`, `fc1a694d`, `e188053a`, `d4b394ad`, `84b043f6` in `git ls-files -- src tests gate tools` minus `tests/fixtures/verdicts/` (frozen conformance data, A-480); tokens concatenated in source; bare `dstdns` stays legal (≈25 `src` comments, out of scope). Negative: a token planted in a `.sh` in a tmp tree → found.
+- **T7** `run_bash` (PATH stubs as existing gate tests): fake harness → `ASSAY_GATE_PHASE=sql-qualified` once, between tester and `finish_registered_gate`. Red, no phase marker: exit 1; marker plus exit 1; marker plus an extra line; exit 3 (after `ASSAY_GATE_DIAGNOSTIC=sql-qualification-inconclusive`); clone HEAD ≠ commit; red tester (harness never invoked). The trap issues `docker rm -f -v <name>` and removes the scratch.
+- **R1** CLI exit 0, witness equal. Break: `--fixture-root` copy with `tests/K05.sql` = `SELECT 1;` → exit 1 naming K05.
+- **R2** gate log order `ASSAY_GATE_CONTAINER_EXIT=0`, `ASSAY_GATE_PHASE=sql-qualified`, W4's receipt and COMPLETE markers; no own break (T7).
 
-**Forbidden in tests (AUTHORING §3b):** A. no time-based verdicts; timeouts are generous failsafes; a slow-host red is true. B. no unrestored global state; no `monkeypatch` of `__getattr__` proxies. C. no hollow tests (`pass`, "nothing raised", call counts, private attributes, log strings); never weaken an assertion. D. no no-cover pragma, even in comments. E. no real network, registry or clock. F. no predicted numbers.
+**Traceability** (work | owner | oracle | fixture | break): fixtures | W1 | T0–T2 | schema, matrix, probes | byte, swap, `K02.sql` · derivation | W1 | T3, T4, W0 | built dumps/verdicts | precedence, K01/K02 · container | W1 | T5 | `_run` stub | SIGTERM · gate phase | W5 | T7, R2 | fake harness | marker+exit 1 · PostgreSQL | W0, W5 | R1 | pinned image | K05 `SELECT 1;` · dstdns refs | W1, W4 | T6 | tmp tree | `.sh` token.
 
-## Docs, backlog, scope
-README §SQL (`:632`), DESIGN-GUIDE §11 (`:2809`): the qualification (schema, digest, phase, dedupe rule, two derivations). CONSUMERS SQL (`:1057`): the out-of-scope list. W3 `MANIFEST.md`: witness moved (A-480). Backlog: B126 done; next free B-id for the list. **Forbid:** `src/**` except `provenance.py:245`; `assay.toml`; `run-gate.toml`; other carve-assets.
+**Forbidden in tests:** AUTHORING §3b A–F exactly as tabled in `W4-test-split.md`.
+
+## Docs, decisions, backlog, scope
+README §SQL (`:632`), DESIGN-GUIDE §11 (`:2809`): schema, digest, phase, dedupe rule, class map (`W5-REPORT.md`), two derivations, O4-residue premise. CONSUMERS SQL (`:1057`): out-of-scope list. Decision notes: A-280 (`88de912d` pin retired by A-480), A-286 (dstdns fixture removed), A-289 (TimescaleDB exclusion obsolete; named/unnamed divergence is now K05/K06). One line in the W3, W5, W6, W7, W8 `MANIFEST.md`: `dstdns-sql-r2-v6-witness.json: retired by A-480; frozen at v13; no longer migrated`. Backlog: B126 DONE (class map as evidence); B132/B133 as above; new ids from B134. **Forbid:** `src/**` except `provenance.py:245`; `assay.toml`; `run-gate.toml`; carve-assets beyond those lines.
 
 ## Gate, host load, BLOCKED, review
-`docker ps`; `cd <wt>/assay && nice -n 19 ionice -c3 python ./run-gate.py tester-unified > ../W5-gate.log 2>&1; echo "exit=$?"`; then read markers. **Known red (plan §4):** `test_run_liveness_classifies_a_thread_join_hang_as_hung` (B107) may be the only failure; log it. **Host load:** production game server here; nice/ionice; one gate container, none during another session's gate; PostgreSQL only after the tester exits; never full `self-qualification`; remove containers by exact name. Editor tools; trailer `Co-Authored-By: Claude Sonnet <noreply@anthropic.com>`.
+`docker ps` (a `run-gate-*` running → wait until it ends, recheck); `cd <wt>/assay && nice -n 19 ionice -c3 python ./run-gate.py tester-unified > ../W5-gate.log 2>&1; echo "exit=$?"`; read markers separately. Every failure is real (CD29); only `ASSAY_SQL_INCONCLUSIVE=host busy` means rerun later. **Host load:** production game server; nice/ionice; one gate at a time; PostgreSQL only after a green tester, in `dev-gates.slice`; never full `self-qualification`; remove containers by exact name. Manual CLI: `s="$(mktemp -d)"; nice -n 19 ionice -c3 python3 -I gate/python/qualify_sql.py --scratch "$s/sql" --container-name "run-gate-assay-sql-$$-$(date +%s)" --cgroup-parent "$CGROUP_PARENT_DEV_GATES" …; rm -rf -- "$s"`. Editor tools; trailer `Co-Authored-By: Claude Sonnet <noreply@anthropic.com>`.
 
-**BLOCKED** (`W5-LOG.md`, commit, stop): W3/W1/W4 unmerged; checksum differs; unmutated schema or a probe fails; a row derives another bucket; readiness race; gate red beyond the known test. Never edit expectations toward green.
+**BLOCKED** (`W5-LOG.md`, commit, stop): W3/W1/W2/W6/W4 unmerged; a Work 0/0b contradiction; a checksum differs; the baseline or a probe fails unmutated; a row derives another bucket; readiness race; any gate failure. Never edit expectations toward green.
 
-**Review:** fresh session; rerun the CLI, recompute T1, empty a probe and a kill signal, read the witness.
+**Review:** fresh session; rerun the CLI **without** `--witness-out` first and diff against the committed witness; recompute T1 and the class map; empty a probe and a kill signal; read the witness.
