@@ -146,3 +146,43 @@ Updated the final lane to `max_mutants = 642` and a 24-hour budget, leaving
 prose CLI goldens run against the changed session-extraction code. The
 committed exact-cap plan is to be checked before starting R2. No mutation
 campaign or test container has started on the combined P113/P114 revision.
+
+
+## First combined tester-unified attempt and correction — 2026-09-29
+
+The initial invocation passed the nested `nyxloom/` project directory to
+`--worktree` instead of the monorepo worktree root. It started container
+`run-gate-vbpub-tester-unified-3869582-1790647873`, whose preflight exited 2
+because that nested path has no sibling `assay/pyproject.toml`; pytest did not
+run. The container was removed.
+
+The corrected invocation used the monorepo worktree root and judged commit
+`7805509791a48664d12c530e6491fa597dc8c58c` in container
+`run-gate-vbpub-tester-unified-3871108-1790647918`. It ran from
+2026-09-29T02:12:01Z to 02:15:45Z, then failed:
+
+```text
+tester-unified: FAIL/COMMAND_FAILED (exit 1)
+R0: FAIL/COMMAND_FAILED — baseline pytest returned 1
+R1: FAIL/UNCOVERED_LINES — 120/127 lines, 53/62 branches (91.53%)
+missing changed lines: claude_code.py 261, 269, 272, 280, 297, 340, 343
+missing branches: claude_code.py 260, 268, 271, 279, 296, 339, 342, 765, 768
+```
+
+The container is removed. Its verdict is
+`nyxloom/.assay/verdict-tester-unified.json`; the outer log is
+`/tmp/run-gate/run-gate-vbpub-tester-unified-3871108-1790647918.log` (709
+bytes, containing only the outer summary, not pytest's failure traceback).
+The local devcontainer reproduction of the full test suite exposed that the
+new sidechain test selected the earlier prompt event instead of the answer
+event. The test now selects marker `side-u1` and asserts that answer's
+`OPERATOR:` prose. Additional malformed-envelope and malformed-prompt cases
+cover the missing defensive branches. The session-extraction suite passed in
+the devcontainer; coverage on the changed Claude adapter lines reports 133
+changed lines, zero uncovered changed lines, and zero changed lines with a
+missing branch. No container was started for these local diagnostics.
+
+The same local full-suite diagnostic also encountered host Docker address-pool
+exhaustion and could not import `hypothesis` from the devcontainer venv. Those
+environment-specific results are not attributed to the tester-unified lane;
+the lane's R0 command failure remains to be resolved from a clean rerun.

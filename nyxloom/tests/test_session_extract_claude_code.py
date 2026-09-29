@@ -429,7 +429,8 @@ def test_sidechain_askuserquestion_reply_keeps_its_question_metadata(tmp_path):
                   encoding="utf-8")
 
     events = claude_code.parse(fp, str(fp), ExtractConfig())
-    qa = next(event for event in events if event.kind is EventKind.QA_PAIR)
+    qa = next(event for event in events if event.marker == "side-u1")
+    assert qa.kind is EventKind.QA_PAIR
     assert qa.text == (
         "INTERVIEW: Which sidechain label?\n- Yes\n- No\n\nOPERATOR: Yes"
     )
@@ -988,6 +989,31 @@ def test_askuserquestion_prose_preserves_header_option_descriptions_and_multisel
     ) == expected + "\n\nOPERATOR: Labeled prose"
 
 
+@pytest.mark.parametrize("question", [None, "not a question object", {}, {"question": ""}, {"question": 7}])
+def test_askuserquestion_prompt_formatter_omits_malformed_questions(question):
+    assert claude_code._format_askuserquestion_prompt(question) is None
+
+
+def test_malformed_askuserquestion_tool_inputs_do_not_emit_empty_prompts(tmp_path):
+    records = [
+        _rec(type="assistant", uuid="bad-string", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "bad-string", "name": "AskUserQuestion",
+                 "input": {"questions": "not a list"},
+             }]}),
+        _rec(type="assistant", uuid="bad-question", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "bad-question", "name": "AskUserQuestion",
+                 "input": {"questions": [{"question": ""}]},
+             }]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert events == []
+
+
 def test_format_qa_pairs_rejected_envelope_with_unknown_question_falls_back():
     text = 'Questions asked:\n- "Changed prompt?"\n  Answer: yes'
     assert claude_code._format_qa_pairs(text, [_q("Original prompt?", "yes")]) == text
@@ -1041,6 +1067,21 @@ def test_format_qa_pairs_rejected_envelope_falls_back_on_extra_answer_row():
         "  Answer: unexpected extra row"
     )
     assert claude_code._format_qa_pairs(text, [_q("Pick?", "yes")]) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "questions"),
+    [
+        ("Questions asked:\nNo question row", [_q("Pick?", "A")]),
+        ('Questions asked:\n- "Pick?"', [_q("Pick?", "A")]),
+        ('Questions asked:\n- "Pick?"\n  Unlabeled answer', [_q("Pick?", "A")]),
+        ('Questions asked:\n- "Pick?"\n  Answer:', [_q("Pick?", "A")]),
+        ('Questions asked:\n- "Pick?"\n  Answer: yes', [None]),
+        ('Questions asked:\n- "Pick?"\n  Answer: yes', [{"question": ""}]),
+    ],
+)
+def test_malformed_rejected_question_envelopes_preserve_raw_text(text, questions):
+    assert claude_code._format_qa_pairs(text, questions) == text
 
 
 def test_format_qa_pairs_falls_back_to_raw_text_when_marker_not_found():
