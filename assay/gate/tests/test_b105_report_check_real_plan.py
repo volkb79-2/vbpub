@@ -117,3 +117,5 @@ def test_o14_the_real_plan_agrees_with_the_real_unsharded_run_and_not_with_a_sha
     checker.check_campaign_scope(verdict, plan, expected_commit=head, expected_tree=tree)
     with pytest.raises(ValueError, match=r"judgment\.r2\.shard_(index|count) is"):
         checker.check_campaign_scope(json.loads(shard.read_text(encoding="utf-8")), plan)
+    with pytest.raises(ValueError, match="plan commit/tree differ from the expected source"):
+        checker.check_campaign_scope(verdict, plan, expected_tree="0" * 40)

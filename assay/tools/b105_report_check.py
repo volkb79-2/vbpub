@@ -125,7 +125,7 @@ def _plan_structure(
     shard = plan.get("shard")
     if shard is not None and not isinstance(shard, str):
         raise ValueError("plan shard is neither null nor a string")
-    if expected_commit is not None and (
+    if (expected_commit is not None or expected_tree is not None) and (
         plan.get("commit") != expected_commit or plan.get("tree") != expected_tree
     ):
         raise ValueError("plan commit/tree differ from the expected source")
