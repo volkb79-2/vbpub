@@ -441,7 +441,7 @@ def test_run_mutation_accepts_a_declared_artifact_with_real_baseline_bytes_the_c
 # -- which is what actually performs the unlink -- rather than a raw
 # read that a stale byte could leak through. Proven directly against the
 # private reservation helper with a plain directory, mirroring exactly how
-# `tests/test_safeio.py` itself proves `arm()`'s own unlink contract; no
+# `tests/core/test_safeio.py` itself proves `arm()`'s own unlink contract; no
 # public `run_mutation` fixture could exercise "a stale file already sat at
 # this path when the reservation was taken" at all, since nothing above
 # this layer can ever construct that precondition through the shipped

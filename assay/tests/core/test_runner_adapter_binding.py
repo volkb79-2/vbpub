@@ -11,7 +11,7 @@ not the key join (or the other mode) would recreate it inside the fix.
 
 The adapter here is synthetic on purpose. Whether a Go project's ``go.mod``
 says what assay thinks it says is proven against the real toolchain
-(``tests/qualification/test_go_r1_real.py``, A-334); what is proven HERE is
+(``gate/tests/qualification/test_go_r1_real.py``, A-334); what is proven HERE is
 that the core hands over its two anchors and then judges by the object it got
 back, which is language-free and true of every adapter.
 """

@@ -1,6 +1,6 @@
 """Wave-1 §3.2/A-257 — :func:`assay.coverage.derive_branch_capability`.
 
-Mirrors ``tests/test_coverage_exclusion_capability.py`` exactly, one field
+Mirrors ``tests/parsers/coverage/test_coverage_exclusion_capability.py`` exactly, one field
 over: the claim under attack is the identical one A-008/A-183 already
 defends for exclusions -- **"this format cannot report branch arcs" and
 "this format reported none" are different facts, and the artifact must be

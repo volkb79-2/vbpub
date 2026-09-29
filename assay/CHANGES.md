@@ -5,6 +5,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
+- refactor(assay): judge tests (`tests/`) and tooling tests (`gate/tests/`, for
+  the gate script, checker, wheel and zipapp, packaging and lane-config drift)
+  are separate trees; `tester-unified` runs both, the B105 lanes collect
+  `tests/` only without `--override-ini`, and the full `self-qualification`
+  lane requires a same-commit `tester-unified` receipt
+  (`assay/.assay/registered-gate/tester-unified.json`, written by the gate
+  script after a green run); the gate exits 3 with
+  `ASSAY_GATE_INCONCLUSIVE=host busy` when another `run-gate-*` container is
+  running. Assay-internal: no consumer-facing change (B123, A-476)
 - chore(assay): the registered gate retires the Topos and CMRU qualification
   harnesses and the historical schema phases; one refusal test per schema
   remains (A-475/A-477, B124/B125). Nothing in the product changes.

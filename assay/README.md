@@ -981,8 +981,12 @@ you're changing assay itself:
   something is an oversight rather than a deliberate choice.
 - [`nyxloom-trove/handoffs/README.md`](nyxloom-trove/handoffs/README.md)
   tracks the current package queue and its dependency order.
-- `./run-gate.py tester-unified` is the ordinary R0 release gate. The
-  separately invoked `./run-gate.py self-qualification` runs full-source
+- `./run-gate.py tester-unified` is the ordinary R0 release gate. It collects both
+  test trees (`tests/` and `gate/tests/`), and after a green run at a commit it writes
+  the same-commit receipt `.assay/registered-gate/tester-unified.json`
+  (`ASSAY_REGISTERED_GATE_RECEIPT=` names it). The
+  separately invoked `./run-gate.py self-qualification` requires that receipt for
+  its own commit and tree (run `./run-gate.py tester-unified` first), then runs full-source
   R0-R3 qualification in `tester-unified`, writes its verdict, progress, and
   raw baseline coverage arcs in
   `.assay/coverage-self-qualification-preflight-snapshots/`, keyed by source
@@ -1032,9 +1036,13 @@ you're changing assay itself:
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
-Judge tests are organized by component under `tests/core/`, `tests/adapters/<lang>/` and
-`tests/parsers/`, and `tests/core/test_import_contracts.py` enforces the import boundaries between
-components; the rules are in the DESIGN-GUIDE section "Component boundaries and test layout".
+There are two test trees. Judge tests (`tests/`, plus `analysis/tests/`) are organized by
+component under `tests/core/`, `tests/adapters/<lang>/` and `tests/parsers/`, and
+`tests/core/test_import_contracts.py` enforces the import boundaries between components and that
+no judge test reaches into the other tree; the rules are in the DESIGN-GUIDE section
+"Component boundaries and test layout". Tooling tests (`gate/tests/`: the gate script, the B105
+checker, the wheel and zipapp, packaging, lane-config drift) run only in the `tester-unified`
+gate; the B105 qualification lanes collect `tests/` alone.
 
 ### CLI diagnostics
 

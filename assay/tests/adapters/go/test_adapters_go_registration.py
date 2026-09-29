@@ -67,7 +67,7 @@ def test_the_adapter_the_REGISTRY_hands_a_lane_is_the_undowngraded_one():
     The test above asserts it of ``GoAdapter()``. This asserts it of the
     object a real lane actually resolves, which is the one that matters and
     is not the same claim. When this was written the suite carried a real
-    example of the hazard: ``tests/test_canary_go_pipeline.py``'s
+    example of the hazard: ``tests/adapters/go/test_canary_go_pipeline.py``'s
     ``_PreOracleGoAdapter``, a SUBCLASS of this very class with
     ``requires_statement_attribution`` flipped to ``False``. F008-A4 retired
     that double -- the regenerated fixtures are joined against a real oracle

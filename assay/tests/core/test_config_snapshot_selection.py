@@ -18,7 +18,7 @@ everything fails the REJECT half.
 O1's own command runs exactly this module's ``test_snapshot_selection_
 closed_matrix``:
 
-    pytest -q -p no:randomly tests/test_config_snapshot_selection.py::test_snapshot_selection_closed_matrix
+    pytest -q -p no:randomly tests/core/test_config_snapshot_selection.py::test_snapshot_selection_closed_matrix
 
 and the exact success marker is ``ASSAY_B006A_CONFIG=1``, printed by the
 registered gate only once this test PASSES.

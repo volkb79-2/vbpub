@@ -391,7 +391,7 @@ def test_an_arc_on_a_line_no_statement_covers_is_isolated_to_that_file():
     arcs are dropped, their lines are recorded on the file, and the refusal
     (still `ERROR`/`UNREADABLE_ARTIFACT`, still naming the file and the
     line) happens in `assay.evaluate` only if the lane actually judges this
-    file. `tests/test_coverage_istanbul_contradictory_branch_arcs.py`
+    file. `tests/parsers/coverage/test_coverage_istanbul_contradictory_branch_arcs.py`
     proves both halves of that disposition end to end."""
     document = _record(
         branchMap={

@@ -1969,6 +1969,18 @@ That is O1 discharged mechanically, with no cockpit-green pathway. Bare
 `pytest` remains a documented developer convenience and explicitly **not**
 evidence.
 
+**Two test trees (B123, A-476).** Judge tests (`tests/`, and the analysis
+package's own `analysis/tests/`) are tests whose outcome depends on `src/assay`
+running; they are what the B105 qualification lanes collect and mutate against.
+Tooling tests (`gate/tests/`) test the gate script, the B105 checker, the wheel
+and zipapp, packaging and the lane configuration itself; they run in the
+`tester-unified` lane, which names both trees (`pytest tests gate/tests`) and
+overrides `pythonpath` to test the installed wheel (A-130). `gate/tests` is a
+package (its `support.py` loads the judge `tests/conftest.py` on demand under
+the module name `assay_judge_conftest`), so its `from conftest import` never
+competes with the judge's; a judge test may not import from it, and a layout
+test enforces that.
+
 ### Full-source self-qualification (B105)
 
 The separate `self-qualification` gate is deliberately invoked only when a
@@ -1985,9 +1997,28 @@ Assay CLI and child `assay` commands with real `judge_provenance`; the pytest
 command separately imports `src/assay` from the isolated baseline or mutant
 snapshot, rather than from the wheel in the invoking worktree. Otherwise
 coverage could be empty and mutants would not be the code the suite loaded.
+The B105 lanes collect `tests/` only (B123), take their import paths from
+pyproject's own `pythonpath = ["src", "analysis/src"]` and carry no
+`--override-ini` (a `-o` token makes a lane ineligible for the mutation
+witness); `gate/tests/test_self_lane.py` pins the exact argv of every lane.
 No collected judge test
 reads history or tags (A-475); the lane keeps full snapshot history until
 B128, and snapshot refs and tags are intentionally not copied.
+
+**S1: the same-commit `tester-unified` receipt.** The full lane refuses to
+start unless the registered `tester-unified` gate passed at the very commit and
+tree it is about to judge. After a green container, and only if HEAD and its
+tree are unchanged, `tools/tester-unified-gate.sh` writes
+`assay/.assay/registered-gate/tester-unified.json` (exactly
+`{"schema_version": 1, "lane": "tester-unified", "commit": …, "tree": …}`) and
+prints `ASSAY_REGISTERED_GATE_RECEIPT=<path>`; it removes any old receipt at
+every launch, so a red re-run leaves none. The full lane's driver checks it
+first (`b105_report_check.py --receipt-only`, phase
+`require-same-commit-tester-unified-pass`), and the checker refuses a full
+report without a matching receipt. The preflight lane needs none. Run
+`./run-gate.py tester-unified` before `./run-gate.py self-qualification`. A
+gate started while another `run-gate-*` container runs exits 3 with
+`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. This interim budget
@@ -2995,9 +3026,11 @@ same test file; it also requires unique test basenames and forbids extra
 `__init__.py` or `conftest.py` files (only `tests/conftest.py` exists).
 Fixtures stay in `tests/fixtures/`, and moved tests reach them through
 `TESTS_ROOT` and `PROJECT_ROOT` from `tests/conftest.py`, not through their own
-`__file__`. A temporary list of names still pinned at the `tests/` root shrinks
-as the packages that own them move or remove them. The layout is organization
-only: it claims nothing about which tests kill which mutants.
+`__file__`. The `tests/` root holds only `conftest.py` and `fixtures/`: the
+tooling tests moved to `gate/tests/` (B123), and the same test file forbids a
+judge test from importing `gate` or requesting the wheel-building `standalone`
+fixture. The layout is organization only: it claims nothing about which tests
+kill which mutants.
 
 ## 12. Lane file structure = D7's three questions, literally
 

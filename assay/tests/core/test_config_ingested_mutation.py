@@ -245,7 +245,7 @@ def test_a_sub_hundred_fail_under_LOADS_and_is_carried_to_the_judge(
 
     The floor must arrive at the judge, not merely load: this asserts the
     loaded value on the config, and
-    ``tests/test_mutation_judge.py`` asserts what ``judge_mutation`` does with
+    ``tests/core/test_mutation_judge.py`` asserts what ``judge_mutation`` does with
     it. ``config`` is still the only thing that constrains the RANGE (the
     test below), which is the half of the old block that stayed.
     """

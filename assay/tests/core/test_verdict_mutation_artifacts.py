@@ -500,7 +500,7 @@ SQL_OPERATORS: tuple[str, ...] = (
 def _sha(seed: str) -> str:
     """A validly-shaped, arbitrary 64-hex-char placeholder -- these fixtures
     assert nothing about what SqlAdapter actually computes (that is
-    ``tests/test_adapters_sql_generate_mutants.py``'s job), so a mechanical
+    ``tests/adapters/sql/test_adapters_sql_generate_mutants.py``'s job), so a mechanical
     hash of a distinguishing seed is exactly as good as a hand-picked
     literal and does not require inventing four of them by hand."""
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()

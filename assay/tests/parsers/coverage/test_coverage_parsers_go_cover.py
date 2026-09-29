@@ -334,7 +334,7 @@ def test_a_backwards_single_line_block_is_an_AssayError_not_a_bare_ValueError():
 def test_a_line_directive_column_of_zero_is_accepted_and_flags_the_file():
     """A-405, at the parser's own boundary. The full witness -- Go's own
     ``TestLineDup`` corpus, run through the real toolchain -- is
-    ``tests/test_go_line_directive_witness.py``; this is the unit-level
+    ``tests/adapters/go/test_go_line_directive_witness.py``; this is the unit-level
     statement of the same rule, beside the artifact grammar it belongs to.
 
     The contrast with the record above is the point: a zero column is REAL

@@ -5,7 +5,7 @@ sole oracle (DESIGN-GUIDE §9).
 
 **O1.** ``VOCABULARY`` below is transcribed BY HAND from DESIGN-GUIDE §6's
 own outcome/``reason_code`` table — deliberately never
-``assay.errors.REASON_CODES`` (``tests/test_errors.py`` already proves THAT
+``assay.errors.REASON_CODES`` (``tests/core/test_errors.py`` already proves THAT
 table agrees with the design guide; auditing the fixtures against the same
 enum they exist to independently check would only prove the fixtures agree
 with the code, never that the code agrees with the design).
@@ -32,7 +32,7 @@ that build could render into an artifact were listed in
 three reachable in turn (``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL``,
 :func:`assay.runner.run_lane`'s own external-tool preflight, A-253), so five
 of the seven are producer-reachable and fixtured as of this package, and two
-remain excluded. The size cross-check against ``tests/test_errors.py`` is
+remain excluded. The size cross-check against ``tests/core/test_errors.py`` is
 now a set comparison rather than a literal — the literal is exactly what
 went stale when the vocabulary grew.
 
@@ -203,7 +203,7 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 #:   channel left is stderr plus exit 2 (A-181: "no fallback artifact is
 #:   invented"). Fixturing it would assert an artifact whose own existence
 #:   the reason denies. Proven instead by the locked CLI marker test and
-#:   ``tests/test_output_reservation.py``.
+#:   ``tests/core/test_output_reservation.py``.
 #:
 #: P23 closes A-190: the snapshot-policy limit pair P22 reserved is now
 #: producer-reachable (a byte-identical copy of P22's own carver-owned
@@ -278,7 +278,7 @@ def _pairs_in(document: dict) -> set[tuple[str, str]]:
 def test_the_transcribed_manifest_agrees_with_its_sibling_transcription():
     # MECHANICAL, not a literal count. This used to assert `len(ALL_PAIRS) ==
     # 19` while claiming it "pins the audit's OWN transcription against the
-    # count tests/test_errors.py independently proves" — a cross-check that
+    # count tests/core/test_errors.py independently proves" — a cross-check that
     # was never mechanical at all, only two humans keeping two numbers in
     # step. P21 added seven reasons, `test_errors.py`'s hand table was
     # updated and this one was not, and the literal 19 kept passing while the

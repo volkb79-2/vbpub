@@ -10,7 +10,7 @@ identities, so every fixture below that passes non-empty evidence declares a
 matching ``judge.evidence`` on its lane.
 
 Backward compatibility (every caller through P09 never named these two
-parameters) is proven by ``tests/test_runner_verdict_fixtures.py`` staying
+parameters) is proven by ``tests/core/test_runner_verdict_fixtures.py`` staying
 green, completely unmodified by this package -- this module only ADDS cases.
 """
 

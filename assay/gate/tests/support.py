@@ -126,7 +126,7 @@ requires_parent_repository = pytest.mark.skipif(
 
 # --- assay, built and installed with nothing else present ---------------------
 #
-# Hoisted from tests/test_dependency_purity.py so P01b's packaging oracle
+# Hoisted from test_dependency_purity.py so P01b's packaging oracle
 # and P01a's purity oracle share ONE build; nine more packages would otherwise
 # each inherit a copy of a subtle two-environment procedure (A-070).
 

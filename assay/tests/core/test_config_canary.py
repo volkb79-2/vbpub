@@ -5,7 +5,7 @@ normalized, project-relative path to a real, ordinary source file beneath
 one of the lane's own declared ``source_roots`` — the singular ``target``,
 or (B007/A-432) the ordered plural ``targets`` with its ``aggregation``.
 
-Mirrors ``tests/test_config_mutation.py``'s own house pattern one field
+Mirrors ``tests/core/test_config_mutation.py``'s own house pattern one field
 over: the vocabulary is cross-checked against its own owner
 (:mod:`assay.canary`), never duplicated, and both directions of every
 closed check are proven — every accepted shape loads, every rejected shape

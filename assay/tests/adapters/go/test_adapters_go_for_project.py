@@ -11,7 +11,7 @@ actually an unstripped prefix.
 Nothing here needs a Go toolchain: the subject is where assay gets the module
 path and what it does with a key that is not under it, both of which are
 assay's own logic over committed text. The real ``go test`` half is
-``tests/qualification/test_go_r1_real.py`` (A-334).
+``gate/tests/qualification/test_go_r1_real.py`` (A-334).
 """
 
 from __future__ import annotations
@@ -189,7 +189,7 @@ def test_a_sibling_module_sharing_the_prefixs_characters_refuses_when_derived(
 
 
 def test_a_declared_module_path_keeps_the_pass_through(tmp_path: Path):
-    """The library affordance (``tests/test_standalone.py`` builds its own
+    """The library affordance (``gate/tests/test_standalone.py`` builds its own
     registry this way) is unchanged: with no ``go.mod`` behind it, assay has
     nothing to contradict the caller with, so a foreign key is simply not one
     it was told to strip."""

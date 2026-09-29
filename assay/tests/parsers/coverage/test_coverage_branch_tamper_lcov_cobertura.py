@@ -1,6 +1,6 @@
 """O4b/O4c — lcov and Cobertura's own identity, merge and capability-
 disagreement rules, over the REAL fixtures plus hand-authored Cobertura XML
-(matching ``tests/test_coverage_parsers_cobertura.py``'s own established
+(matching ``tests/parsers/coverage/test_coverage_parsers_cobertura.py``'s own established
 convention -- "every fixture here is independently hand-written (A-080)" --
 since the real ``cobertura.branch.xml`` witnesses only ONE ``<class>`` per
 file and the multi-``<class>``-same-file shape has no real-fixture form to

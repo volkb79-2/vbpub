@@ -973,7 +973,7 @@ def test_run_passes_env_through_when_given() -> None:
 
 # =============================================================================
 # O5 -- the pg_dump reproducibility trap (docker-gated, dstdns-independent)
-#   Carve command: `pytest tests/test_gate_qualify_dstdns_sql.py -k restrict_key -q`
+#   Carve command: `pytest gate/tests/test_gate_qualify_dstdns_sql.py -k restrict_key -q`
 # =============================================================================
 
 

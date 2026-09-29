@@ -1,7 +1,7 @@
 """B078 -- the format-agnostic completeness core and the ``vitest-json``
 reader, at the unit level.
 
-``tests/test_runner_result_report.py`` proves what R0 DOES with a report;
+``tests/core/test_runner_result_report.py`` proves what R0 DOES with a report;
 this module proves the split the design rests on: a reader turns one format's
 bytes into a normalized summary or refuses, and
 :func:`~assay.result_reports.model.verify_complete` applies SR-2's bar to
@@ -131,7 +131,7 @@ def test_the_reader_refuses_every_unusable_document(raw: bytes, expected: str):
 
 def test_a_pathologically_nested_document_refuses_instead_of_crashing():
     """The untrusted-JSON rule this codebase sweeps for
-    (``tests/test_untrusted_json_parse_sweep.py``): a report is a third-party
+    (``tests/core/test_untrusted_json_parse_sweep.py``): a report is a third-party
     artifact, and a deeply nested one blows CPython's stack inside the
     decoder. An uncaught ``RecursionError`` would escape R0's terminal mapping
     entirely, where every other malformed shape is a quiet fallback to

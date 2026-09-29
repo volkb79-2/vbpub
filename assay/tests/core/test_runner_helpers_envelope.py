@@ -5,7 +5,7 @@ Until this wave ``Verdict.helpers`` was validated and never populated -- P33
 shipped no helper-invoking adapter, so its own docstring says "P33 only
 VALIDATES this array". A-217's Go statement-position oracle is the first real
 one, and A-395 rules that the end-to-end proof must be a REAL toolchain
-(``tests/qualification/test_go_r1_real.py``, opt-in, no Go in either gate
+(``gate/tests/qualification/test_go_r1_real.py``, opt-in, no Go in either gate
 image). This module is the half that does NOT need a toolchain: the envelope
 wiring, its two refusals, and the one rule both the producer and the schema
 read.
@@ -26,7 +26,7 @@ document written at all. It needs no toolchain (a synthetic
 ``requires_statement_attribution`` adapter over a ``go-cover``-shaped
 profile), so the REGISTERED gate exercises it; the same two shapes are
 proven through the shipped zipapp against real Go in
-``tests/qualification/test_go_r1_real.py``.
+``gate/tests/qualification/test_go_r1_real.py``.
 """
 
 from __future__ import annotations
@@ -400,7 +400,7 @@ def test_a_lane_whose_r1_really_JUDGED_keeps_its_helper_through_run_lane(
     about a helper being DROPPED, and an unconditional drop at the same site
     would satisfy all of it -- while silently deleting `helpers[]` from every
     passing Go verdict in the product. The real-toolchain proof of the
-    positive is opt-in (`tests/qualification/test_go_r1_real.py`), so without
+    positive is opt-in (`gate/tests/qualification/test_go_r1_real.py`), so without
     this the registered gate would not hold the other side of the rule.
 
     Same fixture, same adapter class, one field different: the oracle agrees
@@ -454,7 +454,7 @@ def test_a_judge_that_refuses_after_the_oracle_ran_reports_ITS_reason_not_the_wi
     away.
 
     Measured in-image against real Go on the same day, both shapes, through
-    the shipped zipapp: ``tests/qualification/test_go_r1_real.py``'s
+    the shipped zipapp: ``gate/tests/qualification/test_go_r1_real.py``'s
     ``test_a_stale_go_profile_refuses_through_the_cli_and_writes_a_verdict``
     and its ``//line`` sibling. This one needs no toolchain, which is why it
     is here: the registered gate runs it."""
