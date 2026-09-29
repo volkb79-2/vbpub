@@ -256,6 +256,13 @@ uses `--enable-docker` must also declare its nested-Docker image. The stock `whe
 handler requires an explicit wheel-builder image. These are release inputs, not CMRU
 defaults; pin immutable digests in a production contract.
 
+`cmru tester-gate --dry-run` prints the exact workload Docker command and, when
+`--enable-docker` is selected, the DinD startup command. It starts no container and skips
+host slice and IO-support checks because those checks use temporary privileged containers.
+The output names this limitation. Actual runs perform the checks before starting the gate;
+the checks, DinD sidecar, and workload all use the configured gates cgroup parent. See
+[the tester-gate contract](docs/SPEC.md#s26a--tester-gate-environment-preflight-ki-17).
+
 ## Release history is automatic
 
 Every CMRU-managed project gets a project-local `CHANGES.md` by default. No project

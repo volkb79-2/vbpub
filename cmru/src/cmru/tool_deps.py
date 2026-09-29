@@ -521,7 +521,6 @@ def refresh_tool_dependency(
         print(
             f"[DRY RUN] Would write {new_absolute}, its sha256 sidecar, and update "
             f"{config_path}; would remove old pin files if present.",
-            flush=True,
         )
     else:
         new_absolute.parent.mkdir(parents=True, exist_ok=True)
@@ -730,7 +729,7 @@ def _run_tool_deps(args, _runtime) -> int:
 
 def _run_refresh(
     *, projects: Mapping[str, object], selected: Iterable[str], provider_id: str,
-    owner: str, repo: str, timeout: int, dry_run: bool = False,
+    owner: str, repo: str, timeout: int, dry_run: bool,
 ) -> None:
     if provider_id not in projects:
         print(f"[ERROR] cmru tool-deps --refresh: unknown project {provider_id!r}", file=sys.stderr, flush=True)

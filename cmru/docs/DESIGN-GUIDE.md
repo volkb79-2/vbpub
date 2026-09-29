@@ -166,6 +166,15 @@ dry-run stops after that preview. The canonical semantic table records each
 verb's scope, combinations, defaults, writes, network effects, and dry-run
 boundary.
 
+`tester-gate --dry-run` does not run the host checks. Both the systemd slice check and
+the optional IO-controller check need a temporary privileged container; starting one would
+break the promise that dry-run starts nothing. The preview therefore shows the workload
+command and any DinD startup command, prints that the host checks were skipped, and keeps
+the `--cgroup-parent` argument visible. Actual execution performs the checks before it
+starts the gate, and places every helper and workload container in the declared gates tier.
+This makes the boundary honest: dry-run proves command construction, while a real launch
+proves host acceptance.
+
 The get.py template is a package resource, not a path inferred from `__file__`.
 Source-checkout execution and installed-wheel execution therefore read the
 same shipped file. KI-26's installed-wheel lane builds the distribution,

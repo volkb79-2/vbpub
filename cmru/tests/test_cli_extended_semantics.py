@@ -471,15 +471,15 @@ def test_tester_gate_dry_run_prints_docker_argv_without_host_probes_or_launch(
     monkeypatch, tmp_path, capsys, enable_docker,
 ):
     monkeypatch.setattr(tester_gate, "_missing_orchestration_env", lambda _args: [])
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "loaded"))
+    monkeypatch.setattr(
+        tester_gate, "check_slice_unit",
+        lambda *_: pytest.fail("dry-run ran a privileged host slice probe"),
+    )
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_: (tmp_path, "cmru"))
+    monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: tmp_path)
+    monkeypatch.setattr(tester_gate, "_git_common_dir", lambda _path: None)
     monkeypatch.setattr(tester_gate, "_probe_io_support", lambda *_: pytest.fail("dry-run probed privileged Docker IO"))
     monkeypatch.setattr(tester_gate, "dind_sidecar", lambda *_: pytest.fail("dry-run launched DinD"))
-    calls = []
-    monkeypatch.setattr(
-        tester_gate, "build_docker_command",
-        lambda *args, **kwargs: calls.append((args, kwargs)) or ["docker", "run", "tester", *args[2]],
-    )
     if enable_docker:
         monkeypatch.setattr(tester_gate, "resolve_dind_image", lambda _value: "dind:test")
 
@@ -493,8 +493,12 @@ def test_tester_gate_dry_run_prints_docker_argv_without_host_probes_or_launch(
     argv += ["--device-read-iops", "/dev/sda:10", "--", "pytest", "-q"]
     assert tester_gate.main(argv) == 0
     output = capsys.readouterr().out
-    assert "DRY RUN" in output and "docker run tester pytest -q" in output
-    assert calls[0][1].get("sidecar_name") == ("cmru-dry-run-dind-sidecar" if enable_docker else None)
+    assert "Host gates-slice verification skipped" in output
+    assert "docker run --cgroup-parent=gates.slice --rm" in output
+    assert "tester:test pytest -q" in output
+    assert ("docker run --cgroup-parent=gates.slice -d --rm --privileged" in output) is enable_docker
+    if enable_docker:
+        assert "dind:test" in output and "cmru-dry-run-dind-sidecar" in output
 
 
 @pytest.mark.parametrize(

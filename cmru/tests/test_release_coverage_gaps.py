@@ -595,6 +595,7 @@ def test_tester_gate_forwards_gate_slice(monkeypatch):
         repo_root=Path("/repo"), relative_cwd=".", memory="1g", memory_swap="2g",
         cpus="1", image="tester", command=["true"],
         cgroup_parent_dev_gates="dev-gates.slice",
+        cgroup_parent="dev-gates.slice",
     )
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in argv
 

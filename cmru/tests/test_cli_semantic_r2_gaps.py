@@ -45,6 +45,7 @@ def test_backfill_dry_run_preserves_no_final_newline_in_existing_history(
     preview = capsys.readouterr().out
     assert "\n+## [1.2.3] - 2026-09-27\n" in preview
     assert "\n - old entry" in preview
+    assert "\n ## [1.2.2] - 2026-01-01\n" in preview
     assert " --> +## [1.2.3]" not in preview
     assert path.read_text(encoding="utf-8") == original
 

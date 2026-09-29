@@ -296,13 +296,18 @@ def test_tester_gate_io_probe_verdicts(monkeypatch):
         "garbage\n": (False, "could not determine"),
     }
     for stdout, (want_ok, want_note) in cases.items():
-        monkeypatch.setattr(tester_gate.subprocess, "run", _fake_io_probe(stdout))
-        ok, note = tester_gate._probe_io_support("debian:test")
+        seen = {}
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+        monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
+        ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
         assert ok is want_ok, (stdout, ok, note)
         assert want_note in note
+        assert "--cgroup-parent=dev-gates.slice" in seen["argv"]
 
     monkeypatch.setattr(tester_gate.shutil, "which", lambda name: None)
-    ok, note = tester_gate._probe_io_support("debian:test")
+    ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
     assert ok is None and "skipping" in note
 
 

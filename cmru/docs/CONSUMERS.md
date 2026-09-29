@@ -471,9 +471,17 @@ forget, but it is faster to set it before the first try:
 ```sh
 export CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
        CMRU_TESTER_MEMORY=3g CMRU_TESTER_MEMORY_SWAP=16g CMRU_TESTER_CPUS=1.5 \
-       CMRU_TESTER_CGROUP_PROBE_IMAGE=debian:trixie-slim
+       CMRU_TESTER_CGROUP_PROBE_IMAGE=debian:trixie-slim \
+       CMRU_TESTER_CGROUP_PARENT="${CGROUP_PARENT_DEV_GATES:?CGROUP_PARENT_DEV_GATES is required}"
 # then run the step's argv
 ```
+
+To inspect the constructed command without launching containers, add `--dry-run` to the
+copied `tester-gate` argv. The preview also shows the DinD startup command when that option
+is enabled. It skips the privileged host slice and IO checks, so a dry-run is not evidence
+that the host will accept the configured cgroup parent or device limits; the actual run
+performs those checks before starting the gate. Every probe, sidecar, and gate container is
+placed under `CMRU_TESTER_CGROUP_PARENT`.
 
 ### The CMRU R0-R3 gate
 

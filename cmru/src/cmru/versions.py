@@ -2098,7 +2098,7 @@ def _run_versions(args, _runtime) -> int:
         forge = load_forge_config(context.config_path)
         projects = _selected_projects(forge, context, args.target)
         if action == "init":
-            for line in _versions_init(forge, projects, dry_run=getattr(args, "dry_run", False)):
+            for line in _versions_init(forge, projects, dry_run=args.dry_run):
                 print(line)
             return 0
         if action == "check":
@@ -2113,7 +2113,7 @@ def _run_versions(args, _runtime) -> int:
             else:
                 print(_render_report(records))
             return 0
-        for line in _run_resolve(forge, context, projects, dry_run=getattr(args, "dry_run", False)):
+        for line in _run_resolve(forge, context, projects, dry_run=args.dry_run):
             print(line)
         return 0
     except VersionsPrerequisiteError as exc:

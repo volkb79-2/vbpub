@@ -2615,7 +2615,7 @@ def _dispatch(args, runtime):
         if vargs.minor or vargs.major or vargs.set_version:
             ignored_overrides = [
                 name for name in selected_names
-                if not getattr(configs[name], "git_tag", True)
+                if not configs[name].git_tag
                 or _version_strategy(configs[name]).startswith("external:")
             ]
             if ignored_overrides:
@@ -2915,17 +2915,6 @@ def _dispatch(args, runtime):
          _execution_mode, _step_project_order, cleanup, github_config, env_config) = load_config(cfg_path)
         selected_names = _select_projects(cfg_path, vargs.target, configs, project_order)
 
-        exclusive_modes = [
-            ("--remove-assets", vargs.remove_assets),
-            ("--delete-unmanaged-release-tag", vargs.delete_unmanaged_release_tag),
-            ("--delete-build-output", vargs.delete_build_output),
-            ("--discard-build-worktree", vargs.discard_build_worktree),
-        ]
-        selected_modes = [name for name, value in exclusive_modes if value]
-        if vargs.dry_run and not selected_modes:
-            # No mode means the configured project cleanup policy, so dry-run is valid.
-            pass
-
         if vargs.delete_unmanaged_release_tag:
             if len(selected_names) != 1:
                 _usage_error("--delete-unmanaged-release-tag requires exactly one project target")
@@ -2994,7 +2983,7 @@ def _dispatch(args, runtime):
         action(True)
         if vargs.dry_run:
             return
-        if not (getattr(vargs, "yes", False) or runtime.confirm(
+        if not (vargs.yes or runtime.confirm(
             "Apply the cleanup actions listed above?"
         )):
             return

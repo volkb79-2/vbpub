@@ -48,7 +48,7 @@ def _build_engine(args, landscape: str):
         backend=backend,
         landscape=landscape,
         generation_base=getattr(args, "generation_base", 1),
-        dry_run=getattr(args, "dry_run", False),
+        dry_run=args.dry_run,
     )
 
 

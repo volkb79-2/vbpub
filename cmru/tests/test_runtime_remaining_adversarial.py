@@ -116,12 +116,12 @@ def test_handlers_refuse_oci_repack_and_missing_prerequisites(monkeypatch):
 
 def test_tester_gate_slice_probe_distinguishes_real_transient_and_missing(monkeypatch):
     monkeypatch.setattr(tester_gate.shutil, "which", lambda _: None)
-    assert tester_gate.check_slice_unit("dev.slice", "probe")[0] is None
+    assert tester_gate.check_slice_unit("dev.slice", "probe", "dev-gates.slice")[0] is None
     monkeypatch.setattr(tester_gate.shutil, "which", lambda _: "/usr/bin/docker")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
         stdout="LoadState=loaded\nFragmentPath=\n", stderr="", returncode=0))
-    ok, note = tester_gate.check_slice_unit("typo.slice", "probe")
+    ok, note = tester_gate.check_slice_unit("typo.slice", "probe", "dev-gates.slice")
     assert ok is False and "TRANSIENT" in note
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
         stdout="LoadState=loaded\nFragmentPath=/etc/systemd/system/dev.slice\n", stderr="", returncode=0))
-    assert tester_gate.check_slice_unit("dev.slice", "probe")[0] is True
+    assert tester_gate.check_slice_unit("dev.slice", "probe", "dev-gates.slice")[0] is True

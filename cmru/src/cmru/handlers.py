@@ -607,7 +607,7 @@ def handlers_cli():
             ),)
 
         def dispatch(args, _runtime, fn=handler, command=name):
-            if getattr(args, "dry_run", False):
+            if args.dry_run:
                 if getattr(args, "repack", False):
                     _reject_experimental_repack(True)
                 details = {

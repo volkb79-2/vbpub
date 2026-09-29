@@ -137,6 +137,14 @@ _CPUS_ENV = "CMRU_TESTER_CPUS"
 _DIND_IMAGE_ENV = "CMRU_TESTER_DIND_IMAGE"
 _CGROUP_PARENT_ENV = "CMRU_TESTER_CGROUP_PARENT"
 
+
+def _docker_run_argv(cgroup_parent: str, *arguments: str) -> list[str]:
+    """Start every helper and workload container inside the declared tier."""
+    parent = cgroup_parent.strip()
+    if not parent:
+        raise ValueError("tester-gate Docker containers require a cgroup parent")
+    return ["docker", "run", f"--cgroup-parent={parent}", *arguments]
+
 # The orchestration-injected environment every tester-gate step depends on
 # (KI-17). These are normally supplied by ``cmru.orchestration.toml [env]`` and
 # reach the step through ``cmru release`` -- they are NOT usually set in the
@@ -155,7 +163,9 @@ REQUIRED_TESTER_ENV = (
 )
 
 
-def check_slice_unit(slice_name: str, probe_image: str) -> tuple[bool | None, str]:
+def check_slice_unit(
+    slice_name: str, probe_image: str, cgroup_parent: str,
+) -> tuple[bool | None, str]:
     """Probe whether a systemd slice UNIT is genuinely installed on the DOCKER
     HOST (not this process's own host/mount namespace).
 
@@ -211,12 +221,12 @@ def check_slice_unit(slice_name: str, probe_image: str) -> tuple[bool | None, st
 
     try:
         result = subprocess.run(
-            [
-                "docker", "run", "--rm", "--privileged", "--pid=host", probe_image,
+            _docker_run_argv(
+                cgroup_parent, "--rm", "--privileged", "--pid=host", probe_image,
                 "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "-p",
                 "systemctl", "show", slice_name,
                 "--property=LoadState,FragmentPath", "--no-pager",
-            ],
+            ),
             capture_output=True,
             text=True,
             timeout=30,
@@ -250,7 +260,9 @@ def check_slice_unit(slice_name: str, probe_image: str) -> tuple[bool | None, st
     )
 
 
-def _probe_io_support(probe_image: str) -> tuple[bool | None, str]:
+def _probe_io_support(
+    probe_image: str, cgroup_parent: str,
+) -> tuple[bool | None, str]:
     """Whether the DOCKER HOST's cgroup hierarchy supports per-device blkio
     throttling — required before passing any ``--device-*-bps/iops`` flag.
 
@@ -273,11 +285,11 @@ def _probe_io_support(probe_image: str) -> tuple[bool | None, str]:
         )
     try:
         result = subprocess.run(
-            [
-                "docker", "run", "--rm", "--privileged", "--pid=host", probe_image,
+            _docker_run_argv(
+                cgroup_parent, "--rm", "--privileged", "--pid=host", probe_image,
                 "sh", "-c",
                 "stat -fc %T /sys/fs/cgroup; cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null",
-            ],
+            ),
             capture_output=True, text=True, timeout=30, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -420,8 +432,17 @@ def _dind_ready(name: str) -> bool:
     return probe.returncode == 0 and bool(probe.stdout.strip())
 
 
+def _dind_start_argv(image: str, name: str, cgroup_parent: str) -> list[str]:
+    return _docker_run_argv(
+        cgroup_parent, "-d", "--rm", "--privileged", "--name", name,
+        "-e", "DOCKER_TLS_CERTDIR=", image,
+    )
+
+
 @contextmanager
-def dind_sidecar(image: str, ready_timeout: float = _DIND_READY_TIMEOUT) -> Iterator[str]:
+def dind_sidecar(
+    image: str, *, cgroup_parent: str, ready_timeout: float = _DIND_READY_TIMEOUT,
+) -> Iterator[str]:
     """Start an ephemeral, fully isolated nested Docker daemon; yield its
     container name once ready. Always torn down, even on failure.
 
@@ -435,8 +456,7 @@ def dind_sidecar(image: str, ready_timeout: float = _DIND_READY_TIMEOUT) -> Iter
     """
     name = f"cmru-tester-dind-{uuid.uuid4().hex[:12]}"
     subprocess.run(
-        ["docker", "run", "-d", "--rm", "--privileged", "--name", name,
-         "-e", "DOCKER_TLS_CERTDIR=", image],
+        _dind_start_argv(image, name, cgroup_parent),
         check=True, capture_output=True, text=True,
     )
     try:
@@ -458,7 +478,7 @@ def build_docker_command(
     command: Sequence[str],
     *,
     image: str,
-    cgroup_parent: str = "",
+    cgroup_parent: str,
     cgroup_parent_dev_background: str = "",
     cgroup_parent_dev_gates: str = "",
     sidecar_name: str | None = None,
@@ -514,20 +534,19 @@ def build_docker_command(
     if not command:
         raise ValueError("tester-gate requires a command after '--'")
     host_root = _physical_path(repo_root)
-    argv = [
-        "docker", "run", "--rm",
+    argv = _docker_run_argv(
+        cgroup_parent,
+        "--rm",
         "--mount", f"type=bind,src={host_root},dst=/worktree",
         "--workdir", str(Path("/worktree") / relative),
         "--memory", memory,
         "--memory-swap", memory_swap,
         "--cpus", cpus,
-    ]
+    )
     common_dir = _git_common_dir(repo_root)
     if common_dir is not None:
         host_common_dir = _physical_path(common_dir)
         argv += ["--mount", f"type=bind,src={host_common_dir},dst={common_dir},readonly"]
-    if cgroup_parent:
-        argv.append(f"--cgroup-parent={cgroup_parent}")
     if device_read_iops:
         argv += ["--device-read-iops", device_read_iops]
     if device_write_iops:
@@ -626,7 +645,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_tester_gate(args, _runtime) -> int:
-    dry_run = bool(getattr(args, "dry_run", False))
+    dry_run = args.dry_run
     command = list(args.command)
     if command[:1] == ["--"]:
         command = command[1:]
@@ -647,14 +666,17 @@ def _run_tester_gate(args, _runtime) -> int:
 
     cgroup_parent = resolve_cgroup_parent(args.cgroup_parent)
     probe_image = resolve_cgroup_probe_image(args.cgroup_probe_image)
-    if cgroup_parent:
-        exists, note = check_slice_unit(cgroup_parent, probe_image)
+    if dry_run:
+        print(
+            "[DRY RUN] Host gates-slice verification skipped; it starts a temporary "
+            "privileged container and will run during an actual launch."
+        )
+    else:
+        exists, note = check_slice_unit(cgroup_parent, probe_image, cgroup_parent)
         if exists is False:
             raise SystemExit(f"tester-gate: refusing to launch — {note}")
         if exists is None:
             print(f"[WARN] tester-gate: {note}", file=sys.stderr)
-    else:  # pragma: no cover - resolve_cgroup_parent fails closed above
-        raise SystemExit("tester-gate: cgroup parent is required")
 
     device_caps = [dc.strip() for dc in (
         args.device_read_iops, args.device_write_iops,
@@ -663,7 +685,7 @@ def _run_tester_gate(args, _runtime) -> int:
     args.device_read_iops, args.device_write_iops = device_caps[0], device_caps[1]
     args.device_read_bps, args.device_write_bps = device_caps[2], device_caps[3]
     if any(device_caps) and not dry_run:
-        io_ok, io_note = _probe_io_support(probe_image)
+        io_ok, io_note = _probe_io_support(probe_image, cgroup_parent)
         if io_ok is False:
             raise SystemExit(
                 "tester-gate: refusing to launch — device IO caps requested but "
@@ -709,11 +731,15 @@ def _run_tester_gate(args, _runtime) -> int:
     if dry_run:
         if args.enable_docker:
             dind_image = resolve_dind_image(args.dind_image)
+            dind_name = "cmru-dry-run-dind-sidecar"
+            print(
+                "[DRY RUN] "
+                + shlex.join(_dind_start_argv(dind_image, dind_name, cgroup_parent))
+            )
             docker_argv = build_docker_command(
                 repo_root, container_cwd, command,
-                sidecar_name="cmru-dry-run-dind-sidecar", **build_kwargs,
+                sidecar_name=dind_name, **build_kwargs,
             )
-            print(f"[DRY RUN] Would start nested Docker daemon image {dind_image}")
         else:
             docker_argv = build_docker_command(
                 repo_root, container_cwd, command, **build_kwargs,
@@ -723,7 +749,7 @@ def _run_tester_gate(args, _runtime) -> int:
 
     if args.enable_docker:
         dind_image = resolve_dind_image(args.dind_image)
-        with dind_sidecar(dind_image) as sidecar:
+        with dind_sidecar(dind_image, cgroup_parent=cgroup_parent) as sidecar:
             docker_argv = build_docker_command(
                 repo_root, container_cwd, command, sidecar_name=sidecar, **build_kwargs,
             )
