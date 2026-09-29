@@ -68,6 +68,8 @@ assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-sel
 assay analyze report --expected-commit "$REVIEW_HEAD" \
   --verdict r2 .assay/verdict-r2.json \
   --progress r2 .assay/progress-r2.jsonl --log r2 "$GATE_LOG" --format text
+assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
+  --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json --command-exit 0
 ```
 
 Set `REVIEW_HEAD` to the full Git commit agreed with the controller and

@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Assay mutation campaign analysis v1",
+  "description": "A bounded closeout joining one committed lane plan, verified verdict, progress stream, observed command exit, and declared coverage evidence. This report is diagnostic and does not replace assay verify.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "analysis", "status", "expected_commit", "tree", "lane", "lane_file", "verdict", "plan", "campaign", "runs", "coverage", "timing", "evidence", "candidate_details"],
+  "properties": {
+    "schema_version": {"const": 1, "type": "integer"},
+    "analysis": {"const": "mutation_campaign"},
+    "status": {"enum": ["complete", "incomplete"]},
+    "expected_commit": {"$ref": "#/$defs/objectId"},
+    "tree": {"$ref": "#/$defs/objectId"},
+    "lane": {"type": "string", "minLength": 1},
+    "lane_file": {"type": "string", "minLength": 1},
+    "verdict": {"$ref": "#/$defs/verdict"},
+    "plan": {"$ref": "#/$defs/plan"},
+    "campaign": {"$ref": "#/$defs/campaign"},
+    "runs": {"type": "array", "items": {"$ref": "#/$defs/run"}},
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "timing": {"$ref": "#/$defs/timing"},
+    "evidence": {"$ref": "#/$defs/evidence"},
+    "candidate_details": {"$ref": "#/$defs/candidateDetails"}
+  },
+  "$defs": {
+    "objectId": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableString": {"oneOf": [{"type": "string"}, {"type": "null"}]},
+    "nullableInteger": {"oneOf": [{"type": "integer"}, {"type": "null"}]},
+    "nullableNumber": {"oneOf": [{"type": "number"}, {"type": "null"}]},
+    "fingerprint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "verdict": {
+      "type": "object", "additionalProperties": false,
+      "required": ["outcome", "exit_code", "reason_code", "assay_version", "argv_modified", "started", "ended", "elapsed_seconds", "verified", "observed_command_exit", "command_exit_source", "command_exit_matches"],
+      "properties": {
+        "outcome": {"type": "string", "minLength": 1},
+        "exit_code": {"type": "integer"},
+        "reason_code": {"$ref": "#/$defs/nullableString"},
+        "assay_version": {"type": "string", "minLength": 1},
+        "argv_modified": {"type": "boolean"},
+        "started": {"type": "string", "minLength": 1},
+        "ended": {"type": "string", "minLength": 1},
+        "elapsed_seconds": {"type": "number", "minimum": 0},
+        "verified": {"const": true},
+        "observed_command_exit": {"$ref": "#/$defs/nullableInteger"},
+        "command_exit_source": {"oneOf": [{"const": "explicit caller observation"}, {"type": "null"}]},
+        "command_exit_matches": {"type": "boolean"}
+      }
+    },
+    "plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "planned_total", "inventory_sha256", "shard"],
+      "properties": {
+        "status": {"enum": ["ok", "unsupported", "not_supported", "not_applicable"]},
+        "planned_total": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "inventory_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "shard": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "bucketCounts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["killed", "survived", "crashed", "budget_exceeded", "equivalent", "hung"],
+      "properties": {
+        "killed": {"type": "integer", "minimum": 0},
+        "survived": {"type": "integer", "minimum": 0},
+        "crashed": {"type": "integer", "minimum": 0},
+        "budget_exceeded": {"type": "integer", "minimum": 0},
+        "equivalent": {"type": "integer", "minimum": 0},
+        "hung": {"type": "integer", "minimum": 0}
+      }
+    },
+    "campaign": {
+      "type": "object", "additionalProperties": false,
+      "required": ["planned_total", "completed_total", "pending_total", "resumed_total", "rejudged_total", "per_run_resumed_total", "per_run_rejudged_total", "execution_mode_counts", "outcomes"],
+      "properties": {
+        "planned_total": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "completed_total": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "pending_total": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "resumed_total": {"type": "integer", "minimum": 0},
+        "rejudged_total": {"type": "integer", "minimum": 0},
+        "per_run_resumed_total": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        "per_run_rejudged_total": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        "execution_mode_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "outcomes": {"oneOf": [{"$ref": "#/$defs/bucketCounts"}, {"type": "null"}]}
+      }
+    },
+    "shard": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["index", "count"], "properties": {"index": {"type": "integer", "minimum": 0}, "count": {"type": "integer", "minimum": 1}}},
+        {"type": "null"}
+      ]
+    },
+    "terminal": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["event", "outcome", "exit_code", "reason_code", "emitted_at", "elapsed_s"], "properties": {"event": {"const": "verdict_written"}, "outcome": {"$ref": "#/$defs/nullableString"}, "exit_code": {"type": "integer"}, "reason_code": {"$ref": "#/$defs/nullableString"}, "emitted_at": {"type": "string", "minLength": 1}, "elapsed_s": {"type": "number", "minimum": 0}}},
+        {"type": "null"}
+      ]
+    },
+    "run": {
+      "type": "object", "additionalProperties": false,
+      "required": ["run_id", "started", "ended", "elapsed_seconds", "progress_line", "commit", "lane", "rigor", "candidate_total", "candidate_milestone", "selected_total", "pending_total", "resumed_total", "rejected_total", "rejudged_total", "shard", "fresh_candidate_events", "sweep_end_buckets", "sweep_end_reason", "sweep_end_present", "terminal"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "started": {"type": "string", "minLength": 1},
+        "ended": {"$ref": "#/$defs/nullableString"},
+        "elapsed_seconds": {"oneOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
+        "progress_line": {"type": "integer", "minimum": 1},
+        "commit": {"$ref": "#/$defs/objectId"},
+        "lane": {"$ref": "#/$defs/nullableString"},
+        "rigor": {"oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
+        "candidate_total": {"$ref": "#/$defs/nullableInteger"},
+        "candidate_milestone": {"type": "boolean"},
+        "selected_total": {"$ref": "#/$defs/nullableInteger"},
+        "pending_total": {"$ref": "#/$defs/nullableInteger"},
+        "resumed_total": {"type": "integer", "minimum": 0},
+        "rejected_total": {"type": "integer", "minimum": 0},
+        "rejudged_total": {"type": "integer", "minimum": 0},
+        "shard": {"$ref": "#/$defs/shard"},
+        "fresh_candidate_events": {"type": "integer", "minimum": 0},
+        "sweep_end_buckets": {"oneOf": [{"$ref": "#/$defs/bucketCounts"}, {"type": "null"}]},
+        "sweep_end_reason": {"$ref": "#/$defs/nullableString"},
+        "sweep_end_present": {"type": "boolean"},
+        "terminal": {"$ref": "#/$defs/terminal"}
+      }
+    },
+    "pathLines": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "integer", "minimum": 1}}},
+    "coverageR1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "fail_under", "covered", "executable", "pct", "branches_covered", "branches_total", "branch_capability", "missing_lines", "unclassified_lines", "excluded_lines", "missing_branch_lines"],
+      "properties": {
+        "status": {"$ref": "#/$defs/nullableString"},
+        "fail_under": {"$ref": "#/$defs/nullableNumber"},
+        "covered": {"$ref": "#/$defs/nullableInteger"},
+        "executable": {"$ref": "#/$defs/nullableInteger"},
+        "pct": {"$ref": "#/$defs/nullableNumber"},
+        "branches_covered": {"$ref": "#/$defs/nullableInteger"},
+        "branches_total": {"$ref": "#/$defs/nullableInteger"},
+        "branch_capability": {"$ref": "#/$defs/nullableString"},
+        "missing_lines": {"$ref": "#/$defs/pathLines"},
+        "unclassified_lines": {"$ref": "#/$defs/pathLines"},
+        "excluded_lines": {"$ref": "#/$defs/pathLines"},
+        "missing_branch_lines": {"$ref": "#/$defs/pathLines"}
+      }
+    },
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "r1", "r2_floor", "artifact_status", "branch_arc_detail_status", "missing_branch_arcs"],
+      "properties": {
+        "status": {"enum": ["not_judged", "from_verified_verdict"]},
+        "r1": {"oneOf": [{"$ref": "#/$defs/coverageR1"}, {"type": "null"}]},
+        "r2_floor": {"$ref": "#/$defs/nullableNumber"},
+        "artifact_status": {"enum": ["not_applicable", "missing", "parsed_and_reverified_r1"]},
+        "artifact_error": {"type": "string", "minLength": 1},
+        "artifact": {"$ref": "#/$defs/fingerprint"},
+        "branch_arc_detail_status": {"enum": ["not_applicable", "unavailable_without_artifact", "exact_from_coverage_py_artifact_and_reverified_r1", "format_does_not_expose_exact_destinations", "unavailable"]},
+        "missing_branch_arcs": {"oneOf": [{"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "source_line", "destination"], "properties": {"path": {"type": "string", "minLength": 1}, "source_line": {"type": "integer", "minimum": 1}, "destination": {"type": "integer"}}}}, {"type": "null"}]}
+      }
+    },
+    "window": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["first", "last"], "properties": {"first": {"type": "string", "minLength": 1}, "last": {"type": "string", "minLength": 1}}},
+        {"type": "null"}
+      ]
+    },
+    "timing": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "sample", "minimum_sample_count", "excluded_candidate_counts", "remaining_seconds", "diagnostic_only"],
+      "properties": {
+        "status": {"enum": ["no_remaining_work", "insufficient_sample", "remaining_work_unknown", "sample_qualified"]},
+        "sample": {"type": "object", "additionalProperties": false, "required": ["count", "measurement_window", "median_candidate_seconds"], "properties": {"count": {"type": "integer", "minimum": 0}, "measurement_window": {"$ref": "#/$defs/window"}, "median_candidate_seconds": {"$ref": "#/$defs/nullableNumber"}}},
+        "minimum_sample_count": {"type": "integer", "minimum": 1},
+        "excluded_candidate_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "remaining_seconds": {"$ref": "#/$defs/nullableNumber"},
+        "diagnostic_only": {"const": true},
+        "pending_candidates": {"type": "integer", "minimum": 0},
+        "parallel_jobs": {"type": "integer", "minimum": 1}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["verdict", "progress", "lane_file"],
+      "properties": {
+        "verdict": {"$ref": "#/$defs/fingerprint"},
+        "progress": {"$ref": "#/$defs/fingerprint"},
+        "lane_file": {"$ref": "#/$defs/fingerprint"},
+        "log": {"$ref": "#/$defs/fingerprint"},
+        "coverage": {"$ref": "#/$defs/fingerprint"}
+      }
+    },
+    "candidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate_id", "outcome", "path", "lineno", "operator", "description", "start_byte", "end_byte", "execution_mode"],
+      "properties": {
+        "candidate_id": {"$ref": "#/$defs/nullableString"},
+        "outcome": {"enum": ["killed", "survived", "crashed", "budget_exceeded", "equivalent", "hung"]},
+        "path": {"$ref": "#/$defs/nullableString"},
+        "lineno": {"$ref": "#/$defs/nullableInteger"},
+        "operator": {"$ref": "#/$defs/nullableString"},
+        "description": {"$ref": "#/$defs/nullableString"},
+        "start_byte": {"$ref": "#/$defs/nullableInteger"},
+        "end_byte": {"$ref": "#/$defs/nullableInteger"},
+        "execution_mode": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "candidateDetails": {
+      "type": "object", "additionalProperties": false,
+      "required": ["matching_total", "offset", "limit", "next_offset", "candidates"],
+      "properties": {
+        "matching_total": {"type": "integer", "minimum": 0},
+        "offset": {"type": "integer", "minimum": 0},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+        "next_offset": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "candidates": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/candidate"}}
+      }
+    }
+  }
+}

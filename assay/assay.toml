@@ -310,6 +310,7 @@ source_roots = ["analysis/src/assay_analysis"]
 mode = "whole_target"
 targets = [
   "analysis/src/assay_analysis/__init__.py",
+  "analysis/src/assay_analysis/campaign.py",
   "analysis/src/assay_analysis/cli.py",
   "analysis/src/assay_analysis/evidence.py",
   "analysis/src/assay_analysis/plan_estimate.py",

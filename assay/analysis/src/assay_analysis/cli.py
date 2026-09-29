@@ -11,7 +11,7 @@ from typing import TextIO
 from assay.cli import AssayArgumentParser
 from assay.errors import AssayError
 
-from assay_analysis import evidence, plan_estimate
+from assay_analysis import campaign, evidence, plan_estimate
 
 
 def _workers(text: str) -> int:
@@ -69,10 +69,13 @@ def build_parser() -> argparse.ArgumentParser:
     estimate.add_argument("--plan-json", type=Path, required=True, metavar="PLAN")
     estimate.add_argument("--progress", type=Path, required=True, metavar="PROGRESS")
     estimate.add_argument("--workers", type=_workers, default=1, metavar="N")
+    campaign.build_campaign_parser(commands)
     return parser
 
 
 def cmd_analyze(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
+    if args.analysis_command == "campaign":
+        return campaign.run_campaign_command(args, stdout=stdout, stderr=stderr)
     code = 0
     try:
         if args.analysis_command == "collect":
