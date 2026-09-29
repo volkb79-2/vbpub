@@ -30,7 +30,7 @@ Focused set at FULL and at SHALLOW: `gate/tests/test_self_lane.py`, `tests/core/
 
 - Before (base + step 0): `tests` 5437 (5438 minus the one new test).
 - After (FULL, SHALLOW, docs): `tests` 5438; `gate/tests` 350.
-- One full serial run `tests gate/tests` at the docs commit: 5776 passed, 12 skipped, 1 failed. The failure is the known environmental `tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused` (stray `/tmp/.git`, B134). Not W7's.
+- One full serial run `tests gate/tests` at the docs commit: 5776 passed, 12 skipped, 1 failed (as transcribed; these sum to 5789, one more than the 5788 that `pytest tests gate/tests --collect-only -q` reports at this commit, and the run's summary line was not retained, so treat them as approximate). The failure is the known environmental `tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused` (stray `/tmp/.git`, B134). Not W7's.
 
 ## For the controller's gate run
 
