@@ -37,9 +37,12 @@
 |---|---|
 | 2026-09-29 | Briefs carved, reviewed and fixed (`3daf62a7`). W3 implementer dispatched in `.worktrees/wave-a-w3-boundaries`. W5 and W8/W9 fixers were still running. A landing checkpoint gate was queued behind other sessions' gates (log `scratchpad/gate-landing-1e3c8a49.log`). |
 | 2026-09-29 ~03:00Z | W5 brief fixed (`43abf9e8`); CD21 amended, plus CD32 (gate-entry host check, W4 O7a) and CD33. W8/W9 self-contained briefs committed (`ec427945`), with CD34–CD38. The landing checkpoint gate was **cancelled, never started**: W3's gate covers the same commit. Fresh reviews dispatched: W8+W9 round 1 (`scratchpad/REVIEW-waveA-W8-W9.md`) and W5 round 2 (`scratchpad/REVIEW-waveA-W5-round2.md`). W3 has committed Parts 1 and 2 on its branch and is now in its before/after suite comparison and gate. |
+| 2026-09-29 ~06:00Z | W5 round 2 applied (`9e34f7f9`). W8/W9 review applied (`189ec19a`, CD39–CD42). **All briefs are final.** W3 implementer done: `be0357de`, `f2c249fe`, `ea990a53`; O1–O6 green; the gate was not run because the host was busy with another session's cmru mutation gate, which is due to finish around 08:00Z. Fresh W3 review dispatched (`scratchpad/REVIEW-W3.md`). Next: apply the review fixes, run the W3 gate (controller), merge, then W1 and W2 in parallel. |
 
 ## Per-package loop (controller)
-1. Create the worktree and dispatch a Sonnet implementer with the brief, CARVER-DECISIONS, host rule, edit rule, BLOCKED rule, LOG file, gate command and checkpoint clause.
+**Gate ownership (from 2026-09-29, after W3 polled for 3 hours):** implementers do **not** run the registered gate. They finish their local oracles, commit, write `READY-FOR-GATE` in their LOG and return. The controller runs every package gate serially from one watcher, so two of this session's agents never race for the single gate slot. Gate failures go back to a Sonnet fixer in the same worktree.
+
+1. Create the worktree and dispatch a Sonnet implementer with the brief, CARVER-DECISIONS, host rule, edit rule, BLOCKED rule, LOG file and checkpoint clause, and the instruction not to run the registered gate.
 2. On return, read the LOG and the gate markers yourself.
 3. Dispatch a fresh reviewer (default model) on the package diff against the brief's oracles and negatives, including a combined-axis attack.
 4. Send fixes back to a Sonnet fixer in the same worktree, and re-gate.
