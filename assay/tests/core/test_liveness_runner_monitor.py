@@ -1542,21 +1542,23 @@ def test_o7_a_later_call_whose_popen_raises_leaves_no_stale_sidecar(tmp_path: Pa
     assert not events_path.with_suffix(liveness.RESOURCE_SIDECAR_SUFFIX).exists()
 
 
+@pytest.mark.parametrize("row", _ROWS)
 def test_o7_a_failing_sidecar_write_never_changes_the_outcome(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: str
 ) -> None:
     def refuse(source, destination):
         raise OSError("replace failed")
 
     monkeypatch.setattr(liveness.os, "replace", refuse)
-    outcome, _clock, runner, cwd = _row(tmp_path, "normal", sampler=_constant_sampler)
-    assert outcome == ("returned", 0)
+    outcome, _clock, runner, cwd = _row(tmp_path, row, sampler=_constant_sampler)
+    assert outcome == _EXPECTED_OUTCOME[row]
     assert liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd)) is None
 
 
-def test_o7_a_non_serializable_sample_never_changes_the_outcome(tmp_path: Path) -> None:
+@pytest.mark.parametrize("row", _ROWS)
+def test_o7_a_non_serializable_sample_never_changes_the_outcome(tmp_path: Path, row: str) -> None:
     outcome, _clock, runner, cwd = _row(
-        tmp_path, "normal", sampler=lambda pid: liveness.TreeSample(object(), 1)
+        tmp_path, row, sampler=lambda pid: liveness.TreeSample(object(), 1)
     )
-    assert outcome == ("returned", 0)
+    assert outcome == _EXPECTED_OUTCOME[row]
     assert liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd)) is None
