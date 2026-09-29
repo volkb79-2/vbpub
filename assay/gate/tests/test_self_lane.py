@@ -133,7 +133,7 @@ def test_self_qualification_is_full_source_r0_through_r3():
     assert lane.judge is not None
     assert lane.judge.mode == "whole_target"
     assert lane.isolation is not None
-    assert lane.isolation.snapshot_history == "full"
+    assert lane.isolation.snapshot_history == "shallow"
     assert lane.judge.require_branch is True
     assert lane.judge.fail_under == 100.0
     assert lane.judge.mutation is not None
