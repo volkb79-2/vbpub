@@ -5033,3 +5033,15 @@ session with `danger-full-access` sandbox in that review worktree; keep the
 same no-gates/no-host-changes scope. The external Assay tester-unified gate
 from RW-367 remains untouched and must not be checked before its stated
 25-minute window.
+
+### RW-370 — 2026-09-29 00:37:09Z — fresh Sol review relaunched with working execution
+
+Fresh caller-configured GPT-6-Sol xhigh review session
+`01a0ea97-f1dc-7f22-963e-cf173f3004d0` is now active in
+`.worktrees/rg55-assay-b107-load-independent-sol-20260929` at candidate
+`0a6f74f3bceedde6899a4e16a6405b64d637157b`. The prior session is closed
+without a verdict. This retry uses Codex `danger-full-access` because the
+workspace-write bwrap could not initialize; its scope remains isolated to
+review/test files and report, with gates, host changes, release, and merge
+forbidden. Attached execution handle: `11710`. Do not advance or edit the
+review worktree while it is active.
