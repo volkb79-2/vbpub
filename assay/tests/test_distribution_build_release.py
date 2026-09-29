@@ -536,20 +536,30 @@ def test_the_zipapp_runs_analyze_from_the_one_archive(built):
     inside the archive, prints the headline, and keeps its exit codes."""
     artifacts = built["first"]
 
+    # `-S`: no site-packages, so an `assay_analysis` installed in the running
+    # interpreter (the gate's run venv) cannot stand in for a missing one.
     helped = subprocess.run(
-        [sys.executable, str(artifacts.zipapp), "analyze", "--help"],
+        [sys.executable, "-S", str(artifacts.zipapp), "analyze", "--help"],
         capture_output=True, text=True, timeout=120,
     )
     assert helped.returncode == 0, helped.stderr
     assert helped.stdout.splitlines()[0] == f"ASSAY {artifacts.version} — declared-lane judge"
 
     refused = subprocess.run(
-        [sys.executable, str(artifacts.zipapp), "analyze", "report",
+        [sys.executable, "-S", str(artifacts.zipapp), "analyze", "report",
          "--expected-commit", "a" * 40, "--verdict", "lane", "/nonexistent"],
         capture_output=True, text=True, timeout=120,
     )
     assert refused.returncode == 2, refused.stdout + refused.stderr
     assert json.loads(refused.stdout)["lanes"][0]["status"] == "evidence_error"
+
+    origin = subprocess.run(
+        [sys.executable, "-S", "-c", "import assay_analysis; print(assay_analysis.__file__)"],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert origin.returncode == 0, origin.stderr
+    assert str(artifacts.zipapp) in origin.stdout, origin.stdout
 
 
 def test_the_wheel_holds_both_packages_their_schemas_and_no_tests(built):
