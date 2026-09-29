@@ -1771,6 +1771,17 @@ class TestLeafReadingsAndKill:
         assert (_leaf(root) / "cgroup.kill").read_text() == "0"
         assert logged and "placement is incomplete" in logged[-1]
 
+    def test_incomplete_placement_is_refused_without_optional_logger(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root)
+        plc.apply([101])
+        kill_file = _leaf(root) / "cgroup.kill"
+        kill_file.write_text("0")
+        plc.error = placement.write_failed("simulated-incomplete-placement")
+
+        assert plc.kill() is False
+        assert kill_file.read_text() == "0"
+
     def test_a_preexisting_leaf_is_refused_even_without_caps(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         _leaf(root).mkdir()

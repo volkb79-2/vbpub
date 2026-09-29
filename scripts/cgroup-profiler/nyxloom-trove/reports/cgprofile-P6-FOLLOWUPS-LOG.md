@@ -1582,3 +1582,19 @@ leaves it unchanged. Local iteration of `test_serve_placement.py` and
 `test_serve_socket_carrier.py` passed **236 tests in 21.82 seconds**. This is
 not registered coverage evidence; final clean-tip `r0-r1` and `r3` remain
 required after committing these documentation and test changes.
+
+## Session 27 — 2026-09-29 05:18:09Z — close the last partial coverage branch
+
+The registered `r0-r1` on clean tree
+`d5fd17eb5073efd2b5c58515b2559e0b1b1ef9dd` exited 2 after 121.64 seconds.
+All **1,798 tests passed** in 116.70 seconds and all **6,375 statements** were
+covered. Branch coverage retained one partial arc: `lib/placement.py`
+`836→841`, the incomplete-placement refusal when the optional logger is
+absent. The independent history receipt confirms the tree, clean state, and
+exit.
+
+A regression now verifies that the logger-absent path returns refusal and
+leaves the fake `cgroup.kill` value unchanged. Both logger-present and
+logger-absent cases pass locally (**2 passed, 179 deselected**); this is not a
+registered gate result. Re-run exact-tip `r0-r1` and `r3` after committing the
+test and evidence update.
