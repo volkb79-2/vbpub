@@ -72,7 +72,12 @@ tests in `tests/` only; the tooling tests in `gate/tests/` run in `tester-unifie
 writes `.assay/registered-gate/tester-unified.json` and prints
 `ASSAY_REGISTERED_GATE_RECEIPT=`; the full lane's driver and the B105 checker refuse
 to proceed without a receipt for the commit and tree being judged (the preflight
-does not need one). No collected judge test
+does not need one). The receipt lives in that worktree's ignored `.assay/` and names
+its HEAD, so run both lanes in the same worktree with no commit in between: any
+later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
+run. `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>`
+when another `run-gate-*` container is running; exit 3 always means rerun, and the
+receipt is left as it was. No collected judge test
 reads history or tags (A-475); the lane keeps full commit history until B128,
 and snapshot refs/tags are not copied.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following

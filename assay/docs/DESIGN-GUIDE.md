@@ -2017,7 +2017,9 @@ even one the container wrote itself. The full lane's driver checks it
 first (`b105_report_check.py --receipt-only`, phase
 `require-same-commit-tester-unified-pass`), and the checker refuses a full
 report without a matching receipt. The preflight lane needs none. Run
-`./run-gate.py tester-unified` before `./run-gate.py self-qualification`. A
+`./run-gate.py tester-unified` before `./run-gate.py self-qualification`, in the same
+worktree and with no commit in between: any later commit, a docs-only or merge
+commit included, needs a fresh `tester-unified` run first. A
 gate started while another `run-gate-*` container runs exits 3 with
 `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`).
 

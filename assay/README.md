@@ -986,7 +986,7 @@ you're changing assay itself:
   the same-commit receipt `.assay/registered-gate/tester-unified.json`
   (`ASSAY_REGISTERED_GATE_RECEIPT=` names it). The
   separately invoked `./run-gate.py self-qualification` requires that receipt for
-  its own commit and tree (run `./run-gate.py tester-unified` first), then runs full-source
+  its own commit and tree (run `./run-gate.py tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
   R0-R3 qualification in `tester-unified`, writes its verdict, progress, and
   raw baseline coverage arcs in
   `.assay/coverage-self-qualification-preflight-snapshots/`, keyed by source
