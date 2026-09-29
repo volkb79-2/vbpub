@@ -148,6 +148,7 @@ def _patch_config(monkeypatch, root: Path, projects):
         ("file-shape", "malformed file inventory"),
         ("file-path", "unsafe file coordinate"),
         ("file-path-empty", "unsafe file coordinate"),
+        ("file-path-dot", "unsafe file coordinate"),
         ("file-path-backslash", "unsafe file coordinate"),
         ("file-path-absolute", "unsafe file coordinate"),
         ("duplicate-file", "duplicate file coordinate"),
@@ -204,6 +205,8 @@ def test_build_output_tree_validator_refuses_invalid_manifest_and_bytes(
         manifest["artifacts"][0]["files"][0]["path"] = "../alpha.whl"
     elif fault == "file-path-empty":
         manifest["artifacts"][0]["files"][0]["path"] = ""
+    elif fault == "file-path-dot":
+        manifest["artifacts"][0]["files"][0]["path"] = "."
     elif fault == "file-path-backslash":
         manifest["artifacts"][0]["files"][0]["path"] = "nested\\alpha.whl"
     elif fault == "file-path-absolute":

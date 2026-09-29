@@ -933,6 +933,8 @@ def validate_build_output_tree(
                 raise RuntimeError(unsafe_coordinate)
             if relative_path.is_absolute():
                 raise RuntimeError(unsafe_coordinate)
+            if not relative_path.parts:
+                raise RuntimeError(unsafe_coordinate)
             if relative_path.as_posix() != relative:
                 raise RuntimeError(unsafe_coordinate)
             if ".." in relative_path.parts:
