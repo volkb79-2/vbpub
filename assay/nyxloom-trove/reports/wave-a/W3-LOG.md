@@ -26,3 +26,20 @@
 ## Gate (O7): NOT RUN
 Waited the full 3 hours (polling `docker ps` every 2 minutes) for the host to have no `run-gate*` container. Another session's `run-gate-vbpub-mutation-3747550-1790644029` (5+ hours old) was still running at the timeout (`run-gate-rg55-p1-r2-isolated-r2-3806635-1790646112` ended earlier). Per the host-load rule one gate container only, so I did not start `tester-unified`. Next step for whoever continues: when `docker ps --format '{{.Names}}' | grep '^run-gate'` is empty, run
 `cd .../wave-a-w3-boundaries/assay && nice -n 19 ionice -c3 python ./run-gate.py tester-unified > <log> 2>&1`, then read the markers separately. Everything else (O1-O6) is done and committed.
+
+## Fix after review (W3R-1)
+- The vbpub root `.gitignore:352` pattern `core` ignored `tests/core/`, so `tests/core/test_import_contracts.py` was never added: `f2c249fe` did not contain it and a clean checkout collected 5965, not 5972. O1/O2/O3/O6 above were measured in the working tree, not the commit.
+- Fix: `assay/.gitignore` re-includes `/tests/core/`; the file is committed unchanged (sha256 20891aae…1815).
+- O3 re-run on a fresh detached worktree of the fixed HEAD (`b751a37f`): `5972 tests collected in 6.76s` (7 `test_import_contracts` ids); `tests/core/test_import_contracts.py`: `7 passed in 0.48s`.
+- Correction to the 2c line above: 15 `pathlib` imports were removed (14 `Path`, 1 function-local `Path as _Path`), not 14.
+
+## Review fixes
+- W3R-1 (BLOCKER): `b751a37f`. `git check-ignore --no-index` exit=1; sha256 matched; `git status --porcelain --ignored assay/tests` (minus `__pycache__`) empty; fresh-checkout collect 5972, 7 passed.
+- W3R-2: `c2da2f2a`. Positive: 8 passed. Negative: planted `src/assay/adapters/rust.py`, red (`['assay.adapters.rust'] == []`), removed.
+- W3R-3: `175cf326`. Positive: 9 passed. Negative: planted `tests/escape_test.py`, red (`['escape_test.py'] == []`), removed.
+- W3R-4: `5a072d0b`. Positive: 10 passed. Negative: planted `tests/adapters/javascript/test_javascript_probe.py` importing `test_coverage_istanbul_default_arg_signature`, red, removed.
+- W3R-5: `b4139c18`. Positive: `before.xml` reproduces the report (core 4015/203.6, root 533/48.0, go 191/0.5, js 115/1.9, python 123/15.0, sql 120/0.3, parsers 462/5.2, 43/0.1, 26/2.0); `after.xml` same partitions, core 4022 (= 4015 + 7). Negative: the old script on `after.xml` gives `core 5102 / root 533` (wrong attribution).
+- W3R-6: no code change; handed to W4 by the carver.
+- Final collect-only at code HEAD `b4139c18`: 5975 tests (5965 + 10 contract tests). Contract file: 10 tests, all passing. The registered gate (O7) was not run by the fixer; the controller runs it.
+
+READY-FOR-GATE b4139c18
