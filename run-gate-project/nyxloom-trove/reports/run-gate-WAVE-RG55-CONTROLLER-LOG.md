@@ -5099,3 +5099,32 @@ the test-only repair is provisionally merged, P1 must be rejudged on its
 final quiet tree with the B107 monitor. Preserve that run's per-candidate
 evidence and classify each terminal outcome from the actual receipt; do not
 infer pressure causality from this old result.
+
+### RW-373 — 2026-09-29 01:10:10Z — B107 exact-tree registered gate PASS
+
+The registered `tester-unified` gate passed in CIU-managed worktree
+`.worktrees/rg55-b107-ciu-root/.worktrees/rg55-b107-final-gate-20260929` at
+exact tree `7dd3a8cee6504732b7f58588ccae7151f8d94ff1`. Container
+`run-gate-assay-selfhosted-3730117-25109-1790642983` exited 0; the immediately
+applied cap and placement read back as `NanoCpus=3000000000`,
+`CgroupParent=dev-gates.slice`. The independent run-gate history read reports
+PASS, `dirty=false`, `history_eligible=true`, exit 0, and 842.547 seconds
+(00:49:43Z–01:03:45Z). The gate completed its wheel build/install, self-hosted
+Assay lane, Topos qualification, CMRU B006(a) qualification, independent
+self-hosting witness, and pyflakes phase.
+
+R-36h disclosure: `cgprofile-host-daemon` was not running. Run-Gate emitted
+its named warning and used coarse rusage sampling; the functional gate still
+passed, with no profiler token/daemon measurements. `RUN_GATE_PROFILE=off`
+was not set. The B107 code/test delta is unchanged between gated tree `7dd3a8ce`
+and the current repair branch; later commits are controller/review report
+records only. Sol's ACCEPT artifact was cherry-picked onto the repair branch
+as `ad32d14e`. This evidence supports the requested provisional merge; it
+does not authorize an Assay release or install.
+
+The isolated CIU root was necessary because CIU inventory in the primary
+checkout refuses on the unrelated stale P6 identity record; the P6 checkout
+was left untouched. CIU marked the B107 worktree ready, while its optional
+network creation warned that Docker's predefined address pools are exhausted.
+The gate did not use that network (`tester-unified` is launched with network
+disabled), so the warning did not affect this run. No network was removed.
