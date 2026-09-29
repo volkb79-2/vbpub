@@ -531,6 +531,45 @@ def test_the_zipapp_propagates_a_nonzero_exit_from_a_failing_lane(built, tmp_pat
     )
 
 
+def test_the_zipapp_runs_analyze_from_the_one_archive(built):
+    """(A-478) One zipapp holds both packages: `analyze` finds `assay_analysis`
+    inside the archive, prints the headline, and keeps its exit codes."""
+    artifacts = built["first"]
+
+    helped = subprocess.run(
+        [sys.executable, str(artifacts.zipapp), "analyze", "--help"],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert helped.returncode == 0, helped.stderr
+    assert helped.stdout.splitlines()[0] == f"ASSAY {artifacts.version} — declared-lane judge"
+
+    refused = subprocess.run(
+        [sys.executable, str(artifacts.zipapp), "analyze", "report",
+         "--expected-commit", "a" * 40, "--verdict", "lane", "/nonexistent"],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert json.loads(refused.stdout)["lanes"][0]["status"] == "evidence_error"
+
+
+def test_the_wheel_holds_both_packages_their_schemas_and_no_tests(built):
+    with zipfile.ZipFile(built["first"].wheel) as archive:
+        names = set(archive.namelist())
+
+    for required in (
+        "assay_analysis/__init__.py",
+        "assay_analysis/cli.py",
+        "assay_analysis/evidence.py",
+        "assay/schemas/analysis-archive.schema.json",
+        "assay/schemas/analysis-receipt.schema.json",
+        "assay/schemas/analysis-report.schema.json",
+    ):
+        assert required in names, required
+    assert "assay/analysis.py" not in names
+    assert not any(n.startswith(("analysis/", "tests/", "assay/tests/")) for n in names)
+    assert not any(n.startswith("assay_analysis/") and "test" in n for n in names)
+
+
 def test_the_archive_carries_no_builder_specific_paths(built):
     """Both reproducibility culprits, asserted as absences so a future change
     that reintroduces either is caught by name rather than by a hash diff."""
