@@ -50,6 +50,44 @@ Reviews: `REVIEW-waveA-tests-gate.md`, `REVIEW-waveA-code.md` and `REVIEW-waveA-
 | CD31 | W4 moves `test_gate_qualify_dstdns_sql.py` whole into `gate/tests/`, with path-rule edits only; it is tooling, since it runs containers. W5 then replaces it there (CD21, CD28). The shared fixture loader's module name is `assay_judge_conftest`, created by W2 in `analysis/tests/conftest.py` and reused by W4's `gate/tests/support.py`. |
 | CD30 | **Consumer-visible list for the release (A-479).** Candidates:<br>• the second top-level package `assay_analysis` in the wheel;<br>• removed gate phases (not consumer-facing);<br>• removed `import assay.analysis` (undocumented, CD19);<br>• the B105 checker's new receipt requirement (assay-internal);<br>• W5's new SQL fixtures (tests only).<br>None of these changes a documented consumer surface, so 7.2.0 stands, unless an implementer reports a change to a documented CLI, schema path or lane key. That report goes to the carver before the release. |
 
+## Additions after the W5 fix pass (2026-09-29)
+
+| # | Decision |
+|---|---|
+| CD21 (amended) | Wording per review W5-6 as adapted by CD28. The PostgreSQL container belongs to the same registered gate run and uses its slot. Rules: it starts only after a **green** tester (a red tester ends the script first); it is named `run-gate-assay-sql-<pid>-<epoch>`; it runs in `$cgroup_parent` with `--cpus 1 --memory 512m`. The harness never polls or waits for other sessions' gates. It runs one `docker ps` check right before `docker run`: if any `run-gate-*` container is present, it exits 3 with `ASSAY_SQL_INCONCLUSIVE=host busy — rerun: <names>` (visible and inconclusive, never green). **Round 2 (W5R2-2):** the gate passes a harness exit 3 through as gate exit 3, printing stderr `ASSAY_GATE_INCONCLUSIVE=sql-qualification — rerun` (no receipt, no COMPLETE), just like CD32 at entry. Exit 3 with `ASSAY_GATE_INCONCLUSIVE=` always means rerun; every other non-zero exit is real (CD29). An incomplete witness (hung or budget-exceeded entries, `LANE_TIMEOUT`) is also inconclusive, and is checked before the FAIL requirement (W5R2-1). |
+| CD32 | **Gate-entry host check (W4).** `run_registered_gate` begins with the same one-shot check, before capturing C/T, clearing the receipt or building anything: `docker ps --no-trunc --format '{{.Names}}'`. If any name starts with `run-gate-`, it prints stderr `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names, comma-joined>` and exits 3. The receipt stays untouched, and there is no waiting or polling. Its oracle is in W4 (O7a). This makes the host-load rule a mechanism, so a Wave A gate no longer runs the tester for 30–60 minutes only to stop at W5's pre-PostgreSQL check. |
+| CD33 | **W5 brief size (26.5 KB) accepted**, as CD24: about 6.3 KB is exact text (schema, matrix, probes, scripts). The W5-local decision to keep `carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json` follows CD8. The one-line MANIFEST notes in the old carve-asset directories W3 and W5–W8 are the only carve-asset edits W5 may make. These are the historical B-wave carve directories, not Wave A packages. |
+
+## Answers to the W8/W9 re-carve questions (2026-09-29)
+
+| # | Decision |
+|---|---|
+| CD34 | **Q1: the tree is bound through the commit only.** `plan-estimate` checks `run.commit` against the plan's commit. `tree` in its output comes from the plan JSON. The judge's progress `run` event does not gain a `tree` field in Wave A: that changes the judge output for an estimate that never classifies anything. |
+| CD35 | **Q2:** CD25's nine keys are exact. P0's provenance fields (progress sha256, run line, source event) are dropped: the estimate is advisory, not evidence. |
+| CD36 | **Q3:** the `assay plan` hint goes to stderr, one line, only when a plan was produced, so stdout stays pure JSON. |
+| CD37 | **Q4:** unverified hung evidence stays record-only, as W9 specifies. W9 mirrors exactly where the judge re-checks (the state record); it never applies a stricter rule than the judge. |
+| CD38 | **Q5:** W8 (21.1 KB) and W9 (22.6 KB) are accepted, as CD24 and CD33. **CD30 additions:** all additive, so 7.2.0 stands. They are: `assay plan`'s JSON gains `commit`/`tree` (W8); a stderr hint (W8); new subcommands `assay analyze plan-estimate` (W8) and `assay analyze campaign` (W9); four public judge aliases (W9). |
+
+## After the W8/W9 pre-dispatch review (2026-09-29, `review-predispatch/REVIEW-waveA-W8-W9.md`)
+
+Every finding is accepted, with its fix text as written, except where noted below.
+
+| # | Decision |
+|---|---|
+| CD39 | **W9 output shape is closed (W9-1).** It is exactly the review's "Output shape (closed)" text, which is folded into W9 as a new subsection:<br>• the draft's 15 top-level keys plus `qualifying`, `complete_blockers`, `torn_final_record`, `adverse`, `unresolved`, `reclassified`, `state` and `projection`;<br>• `execution_mode_counts` under `campaign`;<br>• without `--verdict`: `verdict`/`evidence.verdict` `null` and `coverage.status "not_judged"` with the listed nulls;<br>• the eight sorted `complete_blockers` strings;<br>• `timing` = P8's ETA object exactly.<br>The draft schema is edited to match. |
+| CD40 | **W9 rule order (W9-2).** In every evidence mode the order is:<br>1. shape validation;<br>2. the C25 current-judge rule;<br>3. unverified-hung removal from the store view;<br>4. only then P8's O4 verdict comparison and reconciliation.<br>A removed record is never an `evidence_error` or `reclassified`. `unverified_hung_records` blocks completion only when a listed candidate has neither a verdict bucket nor a latest-run event. O22 gains the review's Inputs A and B. This is CD37 made operational. |
+| CD41 | **W8-14 adopted.** The B105 checker's plan check also refuses when `plan["commit"]`/`plan["tree"]` differ from `--expected-commit`/`--expected-tree` (`ValueError("plan commit/tree differ from the expected source")`), with one O11 case. |
+| CD42 | **W8 header (W8-11):** W8 runs after W2 **and W7**, because both edit `gate/tests/test_self_lane.py` and `assay.toml`. The stage 3 order is therefore W7, W8, W9. |
+| CD38 (amended, X-1) | Also additive, all named in the release notes:<br>• progress: `candidate` gains `cpu_seconds`, `peak_rss_bytes`, `phase_seconds` and `startup_seconds`; the baseline `test` event gains `setup_s`/`teardown_s`; the `candidates` event gains `judge_sha256`;<br>• the state record gains `resources`; plan rows gain `source_sha256`/`mutated_file_sha256`;<br>• the `<events>.resources.json` sidecar;<br>• `cli.plan_jobs` and `mutation.candidate_identity_fields`.<br>7.2.0 stands. |
+
+## After the W3 review (2026-09-29, `REVIEW-W3.md`)
+
+| # | Decision |
+|---|---|
+| CD43 | **Moved-path prose (W3R-6) and locked consumers.**<br>• W4 updates the prose mentions of moved test files: docstrings and comments in `tests/`, the runnable command at `tests/core/test_config_snapshot_selection.py:21` and the `pyproject.toml:36` comment.<br>• W10 updates the `src/assay` comments that the W4 REPORT list names, since W10 already edits those modules.<br>• Byte-pinned fixtures stay as they are.<br>• The locked P33 suite, which asserts root test paths, stops running when W1 retires `verdict-v5-accepted`. P23's suite is not executed (CD8).<br>• Stale `--deselect` entries cannot survive, because W4's `test_self_lane.py` pins forbid `--deselect*` in the B105 lanes. |
+| CD44 | **The controller owns the registered gate (overrides every brief's Gate section).** Implementers run focused tests and collect-only, never `run-gate.py`. They finish with `READY-FOR-GATE <hash>` in their LOG. The controller runs `tester-unified` (and `self-qualification-preflight` where a brief requires it) serially, one watcher at a time, and hands the verdict and markers back. Oracles that read gate output (for example W4 O8/O10, W8/W9 preflight checks) are completed by a Sonnet fixer after the controller's gate run. |
+| CD45 | **New files under `tests/core/`.** The vbpub root `.gitignore:352` ignores every path named `core`. W3 adds `!/tests/core/` to `assay/.gitignore`. Every implementer checks `git status --short --ignored` for `!!` entries before committing new test files. |
+
 **Plan consequences:**
 - W8 now depends on W2 (CD1).
 - W7 edits `gate/tests/test_self_lane.py` (CD12).
