@@ -5264,3 +5264,21 @@ still resolves to `e5e9b95c`, and create a fresh CIU worktree with no stale
 run-gate inflight state. Then repeat admission checks and run R2 on that quiet
 tree. The prior 1080ac2 R2 PASS predates these P1 repairs and is not final
 evidence. No candidates from this attempt are counted toward the campaign.
+
+### RW-376 — 2026-09-29 01:49:26Z — P6 migration permission errors must not certify placement
+
+While resuming P6, inspection of the private-PID migration path found a false
+success state: non-`ESRCH` errors writing a lane PID to the gates leaf were
+silently skipped. In the concrete `EPERM` path, systemd fallback was correctly
+not attempted, but `enforcement_failed` stayed false, so the empty leaf could
+remain and the response could say `placement.error=null`, `pids_moved=0`.
+
+On the isolated P6 branch, non-`ESRCH` write failures now fail closed, log the
+error, report the existing `place-refused:write-failed:<leaf>/cgroup.procs`
+shape, and abandon an empty leaf. The regression test verifies no systemd
+fallback, exact refusal, and leaf removal. The focused test passed and the
+complete `test_serve_placement.py` file passed 122 tests in 17.18 seconds;
+these are local iteration results, not registered gate evidence. P6 exact-tip
+short gates, changed-line and branch coverage, the live private-PID start and
+stop probes, a fresh Sol round-5 review, replacement R2, and the full gate
+remain outstanding. The code fix has not been merged to main.
