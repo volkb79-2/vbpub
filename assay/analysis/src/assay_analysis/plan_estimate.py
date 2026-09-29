@@ -141,6 +141,9 @@ def plan_estimate(plan_path: Path, progress_path: Path, *, workers: int = 1) -> 
         raise ValueError(f"commit mismatch: progress run at line {line} is at "
                          f"{run.get('commit')!r}, plan is at {plan['commit']!r}")
     worker_hours = plan["candidate_count"] * seconds / 3600
+    if not math.isfinite(worker_hours):
+        raise ValueError(f"progress run at line {line}: "
+                         "plan.baseline_s is not a finite positive number")
     return {
         "schema_version": SCHEMA_VERSION,
         "commit": plan["commit"],

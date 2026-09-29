@@ -344,3 +344,8 @@ def test_op5_a_real_plan_and_a_real_run_progress_project_through_the_judge_entry
     assert result["workers"] == 2
     direct = _ok(tmp_path, plan_path.read_text(encoding="utf-8"), progress.read_text(encoding="utf-8"))
     assert direct["baseline_s"] == result["baseline_s"]
+
+
+def test_op4_a_baseline_whose_projection_overflows_is_refused(tmp_path):
+    _refused(tmp_path, _plan(), [_run(), {"event": "plan", "baseline_s": 1e308}],
+             "progress run at line 1: plan.baseline_s is not a finite positive number")
