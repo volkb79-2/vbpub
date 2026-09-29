@@ -517,11 +517,18 @@ bounded at 1024 samples; once truncated, that idle interval cannot certify a
 hang, and a configured-budget expiry remains incomplete. Cached `hung`
 records without a structurally valid complete trace are refused and rerun.
 
-**Per-candidate resource, phase and startup evidence (B111).** Every liveness
-candidate additionally records diagnostic measurements: `cpu_seconds` and
-`peak_rss_bytes` of its process tree, `phase_seconds` (`materialize`,
-`command`, `integrity`, `teardown`) and `startup_seconds` (`to_session_start`,
-`to_first_test`). They ride on the `candidate` progress event and, as the
+**Per-candidate resource, phase and startup evidence (B111).** Every candidate
+records `phase_seconds` (`materialize`, `command`, `integrity`, `teardown`, the
+worker's own monotonic split); a liveness candidate also records `cpu_seconds`
+and `peak_rss_bytes` of its process tree and `startup_seconds`
+(`to_session_start`, `to_first_test`). `cpu_seconds` is the maximum over 1 Hz
+samples of utime+stime+cutime+cstime summed over the live tree, a lower bound
+(the series is not monotone, and CPU after the last sample is missing);
+`peak_rss_bytes` is a 1 Hz lower bound on peak Σ RSS, and Σ RSS overcounts
+shared and copy-on-write pages, so it is not a bound on true peak memory use.
+All four describe the attempt that produced the bucket; a witness replay that
+did not kill counts only in `elapsed_seconds`. They ride on the `candidate`
+progress event and, as the
 identical object, in the state record's `resources`; the baseline `test` events
 carry the tests' own `setup_s`/`teardown_s`. The monitor writes a
 `<events>.resources.json` sidecar on every exit path (a `try/finally` around the
