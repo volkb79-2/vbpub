@@ -1,0 +1,980 @@
+"""B046 — R2 by evidence INGESTION, end to end through the real runner,
+against the REAL committed StrykerJS artifact.
+
+The primary fixture here is a genuine
+``mutation-testing-report-schema`` document produced by a real StrykerJS
+10.0.0 run over ``tests/fixtures/coverage/probe-js`` (recipe and pinned
+versions in ``tests/fixtures/mutation/PROVENANCE.md``) — not a heredoc, not a
+hand-built dict (A-334). Wave A's own lesson, one tier up: a real CLI run
+through a test double still does not prove a claim the double never
+exercised, and B049 was found precisely because a real tool was finally run.
+
+The lane's command does not run Stryker — ``tester-unified`` has no Node
+(DESIGN-GUIDE §10) — but it does write the real artifact, at the declared
+path, from inside the snapshot, through the same reservation any real
+producer would. The one substitution is ``projectRoot``: the committed report
+names the absolute directory the original run happened in, and a report is
+only valid for the directory THIS run's command executed in, so the command
+rewrites that one field to its own ``$PWD``. That substitution is itself
+under test — ``test_a_report_from_another_project_root_is_refused`` removes it
+and asserts the refusal.
+
+The lane declares ``cwd = "app"`` throughout, which is not incidental: an
+ingested report's ``projectRoot`` is the directory the TOOL ran in and its
+``files`` keys are relative to that, so the B043/B046 coupling is exercised by
+every test here rather than by a special case.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from conftest import TESTS_ROOT, GitRepo, make_lane
+
+from assay import runner
+from assay.adapters.javascript import JavaScriptAdapter
+from assay.config import JudgeConfig, MutationConfig
+from assay.errors import Outcome, ReasonCode
+from assay.mutation_parsers.mutation_report_json import SUPPORTED_REPORT_SCHEMA_MAJORS
+
+REAL_REPORT = (
+    TESTS_ROOT
+    / "fixtures"
+    / "mutation"
+    / "mutation-report-json.probe-js-stryker.json"
+)
+
+#: (B070, schema v11) The SECOND real StrykerJS artifact, and the one this
+#: project owed itself the moment ``judgment.r2.discarded`` stopped being
+#: declared-not-verified: a run of the same StrykerJS 10.0.0 over the same
+#: probe sources with ``@stryker-mutator/typescript-checker`` enabled, which
+#: type-checks each mutant before running it and marks the ones that do not
+#: compile ``CompileError``. It carries **40 genuinely discarded mutants** out
+#: of 88 — not a hand-authored status, not a synthetic report: the recipe,
+#: pinned versions and the exact ``tsconfig``/``stryker.config`` are committed
+#: beside it in ``fixtures/mutation/probe-js-stryker-typecheck/`` and recorded
+#: in ``fixtures/mutation/PROVENANCE.md``. DA-D4's witness clause, waived for a
+#: declared field by DA-R26 and owed again the moment the field became
+#: verified.
+REAL_TYPECHECK_REPORT = (
+    TESTS_ROOT
+    / "fixtures"
+    / "mutation"
+    / "mutation-report-json.probe-js-stryker-typecheck.json"
+)
+
+#: The lane's command rewrites this placeholder to its own ``$PWD``. `sed` is
+#: used rather than an unquoted heredoc on purpose: the report embeds the full
+#: TypeScript SOURCE of every measured file, and a shell would expand a `$` in
+#: a template literal inside it.
+PLACEHOLDER = "__ASSAY_TEST_PROJECT_ROOT__"
+
+ARTIFACT = "app/reports/mutation.json"
+
+
+def _report_document() -> dict:
+    return json.loads(REAL_REPORT.read_text(encoding="utf-8"))
+
+
+def _typecheck_report_document() -> dict:
+    """(B070) The real high-discard artifact, read verbatim."""
+    return json.loads(REAL_TYPECHECK_REPORT.read_text(encoding="utf-8"))
+
+
+def _stage_report(tmp_path: Path, document: dict, *, name: str = "report.json") -> Path:
+    """Write *document* OUTSIDE the repository, with the placeholder in place
+    of ``projectRoot``, ready for the lane's command to copy in."""
+    staged = tmp_path / name
+    staged.write_text(json.dumps(document), encoding="utf-8")
+    return staged
+
+
+def _seed_repo(git_repo: GitRepo, document: dict) -> None:
+    """A repo whose SECOND commit adds every file the report measured, with
+    the exact text the report itself carries.
+
+    An empty first commit means every line of every measured file is an ADDED
+    line, so all of the report's mutants fall inside a ``changed_lines``
+    scope. That is a real diff, not a bypass: it is the shape of a branch that
+    introduces a new module, and it makes the scope intersection observable
+    rather than incidental.
+    """
+    git_repo.write(".gitignore", "app/reports\n")
+    git_repo.commit_all("gitignore the mutation report")
+    for key, record in document["files"].items():
+        git_repo.write(f"app/{key}", record["source"])
+    git_repo.commit_all("add the measured sources")
+
+
+def _lane(
+    *,
+    git_repo: GitRepo,
+    staged: Path,
+    mode: str = "changed_lines",
+    targets=None,
+    base: str,
+    mutation_fail_under: float = 100.0,
+):
+    judge = JudgeConfig(
+        language="javascript",
+        source_roots=("app/src",),
+        source_root_paths=((git_repo.path / "app" / "src").resolve(),),
+        fail_under=None,
+        allow_excluded=None,
+        coverage=None,
+        mutation=MutationConfig(
+            format="mutation-report-json",
+            artifact=ARTIFACT,
+            fail_under=mutation_fail_under,
+        ),
+        canary=None,
+        base=None if mode == "whole_target" else base,
+        mode=mode,
+        targets=targets,
+    )
+    return make_lane(
+        rigor=("R0", "R2"),
+        judge=judge,
+        cwd="app",
+        env={"STAGED_REPORT": str(staged), "PLACEHOLDER": PLACEHOLDER},
+        argv=(
+            "/bin/sh",
+            "-c",
+            'mkdir -p reports && sed "s|$PLACEHOLDER|$PWD|" "$STAGED_REPORT" '
+            "> reports/mutation.json",
+        ),
+    )
+
+
+def _run(git_repo: GitRepo, lane):
+    return runner.run_lane(
+        lane,
+        commit=git_repo.head(),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=JavaScriptAdapter(),
+        assay_version="0.1.0",
+    )
+
+
+@pytest.fixture
+def ingested(git_repo: GitRepo, tmp_path: Path):
+    """The happy path, materialised once: the real report, a real repo, a real
+    run. Returns ``(verdict, document)``."""
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document)
+    _seed_repo(git_repo, document)
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    verdict = _run(git_repo, _lane(git_repo=git_repo, staged=staged, base=base))
+    return verdict, document
+
+
+# --------------------------------------------------------------------------
+# The happy path, over the real artifact
+# --------------------------------------------------------------------------
+
+
+def test_the_real_stryker_report_becomes_a_judged_r2_claim(ingested):
+    """21 Killed, 19 Survived, 69 NoCoverage — the exact counts in the
+    committed artifact, arrived at by assay's own scope computation rather
+    than by reading the tool's score."""
+    verdict, _document = ingested
+    r2 = next(claim for claim in verdict.claims if claim.rigor == "R2")
+    assert r2.mutation is not None
+    assert len(r2.mutation.killed) == 21
+    # NoCoverage maps to `survived` -- a mutant no test exercised is not
+    # killed -- so the bucket is 19 + 69.
+    assert len(r2.mutation.survived) == 88
+    assert r2.mutation.crashed == ()
+    assert r2.mutation.budget_exceeded == ()
+    assert r2.mutation.equivalent == ()
+    assert r2.mutation.total == 109
+    assert r2.mutation.candidate_count == 109
+    assert r2.status is Outcome.FAIL
+    assert r2.reason_code is ReasonCode.MUTANTS_SURVIVED
+
+
+def test_the_judgment_records_the_ingested_producer_and_its_tool(ingested):
+    verdict, _document = ingested
+    assert verdict.judgment is not None
+    r2 = verdict.judgment.r2
+    assert r2 is not None
+    assert r2.producer == "ingested"
+    assert r2.producer_tool is not None
+    # Copied from the report's own `framework`, never from `helpers[]`
+    # (A-230a/A-361): assay did not invoke Stryker.
+    assert r2.producer_tool.name == "StrykerJS"
+    assert r2.producer_tool.version == "10.0.0"
+    assert r2.producer_tool.report_schema_version == "1.0"
+    # A-230a: `helpers[]` records tools assay ITSELF invoked and resolved on
+    # PATH. Assay did not invoke Stryker -- the lane's own argv did -- so the
+    # producer must not appear there, and putting it there would launder a
+    # DECLARED fact into a verified one.
+    assert not any(
+        helper.name == "StrykerJS" for helper in (verdict.helpers or ())
+    )
+
+
+def test_assays_own_policy_fields_are_absent_not_backfilled(ingested):
+    """A-360: assay chose no operators, no concurrency and no ceiling for a
+    run it did not orchestrate, so those fields are ABSENT rather than filled
+    from the report."""
+    verdict, _document = ingested
+    r2 = verdict.judgment.r2
+    assert r2.jobs is None
+    assert r2.max_mutants is None
+    assert r2.operators is None
+    assert r2.equivalence_artifact is None
+    assert r2.kill_attribution == "unattributed"
+    wire = verdict.to_dict()["judgment"]["r2"]
+    for absent in ("jobs", "max_mutants", "operators", "equivalence_artifact"):
+        assert absent not in wire
+
+
+def test_the_observed_operators_are_on_the_wire_one_per_mutant(ingested):
+    """The operators are not lost by being absent from the policy: they are
+    recorded per mutant, namespaced, verbatim from the tool."""
+    verdict, _document = ingested
+    r2 = next(claim for claim in verdict.claims if claim.rigor == "R2")
+    operators = {
+        outcome.operator
+        for bucket in ("killed", "survived")
+        for outcome in getattr(r2.mutation, bucket)
+    }
+    assert operators == {
+        "stryker:ArithmeticOperator",
+        "stryker:ArrayDeclaration",
+        "stryker:BlockStatement",
+        "stryker:BooleanLiteral",
+        "stryker:ConditionalExpression",
+        "stryker:EqualityOperator",
+        "stryker:LogicalOperator",
+        "stryker:ObjectLiteral",
+        "stryker:StringLiteral",
+    }
+
+
+def test_no_coverage_mutants_are_listed_by_position_not_buried_in_a_count(
+    ingested,
+):
+    """69 ``NoCoverage`` mutants, but 31 distinct untested POSITIONS: ten of
+    them share ``src/format.ts`` line 34 alone. The field lists PLACES, not
+    mutants — repeating a line once per mutant would turn a list of places
+    into a disguised count, and the model refuses the duplicate outright."""
+    verdict, document = ingested
+    expected = {
+        (f"app/{key}", mutant["location"]["start"]["line"])
+        for key, record in document["files"].items()
+        for mutant in record["mutants"]
+        if mutant["status"] == "NoCoverage"
+    }
+    r2 = verdict.judgment.r2
+    assert {(p.path, p.lineno) for p in r2.survived_uncovered} == expected
+    assert len(r2.survived_uncovered) == 31
+    # Every one of them is a position the `survived` bucket really records --
+    # the same relation `verify.py` re-derives at the raw layer.
+    survived = {
+        (outcome.path, outcome.lineno)
+        for outcome in next(
+            claim for claim in verdict.claims if claim.rigor == "R2"
+        ).mutation.survived
+    }
+    for position in r2.survived_uncovered:
+        assert (position.path, position.lineno) in survived
+    assert list(r2.survived_uncovered) == sorted(
+        r2.survived_uncovered, key=lambda p: p.sort_key
+    )
+
+
+def test_wire_paths_are_repo_relative_and_carry_the_lane_cwd(ingested):
+    """The report's keys are ``src/format.ts``, relative to the directory the
+    tool ran in. The wire path is repo-top-relative — the same spelling a
+    natively generated mutant carries — so it is ``app/src/format.ts``. This
+    is the B043 coupling: without the declared ``cwd`` the prefix could not be
+    known."""
+    verdict, _document = ingested
+    r2 = next(claim for claim in verdict.claims if claim.rigor == "R2")
+    paths = {outcome.path for outcome in r2.mutation.survived}
+    assert all(path.startswith("app/src/") for path in paths), paths
+    assert "app/src/format.ts" in paths
+
+
+def test_the_verdict_verifies_against_the_shipped_schema_and_the_raw_layer(
+    ingested,
+):
+    """The whole point of the tier vocabulary: an INGESTED verdict is a
+    first-class document, not a special case that only assay can read."""
+    from assay.verify import verify_document
+
+    verdict, _document = ingested
+    failures = verify_document(verdict.to_dict())
+    assert failures == [], failures
+
+
+def test_a_declared_floor_the_real_report_MEETS_produces_a_verified_pass(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B050/A-427/DA-R22's acceptance witness, end to end over the real report.
+
+    The committed StrykerJS artifact scores 21 killed / (21 + 88 survived) =
+    19.26%. At `fail_under = 19.0` the lane declares that floor MET, so
+    `judge_mutation`'s survived branch falls through and the R2 claim is a
+    PASS **that records all 88 survivors** — and `assay verify` re-derives the
+    same PASS by reading `judgment.r2.fail_under` back off the wire.
+
+    Under v9 this document was doubly impossible: `config` refused any floor
+    but 100.0 at LOAD, and the verifier assumed 100 regardless. Nothing here
+    is fixtured toward the answer — same report, same repo, same run as the
+    `ingested` fixture; the floor is the only difference.
+    """
+    from assay.mutation import mutation_pct
+    from assay.verify import verify_document
+
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document)
+    _seed_repo(git_repo, document)
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    verdict = _run(
+        git_repo,
+        _lane(
+            git_repo=git_repo,
+            staged=staged,
+            base=base,
+            mutation_fail_under=19.0,
+        ),
+    )
+
+    r2 = next(claim for claim in verdict.claims if claim.rigor == "R2")
+    assert len(r2.mutation.survived) == 88
+    assert mutation_pct(r2.mutation) == pytest.approx(19.2660550458, rel=1e-9)
+    assert (r2.status, r2.reason_code) == (Outcome.PASS, None)
+    # The floor is on the wire, and it is the SAME number the lane declared:
+    # the producer reads `lane.judge.mutation.fail_under` once, for both the
+    # judgment and the judge.
+    assert verdict.judgment.r2.fail_under == 19.0
+    assert verify_document(verdict.to_dict()) == [], verify_document(verdict.to_dict())
+
+
+def test_the_same_run_at_the_default_floor_is_the_unchanged_fail(ingested):
+    """The control for the test above: 100.0 is still FAIL/MUTANTS_SURVIVED.
+
+    `ingested` is the identical run at `fail_under = 100.0`, so the pair
+    isolates the floor as the only cause of the difference — and proves B050
+    changed no outcome that was not asked to change.
+    """
+    verdict, _document = ingested
+    r2 = next(claim for claim in verdict.claims if claim.rigor == "R2")
+    assert (r2.status, r2.reason_code) == (Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED)
+    assert verdict.judgment.r2.fail_under == 100.0
+
+
+def test_lines_without_candidates_records_where_the_tool_declined(ingested):
+    verdict, _document = ingested
+    r2 = verdict.judgment.r2
+    assert r2.lines_without_candidates
+    mutated = {
+        (outcome.path, outcome.lineno)
+        for bucket in ("killed", "survived")
+        for outcome in getattr(
+            next(claim for claim in verdict.claims if claim.rigor == "R2").mutation,
+            bucket,
+        )
+    }
+    for position in r2.lines_without_candidates:
+        assert (position.path, position.lineno) not in mutated
+
+
+# --------------------------------------------------------------------------
+# whole_target scope
+# --------------------------------------------------------------------------
+
+
+def test_whole_target_scope_counts_only_declared_target_files(
+    git_repo: GitRepo, tmp_path: Path
+):
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document)
+    _seed_repo(git_repo, document)
+
+    verdict = _run(
+        git_repo,
+        _lane(
+            git_repo=git_repo,
+            staged=staged,
+            mode="whole_target",
+            targets=("app/src/orphan.ts",),
+            base="unused",
+        ),
+    )
+
+    r2 = next(claim for claim in verdict.claims if claim.rigor == "R2")
+    assert r2.mutation is not None
+    paths = {
+        outcome.path
+        for bucket in ("killed", "survived")
+        for outcome in getattr(r2.mutation, bucket)
+    }
+    assert paths == {"app/src/orphan.ts"}
+    # `src/orphan.ts` carries exactly two mutants in the committed report.
+    assert r2.mutation.total == 2
+
+
+# --------------------------------------------------------------------------
+# The refusals — each its own named terminal
+# --------------------------------------------------------------------------
+
+
+def _refused(git_repo: GitRepo, tmp_path: Path, document: dict):
+    staged = _stage_report(tmp_path, document)
+    _seed_repo(git_repo, _report_document())
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    verdict = _run(git_repo, _lane(git_repo=git_repo, staged=staged, base=base))
+    return next(claim for claim in verdict.claims if claim.rigor == "R2")
+
+
+def test_a_report_from_another_project_root_is_refused(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B046 non-repudiation (iii). The committed artifact's own absolute
+    ``projectRoot`` is left in place — so this is literally the real report,
+    describing the directory it was really produced in, presented to a lane
+    that ran somewhere else."""
+    document = _report_document()  # projectRoot NOT replaced
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert claim.mutation is None
+
+
+def test_a_pending_mutant_anywhere_refuses_the_whole_report(
+    git_repo: GitRepo, tmp_path: Path
+):
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    document["files"]["src/orphan.ts"]["mutants"][0]["status"] = "Pending"
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_an_unknown_status_is_refused_rather_than_dropped(
+    git_repo: GitRepo, tmp_path: Path
+):
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    document["files"]["src/orphan.ts"]["mutants"][0]["status"] = "Vaporised"
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_an_in_scope_ignored_mutant_is_refused(git_repo: GitRepo, tmp_path: Path):
+    """A-377: the v9 wire has no field that can state "the tool was told to
+    skip this". Dropping it would let a gate be made green from inside the
+    mutation tool's own config; folding it into ``discarded`` would report a
+    suppressed mutant as one that failed to COMPILE."""
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    document["files"]["src/orphan.ts"]["mutants"][0]["status"] = "Ignored"
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_an_unknown_schema_major_is_refused(git_repo: GitRepo, tmp_path: Path):
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    document["schemaVersion"] = "99.0"
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_schema_major_2_is_refused_as_UNPROVEN(git_repo: GitRepo, tmp_path: Path):
+    """Fix round 1. ``SUPPORTED_REPORT_SCHEMA_MAJORS`` shipped as ``{"1", "2"}``
+    while the one committed real artifact carries ``schemaVersion: "1.0"`` --
+    so major 2 was admitted on the strength of no witness at all, in a constant
+    whose own docstring says it is "pinned to the major the committed real
+    fixture carries".
+
+    Major 2 is refused the way ``jest-v8`` is refused one format over: as
+    UNPROVEN rather than proven-defective. Nothing here asserts that major 2 is
+    incompatible -- assay has no artifact in which to look. It asserts that a
+    shape assay has never seen is not read as if the shape had held, which is
+    the only thing a version field can honestly buy. The pin opens when a real
+    major-2 report is committed beside the major-1 one and the parser is
+    measured against it.
+    """
+    assert SUPPORTED_REPORT_SCHEMA_MAJORS == frozenset({"1"})
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    document["schemaVersion"] = "2.0"
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_the_committed_real_fixture_is_the_witness_for_the_pinned_major(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The other half of the pin, and what makes the test above a rule rather
+    than a preference: every admitted major has a real artifact behind it."""
+    assert _report_document()["schemaVersion"].split(".")[0] == "1"
+    assert {
+        version.split(".")[0] for version in [_report_document()["schemaVersion"]]
+    } == SUPPORTED_REPORT_SCHEMA_MAJORS
+
+
+def test_a_file_key_outside_the_declared_source_roots_is_refused(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """"An artifact from elsewhere" — refused, never quietly skipped. Skipping
+    would let a report about a DIFFERENT project be judged as this one and
+    score zero mutants, which is a PASS-shaped answer to a question nobody
+    asked."""
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    document["files"]["elsewhere/thing.ts"] = {
+        "language": "typescript",
+        "source": "export const x = 1\n",
+        "mutants": [],
+    }
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_a_mutant_with_no_replacement_is_refused(git_repo: GitRepo, tmp_path: Path):
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    document["files"]["src/orphan.ts"]["mutants"][0].pop("replacement")
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_a_report_with_no_framework_is_refused(git_repo: GitRepo, tmp_path: Path):
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    document.pop("framework")
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_an_absent_project_root_is_refused(git_repo: GitRepo, tmp_path: Path):
+    """Assay's OWN added requirement (A-375): the upstream schema makes
+    ``projectRoot`` optional, and only ``schemaVersion``/``thresholds``/
+    ``files`` required."""
+    document = _report_document()
+    document.pop("projectRoot")
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_a_command_that_writes_no_report_is_no_measurement_not_a_pass(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The silent green this whole project exists to remove: an ingested R2
+    lane whose evidence never appeared must not read as PASS."""
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document)
+    _seed_repo(git_repo, document)
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    lane = _lane(git_repo=git_repo, staged=staged, base=base)
+    silent = make_lane(
+        rigor=("R0", "R2"),
+        judge=lane.judge,
+        cwd="app",
+        argv=("/bin/sh", "-c", "exit 0"),
+    )
+
+    verdict = _run(git_repo, silent)
+
+    claim = next(c for c in verdict.claims if c.rigor == "R2")
+    assert claim.status is Outcome.NO_MEASUREMENT
+    assert claim.reason_code is ReasonCode.EMPTY_COVERAGE
+    assert verdict.outcome is not Outcome.PASS
+
+
+# --------------------------------------------------------------------------
+# B052 / DA-D5 — non-repudiation tier THREE: content
+#
+# Identity (`projectRoot`) says the report is about the directory the command
+# ran in. Anchoring (`files` keys) says every file it names resolves under a
+# declared source root. NEITHER says the report is about THIS COMMIT'S
+# CONTENT — and assay does not merely quote that content, it computes from
+# it: every mutant's byte span and every `lines_without_candidates` entry is
+# derived from the report's own `source` text.
+#
+# The harness these tests use is `_refused`'s: the repo is seeded from a
+# PRISTINE `_report_document()` and the STAGED report is the mutated one, so
+# the committed bytes are the real fixture's in every case and the only
+# difference is the text the report claims to have read.
+# --------------------------------------------------------------------------
+
+
+def _one_measured_key(document: dict) -> str:
+    """The first measured file, by the same sort order the ingester walks."""
+    return sorted(document["files"])[0]
+
+
+def _content_refusal_line(git_repo: GitRepo, tmp_path: Path, document: dict):
+    """Run the lane with a diagnostics stream (B053/A-409) so the refusal's
+    own sentence is readable, and return ``(claim, text)``."""
+    import io
+
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document)
+    _seed_repo(git_repo, _report_document())
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    stream = io.StringIO()
+    verdict = runner.run_lane(
+        _lane(git_repo=git_repo, staged=staged, base=base),
+        commit=git_repo.head(),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=JavaScriptAdapter(),
+        assay_version="0.1.0",
+        diagnostics=stream,
+    )
+    claim = next(item for item in verdict.claims if item.rigor == "R2")
+    return claim, stream.getvalue()
+
+
+def test_a_byte_identical_report_still_passes_the_content_tier(ingested):
+    """The control that makes every refusal below non-vacuous. This is the
+    REAL committed StrykerJS report against a commit carrying exactly the text
+    it embeds, and it produces a judged R2 claim — so the tier is a check the
+    honest lane survives, not a wall."""
+    verdict, _document = ingested
+    claim = next(item for item in verdict.claims if item.rigor == "R2")
+    assert claim.mutation is not None
+    assert claim.reason_code is not ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_a_stale_report_source_is_refused_naming_the_file_and_the_causes(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B052's cause 1, and the acceptance criterion's own test: ONE measured
+    file's `source` differs from the commit's bytes, by one line, and the
+    refusal names that file and all three causes.
+
+    The extra line is APPENDED rather than inserted, deliberately: an
+    insertion shifts every mutant below it and the PARSER refuses first
+    ("location.start names line N column M, which is past the end of that
+    line"), which would make this a test of `_parse_mutant` wearing B052's
+    name. Appending leaves every recorded position valid against the report's
+    own text, so the content tier is the only thing that can refuse it."""
+    document = _report_document()
+    key = _one_measured_key(document)
+    original = document["files"][key]["source"]
+    document["files"][key]["source"] = (
+        original.rstrip("\n") + "\n// a line the commit does not carry\n"
+    )
+    assert document["files"][key]["source"] != original
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert claim.mutation is None
+    assert f"app/{key}" in text, text
+    assert "does not match the bytes the judged commit carries" in text, text
+    for cause in ("STALE", "REWROTE", "FOREIGN"):
+        assert cause in text, text
+    assert "run the mutation tool inside the lane" in text.lower(), text
+
+
+def test_a_REWRITTEN_source_is_refused_and_that_is_the_ruling(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B052's cause 2 — a transpiler or a formatter inside the test command
+    rewriting the file before the tool mutated it. DA-D5 REFUSES it, and this
+    test is the record that the refusal is deliberate rather than collateral:
+    evidence whose text is not the commit's is not evidence about the commit,
+    because the mutants were applied to the rewritten text and carry the
+    rewritten text's line numbers.
+
+    The rewrite here is the most benign one imaginable — reindentation,
+    changing no token — and it is still refused. A check that let this through
+    would have to decide which rewrites preserve meaning, which is a judgment
+    about a language assay did not run."""
+    document = _report_document()
+    key = _one_measured_key(document)
+    original = document["files"][key]["source"]
+    reindented = "".join(
+        ("  " + line if line.strip() else line) for line in original.splitlines(True)
+    )
+    assert reindented != original
+    assert reindented.split() == original.split(), (
+        "the rewrite must change only whitespace, or this test is about "
+        "something else"
+    )
+    document["files"][key]["source"] = reindented
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert f"app/{key}" in text, text
+    assert "REWROTE" in text, text
+
+
+def test_CRLF_line_endings_are_not_a_content_mismatch(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B052's cause 4, the one the normalisation exists for. A consumer whose
+    `.gitattributes` checks files out CRLF gets a CRLF `source` against an LF
+    blob, and refusing that pair would refuse a correct lane over a checkout
+    setting. Every measured file is converted, so this is not one file's
+    accident."""
+    document = _report_document()
+    for record in document["files"].values():
+        record["source"] = record["source"].replace("\n", "\r\n")
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.reason_code is not ReasonCode.UNREADABLE_ARTIFACT, text
+    assert claim.mutation is not None, text
+
+
+def test_one_trailing_newline_either_way_is_not_a_content_mismatch(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The second half of the stated normalisation, tested in BOTH directions
+    from the same fixture: a report whose text lost its final newline, and one
+    that gained a first."""
+    stripped = _report_document()
+    for record in stripped["files"].values():
+        record["source"] = record["source"].rstrip("\n")
+    claim, text = _content_refusal_line(git_repo, tmp_path, stripped)
+    assert claim.reason_code is not ReasonCode.UNREADABLE_ARTIFACT, text
+    assert claim.mutation is not None, text
+
+
+def test_a_SECOND_trailing_newline_IS_a_content_mismatch(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The BOUND of the normalisation, which is the half that makes it a
+    contract rather than a shrug: exactly ONE trailing newline is ignored. A
+    file that gained a blank line at the end differs from the commit in a way
+    the tool's own line numbering can see, so it is a mismatch."""
+    document = _report_document()
+    key = _one_measured_key(document)
+    document["files"][key]["source"] = (
+        document["files"][key]["source"].rstrip("\n") + "\n\n"
+    )
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert f"app/{key}" in text, text
+
+
+def test_a_measured_file_the_commit_does_not_track_is_the_same_refusal(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """"The commit has no such content" is the strongest content mismatch
+    there is — B052's cause 3 in its most literal form — so it is this
+    refusal and not a `GIT_FAILED`, which would report a repository failure
+    for a report defect.
+
+    The added key is spelled to resolve under the lane's declared
+    `judge.source_roots`, so it passes tier two (anchoring) and is refused by
+    tier three alone."""
+    document = _report_document()
+    key = _one_measured_key(document)
+    document["files"]["src/never-committed.ts"] = {
+        "source": document["files"][key]["source"],
+        "mutants": [],
+    }
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "app/src/never-committed.ts" in text, text
+    assert "does not carry as a regular tracked file" in text, text
+
+
+# --------------------------------------------------------------------------
+# B070 (schema v11): the discarded mutants are RECORDED, not dropped
+#
+# Every test below drives the SECOND real StrykerJS artifact --
+# `mutation-report-json.probe-js-stryker-typecheck.json`, 88 mutants of which
+# 40 are genuine `CompileError`s produced by `@stryker-mutator/
+# typescript-checker`. Through schema v10 `ingest_mutation_report` `continue`d
+# past each of those 40 with no record of it anywhere in the document, which
+# is exactly why `judgment.r2.discarded` had nothing to be checked against.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def discarding(git_repo: GitRepo, tmp_path: Path):
+    """The high-discard run, materialised the same way `ingested` is: the real
+    report, a real repo seeded with the exact sources it embeds, a real lane
+    whose command writes it from inside the snapshot."""
+    document = _typecheck_report_document()
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document, name="typecheck-report.json")
+    _seed_repo(git_repo, document)
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    return _run(git_repo, _lane(git_repo=git_repo, staged=staged, base=base))
+
+
+def _r2(verdict) -> tuple:
+    claim = next(item for item in verdict.claims if item.rigor == "R2")
+    return claim, verdict.judgment.r2
+
+
+def test_the_real_report_carries_forty_genuine_compile_errors():
+    """The fixture's own premise, asserted against the committed bytes rather
+    than trusted from PROVENANCE.md. If a regenerated report ever stops
+    carrying discarded mutants, this fails FIRST and names why, instead of
+    every B070 test below quietly degenerating into a zero-discard control."""
+    document = _typecheck_report_document()
+    statuses = [
+        mutant["status"]
+        for record in document["files"].values()
+        for mutant in record["mutants"]
+    ]
+    assert statuses.count("CompileError") == 40, statuses.count("CompileError")
+    assert len(statuses) == 88, len(statuses)
+    assert document["framework"]["name"] == "StrykerJS"
+    assert document["framework"]["version"] == "10.0.0"
+
+
+def test_duplicate_ingested_mutant_identity_is_a_typed_artifact_refusal(
+    git_repo: GitRepo, tmp_path: Path
+):
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    key = _one_measured_key(document)
+    duplicate = dict(document["files"][key]["mutants"][0])
+    document["files"][key]["mutants"].append(duplicate)
+
+    claim = _refused(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert claim.mutation is None
+    assert "same mutant identity twice" in (claim.detail or "").lower()
+
+
+def test_every_discarded_mutant_reaches_the_wire_with_its_full_identity(
+    discarding,
+):
+    """B070's whole point: the forty invalid mutants are LISTED, one entry
+    each, with the same identity a bucketed mutant carries."""
+    claim, judgment_r2 = _r2(discarding)
+    assert len(judgment_r2.discarded) == 40
+    for entry in judgment_r2.discarded:
+        assert entry.path.startswith("app/src/")
+        assert entry.operator.startswith("stryker:")
+        assert entry.end_byte > entry.start_byte
+        assert len(entry.replacement_sha256) == 64
+        # A discarded mutant was refused by nothing, so it names no mechanism.
+        assert entry.kill_signal is None
+        assert entry.discard_reason == "compile_error"
+
+
+def test_compile_and_runtime_discards_keep_distinct_reasons(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B079: the two upstream discard statuses are not collapsed on the wire."""
+    document = _typecheck_report_document()
+    document["projectRoot"] = PLACEHOLDER
+    for record in document["files"].values():
+        for mutant in record["mutants"]:
+            if mutant["status"] == "CompileError":
+                mutant["status"] = "RuntimeError"
+                break
+        else:
+            continue
+        break
+    staged = _stage_report(tmp_path, document, name="runtime-discard-report.json")
+    _seed_repo(git_repo, document)
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    verdict = _run(git_repo, _lane(git_repo=git_repo, staged=staged, base=base))
+    _, judgment_r2 = _r2(verdict)
+    reasons = [entry.discard_reason for entry in judgment_r2.discarded]
+    assert reasons.count("runtime_error") == 1
+    assert reasons.count("compile_error") == 39
+
+
+def test_the_discarded_list_is_sorted_and_unique_by_identity(discarding):
+    _, judgment_r2 = _r2(discarding)
+    identities = [entry.identity for entry in judgment_r2.discarded]
+    assert identities == sorted(identities)
+    assert len(set(identities)) == len(identities)
+
+
+def test_the_fifth_disposition_arithmetic_holds_on_a_real_document(discarding):
+    """`candidate_count - total == len(discarded)` — the quantity that did not
+    exist before v11, on a real 88-mutant report."""
+    claim, judgment_r2 = _r2(discarding)
+    payload = claim.mutation
+    assert payload.total == 48
+    assert payload.candidate_count == 88
+    assert payload.candidate_count - payload.total == len(judgment_r2.discarded)
+
+
+def test_no_discarded_mutant_is_also_in_a_bucket(discarding):
+    """Disjointness, on the real document rather than only in the model's
+    own refusal message."""
+    claim, judgment_r2 = _r2(discarding)
+    bucketed = {
+        item.identity
+        for name in ("killed", "survived", "crashed", "budget_exceeded", "equivalent")
+        for item in getattr(claim.mutation, name)
+    }
+    assert bucketed
+    assert not bucketed & {entry.identity for entry in judgment_r2.discarded}
+
+
+def test_a_discarded_mutants_line_is_never_reported_as_barren(discarding):
+    """The converse of `lines_without_candidates`: the tool DID produce a
+    candidate on that line — it merely produced an invalid one."""
+    _, judgment_r2 = _r2(discarding)
+    barren = {item.sort_key for item in judgment_r2.lines_without_candidates}
+    assert not barren & {
+        (entry.path, entry.lineno) for entry in judgment_r2.discarded
+    }
+
+
+def test_the_discarded_mutants_do_not_move_the_score(discarding):
+    """DA-R23's sentence, re-asserted at v11: listing the mutants changed
+    where they are recorded, not whether they count. The denominator is
+    `killed + survived` over the buckets, and forty entries beside it leave
+    it untouched."""
+    from assay.mutation import mutation_pct
+
+    claim, judgment_r2 = _r2(discarding)
+    payload = claim.mutation
+    assert len(judgment_r2.discarded) == 40
+    assert mutation_pct(payload) == pytest.approx(
+        100.0 * len(payload.killed) / (len(payload.killed) + len(payload.survived))
+    )
+
+
+def test_the_high_discard_verdict_verifies_clean(discarding):
+    """The CONTROL that proves the new arithmetic is a re-derivation and not
+    an upper-bound clamp (route 3, rejected by DA-R26). A truthful document
+    whose discarded mutants outnumber four fifths of its buckets is ACCEPTED,
+    in full, by the real verifier."""
+    from assay.verify import verify_document
+
+    document = json.loads(json.dumps(discarding.to_dict()))
+    assert len(document["judgment"]["r2"]["discarded"]) == 40
+    assert verify_document(document) == []
+
+
+def test_a_zero_discard_report_still_records_an_EMPTY_list(ingested):
+    """The empty-vs-absent rule `survived_uncovered` already lives under. The
+    first real artifact discards nothing; that is a positive statement assay
+    makes, not a silence."""
+    verdict, _document = ingested
+    claim, judgment_r2 = _r2(verdict)
+    assert judgment_r2.discarded == ()
+    assert claim.mutation.candidate_count == claim.mutation.total

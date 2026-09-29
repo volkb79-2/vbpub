@@ -1743,7 +1743,7 @@ choice you make in `vite.config.ts`, and the only safe one today is
 The witness artifacts are committed under
 `tests/fixtures/coverage/probe-js-provider-defect/` (both providers, both
 Vitest majors) and re-derived by
-`tests/test_coverage_istanbul_provider_accuracy.py` on every run. The ruling
+`tests/parsers/coverage/test_coverage_istanbul_provider_accuracy.py` on every run. The ruling
 is A-346; B040 tracks it upstream. **`nyc`/`istanbul` and Jest with its
 default `babel` coverage provider share `@vitest/coverage-istanbul`'s own
 instrumenter and are unaffected.** Jest's `coverageProvider: "v8"` was not
@@ -2108,7 +2108,7 @@ configured build keys its coverage map by the real source path — proved here
 against a real, committed artifact
 (`tests/fixtures/coverage/coverage-istanbul-json.vite-plugin-istanbul.json`,
 `tests/fixtures/coverage/PROVENANCE.md`'s own section, and
-`tests/test_coverage_parsers_vite_plugin_istanbul_artifact.py`) rather than
+`tests/parsers/coverage/test_coverage_parsers_vite_plugin_istanbul_artifact.py`) rather than
 assumed from the plugin's own description. Nothing about the parser changes
 for this producer: it is the SAME `coverage-istanbul-json` format every
 Vitest artifact in this project already declares, read by the identical,

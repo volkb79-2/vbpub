@@ -54,6 +54,9 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
     f"expected assay's project root at {PROJECT_ROOT}, but there is no "
     f"pyproject.toml there"
 )
+#: The `tests/` directory. Moved test files use this instead of their own
+#: `__file__`, which changes when a file changes folder (B130).
+TESTS_ROOT = PROJECT_ROOT / "tests"
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -1217,10 +1220,10 @@ def as_statement_attributed(profile):
     correction instead, through
     :func:`assay.statement_attribution.attribute_statements` with real oracle
     blocks -- see :func:`load_go_statement_oracle` and its two committed
-    documents, ``tests/test_statement_attribution_go_witnesses.py`` (the
-    frozen P27 witnesses), ``tests/test_adapters_go_union_fidelity.py`` and
-    ``tests/test_canary_go_pipeline.py`` (the regenerated fixtures, F008-A4),
-    and ``tests/test_runner_statement_attribution_wiring.py`` (the runner
+    documents, ``tests/adapters/go/test_statement_attribution_go_witnesses.py`` (the
+    frozen P27 witnesses), ``tests/adapters/go/test_adapters_go_union_fidelity.py`` and
+    ``tests/adapters/go/test_canary_go_pipeline.py`` (the regenerated fixtures, F008-A4),
+    and ``tests/core/test_runner_statement_attribution_wiring.py`` (the runner
     seam).
 
     Renamed from ``as_pre_oracle_attributed`` when F008-A4 landed: every
