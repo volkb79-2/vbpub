@@ -64,13 +64,13 @@ def test_the_git_drain_loop_offers_no_mutation_site_in_its_exit_test():
     span = range(function.lineno, function.end_lineno + 1)
     (loop,) = [n for n in span if "while selector.get_map():" in lines[n - 1]]
     (overflow,) = [n for n in span if lines[n - 1].strip() == "if overflowed:"]
-    sites = PythonAdapter().generate_mutation_sites(
-        text,
-        {loop, overflow},
-        operators=("python:compare-swap", "python:boolop-swap", "python:falsy-swap", "python:bool-const-flip"),
-        limit=1000,
-    )
+    operators = ("python:compare-swap", "python:boolop-swap", "python:falsy-swap", "python:bool-const-flip")
+    sites = PythonAdapter().generate_mutation_sites(text, {loop, overflow}, operators=operators, limit=1000)
     assert list(sites) == []
+    # Positive control: the same call finds sites on the wait loop's mutable test, so the
+    # empty result above is not a silent no-op (an unknown operator name also yields []).
+    (wait,) = [n for n in span if lines[n - 1].strip() == "while overflowed is None and proc.poll() is None:"]
+    assert PythonAdapter().generate_mutation_sites(text, {wait}, operators=operators, limit=1000)
 
 
 def test_the_git_drain_stops_after_an_output_overflow_even_without_a_deadline(monkeypatch):
