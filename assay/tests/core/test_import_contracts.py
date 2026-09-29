@@ -176,6 +176,28 @@ def test_edge_walk_sees_type_checking_and_function_level_relative_imports():
     }
 
 
+PARSER_PACKAGES = ("coverage_parsers", "mutation_parsers", "result_reports")
+
+
+def unmapped_modules(paths: dict[str, Path]) -> list[str]:
+    """Modules under adapters/ or a parser package that component() files under core by default."""
+    bad = []
+    for name, path in paths.items():
+        rel = path.relative_to(PACKAGE_DIR)
+        if rel.parts[0] == "adapters" and rel.name not in ("__init__.py", "base.py"):
+            if not component(name).startswith("adapter."):
+                bad.append(name)
+        elif rel.parts[0] in PARSER_PACKAGES and not component(name).startswith("parsers."):
+            bad.append(name)
+    return sorted(bad)
+
+
+def test_no_adapter_or_parser_module_falls_into_core_by_default():
+    assert unmapped_modules(_module_paths()) == []
+    synthetic = {"assay.adapters.rust": PACKAGE_DIR / "adapters" / "rust.py"}
+    assert unmapped_modules(synthetic) == ["assay.adapters.rust"]
+
+
 # --------------------------------------------------------------------------
 # Part 2: test-directory layout
 # --------------------------------------------------------------------------
