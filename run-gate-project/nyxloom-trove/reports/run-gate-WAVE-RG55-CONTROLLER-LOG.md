@@ -5333,3 +5333,29 @@ specific PID/error diagnostic. Its full containing file passed 122 tests in
 through RW-377 was reconciled into P6 at `4af3d3c0`. R0/R1 must be rerun on
 the resulting quiet tip, followed by R3, fresh Sol round 5, live probes,
 replacement P6 R2, and the full gate. No P6 code has been merged to main.
+
+### RW-379 — 2026-09-29 02:08:07Z — P6 exact-tip R0/R1 and R3 pass after coverage repair
+
+P6 tree `d7603b5292779a227fe9177254668eb50049f147` now passes both registered
+short lanes. `r0-r1` ran 02:01:27–02:03:50Z (143.567s; exit 0): all **1,705
+tests passed**, with **6,167/6,167 statements and 2,148/2,148 branches**.
+Run-gate history independently records `outcome=pass`, `dirty=false`, and
+the exact commit. The new `lib/placement.py` diagnostic path is covered; this
+closes RW-378's coverage miss. Its exact gate container was
+`cgprofile-gate-3848809-1790647289`, capped at 3 CPUs in `dev-gates.slice`.
+
+`r3` ran 02:04:36–02:04:51Z (14.549s; exit 0): **7/7 canaries rejected**
+(`counter-reset-negative`, `absent-reads-as-zero`, `limits-ignore-ancestors`,
+`slice-hierarchy-flattened`, `follow-children-disabled`,
+`manifest-renamed-to-jsonl`, `log-timestamp-uses-arrival-time`). Its history
+record matches the same exact commit; container
+`run-gate-vbpub-r3-3855123-1790647476` was capped at 3 CPUs in
+`dev-gates.slice`.
+
+The daemon was down for both lanes. R0/R1 used coarse rusage; R3 used basic
+container sampling, not DAMON. R3 still passed while host loadavg was 5.68 at
+start and 6.04 at finish, with host CPU `some` pressure around 11%: no resource
+measurement participates in the canary verdict. These results do not replace
+the required live daemon/carrier/placement probes or measured DAMON series.
+The receipts are on `d7603b5`; after recording them in the package report, rerun
+the short lanes on the final documentation tip before Sol round 5.

@@ -1671,3 +1671,33 @@ in 17.00 seconds. The test change is committed at `e7bca65e`, and the
 controller-log reconciliation is at `4af3d3c0`. Exact-tip registered R0/R1
 and R3, 100% changed-area coverage, live placement/refusal and restoration
 probes, fresh Sol round 5, replacement R2, and the full gate remain required.
+
+## Session 23 — exact-tip short gates pass after the coverage repair
+
+On exact tree `d7603b5292779a227fe9177254668eb50049f147`, registered `r0-r1`
+completed 02:01:27–02:03:50Z in 143.567s with exit 0. All **1,705 tests
+passed**. Branch-aware coverage was **6,167/6,167 statements and 2,148/2,148
+branches (100%)**, including the migration refusal logger added in Session
+21. The separate `.run-gate/history.json` record agrees on exact commit,
+clean state, and PASS. Gate container `cgprofile-gate-3848809-1790647289`
+was capped at 3 CPUs under `dev-gates.slice`.
+
+Registered `r3` completed 02:04:36–02:04:51Z in 14.549s with exit 0; its
+history record matches the same clean commit. All seven adversarial canaries
+were rejected: counter-reset-negative, absent-reads-as-zero,
+limits-ignore-ancestors, slice-hierarchy-flattened, follow-children-disabled,
+manifest-renamed-to-jsonl, and log-timestamp-uses-arrival-time. Its container
+was `run-gate-vbpub-r3-3855123-1790647476`, capped at 3 CPUs under
+`dev-gates.slice`.
+
+The host daemon was down. R0/R1 therefore used coarse rusage; R3 used basic
+container sampling, not DAMON. During R3 host loadavg rose from 5.68 to 6.04
+and host CPU `some` pressure was about 11%; all seven functional canary
+verdicts remained rejected. This is not evidence for the still-required live
+daemon, socket/docker-exec carrier, private-PID placement start/refusal and
+stop-restoration probes, or measured DAMON overhead.
+
+Because this session record changes the package documentation tip, repeat
+R0/R1 and R3 on the resulting final review SHA. Fresh Sol round 5, live probes,
+replacement R2, the full gate, and review disposition remain open; nothing in
+this report claims P6 is released or merged.
