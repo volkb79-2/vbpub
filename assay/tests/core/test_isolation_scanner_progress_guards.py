@@ -48,6 +48,15 @@ def test_every_guarded_function_still_terminates_on_ordinary_input():
     assert refused.value.reason_code is ReasonCode.GIT_FAILED
 
 
+def test_the_tree_record_guard_accepts_ordinary_records():
+    # Reaches isolation.py's record-cursor guard twice (from 0 and from a later record) with real code.
+    raw = b"100644 f\x00" + bytes(range(20)) + b"40000 d\x00" + bytes(range(20, 40))
+    assert isolation._parse_tree(raw, "t") == (
+        ("100644", b"f", bytes(range(20)).hex()),
+        ("40000", b"d", bytes(range(20, 40)).hex()),
+    )
+
+
 def test_the_git_drain_loop_offers_no_mutation_site_in_its_exit_test():
     text = (SRC / "git.py").read_text(encoding="utf-8")
     (function,) = [n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == "_run_bounded"]

@@ -45,3 +45,8 @@ def test_every_guarded_function_still_terminates_on_ordinary_input():
         {"adapters/go.py": go, "adapters/go_modfile.py": go_modfile},
         (AssayError,),
     )
+
+
+def test_the_block_comment_and_raw_string_guards_accept_ordinary_input():
+    # Reaches go.py's closed `/* */` and closed raw-string guards with real code.
+    assert go._strip_comments_and_literals("package x\n/* c */ var s = `r`\n") == "package x\n        var s =    \n"

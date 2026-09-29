@@ -37,3 +37,10 @@ def test_sql_cases_name_only_the_sql_lexer_source():
 
 def test_every_guarded_function_still_terminates_on_ordinary_input():
     assert_ordinary_input_terminates(CASES, {"adapters/sql_lex.py": sql_lex}, (MutationDiscoveryError,))
+
+
+def test_the_dollar_quote_guard_accepts_ordinary_input():
+    # Reaches sql_lex.py's closed dollar-quote guard with real code.
+    mask, bodies = sql_lex._lex_once(b"SELECT $$ b $$;\n")
+    assert bytes(mask) == b"SELECT        ;\n"
+    assert bodies == [(9, 12)]
