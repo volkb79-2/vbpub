@@ -650,6 +650,16 @@ itself declares. See
 for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
 a worked, pasteable lane.
 
+The adapter is qualified against a **real PostgreSQL 18.6** by assay's own gate
+(A-480), with no consumer checkout: an outer phase of the registered
+`tester-unified` gate runs `gate/python/qualify_sql.py` on the host after a green
+tester container, against assay's own schema
+(`tests/fixtures/mutation/sql/qualification/01-schema.sql`), a 24-row probe
+matrix and a witnessed `assay run`, in one digest-pinned, never-pulled container
+named `run-gate-assay-sql-<pid>-<epoch>`. A busy host or an absent image is an
+inconclusive run (`ASSAY_GATE_INCONCLUSIVE=`, exit 3), never a green one. See
+[§11 of the design guide](docs/DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126).
+
 The two B015 semantic families, `python:uuid-equality-swap` and
 `python:enum-comparison-swap`, are **withdrawn** (A-326). Measured
 over assay's own source they produced 87 sites, none of which

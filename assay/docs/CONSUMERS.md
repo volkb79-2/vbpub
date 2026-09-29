@@ -1241,6 +1241,24 @@ declared artifacts:
 Commit that `.gitignore` in the same change that adds the lane, exactly as
 for a coverage artifact above.
 
+### What assay's own SQL qualification does not cover
+
+assay qualifies this adapter against a real PostgreSQL 18.6 with its own schema
+(24 representative sites; see [§11 of the design guide](DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126)),
+not against your schema. Two families are outside that evidence and are tracked
+in `nyxloom-trove/4-backlog.md`:
+
+- **Constructs PostgreSQL may refuse (B132).** A generated mutant can be
+  invalid DDL the qualification never exercises: `NOT NULL` dropped from an
+  `IDENTITY`/`serial`/primary-key column, a string widen of an enum `CHECK`
+  (unknown outcomes), and constructs the schema does not reach (generated
+  expressions, `EVENT` triggers, quoted foreign-key targets, triggers created
+  inside a `DO` block). Such a mutant is `crashed`, never a kill; a probe for
+  them needs an ad-hoc-construct mode of the qualification harness.
+- **Operator labels (B133).** `sql:widen-check-in` on a `NOT IN` list
+  *narrows* the check, and `sql:drop-check` also rewrites `CREATE POLICY ...
+  WITH CHECK`; the operator names describe the common case only.
+
 ## JavaScript/TypeScript lanes (R1, and R2 by ingestion)
 
 `judge.language = "javascript"` is a changed-line lane over
