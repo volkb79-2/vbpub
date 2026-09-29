@@ -52,6 +52,12 @@ before Docker starts. The marker is an MDT bootstrap convention, not Docker
 mount metadata; the shipped template marks every directory source with `/`. See the
 [consumer example](CONSUMERS.md#optional-git-config-mount).
 
+The template puts Codex's shared SQLite database under the persistent `.codex` mount with
+`CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`, so profile data survives a rebuild.
+It sets `shutdownAction: "none"` so closing the attached Dev Containers session leaves the
+container available. Adoption details are in the
+[consumer guide](CONSUMERS.md#codex-profile-state-and-container-lifetime).
+
 ## Release relationship
 
 The `release` run-gate lane contains the image release-flow tests and is the

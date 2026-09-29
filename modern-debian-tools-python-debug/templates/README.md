@@ -57,9 +57,14 @@ That directory holds `ai.env` for central API keys, `aliases.sh` for local shell
 
 **Intentionally ephemeral:** `~/.cache`, `~/.npm` — rebuildable, not worth persisting.
 
+The template sets `CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`; that database lives
+under the persistent `.codex` mount and is shared by the configured Codex profiles. It also
+sets `shutdownAction` to `none`, so the container remains running when its Dev Containers
+session disconnects.
+
 ### Migrate existing Pi, ClaudeLink, and OpenCode state once
 
-The host bootstrap creates empty source directories; it never copies existing state. Before
+The host bootstrap creates missing source directories and files; it never copies existing state. Before
 the first rebuild after adopting this template, run this on the host. It contains no
 credentials; it copies the state already present on your machine:
 

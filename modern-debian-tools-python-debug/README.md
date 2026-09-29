@@ -304,6 +304,11 @@ the workspace root, `/home/vscode/.claude`, `/home/vscode/.claudelink`, `/home/v
 `/home/vscode/.openclaw`, `/home/vscode/.pi`, `/home/vscode/.reasonix`, and
 `/home/vscode/.local/share/opencode`.
 
+The template sets `CODEX_SQLITE_HOME` to `/home/vscode/.codex/sqlite-shared`, under the
+persistent Codex mount, and keeps the container running when its Dev Containers session
+disconnects with `shutdownAction: "none"`. See the
+[Codex profile and container-lifetime notes](docs/CONSUMERS.md#codex-profile-state-and-container-lifetime).
+
 The template's Pi mount preserves the whole `~/.pi` root, including `~/.pi/agent/sessions/`.
 Its ClaudeLink mount preserves the whole `~/.claudelink` root, including `nexus.db`, scheduler
 state/logs, and related runtime files. Their grouped host sources are

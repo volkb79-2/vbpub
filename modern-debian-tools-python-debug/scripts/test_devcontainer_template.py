@@ -79,6 +79,14 @@ def test_template_marks_home_directories_and_files_by_source_spelling() -> None:
     assert "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY" in TEMPLATE_TEXT
     assert "create-by-spelling" in TEMPLATE_TEXT
     assert "no `/` marks it as an empty" in TEMPLATE_TEXT
+    assert "Docker's --mount" in TEMPLATE_TEXT
+    assert "refuses a missing source" in TEMPLATE_TEXT
+    assert "Docker creates them as root" not in TEMPLATE_TEXT
+
+
+def test_template_keeps_codex_database_persistent_and_container_running() -> None:
+    assert '"CODEX_SQLITE_HOME": "/home/vscode/.codex/sqlite-shared"' in TEMPLATE_TEXT
+    assert '"shutdownAction": "none"' in TEMPLATE_TEXT
 
 
 def test_bootstrap_derives_every_active_home_bind_source() -> None:
@@ -329,6 +337,11 @@ def test_bind_source_type_policy_is_explained_and_cross_linked() -> None:
     assert "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY" in template_readme
     assert "empty regular file (`0600`)" in lifecycle
     assert ".gitconfig" in consumers
+    for text in (top_readme, design, consumers):
+        assert "CODEX_SQLITE_HOME" in text
+        assert 'shutdownAction: "none"' in text or 'shutdownAction` to `none' in text
+    assert "docs/CONSUMERS.md#codex-profile-state-and-container-lifetime" in top_readme
+    assert "CONSUMERS.md#codex-profile-state-and-container-lifetime" in design
 
 
 def test_running_container_recipe_quiesces_before_copying_sqlite_state() -> None:

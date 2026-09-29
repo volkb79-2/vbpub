@@ -4,6 +4,10 @@ This is the **canonical** reference for the two lifecycle hooks an mdt-based dev
 and for the grouped-persistence mount layout. Consuming repos (e.g. dstdns) point here and keep only
 their project-specific notes.
 
+The shipped template uses `shutdownAction: "none"`; the devcontainer remains running when its
+attached Dev Containers session disconnects. `CODEX_SQLITE_HOME` points at the shared SQLite
+database beneath the persistent `/home/vscode/.codex` mount.
+
 ## The two lifecycle hooks (set in the consuming repo's `devcontainer.json`)
 
 | Hook | Runs | Where | Script |

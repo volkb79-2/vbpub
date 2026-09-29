@@ -214,6 +214,13 @@ OpenCode source is `${localEnv:HOME}/mdt--mounted-folders/opencode-data`.
 | ClaudeLink | `.claudelink` | `/home/vscode/.claudelink` | `nexus.db`, scheduler state/logs, and related runtime files |
 | OpenCode | `opencode-data` | `/home/vscode/.local/share/opencode` | auth, sessions, logs, and runtime state |
 
+### Codex profile state and container lifetime
+
+The shipped template persists `.codex` and an optional `.codex2` profile directory. It sets
+`CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`, placing the shared SQLite database
+under the persistent `.codex` host mount. The template also sets `shutdownAction` to `none`,
+so the container remains running when the attached Dev Containers session disconnects.
+
 ### Optional Git config mount
 
 The shipped template does not mount `.gitconfig`. If a consumer needs a grouped, persistent Git
