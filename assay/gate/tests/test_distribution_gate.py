@@ -1092,6 +1092,8 @@ def test_the_shipped_source_tree_is_pyflakes_clean(
     (scratch / "clone" / "assay" / "src" / "assay").symlink_to(PROJECT_ROOT / "src" / "assay")
     (scratch / "clone" / "assay" / "tests").symlink_to(PROJECT_ROOT / "tests")
     (scratch / "clone" / "assay" / "analysis").symlink_to(PROJECT_ROOT / "analysis")
+    (scratch / "clone" / "assay" / "gate").mkdir()
+    (scratch / "clone" / "assay" / "gate" / "tests").symlink_to(PROJECT_ROOT / "gate" / "tests")
     shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
 
     proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions, timeout=180)
