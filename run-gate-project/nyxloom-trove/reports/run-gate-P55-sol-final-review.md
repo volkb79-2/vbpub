@@ -5,7 +5,7 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "8823dca820cf6ffc6520da57663f8b7424f1ce35"
+input_revision: "477a8e7a8cf71370a3c89ca37189a4e838b69f1e"
 depends_on: []
 session: fresh
 source:
