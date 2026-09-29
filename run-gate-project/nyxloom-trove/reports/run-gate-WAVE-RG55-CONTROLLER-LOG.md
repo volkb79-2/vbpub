@@ -5283,3 +5283,20 @@ placement request, D-15 documentation/tests, and live acceptance probes must
 implement this ruling before P6 review can pass. The focused live probe must
 show the selected gate lane exits while a different lane and the daemon
 remain alive.
+
+### RW-380 — 2026-09-29 03:55:30Z — do not add placement solely to obtain stall kill
+
+Refinement to RW-379 after applying the estate's performance-invariance
+constraint: a liveness policy must not silently move a lane into a different
+CPU/memory hierarchy just to make daemon enforcement available. For a
+`container-shared` session, `--on-stall kill` still requires an explicit
+`--place` request and a successfully verified leaf; no PID-signal fallback
+is permitted. The run-gate consumer requests `kill` only when its already
+derived placement plan requests a leaf; otherwise it requests `report` and
+keeps its existing lane-local stall watchdog as verdict authority. Do not
+invent a placement request when no declared or measured resource fact
+supports one. A requested placement that is refused makes daemon `start`
+return `bad-policy`; the consumer's profiling fallback must remain
+non-blocking and preserve the lane-local verdict path. Scope `container`
+continues to use the exact target-container `cgroup.kill` under the guards
+from RW-379.
