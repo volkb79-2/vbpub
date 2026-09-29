@@ -214,15 +214,71 @@ OpenCode source is `${localEnv:HOME}/mdt--mounted-folders/opencode-data`.
 | ClaudeLink | `.claudelink` | `/home/vscode/.claudelink` | `nexus.db`, scheduler state/logs, and related runtime files |
 | OpenCode | `opencode-data` | `/home/vscode/.local/share/opencode` | auth, sessions, logs, and runtime state |
 
+### Codex profile state and container lifetime
+
+The shipped template persists `.codex` and an optional `.codex2` profile directory. It sets
+`CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`, placing the shared SQLite database
+under the persistent `.codex` host mount. The template also sets `shutdownAction` to `none`,
+so the container remains running when the attached Dev Containers session disconnects.
+
+### Optional Git config mount
+
+The shipped template does not mount `.gitconfig`. If a consumer needs a grouped, persistent Git
+config, add this entry to its `mounts` array:
+
+```jsonc
+"source=${localEnv:HOME}/mdt--mounted-folders/.gitconfig,target=/home/vscode/.gitconfig,type=bind"
+```
+
+The bootstrap uses the host filesystem type for existing sources, so an existing regular-file
+source works regardless of its filename or suffix. The default
+`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=create-by-spelling` creates missing sources according to
+their spelling: append `/` for a directory; without `/`, MDT creates an empty regular file with
+mode `0600`. This is an MDT convention, not a Docker mount type option. For example, this missing
+custom directory source is marked for creation:
+
+```jsonc
+"source=${localEnv:HOME}/mdt--mounted-folders/.my-cache/,target=/home/vscode/.my-cache,type=bind"
+```
+
+A directory mount must keep its trailing `/`, including in copied template entries. For a missing
+`$HOME` source without `/`, MDT creates a file regardless of its basename or suffix. Other existing
+host sources retain their actual type. The MDT host-setup wizard can instead set
+`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail`; this requires every `$HOME` source managed by the
+bootstrap to exist before Docker starts the devcontainer. `.gitconfig` is recognized as a file name
+and a directory at that path is refused.
+
+Choose the policy with `sudo ./install.sh --wizard` from MDT's `host-setup/` directory on the Docker
+host. The bootstrap reads the resulting `/etc/mdt/host-setup.env` when `initializeCommand` runs.
+
+To seed the source from the host's native Git config, run this on the host before the bootstrap has
+created the source, or after inspecting any already-created file:
+
+```sh
+set -eu
+source_file="$HOME/.gitconfig"
+target_file="$HOME/mdt--mounted-folders/.gitconfig"
+test -f "$source_file"
+if [ -e "$target_file" ] || [ -L "$target_file" ]; then
+  printf 'Refusing to overwrite existing Git config source: %s\n' "$target_file" >&2
+  exit 1
+fi
+install -D -m 600 "$source_file" "$target_file"
+```
+
+If an earlier bootstrap created a directory or empty file at the grouped `.gitconfig` path, inspect
+it before moving, replacing, or removing it. If Git config is not needed in the container, remove
+the mount instead.
+
 Copy the current template's mount entries unchanged so the host sources and container
-targets stay aligned. The bootstrap creates empty sources but does not migrate existing
-data. Before the first rebuild, run this on the host; it contains no credentials or
-secret literals:
+targets stay aligned. By default the bootstrap creates missing directories and empty files from
+their source spellings, but it does not migrate existing data. Before the first rebuild, run this
+on the host; it contains no credentials or secret literals:
 
 ```sh
 mdt_state="$HOME/mdt--mounted-folders"
 mkdir -p "$mdt_state"
-for d in .claude .claudelink .codex .config .gnupg .local .minisign .openclaw .pi .reasonix; do
+for d in .claude .claudelink .codex .codex2 .config .gnupg .local .minisign .openclaw .pi .reasonix; do
   if [ -d "$HOME/$d" ]; then
     mkdir -p "$mdt_state/$d"
     cp -a "$HOME/$d/." "$mdt_state/$d/"
