@@ -2071,7 +2071,7 @@ per-candidate budget. Scanner cursors therefore advance through
 stalled or rewound cursor raises `AssertionError`, an ordinary test failure and
 so an ordinary kill. The `git.py` pipe-drain loop's exit test deliberately has
 no mutable comparison (the overflow exit is a separate `if overflowed:` after
-the `for`), so no mutant can make it block forever. The per-component
+the `for`), so no mutant of that exit test can make the drain block forever. The wait loop after it keeps its mutable test; the drain test refuses a wait on the overflowing child before its group is killed, so those mutants fail at once instead of idling into `hung`. The per-component
 `test_*_scanner_progress_guards.py` files also kill their own target mutants
 textually under R2 (the anchor stops matching), so those kills are not evidence
 that the guards work; their effect shows in the other scanner tests failing
