@@ -88,6 +88,13 @@ Every finding is accepted, with its fix text as written, except where noted belo
 | CD44 | **The controller owns the registered gate (overrides every brief's Gate section).** Implementers run focused tests and collect-only, never `run-gate.py`. They finish with `READY-FOR-GATE <hash>` in their LOG. The controller runs `tester-unified` (and `self-qualification-preflight` where a brief requires it) serially, one watcher at a time, and hands the verdict and markers back. Oracles that read gate output (for example W4 O8/O10, W8/W9 preflight checks) are completed by a Sonnet fixer after the controller's gate run. |
 | CD45 | **New files under `tests/core/`.** The vbpub root `.gitignore:352` ignores every path named `core`. W3 adds `!/tests/core/` to `assay/.gitignore`. Every implementer checks `git status --short --ignored` for `!!` entries before committing new test files. |
 
+## After the W2 review (2026-09-29, `REVIEW-W2.md`)
+
+| # | Decision |
+|---|---|
+| CD46 | **"Public judge name" (CD18) means no leading underscore**, which is T3's rule. `__all__` membership is not required. `assay.git.ignore_rule_source` and `assay.cli.AssayArgumentParser` stay as they are in Wave A, and W2 does not edit `git.py`. The analysis-to-judge module set is pinned by T3's `ALLOWED_JUDGE_MODULES` (W2R-8). Adding a module there is a reviewed change. |
+| CD31 (amended by W2R-1) | The shared fixture loader is realized as the review specifies: `analysis/` and `analysis/tests/` are packages, and the judge `tests/conftest.py` is loaded on demand under the module name `assay_judge_conftest`. There is no module `__getattr__` proxy. W4's `gate/tests/support.py` reuses that loader. |
+
 **Plan consequences:**
 - W8 now depends on W2 (CD1).
 - W7 edits `gate/tests/test_self_lane.py` (CD12).
