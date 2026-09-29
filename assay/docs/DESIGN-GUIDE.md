@@ -2063,6 +2063,21 @@ shows how to preserve the log and inspect the report. Decision A-462 records
 why this separate lane supersedes A-133's former permanent R0-only limit while
 leaving the ordinary release lane unchanged.
 
+Loop guards (B113, A-466). Time never classifies a candidate (A-464), so a
+mutant that spins must fail by itself: a CPU-spinning candidate keeps the
+liveness monitor's `cpu_growing` true and would otherwise burn its whole
+per-candidate budget. Scanner cursors therefore advance through
+`errors.require_advance`, one shared comparison that one test kills, and a
+stalled or rewound cursor raises `AssertionError`, an ordinary test failure and
+so an ordinary kill. The `git.py` pipe-drain loop's exit test deliberately has
+no mutable comparison (the overflow exit is a separate `if overflowed:` after
+the `for`), so no mutant can make it block forever. The per-component
+`test_*_scanner_progress_guards.py` files also kill their own target mutants
+textually under R2 (the anchor stops matching), so those kills are not evidence
+that the guards work; their effect shows in the other scanner tests failing
+fast instead of spinning. The historical real-clock liveness tests a watchdog
+would have protected no longer exist (CD3).
+
 **Zero runtime dependencies** (stdlib only: `tomllib`, `json`,
 `xml.etree.ElementTree`, `ast`, `re`, `subprocess`, `pathlib`, `argparse`) makes
 that scratch-venv test trivially offline. assay consumes coverage.py's *output*
