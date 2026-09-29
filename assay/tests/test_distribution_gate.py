@@ -964,6 +964,7 @@ def test_a_clone_with_no_analysis_tree_refuses_rather_than_linting_nothing(
 
     proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
     assert proc.returncode != 0
+    assert "lint phase found no analysis sources to lint" in proc.stdout + proc.stderr
     assert "ASSAY_GATE_PHASE=pyflakes-clean" not in proc.stdout
 
 
