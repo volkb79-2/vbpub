@@ -58,6 +58,16 @@ Reviews: `REVIEW-waveA-tests-gate.md`, `REVIEW-waveA-code.md` and `REVIEW-waveA-
 | CD32 | **Gate-entry host check (W4).** `run_registered_gate` begins with the same one-shot check, before capturing C/T, clearing the receipt or building anything: `docker ps --no-trunc --format '{{.Names}}'`. If any name starts with `run-gate-`, it prints stderr `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names, comma-joined>` and exits 3. The receipt stays untouched, and there is no waiting or polling. Its oracle is in W4 (O7a). This makes the host-load rule a mechanism, so a Wave A gate no longer runs the tester for 30–60 minutes only to stop at W5's pre-PostgreSQL check. |
 | CD33 | **W5 brief size (26.5 KB) accepted**, as CD24: about 6.3 KB is exact text (schema, matrix, probes, scripts). The W5-local decision to keep `carve-assets/W3/expected/dstdns-sql-r2-v6-witness.json` follows CD8. The one-line MANIFEST notes in the old carve-asset directories W3 and W5–W8 are the only carve-asset edits W5 may make. These are the historical B-wave carve directories, not Wave A packages. |
 
+## Answers to the W8/W9 re-carve questions (2026-09-29)
+
+| # | Decision |
+|---|---|
+| CD34 | **Q1: the tree is bound through the commit only.** `plan-estimate` checks `run.commit` against the plan's commit. `tree` in its output comes from the plan JSON. The judge's progress `run` event does not gain a `tree` field in Wave A: that changes the judge output for an estimate that never classifies anything. |
+| CD35 | **Q2:** CD25's nine keys are exact. P0's provenance fields (progress sha256, run line, source event) are dropped: the estimate is advisory, not evidence. |
+| CD36 | **Q3:** the `assay plan` hint goes to stderr, one line, only when a plan was produced, so stdout stays pure JSON. |
+| CD37 | **Q4:** unverified hung evidence stays record-only, as W9 specifies. W9 mirrors exactly where the judge re-checks (the state record); it never applies a stricter rule than the judge. |
+| CD38 | **Q5:** W8 (21.1 KB) and W9 (22.6 KB) are accepted, as CD24 and CD33. **CD30 additions:** all additive, so 7.2.0 stands. They are: `assay plan`'s JSON gains `commit`/`tree` (W8); a stderr hint (W8); new subcommands `assay analyze plan-estimate` (W8) and `assay analyze campaign` (W9); four public judge aliases (W9). |
+
 **Plan consequences:**
 - W8 now depends on W2 (CD1).
 - W7 edits `gate/tests/test_self_lane.py` (CD12).
