@@ -5019,3 +5019,17 @@ reviewer may make scoped fixes only in that review worktree. The implementation
 worktree remains unchanged after candidate `ed2c4cf`; the 52-test targeted
 iteration result is green, while the exact-tree registered tester-unified
 gate remains pending behind the concurrent Assay gate recorded in RW-367.
+
+### RW-369 — 2026-09-29 00:35:37Z — Sol review retry after sandbox startup failure
+
+The first Sol xhigh review session (`01a0ea8e-cab4-7dd3-9963-b8e3e6f4046a`)
+could not run even `pwd` or `git rev-parse`: its workspace-write sandbox
+failed during setup with `bwrap: Can't mount proc on /proc: Operation not
+permitted`. The session made no repository changes, ran no tests, and
+returned no verdict. The isolated review worktree remains clean; it was
+fast-forwarded from `ed2c4cf` to this candidate `6831b8f8` to include the
+latest controller record. Start a fresh caller-selected GPT-6-Sol xhigh
+session with `danger-full-access` sandbox in that review worktree; keep the
+same no-gates/no-host-changes scope. The external Assay tester-unified gate
+from RW-367 remains untouched and must not be checked before its stated
+25-minute window.
