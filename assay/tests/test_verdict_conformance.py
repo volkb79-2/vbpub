@@ -1344,6 +1344,21 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
     ]
 
 
+#: A-477: exactly one verdict schema is supported, so its bytes are frozen per
+#: version. An edit to `verdict.schema.json` without a VERDICT_SCHEMA_VERSION
+#: bump fails here; a bump fails with a KeyError until its digest is added.
+#: Carries forward the retired W9 gate phase's
+#: `test_shipped_schema_is_byte_identical_to_the_locked_v13_asset`.
+_VERDICT_SCHEMA_SHA256 = {
+    13: "ade21cf0313d798b6b0ba9e41871bdcb310a33101c1b66317d1dbfc569e68734",
+}
+
+
+def test_the_shipped_verdict_schema_is_frozen_for_its_version():
+    shipped = (PROJECT_ROOT / "src" / "assay" / "schemas" / "verdict.schema.json").read_bytes()
+    assert hashlib.sha256(shipped).hexdigest() == _VERDICT_SCHEMA_SHA256[VERDICT_SCHEMA_VERSION]
+
+
 # ============================================================================
 # O2 (P16 review) -- the rest of work item 6's named contradictory negatives:
 # survivor/crash/budget PRECEDENCE (not merely the survivor mapping), broken
