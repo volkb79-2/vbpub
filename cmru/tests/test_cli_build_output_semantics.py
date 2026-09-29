@@ -139,9 +139,17 @@ def _patch_config(monkeypatch, root: Path, projects):
         ("no-artifacts", "no publishable artifacts"),
         ("artifact-shape", "malformed artifact inventory"),
         ("artifact-dir", "malformed artifact directory"),
+        ("artifact-dir-empty", "malformed artifact directory"),
+        ("artifact-dir-backslash", "malformed artifact directory"),
+        ("artifact-dir-absolute", "malformed artifact directory"),
+        ("artifact-dir-duplicate", "malformed artifact directory"),
         ("artifact-dir-missing", "declared artifact directory is missing"),
+        ("artifact-files-empty", "malformed artifact directory"),
         ("file-shape", "malformed file inventory"),
         ("file-path", "unsafe file coordinate"),
+        ("file-path-empty", "unsafe file coordinate"),
+        ("file-path-backslash", "unsafe file coordinate"),
+        ("file-path-absolute", "unsafe file coordinate"),
         ("duplicate-file", "duplicate file coordinate"),
         ("file-missing", "retained artifact bytes differ"),
         ("file-symlink", "contains a symlink"),
@@ -178,12 +186,28 @@ def test_build_output_tree_validator_refuses_invalid_manifest_and_bytes(
         manifest["artifacts"] = [{"directory": "dist"}]
     elif fault == "artifact-dir":
         manifest["artifacts"][0]["directory"] = "../dist"
+    elif fault == "artifact-dir-empty":
+        manifest["artifacts"][0]["directory"] = ""
+    elif fault == "artifact-dir-backslash":
+        manifest["artifacts"][0]["directory"] = "dist\\nested"
+    elif fault == "artifact-dir-absolute":
+        manifest["artifacts"][0]["directory"] = "/"
+    elif fault == "artifact-dir-duplicate":
+        manifest["artifacts"].append(dict(manifest["artifacts"][0]))
     elif fault == "artifact-dir-missing":
         manifest["artifacts"][0]["directory"] = "absent"
+    elif fault == "artifact-files-empty":
+        manifest["artifacts"][0]["files"] = []
     elif fault == "file-shape":
         manifest["artifacts"][0]["files"] = [{}]
     elif fault == "file-path":
         manifest["artifacts"][0]["files"][0]["path"] = "../alpha.whl"
+    elif fault == "file-path-empty":
+        manifest["artifacts"][0]["files"][0]["path"] = ""
+    elif fault == "file-path-backslash":
+        manifest["artifacts"][0]["files"][0]["path"] = "nested\\alpha.whl"
+    elif fault == "file-path-absolute":
+        manifest["artifacts"][0]["files"][0]["path"] = "/alpha.whl"
     elif fault == "duplicate-file":
         manifest["artifacts"][0]["files"].append(
             dict(manifest["artifacts"][0]["files"][0])

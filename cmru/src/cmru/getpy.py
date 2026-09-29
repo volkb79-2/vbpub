@@ -228,7 +228,7 @@ def getpy_cli():
     return registry.build()
 
 
-def _run_getpy(args, _runtime) -> int:
+def _run_getpy(args, _runtime) -> None:
     from cmru.cli_support import TargetSelectionError, select_target_names
     from cmru.cli import _resolve_config, load_config
     from cmru.config import resolve_invocation_context
@@ -269,7 +269,7 @@ def _run_getpy(args, _runtime) -> int:
             print(f"[DRY RUN] Would write {args.output}")
         else:
             print(f"[DRY RUN] Would render {len(scripts)} installer(s) to stdout; no files written.")
-        return 0
+        return
     if args.output_dir:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -292,7 +292,6 @@ def _run_getpy(args, _runtime) -> int:
             sys.stdout.write(script)
             if not script.endswith("\n"):
                 sys.stdout.write("\n")
-    return 0
 
 
 def getpy_main(argv: Optional[list] = None) -> int:

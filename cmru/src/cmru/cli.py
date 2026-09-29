@@ -251,12 +251,10 @@ def run_project_step(
     # load_config. Derive the execution root again from the selected repository
     # snapshot so the same contract always targets the child worktree, never the
     # caller checkout.
-    if project_root_override is None and not project.cwd:
-        raise RuntimeError(f"{project.name}: derived project working directory is absent")
     project_root = (
         Path(project_root_override).resolve()
         if project_root_override is not None
-        else resolve_cwd(repo_root, project.cwd)
+        else resolve_cwd(repo_root, _project_working_directory(project))
     )
     step = (project.runner_steps or {}).get(step_name)
     if step is None:
@@ -359,6 +357,14 @@ def resolve_cwd(repo_root: Path, raw_cwd: str) -> Path:
     if cwd_path.is_absolute():
         return cwd_path
     return (repo_root / cwd_path).resolve()
+
+
+def _project_working_directory(project: "ProjectConfig") -> str:
+    """Return the project-relative directory derived from its config path."""
+    cwd = project.cwd
+    if not cwd:
+        raise RuntimeError(f"{project.name}: derived project working directory is absent")
+    return cwd
 
 
 def parse_commands(config_path: Path, repo_root: Path, step_name: str, raw_commands: list) -> List[Command]:
@@ -1376,7 +1382,7 @@ def _orchestrate(args=None) -> None:
                 raise RuntimeError(
                     f"{project.name}: required declared step {step_name!r} is absent"
                 )
-            project_root = resolve_cwd(repo_root, project.cwd or ".")
+            project_root = resolve_cwd(repo_root, _project_working_directory(project))
             for line in render_step_plan(step, project_root):
                 log_info(f"[DRY RUN] {project.name}:{step_name}: {line}")
         log_info("[DRY RUN] No project command was started.")
@@ -2136,7 +2142,7 @@ def _commit_prepared_generated(repo_root: Path, project: "ProjectConfig") -> boo
     into a post-publish commit.  This deliberately checks the entire worktree so
     a prepare script cannot hide an unrelated mutation behind one allowlisted file.
     """
-    cwd = project.cwd or project.name
+    cwd = _project_working_directory(project)
     declared_outputs = [*project.commit_generated]
     changelog = getattr(project, "changelog", None)
     if changelog:
@@ -2374,7 +2380,9 @@ def _dispatch(args, runtime):
                 step_config = (project.runner_steps or {}).get(step)
                 if step_config is None:
                     raise RuntimeError(f"{name}: required declared step {step!r} is absent")
-                project_root = resolve_cwd(repo_root, project.cwd or ".")
+                if not project.cwd:
+                    raise RuntimeError(f"{name}: derived project working directory is absent")
+                project_root = resolve_cwd(repo_root, project.cwd)
                 for line in render_step_plan(step_config, project_root):
                     log_info(f"[DRY RUN] {name}:{step}: {line}")
             return

@@ -31,8 +31,9 @@ def test_standards_dry_run_diff_keeps_old_and_new_revision_lines_separate(
     assert config.read_text(encoding="utf-8") == original
 
 
-def test_abandon_reports_a_malformed_nonempty_duplicate_scope(
-    monkeypatch, tmp_path, capsys,
+@pytest.mark.parametrize("scope", [["alpha", "alpha"], [""]])
+def test_abandon_reports_malformed_scope_before_remote_inspection(
+    monkeypatch, tmp_path, capsys, scope,
 ):
     branch = "cmru-release-20260927_120000-alpha-ab12cd"
     workspace = SimpleNamespace(
@@ -45,7 +46,7 @@ def test_abandon_reports_a_malformed_nonempty_duplicate_scope(
     monkeypatch.setattr(
         transaction, "list_cmru_workspaces", lambda _root: [workspace],
     )
-    monkeypatch.setattr(transaction, "read_release_scope", lambda *_: ["alpha", "alpha"])
+    monkeypatch.setattr(transaction, "read_release_scope", lambda *_: scope)
     monkeypatch.setattr(transaction, "read_release_results", lambda *_: {})
     monkeypatch.setattr(transaction, "read_release_progress", lambda *_: "a" * 40)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: False)

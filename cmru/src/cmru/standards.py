@@ -214,7 +214,7 @@ def standards_main(argv: list[str] | None = None) -> int:
     return standards_cli().run(argv=argv)
 
 
-def _run_standards(args, _runtime) -> int:
+def _run_standards(args, _runtime) -> None:
     from cmru.cli_support import TargetSelectionError, select_target_names
 
     # Import lazily: cli dispatches this verb, and is itself the configuration
@@ -282,4 +282,3 @@ def _run_standards(args, _runtime) -> int:
         )
         raise SystemExit(2)
     print(f"[INFO] CMRU standards: {len(results)} project(s) conform.", flush=True)
-    return 0

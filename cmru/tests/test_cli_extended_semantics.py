@@ -58,6 +58,7 @@ def test_run_dry_run_respects_step_first_project_order_and_rejects_bad_plans(
     assert "May append build arguments from environment variables: TAG" in output
     assert "May append --no-cache when NO_CACHE=1" in output
     assert "Sets step environment keys: MODE" in output
+    assert f"cwd={tmp_path / 'alpha' / 'src'}" in output
 
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(
         tmp_path, projects, mode="step-first", step_order={"build": ["missing"]},
@@ -70,6 +71,14 @@ def test_run_dry_run_respects_step_first_project_order_and_rejects_bad_plans(
         mode="step-first",
     ))
     with pytest.raises(RuntimeError, match="required declared step 'build' is absent"):
+        cli.main(["run", "alpha", "--dry-run"])
+
+    project_without_cwd = SimpleNamespace(**{**vars(alpha), "cwd": None})
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda _path: _loaded(tmp_path, {"alpha": project_without_cwd}),
+    )
+    with pytest.raises(RuntimeError, match="derived project working directory is absent"):
         cli.main(["run", "alpha", "--dry-run"])
 
 
