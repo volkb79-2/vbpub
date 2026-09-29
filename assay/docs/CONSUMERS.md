@@ -2317,12 +2317,29 @@ worker concurrency, and runtime estimates. The candidate IDs and counts are the 
 `assay run` of that lane executes — plan resolves them against the same declared source roots, the
 same adapter, and the same `max_mutants`/operator selection.
 
-`estimated_serial_seconds`/`estimated_wall_seconds` are a **declaration-derived upper bound, not a
-measurement**: they are `candidate_count x budget_per_candidate` (falling back to 60 s per candidate
+`estimated_serial_seconds`/`estimated_wall_seconds` are **declaration-derived, not a measurement**:
+they are `candidate_count x budget_per_candidate` (falling back to a 60 s placeholder per candidate
 whenever the declaration is not a numeric duration — an omitted key, `"auto"`, or `"none"`, see below),
 divided by declared `jobs` for the wall figure. Assay never times a baseline to produce them (`assay
-plan` never executes anything at all). Treat them as "no longer than", not "about". Use those facts to
-choose an optional per-candidate bound:
+plan` never executes anything at all). They are **not an upper bound**: a candidate that runs the full
+suite can take longer than the declared bound or the placeholder. Treat them as a sizing input for the
+optional per-candidate bound, never as a forecast.
+
+The plan JSON also carries `commit` and `tree` (the full object ids of the source it was made at),
+and `assay plan` prints a one-line hint on stderr (stdout stays one JSON document) naming the measured
+projection. To project the campaign from a measured baseline, save the plan and give it a progress
+file that holds a completed baseline (a preflight or an R0/R1 run at the same commit):
+
+```bash
+assay plan worker_lane --file assay.toml > plan.json
+assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-self-qualification-preflight.jsonl --workers 3
+```
+
+It prints one JSON object (`schema_version`, `commit`, `tree`, `candidates`, `baseline_s`,
+`per_candidate_s`, `workers`, `projected_worker_hours`, `projected_wall_hours`) and exits `0`, or exits
+`2` with one stderr line and empty stdout when the input is unusable (no completed baseline, a commit
+mismatch between plan and progress, an unreadable file). It is advisory: it never classifies a
+candidate. Use the plan's facts to choose an optional per-candidate bound:
 
 <!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
 ```toml
@@ -2658,11 +2675,11 @@ never says `coverage_parsed`.
 | `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended` |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
 | `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`) |
-| `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s` |
+| `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
 | `baseline` | the sweep's baseline record | `candidate_total` |
-| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (now including `hung`, B091/RW-33 — see below), `elapsed_seconds`, `tests_completed` (B091 A4/B097 — the count of owner-process `test` records; `None` when liveness never ran for this lane, `0` when it ran and genuinely observed no owner test event yet, distinct meanings) |
+| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (now including `hung`, B091/RW-33 — see below), `elapsed_seconds`, `tests_completed` (B091 A4/B097 — the count of owner-process `test` records; `None` when liveness never ran for this lane, `0` when it ran and genuinely observed no owner test event yet, distinct meanings), `cpu_seconds`, `peak_rss_bytes`, `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`), `startup_seconds` (`to_session_start`/`to_first_test`) — diagnostic resource evidence, additive, never a classification input; each is `None` when not measured (a lane without liveness measures none of `cpu_seconds`, `peak_rss_bytes`, `startup_seconds`). The same object is stored as `resources` in the candidate's state record. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`cpu_seconds`, `peak_rss_bytes`, `samples`, `spawned_at`, `format`), which is assay-internal input to these keys |
 | `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason` |
 | `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
 

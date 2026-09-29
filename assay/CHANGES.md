@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- feat(assay): `assay analyze plan-estimate`; `assay plan` JSON `commit`/`tree`
+  and a stderr hint; `candidate` progress `cpu_seconds`/`peak_rss_bytes`/
+  `phase_seconds`/`startup_seconds` and state `resources` (with the
+  `<events>.resources.json` sidecar); baseline `test` `setup_s`/`teardown_s`.
+  All additive; no schema version changes (B111)
+
 ### Changed
 - chore(assay): assay's own two B105 self-qualification lanes now use the
   shallow snapshot (`snapshot_history = "shallow"`, the A-451 default) instead of
@@ -33,6 +40,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   (B127)
 
 ### Fixed
+- fix(assay): liveness test leak; CONSUMERS 'upper bound' claim (the plan
+  estimate is declaration-derived, not an upper bound); the B105 report checker
+  refuses a partial, sharded or foreign R2 campaign against the plan (B111)
 - fix(assay): require time-aligned resource evidence and a CPU-quiet window
   before classifying an R2 candidate as hung (B107/RW-57)
 - fix(assay): restart the hung CPU window when an exiting descendant lowers
@@ -44,6 +54,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   no longer offers a mutant that blocks forever (B113/A-466)
 
 ### Testing
+- test(assay): G1–G5 snapshot invariant guards (B111)
 - test(assay): deterministic mutant-guard tests, one per component, under a
   line-event budget (B113)
 

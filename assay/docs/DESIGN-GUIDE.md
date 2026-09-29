@@ -517,6 +517,20 @@ bounded at 1024 samples; once truncated, that idle interval cannot certify a
 hang, and a configured-budget expiry remains incomplete. Cached `hung`
 records without a structurally valid complete trace are refused and rerun.
 
+**Per-candidate resource, phase and startup evidence (B111).** Every liveness
+candidate additionally records diagnostic measurements: `cpu_seconds` and
+`peak_rss_bytes` of its process tree, `phase_seconds` (`materialize`,
+`command`, `integrity`, `teardown`) and `startup_seconds` (`to_session_start`,
+`to_first_test`). They ride on the `candidate` progress event and, as the
+identical object, in the state record's `resources`; the baseline `test` events
+carry the tests' own `setup_s`/`teardown_s`. The monitor writes a
+`<events>.resources.json` sidecar on every exit path (a `try/finally` around the
+poll loop), and the sampler runs after the B107 resource read, so it can never
+feed the CPU-growth or hang decision. The values are measured once, are
+`None` when unavailable, and never enter a classification, a verdict or the
+`judge_sha256` inputs; they exist so a campaign can be sized from measurement
+rather than from the declared budget.
+
 #### Liveness process-group cleanup
 
 Each native R2 candidate is launched in its own session/process group. The
@@ -2001,7 +2015,15 @@ The B105 lanes collect `tests/` only (B123), take their import paths from
 pyproject's own `pythonpath = ["src", "analysis/src"]` and carry no
 `--override-ini` (a `-o` token makes a lane ineligible for the mutation
 witness); `gate/tests/test_self_lane.py` pins the exact argv of every lane.
-No collected judge test
+For an R2 lane the driver runs `assay plan` first, writes
+`.assay/plan-<lane>.json`, and hands it to `tools/b105_report_check.py
+--plan-json`. The checker refuses (B111), in order and after its own
+argument, receipt, provenance and scope checks: a plan file that cannot be
+read or whose structure is invalid, a plan made at another commit or tree than
+`--expected-commit`/`--expected-tree`, a plan that is not `ok`, is sharded or
+disagrees with its own count, a report that is sharded, and a report whose R2
+candidate ids are not exactly the plan's. A partial or foreign R2 campaign can
+therefore never be accepted as the full one. No collected judge test
 reads history or tags (A-475), so both B105 lanes use the shallow snapshot
 default (`snapshot_history = "shallow"`, B128): the seed carries the judged
 commit and resolved base only, and `tests/core/test_snapshot_history_shallow.py`
@@ -3567,7 +3589,7 @@ into the runtime dependency closure.
 ### Package boundary (A-478)
 
 `assay analyze` lives in its own top-level package, `assay_analysis`
-(`analysis/src/assay_analysis/`: `cli.py`, `evidence.py`), shipped in the same
+(`analysis/src/assay_analysis/`: `cli.py`, `evidence.py`, `plan_estimate.py`), shipped in the same
 wheel and zipapp as `assay`. Analysis reads evidence and never judges: it
 never decides ACCEPT or REJECT, and it was 317 of the 3,760 B105 mutation
 candidates, so scoring it as judge code inflated the judge's own cost without
@@ -3591,6 +3613,15 @@ protecting any verdict.
   (`analysis`, tests in `analysis/tests/`, 100% line and branch). R2 for
   analysis is deliberately not claimed in this change; it is a follow-up
   (B131).
+- **The measured plan estimate lives here (CD1, B111).** `assay plan` keeps
+  its declared-budget estimate and only prints a stderr hint; the measured
+  projection is `assay analyze plan-estimate`
+  (`analysis/src/assay_analysis/plan_estimate.py`). It reads the plan's JSON
+  (which now carries `commit` and `tree`) and one progress stream with a
+  completed baseline, binds them through the commit, and prints
+  `baseline_s`, `per_candidate_s` and the projected worker and wall hours.
+  It imports no judge name, never classifies a candidate, and exits `2` on
+  unusable input.
 - **Schemas** stay in `src/assay/schemas/`; documented paths do not move.
 - The undocumented `import assay.analysis` is removed. A source checkout
   needs both `src` and `analysis/src` on `PYTHONPATH`.

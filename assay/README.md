@@ -918,7 +918,13 @@ Two more CLI verbs round out the surface:
   useful for auditing what a project claims before trusting its gate.
 - `assay plan <mutation-lane>` discovers candidates through a private commit
   snapshot, reports total/per-file/per-operator counts and deterministic IDs,
-  and estimates runtime without running the lane command or any mutant.
+  and estimates runtime without running the lane command or any mutant. Its
+  JSON carries the `commit` and `tree` it was made at, and the estimate is the
+  declared budget (a placeholder when none is numeric), not a measurement; save
+  the JSON and pass it to `assay analyze plan-estimate` for a measured
+  projection. The B105 R2 driver plans first and its checker refuses a report
+  whose campaign is not exactly that complete, unsharded plan at the expected
+  commit and tree.
 - `assay verify <verdict.json>` independently re-checks that a verdict
   artifact is schema-conformant and internally self-consistent. It never
   re-runs a lane and is never the *sole* witness to a producer's
