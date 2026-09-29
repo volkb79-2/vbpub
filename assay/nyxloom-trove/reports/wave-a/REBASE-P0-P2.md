@@ -1,18 +1,23 @@
 # REBASE — P0 (W8, B111) and P2 (W6, B113) onto Wave A
 
+The P0 half is superseded by `W8-measurement.md` (CD26); only the P2 half below is live.
+
+**Context to read first:** `CARVER-DECISIONS.md` (this directory): CD2, CD3, CD26 and CD29 bind the P2 half. Where a review fix text and a CD conflict, the CD wins.
+
 Delta list for `b110/P0-measurement-hygiene.md` and `b110/P2-loop-guards.md`.
 - **Baseline.** Both briefs were anchored at `db85f747`; this note re-checks them at `5bbd916e` (landing plus the B107 merge `7d7b0fb9`).
 - **What changed since then:** `liveness.py`, `mutation.py`, `runner.py`, the new `liveness_resources.py`, `assay.toml`, the docs and the B107 tests. All other anchors below were re-read and are unchanged.
 - **Main is ahead by one change:** `35adca38` deletes both real-child liveness tests in `test_cli_run.py`.
 
-## R0. Do on landing before stage 2
-1. **The B105 exclusion fixture is stale, and that blocks both P0 and P2.**
+## R0. Landing prerequisites: DONE (`55611561`, `1e3c8a49`)
+Do not redo these; no "do on landing before stage 2" step remains.
+1. **DONE (`55611561`: the fixture is `[94, 95]`). The B105 exclusion fixture was stale, and that blocked both P0 and P2.**
    - B107 inserted `liveness.py:92`, which moved the pragma from line 93 to 94 and its body to 95.
    - `tests/fixtures/b105-coverage-exclusions.json` (landing only) still says `[93, 94]`, and line 93 is now blank.
    - The fast suite cannot see this (`test_b105_source_coverage_controls.py:136-145` checks the fixture only against itself). The preflight's `_validate_b105_exclusion_inventory` and P2's O5b will both fail.
    - Neither package can fix it: P0 forbids editing the fixture, and P2 may edit only its git.py entry.
    - **Fix:** a controller commit setting the entry to `[94, 95]`, as `ef9bb3bb` did for targets.
-2. **Re-merge main into landing now.** This removes the plan §4 known-red test for every package. It also avoids a modify/delete conflict with P2's Work 3.
+2. **DONE (`1e3c8a49`, CD29). Main is re-merged into landing.** The plan §4 known-red test is gone for every package: no known red at HEAD, any gate failure is red.
 3. **Test paths move.** W3 (stage 0) moves the judge tests into `tests/<component>/`, and W4 moves the tooling tests into `gate/tests/`.
    - Resolve every `tests/…:N` anchor by file name, then by function.
    - New test files go into the component that W3 assigns.
@@ -29,7 +34,7 @@ Delta list for `b110/P0-measurement-hygiene.md` and `b110/P2-loop-guards.md`.
 - **Unchanged:**
   - go 203/326/334/356; javascript 176/258; sql_lex 64/197/280; go_modfile 77/393;
   - isolation 52/1406; git 261/335/357/376/1342; cli 488; python 881;
-  - `test_cli_run` 127/463/529/586/645.
+  - `test_cli_run` 127; `test_cli_run` 463/529/586/645: n/a at HEAD (deleted by `35adca38`).
 - **Moved:**
 
 | Anchor | Was | Now |
@@ -45,12 +50,17 @@ Delta list for `b110/P0-measurement-hygiene.md` and `b110/P2-loop-guards.md`.
 - The remaining real-child test (`test_liveness_runner_monitor.py:1069`: `sleep 300`, fake clock, fake 600 s timeout) cannot spin under one mutant. With the timeout check (`:1692`) disabled, the hung path still ends it; with hung detection disabled, the fake timeout does.
 - Record `:1692` in the P2 report as "test-level hazard removed with its host test".
 - Drop `test_cli_run.py` from the scope. Work 1–2 and O1–O5b are unchanged.
+- No known red at HEAD (CD29): P2's gate section inherits no plan §4 exception.
 
 **New notes:**
-- **Q-P2-1 (carver): where `test_scanner_progress_guards.py` goes.** Its CASES span four adapters and core (`isolation`).
-  - Recommendation: split the file by W3 component, so each component's mutants are killed by its own tests (B130).
-  - Its `from conftest import PROJECT_ROOT` follows W3's conftest.
-- `test_errors.py` moves to core.
+- **Q-P2-1: where `test_scanner_progress_guards.py` goes.** Decided (CD2): split it by component, following W3's layout. Split the file into:
+  - `tests/adapters/go/test_adapters_go_scanner_progress_guards.py`: the go.py 326, 334 and 356 cases and the go_modfile 393 cases;
+  - `tests/adapters/javascript/test_adapters_javascript_scanner_progress_guards.py`: 258;
+  - `tests/adapters/sql/test_adapters_sql_scanner_progress_guards.py`: sql_lex 197 and 280;
+  - `tests/core/test_isolation_scanner_progress_guards.py`: isolation 1406.
+
+  The shared `_StepLimit`, the trace budget and the mutant builder move verbatim into `tests/scanner_progress_support.py`, imported as `from scanner_progress_support import …` (`tests/` is on `sys.path` via the root conftest; `from conftest import PROJECT_ROOT` follows W3's conftest). Each file asserts that its CASES name only its own component's source paths; without that assertion a misfiled case still passes (the plausible wrong implementation). Update P2's Touch list and gate list to these files.
+- `test_errors.py` stays at `tests/` (W3 `ROOT_PINNED`; imported by `test_verdict_conformance.py:296`). If W4 later moves it (CD23 amended), follow W4's path.
 - W10 later shifts git.py's pragma lines, and P2's O5b is its check.
 
 ## P0 (W8, B111)
@@ -137,7 +147,7 @@ Docs
 - **(e) The exclusion-line trap moves.** After R0.1 the pragma is at liveness `94` and its body at `95`, so the rule is "no line above `:94`".
 
 **Invalidated by Wave A:**
-- **D-W8-1 (carver decision): home of the W1 reader.** This blocks P0's W1 only.
+- **D-W8-1: home of the W1 reader.** Decided (CD1, CD25): option (ii), an `assay analyze plan-estimate` subcommand (superseded text; see `W8-measurement.md`). Original note, P0 half only:
   - P0 puts `MeasuredBaseline` in `analysis.py` and reuses its framing. W2 moves that module to `analysis/src/assay_analysis/evidence.py`. Under A-478, W2's T6 allows `src/assay` a single `assay_analysis` import, inside `cli._run_analyze`, so `assay plan` cannot use the module.
   - **(i)** A judge-side reader next to `_cmd_plan`, with its own framing. This adds B105 candidates.
   - **(ii)** An `assay analyze` subcommand that reads `assay plan` JSON plus progress and imports `mutation.auto_budget_per_candidate_seconds` one-way. `assay plan` keeps `estimate_provenance: "fallback"` and the CONSUMERS fix.

@@ -1,5 +1,7 @@
 # REBASE-P8: delta for `b110/P8-campaign-analysis-core.md` (Wave A W9)
 
+Superseded by `W9-campaign-analysis.md` (CD26).
+
 The P8 brief targets `db85f747`. This note lists what changes after W3, W2 and W8 merge, and overrides the brief on conflict. Implementer: Sonnet.
 
 ## 1. Base and dependencies
