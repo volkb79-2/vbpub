@@ -191,11 +191,13 @@ every `kind = "assay"` lane, and a gate that calls `assay run` directly (assay's
 own) passes them itself. Both are no-ops on an R0/R1 lane; on a mutation lane
 they are what lets a budget-capped retry continue instead of restarting from
 mutant #1. Resume state and the progress stream live under the git-ignored
-`.assay/`, never in the judged tree. Use the latest released Assay available
-that meets the consuming project's current declared judge floor, verified by
-that project's current preflight (run-gate R-38; `--state-dir` is B066). Do
-not infer today's minimum from historical version numbers in old instructions
-or reports. For in-repo consumers, follow the source-backed installation rule
+`.assay/`, never in the judged tree. Use the latest released Assay version
+available. Verify that it satisfies the consuming project's currently declared
+judge floor and passes that project's current preflight (run-gate R-38;
+`--state-dir` is B066). If it does not, resolve the availability or
+compatibility mismatch; do not silently fall back to an older release. Do not
+infer today's minimum from historical version numbers in old instructions or
+reports. For in-repo consumers, follow the source-backed installation rule
 below instead of pinning a versioned zipapp.
 
 ## Consuming assay from inside vbpub (estate-wide, 2026-08-27)
