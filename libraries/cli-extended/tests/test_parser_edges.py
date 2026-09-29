@@ -303,6 +303,12 @@ def test_run_cli_converts_noninteger_system_exit_codes(code, expected):
         assert "stopped" in stderr.getvalue()
 
 
+def test_run_cli_normalizes_none_handler_result_to_success():
+    app = _simple_cli(lambda _args, _runtime: None)
+
+    assert app.run(argv=["run"], stderr=io.StringIO()) == 0
+
+
 def test_help_catalog_is_not_used_by_a_non_top_level_parser():
     catalog = HelpCatalog(
         IDENTITY,
