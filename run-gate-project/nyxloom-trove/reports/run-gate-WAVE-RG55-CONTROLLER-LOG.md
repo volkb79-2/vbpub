@@ -5233,3 +5233,34 @@ restored the tracked cgroup2 mount options; no host-setup source was edited.
 The retry must use a fresh independent clone (no object alternates), verify
 that fact before creating its CIU worktree, then repeat the normal admission
 check. Do not convert or delete this failed checkout.
+
+### RW-375 — 2026-09-29 01:36:21Z — P1 R2 ran zero mutants because the target was post-merge main
+
+The clean independent-clone retry used CIU worktree
+`.worktrees/rg55-p1-r2-clean-20260929` at `9e3429412097b30eebbb8433ac1c22ac0a566e4c`.
+The registered `r2` command completed its R0 baseline (1,394 tests passed),
+then wrote `INCONCLUSIVE/NO_MUTANTS`, exit 5, after 72.846 seconds. The
+separate verdict and progress records report `candidate_count=0`,
+`candidate_total=0`, and no mutation records; run-gate history is eligible but
+is not mutation evidence. The exact container was
+`run-gate-vbpub-r2-3767927-1790644806`, placed in `dev-gates.slice` at
+3 CPUs; it had already exited by the 90-second health check.
+
+Root cause: the target was the current main tip after P1 had already been
+provisionally merged. Assay therefore resolved `base=4e418154` (main's
+first-parent) and the P1 source changes were already in that base; the only
+post-base delta was controller documentation, outside the configured
+`scripts/cgroup-profiler/lib` mutation roots. This was a wrong-tree launch,
+not a P1 mutation pass/fail and not evidence about host contention. Preserve
+all artifacts and do not resume this zero-candidate receipt as if candidates
+had run.
+
+The correct rejudge lineage is the isolated P1 branch whose pre-P1
+`origin/main` is `e5e9b95c`: its current reviewed follow-up tip includes the
+accepted `proc stat` identity and explicit-null DAMON repairs (Sol round 4,
+product tip `cc7e1910`). Before the next attempt, carry in the B107 Assay
+source changes (`193b8dd0`, `3c63ca34`, `76325aa5`), verify the merge base
+still resolves to `e5e9b95c`, and create a fresh CIU worktree with no stale
+run-gate inflight state. Then repeat admission checks and run R2 on that quiet
+tree. The prior 1080ac2 R2 PASS predates these P1 repairs and is not final
+evidence. No candidates from this attempt are counted toward the campaign.
