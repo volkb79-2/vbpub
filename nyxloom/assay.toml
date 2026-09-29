@@ -120,6 +120,7 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_reasonix.py",
   "tests/test_session_extract_classifier.py",
   "tests/test_session_extract_claude_code.py",
+  "tests/test_session_extract_cli_acceptance.py",
   "tests/test_session_extract_codex.py",
   "tests/test_session_extract_config_validation.py",
   "tests/test_session_extract_debug_diff.py",
@@ -145,8 +146,9 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# The package-scoped changed-line campaign has 599 candidates. At the declared
-# 120s per-candidate failsafe, the plan's serial upper bound is 19h58m; allow
+# The package-scoped changed-line campaign has 600 candidates after the
+# P113 Claude question-rendering changes. At the declared 120s per-candidate
+# failsafe, the plan's serial upper bound is 20h; allow
 # 22h for the complete campaign plus baseline and verdict overhead. Keep the
 # mutation jobs serial on the shared production host.
 budget = "22h"
@@ -177,13 +179,12 @@ base = "3d27c67e"
 # (host-shared-with-production-load-rule: load hit 85 doing exactly this
 # kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
 # concurrency bounded to the single already-accounted-for xdist fan-out.
-# The authoritative source-backed Assay plan, with a temporary 1000-candidate
-# discovery cap, found 599 candidates under this package root; this exact
-# finite cap prevents an unbounded campaign.
+# The authoritative source-backed Assay plan found 600 candidates under this
+# package root; this exact finite cap prevents an unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-max_mutants = 599
+max_mutants = 600
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 

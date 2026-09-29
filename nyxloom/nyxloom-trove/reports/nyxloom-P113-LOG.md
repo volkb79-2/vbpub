@@ -96,3 +96,31 @@ final P113 revision so this adapter change receives its own R2 evidence. Run
 P113's declared tester-unified gate as well. No heavy gate is started in
 parallel with the active campaign. Record the exact verdicts and commit in
 `nyxloom-P113-REPORT.md` before calling this work complete.
+
+## Controller integration and R2 scope follow-up — 2026-09-29
+
+The text above records the status when this log was first written. The P112
+campaign has since completed and failed; its exact outcome and the focused
+test triage are in `nyxloom-P112-REPORT.md`. Its focused tests were brought
+forward with P113, along with P114's side-effect-free daemon help/version fix.
+All three feature histories were rebased onto then-current local `main`
+`02b9ac648d259d77e5dd8b9a83a12e28123d7f82`. The final feature history is kept
+linear: Assay resolves merge-tip changed-line work against the first parent,
+which would have excluded P113 session code from the R2 scope.
+
+The first read-only plan at merged tip `ba88d673` reported zero candidates.
+No gate was started from that plan. After flattening the feature commits onto
+local `main`, the source-backed `assay plan session-extract` reported 600
+candidates (74 boolean-constant, 191 boolean-operator, 281 comparison, and 54
+falsy-swap), with a 72,000-second / 20-hour serial estimate. The P113 Claude
+adapter changes make the prior 599 cap stale. Updated `assay.toml` to cap at
+600 and to include `tests/test_session_extract_cli_acceptance.py` in the
+focused lane, so the real CLI goldens run against session-extraction mutants.
+The 22-hour lane budget remains above the declared serial estimate. Planning
+ran from assay 7.1.1.dev188+gba88d673 installed from this worktree's `assay/`
+source into the estate venv; it executed no tests or mutants and started no
+container.
+
+The combined tester-unified and session-extract gates remain pending at this
+log entry. Their exact commits, verdicts, and any named test containers will
+be added after completion.
