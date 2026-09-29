@@ -10731,8 +10731,6 @@ qualification evidence.
       It explicitly deselects only the two release-tag audit tests, because
       snapshots do not carry refs/tags; the ordinary checkout-based R0 release
       gate continues to run those tests. A drift test pins these exclusions.
-      **Amended 2026-09-29 (A-475, Wave A W1):** the deselections are gone
-      because the two release-tag audit tests were removed.
       **Amended 2026-09-28 (A-468):** both self-qualification lanes also
       `--ignore=tests/test_python_qualification.py`. That file exercises only
       the unmutated PATH wheel and the committed 1.2.5 release wheel, never
@@ -10742,6 +10740,10 @@ qualification evidence.
       `pyproject.toml` `pythonpath = ["src"]`. Heavy tests are collected last
       from `tests/zz_slow/`. The drift test pins the exact `--ignore` and
       `--deselect` sets.
+      **Amended 2026-09-29 (A-475, Wave A W1):** the deselections are gone
+      because the two release-tag audit tests were removed, and
+      `tests/test_python_qualification.py` is deleted, so the A-468 `--ignore`
+      above never lands and no lane runs that file.
 - [ ] R2 runs native mutation over the full declared source target and
       produces a complete, verifier-accepted candidate inventory and outcomes.
       Deterministic shards may execute the fixed inventory, but missing or
