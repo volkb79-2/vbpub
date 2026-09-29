@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 import tomllib
 from pathlib import Path
 
-from analysis_support import PROJECT_ROOT
+from analysis.tests.analysis_support import PROJECT_ROOT
 from assay.config import load_lane_file
 
 #: ``"<file>:<private name>" -> reason``. CD18: stays empty.
@@ -179,3 +180,11 @@ def test_the_analysis_lane_is_a_whole_target_r0_r1_lane_over_every_analysis_sour
         (PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml").read_text(encoding="utf-8")
     )["gates"]["tester-unified"]
     assert lane.budget_seconds == float(gate["timeout_seconds"])
+
+
+def test_the_analysis_conftest_never_rebinds_the_judge_conftest_name():
+    """(W2R-1) pytest imports this tree's conftest as a package module, so a judge
+    test's ``from conftest import ...`` always reaches the judge's conftest."""
+    assert "analysis.tests.conftest" in sys.modules
+    bound = sys.modules.get("conftest")
+    assert bound is None or Path(bound.__file__).resolve() == PROJECT_ROOT / "tests" / "conftest.py"

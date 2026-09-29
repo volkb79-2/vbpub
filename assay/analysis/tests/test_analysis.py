@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator, ValidationError
 
-from analysis_support import JUDGE_VERDICT_FIXTURES, PROJECT_ROOT
+from analysis.tests.analysis_support import JUDGE_VERDICT_FIXTURES, PROJECT_ROOT
 from assay.cli import main
 from assay_analysis import cli as analysis_cli
 from assay_analysis import evidence as analysis
