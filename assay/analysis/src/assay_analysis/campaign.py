@@ -39,6 +39,11 @@ MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_PROGRESS_RUNS = 10_000
 MAX_DETAIL_LIMIT = 500
 MIN_ETA_SAMPLE = 5
+EXIT_PASS = 0
+EXIT_COMPLETE_NOT_PASS = 1
+EXIT_EVIDENCE_ERROR = 2
+EXIT_INCOMPLETE = 3
+ERROR_DOCUMENT_KIND = "assay-campaign-analysis"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -1168,6 +1173,7 @@ def campaign(
         "schema_version": SCHEMA_VERSION,
         "analysis": "mutation_campaign",
         "status": status,
+        "qualifying": True,
         "expected_commit": expected_commit,
         "tree": tree,
         "lane": lane_name,
@@ -1239,6 +1245,26 @@ def build_campaign_parser(commands: argparse._SubParsersAction) -> None:
     parser.add_argument("--format", choices=("json", "text"), default="json")
 
 
+def _exit_code(document: dict) -> int:
+    """Status row 3-6 exit mapping (A-460 codes 0/1/2; 3 is post-hoc ``incomplete``)."""
+    if document["status"] != "complete":
+        return EXIT_INCOMPLETE
+    return EXIT_PASS if document["verdict"]["outcome"] == "PASS" else EXIT_COMPLETE_NOT_PASS
+
+
+def _evidence_error_document(args: argparse.Namespace, exc: BaseException) -> dict:
+    """The closed seven-key document a refused input produces (status row 1)."""
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": ERROR_DOCUMENT_KIND,
+        "status": "evidence_error",
+        "lane": args.lane,
+        "expected_commit": args.expected_commit,
+        "errors": [{"source": type(exc).__name__, "message": str(exc)}],
+        "errors_truncated": False,
+    }
+
+
 def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
     try:
         result = campaign(
@@ -1259,7 +1285,11 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
     except (OSError, ValueError, RecursionError, KeyError, TypeError,
             AttributeError, AssayError) as exc:
         print(f"assay analyze campaign: {exc}", file=stderr)
-        return 2
+        print(
+            json.dumps(_evidence_error_document(args, exc), indent=2, sort_keys=True),
+            file=stdout,
+        )
+        return EXIT_EVIDENCE_ERROR
     if args.format == "text":
         print(
             f"{result['lane']}: {result['status']} outcome={result['verdict']['outcome']} "
@@ -1278,4 +1308,4 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
         print("  ETA: " + json.dumps(result["timing"], sort_keys=True), file=stdout)
     else:
         print(json.dumps(result, indent=2, sort_keys=True), file=stdout)
-    return 0 if result["status"] == "complete" else 3
+    return _exit_code(result)

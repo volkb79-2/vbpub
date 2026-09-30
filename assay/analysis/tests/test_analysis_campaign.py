@@ -266,7 +266,7 @@ def test_terminal_lane_timeout_accounts_for_budget_candidates_without_duration_e
     )
 
     code, out, err = _invoke(root, head, verdict, progress, command_exit=4)
-    assert (code, err) == (0, "")
+    assert (code, err) == (1, "")
     result = json.loads(out)
     assert result["status"] == "complete"
     assert result["campaign"]["outcomes"]["budget_exceeded"] == 1
@@ -354,5 +354,67 @@ def test_progress_and_verdict_outcomes_must_agree(tmp_path, monkeypatch):
 
     code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
     assert code == 2
-    assert out == ""
     assert "progress and verdict disagree" in err
+    error = json.loads(out)
+    assert error["status"] == "evidence_error"
+    assert "progress and verdict disagree" in error["errors"][0]["message"]
+
+
+def _complete_fixture(tmp_path, monkeypatch, name: str) -> tuple[Path, str, Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    document = _fixture_document(name)
+    root, head, verdict = _repository(tmp_path, document)
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=document, plan_rows=rows)
+    return root, head, verdict, progress
+
+
+def _validate(document: dict) -> None:
+    schema = json.loads(files("assay").joinpath("schemas/analysis-campaign.schema.json").read_text())
+    Draft202012Validator(schema).validate(document)
+
+
+def test_o1_exit_mapping_follows_the_status_table(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path / "pass", monkeypatch, "r2_pass")
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+    assert (code, err) == (0, "")
+    assert json.loads(out)["status"] == "complete"
+
+    root, head, verdict, progress = _complete_fixture(
+        tmp_path / "fail", monkeypatch, "r2_fail_mutants_survived"
+    )
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=1)
+    assert (code, err) == (1, "")
+    document = json.loads(out)
+    assert document["status"] == "complete"
+    assert document["verdict"]["outcome"] == "FAIL"
+    assert document["qualifying"] is True
+    _validate(document)
+
+
+def test_o1_a_command_exit_that_differs_from_the_verdict_is_an_evidence_error(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=1)
+    assert code == 2
+    document = json.loads(out)
+    _validate(document)
+    assert set(document) == {
+        "schema_version", "kind", "status", "lane", "expected_commit", "errors", "errors_truncated",
+    }
+    assert (document["kind"], document["status"], document["lane"]) == (
+        "assay-campaign-analysis", "evidence_error", "package",
+    )
+    assert document["expected_commit"] == head
+    assert document["errors_truncated"] is False
+    [error] = document["errors"]
+    assert error["message"] == "observed command exit 1 differs from verified verdict exit 0"
+    assert err == f"assay analyze campaign: {error['message']}\n"
+
+
+def test_an_evidence_error_document_is_json_even_for_the_text_format(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    code, out, _err = _invoke(root, head, verdict, progress, command_exit=1, output_format="text")
+    assert code == 2
+    assert json.loads(out)["status"] == "evidence_error"

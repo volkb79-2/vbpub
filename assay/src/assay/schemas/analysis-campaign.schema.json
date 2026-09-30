@@ -2,27 +2,58 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Assay mutation campaign analysis v1",
   "description": "A bounded closeout joining one committed lane plan, verified verdict, progress stream, observed command exit, and declared coverage evidence. This report is diagnostic and does not replace assay verify.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["schema_version", "analysis", "status", "expected_commit", "tree", "lane", "lane_file", "verdict", "plan", "campaign", "runs", "coverage", "timing", "evidence", "candidate_details"],
-  "properties": {
-    "schema_version": {"const": 1, "type": "integer"},
-    "analysis": {"const": "mutation_campaign"},
-    "status": {"enum": ["complete", "incomplete"]},
-    "expected_commit": {"$ref": "#/$defs/objectId"},
-    "tree": {"$ref": "#/$defs/objectId"},
-    "lane": {"type": "string", "minLength": 1},
-    "lane_file": {"type": "string", "minLength": 1},
-    "verdict": {"$ref": "#/$defs/verdict"},
-    "plan": {"$ref": "#/$defs/plan"},
-    "campaign": {"$ref": "#/$defs/campaign"},
-    "runs": {"type": "array", "items": {"$ref": "#/$defs/run"}},
-    "coverage": {"$ref": "#/$defs/coverage"},
-    "timing": {"$ref": "#/$defs/timing"},
-    "evidence": {"$ref": "#/$defs/evidence"},
-    "candidate_details": {"$ref": "#/$defs/candidateDetails"}
-  },
+  "oneOf": [
+    {"$ref": "#/$defs/document"},
+    {"$ref": "#/$defs/evidenceError"}
+  ],
   "$defs": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "analysis", "status", "qualifying", "expected_commit", "tree", "lane", "lane_file", "verdict", "plan", "campaign", "runs", "coverage", "timing", "evidence", "candidate_details"],
+      "properties": {
+        "schema_version": {"const": 1, "type": "integer"},
+        "analysis": {"const": "mutation_campaign"},
+        "status": {"enum": ["complete", "incomplete"]},
+        "qualifying": {"const": true},
+        "expected_commit": {"$ref": "#/$defs/objectId"},
+        "tree": {"$ref": "#/$defs/objectId"},
+        "lane": {"type": "string", "minLength": 1},
+        "lane_file": {"type": "string", "minLength": 1},
+        "verdict": {"$ref": "#/$defs/verdict"},
+        "plan": {"$ref": "#/$defs/plan"},
+        "campaign": {"$ref": "#/$defs/campaign"},
+        "runs": {"type": "array", "items": {"$ref": "#/$defs/run"}},
+        "coverage": {"$ref": "#/$defs/coverage"},
+        "timing": {"$ref": "#/$defs/timing"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "candidate_details": {"$ref": "#/$defs/candidateDetails"}
+      }
+    },
+    "evidenceError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "status", "lane", "expected_commit", "errors", "errors_truncated"],
+      "properties": {
+        "schema_version": {"const": 1, "type": "integer"},
+        "kind": {"const": "assay-campaign-analysis"},
+        "status": {"const": "evidence_error"},
+        "lane": {"type": "string"},
+        "expected_commit": {"type": "string"},
+        "errors": {
+          "type": "array", "minItems": 1, "maxItems": 10,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["source", "message"],
+            "properties": {
+              "source": {"type": "string", "minLength": 1},
+              "message": {"type": "string"}
+            }
+          }
+        },
+        "errors_truncated": {"type": "boolean"}
+      }
+    },
     "objectId": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "nullableString": {"oneOf": [{"type": "string"}, {"type": "null"}]},
