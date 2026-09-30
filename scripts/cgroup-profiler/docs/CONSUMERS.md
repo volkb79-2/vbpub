@@ -158,6 +158,13 @@ it runs when the lane fails. Read the daemon command's exit status directly:
 unreachable or malformed-daemon state. Do not pipe the command through a
 pager when deciding whether the stop succeeded.
 
+For `ctl start`, an exit-2 `target-not-found` means the daemon searched a
+readable host cgroup tree and found no scope for that full container ID.
+An exit 3 can also mean the host cgroup bind became unreadable during lookup;
+record profiling as unavailable and inspect the daemon's mount/logs. Do not
+turn that indeterminate result into "container absent" or invent a cgroup
+from Docker's name alone.
+
 Use `--scope container-shared` when the target cgroup is shared with unrelated
 work and the summary must report sampled-max memory plus deltas. Use
 `--scope container` for a lane-owned cgroup; its `memory.peak` and absolute

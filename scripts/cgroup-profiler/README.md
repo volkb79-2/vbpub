@@ -172,6 +172,12 @@ The daemon's version response is contract major 1:
   cgprofile-host-daemon cgprofile ctl <verb> --json` from anywhere with
   docker access to that container. `ctl`'s own client-side timeout is 25 s;
   see the contract §1.3/§1.5 for run-gate's own per-verb timeouts.
+- **Target lookup reports what was established.** A complete cgroup-tree
+  search with no matching container returns `target-not-found` (ctl exit 2).
+  If the host cgroup bind cannot be searched, `ctl` exits 3 as a daemon
+  fault; that result does not establish that the container is absent. See
+  [the contract boundary](docs/DESIGN-GUIDE.md#contract-boundary) for why
+  the daemon uses the host tree as its identity source.
 - **Sessions live in the named volume** `cgprofile-sessions`, mounted at
   `/var/lib/cgprofile/sessions` — `ctl stop <session>`'s response names the
   exact `session_dir` and the series files inside it (`samples.jsonl.gz`,

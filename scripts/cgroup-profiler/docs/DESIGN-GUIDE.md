@@ -88,6 +88,14 @@ object with a boolean `ok`, contract major 1, and the shape for the requested
 verb before printing it. Valid daemon errors remain exit 2; malformed or
 incompatible peer responses are daemon faults (exit 3).
 
+Container IDs are resolved against the mounted host cgroup tree, which is
+the identity source. A complete search with no matching scope proves
+`target-not-found`; an unreadable root or branch does not. The walker
+therefore propagates search errors instead of converting them to an empty
+result. The server closes only that request's socket, leaving other sessions
+alive; `ctl` reports a daemon fault at exit 3. Using Docker metadata as a
+fallback would let a name claim a cgroup that the observer could not verify.
+
 ```json
 {
   "ok": true,

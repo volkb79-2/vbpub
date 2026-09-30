@@ -2043,6 +2043,52 @@ def test_ctl_start_optional_damon_round_trips_over_real_socket(
         assert not thread.is_alive()
 
 
+def test_real_socket_distinguishes_absent_target_from_unreadable_cgroup_tree(
+    tmp_path, capsys,
+):
+    complete_root = tmp_path / "complete-empty-cgroups"
+    complete_root.mkdir()
+    missing_root = tmp_path / "missing-cgroup-mount"
+    socket_path = str(tmp_path / "ctl.sock")
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+        cgroup_root=str(complete_root), damon_default="off", accept_timeout=0.05,
+    )
+    argv = [
+        "ctl", "start", "--socket", socket_path,
+        "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
+        "--scope", "container", "--meta", "{}",
+    ]
+    thread = threading.Thread(target=server._accept_loop, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0  # suite failsafe
+        while not os.path.exists(socket_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert os.path.exists(socket_path)
+
+        assert cg.main(argv) == 2
+        absent = capsys.readouterr()
+        absent_response = json.loads(absent.out)
+        assert absent_response["contract"] == 1
+        assert absent_response["error"]["code"] == "target-not-found"
+
+        server.cgroup_root = str(missing_root)
+        assert cg.main(argv) == 3
+        indeterminate = capsys.readouterr()
+        assert indeterminate.out == ""
+        assert "could not reach the daemon" in indeterminate.err
+        assert "cannot search container cgroups" in indeterminate.err
+
+        assert cg.main(["ctl", "version", "--socket", socket_path]) == 0
+        healthy = capsys.readouterr()
+        assert json.loads(healthy.out)["contract"] == 1
+    finally:
+        server.request_shutdown()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
 @pytest.mark.parametrize("reply", [
     b'{"ok": true, "contract": 2, "cgprofile": "1.0.0", "daemon": {}}\n',
     b'[]\n',
