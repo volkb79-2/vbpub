@@ -275,3 +275,23 @@ Branch `wave-a-w9-campaign`, project dir `assay/`. Last code commit `14bc8588`; 
 - Local evidence (serial, `nice -n 19 ionice -c3`, no container): `tests` 5501 collected, 5500 passed + 1 known B134 failure (`test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused`, environmental) + 1 skipped; coverage over `src/assay` with branches 99% total, the only miss `src/assay/git.py:459` (that same B134 line); every judge file W9 touched is at 100%. `analysis/tests` 496 collected and passed, `assay_analysis` 2037 statements / 986 branches at 100%, `campaign.py` 979 / 440 at 100%, `grep -c pragma` = 0. `gate/tests` 382 collected, 371 passed, 11 skipped (includes `test_distribution_build_release.py`). Docs test `tests/core/test_docs_examples_and_vocabulary.py` 46 passed.
 - The gate must judge: `analysis` lane (R0+R1 whole target at 100% line and branch), the B105 judge lane over the J step files (`src/assay/cli.py`, `src/assay/mutation.py`), and the O15/O18/O19 real-run tests in `analysis/tests/test_analysis_campaign_real.py`.
 - Consumer-visible: `assay analyze campaign`; the additive surfaces named in `CHANGES.md` `[Unreleased]`; docs in README, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`; B108 boxes 1, 2 and 4 ticked (box 3, the variable-duration fixture, and box 5 onward are not W9's).
+
+## Review fixes (W9R)
+
+Source: `REVIEW-W9.md`, accepted whole by CD60. No QUESTIONS were raised (the review and CD60 leave nothing open). Code fix commit `e7127416` (W9R-1, W9R-2); tests, O2 assert and docs commit `d2e4b0b3`. The code fix was applied with Edit calls, not `git apply`.
+
+| finding | fix | test | controlled break | result |
+|---|---|---|---|---|
+| W9R-1 | `complete_inventory` gains `and (lane_timeout_row or len(events) == latest["pending_total"])` | `test_a_pending_candidate_without_an_event_is_not_exhausted`, `test_a_stream_with_no_candidate_events_is_not_exhausted` (`..._residual.py`) | before the fix: both tests written and run on the unfixed code | red before the fix (`complete`, exit 0), green after |
+| W9R-2 | `_no_state()` and `_reconcile_state` return `resume_shortfall` (`current is not None and len(eventless) < latest["resumed_total"]`); the `state_unreconciled` blocker also fires on it; output shape unchanged | `test_a_resume_claim_with_no_backing_record_in_the_store_is_unreconciled` (`..._state.py`) | before the fix: written and run on the unfixed code | red before the fix (`complete`, exit 0), green after |
+| W9R-3 | test only | `test_a_never_started_leftover_under_a_non_timeout_reason_is_unresolved` (`..._verdicts.py`) | delete `or bool(never_started)` from `lane_timeout_row` | red with the clause deleted, green restored |
+| W9R-4 | test only | `test_q3_an_unknown_judge_leaves_unpaired_records_unreconciled` (`..._state.py`) | replace the `current is None` `unreconciled` list by `[]` | red with the list emptied, green restored |
+| W9R-5 | test only | `test_a_terminal_that_differs_in_any_one_field_from_the_verdict_is_refused[outcome-FAIL / exit_code-1 / reason_code-LANE_TIMEOUT]` (`..._residual.py`) | delete the `outcome` leg; delete the `exit_code` leg; delete the `reason_code` leg (one at a time) | exactly the matching parameter is red for each deletion; all green restored |
+| W9R-6 | test only: one assert in `test_o2_appended_resume_runs_count_each_candidate_once` (`campaign["resumed_total"] == 7 and campaign["rejudged_total"] == 1`) | `..._oracles.py` | `campaign.resumed_total` / `rejudged_total` summed over `run_summaries` | red with the sum (12 and 1 wrong readings), green restored |
+| W9R-7 | `docs/CONSUMERS.md`: a missing parent directory of the coverage artifact is an `evidence_error`; the artifact path must be git-ignored | `tests/core/test_docs_examples_and_vocabulary.py` | not applicable | 46 passed |
+
+Post-fix evidence (serial, foreground, `nice -n 19 ionice -c3`, no container, `COVERAGE_FILE` in scratch so no `.coverage` in the tree):
+- `analysis/tests`: 504 passed; coverage over `analysis/src/assay_analysis` with branches is 100% line and 100% branch for `campaign.py`, `cli.py`, `evidence.py`, `plan_estimate.py`, no pragma.
+- `gate/tests`: 371 passed, 11 skipped.
+
+READY-FOR-GATE d2e4b0b3
