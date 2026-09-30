@@ -49,6 +49,26 @@ service becomes ready. The sticky runtime directory prevents unrelated local
 users from replacing or deleting the socket after it appears. This shares the
 BuildKit API only with principals already trusted for Docker access; it does
 not make the socket world-accessible.
+## Bootstrap uses the source filesystem type
+
+Devcontainer bind-mount syntax declares a source and target but has no
+source-kind field. Names and suffixes do not identify a missing source's type:
+`.gitconfig` is usually a file, while `.ssh` is a directory, and custom dotfiles
+can be either. The host bootstrap checks existing host sources by their actual
+filesystem type, regardless of name or suffix. For missing sources, the
+`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` setting controls whether MDT creates
+the path or refuses it. The shipped default, `create-by-spelling`, interprets a
+trailing `/` as a directory and no trailing `/` as an empty regular file. The
+`fail` option requires every `$HOME` source managed by the bootstrap to exist
+before Docker starts. The marker is an MDT bootstrap convention, not Docker
+mount metadata; the shipped template marks every directory source with `/`. See the
+[consumer example](CONSUMERS.md#optional-git-config-mount).
+
+The template puts Codex's shared SQLite database under the persistent `.codex` mount with
+`CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`, so profile data survives a rebuild.
+It sets `shutdownAction: "none"` so closing the attached Dev Containers session leaves the
+container available. Adoption details are in the
+[consumer guide](CONSUMERS.md#codex-profile-state-and-container-lifetime).
 
 ## Release relationship
 

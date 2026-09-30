@@ -133,6 +133,13 @@ RUN set -euo pipefail; \
         useradd -m -s /bin/bash -u 1000 -g 1000 vscode; \
     fi
 
+# Release worktrees may be checked out under umask 077. These copied build
+# inputs contain public package metadata and must remain readable in the
+# unprivileged vscode install layers below.
+RUN set -euo pipefail; \
+    chmod -R a+rX /tmp/pip /tmp/requirements; \
+    chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py /tmp/mdt_cli.py
+
 # Core system packages
 RUN set -euo pipefail; \
     if [ -f /etc/apt/sources.list.d/yarn.list ]; then \
@@ -583,7 +590,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     install_from_tar "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz" cdebug /tmp/cdebug-extract; \
     cdebug --version; \
     mandb -q; \
-    cp "${STAGE_DIR}/tool-versions.env" /tmp/ai-tool-versions.env; \
+    install -o vscode -g vscode -m 0644 "${STAGE_DIR}/tool-versions.env" /tmp/ai-tool-versions.env; \
     python3 /tmp/install_ai_cli_tools.py root; \
     rm -rf \
         /tmp/bat-extract \

@@ -23,10 +23,11 @@
   "name": "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",
 
   // ─── 2. Host bootstrap (PRE-container) ─────────────────────────────────────────
-  // Runs ON THE HOST before the container is created, so every $HOME bind-mount
-  // source below exists with correct perms (else Docker creates them as root and
-  // the vscode user can't write its own state). Derives the dir list from the
-  // mounts below, so the two stay in sync. Vendored into your repo (see header).
+  // Runs ON THE HOST before the container is created and prepares each $HOME
+  // bind source under DEVCONTAINER_MISSING_BIND_SOURCE_POLICY. Docker's --mount
+  // form refuses a missing source. With the default policy, trailing `/` marks
+  // a missing directory source; no `/` marks an empty regular file. Vendored
+  // into your repo with the mount list below, so bootstrap and mounts stay aligned.
   "initializeCommand": "python3 .devcontainer/initialize_container_environment.py",
 
   // ─── 3. Container image ────────────────────────────────────────────────────────
@@ -110,30 +111,36 @@
     "source=/sys/kernel/debug,target=/sys/kernel/debug,type=bind,readonly",
 
     // ── Host ssh keys (readonly, dual-use: native keys + in-container), owned by host ─────────
-    "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh-host,type=bind,consistency=cached,readonly",
+    "source=${localEnv:HOME}/.ssh/,target=/home/vscode/.ssh-host,type=bind,consistency=cached,readonly",
 
     // ── PERSISTENT STATE (~/mdt--mounted-folders/) — survives rebuilds, owned by container ────────
+    // MDT host bootstrap defaults DEVCONTAINER_MISSING_BIND_SOURCE_POLICY to
+    // `create-by-spelling` (configurable in the host-setup wizard). A trailing
+    // `/` marks a missing source as a directory; no `/` marks it as an empty
+    // regular file. Set the policy to `fail` to require every $HOME source to exist.
+    // This marker is MDT bootstrap policy; Docker itself only sees a bind path.
     // Directory mounts (alphabetical by subdir name)
-    "source=${localEnv:HOME}/mdt--mounted-folders/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.claude/,target=/home/vscode/.claude,type=bind,consistency=cached",
     // ClaudeLink durable hub state: nexus.db, scheduler state/logs, and related runtime files.
-    "source=${localEnv:HOME}/mdt--mounted-folders/.claudelink,target=/home/vscode/.claudelink,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.config,target=/home/vscode/.config,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.gnupg,target=/home/vscode/.gnupg,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.local,target=/home/vscode/.local,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.minisign,target=/home/vscode/.minisign,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw,target=/home/vscode/.openclaw,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.claudelink/,target=/home/vscode/.claudelink,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.codex/,target=/home/vscode/.codex,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.codex2/,target=/home/vscode/.codex2,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.config/,target=/home/vscode/.config,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.gnupg/,target=/home/vscode/.gnupg,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.local/,target=/home/vscode/.local,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.minisign/,target=/home/vscode/.minisign,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw/,target=/home/vscode/.openclaw,type=bind,consistency=cached",
     // Pi config and session root: sessions live below ~/.pi/agent/sessions/.
-    "source=${localEnv:HOME}/mdt--mounted-folders/.pi,target=/home/vscode/.pi,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix,target=/home/vscode/.reasonix,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/opencode-data,target=/home/vscode/.local/share/opencode,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.pi/,target=/home/vscode/.pi,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix/,target=/home/vscode/.reasonix,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.ssh/,target=/home/vscode/.ssh,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/opencode-data/,target=/home/vscode/.local/share/opencode,type=bind,consistency=cached",
     // File-level state mounts (not inside a subdirectory)
     "source=${localEnv:HOME}/mdt--mounted-folders/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached",
     // "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix.toml,target=/home/vscode/.reasonix.toml,type=bind,consistency=cached",
 
     // ── Persisted host-backed /tmp (mode 1777) ─────────────────────────────────
-    "source=${localEnv:HOME}/mdt--mounted-folders/tmp,target=/tmp,type=bind,consistency=cached"
+    "source=${localEnv:HOME}/mdt--mounted-folders/tmp/,target=/tmp,type=bind,consistency=cached"
     // NOTE: caches (~/.cache, ~/.npm) are intentionally NOT persisted.
 
     // ── Sibling-repo workspace mounts (multi-root workspace) ───────────────────
@@ -176,7 +183,9 @@
     "BUILDX_CONFIG": "/home/vscode/.config/docker/buildx",
     // Explicitly select the durable host-managed remote for all builds.
     "BUILDX_BUILDER": "mdt-managed",
-    "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock"
+    "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock",
+    // Persist Codex's shared SQLite database on the grouped `.codex` source.
+    "CODEX_SQLITE_HOME": "/home/vscode/.codex/sqlite-shared"
   },
 
   // ─── 8. Docker runtime arguments ──────────────────────────────────────────────
@@ -247,5 +256,8 @@
         "yzhang.markdown-all-in-one"
       ]
     }
-  }
+  },
+
+  // Keep this devcontainer available when the attached Dev Containers session disconnects.
+  "shutdownAction": "none"
 }

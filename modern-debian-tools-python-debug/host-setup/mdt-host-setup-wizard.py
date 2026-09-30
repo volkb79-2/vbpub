@@ -510,6 +510,15 @@ def validate_guard_policy(value: str) -> str | None:
     return None
 
 
+def validate_missing_bind_source_policy(value: str) -> str | None:
+    if value not in ("create-by-spelling", "fail"):
+        return (
+            "choose 'create-by-spelling' (trailing `/` creates a directory; "
+            "no `/` creates an empty file) or 'fail' (require every source to exist)"
+        )
+    return None
+
+
 def _memory_value_configured(value: str) -> bool:
     """Return whether an env value represents an actual memory directive."""
     return bool(value and value not in ("-", "auto"))
@@ -698,6 +707,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_BUILDKITD_IMAGE": validate_buildkit_image,
         "DEV_BUILDKITD_MAX_PARALLELISM": validate_positive_int,
         "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
+        "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY": validate_missing_bind_source_policy,
         "DOCKER_DAEMON_CGROUP_PARENT": validate_cgroup_parent,
         "DOCKER_SCOPE_BACKSTOP_MEMORY_MAX": validate_positive_size,
         "DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX": validate_positive_size,
@@ -2515,6 +2525,28 @@ def step_watcher(
     return values
 
 
+def step_devcontainer_bootstrap(
+    cfg_current: dict[str, str], example_defaults: dict[str, str]
+) -> dict[str, str]:
+    """Choose how the host bootstrap prepares missing devcontainer sources."""
+    out("\n-- h. devcontainer bind-source preparation --")
+    out("The initializeCommand runs on the host before Docker starts the container.")
+    for bullet in (
+        "Existing sources are classified from the host filesystem, independent of their names or suffixes.",
+        "With `create-by-spelling`, a source ending in `/` creates a directory; no trailing `/` creates an empty regular file.",
+        "With `fail`, the bootstrap refuses every missing `$HOME` source it manages; create it on the host before startup.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    policy = walk_key(
+        "Missing devcontainer bind-source policy (create-by-spelling or fail)",
+        "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY",
+        cfg_current,
+        example_defaults,
+        validate=validate_missing_bind_source_policy,
+    )
+    return {"DEVCONTAINER_MISSING_BIND_SOURCE_POLICY": policy}
+
+
 # ─── orchestration ─────────────────────────────────────────────────────────
 
 
@@ -2545,6 +2577,7 @@ def explain_install_map() -> None:
         "`mdt-buildkitd.service` + remote — rootless worker in `dev-buildkitd.slice`.",
         "BuildKit image and maximum solver parallelism are configured here.",
         "`mdt-buildkit-guard.service` — enforce accidental Buildx terminate/report-only policy.",
+        "`initialize_container_environment.py` — prepare host bind sources before Docker starts a devcontainer.",
         "Docker `cgroup-parent` merge + `docker-.scope` backstop — placement and a transient-scope floor.",
         "Installed scripts + `mdt-host-check.sh` — baseline, runtime control, guard, and health evidence.",
     ):
@@ -2555,6 +2588,7 @@ def explain_install_map() -> None:
         "`WATCHER_IO_CAP_PCT` -> periodic sweep + IO watcher.",
         "Slice resource keys -> their matching slice units.",
         "BuildKit image/parallelism/policy -> BuildKit + guard.",
+        "`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` -> devcontainer host bootstrap.",
         "Docker parent/backstop -> daemon.json + scope drop-in.",
         "Watcher memory keys -> memory watcher.",
     ):
@@ -2852,6 +2886,7 @@ def main(argv: list[str] | None = None) -> int:
         walked["DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX"] = backstop_swap
 
         walked.update(step_watcher(cfg_current, example_defaults))
+        walked.update(step_devcontainer_bootstrap(cfg_current, example_defaults))
         _reprompt_memory_constraints(meminfo.get("MemAvailable", 0), walked)
         baseline_results = finish_io_baseline(baseline_job)
         if not baseline_results:
