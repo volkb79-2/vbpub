@@ -283,6 +283,32 @@ def test_surface_signature_tracks_parser_scoped_abbreviation_policy():
     assert abbreviated_case["signature"] != exact_case["signature"]
 
 
+def test_surface_signature_tracks_mutation_confirmation_policy():
+    def minimum_signature(mutating: bool) -> str:
+        registry = CliRegistry(
+            IDENTITY,
+            prog="surface-demo",
+            description="inspect sample commands",
+        )
+        registry.register(
+            VerbSpec(
+                "show",
+                description="show one item",
+                mutating=mutating,
+                handler=lambda *_: 0,
+            )
+        )
+        surface = export_cli_surface(registry.build())
+        minimum = next(
+            candidate
+            for candidate in surface["candidates"]
+            if candidate["kind"] == "minimum"
+        )
+        return minimum["signature"]
+
+    assert minimum_signature(False) != minimum_signature(True)
+
+
 @pytest.mark.parametrize(
     ("setting", "value", "finding"),
     (
