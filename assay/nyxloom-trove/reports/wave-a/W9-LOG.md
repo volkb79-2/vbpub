@@ -32,7 +32,7 @@ eb5585414886feba6b05668a708dae12c53907bd5e713d38238abc6e853239cb  tracked-change
 9. Never-started `budget_exceeded` candidates (status row 3): `outcomes`, `adverse` and `candidate_details` keep the verdict's bucket for them, but `completed_total` excludes them and `pending_total` includes them, so `no_remaining_work` is never claimed for a timed-out campaign.
 10. `projection.bases.<basis>` with fewer than 20 samples is an object whose `fallback_counts`, `serial_seconds_p50/p90` are `null` and `reason` is `"insufficient_sample"` (a bare `null` cannot carry the reason); a basis that computed has `reason: null`. `wall_seconds_*` are `null` when the `killed` basis is insufficient.
 11. Stage tags for CD51 Q1: root/`--expected-commit`/scalar checks and the `--command-exit` mismatch -> `arguments`; lane file/lane lookup -> `lane`; verdict read/verify/policy/inventory checks (including verdict-vs-plan inventory) -> `verdict`; plan build, plan-row identity -> `plan`; per-run stream checks (including progress-vs-verdict per-candidate disagreement) -> `progress`; latest-run-vs-verdict scope/terminal checks, `--log` -> `input`; state dir/records -> `state`; `--coverage` -> `coverage`.
-12. `--command-exit` without a verdict is accepted, not compared and not echoed (`verdict` is `null`); `command_exit_not_observed` is present exactly when `--command-exit` is absent.
+12. (SUPERSEDED by CD55 Q12: `--command-exit` without `--verdict` is an `evidence_error`, `source: "arguments"`, message `--command-exit requires --verdict`; `command_exit_not_observed` is present exactly when `--command-exit` is absent.)
 13. `projection.fixed_components.other` subtracts a missing coverage/r2 source as 0 (the missing source stays listed in `fixed_components_missing`); every duration is clamped at >= 0.
 14. Without a verdict, a candidate event outside the latest run's selection is refused; the message is now the same for verdict mode (`latest progress run includes candidates outside its selected scope`).
 15. Candidate-event `cpu_seconds`, `peak_rss_bytes`, `phase_seconds`, `startup_seconds` that break W8's shapes are refused as a progress `evidence_error` instead of being copied verbatim.
@@ -48,3 +48,10 @@ Positive: `tests/core/test_cli_plan_jobs.py` 11 passed; `tests/core/test_mutatio
 | O20 | `test_o20_the_candidates_event_carries_the_judge_every_record_carries` | `**({"judge_sha256": judge} ...)` removed from the `candidates` event | red, reverted, green |
 | O16a (vii) | `test_o16a_vii_allow_dirty_reaches_the_integrity_probe` | `allow_dirty=False` hard-coded in `_cmd_plan`'s discovery call | red, reverted, green |
 | O16a (viii) | `test_o16a_viii_the_reuse_command_is_resolved_only_when_reuse_is_requested` | `resolve_reuse_command=reuse_source is None` (inverted) | red, reverted, green |
+
+## Campaign oracle traceability (work | owner | oracle | test id | controlled break | failures)
+Every break is an Edit on `campaign.py` (or the named file), observed red, reverted by Edit, observed green. Nothing broken is committed. Test ids are in `analysis/tests/test_analysis_campaign.py` unless named.
+
+| work | owner | oracle | test id | controlled break | failures |
+|---|---|---|---|---|---|
+| CD55 Q12 | W9 | CD55 | `test_cd55_q12_command_exit_without_a_verdict_is_an_evidence_error` | the `--command-exit requires --verdict` guard disabled (`if False and ...`) | 1 failed |

@@ -426,6 +426,19 @@ def test_o1_a_command_exit_that_differs_from_the_verdict_is_an_evidence_error(tm
     assert err == f"assay analyze campaign: {error['message']}\n"
 
 
+def test_cd55_q12_command_exit_without_a_verdict_is_an_evidence_error(tmp_path, monkeypatch):
+    root, head, _verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    code, out, err = _invoke(root, head, None, progress, command_exit=0)
+    assert code == 2
+    document = json.loads(out)
+    _validate(document)
+    assert document["status"] == "evidence_error"
+    assert document["errors"] == [
+        {"source": "arguments", "message": "--command-exit requires --verdict"}
+    ]
+    assert err == "assay analyze campaign: --command-exit requires --verdict\n"
+
+
 def test_an_evidence_error_document_is_json_even_for_the_text_format(tmp_path, monkeypatch):
     root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
     code, out, _err = _invoke(root, head, verdict, progress, command_exit=1, output_format="text")

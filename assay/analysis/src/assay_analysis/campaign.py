@@ -1568,6 +1568,8 @@ def campaign(
         isinstance(command_exit, bool) or not isinstance(command_exit, int) or command_exit < 0
     ):
         raise ValueError("command exit must be a non-negative integer")
+    if command_exit is not None and verdict_path is None:
+        raise ValueError("--command-exit requires --verdict")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("detail offset must be a non-negative integer")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_DETAIL_LIMIT:
