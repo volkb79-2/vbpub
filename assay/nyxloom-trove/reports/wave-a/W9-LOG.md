@@ -294,4 +294,8 @@ Post-fix evidence (serial, foreground, `nice -n 19 ionice -c3`, no container, `C
 - `analysis/tests`: 504 passed; coverage over `analysis/src/assay_analysis` with branches is 100% line and 100% branch for `campaign.py`, `cli.py`, `evidence.py`, `plan_estimate.py`, no pragma.
 - `gate/tests`: 371 passed, 11 skipped.
 
-READY-FOR-GATE d2e4b0b3
+- V-1 (controller-accepted, follow-up to W9R-2): `resume_shortfall` was `current is not None and ...`, so an unknown judge (no `judge_sha256` on the `candidates` event, no paired records) let a `resume` claim with an empty state store finish `complete`. It is now `latest["resumed_total"] > (len(eventless) if current is not None else 0)`: records under an unknown judge cannot vouch for completion (CD51 Q3). Test `test_unknown_judge_empty_state_resume_claim` (`..._state.py`): red before the fix (`(0, "complete")`), green after; the no-over-correction tests (a resumed campaign whose state records cover every resumed candidate stays `complete`) still pass. `analysis/tests`: 505 passed, 100% line and branch over `assay_analysis`, no pragma. Full default testpaths: 6005 passed, 1 skipped; the one deselected test, `tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused`, fails only because this host has a stray `/tmp/.git` (an ancestor of `tmp_path`), which is unrelated to W9.
+
+READY-FOR-GATE d2e4b0b3 (superseded by the V-1 line below)
+
+READY-FOR-GATE 883a74de
