@@ -25,7 +25,14 @@ from pathlib import Path
 
 import pytest
 from gate.tests.support import PROJECT_ROOT, requires_parent_repository
-from gate.tests.test_distribution_gate import HEX40, RECEIPT_RELATIVE, _git_commit, _rev, run_bash
+from gate.tests.test_distribution_gate import (
+    HEX40,
+    RECEIPT_RELATIVE,
+    _git_commit,
+    _host_environ,
+    _rev,
+    run_bash,
+)
 
 _MODULE_PATH = PROJECT_ROOT / "gate" / "python" / "qualify_sql.py"
 _SPEC = importlib.util.spec_from_file_location("qualify_sql", _MODULE_PATH)
@@ -567,7 +574,7 @@ def _fake_bin(tmp_path: Path, *, psql_rc: dict[str, int]) -> dict[str, str]:
     (stub_dir / "pg_dump").write_text("#!/bin/sh\necho DUMP\n", encoding="utf-8")
     for name in ("psql", "pg_dump"):
         (stub_dir / name).chmod(0o755)
-    return {**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+    return {**_host_environ(), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
 
 
 def _run_assertions(tmp_path: Path, psql_rc: dict[str, int]) -> subprocess.CompletedProcess[str]:
@@ -1136,7 +1143,7 @@ def _sql_env(tmp_path: Path, *, out: str, rc: int) -> tuple[dict[str, str], Path
     stub.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$DOCKER_STUB_LOG"\nexit 0\n', encoding="utf-8")
     stub.chmod(0o755)
     env = {
-        **os.environ,
+        **_host_environ(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_STUB_LOG": str(docker_log),
         "FAKE_LOG": str(harness_log),
