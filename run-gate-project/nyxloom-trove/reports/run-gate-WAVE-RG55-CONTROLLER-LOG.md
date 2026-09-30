@@ -5632,3 +5632,24 @@ not the registered exact-tree gate. Also removed a duplicate leaf-path refusal
 whose rejection condition is implied by the journal and verified-scope checks
 above it; no accepted placement or recovery path changes. Fresh `r0-r1`, `r3`,
 and adversarial review on the resulting committed tree remain required.
+
+### RW-391 — 2026-09-30 21:18:49Z — repair restart-recovery coverage gaps from the exact-tree gate
+
+Registered `r0-r1` on clean exact tree
+`1e0d5a2cb94fa001eb1080018bbc6983401bb7a4` completed in 135.021 s and
+exited 2. Its independent `.run-gate/history.json` receipt confirms that
+commit, `dirty: false`, lane `r0-r1`, and exit 2. All 2,048 tests passed;
+whole-project coverage was 99%, below the mandatory 100% line-and-branch
+floor. `lib/placement.py` was fully covered; the remaining misses were in
+`lib/serve.py`'s startup placement-journal recovery/final-summary branches and
+`lib/subtree.py`'s malformed process identity and owned-leaf accounting paths.
+The daemon was absent, so the lane used coarse rusage profiling; profiling did
+not alter the gate verdict.
+
+Added behavioral tests for non-object manifests with durable placement
+journals, corrupt journals on finished sessions, live-orphan restoration or
+refusal summaries, malformed `/proc/<pid>/stat` identities, and continued
+attribution from the verified placed leaf after the original token root exits.
+The affected files now pass locally: 525 passed, 6 skipped in 40.52 s; this
+is not registered exact-tree evidence. Fresh `r0-r1` and `r3` on the committed
+tree are still required before the Sol final review.

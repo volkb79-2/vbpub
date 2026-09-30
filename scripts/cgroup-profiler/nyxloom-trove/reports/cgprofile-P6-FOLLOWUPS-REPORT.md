@@ -1824,3 +1824,27 @@ and `r3`, live daemon/carrier/placement/restoration probes, fresh Sol round 7,
 replacement P6 R2, and the full gate remain outstanding. R2 and the full gate
 may proceed asynchronously after provisional merge under RW-381; no release
 or daemon activation is authorized by this report.
+
+## Session 30 — 2026-09-30 21:18:49Z — cover orphan placement-recovery branches
+
+The registered `r0-r1` on clean tree
+`1e0d5a2cb94fa001eb1080018bbc6983401bb7a4` completed in 135.021 s with all
+2,048 tests passing, but exited 2 because whole-project line-and-branch
+coverage was 99%. The separately read run-gate history receipt confirms the
+exact tree, clean state, lane, and exit. Placement was 100%; the residual
+coverage gaps were in `lib/serve.py`'s malformed/non-object manifest and
+placement-recovery reporting paths and `lib/subtree.py`'s invalid start-time
+identity and placed-leaf membership paths. The daemon was not running, so this
+gate recorded coarse rusage; that did not affect its test verdict.
+
+Added recovery oracles that exercise a non-object manifest without hiding its
+write-ahead placement journal, corrupt recovery state for an already-finished
+session, all live-orphan recovery outcomes (restored, refusal, and missing
+journal), and the summary's placement-recovery disclosure when samples exist.
+Subtree tests now reject unreadable/malformed reuse identities and prove that
+the verified leaf continues to attribute a surviving worker after its token
+root exits. The affected files pass locally: 525 passed, 6 skipped in 40.52 s.
+That is targeted local evidence only; it does not substitute for a fresh
+registered gate. RW-391 records the ruling and receipt details. The user's
+selected memory semantics remain kernel-native, charge-based cgroup-leaf
+accounting; docs explicitly disclaim total RSS and a total-resident-memory cap.

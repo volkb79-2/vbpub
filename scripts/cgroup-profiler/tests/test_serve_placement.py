@@ -2829,6 +2829,34 @@ class TestServerPlacement:
         if recovery_result is None:
             assert json.loads(journal_path.read_text())["state"] == "complete"
 
+    def test_non_object_manifest_does_not_hide_a_placement_journal(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        session_dir = tmp_path / "sessions" / SESSION_ID
+        session_dir.mkdir(parents=True)
+        (session_dir / "manifest.json").write_text("[]")
+        journal = {"schema": 1, "state": "creating-scope", "token": TOKEN}
+        journal_path = session_dir / "placement-state.json"
+        journal_path.write_text(json.dumps(journal))
+        calls: List[Any] = []
+
+        def recover(record, **kwargs):
+            calls.append(record)
+            kwargs["state_write"]({**record, "state": "complete"})
+            return None
+
+        monkeypatch.setattr(serve.placement_mod, "recover_journal", recover)
+
+        _server(tmp_path, root)
+
+        assert calls == [journal]
+        assert json.loads(journal_path.read_text())["state"] == "complete"
+        recovery = json.loads((session_dir / "placement-recovery.json").read_text())
+        assert recovery["status"] == "restored"
+        assert recovery["error"] is None
+        assert json.loads((session_dir / "manifest.json").read_text()) == []
+
     @pytest.mark.parametrize(
         "recovery_result",
         [None, placement.REFUSED_IDENTITY_UNAVAILABLE],
@@ -2873,6 +2901,102 @@ class TestServerPlacement:
         )
         if recovery_result is None:
             assert json.loads(journal_path.read_text())["state"] == "complete"
+
+    def test_startup_retries_a_corrupt_journal_for_finished_manifest(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        session_dir = tmp_path / "sessions" / SESSION_ID
+        session_dir.mkdir(parents=True)
+        manifest_path = session_dir / "manifest.json"
+        manifest_path.write_text(json.dumps({"session": SESSION_ID, "status": "finished"}))
+        (session_dir / "placement-state.json").write_text("{not json")
+
+        _server(tmp_path, root)
+
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["status"] == "finished"
+        assert manifest["placement_recovery"] == {
+            "status": "failed", "error": placement.REFUSED_STATE_UNAVAILABLE,
+        }
+
+    @pytest.mark.parametrize(
+        ("journal_present", "recovery_error"),
+        [
+            (True, None),
+            (True, placement.REFUSED_IDENTITY_UNAVAILABLE),
+            (False, None),
+        ],
+        ids=["restored-journal", "failed-journal", "missing-requested-journal"],
+    )
+    def test_live_orphan_records_placement_recovery_in_summary(
+        self, tmp_path, monkeypatch, journal_present, recovery_error,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        session_dir = tmp_path / "sessions" / SESSION_ID
+        session_dir.mkdir(parents=True)
+        manifest_path = session_dir / "manifest.json"
+        manifest_path.write_text(json.dumps({
+            "session": SESSION_ID,
+            "status": "live",
+            "scope": "container",
+            "container_id": "a" * 64,
+            "cgroup": "/dev.slice/x.scope",
+            "token": TOKEN,
+            "slice_name": None,
+            "interval_seconds": 1.0,
+            "started_at": "2026-01-01T00:00:00Z",
+            "ended_at": None,
+            "damon_enabled": False,
+            "damon_kdamond": None,
+            "damon_thresholds": None,
+            "damon_unavailable_reason": None,
+            "meta": {},
+            "aborted_reason": None,
+            "placement": {"requested": True},
+        }))
+        journal_path = session_dir / "placement-state.json"
+        if journal_present:
+            journal_path.write_text(json.dumps({"schema": 1, "state": "placed"}))
+            monkeypatch.setattr(
+                serve.SessionServer, "_recover_placement_file",
+                lambda _self, _session, _path: recovery_error,
+            )
+        (session_dir / "samples.jsonl").write_text(json.dumps({
+            "seq": 0,
+            "cg": {"/dev.slice/x.scope": {"mem": {"current": 100, "peak": 100}}},
+            "pids": [1],
+            "mono": 0.0,
+        }) + "\n")
+        (session_dir / "host.jsonl").write_text(
+            json.dumps({"host": {}, "slice": None}) + "\n"
+        )
+
+        _server(tmp_path, root)
+
+        effective_error = (
+            recovery_error if journal_present else placement.REFUSED_STATE_UNAVAILABLE
+        )
+        expected_recovery = (
+            {"status": "failed", "error": effective_error}
+            if effective_error is not None else
+            {"status": "restored", "error": None}
+        )
+        summary_doc = json.loads((session_dir / "summary.json").read_text())
+        manifest = json.loads(manifest_path.read_text())
+        assert summary_doc["placement_recovery"] == expected_recovery
+        assert summary_doc["placement"] == {
+            "requested": True,
+            "leaf": None,
+            "applied": {},
+            "pids_moved": 0,
+            "error": effective_error,
+        }
+        assert manifest["placement_recovery"] == expected_recovery
+        assert manifest["aborted_reason"] == (
+            "daemon-restarted-placement-recovery-failed"
+            if effective_error is not None else "daemon-restarted"
+        )
 
     def test_startup_does_not_revisit_completed_journal_for_finished_manifest(
         self, tmp_path, monkeypatch,
