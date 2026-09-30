@@ -240,7 +240,7 @@ def test_complete_campaign_json_and_text_bind_plan_progress_and_verdict(tmp_path
     assert result["campaign"]["completed_total"] == 2
     assert result["campaign"]["pending_total"] == 0
     assert result["candidate_details"]["matching_total"] == 2
-    assert result["timing"]["status"] == "no_remaining_work"
+    assert result["timing"]["eta_reason"] == "no_remaining_work"
 
     code, out, err = _invoke(
         root, head, verdict, progress, command_exit=0, output_format="text"
@@ -250,7 +250,7 @@ def test_complete_campaign_json_and_text_bind_plan_progress_and_verdict(tmp_path
     assert "planned=2 completed=2 pending=0" in out
 
 
-def test_terminal_lane_timeout_accounts_for_budget_candidates_without_duration_events(
+def test_terminal_lane_timeout_leaves_never_started_candidates_unresolved(
     tmp_path, monkeypatch
 ):
     document = _fixture_document("r2_budget_exceeded_lane_timeout")
@@ -268,12 +268,21 @@ def test_terminal_lane_timeout_accounts_for_budget_candidates_without_duration_e
     )
 
     code, out, err = _invoke(root, head, verdict, progress, command_exit=4)
-    assert (code, err) == (1, "")
+    assert (code, err) == (3, "")
     result = json.loads(out)
-    assert result["status"] == "complete"
+    _validate(result)
+    assert result["status"] == "incomplete"
+    assert result["complete_blockers"] == ["lane_timeout_or_unstarted"]
+    assert result["unresolved"] == {"matching_total": 1, "candidates": [
+        next(
+            row["id"] for row in rows
+            if row["id"] != first_kill
+        )
+    ]}
     assert result["campaign"]["outcomes"]["budget_exceeded"] == 1
     assert result["campaign"]["outcomes"]["killed"] == 1
-    assert result["timing"]["status"] == "no_remaining_work"
+    assert (result["campaign"]["completed_total"], result["campaign"]["pending_total"]) == (1, 1)
+    assert result["timing"]["eta_reason"] == "insufficient_sample"
 
 
 def test_interrupted_progress_produces_an_incomplete_closeout(tmp_path, monkeypatch):
@@ -297,7 +306,9 @@ def test_interrupted_progress_produces_an_incomplete_closeout(tmp_path, monkeypa
     result = json.loads(out)
     assert result["status"] == "incomplete"
     assert result["runs"][-1]["terminal"] is None
-    assert result["timing"]["status"] == "insufficient_sample"
+    # The verified verdict resolves both candidates even though the stream stopped early.
+    assert result["timing"]["eta_reason"] == "no_remaining_work"
+    assert result["complete_blockers"] == ["inventory_not_exhausted", "terminal_disagrees"]
 
 
 def test_mutant_limit_sentinel_is_not_reported_as_an_empty_complete_campaign(

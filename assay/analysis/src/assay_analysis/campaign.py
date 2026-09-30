@@ -17,12 +17,13 @@ import os
 import re
 import stat
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from assay import coverage as coverage_api
-from assay import git
+from assay import git, mutation
 from assay.candidate_identity import candidate_id_from_fields
 from assay.config import LaneFile, load_lane_file
 from assay.errors import AssayError
@@ -39,7 +40,15 @@ MAX_LANE_FILE_BYTES = 4 * 1024 * 1024
 MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_PROGRESS_RUNS = 10_000
 MAX_DETAIL_LIMIT = 500
-MIN_ETA_SAMPLE = 5
+MIN_ETA_SAMPLE = 20
+MAX_ERRORS = 10
+MAX_SAMPLE_IDS = 10
+MAX_PROJECT_JOBS = 64
+MIN_PROJECTION_SAMPLE = 20
+PHASE_SECONDS_KEYS = ("materialize", "command", "integrity", "teardown")
+STARTUP_SECONDS_KEYS = ("to_session_start", "to_first_test")
+ADVERSE_BUCKETS = ("survived", "hung", "crashed", "budget_exceeded")
+IDENTITY_KEYS = ("path", "source_sha256", "start_byte", "end_byte", "mutated_file_sha256", "operator")
 EXIT_PASS = 0
 EXIT_COMPLETE_NOT_PASS = 1
 EXIT_EVIDENCE_ERROR = 2
@@ -83,6 +92,19 @@ def _finite_number(value: Any, where: str) -> float:
     if not math.isfinite(number) or number < 0:
         raise ValueError(f"{where} must be finite and non-negative")
     return number
+
+
+def _optional_number(value: Any, where: str) -> float | None:
+    return None if value is None else _finite_number(value, where)
+
+
+def _optional_object(value: Any, keys: tuple[str, ...], where: str) -> dict | None:
+    """``None`` or an object with exactly *keys*, each a number or ``None`` (W8's shapes)."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != set(keys):
+        raise ValueError(f"{where} must be null or an object with exactly {list(keys)}")
+    return {key: _optional_number(value[key], f"{where}.{key}") for key in keys}
 
 
 def _timestamp(value: Any, where: str) -> datetime:
@@ -197,7 +219,10 @@ def _bind_lane_file(path: Path, *, root: Path, commit: str) -> None:
         raise ValueError("lane file bytes differ from the expected committed tree")
 
 
-def _read_progress(path: Path, *, expected: str, lane: str) -> tuple[dict, list[dict]]:
+def _read_progress(
+    path: Path, *, expected: str, lane: str, tolerate_torn: bool
+) -> tuple[dict, list[dict], bool]:
+    """Read the progress stream; a torn final record is tolerated only without a verdict."""
     raw_bytes, artifact = _read_artifact(
         path, limit=MAX_PROGRESS_BYTES, label="progress"
     )
@@ -205,8 +230,12 @@ def _read_progress(path: Path, *, expected: str, lane: str) -> tuple[dict, list[
         raw = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError(f"progress artifact is not UTF-8: {path}") from exc
-    if not raw.endswith("\n"):
-        raise ValueError("progress artifact has a torn final record (missing newline)")
+    torn = not raw.endswith("\n")
+    if torn:
+        if not tolerate_torn:
+            raise ValueError("progress artifact has a torn final record (missing newline)")
+        # A live or killed run leaves a partial last line; it is dropped, not parsed.
+        raw = raw[: raw.rfind("\n") + 1]
     runs: list[dict] = []
     all_runs: list[dict] = []
     current: dict | None = None
@@ -265,7 +294,7 @@ def _read_progress(path: Path, *, expected: str, lane: str) -> tuple[dict, list[
         )
     if not runs:
         raise ValueError(f"progress has no run at expected commit {expected} for lane {lane!r}")
-    return artifact, runs
+    return artifact, runs, torn
 
 
 def _lane_plan(lane_file: LaneFile, lane_name: str, request_base: str | None) -> dict:
@@ -328,12 +357,20 @@ def _coverage_from_verdict(document: dict) -> dict:
 
 
 def _coverage_artifact_summary(
-    *, lane_file: LaneFile, lane, verdict: dict, root: Path,
+    *, lane_file: LaneFile, lane, verdict: dict | None, root: Path,
     path: Path | None
 ) -> dict:
-    """Re-derive the judged R1 facts from the lane's declared coverage bytes."""
+    """Re-derive the judged R1 facts from the coverage artifact named by ``--coverage``.
+
+    The lane-declared artifact is never read implicitly: without ``--coverage``
+    an R1 lane reports ``not_supplied`` (which blocks ``complete``).
+    """
     policy = None if lane.judge is None else lane.judge.coverage
-    verdict_summary = _coverage_from_verdict(verdict)
+    verdict_summary = (
+        {"status": "not_judged", "r1": None, "r2_floor": None}
+        if verdict is None
+        else _coverage_from_verdict(verdict)
+    )
     if policy is None:
         if path is not None:
             raise ValueError("coverage artifact was supplied for a lane with no R1 coverage declaration")
@@ -343,11 +380,17 @@ def _coverage_artifact_summary(
             "branch_arc_detail_status": "not_applicable",
             "missing_branch_arcs": None,
         }
+    if path is None:
+        return {
+            **verdict_summary,
+            "artifact_status": "not_supplied",
+            "branch_arc_detail_status": "unavailable_without_artifact",
+            "missing_branch_arcs": None,
+        }
+    if verdict is None:
+        raise ValueError("coverage cannot be reverified without --verdict")
     declared = (lane_file.project_root / policy.artifact).resolve(strict=False)
-    supplied_path = declared if path is None else (
-        path if path.is_absolute() else lane_file.project_root / path
-    )
-    supplied = supplied_path.resolve(strict=False)
+    supplied = (path if path.is_absolute() else lane_file.project_root / path).resolve(strict=False)
     if supplied != declared:
         raise ValueError(
             f"coverage artifact {supplied} differs from lane-declared artifact {declared}"
@@ -547,6 +590,8 @@ def _run_summary(
     resume_merged_event = None
     sweep_end = None
     terminal = None
+    plan_event: dict | None = None
+    command_finished: list[dict] = []
     phase = "header"
     for line_number, event in events:
         kind = event["event"]
@@ -555,6 +600,11 @@ def _run_summary(
                 raise ValueError("progress run repeats its candidates milestone")
             if phase not in ("header", "resume"):
                 raise ValueError("progress candidates milestone is out of order")
+            if "selection_sha256" in event:
+                raise ValueError("pilot selection unsupported before P7")
+            judge = event.get("judge_sha256")
+            if judge is not None and (not isinstance(judge, str) or not _SHA256_RE.fullmatch(judge)):
+                raise ValueError("progress judge_sha256 must be a SHA-256 digest")
             candidates_event = event
             phase = "sweep"
         elif kind == "shard":
@@ -613,10 +663,23 @@ def _run_summary(
                     raise ValueError(
                         f"progress and verdict disagree for candidate {candidate_id}"
                     )
+            execution_mode = event.get("execution_mode")
             candidates[candidate_id] = {
                 "outcome_bucket": event["outcome_bucket"],
                 "elapsed_seconds": elapsed,
                 "emitted_at": emitted_at.isoformat(),
+                "cpu_seconds": _optional_number(event.get("cpu_seconds"), "candidate cpu_seconds"),
+                "peak_rss_bytes": _optional_number(
+                    event.get("peak_rss_bytes"), "candidate peak_rss_bytes"
+                ),
+                "phase_seconds": _optional_object(
+                    event.get("phase_seconds"), PHASE_SECONDS_KEYS, "candidate phase_seconds"
+                ),
+                "startup_seconds": _optional_object(
+                    event.get("startup_seconds"), STARTUP_SECONDS_KEYS, "candidate startup_seconds"
+                ),
+                "execution_mode": execution_mode if isinstance(execution_mode, str) else None,
+                "liveness_resource_evidence": event.get("liveness_resource_evidence"),
             }
         elif kind == "end":
             if sweep_end is not None:
@@ -637,6 +700,10 @@ def _run_summary(
                       "coverage_parsed"}:
             if phase in ("ended", "terminal"):
                 raise ValueError(f"progress event {kind!r} follows the run terminal")
+            if kind == "command_finished":
+                command_finished.append(event)
+            elif kind == "plan":
+                plan_event = event
         else:
             raise ValueError(f"progress event {kind!r} is not supported by campaign analysis")
 
@@ -783,54 +850,693 @@ def _run_summary(
         "sweep_end_reason": sweep_end.get("reason") if sweep_end is not None else None,
         "sweep_end_present": sweep_end is not None,
         "terminal": terminal_summary,
+        "judge_sha256": None if candidates_event is None else candidates_event.get("judge_sha256"),
         "candidate_ids": sorted(candidates),
         "_candidate_events": candidates,
+        "_selection": selected_ids,
+        "_plan_event": plan_event,
+        "_command_finished": command_finished,
+    }
+
+
+class EvidenceErrors(ValueError):
+    """Several refused facts found in one scan; each entry is ``{source, message}``."""
+
+    def __init__(self, errors: list[dict]) -> None:
+        super().__init__("; ".join(error["message"] for error in errors))
+        self.errors = errors
+
+
+def _identity_reproduces(fields: dict, expected_id: Any) -> bool:
+    """Whether the six identity inputs in *fields* reproduce *expected_id* (section C)."""
+    try:
+        derived = candidate_id_from_fields(**{key: fields.get(key) for key in IDENTITY_KEYS})
+    except ValueError:
+        return False
+    return derived == expected_id
+
+
+def _check_plan_identity(plan_by_id: dict[str, dict]) -> None:
+    """Every plan row must carry the inputs that reproduce its own id."""
+    failures = [
+        {
+            "source": "plan",
+            "message": f"plan row {candidate_id}: identity inputs do not reproduce its id",
+        }
+        for candidate_id, row in plan_by_id.items()
+        if not _identity_reproduces(row, candidate_id)
+    ]
+    if failures:
+        raise EvidenceErrors(failures)
+
+
+_STATE_NAME = re.compile(r"[0-9a-f]{64}\.json\Z")
+
+
+def _state_entry(record: dict, stem: str) -> dict:
+    """P8's read-only shape checks 4-9 for one state record; the first failure raises."""
+    if record.get("schema_version") != 1:
+        raise ValueError("schema_version is not 1")
+    if record.get("candidate_id") != stem:
+        raise ValueError("candidate_id differs from the file name")
+    if not _identity_reproduces(record, stem):
+        raise ValueError("identity inputs do not reproduce the file name")
+    bucket = record.get("outcome_bucket")
+    if bucket not in MUTATION_BUCKETS:
+        raise ValueError("outcome_bucket is unknown")
+    try:
+        mode = mutation.execution_from_state_record(record).mode
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"execution provenance is invalid: {exc}") from exc
+    judge = record.get("judge_sha256")
+    if not isinstance(judge, str) or not _SHA256_RE.fullmatch(judge):
+        raise ValueError("judge_sha256 is not a SHA-256 digest")
+    return {"id": stem, "record": record, "bucket": bucket, "judge": judge, "mode": mode}
+
+
+def _read_state_dir(state_dir: Path) -> list[dict]:
+    """Read every state record by name; all shape failures are reported together."""
+    if not state_dir.is_dir():
+        raise ValueError(f"state directory is not an existing directory: {state_dir}")
+    entries: list[dict] = []
+    failures: list[dict] = []
+    for name in sorted(os.listdir(state_dir)):
+        if not _STATE_NAME.fullmatch(name):
+            continue
+        try:
+            raw, _artifact = _read_artifact(
+                state_dir / name, limit=mutation.MUTATION_STATE_RECORD_LIMIT, label="state record"
+            )
+            record = evidence._json(raw.decode("utf-8"))
+            if not isinstance(record, dict):
+                raise ValueError("record is not a JSON object")
+            entries.append(_state_entry(record, name[: -len(".json")]))
+        except ValueError as exc:
+            failures.append({"source": "state", "message": f"state record {name}: {exc}"})
+    if failures:
+        raise EvidenceErrors(failures)
+    return entries
+
+
+def _id_summary(ids) -> dict:
+    ordered = sorted(ids)
+    return {"count": len(ordered), "sample_ids": ordered[:MAX_SAMPLE_IDS]}
+
+
+def _no_state() -> dict:
+    """The store view when ``--state-dir`` was not supplied."""
+    return {
+        "output": None, "counted": {}, "current": {}, "unverified_ids": set(), "reclassified": [],
+    }
+
+
+def _reconcile_state(
+    entries: list[dict],
+    *,
+    plan_ids: set[str],
+    selection: set[str],
+    latest: dict,
+    verdict_by_id: dict[str, dict],
+) -> dict:
+    """CD40 order over shape-valid records: judge, foreign/stale, unverified hung, verdict, reconcile."""
+    events = latest["_candidate_events"]
+    in_selection = [entry for entry in entries if entry["id"] in selection]
+    paired_ids = {
+        entry["id"] for entry in in_selection
+        if entry["id"] in events and events[entry["id"]]["outcome_bucket"] == entry["bucket"]
+    }
+    paired_judges = {entry["judge"] for entry in in_selection if entry["id"] in paired_ids}
+    if latest["judge_sha256"] is not None:
+        current, source = latest["judge_sha256"], "candidates-event"
+    elif len(paired_judges) == 1:
+        (current,) = paired_judges
+        source = "paired-records"
+    else:
+        current, source = None, "unknown"
+    foreign = [entry for entry in entries if entry["id"] not in plan_ids]
+    stale = [
+        entry for entry in entries
+        if entry["id"] in plan_ids and current is not None and entry["judge"] != current
+    ]
+    same_judge = [entry for entry in in_selection if entry["judge"] == current]
+    unverified_ids = {
+        entry["id"] for entry in same_judge
+        if entry["bucket"] == "hung"
+        and not mutation.valid_hung_resource_evidence(
+            entry["record"].get("liveness_resource_evidence")
+        )
+    }
+    remaining = [entry for entry in same_judge if entry["id"] not in unverified_ids]
+    disagreements = [
+        {
+            "source": "state",
+            "message": (
+                f"state record {entry['id']}.json: bucket {entry['bucket']!r} disagrees "
+                f"with verified verdict bucket {verdict_by_id[entry['id']]['bucket']!r}"
+            ),
+        }
+        for entry in remaining
+        if entry["id"] in verdict_by_id and verdict_by_id[entry["id"]]["bucket"] != entry["bucket"]
+    ]
+    if disagreements:
+        raise EvidenceErrors(disagreements)
+    counted: dict[str, dict] = {}
+    reclassified: list[dict] = []
+    eventless: list[dict] = []
+    for entry in remaining:
+        event = events.get(entry["id"])
+        if event is None:
+            eventless.append(entry)
+            continue
+        counted[entry["id"]] = entry
+        if event["outcome_bucket"] != entry["bucket"]:
+            reclassified.append({
+                "candidate_id": entry["id"],
+                "source": "state_vs_progress",
+                "runs": [{"run_id": latest["run_id"], "bucket": event["outcome_bucket"]}],
+                "state_bucket": entry["bucket"],
+            })
+    if current is None:
+        unreconciled = [entry for entry in in_selection if entry["id"] not in paired_ids]
+    elif len(eventless) == latest["resumed_total"]:
+        counted.update({entry["id"]: entry for entry in eventless})
+        unreconciled = []
+    else:
+        unreconciled = eventless
+    return {
+        "output": {
+            "records": len(entries),
+            "counted": len(counted),
+            "foreign": _id_summary(entry["id"] for entry in foreign),
+            "stale_judge": {
+                "count": len(stale),
+                "judge_sha256_counts": dict(sorted(Counter(e["judge"] for e in stale).items())),
+            },
+            "unreconciled": _id_summary(entry["id"] for entry in unreconciled),
+            "unverified_hung": _id_summary(unverified_ids),
+            "judge_sha256_current": current,
+            "judge_sha256_source": source,
+            "judge_sha256_counts": dict(sorted(Counter(e["judge"] for e in entries).items())),
+        },
+        "counted": counted,
+        "current": {entry["id"]: entry for entry in same_judge},
+        "unverified_ids": unverified_ids,
+        "reclassified": reclassified,
+    }
+
+
+def _typed(value: Any, kind: type) -> Any:
+    return value if isinstance(value, kind) and not isinstance(value, bool) else None
+
+
+def _liveness(bucket: str, event: dict, current_record: dict | None) -> tuple[str | None, str | None]:
+    """``(decision, evidence status)`` for a hung row; both ``None`` for other buckets."""
+    if bucket != "hung":
+        return None, None
+    evidence_value = event.get("liveness_resource_evidence")
+    if evidence_value is None and current_record is not None:
+        evidence_value = current_record["record"].get("liveness_resource_evidence")
+    if evidence_value is None:
+        return None, "absent"
+    status = "valid" if mutation.valid_hung_resource_evidence(evidence_value) else "invalid"
+    return _typed(evidence_value.get("decision") if isinstance(evidence_value, dict) else None, str), status
+
+
+def _row(item: dict, site: dict) -> dict:
+    """One per-candidate row (20 keys); an absent fact is ``null``, never 0."""
+    event = item["event"] or {}
+    outcome = item["outcome"] or {}
+    counted = item["record"]
+    record = {} if counted is None else counted["record"]
+    evidence_object = _typed((outcome or record).get("evidence"), dict) or {}
+    mode = next(
+        (
+            candidate for candidate in (
+                (outcome.get("execution") or {}).get("mode"),
+                None if counted is None else counted["mode"],
+                event.get("execution_mode"),
+            ) if candidate is not None
+        ),
+        None,
+    )
+    decision, status = _liveness(item["bucket"], event, item["current_record"])
+    return {
+        "candidate_id": item["candidate_id"],
+        "outcome": item["bucket"],
+        "path": site.get("path"),
+        "lineno": site.get("lineno"),
+        "operator": site.get("operator"),
+        "description": site.get("description"),
+        "start_byte": site.get("start_byte"),
+        "end_byte": site.get("end_byte"),
+        "execution_mode": mode,
+        "elapsed_seconds": event.get("elapsed_seconds"),
+        "cpu_seconds": event.get("cpu_seconds"),
+        "peak_rss_bytes": event.get("peak_rss_bytes"),
+        "phase_seconds": event.get("phase_seconds"),
+        "startup_seconds": event.get("startup_seconds"),
+        "started_count": _typed(evidence_object.get("started_count"), int),
+        "evidence_command": _typed(evidence_object.get("command"), str),
+        "outcome_source": item["source"],
+        "run_id": item["run_id"],
+        "liveness_decision": decision,
+        "liveness_evidence_status": status,
+    }
+
+
+def _resolutions(
+    *,
+    verdict_buckets: dict[str, list[dict]] | None,
+    selection: set[str],
+    runs: list[dict],
+    state: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Every candidate with one resolved bucket, plus the ``reclassified`` items."""
+    latest = runs[-1]
+    events = latest["_candidate_events"]
+
+    def item(candidate_id, bucket, source, event, run_id, outcome):
+        return {
+            "candidate_id": candidate_id, "bucket": bucket, "source": source,
+            "event": event, "run_id": run_id, "outcome": outcome,
+            "record": state["counted"].get(candidate_id),
+            "current_record": state["current"].get(candidate_id),
+        }
+
+    found: list[dict] = []
+    reclassified = list(state["reclassified"])
+    if verdict_buckets is not None:
+        for bucket in MUTATION_BUCKETS:
+            for outcome in verdict_buckets.get(bucket, []):
+                candidate_id = outcome.get("candidate_id")
+                event = events.get(candidate_id)
+                run_id = None if event is None else latest["run_id"]
+                found.append(item(candidate_id, bucket, "verdict", event, run_id, outcome))
+        return found, reclassified
+    # Progress-only looks at every run at the commit; a store narrows it to the latest.
+    scope = runs if state["output"] is None else runs[-1:]
+    seen: dict[str, tuple[dict, str]] = {}
+    history: dict[str, list[dict]] = {}
+    for run in scope:
+        for candidate_id, event in run["_candidate_events"].items():
+            if candidate_id in selection:
+                seen[candidate_id] = (event, run["run_id"])
+                history.setdefault(candidate_id, []).append(
+                    {"run_id": run["run_id"], "bucket": event["outcome_bucket"]}
+                )
+    for candidate_id in sorted(selection):
+        record = state["counted"].get(candidate_id)
+        if candidate_id in seen:
+            event, run_id = seen[candidate_id]
+            bucket = event["outcome_bucket"]
+            source = "state" if record is not None and record["bucket"] == bucket else "progress"
+            found.append(item(candidate_id, bucket, source, event, run_id, None))
+            if len({entry["bucket"] for entry in history[candidate_id]}) > 1:
+                reclassified.append({
+                    "candidate_id": candidate_id,
+                    "source": "progress_runs",
+                    "runs": history[candidate_id],
+                    "state_bucket": None,
+                })
+        elif record is not None:
+            found.append(item(candidate_id, record["bucket"], "state", None, None, None))
+    return found, reclassified
+
+
+def _page(rows: list[dict], *, offset: int, limit: int) -> dict:
+    rows = sorted(rows, key=lambda row: (
+        row["path"] or "", row["lineno"] or 0, row["candidate_id"] or ""
+    ))
+    page = rows[offset:offset + limit]
+    return {
+        "matching_total": len(rows),
+        "offset": offset,
+        "limit": limit,
+        "next_offset": offset + len(page) if offset + len(page) < len(rows) else None,
+        "candidates": page,
     }
 
 
 def _details(
-    buckets_in_verdict: dict[str, list[dict]],
-    plan_by_id: dict[str, dict],
-    *,
-    buckets: list[str],
-    path_filter: str | None,
-    offset: int,
-    limit: int,
+    rows: list[dict], *, buckets: list[str], path_filter: str | None, offset: int, limit: int
 ) -> dict:
-    rows = []
-    for bucket in buckets:
-        for outcome in buckets_in_verdict.get(bucket, []):
-            candidate_id = outcome.get("candidate_id")
-            site = plan_by_id.get(candidate_id, outcome)
-            path = site.get("path")
-            if path_filter is not None and (
-                not isinstance(path, str) or not path.startswith(path_filter)
-            ):
-                continue
-            execution = outcome.get("execution") or {}
-            rows.append({
-                "candidate_id": candidate_id,
-                "outcome": bucket,
-                "path": path,
-                "lineno": site.get("lineno"),
-                "operator": site.get("operator"),
-                "description": site.get("description"),
-                "start_byte": site.get("start_byte"),
-                "end_byte": site.get("end_byte"),
-                "execution_mode": execution.get("mode"),
-            })
-    rows.sort(key=lambda row: (
-        row["path"] or "", row["lineno"] or 0, row["candidate_id"] or ""
-    ))
-    total = len(rows)
-    page = rows[offset:offset + limit]
-    next_offset = offset + len(page) if offset + len(page) < total else None
+    selected = [
+        row for row in rows
+        if row["outcome"] in buckets
+        and (
+            path_filter is None
+            or (isinstance(row["path"], str) and row["path"].startswith(path_filter))
+        )
+    ]
+    return _page(selected, offset=offset, limit=limit)
+
+
+def _adverse(rows: list[dict], *, limit: int) -> dict:
+    """The four adverse lists; ``--outcome``, ``--path-prefix`` and ``--offset`` never apply."""
+    result = {}
+    for bucket in ADVERSE_BUCKETS:
+        page = _page([row for row in rows if row["outcome"] == bucket], offset=0, limit=limit)
+        result[bucket] = {
+            "matching_total": page["matching_total"],
+            "candidates": page["candidates"],
+            "next_offset": page["next_offset"],
+        }
+    return result
+
+
+def _timing(latest: dict, *, pending: int | None, jobs: int | None) -> dict:
+    """P8's diagnostic ETA object; time never changes ``status`` or the exit code."""
+    events = latest["_candidate_events"]
+    sample = [
+        event for event in events.values()
+        if event["outcome_bucket"] in ("killed", "survived", "equivalent")
+        and event["elapsed_seconds"] > 0
+    ]
+    ordered = sorted(event["elapsed_seconds"] for event in sample)
+    emitted = [_timestamp(event["emitted_at"], "candidate emitted_at") for event in sample]
+    window = None if not sample else {
+        "first": min(emitted).isoformat(),
+        "last": max(emitted).isoformat(),
+        "run_id": latest["run_id"],
+    }
+    if pending is None:
+        reason = "remaining_work_unknown"
+    elif pending == 0:
+        reason = "no_remaining_work"
+    elif len(ordered) < MIN_ETA_SAMPLE:
+        reason = "insufficient_sample"
+    else:
+        reason = None
+    eta = None
+    if reason is None:
+        p50 = _nearest_rank(ordered, 50)
+        p90 = _nearest_rank(ordered, 90)
+        eta = {
+            "jobs": jobs,
+            "jobs_source": "lane",
+            "pending": pending,
+            "p50_candidate_s": round(p50, 1),
+            "p90_candidate_s": round(p90, 1),
+            "remaining_seconds_p50": round(pending * p50 / jobs, 1),
+            "remaining_seconds_p90": round(pending * p90 / jobs, 1),
+        }
+    counts = Counter(event["outcome_bucket"] for event in events.values())
     return {
-        "matching_total": total,
-        "offset": offset,
-        "limit": limit,
-        "next_offset": next_offset,
-        "candidates": page,
+        "diagnostic_only": True,
+        "eta_reason": reason,
+        "sample_count": len(ordered),
+        "minimum_sample_count": MIN_ETA_SAMPLE,
+        "measurement_window": window,
+        "eta": eta,
+        "excluded_candidate_counts": {
+            "crashed": counts["crashed"],
+            "hung": counts["hung"],
+            "budget_exceeded": counts["budget_exceeded"],
+            "resumed": latest["resumed_total"],
+        },
+    }
+
+
+class CostSample(NamedTuple):
+    """One measured candidate: where it lives, which operator, its bucket, its seconds."""
+
+    path: str
+    operator: str
+    bucket: str
+    seconds: float
+
+
+SIZE_CLASSES = {"small": "≤10", "medium": "11–100", "large": ">100"}
+STRATA_RULE = "operator×size_class→operator→all, n≥20"
+WALL_SCOPE = (
+    "fixed_seconds_measured + serial/jobs; excludes preflight, R3 and consolidation"
+)
+
+
+def _size_class(candidates_in_file: int) -> str:
+    """C26: by the number of plan candidates in the file, never by samples."""
+    if candidates_in_file <= 10:
+        return "small"
+    return "medium" if candidates_in_file <= 100 else "large"
+
+
+def _project_basis(
+    samples: list[CostSample], rows: Sequence[Mapping[str, Any]], per_file: Counter
+) -> tuple[dict, float | None, float | None]:
+    """One basis: per-candidate stratum cost with the hierarchical fallback (n >= 20)."""
+    result: dict[str, Any] = {
+        "samples": len(samples),
+        "candidates_projected": len(rows),
+        "fallback_counts": None,
+        "serial_seconds_p50": None,
+        "serial_seconds_p90": None,
+        "reason": "insufficient_sample",
+    }
+    if len(samples) < MIN_PROJECTION_SAMPLE:
+        return result, None, None
+    by_stratum: dict[tuple[str, str], list[float]] = {}
+    by_operator: dict[str, list[float]] = {}
+    for sample in samples:
+        stratum = (sample.operator, _size_class(per_file[sample.path]))
+        by_stratum.setdefault(stratum, []).append(sample.seconds)
+        by_operator.setdefault(sample.operator, []).append(sample.seconds)
+    pools = {
+        "operator_size_class": by_stratum,
+        "operator": by_operator,
+        "all": {"all": [sample.seconds for sample in samples]},
+    }
+    cache: dict[tuple[str, Any], tuple[float, float]] = {}
+    fallback = {"operator_size_class": 0, "operator": 0, "all": 0}
+    total_p50 = total_p90 = 0.0
+    for row in rows:
+        keys = {
+            "operator_size_class": (row["operator"], _size_class(per_file[row["path"]])),
+            "operator": row["operator"],
+            "all": "all",
+        }
+        level = next(
+            name for name in ("operator_size_class", "operator", "all")
+            if len(pools[name].get(keys[name], ())) >= MIN_PROJECTION_SAMPLE
+        )
+        fallback[level] += 1
+        key = (level, keys[level])
+        if key not in cache:
+            ordered = sorted(pools[level][keys[level]])
+            cache[key] = (_nearest_rank(ordered, 50), _nearest_rank(ordered, 90))
+        total_p50 += cache[key][0]
+        total_p90 += cache[key][1]
+    result.update({
+        "fallback_counts": fallback,
+        "serial_seconds_p50": round(total_p50, 1),
+        "serial_seconds_p90": round(total_p90, 1),
+        "reason": None,
+    })
+    return result, total_p50, total_p90
+
+
+def project(
+    samples: Sequence[CostSample],
+    rows: Sequence[Mapping[str, Any]],
+    jobs: int,
+    fixed: Mapping[str, float | None],
+) -> dict:
+    """Stratified projection (pure): no I/O, no clock, ``size_class`` derived from *rows*."""
+    per_file = Counter(row["path"] for row in rows)
+    killed, killed_p50, killed_p90 = _project_basis(
+        [sample for sample in samples if sample.bucket == "killed"], rows, per_file
+    )
+    both, _both_p50, _both_p90 = _project_basis(
+        [sample for sample in samples if sample.bucket in ("killed", "survived")], rows, per_file
+    )
+    components = {
+        name: fixed.get(name) for name in ("coverage_baseline", "r2_baseline", "other")
+    }
+    measured = sum(value for value in components.values() if value is not None)
+    return {
+        "diagnostic_only": True,
+        "strata_rule": STRATA_RULE,
+        "size_classes": dict(SIZE_CLASSES),
+        "bases": {"killed": killed, "killed_and_survived": both},
+        "jobs": jobs,
+        "jobs_source": "project-jobs",
+        "fixed_seconds_measured": round(measured, 1),
+        "fixed_components": {
+            name: None if value is None else round(value, 1) for name, value in components.items()
+        },
+        "fixed_components_missing": [
+            name for name, value in components.items() if value is None
+        ] + ["r3"],
+        "wall_seconds_p50": None if killed_p50 is None else round(measured + killed_p50 / jobs, 1),
+        "wall_seconds_p90": None if killed_p90 is None else round(measured + killed_p90 / jobs, 1),
+        "wall_basis": "killed",
+        "wall_scope": WALL_SCOPE,
+    }
+
+
+def _fixed_components(latest: dict) -> dict[str, float | None]:
+    """P8's exact fixed-overhead formula over the latest run's events."""
+
+    def span(phase: str) -> float | None:
+        for event in latest["_command_finished"]:
+            if event.get("phase") == phase:
+                return max(0.0, (
+                    _timestamp(event.get("ended"), "command_finished ended")
+                    - _timestamp(event.get("started"), "command_finished started")
+                ).total_seconds())
+        return None
+
+    coverage = span("baseline")
+    if coverage is None:
+        coverage = span("direct")
+    r2 = span("r2-baseline")
+    if r2 is None and latest["_plan_event"] is not None:
+        r2 = _optional_number(latest["_plan_event"].get("r2_baseline_s"), "plan r2_baseline_s")
+    first = next(iter(latest["_candidate_events"].values()), None)
+    other = None
+    if first is not None:
+        elapsed = (
+            _timestamp(first["emitted_at"], "candidate emitted_at")
+            - _timestamp(latest["started"], "progress run started")
+        ).total_seconds()
+        other = max(0.0, elapsed - (coverage or 0.0) - (r2 or 0.0))
+    return {"coverage_baseline": coverage, "r2_baseline": r2, "other": other}
+
+
+def _native_r2(lane, r2_policy: dict) -> bool:
+    return bool(
+        "R2" in lane.rigor
+        and lane.judge is not None
+        and lane.judge.mutation is not None
+        and lane.judge.mutation.format is None
+        and r2_policy.get("producer", "native") == "native"
+    )
+
+
+def _check_verdict_against_lane(verdict: dict, *, lane_name: str, head: str, lane) -> dict:
+    """The verified verdict must be for this lane, commit and declared policy; returns its R2 policy."""
+    if verdict.get("lane") != lane_name:
+        raise ValueError(f"verdict lane {verdict.get('lane')!r} differs from requested {lane_name!r}")
+    if verdict.get("commit") != head:
+        raise ValueError("verdict commit differs from current expected HEAD")
+    judgment = verdict.get("judgment") or {}
+    r2_policy = judgment.get("r2") or {}
+    r1_policy = judgment.get("r1") or {}
+    if lane.judge is not None and lane.judge.coverage is not None:
+        declared_coverage = lane.judge.coverage
+        if (
+            r1_policy.get("coverage_artifact") != declared_coverage.artifact
+            or r1_policy.get("coverage_format") != declared_coverage.format
+            or r1_policy.get("fail_under") != declared_coverage.fail_under
+        ):
+            raise ValueError("R1 verdict policy differs from the named lane declaration")
+    if _native_r2(lane, r2_policy):
+        mutation_policy = lane.judge.mutation
+        expected_policy = {
+            "jobs": mutation_policy.jobs,
+            "max_mutants": mutation_policy.max_mutants,
+            "operators": list(mutation_policy.operators),
+            "mode": lane.judge.mode,
+        }
+        for key, expected_value in expected_policy.items():
+            if r2_policy.get(key) != expected_value:
+                raise ValueError(
+                    f"R2 verdict policy {key} differs from the named lane declaration"
+                )
+    return r2_policy
+
+
+def _reconstruct_plan(
+    lane_file: LaneFile, lane, lane_name: str, *,
+    native_r2: bool, verdict: dict | None, request_base: str | None,
+) -> dict:
+    """The lane's plan via Assay's own planner; the base comes from the verdict or ``--request-base``."""
+    if native_r2:
+        resolved_base = (
+            None if verdict is None
+            else ((verdict.get("judgment") or {}).get("resolved") or {}).get("base")
+        )
+        if verdict is None and lane.judge.base_source == "request" and request_base is None:
+            raise ValueError("plan base cannot be reconstructed without --verdict or --request-base")
+        plan = _lane_plan(
+            lane_file, lane_name, request_base if verdict is None else resolved_base
+        )
+        if plan["status"] == "unsupported":
+            raise ValueError("lane has no mutation plan")
+        if verdict is not None and plan.get("_resolved_base") != resolved_base:
+            raise ValueError("reconstructed plan base differs from the verified verdict")
+        return plan
+    if "R2" in lane.rigor:
+        return {"status": "not_supported", "reason": "ingested or non-native mutation lane"}
+    return {"status": "not_applicable", "reason": "lane declares no R2 mutation judgment"}
+
+
+def _verdict_inventory(
+    verdict: dict | None, *, native_r2: bool, r2_policy: dict, plan_ids: list[str],
+    plan_by_id: dict[str, dict], buckets_in_verdict: dict, verdict_by_id: dict[str, dict],
+) -> dict:
+    """The verdict's claimed candidate inventory, checked against the reconstructed plan."""
+    empty = {
+        "mutation_claim": None, "raw_ids": None, "pre_submission_limit": False,
+        "verdict_ids": set(), "expected_ids": set(),
+    }
+    if verdict is None:
+        return empty
+    r2_claim = next(
+        (claim for claim in verdict.get("claims", []) if claim.get("rigor") == "R2"),
+        None,
+    )
+    mutation_claim = (
+        r2_claim.get("mutation")
+        if isinstance(r2_claim, dict) and isinstance(r2_claim.get("mutation"), dict)
+        else None
+    )
+    raw_ids = None if mutation_claim is None else mutation_claim.get("candidate_ids")
+    pre_submission_limit = bool(
+        native_r2
+        and mutation_claim is not None
+        and r2_claim.get("reason_code") == "MUTANT_LIMIT_EXCEEDED"
+        and mutation_claim.get("total") == 0
+    )
+    if native_r2 and mutation_claim is not None and raw_ids is None and not pre_submission_limit:
+        raise ValueError("native R2 verdict has no v13 candidate_ids inventory")
+    if raw_ids is not None and (
+        any(not isinstance(item, str) or not _SHA256_RE.fullmatch(item) for item in raw_ids)
+        or len(raw_ids) != len(set(raw_ids))
+    ):
+        raise ValueError("verdict candidate_ids inventory is malformed or duplicated")
+    verdict_ids = set() if raw_ids is None else set(raw_ids)
+    expected_ids = verdict_ids
+    if native_r2 and mutation_claim is not None:
+        shard_index = r2_policy.get("shard_index")
+        if pre_submission_limit:
+            if verdict_by_id or any(buckets_in_verdict.values()):
+                raise ValueError(
+                    "pre-submission mutant-limit verdict unexpectedly has candidate outcomes"
+                )
+            expected_ids = set()
+        else:
+            expected_ids = (
+                set(plan_ids)
+                if shard_index is None
+                else {plan_ids[position] for position in select_mutation_shard(
+                    plan_ids, index=shard_index, count=r2_policy.get("shard_count")
+                )}
+            )
+            if verdict_ids != expected_ids:
+                raise ValueError("verdict candidate inventory differs from the current lane plan")
+            if set(verdict_by_id) != verdict_ids:
+                raise ValueError("verdict outcome buckets do not exhaust its candidate inventory")
+            for candidate_id, outcome in verdict_by_id.items():
+                row = plan_by_id[candidate_id]
+                for field in ("path", "lineno", "operator", "description", "start_byte", "end_byte"):
+                    if outcome.get(field) != row.get(field):
+                        raise ValueError(
+                            f"verdict candidate {candidate_id} {field} differs from the current plan"
+                        )
+    return {
+        "mutation_claim": mutation_claim, "raw_ids": raw_ids,
+        "pre_submission_limit": pre_submission_limit,
+        "verdict_ids": verdict_ids, "expected_ids": expected_ids,
     }
 
 
@@ -842,9 +1548,12 @@ def campaign(
     lane_file_path: Path,
     lane_name: str,
     expected_commit: str,
-    verdict_path: Path,
+    verdict_path: Path | None,
     progress_path: Path,
     command_exit: int | None,
+    state_dir: Path | None = None,
+    request_base: str | None = None,
+    project_jobs: int | None = None,
     log_path: Path | None = None,
     coverage_path: Path | None = None,
     buckets: list[str] | None = None,
@@ -863,6 +1572,12 @@ def campaign(
         raise ValueError("detail offset must be a non-negative integer")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_DETAIL_LIMIT:
         raise ValueError(f"detail limit must be between 1 and {MAX_DETAIL_LIMIT}")
+    if project_jobs is not None and (
+        isinstance(project_jobs, bool)
+        or not isinstance(project_jobs, int)
+        or not 1 <= project_jobs <= MAX_PROJECT_JOBS
+    ):
+        raise ValueError(f"project jobs must be between 1 and {MAX_PROJECT_JOBS}")
     selected_buckets = list(MUTATION_BUCKETS) if buckets is None else buckets
     if not selected_buckets or any(bucket not in MUTATION_BUCKETS for bucket in selected_buckets):
         raise ValueError(f"outcome filters must use {list(MUTATION_BUCKETS)}")
@@ -875,140 +1590,52 @@ def campaign(
     _bind_lane_file(lane_file_path, root=root, commit=head)
     lane_file = load_lane_file(lane_file_path)
     lane = lane_file.lane(lane_name)
-    stage.name = "verdict"
-    verdict_result = _read_verified_verdict(verdict_path, expected=head)
-    verdict = verdict_result["verdict"]
-    if verdict.get("lane") != lane_name:
-        raise ValueError(f"verdict lane {verdict.get('lane')!r} differs from requested {lane_name!r}")
-    if verdict.get("commit") != head:
-        raise ValueError("verdict commit differs from current expected HEAD")
-
-    r2_policy = (verdict.get("judgment") or {}).get("r2") or {}
-    r1_policy = (verdict.get("judgment") or {}).get("r1") or {}
-    if lane.judge is not None and lane.judge.coverage is not None:
-        declared_coverage = lane.judge.coverage
-        if (
-            r1_policy.get("coverage_artifact") != declared_coverage.artifact
-            or r1_policy.get("coverage_format") != declared_coverage.format
-            or r1_policy.get("fail_under") != declared_coverage.fail_under
-        ):
-            raise ValueError("R1 verdict policy differs from the named lane declaration")
-    native_r2 = (
-        "R2" in lane.rigor
-        and lane.judge is not None
-        and lane.judge.mutation is not None
-        and lane.judge.mutation.format is None
-        and r2_policy.get("producer", "native") == "native"
+    verdict_result = None
+    verdict = None
+    r2_policy: dict = {}
+    if verdict_path is not None:
+        stage.name = "verdict"
+        verdict_result = _read_verified_verdict(verdict_path, expected=head)
+        verdict = verdict_result["verdict"]
+        r2_policy = _check_verdict_against_lane(
+            verdict, lane_name=lane_name, head=head, lane=lane
+        )
+    native_r2 = _native_r2(lane, r2_policy)
+    stage.name = "plan"
+    plan = _reconstruct_plan(
+        lane_file, lane, lane_name,
+        native_r2=native_r2, verdict=verdict, request_base=request_base,
     )
-    if native_r2:
-        mutation_policy = lane.judge.mutation
-        assert mutation_policy is not None
-        expected_policy = {
-            "jobs": mutation_policy.jobs,
-            "max_mutants": mutation_policy.max_mutants,
-            "operators": list(mutation_policy.operators),
-            "mode": lane.judge.mode,
-        }
-        for key, expected_value in expected_policy.items():
-            if r2_policy.get(key) != expected_value:
-                raise ValueError(
-                    f"R2 verdict policy {key} differs from the named lane declaration"
-                )
-    stage.name = "plan"
-    plan: dict[str, Any]
-    if native_r2:
-        resolved_base = ((verdict.get("judgment") or {}).get("resolved") or {}).get("base")
-        plan = _lane_plan(lane_file, lane_name, resolved_base)
-        if plan["status"] == "unsupported":
-            raise ValueError("lane has no mutation plan")
-        if plan.get("_resolved_base") != resolved_base:
-            raise ValueError("reconstructed plan base differs from the verified verdict")
-    elif "R2" in lane.rigor:
-        plan = {"status": "not_supported", "reason": "ingested or non-native mutation lane"}
-    else:
-        plan = {"status": "not_applicable", "reason": "lane declares no R2 mutation judgment"}
-
-    stage.name = "verdict"
-    buckets_in_verdict, verdict_by_id = _candidate_outcomes(verdict)
-    stage.name = "plan"
-    plan_rows = plan.get("candidates", []) if isinstance(plan.get("candidates", []), list) else []
+    plan_rows = plan.get("candidates", [])
     plan_by_id = {
         row["id"]: row for row in plan_rows
         if isinstance(row, dict) and isinstance(row.get("id"), str)
     }
     if len(plan_by_id) != len(plan_rows):
         raise ValueError("current lane plan contains duplicate or malformed candidate identities")
+    _check_plan_identity(plan_by_id)
     plan_ids = list(plan_by_id)
     plan_id_set = set(plan_ids)
     plan_total = len(plan_ids) if plan.get("status") == "ok" else None
 
     stage.name = "verdict"
-    r2_claim = next(
-        (claim for claim in verdict.get("claims", []) if claim.get("rigor") == "R2"),
-        None,
+    buckets_in_verdict, verdict_by_id = {}, {}
+    if verdict is not None:
+        buckets_in_verdict, verdict_by_id = _candidate_outcomes(verdict)
+    inventory = _verdict_inventory(
+        verdict, native_r2=native_r2, r2_policy=r2_policy, plan_ids=plan_ids,
+        plan_by_id=plan_by_id, buckets_in_verdict=buckets_in_verdict,
+        verdict_by_id=verdict_by_id,
     )
-    mutation_claim = (
-        r2_claim.get("mutation")
-        if isinstance(r2_claim, dict) and isinstance(r2_claim.get("mutation"), dict)
-        else None
-    )
-    raw_verdict_ids = None if mutation_claim is None else mutation_claim.get("candidate_ids")
-    pre_submission_limit = (
-        native_r2
-        and mutation_claim is not None
-        and r2_claim.get("reason_code") == "MUTANT_LIMIT_EXCEEDED"
-        and mutation_claim.get("total") == 0
-    )
-    if (
-        native_r2
-        and mutation_claim is not None
-        and raw_verdict_ids is None
-        and not pre_submission_limit
-    ):
-        raise ValueError("native R2 verdict has no v13 candidate_ids inventory")
-    if raw_verdict_ids is not None and (
-        any(not isinstance(item, str) or not _SHA256_RE.fullmatch(item) for item in raw_verdict_ids)
-        or len(raw_verdict_ids) != len(set(raw_verdict_ids))
-    ):
-        raise ValueError("verdict candidate_ids inventory is malformed or duplicated")
-    verdict_ids = set() if raw_verdict_ids is None else set(raw_verdict_ids)
-    shard_index = r2_policy.get("shard_index")
-    shard_count = r2_policy.get("shard_count")
-    stage.name = "input"
-    if native_r2 and mutation_claim is not None:
-        if pre_submission_limit:
-            if verdict_by_id or any(buckets_in_verdict.values()):
-                raise ValueError(
-                    "pre-submission mutant-limit verdict unexpectedly has candidate outcomes"
-                )
-            expected_ids = set()
-        else:
-            expected_ids = (
-                plan_id_set
-                if shard_index is None
-                else {plan_ids[position] for position in select_mutation_shard(
-                    plan_ids, index=shard_index, count=shard_count
-                )}
-            )
-            if verdict_ids != expected_ids:
-                raise ValueError("verdict candidate inventory differs from the current lane plan")
-            if set(verdict_by_id) != verdict_ids:
-                raise ValueError("verdict outcome buckets do not exhaust its candidate inventory")
-            for candidate_id, outcome in verdict_by_id.items():
-                row = plan_by_id.get(candidate_id)
-                if row is None:
-                    raise ValueError(f"verdict candidate {candidate_id} is absent from the current plan")
-                for field in ("path", "lineno", "operator", "description", "start_byte", "end_byte"):
-                    if outcome.get(field) != row.get(field):
-                        raise ValueError(
-                            f"verdict candidate {candidate_id} {field} differs from the current plan"
-                        )
-    else:
-        expected_ids = verdict_ids
+    mutation_claim = inventory["mutation_claim"]
+    raw_verdict_ids = inventory["raw_ids"]
+    verdict_ids = inventory["verdict_ids"]
+    expected_ids = inventory["expected_ids"]
 
     stage.name = "progress"
-    progress_artifact, progress_runs = _read_progress(
-        progress_path, expected=expected_commit, lane=lane_name
+    progress_artifact, progress_runs, torn_final_record = _read_progress(
+        progress_path, expected=expected_commit, lane=lane_name,
+        tolerate_torn=verdict is None,
     )
     run_summaries = [
         _run_summary(
@@ -1016,34 +1643,49 @@ def campaign(
             plan_by_id=plan_by_id,
             plan_total=plan_total,
             verdict_by_id=verdict_by_id,
-            compare_verdict=index == len(progress_runs) - 1,
+            compare_verdict=verdict is not None and index == len(progress_runs) - 1,
         )
         for index, run in enumerate(progress_runs)
     ]
     latest = run_summaries[-1]
+    selection = latest["_selection"]
     stage.name = "input"
-    if latest["selected_ids"] and set(latest["selected_ids"]) != expected_ids:
+    if verdict is not None and latest["selected_ids"] and set(latest["selected_ids"]) != expected_ids:
         raise ValueError("latest progress selected inventory differs from the verified verdict")
-    if not set(latest["candidate_ids"]) <= expected_ids:
-        raise ValueError("latest progress run includes candidates outside the verdict's selected scope")
+    scope = selection if verdict is None else expected_ids
+    if not set(latest["candidate_ids"]) <= scope:
+        raise ValueError("latest progress run includes candidates outside its selected scope")
     terminal = latest["terminal"]
-    terminal_matches_verdict = terminal is not None and (
-        terminal.get("outcome") == verdict.get("outcome")
-        and terminal.get("exit_code") == verdict.get("exit_code")
-        and terminal.get("reason_code") == verdict.get("reason_code")
-    )
-    if terminal is not None and not terminal_matches_verdict:
-        raise ValueError("latest progress terminal disagrees with the verified verdict")
+    terminal_matches_verdict = False
+    if verdict is not None and terminal is not None:
+        terminal_matches_verdict = (
+            terminal.get("outcome") == verdict.get("outcome")
+            and terminal.get("exit_code") == verdict.get("exit_code")
+            and terminal.get("reason_code") == verdict.get("reason_code")
+        )
+        if not terminal_matches_verdict:
+            raise ValueError("latest progress terminal disagrees with the verified verdict")
+
+    stage.name = "state"
+    state = _no_state()
+    if state_dir is not None:
+        state = _reconcile_state(
+            _read_state_dir(state_dir), plan_ids=plan_id_set, selection=selection,
+            latest=latest, verdict_by_id=verdict_by_id,
+        )
 
     stage.name = "arguments"
-    actual_exit_matches = command_exit is not None and command_exit == verdict.get("exit_code")
-    if command_exit is not None and not actual_exit_matches:
+    actual_exit_matches = (
+        verdict is not None and command_exit is not None
+        and command_exit == verdict.get("exit_code")
+    )
+    if verdict is not None and command_exit is not None and not actual_exit_matches:
         raise ValueError(
             f"observed command exit {command_exit} differs from verified verdict exit "
             f"{verdict.get('exit_code')}"
         )
     artifacts = {
-        "verdict": verdict_result["artifact"],
+        "verdict": None if verdict_result is None else verdict_result["artifact"],
         "progress": progress_artifact,
     }
     stage.name = "lane"
@@ -1062,112 +1704,62 @@ def campaign(
     )
     if coverage_summary.get("artifact") is not None:
         artifacts["coverage"] = coverage_summary["artifact"]
+    stage.name = "input"
 
-    outcome_counts = {bucket: len(buckets_in_verdict.get(bucket, [])) for bucket in MUTATION_BUCKETS}
-    total_outcomes = sum(outcome_counts.values())
-    execution_mode_counts: Counter[str] = Counter()
-    for outcome in verdict_by_id.values():
-        mode = (outcome.get("execution") or {}).get("mode")
-        if mode is not None:
-            execution_mode_counts[mode] += 1
-
-    current_pending = None
-    if native_r2:
-        if pre_submission_limit:
-            current_pending = plan_total
-        elif (
-            latest["candidate_milestone"]
-            and latest["sweep_end_present"]
-            and latest["sweep_end_reason"] is None
-            and set(latest["selected_ids"]) == expected_ids
-            and verdict_ids == expected_ids
-        ):
-            # The terminal sweep and verifier-accepted inventory establish
-            # completion even when lane-wide timeout handling synthesizes
-            # budget_exceeded outcomes for candidates with no duration event.
-            current_pending = 0
-        elif latest["pending_total"] is not None:
-            current_pending = max(
-                0, latest["pending_total"] - latest["fresh_candidate_events"]
-            )
-        elif plan_total is not None:
-            current_pending = plan_total
-    completed_events = []
-    for candidate_id, event in latest["_candidate_events"].items():
-        outcome = verdict_by_id.get(candidate_id, {})
-        execution_mode = (outcome.get("execution") or {}).get("mode", "full")
-        if (
-            event["outcome_bucket"] in ("killed", "survived", "equivalent")
-            and execution_mode == "full"
-            and event["elapsed_seconds"] > 0
-        ):
-            completed_events.append(event)
-    candidate_samples = [event["elapsed_seconds"] for event in completed_events]
-    sample_times = [
-        _timestamp(event["emitted_at"], "candidate emitted_at")
-        for event in completed_events
+    items, reclassified = _resolutions(
+        verdict_buckets=None if verdict is None else buckets_in_verdict,
+        selection=selection, runs=run_summaries, state=state,
+    )
+    rows = [
+        _row(item, plan_by_id.get(item["candidate_id"], item["outcome"] or {}))
+        for item in items
     ]
-    latest_outcome_counts = Counter(
-        event["outcome_bucket"] for event in latest["_candidate_events"].values()
-    )
-    excluded_counts = {
-        name: latest_outcome_counts.get(name, 0)
-        for name in ("crashed", "hung", "budget_exceeded")
+    have_outcomes = plan_total is not None or (verdict is not None and mutation_claim is not None)
+    outcome_counts = {
+        bucket: sum(1 for row in rows if row["outcome"] == bucket) for bucket in MUTATION_BUCKETS
     }
-    non_full_without_duration = sum(
-        1 for candidate in verdict_by_id.values()
-        if (candidate.get("execution") or {}).get("mode") != "full"
+    execution_mode_counts = Counter(
+        row["execution_mode"] for row in rows if row["execution_mode"] is not None
     )
-    if non_full_without_duration:
-        excluded_counts["non_full_execution"] = non_full_without_duration
-    if latest["resumed_total"]:
-        excluded_counts["resumed_without_current_duration"] = latest["resumed_total"]
-    if not latest["sweep_end_present"] and latest["pending_total"] is not None:
-        not_reported = max(
-            0, latest["pending_total"] - latest["fresh_candidate_events"]
+    events = latest["_candidate_events"]
+    never_started = sorted(
+        candidate_id for candidate_id, outcome in verdict_by_id.items()
+        if outcome["bucket"] == "budget_exceeded" and candidate_id not in events
+    )
+    lane_timeout_row = verdict is not None and (
+        verdict.get("reason_code") == "LANE_TIMEOUT" or bool(never_started)
+    )
+    unresolved = None
+    if lane_timeout_row:
+        unresolved = {"matching_total": len(never_started), "candidates": never_started[:limit]}
+    selected_total = None if plan_total is None else len(selection)
+    completed_total = len(items) - len(never_started) if have_outcomes else None
+    pending_total = None if selected_total is None else max(0, selected_total - completed_total)
+    jobs = lane.judge.mutation.jobs if native_r2 else None
+    timing = _timing(latest, pending=pending_total, jobs=jobs)
+    projection = None
+    if project_jobs is not None:
+        stage.name = "progress"
+        projection = project(
+            [
+                CostSample(
+                    plan_by_id[candidate_id]["path"], plan_by_id[candidate_id]["operator"],
+                    event["outcome_bucket"], event["elapsed_seconds"],
+                )
+                for candidate_id, event in events.items()
+                if event["outcome_bucket"] in ("killed", "survived") and event["elapsed_seconds"] > 0
+            ],
+            list(plan_by_id.values()), project_jobs, _fixed_components(latest),
         )
-        if not_reported:
-            excluded_counts["not_yet_reported"] = not_reported
-    ordered_samples = sorted(candidate_samples)
-    sample = {
-        "count": len(candidate_samples),
-        "measurement_window": None if not sample_times else {
-            "first": min(sample_times).isoformat(),
-            "last": max(sample_times).isoformat(),
-        },
-        "median_candidate_seconds": _nearest_rank(ordered_samples, 50) if candidate_samples else None,
-    }
-    eta = {
-        "status": (
-            "no_remaining_work" if current_pending == 0
-            else "insufficient_sample" if current_pending is not None
-            else "remaining_work_unknown"
-        ),
-        "sample": sample,
-        "minimum_sample_count": MIN_ETA_SAMPLE,
-        "excluded_candidate_counts": excluded_counts,
-        "remaining_seconds": None,
-        "diagnostic_only": True,
-    }
-    if len(candidate_samples) >= MIN_ETA_SAMPLE and current_pending:
-        median_s = _nearest_rank(ordered_samples, 50)
-        workers = lane.judge.mutation.jobs if lane.judge and lane.judge.mutation else 1
-        eta = {
-            "status": "sample_qualified",
-            "sample": sample,
-            "minimum_sample_count": MIN_ETA_SAMPLE,
-            "pending_candidates": current_pending,
-            "parallel_jobs": workers,
-            "remaining_seconds": round(median_s * current_pending / workers, 3),
-            "diagnostic_only": True,
-            "excluded_candidate_counts": excluded_counts,
-        }
+        stage.name = "input"
     for run in run_summaries:
-        del run["_candidate_events"]
+        for key in [name for name in run if name.startswith("_")]:
+            del run[key]
         del run["candidate_ids"]
         del run["selected_ids"]
 
-    complete_inventory = (
+    total_outcomes = sum(outcome_counts.values())
+    complete_inventory = bool(
         native_r2
         and mutation_claim is not None
         and latest["candidate_milestone"]
@@ -1177,7 +1769,7 @@ def campaign(
         and expected_ids == plan_id_set
         and total_outcomes == len(expected_ids)
     )
-    complete_empty_plan = (
+    complete_empty_plan = bool(
         native_r2
         and mutation_claim is not None
         and plan_total == 0
@@ -1187,43 +1779,45 @@ def campaign(
         and latest["sweep_end_reason"] == "no_candidates"
         and not latest["candidate_milestone"]
     )
-    complete_inventory = complete_inventory or complete_empty_plan
-    progress_complete = terminal_matches_verdict
-    status = "complete" if complete_inventory and progress_complete and actual_exit_matches else "incomplete"
-    coverage_complete = (
-        lane.judge is None
-        or lane.judge.coverage is None
-        or coverage_summary["artifact_status"] == "parsed_and_reverified_r1"
+    ingested_lane = not native_r2 and (
+        mutation_claim is None or r2_policy.get("producer") == "ingested"
     )
-    if not coverage_complete:
-        status = "incomplete"
-    if (
-        not native_r2
-        and (mutation_claim is None or r2_policy.get("producer") == "ingested")
-        and terminal_matches_verdict
-        and actual_exit_matches
-        and coverage_complete
-    ):
-        status = "complete"
+    inventory_established = verdict is not None and (
+        complete_inventory or complete_empty_plan or ingested_lane
+    )
+    if verdict is None:
+        inventory_exhausted = selection == plan_id_set and pending_total == 0
+    else:
+        inventory_exhausted = inventory_established
+    coverage_blocks = coverage_summary["artifact_status"] not in (
+        "not_applicable", "parsed_and_reverified_r1",
+    )
+    blockers = {
+        name for name, holds in (
+            ("no_verdict", verdict is None),
+            ("command_exit_not_observed", command_exit is None),
+            ("inventory_not_exhausted", not inventory_exhausted),
+            ("terminal_disagrees", verdict is not None and not terminal_matches_verdict),
+            ("coverage_not_reverified", coverage_blocks),
+            (
+                "state_unreconciled",
+                state["output"] is not None and state["output"]["unreconciled"]["count"] > 0,
+            ),
+            (
+                "unverified_hung_records",
+                any(
+                    candidate_id not in verdict_by_id and candidate_id not in events
+                    for candidate_id in state["unverified_ids"]
+                ),
+            ),
+            ("lane_timeout_or_unstarted", lane_timeout_row),
+        ) if holds
+    }
+    status = "incomplete" if blockers else "complete"
 
-    candidate_details = _details(
-        buckets_in_verdict,
-        plan_by_id,
-        buckets=selected_buckets,
-        path_filter=path_filter,
-        offset=offset,
-        limit=limit,
-    )
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "analysis": "mutation_campaign",
-        "status": status,
-        "qualifying": True,
-        "expected_commit": expected_commit,
-        "tree": tree,
-        "lane": lane_name,
-        "lane_file": str(lane_file.path),
-        "verdict": {
+    verdict_document = None
+    if verdict is not None:
+        verdict_document = {
             "outcome": verdict.get("outcome"),
             "exit_code": verdict.get("exit_code"),
             "reason_code": verdict.get("reason_code"),
@@ -1240,7 +1834,23 @@ def campaign(
             "observed_command_exit": command_exit,
             "command_exit_source": "explicit caller observation" if command_exit is not None else None,
             "command_exit_matches": actual_exit_matches,
-        },
+        }
+    if verdict is not None:
+        shard = (r2_policy.get("shard_index"), r2_policy.get("shard_count"))
+    else:
+        shard = ((latest["shard"] or {}).get("index"), (latest["shard"] or {}).get("count"))
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "analysis": "mutation_campaign",
+        "status": status,
+        "qualifying": True,
+        "complete_blockers": sorted(blockers),
+        "expected_commit": expected_commit,
+        "tree": tree,
+        "lane": lane_name,
+        "lane_file": str(lane_file.path),
+        "torn_final_record": torn_final_record,
+        "verdict": verdict_document,
         "plan": {
             "status": plan.get("status"),
             "planned_total": plan_total,
@@ -1248,25 +1858,45 @@ def campaign(
                 hashlib.sha256("\n".join(sorted(plan_ids)).encode("ascii")).hexdigest()
                 if plan_total is not None else None
             ),
-            "shard": None if shard_index is None else f"{shard_index}/{shard_count}",
+            "shard": None if shard[0] is None else f"{shard[0]}/{shard[1]}",
         },
         "campaign": {
             "planned_total": plan_total,
-            "completed_total": total_outcomes if mutation_claim is not None else None,
-            "pending_total": None if mutation_claim is None else max(0, (plan_total or 0) - total_outcomes),
+            "selected_total": selected_total,
+            "completed_total": completed_total,
+            "pending_total": pending_total,
             "resumed_total": latest["resumed_total"],
             "rejudged_total": latest["rejudged_total"],
             "per_run_resumed_total": [run["resumed_total"] for run in run_summaries],
             "per_run_rejudged_total": [run["rejudged_total"] for run in run_summaries],
             "execution_mode_counts": dict(sorted(execution_mode_counts.items())),
-            "outcomes": outcome_counts if mutation_claim is not None else None,
+            "outcomes": outcome_counts if have_outcomes else None,
         },
         "runs": run_summaries,
         "coverage": coverage_summary,
-        "timing": eta,
+        "timing": timing,
         "evidence": artifacts,
-        "candidate_details": candidate_details,
+        "candidate_details": _details(
+            rows, buckets=selected_buckets, path_filter=path_filter, offset=offset, limit=limit
+        ),
+        "adverse": _adverse(rows, limit=limit),
+        "unresolved": unresolved,
+        "reclassified": sorted(
+            reclassified, key=lambda item: (item["candidate_id"], item["source"])
+        ),
+        "state": state["output"],
+        "projection": projection,
     }
+
+
+def _project_jobs(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= MAX_PROJECT_JOBS:
+        raise argparse.ArgumentTypeError(f"must be an integer between 1 and {MAX_PROJECT_JOBS}")
+    return value
 
 
 def build_campaign_parser(commands: argparse._SubParsersAction) -> None:
@@ -1278,9 +1908,14 @@ def build_campaign_parser(commands: argparse._SubParsersAction) -> None:
     parser.add_argument("--worktree", type=Path, default=Path.cwd())
     parser.add_argument("--file", type=Path, required=True, help="explicit assay.toml path")
     parser.add_argument("--expected-commit", required=True)
-    parser.add_argument("--verdict", type=Path, required=True)
+    parser.add_argument("--verdict", type=Path, help="verified verdict (optional; without it the result is never complete)")
+    parser.add_argument("--state-dir", type=Path, help="mutation state directory to reconcile (read-only)")
+    parser.add_argument("--request-base", help="request base to reconstruct the plan without --verdict")
     parser.add_argument("--progress", type=Path, required=True)
     parser.add_argument("--command-exit", type=int)
+    parser.add_argument("--project", action="store_true", help="add the diagnostic stratified projection")
+    parser.add_argument("--project-jobs", type=_project_jobs, help="jobs for --project (1..64)")
+    parser.set_defaults(_campaign_parser=parser)
     parser.add_argument("--log", type=Path)
     parser.add_argument("--coverage", type=Path)
     parser.add_argument("--outcome", choices=MUTATION_BUCKETS, action="append")
@@ -1299,18 +1934,24 @@ def _exit_code(document: dict) -> int:
 
 def _evidence_error_document(args: argparse.Namespace, exc: BaseException) -> dict:
     """The closed seven-key document a refused input produces (status row 1)."""
+    errors = (
+        exc.errors if isinstance(exc, EvidenceErrors)
+        else [{"source": getattr(exc, "source", "input"), "message": str(exc)}]
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": ERROR_DOCUMENT_KIND,
         "status": "evidence_error",
         "lane": args.lane,
         "expected_commit": args.expected_commit,
-        "errors": [{"source": getattr(exc, "source", "input"), "message": str(exc)}],
-        "errors_truncated": False,
+        "errors": errors[:MAX_ERRORS],
+        "errors_truncated": len(errors) > MAX_ERRORS,
     }
 
 
 def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
+    if args.project != (args.project_jobs is not None):
+        args._campaign_parser.error("--project and --project-jobs must be given together")
     try:
         result = campaign(
             worktree=args.worktree,
@@ -1318,6 +1959,9 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
             lane_name=args.lane,
             expected_commit=args.expected_commit,
             verdict_path=args.verdict,
+            state_dir=args.state_dir,
+            request_base=args.request_base,
+            project_jobs=args.project_jobs,
             progress_path=args.progress,
             command_exit=args.command_exit,
             log_path=args.log,
@@ -1336,21 +1980,36 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
         )
         return EXIT_EVIDENCE_ERROR
     if args.format == "text":
+        verdict_outcome = None if result["verdict"] is None else result["verdict"]["outcome"]
         print(
-            f"{result['lane']}: {result['status']} outcome={result['verdict']['outcome']} "
+            f"{result['lane']}: {result['status']} outcome={verdict_outcome} "
             f"planned={result['campaign']['planned_total']} "
             f"completed={result['campaign']['completed_total']} "
             f"pending={result['campaign']['pending_total']}",
             file=stdout,
         )
+        print("  blockers: " + ", ".join(result["complete_blockers"] or ["none"]), file=stdout)
         print("  outcomes: " + json.dumps(result["campaign"]["outcomes"], sort_keys=True), file=stdout)
+        print(
+            "  adverse: " + " ".join(
+                f"{bucket}={page['matching_total']}"
+                + ("" if page["next_offset"] is None else f"(next_offset={page['next_offset']})")
+                for bucket, page in result["adverse"].items()
+            ),
+            file=stdout,
+        )
         print(
             f"  candidates: showing {len(result['candidate_details']['candidates'])} of "
             f"{result['candidate_details']['matching_total']} matching; "
             f"next_offset={result['candidate_details']['next_offset']}",
             file=stdout,
         )
-        print("  ETA: " + json.dumps(result["timing"], sort_keys=True), file=stdout)
+        print("  ETA (diagnostic): " + json.dumps(result["timing"], sort_keys=True), file=stdout)
+        if result["projection"] is not None:
+            print(
+                "  projection (diagnostic): " + json.dumps(result["projection"], sort_keys=True),
+                file=stdout,
+            )
     else:
         print(json.dumps(result, indent=2, sort_keys=True), file=stdout)
     return _exit_code(result)
