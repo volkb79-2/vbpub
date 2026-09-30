@@ -1902,8 +1902,11 @@ def recover_journal(
     recovery._journal = journal
     recovery.successfully_placed = journal.get("was_placed") is True
     expected_leaf = posixpath.join(recovery.scope_cgroup, recovery.leaf_name)
-    if persisted_leaf is not None and posixpath.normpath(persisted_leaf) != expected_leaf:
-        return REFUSED_STATE_UNAVAILABLE
+    # `persisted_leaf`, when present, was already required above to equal
+    # `persisted_scope/<token>`. The verified systemd scope is also required
+    # to normalize to that exact persisted scope, so this is the only leaf
+    # path recovery may consider; rechecking the same implication here would
+    # add an unreachable refusal branch.
     leaf_created = journal.get("leaf_created") is True
     if leaf_created and os.path.isdir(abs_path(cgroup_root, expected_leaf)):
         recovery.leaf_cgroup = expected_leaf

@@ -5617,3 +5617,18 @@ explicit placed-session test double (real transaction remains covered by the
 placement suite), and corrected the prose links. The affected-file suite now
 passes 441 tests with 6 skipped in 72.84 s. This is local evidence only; the
 exact commit changed and fresh registered R0/R1 plus R3 remain required.
+
+### RW-390 — 2026-09-30 21:01:39Z — close the placement coverage oracle gap before gates
+
+The D-31 transaction and recovery code had only 66% local line/branch coverage
+when measured against `tests/test_serve_placement.py`. Added behavioral tests
+for systemd reply parsing and scope retirement, PID identity races, each
+ownership-journal boundary, migration/refusal outcomes, recovery records, and
+cleanup preservation. A placement-focused run passed 424 tests in 80.00 s; the
+final post-restore-exit race test passed separately. Combined diagnostic
+coverage for `lib/placement.py` is 100.0%: 1,149 statements and 498 branch
+arcs, with no missing statements or partial branches. This is local evidence,
+not the registered exact-tree gate. Also removed a duplicate leaf-path refusal
+whose rejection condition is implied by the journal and verified-scope checks
+above it; no accepted placement or recovery path changes. Fresh `r0-r1`, `r3`,
+and adversarial review on the resulting committed tree remain required.

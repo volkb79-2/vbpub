@@ -1800,3 +1800,27 @@ three CPUs. The daemon was down: `r0-r1` used coarse rusage and `r3` basic
 in-lane sampling, not DAMON. These receipts predate this session's review-
 handoff documentation correction, so repeat both short lanes on the final
 handoff/evidence tip. Required live probes and fresh Sol round 6 remain open.
+
+## Session 29 — 2026-09-30 21:03:12Z — close D-31 placement coverage gaps
+
+The reconciled candidate `d5b524eff15a9eaaa784d00ccbb5f8c9abc347e1` passed
+all 1,811 tests in registered `r0-r1`, but the gate exited 2 because whole-
+project coverage was 94%; `lib/placement.py` measured 66%. Its independent
+history record names that exact tree. This was an oracle-coverage failure,
+not scheduler interference or a test failure.
+
+Added behavioral placement tests for the host-systemd reply protocol,
+identity-checked PID migration and restoration races, transaction-journal
+failure boundaries, and crash recovery validation. Removed one duplicate
+leaf-path refusal whose condition is already implied by the journal shape and
+the verified systemd scope identity. The placement-focused suite passed 424
+tests in 80.00 s, and the final restoration-exit race test passed separately.
+Combined local diagnostic coverage of `lib/placement.py` is 100.0%: 1,149
+statements and 498 branch arcs, with no missing statements or partial arcs.
+This is focused local evidence, not the registered full package result.
+
+The change is committed before the next exact-tree gates. Registered `r0-r1`
+and `r3`, live daemon/carrier/placement/restoration probes, fresh Sol round 7,
+replacement P6 R2, and the full gate remain outstanding. R2 and the full gate
+may proceed asynchronously after provisional merge under RW-381; no release
+or daemon activation is authorized by this report.

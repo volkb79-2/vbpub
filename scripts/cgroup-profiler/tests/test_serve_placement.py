@@ -1440,7 +1440,867 @@ class TestDelegatedScopeMigration:
         assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n999\n"
 
 
+class TestPlacementTransactionRefusals:
+    def test_invalid_token_never_queries_or_mutates_host_state(self, tmp_path):
+        plc = _placement(
+            _fake_cgroup_root(tmp_path), token="../unsafe",
+            scope_create=lambda *_args: pytest.fail("invalid token reached systemd"),
+        )
+        plc.apply([101])
+        assert plc.error == placement.REFUSED_NO_TOKEN
+
+    def test_capture_that_finds_no_live_target_is_a_nonfatal_refusal(self, tmp_path):
+        plc = _placement(
+            _fake_cgroup_root(tmp_path), pid_exists=lambda _pid: False,
+        )
+        plc.apply([101])
+        assert plc.error == "place-refused:no-target-pids"
+        assert plc.scope_cgroup is None
+
+    def test_prejournaled_pid_is_not_captured_twice(self, tmp_path):
+        plc = _placement(_fake_cgroup_root(tmp_path))
+        captured = plc._capture_pid(101)
+        assert captured is not None
+        plc.pid_records[101] = captured
+        plc.apply([101])
+        assert plc.error is None and plc.placed
+        assert plc.pid_records[101]["state"] == "leaf"
+
+    @pytest.mark.parametrize(
+        "phase",
+        ["creating-scope", "scope-created", "scope-verified", "creating-leaf", "leaf-created"],
+    )
+    def test_journal_write_failure_stops_at_each_ownership_boundary(self, tmp_path, phase):
+        root = _fake_cgroup_root(tmp_path)
+        calls: List[str] = []
+
+        def write_state(value):
+            calls.append(value["state"])
+            if value["state"] == phase:
+                raise OSError("durable state unavailable")
+
+        plc = _placement(root, state_write=write_state)
+        plc.apply([101])
+
+        assert plc.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert phase in calls
+        if phase in {"scope-created", "scope-verified", "creating-leaf"}:
+            # systemd already owns the initial process. Keep its exact scope
+            # and incomplete journal for restart recovery; do not guess cleanup.
+            assert (root / SCOPE_UNIT_CGROUP).is_dir()
+        else:
+            assert not (root / SCOPE_UNIT_CGROUP).exists()
+        if phase in {"creating-leaf", "leaf-created"}:
+            assert not _leaf(root).exists()
+        if phase == "leaf-created":
+            assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+    @pytest.mark.parametrize("failure", ["exception", "timeout-result"])
+    def test_uncertain_scope_creation_is_journaled_and_reported(self, tmp_path, failure):
+        root = _fake_cgroup_root(tmp_path)
+        logged: List[str] = []
+
+        def create(*_args):
+            if failure == "exception":
+                raise RuntimeError("manager connection lost")
+            return None
+
+        plc = _placement(root, scope_create=create, log=logged.append)
+        plc.apply([101])
+        assert plc.error == "place-refused:scope-unavailable"
+        assert plc._journal["state"] == "scope-create-uncertain"
+        if failure == "exception":
+            assert any("scope creation failed" in item for item in logged)
+
+    def test_scope_creation_exception_is_safe_without_an_optional_logger(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+
+        def create(*_args):
+            raise RuntimeError("manager connection lost")
+
+        plc = _placement(root, scope_create=create)
+        plc.apply([101])
+        assert plc.error == "place-refused:scope-unavailable"
+
+    def test_scope_returned_outside_gates_slice_is_preserved_for_recovery(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(
+            root,
+            scope_create=lambda unit, _slice, _pids, _controllers: (
+                f"/dev.slice/dev-background.slice/{unit}"
+            ),
+        )
+        plc.apply([101])
+        assert plc.error == placement.REFUSED_PARENT_NOT_GATES_SLICE
+        assert plc._journal["state"] == "recovery-required"
+
+    def test_scope_unit_verification_failure_does_not_make_a_leaf(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(
+            root,
+            unit_cgroup_verifier=lambda unit, _path: unit.startswith("docker-"),
+        )
+        plc.apply([101])
+        assert plc.error == placement.REFUSED_PARENT_NOT_GATES_SLICE
+        assert not _leaf(root).exists()
+        assert (root / SCOPE_UNIT_CGROUP).is_dir()
+
+    @pytest.mark.parametrize("changed_identity", ["pid-reuse", "membership"])
+    def test_process_change_after_scope_transfer_is_not_migrated_to_leaf(
+        self, tmp_path, changed_identity,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        origin = "/" + SCOPE_CGROUP
+        if changed_identity == "pid-reuse":
+            starts = iter(["10197", "10197", "changed"])
+            plc = _placement(root, pid_start_time=lambda _pid: next(starts))
+        else:
+            locations = iter([origin, origin, "/dev.slice/escaped.scope"])
+            plc = _placement(root, pid_cgroup=lambda _pid: next(locations))
+
+        plc.apply([101])
+
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert not _leaf(root).exists()
+        assert plc._journal["state"] == "recovery-required"
+
+    def test_controller_delegation_requires_proven_empty_scope(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+
+        def unreadable_membership(_cgroup, _root, _proc_root):
+            raise PermissionError("host process view unavailable")
+
+        plc = _placement(root, pids_in_cgroup=unreadable_membership)
+        plc.apply([101])
+        assert plc.error == placement.write_failed(f"{SCOPE_UNIT_CGROUP}/cgroup.procs")
+        assert plc.placed is True
+        assert _leaf(root).exists()  # recovery retains ownership evidence
+
+    def test_controller_write_failure_restores_processes_and_removes_the_leaf(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root)
+        real_write = plc._write
+
+        def fail_delegate(path, value):
+            if path.endswith("/cgroup.subtree_control"):
+                raise OSError(1, "controller delegation denied", path)
+            real_write(path, value)
+
+        plc._write = fail_delegate
+        plc.apply([101])
+        assert plc.error == placement.write_failed(
+            f"{SCOPE_UNIT_CGROUP}/cgroup.subtree_control"
+        )
+        assert not _leaf(root).exists()
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+    @pytest.mark.parametrize("phase", ["controllers-enabled", "placed"])
+    def test_journal_failure_after_caps_are_applied_still_restores_lane(self, tmp_path, phase):
+        root = _fake_cgroup_root(tmp_path)
+
+        def write_state(value):
+            if value["state"] == phase:
+                raise OSError("journal unavailable")
+
+        plc = _placement(root, state_write=write_state)
+        plc.apply([101])
+        assert plc.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert plc.released  # release completed despite the reported journal failure
+        assert not _leaf(root).exists()
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_apply_continues_past_a_target_that_exited_before_capture(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root, pid_exists=lambda pid: pid == 101)
+        plc.apply([202, 101])
+        assert plc.error is None and plc.placed
+        assert set(plc.pid_records) == {101}
+
+    def test_capture_refusal_during_discovery_stops_later_pid_moves(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        locations = {101: "/dev.slice/outside.scope", 202: "/" + SCOPE_CGROUP}
+        plc = _placement(root, pid_cgroup=lambda pid: locations[pid])
+        plc.apply([101, 202])
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert plc.scope_cgroup is None
+        assert not _leaf(root).exists()
+
+    def test_pid_exiting_during_scope_transfer_is_journaled_and_not_moved(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        reads = {101: 0}
+
+        def exists(pid):
+            reads[pid] = reads.get(pid, 0) + 1
+            return reads[pid] <= 2
+
+        def scope_created(_unit):
+            (root / SCOPE_UNIT_CGROUP / "cgroup.procs").write_text("")
+
+        plc = _placement(
+            root, pid_exists=exists, scope_created=scope_created,
+            pids_in_cgroup=lambda *_args: [],
+        )
+        plc.apply([101])
+        assert plc.pid_records[101]["state"] == "exited"
+        assert plc.placed and plc.error is None
+
+    def test_cgroup_membership_reader_distinguishes_empty_unknown_and_nonempty(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        write_cgroup(root, SCOPE_UNIT_CGROUP, cgroup_files())
+        plc = _placement(root)
+        scope_procs = root / SCOPE_UNIT_CGROUP / "cgroup.procs"
+        assert plc._cgroup_has_processes("/missing/scope") is None
+        assert plc._cgroup_has_processes("/" + SCOPE_CGROUP) is False
+        scope_procs.write_text("101\n")
+        plc._pids_in_cgroup = lambda *_args: []
+        assert plc._cgroup_has_processes("/" + SCOPE_UNIT_CGROUP) is None
+        scope_procs.write_text("")
+        assert plc._cgroup_has_processes("/" + SCOPE_UNIT_CGROUP) is False
+
+    def test_abandon_removes_a_useless_leaf_and_clears_applied_values(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        lane = _placement(root)
+        lane.apply([101])
+        assert lane.placed
+        assert lane.applied
+        leaf = lane.leaf_abs
+        lane._abandon(leaf)
+        assert lane.leaf_cgroup is None
+        assert lane.applied == {}
+        assert not Path(leaf).exists()
+
+    def test_abandon_swallows_removal_failure_after_clearing_claimed_caps(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+
+        def busy(_path):
+            raise OSError("busy")
+
+        lane = _placement(root, rmdir=busy)
+        lane.apply([101])
+        leaf = lane.leaf_abs
+        lane._abandon(leaf)
+        assert lane.leaf_cgroup is None
+        assert lane.applied == {}
+        assert Path(leaf).exists()
+
+    def test_scope_creation_persistence_error_keeps_journal_for_uncertain_unit(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        logged: List[str] = []
+
+        def write_state(value):
+            if value["state"] == "scope-create-uncertain":
+                raise OSError("disk full")
+
+        plc = _placement(root, scope_create=lambda *_args: None,
+                         state_write=write_state, log=logged.append)
+        plc.apply([101])
+        assert plc.error == "place-refused:scope-unavailable"
+        assert any("could not persist recovery journal" in item for item in logged)
+
+
+class TestPlacementMigrationEdges:
+    def _ready_lane(self, tmp_path, **options):
+        root = _fake_cgroup_root(tmp_path)
+        lane = _placement(root, **options)
+        lane.apply([101])
+        assert lane.placed and lane.error is None
+        return root, lane
+
+    def _record_new_pid(self, lane, pid=202):
+        record = dict(lane.pid_records[101])
+        record.update({"pid": pid, "start_time_ticks": str(pid * 97), "state": "prepared"})
+        lane.pid_records[pid] = record
+        locations = {pid: record["origin_cgroup"]}
+        lane._pid_cgroup = lambda member: locations.get(member)
+        lane._pid_exists = lambda _member: True
+        lane._pid_start_time = lambda member: str(member * 97)
+        lane._systemd_attach = lambda _unit, _subcgroup, member: (
+            locations.__setitem__(member, lane.leaf_cgroup) or True
+        )
+        return record, locations
+
+    def test_migration_of_a_pid_already_in_its_leaf_is_idempotent(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        record, locations = self._record_new_pid(lane)
+        locations[202] = lane.leaf_cgroup
+        assert lane.migrate([202]) == 0
+        assert record["state"] == "leaf"
+        assert 202 in lane.moved
+
+    def test_exited_record_is_not_reattached(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        record, _locations = self._record_new_pid(lane)
+        record["state"] = "exited"
+        assert lane.migrate([202]) == 0
+        assert record["state"] == "exited"
+
+    def test_a_live_pid_that_changes_identity_before_migration_is_refused(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        record, _locations = self._record_new_pid(lane)
+        lane._pid_start_time = lambda _pid: "reused"
+        assert lane.migrate([202]) == 0
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_pid_exit_before_migration_is_recorded_as_exited(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        record, _locations = self._record_new_pid(lane)
+        lane._pid_exists = lambda _pid: False
+        assert lane.migrate([202]) == 0
+        assert record["state"] == "exited"
+        assert lane.error is None
+
+    def test_migration_refuses_process_outside_origin_and_scope(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        _record, locations = self._record_new_pid(lane)
+        locations[202] = "/dev.slice/dev-background.slice/other.scope"
+        assert lane.migrate([202]) == 0
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    @pytest.mark.parametrize("missing", ["unit", "scope"])
+    def test_migration_requires_the_verified_scope_identity(self, tmp_path, missing):
+        _root, lane = self._ready_lane(tmp_path)
+        self._record_new_pid(lane)
+        if missing == "unit":
+            lane.scope_unit = None
+        else:
+            lane.scope_cgroup = None
+        assert lane.migrate([202]) == 0
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_migration_write_guard_refusal_is_not_sent_to_systemd(self, tmp_path, monkeypatch):
+        _root, lane = self._ready_lane(tmp_path)
+        self._record_new_pid(lane)
+        monkeypatch.setattr(
+            lane.guard, "check_write",
+            lambda *_args: (_ for _ in ()).throw(placement.HostWriteError("outside")),
+        )
+        lane._systemd_attach = lambda *_args: pytest.fail("guard refusal reached systemd")
+        assert lane.migrate([202]) == 0
+        assert lane.error == placement.REFUSED_PARENT_NOT_GATES_SLICE
+
+    def test_pid_preparation_journal_failure_prevents_attach(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane.pid_records.pop(202, None)
+        lane._pid_cgroup = lambda _pid: "/" + SCOPE_CGROUP
+        lane._state_write = lambda _state: (_ for _ in ()).throw(OSError("disk full"))
+        lane._systemd_attach = lambda *_args: pytest.fail("unpersisted PID reached systemd")
+        assert lane.migrate([202]) == 0
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+
+    def test_capture_error_during_migration_stops_discovery(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane._capture_pid = lambda _pid: (
+            setattr(lane, "error", placement.REFUSED_IDENTITY_UNAVAILABLE) or None
+        )
+        assert lane.migrate([202]) == 0
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_exit_journal_failure_during_migration_is_reported(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        record, _locations = self._record_new_pid(lane)
+        lane._pid_exists = lambda _pid: False
+        lane._state_write = lambda state: (
+            (_ for _ in ()).throw(OSError("disk full"))
+            if state["state"] == "placing" else None
+        )
+        assert lane.migrate([202]) == 0
+        assert record["state"] == "exited"
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+
+    def test_move_state_journal_failure_prevents_attach(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        record, _locations = self._record_new_pid(lane)
+        lane._state_write = lambda state: (
+            (_ for _ in ()).throw(OSError("disk full"))
+            if state["state"] == "moving-to-leaf" else None
+        )
+        lane._systemd_attach = lambda *_args: pytest.fail("uncommitted move reached systemd")
+        assert lane.migrate([202]) == 0
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert record["state"] == "moving-to-leaf"
+
+    @pytest.mark.parametrize(
+        "outcome",
+        ["refused", "exception", "exception-no-logger", "exited", "exited-write-failure"],
+    )
+    def test_attach_failure_is_distinguished_from_a_racing_process_exit(
+        self, tmp_path, outcome,
+    ):
+        _root, lane = self._ready_lane(tmp_path)
+        record, _locations = self._record_new_pid(lane)
+        logged: List[str] = []
+        lane._log = None if outcome == "exception-no-logger" else logged.append
+        alive = {202: True}
+        lane._pid_exists = lambda pid: alive.get(pid, True)
+
+        def attach(_unit, _subcgroup, _pid):
+            if outcome in {"exception", "exception-no-logger"}:
+                raise RuntimeError("systemd unavailable")
+            if outcome in {"exited", "exited-write-failure"}:
+                alive[202] = False
+            return False
+
+        lane._systemd_attach = attach
+        if outcome == "exited-write-failure":
+            lane._state_write = lambda state: (
+                (_ for _ in ()).throw(OSError("disk full"))
+                if state["state"] == "placing" else None
+            )
+        assert lane.migrate([202]) == 0
+        if outcome == "exited":
+            assert record["state"] == "exited"
+            assert lane.error is None
+        elif outcome == "exited-write-failure":
+            assert record["state"] == "exited"
+            assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+        else:
+            assert lane.error == placement.write_failed(
+                f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cgroup.procs"
+            )
+            if outcome != "exception-no-logger":
+                assert any("could not attach" in item for item in logged)
+            if outcome == "exception":
+                assert any("attach of pid" in item for item in logged)
+            if outcome == "exception-no-logger":
+                assert logged == []
+
+    @pytest.mark.parametrize(
+        "after_attach", ["exit", "exit-write-failure", "reuse", "wrong-cgroup"],
+    )
+    def test_success_reply_is_verified_against_identity_and_actual_membership(
+        self, tmp_path, after_attach,
+    ):
+        _root, lane = self._ready_lane(tmp_path)
+        record, locations = self._record_new_pid(lane)
+        if after_attach in {"exit", "exit-write-failure"}:
+            alive = {202: True}
+            lane._pid_exists = lambda pid: alive.get(pid, True)
+            lane._systemd_attach = lambda *_args: (alive.__setitem__(202, False) or True)
+            if after_attach == "exit-write-failure":
+                lane._state_write = lambda state: (
+                    (_ for _ in ()).throw(OSError("disk full"))
+                    if state["state"] == "placing" else None
+                )
+        elif after_attach == "reuse":
+            starts = iter([str(202 * 97), "reused"])
+            lane._pid_start_time = lambda _pid: next(starts)
+            lane._systemd_attach = lambda *_args: True
+        else:
+            lane._systemd_attach = lambda *_args: True
+
+        assert lane.migrate([202]) == 0
+        if after_attach == "exit":
+            assert record["state"] == "exited"
+            assert lane.error is None
+        elif after_attach == "exit-write-failure":
+            assert record["state"] == "exited"
+            assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+        else:
+            assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+            if after_attach == "reuse":
+                assert record["state"] == "identity-mismatch"
+            else:
+                assert record["state"] == "membership-mismatch"
+
+    def test_migration_persistence_failure_after_verified_move_is_reported(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        record, locations = self._record_new_pid(lane)
+        writes: List[Any] = []
+        lane._on_write = lambda path, value: writes.append((path, value))
+        lane._state_write = lambda state: (
+            (_ for _ in ()).throw(OSError("disk full"))
+            if state["state"] == "placing" else None
+        )
+
+        assert lane.migrate([202]) == 0
+        assert locations[202] == lane.leaf_cgroup
+        assert record["state"] == "leaf"
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert writes[-1] == (f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cgroup.procs", "202")
+
+
+class TestPlacementCleanupEdges:
+    def _ready_lane(self, tmp_path, **options):
+        root = _fake_cgroup_root(tmp_path)
+        lane = _placement(root, **options)
+        lane.apply([101])
+        assert lane.placed and lane.error is None
+        return root, lane
+
+    def test_owned_pid_resolution_rejects_unknown_mismatched_and_nonpositive_membership(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        assert lane._owned_cgroup_pids(None) == []
+        assert lane._owned_cgroup_pids("/missing/scope") is None
+
+        lane._pids_in_cgroup = lambda *_args: (_ for _ in ()).throw(PermissionError("hidden"))
+        assert lane._owned_cgroup_pids(lane.leaf_cgroup) is None
+
+        lane._pids_in_cgroup = lambda *_args: []
+        assert lane._owned_cgroup_pids(lane.leaf_cgroup) is None
+
+        lane._pids_in_cgroup = lambda *_args: [0]
+        assert lane._owned_cgroup_pids(lane.leaf_cgroup) is None
+
+    def test_owned_pid_resolution_deduplicates_host_resolver_results(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane._pids_in_cgroup = lambda *_args: [101, 101]
+        assert lane._owned_cgroup_pids(lane.leaf_cgroup) == [101]
+
+    def test_restore_refuses_without_scope_identity_or_durable_journal(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane.scope_unit = None
+        assert lane._restore_owned_processes() is False
+
+        _root2, no_journal = self._ready_lane(tmp_path / "no-journal")
+        no_journal._state_write = lambda _state: (_ for _ in ()).throw(OSError("disk full"))
+        assert no_journal._restore_owned_processes() is False
+        assert no_journal.error == placement.REFUSED_STATE_UNAVAILABLE
+
+    def test_restore_marks_a_gone_process_exited_then_finishes_when_membership_clears(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        record = lane.pid_records[101]
+        lane._pid_exists = lambda _pid: False
+        reads = iter([[101], [], [], []])
+        lane._owned_cgroup_pids = lambda _cgroup: next(reads)
+        assert lane._restore_owned_processes() is True
+        assert record["state"] == "exited"
+
+    def test_restore_accepts_a_pid_already_back_at_its_origin(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        record = lane.pid_records[101]
+        lane._pid_cgroup = lambda _pid: record["origin_cgroup"]
+        reads = iter([[101], [], [], []])
+        lane._owned_cgroup_pids = lambda _cgroup: next(reads)
+        assert lane._restore_owned_processes() is True
+        assert record["state"] == "restored"
+
+    def test_restore_refuses_a_live_reused_pid_and_keeps_the_leaf(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        lane._pid_start_time = lambda _pid: "reused"
+        assert lane._restore_owned_processes() is False
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert _leaf(root).exists()
+
+    def test_restore_refuses_a_pid_that_escaped_its_owned_source(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane._pid_cgroup = lambda _pid: "/dev.slice/unrelated.scope"
+        assert lane._restore_owned_processes() is False
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_restore_refuses_an_unverified_origin_unit(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane._unit_cgroup_verifier = lambda _unit, _path: False
+        assert lane._restore_owned_processes() is False
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_restore_journal_failure_does_not_send_pid_to_systemd(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane._state_write = lambda _state: (_ for _ in ()).throw(OSError("disk full"))
+        lane._systemd_attach = lambda *_args: pytest.fail("unpersisted restoration reached systemd")
+        assert lane._restore_owned_processes() is False
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+
+    @pytest.mark.parametrize(
+        "outcome", ["refused-live", "refused-exited", "exception", "exception-no-logger"],
+    )
+    def test_restore_attach_failure_never_discards_scope_evidence(self, tmp_path, outcome):
+        root, lane = self._ready_lane(tmp_path)
+        logged: List[str] = []
+        lane._log = None if outcome == "exception-no-logger" else logged.append
+        alive = {101: True}
+
+        def attach(*_args):
+            if outcome in {"exception", "exception-no-logger"}:
+                raise RuntimeError("systemd unavailable")
+            if outcome == "refused-exited":
+                alive[101] = False
+            return False
+
+        lane._pid_exists = lambda pid: alive.get(pid, True)
+        lane._systemd_attach = attach
+        if outcome == "refused-exited":
+            reads = iter([[101], [], [], []])
+            lane._owned_cgroup_pids = lambda _cgroup: next(reads)
+        assert lane._restore_owned_processes() is (outcome == "refused-exited")
+        if outcome == "refused-exited":
+            assert lane.pid_records[101]["state"] == "exited"
+        else:
+            assert not lane.released
+            assert _leaf(root).exists()
+            assert any("restore of pid" in item for item in logged) is (outcome == "exception")
+            if outcome == "exception-no-logger":
+                assert logged == []
+
+    def test_restore_records_process_exit_after_systemd_accepts_restoration(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        alive = {101: True}
+        lane._pid_exists = lambda pid: alive.get(pid, True)
+        lane._systemd_attach = lambda *_args: (alive.__setitem__(101, False) or True)
+        reads = iter([[101], [], [], []])
+        lane._owned_cgroup_pids = lambda _cgroup: next(reads)
+        assert lane._restore_owned_processes() is True
+        assert lane.pid_records[101]["state"] == "exited"
+
+    @pytest.mark.parametrize(
+        ("phase", "setup"),
+        [
+            ("exited", "gone-before-restore"),
+            ("already-restored", "at-origin"),
+            ("before-attach", "normal"),
+            ("attach-exited", "attach-refused-exit"),
+            ("post-attach-exited", "attach-success-exit"),
+            ("after-restore", "attach-success"),
+        ],
+    )
+    def test_each_restore_journal_boundary_fails_closed(self, tmp_path, phase, setup):
+        _root, lane = self._ready_lane(tmp_path)
+        if setup == "gone-before-restore":
+            lane._pid_exists = lambda _pid: False
+            failing_call = 2
+        elif setup == "at-origin":
+            lane._pid_cgroup = lambda _pid: lane.pid_records[101]["origin_cgroup"]
+            failing_call = 2
+        elif setup == "normal":
+            failing_call = 2
+        elif setup == "attach-refused-exit":
+            alive = {101: True}
+            lane._pid_exists = lambda pid: alive.get(pid, True)
+            lane._systemd_attach = lambda *_args: (alive.__setitem__(101, False) or False)
+            failing_call = 3
+        elif setup == "attach-success-exit":
+            alive = {101: True}
+            lane._pid_exists = lambda pid: alive.get(pid, True)
+            lane._systemd_attach = lambda *_args: (alive.__setitem__(101, False) or True)
+            reads = iter([[101], [], [], []])
+            lane._owned_cgroup_pids = lambda _cgroup: next(reads)
+            failing_call = 3
+        else:
+            attach = lane._systemd_attach
+            lane._systemd_attach = lambda unit, subcgroup, pid: attach(unit, subcgroup, pid)
+            failing_call = 3
+
+        writes = 0
+
+        def fail_at_boundary(_state):
+            nonlocal writes
+            writes += 1
+            if writes == failing_call:
+                raise OSError("journal device unavailable")
+
+        lane._state_write = fail_at_boundary
+        assert lane._restore_owned_processes() is False
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert writes == failing_call
+
+    def test_restore_post_attach_pid_reuse_is_not_mistaken_for_restoration(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        starts = iter(["9797", "reused"])
+        lane._pid_start_time = lambda _pid: next(starts)
+        lane._systemd_attach = lambda *_args: True
+        assert lane._restore_owned_processes() is False
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert _leaf(root).exists()
+
+    def test_restore_fails_if_the_post_restore_membership_read_is_unknown(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        reads = iter([[101], [], None, []])
+        lane._owned_cgroup_pids = lambda _cgroup: next(reads)
+        assert lane._restore_owned_processes() is False
+        assert lane.error is not None
+
+    def test_restore_exhaustion_preserves_persistent_unresolved_membership(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane._pid_cgroup = lambda _pid: lane.pid_records[101]["origin_cgroup"]
+        calls = 0
+
+        def stale_membership(_cgroup):
+            nonlocal calls
+            calls += 1
+            return [101] if calls % 4 == 3 else []
+
+        lane._owned_cgroup_pids = stale_membership
+        lane._sleep = lambda _seconds: None
+        assert lane._restore_owned_processes() is False
+        assert lane.error is not None
+
+    def test_restore_rechecks_membership_after_systemd_accepts_the_move(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        lane._systemd_attach = lambda *_args: True
+        lane._pid_cgroup = lambda _pid: lane.leaf_cgroup
+        assert lane._restore_owned_processes() is False
+        assert lane.error == placement.write_failed(
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cgroup.procs"
+        )
+        assert _leaf(root).exists()
+
+    def test_restore_retries_a_stale_membership_snapshot_before_declaring_failure(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane._pid_cgroup = lambda _pid: lane.pid_records[101]["origin_cgroup"]
+        # A stale first read shows one PID; its next read confirms the source
+        # emptied. No move is necessary because identity says it was restored.
+        reads = iter([[101], [], [101], [], [], [], [], []])
+        lane._owned_cgroup_pids = lambda _cgroup: next(reads)
+        sleeps: List[float] = []
+        lane._sleep = sleeps.append
+        assert lane._restore_owned_processes() is True
+        assert sleeps == [placement.RMDIR_RETRY_SECONDS]
+
+    def test_release_is_idempotent_without_an_owned_scope(self, tmp_path):
+        _root, lane = self._ready_lane(tmp_path)
+        lane.released = True
+        lane.release()
+        lane.scope_cgroup = None
+        lane.release()
+
+    def test_release_preserves_leaf_when_its_identity_is_not_owned(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        lane.guard.is_leaf = lambda _path: False
+        lane.release()
+        assert not lane.released
+        assert _leaf(root).exists()
+        assert lane.error is not None
+
+    def test_release_records_leaf_removal_failure_and_keeps_recovery_state(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+
+        def cannot_remove(path):
+            raise OSError(16, "device or resource busy", path)
+
+        logged: List[str] = []
+        lane = _placement(root, rmdir=cannot_remove, log=logged.append, sleep=lambda _s: None)
+        lane.apply([101])
+        assert lane.placed
+        lane.release()
+        assert not lane.released
+        assert lane.error == placement.write_failed(f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}")
+        assert _leaf(root).exists()
+        assert lane._journal["state"] == "recovery-required"
+        assert logged and "could not remove leaf" in logged[-1]
+
+    def test_release_can_retire_a_scope_after_its_leaf_is_already_absent(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        shutil.rmtree(_leaf(root))
+        lane._restore_owned_processes = lambda: True
+        lane.release()
+        assert lane.released
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_release_is_safe_without_an_optional_journal_object(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        lane._journal = None
+        lane.release()
+        assert lane.released
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_leaf_removal_journal_failure_leaves_the_empty_scope_for_recovery(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        lane._state_write = lambda state: (
+            (_ for _ in ()).throw(OSError("disk full"))
+            if state["state"] == "leaf-removed" else None
+        )
+        lane.release()
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert not _leaf(root).exists()
+        assert (root / SCOPE_UNIT_CGROUP).exists()
+
+    @pytest.mark.parametrize("obstruction", ["members", "children", "unreadable", "unit"])
+    def test_release_requires_empty_childless_verified_scope(self, tmp_path, monkeypatch, obstruction):
+        root, lane = self._ready_lane(tmp_path)
+        if obstruction == "members":
+            lane._cgroup_has_processes = lambda _cgroup: True
+        elif obstruction == "children":
+            (root / SCOPE_UNIT_CGROUP / "unexpected-child").mkdir()
+        elif obstruction == "unreadable":
+            real_listdir = os.listdir
+
+            def listdir(path):
+                if path == str(root / SCOPE_UNIT_CGROUP):
+                    raise PermissionError("scope cannot be inspected")
+                return real_listdir(path)
+
+            monkeypatch.setattr(os, "listdir", listdir)
+        else:
+            lane._unit_cgroup_verifier = lambda unit, _cgroup: unit.startswith("docker-")
+        lane.release()
+        assert not lane.released
+        assert (root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_release_requires_systemd_to_confirm_scope_retirement(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        logged: List[str] = []
+        lane._scope_stop = lambda _unit: False
+        lane._log = logged.append
+        lane.release()
+        assert not lane.released
+        assert (root / SCOPE_UNIT_CGROUP).exists()
+        assert any("would not retire empty scope" in item for item in logged)
+
+    def test_scope_retirement_refusal_is_safe_without_an_optional_logger(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        lane._scope_stop = lambda _unit: False
+        lane._log = None
+        lane.release()
+        assert not lane.released
+        assert (root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_release_reports_final_journal_failure_after_scope_was_stopped(self, tmp_path):
+        root, lane = self._ready_lane(tmp_path)
+        lane._state_write = lambda state: (
+            (_ for _ in ()).throw(OSError("disk full"))
+            if state["state"] == "complete" else None
+        )
+        lane.release()
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert not lane.released
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+
 class TestPlacementJournalRecovery:
+    def _make_journal(self, root):
+        snapshots: List[Dict[str, Any]] = []
+        lane = _placement(
+            root,
+            state_write=lambda value: snapshots.append(json.loads(json.dumps(value))),
+        )
+        lane.apply([101])
+        assert lane.placed and snapshots[-1]["state"] == "placed"
+        return json.loads(json.dumps(snapshots[-1]))
+
+    def _patch_manager(self, monkeypatch, **overrides):
+        values = {
+            ("org.freedesktop.systemd1.Unit", "LoadState"): "loaded",
+            ("org.freedesktop.systemd1.Scope", "ControlGroup"): "/" + SCOPE_UNIT_CGROUP,
+            ("org.freedesktop.systemd1.Scope", "Slice"): "dev-gates.slice",
+        }
+        values.update(overrides)
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _proc: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: "/unit/scope")
+        monkeypatch.setattr(
+            placement, "_systemd_property",
+            lambda _path, interface, name: values.get((interface, name)),
+        )
+        monkeypatch.setattr(placement, "_systemd_bool_property", lambda *_args: True)
+        monkeypatch.setattr(
+            placement, "_systemd_string_array_property",
+            lambda *_args: list(placement.REQUIRED_CONTROLLERS),
+        )
+        monkeypatch.setattr(placement, "_systemd_unit_cgroup_matches", lambda *_args: True)
+
+    def _patch_factory(self, monkeypatch, root):
+        real_class = placement.LanePlacement
+
+        def recovery_factory(**kwargs):
+            return _placement(
+                root,
+                _placement_cls=real_class,
+                token=kwargs["token"],
+                origin_cgroup=kwargs["origin_cgroup"],
+                state_write=kwargs["state_write"],
+                proc_root=kwargs["proc_root"],
+            )
+
+        monkeypatch.setattr(placement, "LanePlacement", recovery_factory)
+
     def test_restart_recovery_restores_exact_scope_members_then_retires_scope(
         self, tmp_path, monkeypatch,
     ):
@@ -1498,6 +2358,288 @@ class TestPlacementJournalRecovery:
         assert not (root / SCOPE_UNIT_CGROUP).exists()
         assert updates[-1]["state"] == "complete"
         assert updates[-1]["leaf_created"] is False
+
+    @pytest.mark.parametrize(
+        "corruption",
+        [
+            "scope-unit", "gates-unit", "gates-path", "scope-relative",
+            "scope-normalization", "scope-parent", "scope-name", "leaf-without-scope",
+            "leaf-path", "empty-pids", "nonobject-pids", "nonnumeric-pid",
+            "nonobject-record", "pid-mismatch", "relative-origin", "nonstring-origin",
+            "nonstring-unit", "nonstring-unit-path", "nonstring-subgroup",
+            "nondigit-start-time", "origin-destination-mismatch",
+        ],
+    )
+    def test_recovery_rejects_each_untrusted_journal_identity_shape(
+        self, tmp_path, monkeypatch, corruption,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        record = journal["pids"]["101"]
+        if corruption == "scope-unit":
+            journal["scope_unit"] = "other.scope"
+        elif corruption == "gates-unit":
+            journal["gates_unit"] = "dev-background.slice"
+        elif corruption == "gates-path":
+            journal["gates_cgroup"] = "/dev.slice/dev-background.slice"
+        elif corruption == "scope-relative":
+            journal["scope_cgroup"] = "dev.slice/dev-gates.slice/" + SCOPE_UNIT
+        elif corruption == "scope-normalization":
+            journal["scope_cgroup"] = "/dev.slice/dev-gates.slice/../dev-gates.slice/" + SCOPE_UNIT
+        elif corruption == "scope-parent":
+            journal["scope_cgroup"] = "/dev.slice/dev-background.slice/" + SCOPE_UNIT
+        elif corruption == "scope-name":
+            journal["scope_cgroup"] = "/dev.slice/dev-gates.slice/other.scope"
+        elif corruption == "leaf-without-scope":
+            journal["scope_cgroup"] = None
+        elif corruption == "leaf-path":
+            journal["leaf_cgroup"] = "/dev.slice/dev-gates.slice/other.scope/rg-other"
+        elif corruption == "empty-pids":
+            journal["pids"] = {}
+        elif corruption == "nonobject-pids":
+            journal["pids"] = []
+        elif corruption == "nonnumeric-pid":
+            journal["pids"] = {"1x": record}
+        elif corruption == "nonobject-record":
+            journal["pids"] = {"101": []}
+        elif corruption == "pid-mismatch":
+            record["pid"] = 202
+        elif corruption == "relative-origin":
+            record["origin_cgroup"] = "relative.scope"
+        elif corruption == "nonstring-origin":
+            record["origin_cgroup"] = []
+        elif corruption == "nonstring-unit":
+            record["origin_unit"] = 42
+        elif corruption == "nonstring-unit-path":
+            record["origin_unit_cgroup"] = None
+        elif corruption == "nonstring-subgroup":
+            record["origin_subcgroup"] = 42
+        elif corruption == "nondigit-start-time":
+            record["start_time_ticks"] = "4x"
+        else:
+            record["origin_subcgroup"] = "different-path"
+
+        monkeypatch.setattr(
+            placement, "_systemd_unit_path",
+            lambda _unit: pytest.fail("untrusted journal reached systemd"),
+        )
+        result = placement.recover_journal(
+            journal,
+            cgroup_root=str(root),
+            gates_cgroup=GATES_CGROUP,
+            proc_root="/proc",
+            state_write=lambda _value: pytest.fail("untrusted journal was rewritten"),
+        )
+        assert result == placement.REFUSED_STATE_UNAVAILABLE
+
+    def test_recovery_refuses_when_host_proc_view_is_not_authoritative(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _proc: False)
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/proc", state_write=lambda _value: pytest.fail("refusal was not durable"),
+        )
+        assert result == placement.REFUSED_NO_HOST_PROC
+
+    def test_missing_systemd_unit_is_clean_only_when_processes_are_proved_restored(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        journal["scope_cgroup"] = None
+        journal["leaf_cgroup"] = None
+        proc = tmp_path / "proc"
+        (proc / "101").mkdir(parents=True)
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(placement, "_process_start_time_ticks", lambda _proc, _pid: "9797")
+        monkeypatch.setattr(
+            "lib.targets.cgroup_of_pid",
+            lambda _pid, _root, _proc: "/" + SCOPE_CGROUP,
+        )
+        updates = []
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root=str(proc), state_write=updates.append,
+        )
+        assert result is None
+        assert updates[-1]["state"] == "complete"
+
+    def test_missing_process_after_crash_needs_no_identity_read_and_completes_journal(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        journal["scope_cgroup"] = None
+        journal["leaf_cgroup"] = None
+        proc = tmp_path / "empty-proc"
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(
+            placement, "_process_start_time_ticks",
+            lambda *_args: pytest.fail("exited process must not be reidentified"),
+        )
+        updates = []
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root=str(proc), state_write=updates.append,
+        )
+        assert result is None
+        assert updates[-1]["state"] == "complete"
+
+    @pytest.mark.parametrize("problem", ["scope-remains", "pid-reused", "pid-moved", "write-failed"])
+    def test_missing_systemd_unit_refuses_unproved_cleanup(self, tmp_path, monkeypatch, problem):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        if problem != "scope-remains":
+            journal["scope_cgroup"] = None
+            journal["leaf_cgroup"] = None
+        proc = tmp_path / "proc"
+        (proc / "101").mkdir(parents=True)
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(
+            placement, "_process_start_time_ticks",
+            lambda _proc, _pid: "reused" if problem == "pid-reused" else "9797",
+        )
+        current = "/dev.slice/outside.scope" if problem == "pid-moved" else "/" + SCOPE_CGROUP
+        monkeypatch.setattr("lib.targets.cgroup_of_pid", lambda *_args: current)
+        def writer(_journal):
+            if problem == "write-failed":
+                raise OSError("disk full")
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root=str(proc), state_write=writer,
+        )
+        assert result == (
+            placement.REFUSED_IDENTITY_UNAVAILABLE
+            if problem in {"pid-reused", "pid-moved"}
+            else placement.REFUSED_STATE_UNAVAILABLE
+        )
+
+    @pytest.mark.parametrize(
+        "problem",
+        [
+            "not-loaded", "missing-cgroup", "relative-cgroup", "wrong-slice",
+            "not-delegated", "unknown-delegation", "missing-controller", "unknown-controllers",
+            "wrong-parent", "wrong-unit-name",
+            "unverified-unit", "missing-directory",
+        ],
+    )
+    def test_existing_scope_must_match_all_systemd_ownership_properties(
+        self, tmp_path, monkeypatch, problem,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        properties = {
+            ("org.freedesktop.systemd1.Unit", "LoadState"): "loaded",
+            ("org.freedesktop.systemd1.Scope", "ControlGroup"): "/" + SCOPE_UNIT_CGROUP,
+            ("org.freedesktop.systemd1.Scope", "Slice"): "dev-gates.slice",
+        }
+        if problem == "not-loaded":
+            properties[("org.freedesktop.systemd1.Unit", "LoadState")] = "not-found"
+        elif problem == "missing-cgroup":
+            properties[("org.freedesktop.systemd1.Scope", "ControlGroup")] = None
+        elif problem == "relative-cgroup":
+            properties[("org.freedesktop.systemd1.Scope", "ControlGroup")] = "relative/path"
+        elif problem == "wrong-slice":
+            properties[("org.freedesktop.systemd1.Scope", "Slice")] = "dev-background.slice"
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _proc: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: "/unit/scope")
+        monkeypatch.setattr(
+            placement, "_systemd_property",
+            lambda _path, interface, name: properties.get((interface, name)),
+        )
+        monkeypatch.setattr(
+            placement, "_systemd_bool_property",
+            lambda *_args: (
+                None if problem == "unknown-delegation" else problem != "not-delegated"
+            ),
+        )
+        monkeypatch.setattr(
+            placement, "_systemd_string_array_property",
+            lambda *_args: (
+                None if problem == "unknown-controllers" else
+                ["memory"] if problem == "missing-controller"
+                else list(placement.REQUIRED_CONTROLLERS)
+            ),
+        )
+        monkeypatch.setattr(
+            placement, "_systemd_unit_cgroup_matches",
+            lambda *_args: problem != "unverified-unit",
+        )
+        if problem == "wrong-parent":
+            properties[("org.freedesktop.systemd1.Scope", "ControlGroup")] = "/dev.slice/other.slice/" + SCOPE_UNIT
+        elif problem == "wrong-unit-name":
+            properties[("org.freedesktop.systemd1.Scope", "ControlGroup")] = "/dev.slice/dev-gates.slice/other.scope"
+        elif problem == "missing-directory":
+            shutil.rmtree(root / SCOPE_UNIT_CGROUP)
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/proc", state_write=lambda _value: pytest.fail("invalid scope was mutated"),
+        )
+        assert result == placement.REFUSED_STATE_UNAVAILABLE
+
+    def test_unjournaled_leaf_is_neither_adopted_nor_removed(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        journal["leaf_created"] = False
+        self._patch_manager(monkeypatch)
+        self._patch_factory(monkeypatch, root)
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/proc", state_write=lambda _value: None,
+        )
+        assert result is not None
+        assert _leaf(root).is_dir()
+        assert (root / SCOPE_UNIT_CGROUP).is_dir()
+
+    def test_broken_leaf_symlink_is_not_treated_as_a_recovery_directory(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        shutil.rmtree(_leaf(root))
+        _leaf(root).symlink_to(tmp_path / "missing-target", target_is_directory=True)
+        self._patch_manager(monkeypatch)
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/proc", state_write=lambda _value: pytest.fail("unsafe leaf mutated"),
+        )
+        assert result == placement.REFUSED_STATE_UNAVAILABLE
+        assert _leaf(root).is_symlink()
+
+    def test_missing_leaf_is_not_invented_during_recovery(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        shutil.rmtree(_leaf(root))
+        journal["leaf_created"] = False
+        self._patch_manager(monkeypatch)
+        self._patch_factory(monkeypatch, root)
+        updates = []
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/proc", state_write=updates.append,
+        )
+        assert result is None
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+        assert updates[-1]["state"] == "complete"
+
+    def test_recovery_returns_the_cleanup_failure_instead_of_claiming_success(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        self._patch_manager(monkeypatch)
+        real_class = placement.LanePlacement
+
+        def leave_recovery_required(self):
+            self.error = placement.REFUSED_IDENTITY_UNAVAILABLE
+
+        monkeypatch.setattr(real_class, "release", leave_recovery_required)
+        self._patch_factory(monkeypatch, root)
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/proc", state_write=lambda _value: None,
+        )
+        assert result == placement.REFUSED_IDENTITY_UNAVAILABLE
 
     @pytest.mark.parametrize("journal", [
         None,
