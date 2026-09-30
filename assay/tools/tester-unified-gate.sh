@@ -660,7 +660,11 @@ finish_registered_gate() {
 # Exit 3 from the harness means the environment could not answer: the gate passes
 # it through as exit 3 (no receipt, no COMPLETE); every other failure is real.
 run_sql_qualification() {
-  local commit="$1" cgroup="$2" out rc=0
+  local commit="$1" cgroup="$2" out rc=0 shared_args=()
+  # (CD50) The harness opt-in follows the gate's, and only for the exact value 1.
+  if [[ "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" == 1 ]]; then
+    shared_args=(--allow-shared-host)
+  fi
   _assay_sql_scratch="$(mktemp -d)" || die 'cannot create the SQL scratch directory'
   make_exact_oid_clone "$worktree" "$_assay_sql_scratch"
   [[ "$(git -C "$_assay_sql_scratch/clone" rev-parse HEAD)" == "$commit" ]] \
@@ -669,7 +673,8 @@ run_sql_qualification() {
   out="$(nice -n 19 python3 -I "$_assay_sql_scratch/clone/assay/gate/python/qualify_sql.py" \
     --scratch "$_assay_sql_scratch/sql" \
     --container-name "$_assay_sql_container_name" \
-    --cgroup-parent "$cgroup")" || rc=$?
+    --cgroup-parent "$cgroup" \
+    ${shared_args[@]+"${shared_args[@]}"})" || rc=$?
   if [[ $rc -eq 3 ]]; then
     echo 'ASSAY_GATE_DIAGNOSTIC=sql-qualification-inconclusive'
     printf 'ASSAY_GATE_INCONCLUSIVE=sql-qualification — rerun\n' >&2
@@ -684,7 +689,13 @@ run_sql_qualification() {
 }
 
 run_registered_gate() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names commit tree
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names assay_names commit tree
+  # (CD50) The shared-host opt-in is validated before anything else, so a typo
+  # never launches and never touches the receipt.
+  case "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" in
+    '' | 1) ;;
+    *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1' ;;
+  esac
   # (CD32) One `docker ps`, no waiting: another session's gate on this shared host
   # makes this run inconclusive before it captures, clears or builds anything.
   # A `docker ps` that fails cannot show the host is free, so it is inconclusive too.
@@ -693,7 +704,17 @@ run_registered_gate() {
     exit 3
   fi
   names="$(printf '%s\n' "$listing" | grep '^run-gate-' | paste -sd, -)" || true
-  if [[ -n "$names" ]]; then
+  if [[ "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" == 1 ]]; then
+    # (CD50) Other projects' gates may run alongside; another assay gate may not.
+    assay_names="$(printf '%s\n' "$listing" | grep '^run-gate-assay-' | paste -sd, -)" || true
+    if [[ -n "$assay_names" ]]; then
+      echo "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: $assay_names" >&2
+      exit 3
+    fi
+    if [[ -n "$names" ]]; then
+      echo "ASSAY_GATE_SHARED_HOST=$names"
+    fi
+  elif [[ -n "$names" ]]; then
     echo "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: $names" >&2
     exit 3
   fi

@@ -974,6 +974,26 @@ def test_a_running_gate_container_makes_the_host_busy_and_nothing_starts(tmp_pat
     assert ps == [["docker", "ps", "--no-trunc", "--format", "{{.Names}}"]]
 
 
+def test_shared_host_lets_other_projects_gates_run_and_names_them_on_stderr(tmp_path: Path, stubbed, capsys) -> None:
+    """CD50 (S1)."""
+    fake = stubbed(FakeDocker(ps="run-gate-x\n"))
+    _run_main_under_sentinel([*_main_argv(tmp_path), "--allow-shared-host"])
+    assert fake.ran()
+    captured = capsys.readouterr()
+    assert "ASSAY_SQL_SHARED_HOST=run-gate-x" in captured.err.splitlines()
+    assert "ASSAY_SQL_INCONCLUSIVE" not in captured.err
+
+
+def test_shared_host_still_refuses_another_sql_qualification_container(tmp_path: Path, stubbed, capsys) -> None:
+    """CD50 (S2): one W5 container at a time, opt-in or not."""
+    fake = stubbed(FakeDocker(ps="run-gate-x\nrun-gate-assay-sql-9-1\n"))
+    assert _run_main_under_sentinel([*_main_argv(tmp_path), "--allow-shared-host"]) == 3
+    err = capsys.readouterr().err
+    assert "ASSAY_SQL_INCONCLUSIVE=host busy — rerun: run-gate-assay-sql-9-1" in err
+    assert "run-gate-x" not in err
+    assert not fake.ran() and not any(call[:2] == ["docker", "rm"] for call in fake.calls)
+
+
 def test_other_containers_do_not_make_the_host_busy(tmp_path: Path, stubbed) -> None:
     fake = stubbed(FakeDocker(ps="edge-traefik\nnot-run-gate-x\n"))
     _run_main_under_sentinel(_main_argv(tmp_path))
@@ -1242,6 +1262,34 @@ def test_a_clone_that_is_not_the_gated_commit_is_refused_before_any_harness_or_c
     assert f"SQL clone is not the gated commit {HEX40}" in proc.stderr
     assert not harness_log.exists()
     assert not docker_log.exists()  # no container name existed yet, so the trap removed nothing
+
+
+def _run_sql_phase(tmp_path: Path, gate_functions: Path, allow: str | None):
+    worktree, commit, _tree = _sql_worktree(tmp_path)
+    env, _docker_log, harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
+    env.pop("ASSAY_GATE_ALLOW_SHARED_HOST", None)
+    if allow is not None:
+        env["ASSAY_GATE_ALLOW_SHARED_HOST"] = allow
+    proc = run_bash(
+        f'worktree="{worktree}"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{commit}" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return harness_log.read_text(encoding="utf-8").split()
+
+
+def test_the_shared_host_flag_reaches_the_harness_only_for_the_exact_value_one(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """CD50 (G4)."""
+    assert "--allow-shared-host" in _run_sql_phase(tmp_path, gate_functions, "1")
+
+
+@pytest.mark.parametrize("allow", [None, "", "true", "0"])
+def test_the_shared_host_flag_is_absent_otherwise(tmp_path: Path, gate_functions: Path, allow: str | None) -> None:
+    assert "--allow-shared-host" not in _run_sql_phase(tmp_path, gate_functions, allow)
 
 
 def test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_finisher() -> None:

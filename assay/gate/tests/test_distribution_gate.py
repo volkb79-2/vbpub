@@ -1427,6 +1427,90 @@ def test_a_host_running_only_other_containers_proceeds_to_the_tester(
     assert (worktree / RECEIPT_RELATIVE).is_file()
 
 
+def test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prints_them(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """CD50 (G1): `ASSAY_GATE_ALLOW_SHARED_HOST=1` tolerates other projects' `run-gate-*`
+    containers, names them on stdout and runs the normal gate; the receipt is unchanged."""
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    env, log = _docker_stub(tmp_path, "run-gate-x\nrun-gate-y\nother\n")
+    env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "1"
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LAUNCHED" in proc.stdout
+    assert "ASSAY_GATE_SHARED_HOST=run-gate-x,run-gate-y" in proc.stdout.splitlines()
+    receipt = worktree / RECEIPT_RELATIVE
+    assert json.loads(receipt.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "lane": "tester-unified",
+        "commit": commit,
+        "tree": tree,
+    }
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+
+
+def test_the_shared_host_opt_in_still_refuses_another_assay_gate(tmp_path: Path, gate_functions: Path) -> None:
+    """CD50 (G2): one assay gate at a time, opt-in or not."""
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    earlier = worktree / RECEIPT_RELATIVE
+    earlier.parent.mkdir(parents=True)
+    earlier.write_bytes(b'{"an earlier": "receipt"}\n')
+    before = earlier.read_bytes()
+    env, log = _docker_stub(tmp_path, "run-gate-assay-selfhosted-1-2-3\nrun-gate-x\n")
+    env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "1"
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo LAUNCHED; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: run-gate-assay-selfhosted-1-2-3" in proc.stderr
+    assert "run-gate-x" not in proc.stderr
+    assert earlier.read_bytes() == before
+    assert "LAUNCHED" not in proc.stdout
+    assert "ASSAY_GATE_SHARED_HOST" not in proc.stdout
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+
+
+def test_a_shared_host_opt_in_value_other_than_empty_or_one_is_refused_before_docker(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """CD50 (G3): a typo never launches, never touches the receipt and never reaches docker."""
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    earlier = worktree / RECEIPT_RELATIVE
+    earlier.parent.mkdir(parents=True)
+    earlier.write_bytes(b'{"an earlier": "receipt"}\n')
+    before = earlier.read_bytes()
+    env, log = _docker_stub(tmp_path, "")
+    env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "yes"
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo LAUNCHED; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1" in proc.stderr
+    assert earlier.read_bytes() == before
+    assert "LAUNCHED" not in proc.stdout
+    assert not log.exists()  # zero docker calls
+
+
 def test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt(
     tmp_path: Path, gate_functions: Path
 ) -> None:

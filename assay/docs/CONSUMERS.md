@@ -77,7 +77,9 @@ its HEAD, so run both lanes in the same worktree with no commit in between: any
 later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
 run. `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>`
 when another `run-gate-*` container is running; exit 3 always means rerun, and the
-receipt is left as it was. No collected judge test
+receipt is left as it was. On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1`
+runs alongside other projects' `run-gate-*` containers (printing
+`ASSAY_GATE_SHARED_HOST=<names>`) and still refuses another `run-gate-assay-*` one. No collected judge test
 reads history or tags (A-475); the lane keeps full commit history until B128,
 and snapshot refs/tags are not copied.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following

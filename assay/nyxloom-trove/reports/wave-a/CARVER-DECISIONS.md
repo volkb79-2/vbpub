@@ -102,6 +102,12 @@ Every finding is accepted, with its fix text as written, except where noted belo
 | CD48 | **W4 review (`REVIEW-W4.md`): all findings applied, including the optional W4R-8.**<br>• The container proves it judged the host-captured commit, at its start and its end (`require_expected_head`).<br>• W4R-4: `gate/tests/support.py` imports W2's one loader (CD31).<br>• W4R-6: `gate/distribution/build_release.py:25` goes to W10, `qualify_dstdns_sql.py:47` to W5.<br>• The reviewer's out-of-scope find is filed as **B135** (the mutation witness ignores `pytest.toml`).<br>• New backlog ids from any package are the next free ones after the highest in `4-backlog.md`; this supersedes the fixed "B134/B135" start in CD28. |
 | CD47 | **W4 P5 stand-in for `go_stmtpos.py` `_staged_helper` (124-171).** The stand-in is **two** judge files: `test_b105_go_stmtpos_boundaries.py` plus `tests/adapters/go/test_adapters_go_stmtpos_invoker.py`. The first file alone leaves line 151 uncovered. The invoker test stays in `tests/`, so both B105 lanes collect it and R1 coverage is unaffected by the split. The P5 purpose is met: no tooling test is the only cover of layout-dependent product code. |
 
+## After the operator decision (2026-09-30)
+
+| # | Decision |
+|---|---|
+| CD50 | 2026-09-30 operator: the shared host may run assay's gate and W5's PostgreSQL container alongside OTHER projects' run-gate-* containers. Opt-in only: ASSAY_GATE_ALLOW_SHARED_HOST=1 (gate) / --allow-shared-host (qualify_sql.py). Still refused: another run-gate-assay-* container (gate) or run-gate-assay-sql-* container (harness). Shared runs print ASSAY_GATE_SHARED_HOST= / ASSAY_SQL_SHARED_HOST=. CD32 remains the default; the receipt is unchanged. |
+
 **Plan consequences:**
 - W8 now depends on W2 (CD1).
 - W7 edits `gate/tests/test_self_lane.py` (CD12).

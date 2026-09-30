@@ -2021,7 +2021,7 @@ report without a matching receipt. The preflight lane needs none. Run
 worktree and with no commit in between: any later commit, a docs-only or merge
 commit included, needs a fresh `tester-unified` run first. A
 gate started while another `run-gate-*` container runs exits 3 with
-`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`).
+`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1` (CD50) lets the gate run alongside other projects' `run-gate-*` containers, printing `ASSAY_GATE_SHARED_HOST=<names>` on stdout; another `run-gate-assay-*` container is still refused, any other value of the variable is an error, and the receipt is unchanged.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. This interim budget
@@ -3035,7 +3035,7 @@ inconclusive run. One container runs at a time, `--network none`, `--cpus 1`,
 slice, named `run-gate-assay-sql-<pid>-<epoch>` so a peer's `docker ps` sees
 it; it is removed by its exact name on every path, including SIGTERM. Before
 `docker run` the harness looks once at `docker ps`: any other `run-gate-*`
-container makes the run **inconclusive** (exit 3, `host busy`); it never polls.
+container makes the run **inconclusive** (exit 3, `host busy`); it never polls. With `--allow-shared-host` (CD50; the gate passes it when `ASSAY_GATE_ALLOW_SHARED_HOST=1`) other projects' `run-gate-*` containers are tolerated and named on stderr as `ASSAY_SQL_SHARED_HOST=<names>`, but another `run-gate-assay-sql-*` container is still `host busy`.
 
 **Two derivations, no assertion of the consumer's.** Each row's mutant is
 applied to a fresh database and its bucket is *derived*, never trusted: the

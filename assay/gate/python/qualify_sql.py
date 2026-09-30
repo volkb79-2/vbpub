@@ -37,7 +37,9 @@ incomplete witness): visible and rerunnable, never skipped and never green.
 caller passes, one at a time, named ``run-gate-assay-sql-<pid>-<epoch>`` so a
 peer's ``docker ps`` sees it, and is removed by its exact name. Before
 ``docker run`` the harness looks once at ``docker ps``; any ``run-gate-*`` name
-means ``host busy`` (exit 3) -- it never polls or waits. The witness lane strips
+means ``host busy`` (exit 3) -- it never polls or waits; ``--allow-shared-host``
+(CD50) tolerates other projects' ``run-gate-*`` containers (printing
+``ASSAY_SQL_SHARED_HOST=`` on stderr) but still refuses another ``run-gate-assay-sql-*``. The witness lane strips
 ``DOCKER_HOST`` (its ``env`` is ``PATH`` only) and relies on
 ``/var/run/docker.sock`` reaching the same daemon as this process's docker CLI.
 The witness lane imports :mod:`assay` from this checkout's ``src/``: it
@@ -294,8 +296,9 @@ class ThrowawayPostgres:
     caller, always removed by its exact name (never ``--rm``: the removal
     must be ordered after the ``df`` receipt and be signal-safe)."""
 
-    def __init__(self, name: str, cgroup_parent: str, fixture_root: Path) -> None:
+    def __init__(self, name: str, cgroup_parent: str, fixture_root: Path, *, allow_shared_host: bool = False) -> None:
         self.name = name
+        self.allow_shared_host = allow_shared_host
         self.cgroup_parent = cgroup_parent
         self.fixture_root = fixture_root
         self._owned = False
@@ -320,8 +323,15 @@ class ThrowawayPostgres:
             raise InconclusiveError(f"image absent: docker pull {IMAGE}")
         listing = _run(["docker", "ps", "--no-trunc", "--format", "{{.Names}}"], timeout=60).stdout
         busy = [name for name in listing.splitlines() if name.startswith("run-gate-")]
+        if not self.allow_shared_host:
+            if busy:
+                raise InconclusiveError(f"host busy — rerun: {','.join(busy)}")
+            return
+        sql_busy = [name for name in busy if name.startswith("run-gate-assay-sql-")]
+        if sql_busy:
+            raise InconclusiveError(f"host busy — rerun: {','.join(sql_busy)}")
         if busy:
-            raise InconclusiveError(f"host busy — rerun: {','.join(busy)}")
+            print(f"ASSAY_SQL_SHARED_HOST={','.join(busy)}", file=sys.stderr)
 
     def _docker_run_argv(self) -> list[str]:
         return [
@@ -785,6 +795,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cgroup-parent", required=True)
     parser.add_argument("--witness-out", type=Path, default=None)
     parser.add_argument("--fixture-root", type=Path, default=FIXTURE_ROOT)
+    parser.add_argument("--allow-shared-host", action="store_true")
     args = parser.parse_args(argv)
     if sys.version_info < (3, 11):
         parser.error("Python >= 3.11 is required")
@@ -797,7 +808,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     previous = signal.signal(signal.SIGTERM, lambda *_: sys.exit(3))
     try:
-        container = ThrowawayPostgres(args.container_name, args.cgroup_parent, args.fixture_root)
+        container = ThrowawayPostgres(
+            args.container_name, args.cgroup_parent, args.fixture_root, allow_shared_host=args.allow_shared_host
+        )
         try:
             run_qualification(
                 container=container, scratch=args.scratch, fixture_root=args.fixture_root, witness_out=args.witness_out

@@ -50,6 +50,30 @@ Done before any `git rm`: exactly 13 classes, counts 38/36/28/11/20/2/12/1/11/1/
 | R1 CLI + witness | PENDING (needs the container) | PENDING: `--fixture-root` copy with `tests/K05.sql` = `SELECT 1;` -> exit 1 naming K05 |
 | R2 gate log order | PENDING (controller's gate run) | none (T7 covers it) |
 
+## CD50 -- shared-host opt-in (operator 2026-09-30)
+
+Implemented exactly as specified: gate (`run_registered_gate`: validation before `docker ps`; `=1` refuses `run-gate-assay-*`, prints
+`ASSAY_GATE_SHARED_HOST=` on stdout otherwise), `run_sql_qualification` (`--allow-shared-host` iff exactly `1`), harness
+(`--allow-shared-host`, `ThrowawayPostgres(..., allow_shared_host=False)`, `_check_host`).
+
+| Test | Where | Oracle |
+|---|---|---|
+| G1 `=1`, ps `run-gate-x/y/other` -> `LAUNCHED`, `ASSAY_GATE_SHARED_HOST=run-gate-x,run-gate-y`, receipt unchanged | `test_distribution_gate.py::test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prints_them` | green |
+| G2 `=1`, ps has `run-gate-assay-selfhosted-1-2-3` + `run-gate-x` -> exit 3, only the assay name, receipt bytes, not launched, one docker call | `::test_the_shared_host_opt_in_still_refuses_another_assay_gate` | BREAK 1 (`if [[ -n "$assay_names" ]]` -> `if [[ -n "" ]]`): RED; reverted with Edit |
+| G3 `=yes` -> non-zero, message, not launched, receipt bytes, zero docker calls | `::test_a_shared_host_opt_in_value_other_than_empty_or_one_is_refused_before_docker` | green (validation sits before `docker ps` by construction; the zero-call assertion pins it) |
+| G4 `run_sql_qualification` passes `--allow-shared-host` for `=1` only (absent for unset, empty, `true`, `0`) | `test_qualify_sql.py::test_the_shared_host_flag_reaches_the_harness_only_for_the_exact_value_one` + `..._is_absent_otherwise` (4 cases) | BREAK 3 (`if [[ ... == 1 ]]` -> `if true`): the 4 absent cases RED; reverted |
+| S1 allowed, ps `run-gate-x` -> container starts, stderr `ASSAY_SQL_SHARED_HOST=run-gate-x` | `test_qualify_sql.py::test_shared_host_lets_other_projects_gates_run_and_names_them_on_stderr` | green |
+| S2 allowed, ps `run-gate-x`, `run-gate-assay-sql-9-1` -> exit 3, only the sql name, nothing started, no `docker rm` | `::test_shared_host_still_refuses_another_sql_qualification_container` | BREAK 2 (`if sql_busy:` -> `if False:`): S2 RED (and `test_qualify_sql` G-side unaffected); reverted |
+
+The three breaks were applied with Edit, observed red, reverted with Edit and never committed (the green re-run follows the revert).
+
+**Lane environment (CD50 item 5): the lane process inherits the caller's environment.** `assay/run-gate.toml` `tester-unified` is
+`environment = "bare-host"`, which resolves to `{}` ("the literal old host behaviour", `run-gate-project/run_gate.py:947-948`).
+The lane child is launched at `run_gate.py:8147` (`subprocess.Popen(argv, cwd=..., env=run_env)`) or `:8182`
+(`subprocess.run(argv, cwd=..., env=run_env)`) with `run_env = None` (inherits) or `dict(os.environ)` plus the profiler token
+(`:8108-8111`), and at `:7957` (`subprocess.Popen(argv)`, inherits). No `os.environ.clear/pop/del` and no `env -i` anywhere in
+`run_gate.py`. So `ASSAY_GATE_ALLOW_SHARED_HOST=1 run-gate.py tester-unified` reaches `tester-unified-gate.sh`. Not BLOCKED.
+
 ## Collect counts (collect-only, after commit 2)
 
 * `gate/tests`: 366 collected.
