@@ -180,14 +180,18 @@ def test_tester_gate_refuses_unconfigured_resource(resolver, env, expected, monk
 
 def test_tester_gate_slice_probe_accepts_loaded_configured_host_unit(monkeypatch):
     monkeypatch.setattr(tester_gate.shutil, "which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        tester_gate.subprocess, "run",
-        lambda *args, **kwargs: SimpleNamespace(
+    seen = {}
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        return SimpleNamespace(
             returncode=0, stdout="LoadState=loaded\nFragmentPath=/etc/systemd/x.slice\n", stderr=""
-        ),
+        )
+    monkeypatch.setattr(
+        tester_gate.subprocess, "run", fake_run,
     )
-    exists, note = tester_gate.check_slice_unit("build.slice", "debian:test")
+    exists, note = tester_gate.check_slice_unit("build.slice", "debian:test", "dev-gates.slice")
     assert exists is True and "FragmentPath" in note
+    assert seen["argv"][:3] == ["docker", "run", "--cgroup-parent=dev-gates.slice"]
 
 
 def test_tester_gate_slice_probe_rejects_transient_unit(monkeypatch):
@@ -196,7 +200,7 @@ def test_tester_gate_slice_probe_rejects_transient_unit(monkeypatch):
         tester_gate.subprocess, "run",
         lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="LoadState=loaded\nFragmentPath=\n", stderr=""),
     )
-    exists, note = tester_gate.check_slice_unit("typo.slice", "debian:test")
+    exists, note = tester_gate.check_slice_unit("typo.slice", "debian:test", "dev-gates.slice")
     assert exists is False and "TRANSIENT" in note
 
 

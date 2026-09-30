@@ -88,7 +88,7 @@ def cmd_enroll(args) -> int:
     )
 
     scope = args.scope
-    if getattr(args, "dry_run", False):
+    if args.dry_run:
         consul_addr = (
             getattr(args, "consul_addr", None)
             or os.environ.get("CONSUL_HTTP_ADDR", "http://127.0.0.1:8500")
@@ -136,7 +136,7 @@ def cmd_run(args) -> int:
               file=sys.stderr)
         return 2
 
-    if getattr(args, "dry_run", False):
+    if args.dry_run:
         print(
             f"[DRY RUN] Would start the long-running reconciler for node_id={node_id} "
             f"landscape={landscape} scope={args.scope}; no reconciliation was started."
@@ -182,10 +182,10 @@ def cmd_once(args) -> int:
         release_root=release_root,
         minisign_pubkey=pubkey,
         max_iterations=1,
-        dry_run=getattr(args, "dry_run", False),
+        dry_run=args.dry_run,
     )
     applied = reconciler.once()
-    if getattr(args, "dry_run", False):
+    if args.dry_run:
         print(f"[DRY RUN] once: {'change would be applied' if applied else 'no change'}")
     else:
         print(f"[INFO] once: {'change applied' if applied else 'no change'}")

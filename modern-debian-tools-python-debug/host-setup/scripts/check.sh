@@ -418,9 +418,41 @@ systemctl is-enabled mdt-dev-governance-reconcile.timer >/dev/null 2>&1 \
 systemctl is-active mdt-container-io-events-watcher.service >/dev/null 2>&1 \
   && ok "mdt-container-io-events-watcher.service active (docker-events reactive per-container IO caps)" \
   || warn "mdt-container-io-events-watcher.service not active — governed Docker scopes and out-of-tree Buildx workers only get capped on the next mdt-dev-governance-reconcile.timer sweep, not instantly on start"
-systemctl is-active mdt-container-memory-inotify-watcher.service >/dev/null 2>&1 \
-  && ok "mdt-container-memory-inotify-watcher.service active (inotify reactive per-container memory/swap caps)" \
-  || warn "mdt-container-memory-inotify-watcher.service not active — unlabelled containers in dev-interactive.slice/dev-background.slice/dev-gates.slice only get a default MemoryMax on the next sweep, not instantly on start"
+memory_leaf_policy_configured=0
+for key in \
+  WATCHER_INTERACTIVE_MEMORY_HIGH WATCHER_INTERACTIVE_MEMORY_MAX \
+  WATCHER_BACKGROUND_MEMORY_HIGH WATCHER_BACKGROUND_MEMORY_MAX \
+  WATCHER_GATES_MEMORY_HIGH WATCHER_GATES_MEMORY_MAX; do
+  value="${!key:-}"
+  case "$value" in ""|-) ;; *) memory_leaf_policy_configured=1 ;; esac
+done
+memory_watcher_active=0
+memory_watcher_enabled=0
+systemctl is-active --quiet mdt-container-memory-inotify-watcher.service && memory_watcher_active=1
+systemctl is-enabled --quiet mdt-container-memory-inotify-watcher.service && memory_watcher_enabled=1
+case "${WATCHER_MEMORY_POLICY:-}" in
+  enabled)
+    if [ "$memory_leaf_policy_configured" != 1 ]; then
+      fail "WATCHER_MEMORY_POLICY=enabled but all per-container memory values are '-' — choose at least one cap or disable the policy"
+    elif [ "$memory_watcher_active" = 1 ]; then
+      ok "mdt-container-memory-inotify-watcher.service active (applies explicitly configured per-container memory/swap caps)"
+    else
+      warn "mdt-container-memory-inotify-watcher.service not active — explicitly configured per-container memory controls are not applied to new scopes; there is no periodic memory-cap fallback, while parent slice limits remain in force"
+    fi
+    ;;
+  disabled)
+    if [ "$memory_leaf_policy_configured" = 1 ]; then
+      fail "per-container memory values are configured while WATCHER_MEMORY_POLICY=disabled; set the policy to enabled or change those values to '-'"
+    elif [ "$memory_watcher_active" = 1 ] || [ "$memory_watcher_enabled" = 1 ]; then
+      warn "mdt-container-memory-inotify-watcher.service is active or enabled while WATCHER_MEMORY_POLICY=disabled — run install.sh to stop and disable it"
+    else
+      ok "mdt-container-memory-inotify-watcher.service disabled; no per-container memory controls are configured and parent slice limits remain in force"
+    fi
+    ;;
+  *)
+    fail "WATCHER_MEMORY_POLICY must be exactly enabled or disabled"
+    ;;
+esac
 
 echo "== container placement (informational) =="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then

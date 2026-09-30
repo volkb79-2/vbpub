@@ -19,7 +19,7 @@
 # (mdt-host-setup-wizard.py, alongside this script) — sizes the tiers against
 # THIS host's own /proc/meminfo rather than the example's fixed numbers, then
 # falls through into the same render/apply logic below. --with-baseline
-# additionally runs the official io.cost benchmark (~12 min of saturated disk — quiet
+# additionally runs the shared Linux-derived io.cost benchmark (~12 min of saturated disk — quiet
 # window!). --reset is accepted only with --wizard; it deliberately starts the
 # wizard from the current example instead of using the installed config as
 # defaults. After successful candidate validation the old config is backed up
@@ -58,7 +58,7 @@ Options
                       the candidate validates. It does not mean "skip
                       validation" and is rejected alone. This option resets
                       wizard input defaults; it does not delete the old file.
-  --with-baseline     Run the official kernel io.cost coefficient benchmark
+  --with-baseline     Run the shared Linux-derived io.cost coefficient benchmark
                       against the configured persistent file target. It runs
                       six fio passes (about 12 minutes minimum at defaults)
                       and saturates that disk; use a quiet maintenance window.
@@ -159,8 +159,8 @@ echo "== container memory inotify watcher: availability check =="
 # mdt-container-memory-inotify-watcher.py needs a working inotify_init1() — true on any
 # kernel since 2.6.27, but checked explicitly rather than let a confusing
 # errno surface later inside the service. A failure here skips installing
-# the watcher entirely; mdt-dev-governance-reconcile.sh's periodic sweep still runs
-# either way, just without the reactive/instant half.
+# the optional per-container memory watcher; slice-level memory limits and
+# the separate periodic IO/cgroup-flag reconciliation still apply.
 if python3 -c "
 import ctypes, ctypes.util, sys
 libc = ctypes.CDLL(ctypes.util.find_library('c') or 'libc.so.6', use_errno=True)
@@ -171,7 +171,7 @@ sys.exit(0 if fd >= 0 else 1)
   echo "inotify: available"
 else
   INOTIFY_OK=0
-  echo "WARN: inotify_init1() failed on this host — skipping mdt-container-memory-inotify-watcher.service; the periodic sweep (mdt-dev-governance-reconcile.timer) still applies IO caps and will be the only source of per-container limits"
+  echo "WARN: inotify_init1() failed on this host — skipping the optional per-container memory watcher; no periodic memory-cap fallback exists, while parent slice limits and the separate IO reconciliation remain active"
 fi
 
 echo "== config =="
@@ -267,13 +267,62 @@ if [ -n "$MISSING_KEYS" ]; then
 fi
 
 case "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" in
-  terminate|report-only) ;;
+  terminate)
+    if [ "$WIZARD" != 1 ]; then
+      echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate requires install.sh --wizard and a second explicit confirmation before the guard can run." >&2
+      if systemctl is-active --quiet mdt-buildkit-guard.service \
+        || systemctl is-enabled --quiet mdt-buildkit-guard.service; then
+        systemctl disable --now mdt-buildkit-guard.service \
+          || { echo "ERROR: could not stop the Buildx guard while termination policy awaits confirmation" >&2; exit 2; }
+      fi
+      echo "Run ./install.sh --wizard to choose report-only or explicitly reconfirm terminate." >&2
+      exit 2
+    fi
+    echo "WARN: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate may remove active Docker-container Buildx workers and interrupt builds; second wizard confirmation received."
+    ;;
+  report-only) ;;
   *) echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY must be exactly terminate or report-only" >&2; exit 2 ;;
 esac
 case "${DEVCONTAINER_MISSING_BIND_SOURCE_POLICY:-}" in
   create-by-spelling|fail) ;;
   *) echo "ERROR: DEVCONTAINER_MISSING_BIND_SOURCE_POLICY must be exactly create-by-spelling or fail" >&2; exit 2 ;;
 esac
+configured_memory_keys=()
+for key in \
+  WATCHER_INTERACTIVE_MEMORY_HIGH WATCHER_INTERACTIVE_MEMORY_MAX \
+  WATCHER_BACKGROUND_MEMORY_HIGH WATCHER_BACKGROUND_MEMORY_MAX \
+  WATCHER_GATES_MEMORY_HIGH WATCHER_GATES_MEMORY_MAX; do
+  value="${!key:-}"
+  case "$value" in
+    ""|-) ;;
+    *) configured_memory_keys+=("$key") ;;
+  esac
+done
+if [ "${#configured_memory_keys[@]}" -gt 0 ]; then
+  printf 'Per-container memory controls configured for this host: %s\n' \
+    "${configured_memory_keys[*]}"
+fi
+case "${WATCHER_MEMORY_POLICY:-}" in
+  enabled)
+    if [ "${#configured_memory_keys[@]}" -eq 0 ]; then
+      echo "ERROR: WATCHER_MEMORY_POLICY=enabled requires at least one explicit WATCHER_*_MEMORY_HIGH/MAX value" >&2
+      exit 2
+    fi
+    MEMORY_WATCHER_CONFIGURED=1
+    ;;
+  disabled)
+    if [ "${#configured_memory_keys[@]}" -gt 0 ]; then
+      echo "ERROR: per-container memory values are configured while WATCHER_MEMORY_POLICY=disabled; set the policy to enabled or change those values to '-'" >&2
+      exit 2
+    fi
+    MEMORY_WATCHER_CONFIGURED=0
+    ;;
+  *) echo "ERROR: WATCHER_MEMORY_POLICY must be exactly enabled or disabled" >&2; exit 2 ;;
+esac
+if [ "$MEMORY_WATCHER_CONFIGURED" = 1 ] && [ "$INOTIFY_OK" != 1 ]; then
+  echo "ERROR: WATCHER_MEMORY_POLICY=enabled, but inotify is unavailable; refusing to continue without applying the configured policy" >&2
+  exit 2
+fi
 if [ -z "${DEV_BUILDKITD_IMAGE:-}" ]; then
   echo "ERROR: DEV_BUILDKITD_IMAGE is empty; refusing to start the managed BuildKit service" >&2
   exit 2
@@ -454,7 +503,7 @@ else
 fi
 
 echo "== packages =="
-# fio/pv: dependencies of the official io.cost baseline benchmark.
+# fio/pv: dependencies of the shared io.cost baseline benchmark.
 # systemd-oomd: without it every ManagedOOM*
 # setting in dev-background.slice is a silent no-op (separate package on Debian).
 apt-get update -qq || echo "WARN: apt-get update failed — install may use a stale index"
@@ -709,8 +758,18 @@ find "$BUILDX_CONFIG_DIR" -xdev -type d -exec chown root:root {} + -exec chmod 0
 find "$BUILDX_CONFIG_DIR" -xdev -type f -exec chown root:root {} + -exec chmod 0644 {} +
 systemctl enable --now mdt-buildkit-guard.service
 systemctl restart mdt-buildkit-guard.service
-if [ "$INOTIFY_OK" = 1 ]; then
-  systemctl enable --now mdt-container-memory-inotify-watcher.service  # reactive per-container MemoryMax
+if [ "$MEMORY_WATCHER_CONFIGURED" = 1 ]; then
+  systemctl enable --now mdt-container-memory-inotify-watcher.service
+else
+  # An older install may have enabled the watcher when shipped leaf caps were
+  # defaults. Stop it when the current validated config explicitly disables
+  # every pair, so no stale process keeps applying its old in-memory policy.
+  if systemctl is-active --quiet mdt-container-memory-inotify-watcher.service \
+    || systemctl is-enabled --quiet mdt-container-memory-inotify-watcher.service; then
+    systemctl disable --now mdt-container-memory-inotify-watcher.service \
+      || { echo "ERROR: could not stop the per-container memory watcher after its policy was disabled" >&2; exit 2; }
+  fi
+  echo "per-container memory watcher disabled by WATCHER_MEMORY_POLICY=disabled"
 fi
 systemctl enable mdt-container-io-events-watcher.service         # reactive per-container IO caps (docker events)
 
@@ -739,7 +798,7 @@ systemctl start mdt-dev-governance-reconcile.service           # apply runtime c
 # Both reactive watchers load their configuration and baseline once per
 # process. Restart after the optional baseline measurement so a re-run of this
 # installer cannot leave an already-running watcher applying stale values.
-if [ "$INOTIFY_OK" = 1 ]; then
+if [ "$MEMORY_WATCHER_CONFIGURED" = 1 ]; then
   systemctl restart mdt-container-memory-inotify-watcher.service
 fi
 systemctl restart mdt-container-io-events-watcher.service

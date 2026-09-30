@@ -1247,7 +1247,8 @@ def _entry_prior_instance_scopes(
     **Why not a label filter.** A live ``docker ps --filter label=...`` would
     survive a stale compose file, but CIU injects no identifying label onto
     governed containers today — ``governance.build_injections`` emits only
-    ``cgroup_parent``/``mem_limit``/``memswap_limit``/``mem_reservation``/
+    ``cgroup_parent`` plus explicitly configured
+    ``mem_limit``/``memswap_limit``/``mem_reservation``/
     ``cpus``/``blkio_config`` (plus the KSM ``environment``/``volumes``
     opt-in — still nothing label-shaped) — so that route means inventing a
     whole labeling scheme, a strictly larger change than the defect

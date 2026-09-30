@@ -390,21 +390,38 @@ sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — qu
 sudo mdt-host-check.sh
 ```
 
+For host inspection from an MDT devcontainer, `host-escape -- <command>` runs
+the command in the host's namespaces with host-root authority; `host-escape`
+opens a host shell. Review commands before running them. The helper runs
+`mdt doctor` afterward and may remount cgroup2 to restore required flags.
+See the [operator examples and safety details](docs/CONSUMERS.md#host-commands-from-an-mdt-devcontainer)
+and the [host-escape design](docs/DESIGN-GUIDE.md#host-namespace-access).
+
 [`host-setup/CGROUP-NOTES.md`](host-setup/CGROUP-NOTES.md) explains what a slice unit
 fundamentally cannot express — and the BFQ caveats, where `IOWeight` does not mean what it
 says. Read it before changing any weight.
 
 All MDT devcontainer and release builds use the host-managed `mdt-managed`
 Buildx remote backed by `mdt-buildkitd.service`; the template supplies
-`BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. Host installation, the
-accidental-worker guard, and the fail-closed memory policy are documented in
-[the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend)
-and [consumer instructions](docs/CONSUMERS.md). The service exposes its socket
-only to the host `docker` group; see the
+`BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. The accidental-worker guard
+defaults to report-only; termination is an explicit opt-in. Per-container
+leaf caps from the inotify watcher default off while parent slice limits
+remain active. The host wizard asks whether that optional memory watcher is
+enabled and requires explicit values for it. See the [memory policy rationale](docs/DESIGN-GUIDE.md#per-container-memory-policy)
+and [pasteable host configuration](docs/CONSUMERS.md#per-container-memory-watcher).
+Host installation and the guard policy are documented in
+[the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend).
+The service exposes its socket only to the host `docker` group; see the
 [socket-access design](docs/DESIGN-GUIDE.md#managed-buildkit-socket-access).
 The host wizard also writes `DEV_BUILDKITD_MAX_PARALLELISM` into the managed
 daemon configuration; it limits one BuildKit daemon's internal solver work and
 is independent of release repack concurrency.
+The `io.cost` coefficient generator is shared with `debian-install-v2` and
+built from the pristine Linux source plus a checked patch series; see the
+[generator design](docs/DESIGN-GUIDE.md#shared-iocost-generator) and
+[host usage](docs/CONSUMERS.md#host-benchmark-file-targets). Its file target
+must be dedicated benchmark scratch space because calibration overwrites the
+file contents.
 
 ## Building and publishing
 
@@ -660,8 +677,8 @@ production-quality. Windows as of June 2026:
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
 | [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md) | Cross-CLI adapter pattern; why exact versions stay in the generated inventory |
 | [docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md) | Build/repack/publication flow, cgroup boundaries, load attribution |
-| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate |
-| [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable managed BuildKit host, devcontainer, and release adoption |
+| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate; managed socket access and host namespace access |
+| [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable host governance, host escape, managed BuildKit, and release adoption |
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
 | [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |

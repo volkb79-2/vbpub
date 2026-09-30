@@ -158,7 +158,7 @@ def _update_project_revision(config_path: Path, *, dry_run: bool = False) -> boo
                 config_path.read_text(encoding="utf-8").splitlines(keepends=True),
                 contents.splitlines(keepends=True),
                 fromfile=str(config_path), tofile=f"{config_path} (planned)",
-            )), end="", flush=True)
+            )), end="")
         else:
             _atomic_write(config_path, contents)
     return changed
@@ -214,7 +214,7 @@ def standards_main(argv: list[str] | None = None) -> int:
     return standards_cli().run(argv=argv)
 
 
-def _run_standards(args, _runtime) -> int:
+def _run_standards(args, _runtime) -> None:
     from cmru.cli_support import TargetSelectionError, select_target_names
 
     # Import lazily: cli dispatches this verb, and is itself the configuration
@@ -259,7 +259,7 @@ def _run_standards(args, _runtime) -> int:
                 dry_run=args.dry_run,
             ) or changed
         if changed and args.dry_run:
-            print("[DRY RUN] Marker updates were previewed; no files were written.", flush=True)
+            print("[DRY RUN] Marker updates were previewed; no files were written.")
         elif changed:
             print("[INFO] Updated CMRU-owned template revision marker(s).", flush=True)
         # Re-read to ensure a malformed update can never be reported as conformant.
@@ -282,4 +282,3 @@ def _run_standards(args, _runtime) -> int:
         )
         raise SystemExit(2)
     print(f"[INFO] CMRU standards: {len(results)} project(s) conform.", flush=True)
-    return 0

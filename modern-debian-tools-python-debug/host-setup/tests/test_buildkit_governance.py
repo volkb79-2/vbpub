@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import io
 import json
@@ -493,6 +494,136 @@ printf 'rio=%s wio=%s rbps=%s wbps=%s src=%s valid=%s\\n' \\
         run.assert_not_called()
         self.assertIn("leaving the scope unchanged", log.call_args.args[0])
 
+    def test_memory_watcher_default_disables_leaf_memory_and_swap_caps(self) -> None:
+        values = WIZARD.parse_env_file((ROOT / "host-setup.env.example").read_text())
+        self.assertEqual(values["WATCHER_MEMORY_POLICY"], "disabled")
+        self.assertFalse(WIZARD.memory_relationship_errors(values))
+        for key in (
+            "WATCHER_INTERACTIVE_MEMORY_HIGH", "WATCHER_INTERACTIVE_MEMORY_MAX",
+            "WATCHER_BACKGROUND_MEMORY_HIGH", "WATCHER_BACKGROUND_MEMORY_MAX",
+            "WATCHER_GATES_MEMORY_HIGH", "WATCHER_GATES_MEMORY_MAX",
+        ):
+            self.assertEqual(values[key], "-", key)
+
+        with mock.patch.object(
+            DEV_WATCHER, "SLICE_DEFAULT_MEMORY_HIGH", {"dev-interactive.slice": "-"}
+        ), mock.patch.object(
+            DEV_WATCHER, "SLICE_DEFAULT_MEMORY_MAX", {"dev-interactive.slice": "-"}
+        ), mock.patch.object(
+            DEV_WATCHER, "has_explicit_memory_limit", return_value=False
+        ), mock.patch.object(
+            DEV_WATCHER, "read_slice_swap_max_bytes"
+        ) as read_swap, mock.patch.object(
+            DEV_WATCHER.subprocess, "run"
+        ) as run, mock.patch.object(DEV_WATCHER, "log") as log:
+            DEV_WATCHER.apply_default_cap(
+                "/sys/fs/cgroup/dev.slice/dev-interactive.slice",
+                "dev-interactive.slice",
+                "docker-0123456789ab.scope",
+            )
+        run.assert_not_called()
+        read_swap.assert_not_called()
+        self.assertIn("no per-container memory directive", log.call_args.args[0])
+
+    def test_memory_watcher_still_applies_an_explicit_host_policy(self) -> None:
+        with mock.patch.object(
+            DEV_WATCHER, "SLICE_DEFAULT_MEMORY_HIGH", {"dev-interactive.slice": "800M"}
+        ), mock.patch.object(
+            DEV_WATCHER, "SLICE_DEFAULT_MEMORY_MAX", {"dev-interactive.slice": "1G"}
+        ), mock.patch.object(
+            DEV_WATCHER, "has_explicit_memory_limit", return_value=False
+        ), mock.patch.object(
+            DEV_WATCHER, "read_slice_swap_max_bytes", return_value=2 * 1024**3
+        ), mock.patch.object(
+            DEV_WATCHER.subprocess, "run",
+            return_value=subprocess.CompletedProcess(["systemctl"], 0, "", ""),
+        ) as run:
+            DEV_WATCHER.apply_default_cap(
+                "/sys/fs/cgroup/dev.slice/dev-interactive.slice",
+                "dev-interactive.slice",
+                "docker-0123456789ab.scope",
+            )
+        argv = run.call_args.args[0]
+        self.assertIn("MemoryHigh=800M", argv)
+        self.assertIn("MemoryMax=1G", argv)
+        self.assertIn(f"MemorySwapMax={2 * 1024**3 * 80 // 100}", argv)
+
+    def test_health_check_describes_memory_watcher_as_optional_not_reconciled(self) -> None:
+        check = (ROOT / "scripts/check.sh").read_text()
+        self.assertIn("there is no periodic memory-cap fallback", check)
+        self.assertIn("no per-container memory controls are configured", check)
+        self.assertIn('case "${WATCHER_MEMORY_POLICY:-}" in', check)
+        self.assertIn('WATCHER_MEMORY_POLICY=enabled but all per-container memory values', check)
+        self.assertIn('WATCHER_MEMORY_POLICY=disabled', check)
+        self.assertNotIn("only get a default MemoryMax on the next sweep", check)
+
+        installer = (ROOT / "install.sh").read_text()
+        self.assertIn("no periodic memory-cap fallback exists", installer)
+        self.assertIn("BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate requires install.sh --wizard", installer)
+        self.assertIn("systemctl disable --now mdt-buildkit-guard.service", installer)
+        self.assertIn("WATCHER_MEMORY_POLICY=enabled requires at least one explicit", installer)
+        self.assertIn("per-container memory values are configured while WATCHER_MEMORY_POLICY=disabled", installer)
+        self.assertIn("MEMORY_WATCHER_CONFIGURED=0", installer)
+        self.assertIn("systemctl enable --now mdt-container-memory-inotify-watcher.service", installer)
+        self.assertIn("systemctl disable --now mdt-container-memory-inotify-watcher.service", installer)
+        self.assertIn('if [ "$MEMORY_WATCHER_CONFIGURED" = 1 ]; then', installer)
+
+    def test_memory_watcher_policy_requires_explicit_values(self) -> None:
+        base = {
+            "WATCHER_MEMORY_POLICY": "disabled",
+            "WATCHER_INTERACTIVE_MEMORY_HIGH": "-",
+            "WATCHER_INTERACTIVE_MEMORY_MAX": "-",
+            "WATCHER_BACKGROUND_MEMORY_HIGH": "-",
+            "WATCHER_BACKGROUND_MEMORY_MAX": "-",
+            "WATCHER_GATES_MEMORY_HIGH": "-",
+            "WATCHER_GATES_MEMORY_MAX": "-",
+        }
+        self.assertFalse(WIZARD.memory_relationship_errors(base))
+
+        base["WATCHER_INTERACTIVE_MEMORY_MAX"] = "2G"
+        errors = WIZARD.memory_relationship_errors(base)
+        self.assertTrue(errors)
+        self.assertEqual(errors[-1][0], "WATCHER_MEMORY_POLICY")
+        self.assertIn("WATCHER_MEMORY_POLICY=disabled", errors[-1][1])
+
+        base["WATCHER_MEMORY_POLICY"] = "enabled"
+        base["WATCHER_INTERACTIVE_MEMORY_HIGH"] = "1G"
+        self.assertFalse(WIZARD.memory_relationship_errors(base))
+
+        base["WATCHER_INTERACTIVE_MEMORY_MAX"] = "-"
+        base["WATCHER_INTERACTIVE_MEMORY_HIGH"] = "-"
+        errors = WIZARD.memory_relationship_errors(base)
+        self.assertTrue(errors)
+        self.assertEqual(errors[-1][0], "WATCHER_MEMORY_POLICY")
+        self.assertIn("requires at least one explicit", errors[-1][1])
+
+    def test_wizard_preserves_old_explicit_leaf_caps_when_policy_key_is_missing(self) -> None:
+        example = WIZARD.parse_env_file((ROOT / "host-setup.env.example").read_text())
+        existing = {
+            "WATCHER_INTERVAL": "5min",
+            "WATCHER_BUILDKIT_NAME_PATTERNS": "buildx_buildkit_*",
+            "WATCHER_INTERACTIVE_MEMORY_HIGH": "800M",
+            "WATCHER_INTERACTIVE_MEMORY_MAX": "1G",
+            "WATCHER_BACKGROUND_MEMORY_HIGH": "-",
+            "WATCHER_BACKGROUND_MEMORY_MAX": "-",
+            "WATCHER_GATES_MEMORY_HIGH": "-",
+            "WATCHER_GATES_MEMORY_MAX": "-",
+        }
+        policy_prompt_defaults = {}
+
+        def fake_walk(label, key, current, defaults, **kwargs):
+            if key == "WATCHER_MEMORY_POLICY":
+                policy_prompt_defaults[key] = current.get(key)
+            return current.get(key) or defaults.get(key, "")
+
+        with mock.patch.object(WIZARD, "walk_key", side_effect=fake_walk), \
+             mock.patch.object(WIZARD, "confirm_memory_leaf_policy", side_effect=lambda _slice, high, maximum: (high, maximum)), \
+             mock.patch.object(WIZARD, "out"):
+            values = WIZARD.step_watcher(existing, example)
+        self.assertEqual(policy_prompt_defaults["WATCHER_MEMORY_POLICY"], "enabled")
+        self.assertEqual(values["WATCHER_MEMORY_POLICY"], "enabled")
+        self.assertEqual(values["WATCHER_INTERACTIVE_MEMORY_MAX"], "1G")
+
     def test_no_baseline_clears_only_mdt_runtime_io_properties(self) -> None:
         apply_script = ROOT / "scripts" / "mdt-dev-governance-reconcile.sh"
         with tempfile.TemporaryDirectory() as directory:
@@ -927,8 +1058,26 @@ done
                 )
 
     def test_iocost_generator_identifies_the_file_target_device(self) -> None:
-        generator = ROOT.parent.parent / "scripts/debian-install-v2/tools/iocost_coef_gen.py"
+        repo = ROOT.parent.parent
+        tools = repo / "scripts/debian-install-v2/tools"
+        generator = tools / "iocost_coef_gen.py"
         source = generator.read_text()
+        built = subprocess.run(
+            [sys.executable, str(tools / "build-iocost-generator.py"), "--check"],
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            check=False,
+        )
+        self.assertEqual(built.returncode, 0, built.stderr)
+        self.assertEqual(source.splitlines()[0], "#!/usr/bin/env python3")
+        self.assertEqual(source.count("# GENERATED by tools/build-iocost-generator.py; do not edit."), 1)
+        self.assertIn("source-sha256:", source)
+        self.assertIn("patch-series-sha256:", source)
+        direct_help = subprocess.run(
+            [str(generator), "--help"], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(direct_help.returncode, 0, direct_help.stderr)
         self.assertIn(
             "probe_path = os.path.dirname(os.path.abspath(args.testfile)) if args.testfile else '.'",
             source,
@@ -936,7 +1085,30 @@ done
         self.assertIn("devname, devno = dir_to_dev(probe_path)", source)
         self.assertIn("subprocess.run(\n            ['chattr', '+C', path]", source)
         self.assertIn("filesystem does not support the optional no-COW flag", source)
-        self.assertNotIn("check_call(f'chattr +C", source)
+        self.assertIn("parents = glob.glob('/sys/block/*/' + devname)", source)
+        self.assertIn("os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)", source)
+        self.assertNotIn("shell=True", source)
+        tree = ast.parse(source)
+        resolver = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "resolve_testdev_sysfs_name"
+        )
+        namespace = {
+            "glob": mock.Mock(glob=mock.Mock(return_value=["/sys/block/vda/vda7"])),
+            "os": os,
+        }
+        exec(compile(ast.Module(body=[resolver], type_ignores=[]), str(generator), "exec"), namespace)
+        self.assertEqual(namespace["resolve_testdev_sysfs_name"]("vda7"), "vda")
+        namespace["glob"].glob.return_value = []
+        self.assertEqual(namespace["resolve_testdev_sysfs_name"]("vda"), "vda")
+        namespace["glob"].glob.return_value = ["/sys/block/vda/vda7", "/sys/block/vdb/vda7"]
+        with self.assertRaisesRegex(RuntimeError, "ambiguous whole-disk parent"):
+            namespace["resolve_testdev_sysfs_name"]("vda7")
+        install = (ROOT / "install.sh").read_text()
+        wrapper = (repo / "scripts/debian-install-v2/tools/iocost-calibrate.sh").read_text()
+        self.assertIn('tools/iocost_coef_gen.py" \\', install)
+        self.assertIn('ARGV=(python3 "$HERE/iocost_coef_gen.py")', wrapper)
 
     def test_interactive_main_smoke_writes_without_function_repr(self) -> None:
         example = ROOT / "host-setup.env.example"
@@ -968,6 +1140,7 @@ done
             )
             for bullet in (
                 "mdt-container-io-events-watcher.service",
+                "mdt-container-memory-inotify-watcher.service",
                 "DEV_IO_CAP_PCT",
                 "WATCHER_IO_CAP_PCT",
                 "Starting proposals (review before accepting)",
@@ -980,13 +1153,18 @@ done
                 "does not block",
                 "Matching and cadence",
                 "Cgroup mount safety",
+                "The shipped default is '-' for both values",
+                "install.sh leaves the memory watcher service",
+                "Per-container memory watcher service (enabled or disabled)",
+                "CIU may separately set mem_limit or MemoryMin",
+                "it does not apply per-container memory limits",
             ):
                 self.assertIn(bullet, transcript_text)
             self.assertNotIn("aggregate violations", transcript_text)
 
     def test_guard_policy_and_missing_config_fail_closed(self) -> None:
         config = GUARD.load_config(ROOT / "host-setup.env.example")
-        self.assertEqual(config.policy, "terminate")
+        self.assertEqual(config.policy, "report-only")
         self.assertTrue(config.buildkit_image)
         with self.assertRaises(GUARD.GuardError):
             GUARD.load_config(Path("/definitely/missing/mdt-host-setup.env"))
@@ -995,6 +1173,76 @@ done
             config_path.write_text("DEV_BUILDKITD_IMAGE=buildkit\nBUILDX_ACCIDENTAL_CONTAINER_POLICY=ignore\n")
             with self.assertRaises(GUARD.GuardError):
                 GUARD.load_config(config_path)
+            config_path.write_text("DEV_BUILDKITD_IMAGE=buildkit\nBUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate\n")
+            self.assertEqual(GUARD.load_config(config_path).policy, "terminate")
+
+    def test_guard_report_only_logs_unapproved_worker_without_removing_it(self) -> None:
+        info = GUARD.ContainerInfo(
+            container_id="worker-id",
+            name="buildx_buildkit_active",
+            image="moby/buildkit:buildx-stable-1-rootless",
+            cgroup_parent="system.slice",
+            labels={},
+        )
+        config = GUARD.GuardConfig("report-only", info.image)
+        with mock.patch.object(GUARD, "_docker") as docker, mock.patch("builtins.print") as output:
+            decision = GUARD.handle_container("docker", info, config)
+        docker.assert_not_called()
+        self.assertEqual(decision.status, "unapproved-buildkit-worker")
+        self.assertTrue(decision.enforce)
+        self.assertIn("REPORT-ONLY", output.call_args.args[0])
+
+    def test_guard_termination_removes_worker_only_under_explicit_policy(self) -> None:
+        info = GUARD.ContainerInfo(
+            container_id="worker-id",
+            name="buildx_buildkit_active",
+            image="moby/buildkit:buildx-stable-1-rootless",
+            cgroup_parent="system.slice",
+            labels={},
+        )
+        config = GUARD.GuardConfig("terminate", info.image)
+        completed = subprocess.CompletedProcess(["docker", "rm"], 0, "", "")
+        with mock.patch.object(GUARD, "_docker", return_value=completed) as docker, mock.patch(
+            "builtins.print"
+        ) as output:
+            decision = GUARD.handle_container("docker", info, config)
+        docker.assert_called_once_with("docker", ["rm", "-f", "worker-id"])
+        self.assertEqual(decision.status, "unapproved-buildkit-worker")
+        self.assertIn("TERMINATED", output.call_args.args[0])
+
+    def test_guard_wizard_requires_explicit_termination_confirmation(self) -> None:
+        with mock.patch.object(WIZARD, "ask_yn", return_value=False) as confirm:
+            self.assertEqual(WIZARD.confirm_guard_termination("terminate"), "report-only")
+        self.assertFalse(confirm.call_args.kwargs["default"])
+        with mock.patch.object(WIZARD, "ask_yn", return_value=True):
+            self.assertEqual(WIZARD.confirm_guard_termination("terminate"), "terminate")
+        self.assertEqual(WIZARD.confirm_guard_termination("report-only"), "report-only")
+
+    def test_wizard_requires_explicit_confirmation_for_leaf_memory_caps(self) -> None:
+        with mock.patch.object(WIZARD, "ask_yn", return_value=False) as confirm:
+            self.assertEqual(
+                WIZARD.confirm_memory_leaf_policy("interactive", "800M", "1G"),
+                ("-", "-"),
+            )
+        self.assertFalse(confirm.call_args.kwargs["default"])
+        with mock.patch.object(WIZARD, "ask_yn", return_value=True):
+            self.assertEqual(
+                WIZARD.confirm_memory_leaf_policy("interactive", "800M", "1G"),
+                ("800M", "1G"),
+            )
+        with mock.patch.object(WIZARD, "ask_yn") as confirm:
+            self.assertEqual(
+                WIZARD.confirm_memory_leaf_policy("interactive", "-", "-"),
+                ("-", "-"),
+            )
+        confirm.assert_not_called()
+
+    def test_consumer_guard_policy_examples_parse_with_shipped_env_loader(self) -> None:
+        docs = (ROOT.parent / "docs/CONSUMERS.md").read_text()
+        for policy in ("report-only", "terminate"):
+            line = f"BUILDX_ACCIDENTAL_CONTAINER_POLICY={policy}"
+            self.assertIn(line, docs)
+            self.assertEqual(GUARD.parse_env_file(line), {"BUILDX_ACCIDENTAL_CONTAINER_POLICY": policy})
 
     def test_guard_requires_identity_not_name(self) -> None:
         config = GUARD.GuardConfig("terminate", "moby/buildkit:buildx-stable-1-rootless")

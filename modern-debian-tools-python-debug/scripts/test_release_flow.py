@@ -98,6 +98,53 @@ class ReleaseFlowTests(unittest.TestCase):
             dockerfile.index("COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py"),
         )
 
+    def test_baked_container_finalizer_has_its_parser_module(self) -> None:
+        """The finalizer runs from /usr/local/bin and imports its sibling module."""
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        script_copy = "COPY scripts/finalize_container_environment.py /usr/local/bin/finalize_container_environment.py"
+        helper_copy = "COPY scripts/mdt_cli.py /usr/local/bin/mdt_cli.py"
+        self.assertIn(script_copy, dockerfile)
+        self.assertIn(helper_copy, dockerfile)
+        self.assertLess(dockerfile.index(script_copy), dockerfile.index(helper_copy))
+
+    def test_host_governance_readme_links_to_reasoning_and_consumer_steps(self) -> None:
+        readme = (ROOT / "README.md").read_text()
+        design = (ROOT / "docs/DESIGN-GUIDE.md").read_text()
+        consumers = (ROOT / "docs/CONSUMERS.md").read_text()
+        self.assertIn("docs/CONSUMERS.md#host-commands-from-an-mdt-devcontainer", readme)
+        self.assertIn("docs/DESIGN-GUIDE.md#host-namespace-access", readme)
+        self.assertIn("## Host namespace access", design)
+        self.assertIn("## Host commands from an MDT devcontainer", consumers)
+        self.assertIn("mdt doctor` also starts a privileged host helper", consumers)
+        self.assertIn("report-only", readme)
+        self.assertIn("defaults to `report-only`", design)
+        self.assertIn("BUILDX_ACCIDENTAL_CONTAINER_POLICY=report-only", consumers)
+        self.assertIn("BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate", consumers)
+        self.assertIn("stops and disables the guard", consumers)
+
+    def test_memory_watcher_policy_docs_and_example_match_the_host_parser(self) -> None:
+        readme = (ROOT / "README.md").read_text()
+        design = (ROOT / "docs/DESIGN-GUIDE.md").read_text()
+        consumers = (ROOT / "docs/CONSUMERS.md").read_text()
+        self.assertIn("docs/DESIGN-GUIDE.md#per-container-memory-policy", readme)
+        self.assertIn("docs/CONSUMERS.md#per-container-memory-watcher", readme)
+        self.assertIn("## Per-container memory policy", design)
+        self.assertIn("WATCHER_MEMORY_POLICY=disabled", design)
+        self.assertIn("WATCHER_MEMORY_POLICY=enabled", design)
+        self.assertIn("## Per-container memory watcher", consumers)
+
+        example = consumers.split("```dotenv\n", 1)[1].split("```", 1)[0]
+        spec = importlib.util.spec_from_file_location(
+            "mdt_host_setup_wizard_docs", ROOT / "host-setup/mdt-host-setup-wizard.py"
+        )
+        assert spec and spec.loader
+        wizard = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = wizard
+        spec.loader.exec_module(wizard)
+        values = wizard.parse_env_file(example, strict=True)
+        self.assertEqual(values["WATCHER_MEMORY_POLICY"], "enabled")
+        self.assertFalse(wizard.memory_relationship_errors(values))
+
     def test_cockpit_declares_headless_vm_tooling_without_a_vm_daemon(self) -> None:
         package_names = {
             line.split("#", 1)[0].strip()

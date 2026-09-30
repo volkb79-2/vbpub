@@ -73,6 +73,66 @@ It sets `shutdownAction: "none"` so closing the attached Dev Containers session 
 container available. Adoption details are in the
 [consumer guide](CONSUMERS.md#codex-profile-state-and-container-lifetime).
 
+## BuildKit guard policy
+
+The guard defaults to `report-only` because a reserved Buildx worker may be
+legitimate during a development build or image rebuild. Automatically
+removing it can abort work during export, which Docker reports as an RPC
+unexpected EOF. The report mode leaves the worker available and records the
+identity mismatch. Operators who intentionally want the guard to remove
+unapproved workers can select `terminate`; the wizard requires a second
+confirmation because this action stops a live container.
+An existing `terminate` value is not confirmation for a later plain install:
+the installer stops and disables the guard and requires the wizard to confirm
+termination again.
+
+## Per-container memory policy
+
+Parent slices already bound the combined tier, while callers such as CIU may
+set their own container memory limit or `MemoryMin` floor. An unconditional
+1G leaf cap can stop an otherwise valid workload and may conflict with that
+floor. The inotify watcher therefore ships with both per-container memory
+values set to `-` for each tier. Operators can configure a leaf cap where a
+workload needs one, then explicitly confirm enabling it in the wizard; the
+wizard keeps it disabled when that confirmation is declined. Any configured
+cap must remain compatible with the other memory properties on that scope.
+`WATCHER_MEMORY_POLICY=disabled` is the shipped setting and requires all six
+leaf values to be `-`; `WATCHER_MEMORY_POLICY=enabled` requires at least one
+configured value. The installer rejects mismatched policy/value combinations
+instead of ignoring configured values or starting an empty watcher. During
+upgrades, if an older host config has leaf values but no policy key, the wizard
+carries those values forward for review and confirmation.
+
+## Shared io.cost generator
+
+MDT and `debian-install-v2` use one generated copy of the Linux kernel's
+`iocost_coef_gen.py`. The pristine vendor file stays byte-for-byte intact;
+explicit patches carry the local LVM, file-target, no-COW, and partition
+sysfs behavior. The generator records hashes for its source and patch series,
+and `tools/build-iocost-generator.py --check` verifies the checked-in runtime
+artifact. This keeps calibration behavior aligned without copying one
+consumer's local fork over another. MDT always uses a persistent file target
+on the Docker-data filesystem; automated scratch-partition setup remains a
+separate reviewed change.
+
+The file target is explicitly disposable benchmark scratch. Calibration
+rewrites its contents, including when an existing exact-size file is reused.
+The generator refuses to replace a symlink, non-regular file, multiply linked
+file, or file with a different size, so changing a target's shape requires an
+explicit operator action instead of silently unlinking the prior path.
+
+## Host namespace access
+
+An MDT devcontainer cannot inspect or change the host's cgroup tree through
+its private cgroup namespace. `host-escape` provides one documented route for
+host diagnostics: it starts a privileged helper and enters the selected host
+process's mount, UTS, network, IPC, and cgroup namespaces. This keeps operators
+from improvising several subtly different escape commands, but it is not a
+sandbox: every command runs with host-root authority. Since that helper can
+touch the host cgroup mount namespace, it runs `mdt doctor` on exit to restore
+required cgroup2 flags if needed; `mdt doctor --check-only` provides a
+read-only check.
+
 ## Release relationship
 
 The `release` run-gate lane contains the image release-flow tests and is the

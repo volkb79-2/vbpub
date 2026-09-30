@@ -519,6 +519,48 @@ def validate_missing_bind_source_policy(value: str) -> str | None:
     return None
 
 
+def validate_watcher_memory_policy(value: str) -> str | None:
+    if value not in ("enabled", "disabled"):
+        return "choose exactly 'enabled' or 'disabled'"
+    return None
+
+
+def confirm_guard_termination(policy: str) -> str:
+    """Require an explicit yes before the host guard may remove workers."""
+    if policy != "terminate":
+        return policy
+    out(
+        "The terminate policy can remove an active docker-container Buildx worker "
+        "and interrupt its build. The default remains report-only."
+    )
+    if ask_yn(
+        "Explicitly allow the host guard to terminate unapproved Buildx workers?",
+        default=False,
+        default_source="no keeps report-only",
+    ):
+        return "terminate"
+    return "report-only"
+
+
+def confirm_memory_leaf_policy(
+    slice_name: str, high: str, maximum: str
+) -> tuple[str, str]:
+    """Require an explicit yes before enabling per-container memory caps."""
+    if not any(_memory_value_configured(value) for value in (high, maximum)):
+        return high, maximum
+    out(
+        f"The {slice_name} pair will apply per-container memory controls to new "
+        "Docker scopes that have no explicit Docker memory limit."
+    )
+    if ask_yn(
+        f"Enable this MDT per-container memory policy for {slice_name}?",
+        default=False,
+        default_source="no keeps per-container memory and swap uncapped",
+    ):
+        return high, maximum
+    return "-", "-"
+
+
 def _memory_value_configured(value: str) -> bool:
     """Return whether an env value represents an actual memory directive."""
     return bool(value and value not in ("-", "auto"))
@@ -590,6 +632,22 @@ def memory_relationship_errors(values: dict[str, str]) -> list[tuple[str, str]]:
                     f"MemoryMax={values[max_key]}; re-enter the pair in that order",
                 )
             )
+    memory_policy = values.get("WATCHER_MEMORY_POLICY", "disabled")
+    configured_watcher_memory = any(
+        _memory_value_configured(values.get(key, ""))
+        for _, high_key, max_key in WATCHER_MEMORY_PAIR_SPECS
+        for key in (high_key, max_key)
+    )
+    if memory_policy == "disabled" and configured_watcher_memory:
+        errors.append((
+            "WATCHER_MEMORY_POLICY",
+            "WATCHER_MEMORY_POLICY=disabled requires all WATCHER_*_MEMORY_HIGH/MAX values to be '-'",
+        ))
+    elif memory_policy == "enabled" and not configured_watcher_memory:
+        errors.append((
+            "WATCHER_MEMORY_POLICY",
+            "WATCHER_MEMORY_POLICY=enabled requires at least one explicit per-container memory value",
+        ))
     return errors
 
 
@@ -708,6 +766,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_BUILDKITD_MAX_PARALLELISM": validate_positive_int,
         "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
         "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY": validate_missing_bind_source_policy,
+        "WATCHER_MEMORY_POLICY": validate_watcher_memory_policy,
         "DOCKER_DAEMON_CGROUP_PARENT": validate_cgroup_parent,
         "DOCKER_SCOPE_BACKSTOP_MEMORY_MAX": validate_positive_size,
         "DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX": validate_positive_size,
@@ -1518,7 +1577,7 @@ def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]
     out("\n-- a. storage measurement setup --")
     out("Measurement:")
     for bullet in (
-        "Official kernel `io.cost` matrix: sequential and random read/write throughput.",
+        "Shared Linux-derived `io.cost` matrix generator: sequential and random read/write throughput.",
         "The benchmark writes results used to set `io.max` ceilings; it does not enable `io.cost`.",
         "The persistent target file stays on the Docker-data filesystem/device.",
         "Results are reusable only while target, filesystem, device identity, topology, and kernel/generator match.",
@@ -1762,7 +1821,7 @@ def step_io_baseline_start(
         return baseline_env, testfile_text, None
     if shutil.which("fio") is None or shutil.which("pv") is None:
         out(
-            "The official generator needs `fio` and `pv`, which are not both installed. "
+            "The shared coefficient generator needs `fio` and `pv`, which are not both installed. "
             "On a fresh host, install.sh installs them after this candidate is validated; "
             f"run the benchmark later with `sudo {io_baseline_script}` in a quiet window."
         )
@@ -2436,7 +2495,8 @@ def step_slice_first_resources(
             out("BuildKit-specific controls:")
             for bullet in (
                 "The host-managed rootless worker is the only approved normal worker.",
-                "Accidental docker-container workers: terminate removes them; report-only logs them.",
+                "Report-only logs unapproved docker-container workers and leaves them running.",
+                "Terminate removes those workers and can interrupt a build; choosing it needs a second explicit confirmation.",
             ):
                 out(f"- {bullet}", hang="  ")
             values["DEV_BUILDKITD_IMAGE"] = walk_key(
@@ -2456,11 +2516,12 @@ def step_slice_first_resources(
                 proposal=str(max(1, min(4, host_nproc))),
                 validate=validate_positive_int,
             )
-            values["BUILDX_ACCIDENTAL_CONTAINER_POLICY"] = walk_key(
+            policy = walk_key(
                 "  accidental Buildx policy (terminate or report-only)",
                 "BUILDX_ACCIDENTAL_CONTAINER_POLICY", cfg_current, example_defaults,
                 validate=validate_guard_policy,
             )
+            values["BUILDX_ACCIDENTAL_CONTAINER_POLICY"] = confirm_guard_termination(policy)
     _reprompt_memory_constraints(avail_kib, values)
     return values
 
@@ -2468,14 +2529,16 @@ def step_slice_first_resources(
 def step_watcher(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> dict[str, str]:
-    """Configure the in-slice memory defaults and the out-of-tree Buildx match."""
+    """Configure the per-container memory service and Buildx worker match."""
     values: dict[str, str] = {}
     out("\n-- g. reactive container safeguards --")
     out("Purpose and precedence:")
     for bullet in (
-        "The inotify memory watcher applies defaults to every unlabelled Docker scope it sees under interactive, background, and gates.",
-        "Each of those slices has its own MemoryHigh/MemoryMax pair below; a container's explicit docker run --memory still wins.",
-        "The periodic reconciliation service remains the backstop when inotify is unavailable or misses an event.",
+        "The inotify memory watcher can apply a per-container MemoryHigh/MemoryMax pair under interactive, background, and gates.",
+        "The shipped default is '-' for both values, so no extra leaf memory or swap cap is applied; each parent slice still bounds its tier.",
+        "When all six values are '-', install.sh leaves the memory watcher service disabled.",
+        "A Docker mem_limit is authoritative and makes this watcher leave that container alone. CIU may separately set mem_limit or MemoryMin; keep any explicit leaf settings compatible.",
+        "The periodic reconciliation service manages IO policy and cgroup2 mount flags; it does not apply per-container memory limits.",
     ):
         out(f"- {bullet}", hang="  ")
     out("Matching and cadence:")
@@ -2497,29 +2560,68 @@ def step_watcher(
         "WATCHER_BUILDKIT_NAME_PATTERNS", cfg_current, example_defaults,
         validate=validate_watcher_patterns,
     )
-    out("Per-container memory pairs (queried High before Max):")
-    for slice_name, prefix, reason in (
-        ("interactive", "WATCHER_INTERACTIVE", "IDE and devcontainer leaf ceiling"),
-        ("background", "WATCHER_BACKGROUND", "ordinary stack/test leaf ceiling"),
-        ("gates", "WATCHER_GATES", "one disposable lane; keep enough headroom for a gate"),
-    ):
-        out(f"{slice_name}: {reason}", indent="  ")
-        high_key = f"{prefix}_MEMORY_HIGH"
-        max_key = f"{prefix}_MEMORY_MAX"
-        values[high_key] = walk_key(
-            f"  {slice_name} per-container MemoryHigh (optional; '-' = no directive)",
-            high_key, cfg_current, example_defaults,
-            validate=validate_optional_positive_size, allow_empty_token=True,
+    policy_prompt_config = dict(cfg_current)
+    if "WATCHER_MEMORY_POLICY" not in policy_prompt_config:
+        # Preserve pre-policy installs' explicit leaf caps during upgrade.
+        # They are user configuration, not a default to erase. The operator
+        # still sees and reconfirms each value below.
+        legacy_caps_configured = any(
+            _memory_value_configured(cfg_current.get(key, ""))
+            for _slice_name, high_key, max_key in WATCHER_MEMORY_PAIR_SPECS
+            for key in (high_key, max_key)
         )
-        values[max_key] = walk_key(
-            f"  {slice_name} per-container MemoryMax (optional; '-' = no directive)",
-            max_key, cfg_current, example_defaults,
-            validate=validate_optional_positive_size, allow_empty_token=True,
+        if legacy_caps_configured:
+            policy_prompt_config["WATCHER_MEMORY_POLICY"] = "enabled"
+    memory_policy = walk_key(
+        "Per-container memory watcher service (enabled or disabled)",
+        "WATCHER_MEMORY_POLICY", policy_prompt_config, example_defaults,
+        validate=validate_watcher_memory_policy,
+    )
+    if memory_policy == "disabled":
+        values["WATCHER_MEMORY_POLICY"] = "disabled"
+        for _slice_name, high_key, max_key in WATCHER_MEMORY_PAIR_SPECS:
+            values[high_key] = "-"
+            values[max_key] = "-"
+        out("  disabled: all six per-container memory values will be written as '-'.")
+    else:
+        out("Per-container memory pairs (queried High before Max; '-' means no leaf cap):")
+        for slice_name, prefix, reason in (
+            ("interactive", "WATCHER_INTERACTIVE", "IDE and devcontainer leaf ceiling"),
+            ("background", "WATCHER_BACKGROUND", "ordinary stack/test leaf ceiling"),
+            ("gates", "WATCHER_GATES", "one disposable lane; keep enough headroom for a gate"),
+        ):
+            out(f"{slice_name}: {reason}", indent="  ")
+            high_key = f"{prefix}_MEMORY_HIGH"
+            max_key = f"{prefix}_MEMORY_MAX"
+            values[high_key] = walk_key(
+                f"  {slice_name} per-container MemoryHigh (optional; '-' = no directive)",
+                high_key, cfg_current, example_defaults,
+                validate=validate_optional_positive_size, allow_empty_token=True,
+            )
+            values[max_key] = walk_key(
+                f"  {slice_name} per-container MemoryMax (optional; '-' = no directive)",
+                max_key, cfg_current, example_defaults,
+                validate=validate_optional_positive_size, allow_empty_token=True,
+            )
+            values[high_key], values[max_key] = confirm_memory_leaf_policy(
+                slice_name,
+                values[high_key],
+                values[max_key],
+            )
+        has_memory_policy = any(
+            _memory_value_configured(values.get(key, ""))
+            for _slice_name, high_key, max_key in WATCHER_MEMORY_PAIR_SPECS
+            for key in (high_key, max_key)
         )
+        if has_memory_policy:
+            values["WATCHER_MEMORY_POLICY"] = "enabled"
+        else:
+            values["WATCHER_MEMORY_POLICY"] = "disabled"
+            out("  no memory pair was accepted; the memory watcher service remains disabled.")
     out("Per-container swap:")
     for bullet in (
-        "Not prompted here: the watcher derives it from the matched slice's live swap-only ceiling.",
-        "It applies DEV_SWAP_CASCADE_PCT once more; if the slice is unlimited, no percentage is invented.",
+        "Not prompted here: when a per-container memory pair is enabled, the watcher derives swap from the matched slice's live swap-only ceiling.",
+        "It applies DEV_SWAP_CASCADE_PCT once more; if both memory values are '-', no leaf swap cap is applied. If the slice is unlimited, no percentage is invented.",
     ):
         out(f"- {bullet}", hang="  ")
     return values
