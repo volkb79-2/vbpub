@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import types
 
 import pytest
@@ -169,6 +170,54 @@ def _two_events_at(index, event):
     return _insert(index, event, dict(event))
 
 
+def _verdict_bytes(text: bytes):
+    def mutate(env):
+        env.verdict.write_bytes(text)
+        return {}
+
+    return mutate
+
+
+def _excluded(env, name: str):
+    """A worktree path the repository's own committed ``.gitignore`` hides, so the
+    dirty-worktree refusal in front of the lane binding stays quiet. The commit moves
+    HEAD; the lane binding is checked before the verdict and progress bind to it."""
+    (env.root / ".gitignore").write_text(f"{name}\n")
+    for arguments in (("add", ".gitignore"), ("commit", "-q", "-m", "ignore")):
+        subprocess.run(["git", "-C", str(env.root), *arguments], check=True, capture_output=True)
+    env.head = subprocess.run(
+        ["git", "-C", str(env.root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    return env.root / name
+
+
+def _lane_symlink(env):
+    link = _excluded(env, "ignored-link.toml")
+    link.symlink_to(env.root / "assay.toml")
+    return {"head": env.head, "extra": ("--file", str(link))}
+
+
+def _lane_outside(env):
+    return {"extra": ("--file", str(env.tmp_path / "outside.toml"))}
+
+
+def _lane_untracked(env):
+    untracked = _excluded(env, "ignored.toml")
+    untracked.write_text("schema_version = 2\n")
+    return {"head": env.head, "extra": ("--file", str(untracked))}
+
+
+def _lane_edited(env):
+    """Edited after the commit but hidden from ``git status`` by skip-worktree."""
+    lane = env.root / "assay.toml"
+    subprocess.run(
+        ["git", "-C", str(env.root), "update-index", "--skip-worktree", "assay.toml"],
+        check=True, capture_output=True,
+    )
+    lane.write_text(lane.read_text() + "\n# edited after the commit\n")
+    return {}
+
+
 RESUME = {"event": "resume", "resumed_total": 0, "rejected_total": 0, "rejudged_total": 0}
 SHARD = {"event": "shard", "shard_index": 0, "shard_count": 1, "selected_total": 2}
 MERGED = {"event": "resume_merged", "resumed_total": 0}
@@ -275,6 +324,21 @@ CASES = (
         "end buckets disagree with verified verdict outcomes",
     ),
     ("terminal-exit-code-not-integer", _set(6, exit_code="0"), "verdict_written event has no integer exit_code"),
+    # -- field helpers reached through a candidate event -----------------------
+    ("elapsed-not-a-number", _set(3, elapsed_seconds="x"), "candidate elapsed_seconds must be a number"),
+    ("elapsed-negative", _set(3, elapsed_seconds=-1), "candidate elapsed_seconds must be finite and non-negative"),
+    ("phase-seconds-shape", _set(3, phase_seconds={"a": 1}), "candidate phase_seconds must be null or an object"),
+    ("emitted-at-empty", _set(3, emitted_at=""), "candidate emitted_at must be a non-empty ISO timestamp"),
+    ("emitted-at-not-iso", _set(3, emitted_at="not-a-date"), "candidate emitted_at is not an ISO timestamp"),
+    ("emitted-at-no-timezone", _set(3, emitted_at="2026-09-27T12:00:10"), "candidate emitted_at must include a timezone"),
+    # -- verdict bytes ---------------------------------------------------------------
+    ("verdict-not-utf8", _verdict_bytes(b"\xff\xfe"), "verdict artifact is not UTF-8"),
+    ("verdict-fails-verification", _verdict_bytes(b'{"schema_version": 1}'), "invalid Assay verdict"),
+    # -- lane file binding -------------------------------------------------------------
+    ("lane-file-symlink", _lane_symlink, "lane file is a symlink"),
+    ("lane-file-outside-worktree", _lane_outside, "lane file must be inside the expected worktree"),
+    ("lane-file-untracked", _lane_untracked, "lane file is not a single committed path"),
+    ("lane-file-edited", _lane_edited, "lane file bytes differ from the expected committed tree"),
 )
 
 
@@ -287,7 +351,7 @@ def test_every_campaign_refusal_is_reachable(tmp_path, monkeypatch, case_id, mut
     )
     options = {"verdict": verdict, "command_exit": 0, "progress": progress, **mutate(env)}
     code, out, _err = _invoke(
-        root, head, options.pop("verdict"), options.pop("progress"), **options
+        root, options.pop("head", head), options.pop("verdict"), options.pop("progress"), **options
     )
     document = json.loads(out)
     _validate(document)
