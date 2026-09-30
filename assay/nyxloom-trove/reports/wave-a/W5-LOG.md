@@ -10,7 +10,9 @@ Base `c8e6b783` (W4 reviewed head `21a7b1f0` merged with landing: W3, W1, W2, W6
 | 0 | `2faa6426` | Step 0 integration fix: `tests/core/test_import_contracts.py` allows `__init__`-free `*_support.py` helpers at the tests root (CD23 amended; W4+W6 integration) |
 | 1 | `a0cca9db` | Fixtures (schema, 21 probes, matrix, both scripts), `qualify_sql.py`, `gate/tests/test_qualify_sql.py`, gate wiring + T7, adapter test rewrites, stale refs, dstdns corpus removed (after the class map) |
 | 2 | `d2143b06` | Docs (README, DESIGN-GUIDE §11, CONSUMERS), decision notes A-280/A-286/A-289, backlog B126/B132, five MANIFEST lines |
-| 3 | (this checkpoint) | W5-LOG, W5-CONTINUATION |
+| 3 | `c45d0e1b` | W5-LOG, W5-CONTINUATION (checkpoint 1) |
+| 4 | `98195e04` | CD50 shared-host opt-in (gate, harness, tests G1-G4/S1-S2, docs, CD50 entry) |
+| 5 | (this commit) | Work 0 result (BLOCKED, QUESTION 1), W5-REPORT §Step 0, W5-CONTINUATION (checkpoint 2) |
 
 ## Step 0 (integration fix) checks
 
@@ -47,7 +49,7 @@ Done before any `git rm`: exactly 13 classes, counts 38/36/28/11/20/2/12/1/11/1/
 | T5 container mechanics | all stubbed-`_run` tests green (exact `docker run` argv, digest inspect, rm last on failsafe/QualificationError/SIGTERM/df-timeout, Conflict -> no rm, image absent, no docker, host busy, sentinel handler restored) | BREAK: `main` installs `lambda *_: None` instead of `sys.exit(3)`: `test_sigterm_becomes_exit_3_and_the_container_is_still_removed_last` RED; reverted |
 | T6 dstdns-free tree | no token in tracked `src tests gate tools` (minus `tests/fixtures/verdicts/`) | negative is a test: a token planted in a tmp `.sh` is found; a bare `dstdns` stays legal |
 | T7 gate wiring | green path prints `ASSAY_GATE_PHASE=sql-qualified` once between tester and finisher; red tester never reaches the harness; harness exit 1, marker+exit 1, marker+extra line, exit 3 (gate exit 3, diagnostic, no receipt/COMPLETE), clone HEAD != commit; trap issues `docker rm -f -v <name>` (name read from the stub log) and removes the scratch | BREAK: deleted `[[ $rc -eq 0 ]] \|\| die`: `test_a_failing_harness_stops_the_gate...` and `test_the_marker_with_a_non_zero_exit_is_still_a_failure` RED; restored |
-| R1 CLI + witness | PENDING (needs the container) | PENDING: `--fixture-root` copy with `tests/K05.sql` = `SELECT 1;` -> exit 1 naming K05 |
+| R1 CLI + witness | BLOCKED by the K18/K20 probe contradiction (QUESTION 1); the baseline of the committed probes exits 1 | BLOCKED, not run: `--fixture-root` copy with `tests/K05.sql` = `SELECT 1;` -> exit 1 naming K05 |
 | R2 gate log order | PENDING (controller's gate run) | none (T7 covers it) |
 
 ## CD50 -- shared-host opt-in (operator 2026-09-30)
@@ -82,9 +84,46 @@ The lane child is launched at `run_gate.py:8147` (`subprocess.Popen(argv, cwd=..
 
 ## Containers started
 
-None so far. Host busy since the first `docker ps` of this session (about 08:18 UTC): `run-gate-vbpub-mutation-3747550-1790644029`
-(not started by W5, "Up 7-8 hours"). Polling every 2 minutes with a background loop; the 3-hour wait ends 11:15 UTC.
-No `run-gate-assay-sql-*` container existed.
+The first session (2026-09-29) started none: the host was busy with another session's `run-gate-vbpub-mutation-*` container.
+The successor session (2026-09-30, CD50 permission: other projects' `run-gate-*` containers may run; one W5 container at a time; a
+`docker ps --no-trunc` check before every start showed no `run-gate-assay-sql-*`) started three, all with
+`--cgroup-parent=dev-gates.slice`, `--cpus 1 --memory 512m`, never pulled, each removed by its exact name via the harness context
+manager (`docker rm -f -v <name>`); afterwards `docker ps -a` showed no `run-gate-assay-sql-*`. Each start printed
+`ASSAY_SQL_SHARED_HOST=run-gate-vbpub-mutation-1265864-1790724554` (another session's cmru mutation gate).
+
+| Container | Started (UTC) | Removed (UTC) | Purpose |
+|---|---|---|---|
+| `run-gate-assay-sql-1449332-1790732244` | 01:37:24 | 01:38:25 | Work 0 measurement, committed probes |
+| `run-gate-assay-sql-1461066-1790732346` | 01:39:06 | 01:39:14 | diagnostic: raw psql of K18/K19/K20 (SQLSTATE) |
+| `run-gate-assay-sql-1463321-1790732378` | 01:39:38 | 01:41:24 | Work 0 measurement, scratch-copy probes (`OR restrict_violation`) |
+
+## Work 0 result (2026-09-30): BLOCKED -- a probe fails unmutated
+
+Full table and cause in `W5-REPORT.md` §Step 0. Summary: PostgreSQL 18.6 reports a violated `ON DELETE RESTRICT` as SQLSTATE 23001
+(`restrict_violation`), not 23503; probes `K18.sql` and `K20.sql` catch only `foreign_key_violation`, so the unmutated baseline exits 1
+with `ASSAY_SQL_FAILED=K18,K20`. Buckets with the committed probes: 21 killed rows derive `killed`, K09 `equivalent`, K02/K25 raise
+(no bucket, because exit is 1 not 0), witness `FAIL COMMAND_FAILED`. A scratch copy of the fixtures with `OR restrict_violation` added
+to those two probes makes every measurement match the matrix (24/24 buckets, O4 residue second apply exit 3, M11 crashed, witness
+`FAIL MUTANTS_SURVIVED` with `check_witness_verdict` ok), peak tmpfs 22% (max allowed 50%). No repo fixture was changed: the probes are
+verbatim by CD28 and hash-pinned.
+
+## QUESTIONS for the carver
+
+1. **K18/K20 probes (blocking).** Authorize changing `gate/python/fixtures/sql/tests/K18.sql` and `K20.sql` from
+   `EXCEPTION WHEN foreign_key_violation THEN RETURN;` to `EXCEPTION WHEN foreign_key_violation OR restrict_violation THEN RETURN;`
+   (the only change measured to make the baseline green and all 24 rows match)? It changes the pinned concatenated-probes sha256
+   (`12f564d9...0ce0`, in `verify_fixture_hashes` and its T0 test and in the brief's probe text) and needs a matching brief fix.
+   Conservative reading applied: not done. After the decision the remaining work is mechanical: update the hash pin and T0 test,
+   capture the witness with `--witness-out`, review its 24 rows, R1 rerun and R1 break, re-add the three witness tests
+   (`<scratchpad>/w5/pending-witness-tests.py`), the three serial test runs, `READY-FOR-GATE`.
+2. **B133/B132 note.** The `ON DELETE RESTRICT` SQLSTATE is a PostgreSQL fact relevant to B132 (hazard-construct probe): a probe that
+   only catches `foreign_key_violation` misses `RESTRICT`. Filing it there is left to the carver.
+
+## Environment note (not B134)
+
+`gate/tests/test_dependency_purity.py::test_the_installed_analyze_command_runs_from_the_one_wheel` fails when the shell exports
+`FORCE_COLOR=3` (Python 3.14 argparse then colours `assay analyze --help`, and the test looks for the plain text
+`usage: assay analyze`). It passes with `env -u FORCE_COLOR`. Not caused by W5; all runs below use `env -u FORCE_COLOR`.
 
 ## Deviations
 
@@ -111,7 +150,14 @@ No `run-gate-assay-sql-*` container existed.
   non-zero exit is real (CD29).
 * The pyflakes lint phase covers `gate/tests/test_qualify_sql.py` (passes locally through `test_the_shipped_source_tree_is_pyflakes_clean`).
 
+## Test runs at the CD50 head (serial, `env -u FORCE_COLOR nice -n 19 ionice -c3`, each once)
+
+* `gate/tests`: 365 passed, 11 skipped, 0 failed.
+* `tests`: 5436 passed, 1 skipped, 1 failed: only the known-red B134 `test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused`.
+* `analysis/tests`: 224 passed.
+* The witness tests (three) are not re-added yet (they need the witness file).
+
 ## Status
 
-CHECKPOINT (not READY-FOR-GATE): the container-dependent steps (Work 0 measurement, Work 5 CLI runs, the committed witness) are not done
-because the host stayed busy. See `W5-CONTINUATION.md`.
+BLOCKED (not READY-FOR-GATE): CD50 is implemented and committed; Work 0 ran and found the K18/K20 probe contradiction (QUESTION 1).
+The witness, the Work 5 CLI runs and the witness tests wait for the carver's answer. See `W5-CONTINUATION.md`.
