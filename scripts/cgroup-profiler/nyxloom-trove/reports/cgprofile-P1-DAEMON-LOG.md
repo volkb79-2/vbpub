@@ -1361,3 +1361,25 @@ candidate. No replacement R2 or full gate is complete. The operator now
 authorizes provisional merge after fresh review and short-gate acceptance;
 replacement R2/full gate proceed in a separate attached CIU worktree and
 remain mandatory for release/shipment. Backport and rejudge any fixes.
+
+### 30. Current candidate and attached-tree policy (2026-09-30)
+
+The review candidate is now based on current main `8730098d` at branch
+`rg55-p1-release-review-20260930`. Exact clean tree `80263df6` passed
+registered R0/R1 (1,391 tests; 100% line and branch coverage) and R3 (7/7
+canaries rejected); separate `.run-gate/history.json` rows record PASS/exit 0
+on that SHA. The current handoff/evidence commit changes the tree, so those
+receipts must be repeated after the checkpoint commit. The old 125/125-killed
+R2 on `4e5ff2d2` is stale for the current candidate. No full gate or current-
+tree R2 exists; both remain mandatory before release, but may follow a
+provisional merge under RW-381.
+
+Keep any CIU-managed checkout attached to its registered branch. For an
+exact-tree assay campaign, leave that branch pinned and quiet for the full
+run/resume; make repairs in a separate worktree. The detached P6 checkout
+`.worktrees/rg55-p6-r2-ciu` is clean at `aae66356`, while its recorded branch
+is free at `4392bece`; no matching run-gate/Assay process or P6 mutation
+container was found. Its reflog records a direct checkout to the SHA on
+2026-09-24, but cannot identify the invoking session. CIU's source contains no
+detach operation. Restore the recorded branch before the next CIU lifecycle
+command; do not edit the identity record.

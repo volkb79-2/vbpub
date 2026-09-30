@@ -1,21 +1,26 @@
 # cgprofile-P1-DAEMON — adversarial review handoff (RG-55 wave, package P1)
 
-**Reviewer:** a genuinely fresh Sol xhigh session, never a fork of the
-implementer or controller. Verify the actual route from session metadata; do
-not infer it from this handoff. **Your job is to BREAK this before merge.**
-Three rounds maximum. Fix-verification rounds resume your same live session;
-if it is gone, the controller seeds a fresh one with all prior rounds. The
-operator authorizes you to make and commit scoped fixes in this isolated P1
-worktree. You may not merge, release, tag, publish, install, or start/stop the
-main daemon. Records:
+**Reviewer:** a genuinely fresh Sol xhigh session, not a fork of the
+implementer or controller. The caller selects and verifies the route from the
+invocation/session metadata; do not ask the reviewer to attest its own route.
+**Your job is to BREAK this before provisional merge.** This is a new review
+cycle: historical rounds 1–3 reviewed earlier trees. Record new rounds as
+round4, round5, and round6 (three-round cap). Fix-verification resumes the
+same live reviewer; if it is gone, the controller seeds a fresh reviewer with
+all prior review records. The operator authorizes scoped fixes on this
+isolated branch. You may not merge, release, tag, publish, install, or
+start/stop the main daemon. Records:
 `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round<n>.md`.
 
-Branch `rg55-p1-private-ns`, worktree
-`/workspaces/vbpub/.worktrees/rg55-p1-private-ns`, project dir
-`scripts/cgroup-profiler/`. At dispatch the controller supplies the exact
-current `main` base and committed P1 candidate tip. Review the FULL diff
-`<base>...<tip>` — every file, every type — and verify the actual git state
-before editing.
+Branch `rg55-p1-release-review-20260930`, worktree
+`/workspaces/vbpub/.worktrees/rg55-p1-release-review-20260930`, project dir
+`scripts/cgroup-profiler/`. The candidate was based on main
+`8730098d0a8205bb398e60028e799b4ef7b18835`; the controller supplies the exact
+review tip after the handoff/evidence commit and final short gates. Verify the
+worktree is clean and HEAD is that exact tip before reviewing. Review the FULL
+diff `8730098d0a8205bb398e60028e799b4ef7b18835...<tip>` — every file, every
+type. If main advances before dispatch, the controller must first reconcile
+the candidate and rerun the short gates.
 
 ## Phase 1 — BLIND (before any LOG/REPORT/BRIEF)
 
@@ -26,7 +31,7 @@ Read, in this order: the plan of record
 `fixtures/rg55/README.md`, the controller log's Rulings section
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`
 — RW-3, RW-7, RW-9, RW-11, RW-13..RW-16, RW-19, RW-21, RW-23,
-  RW-47, RW-48, and RW-318..RW-328 bind this package), the
+  RW-47, RW-48, RW-318..RW-328, RW-381..RW-385 bind this package), the
 implementer handoff (`cgprofile-P1-DAEMON-HANDOFF.md`, what was asked), then
 the diff itself — `lib/summary.py`, `lib/subtree.py`, `lib/damon.py`,
 `lib/serve.py`, `lib/store.py` changes, `cgprofile.py`, the shim, the
@@ -94,17 +99,28 @@ each claim against what you found; list claims you could not verify.
    `run-gate-project/nyxloom-trove/fixtures/rg55/`.
 9. **Rulings honored.** RW-3 one-liner present; RW-13/RW-15/RW-16 as ruled;
    RW-19/RW-21/RW-23/RW-47/RW-48/RW-318..RW-328 recorded and reflected in
-   code/tests and the exact gate-launch evidence; the prior P1 R2 terminal
-   is `BUDGET_EXCEEDED/CANDIDATE_HUNG`, not a passing mutation result;
-   the R2/R3 `resources.cpus = "3"` declarations must produce
+   code/tests and exact gate-launch evidence. Prior P1 R2 results are
+   tree-specific: `1908316b` ended `BUDGET_EXCEEDED/CANDIDATE_HUNG`, while
+   `4e5ff2d2` passed 125/125; neither is current-candidate evidence. The
+   R2/R3 `resources.cpus = "3"` declarations must produce
    `NanoCpus=3000000000` on their live gate containers. CP-4..CP-7 entries
-   must be real and honest. Read `.assay/verdict-r2.json`
-   separately and reconcile every survivor with REPORT's concrete
-   disposition; in particular, independently attack the focused oracle for
-   `lib/summary.py:214` and the four claimed equivalents at
-   `lib/serve.py:626,704` and `lib/summary.py:173,177`.
-10. **Docs.** README "Running the daemon", ATTACH-GUIDE lane section,
-    DESIGN.md tier story — accurate to the code, not aspirational.
+   must be real and honest. Read `.assay/verdict-r2.json` separately when it
+   exists. The historical R2 PASS on `4e5ff2d2` judged only that exact tree;
+   the current candidate has no transferable R2 receipt. Under RW-381, R2
+   and the full gate may follow provisional merge in a separate attached CIU
+   worktree; their absence is a disclosed shipping hold, not a reason to
+   misstate evidence or skip code review. Independently attack the current
+   behavior around `lib/summary.py` arithmetic and pool teardown, CLI request
+   omission/default semantics, helper PID identity, daemon recovery, and
+   systemd-owned placement.
+10. **Docs and trust boundary.** README, DESIGN-GUIDE, CONSUMERS, PROTOCOL,
+    and both byte-identical interface contracts must describe the shipped
+    code. D-32 keeps the direct daemon-to-systemd bridge and no broker. This
+    is not a least-privilege claim: Docker-group/run-gate operators already
+    have host-administrator authority, while a compromised privileged daemon
+    retains its declared system-bus, cgroupfs, and DAMON write authority.
+    Review that this limitation is stated accurately, without implying a
+    broker or kernel-enforced containment exists.
 
 ## Live probes (you run them yourself; host rule below)
 
@@ -156,6 +172,66 @@ each claim against what you found; list claims you could not verify.
   cannot be completed without touching shared state, record the exact missing
   evidence and stop that probe; do not improvise a recovery or cleanup.
 
+## BLOCKED rule (mechanical)
+
+If a required live probe cannot be performed using only reviewer-owned
+containers, or the authored loaded cgroup parent/systemd unit state does not
+match the documented contract, stop that probe and write `BLOCKED: <exact
+condition>` with the missing observable and attempted read-only checks in the
+round record. Do not change host units, join a host namespace, or substitute
+another carrier. Continue the code review and report the evidence gap; do not
+invent a product decision. If a true product choice remains, state it as a
+decision ask for the controller.
+
+## Test-oracle constraints for any repair
+
+If a repair adds or changes tests, obey all of these constraints from
+`nyxloom/reference/AUTHORING.md` §3b:
+
+**A. Nothing may make the verdict depend on how fast the machine is.**
+- No deadline/sleep/elapsed-time/iteration-count assertion as an oracle.
+- Wait on a real synchronization point (`join()`, an `Event`, a drained queue).
+- Best: remove the wait; extract and directly call the deterministic step.
+- A timeout is only a generous failsafe (60s, not 3s), never the verdict.
+- If a test fails on a slow machine, fix the test/race; never widen its timeout
+  or raise cgroup weight/add CPU to get a pass.
+
+**B. Nothing may depend on test order, worker assignment, or a sibling test.**
+- Restore process-global state (`os.environ`, logging config, module attrs,
+  singletons); do not patch lazy `__getattr__` objects via `setattr`.
+- Teardown restores prior shared state, never destroys it; use fresh `tmp_path`
+  and assert cleanup restored what it found.
+- When a failure appears only in parallel, first look for earlier-test
+  pollution before assuming a race.
+
+**C. No hollow tests.**
+- No `pass`, no assert-only-no-exception, no call-count/private-attribute/log
+  trivia, and no weakened/deleted assertion to get past a failure.
+- Assert the behavior and observable contract; where a check guards a real
+  crash, prove that crash with a controlled broken implementation.
+
+**D. No coverage evasion.**
+- No no-cover pragma on changed lines, including a comment that merely
+  describes the prohibition.
+- Do not exclude an `except` body and assume that covers the clause.
+- Restructure genuinely unreachable code so it does not exist.
+
+**E. Network, clock, and filesystem are inputs — control them.**
+- No real external network, registry, or model endpoint in a unit test.
+- Do not assert on `datetime.now()`/`time.time()`; inject or mock boundaries
+  and keep offline as the default.
+
+**F. No predicted measurements.**
+- Do not predict coverage/mutation numbers, missing-line lists, or
+  permanently-uncoverable branches from reasoning about rendered reports.
+- The coverage `Missing` column is not a complete branch-arc list.
+- Assert policy (coverage floor, lane tier, decision); obtain measurements by
+  running the project's real judge. Prove achievability/unreachability with
+  the tool on real or synthetic code, not by reading a report.
+
+For every test, ask whether it could flip on a slower machine, different
+worker, or different order. If yes, it is not yet an oracle.
+
 ## Verdict
 
 `ACCEPT` / `ACCEPT-conditional` / `REJECT` with numbered blockers (B1..),
@@ -168,12 +244,17 @@ Write the round file, then return the verdict line first in your message.
 
 8 cores shared with a production game server; host contention is an allowed
 condition and must not alter a functional verdict or mutation classification.
-The host `dev-gates.slice` is loaded and capped at 5 CPUs; at most 3 mutation
-lanes may run estate-wide, each with its own unique exact container name and
+The host `dev-gates.slice` is loaded and capped at 5 CPUs; at most 2 mutation
+lanes may run estate-wide until RW-194's admission evidence changes that
+limit, each with its own unique exact container name and
 immediate verified `docker update --cpus=3`. Check memory PSI before launch
 and do not launch while `full avg10 > 5`. pytest is serial and load-niced;
 the scheduler is not to be tuned to make a test pass. No container may use
 host PID/cgroup/network namespace modes. Read-only access to
 `run-gate-project/` is required for contract/ruling context; do not edit it
 as reviewer. Never touch `ciu/src/` or `/workspaces/dstdns`. Remove only
-your exact temporary containers in a `finally`.
+your exact temporary containers in a `finally`. Keep a CIU-managed checkout
+attached to its recorded branch. For an exact-tree run, freeze that branch at
+the judged commit and do not commit or move it until the run/resume ends; use
+a separate worktree for fixes. Do not detach a managed CIU checkout to pin a
+tree.

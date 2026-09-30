@@ -5406,3 +5406,45 @@ force: this is still the no-broker design, with its existing privileged
 daemon authority documented honestly. P1's current-main candidate is
 `b88d4f07` (five Sol follow-up commits replayed); exact-tree gates, a fresh
 Sol review, complete R2, and the registered full gate are outstanding.
+
+### RW-385 — 2026-09-30 23:26:54Z — keep CIU judging checkouts attached; resume P1/P6 closeout
+
+The active P1 release-review candidate is branch
+`rg55-p1-release-review-20260930`, based on main
+`8730098d0a8205bb398e60028e799b4ef7b18835`. On its pre-checkpoint tree
+`80263df66ad989e9b6f621758d7fb328d07a7a4c`, R0/R1 passed 1,391 tests with
+100% line and branch coverage (5,040 statements, 1,744 branch arcs), and R3
+rejected all seven canaries. Run-gate history separately records exact-tree
+PASS/exit 0 for both. The handoff and evidence refresh changes the candidate
+tree; rerun R0/R1, R3, and doctor on the committed checkpoint before the
+fresh P1 Sol review. This is a new review cycle (round4–round6); rounds 1–3
+reviewed an older tip.
+
+The old P1 R2 PASS on `4e5ff2d2a28d153195995df4c1e5a03a813af802` is not
+transferable to the current P1 candidate. No current-tree P1 R2 or full gate
+is complete. Under RW-381, provisional merge can follow green short gates and
+the fresh Sol acceptance, while current-tree R2 and the full gate run
+asynchronously in a separate CIU-managed worktree; no release or daemon
+activation until those long gates pass and any fixes are backported/rejudged.
+
+P6 branch `rg55-followups-cgprofile-final` at `f6a36616089cd194b306af6d2e2052d12fafc951`
+has exact-tree R0/R1 and R3 PASS receipts: 2,106 tests, 100% line/branch
+coverage (7,233 statements, 2,648 branch arcs), and 7/7 canaries rejected.
+The daemon was down during these gates. P6 round-7 blockers B1–B3 are repaired,
+but same-session Sol fix verification, live delegated-scope start/stop and
+restoration probes, current-tree R2, the full gate, and release work remain.
+Operator-selected placement memory semantics are cgroup-leaf charge
+accounting since placement, explicitly not total RSS or a total-RSS cap. D-32
+keeps the direct daemon-to-systemd bridge with no host broker and documents
+the daemon's actual privileged authority honestly.
+
+CIU did not detach the managed P6 mutation checkout. Its Git reflog records a
+plain checkout to `aae66356` on 2026-09-24; the checkout is currently clean and
+detached while the registered branch is at `4392bece`. Read-only checks found
+no active matching run-gate/Assay process or P6 mutation container, and the
+CIU source contains no worktree-detach operation. RW-385 rules that
+CIU-managed judging worktrees stay attached to their recorded branch. Pin the
+branch at the judged commit and keep it quiet throughout run/resume; put fixes
+in a separate worktree. For this stale record, restore the checkout to its
+recorded branch before another CIU lifecycle operation; never edit the CIU
+identity record or auto-repair this state.

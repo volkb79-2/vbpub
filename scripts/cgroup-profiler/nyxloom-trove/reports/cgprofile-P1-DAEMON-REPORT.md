@@ -1792,3 +1792,30 @@ Per the operator's revised process, a fresh review and these short gates may
 authorize a provisional merge while R2/full-gate judging continues in a
 separate attached CIU worktree. Release/shipping remains blocked until that
 exact-tree campaign and full gate pass, with all fixes backported and rejudged.
+
+## Controller addendum — current P1 candidate checkpoint (2026-09-30)
+
+The current P1 review candidate is branch
+`rg55-p1-release-review-20260930`, worktree
+`.worktrees/rg55-p1-release-review-20260930`, based on main
+`8730098d0a8205bb398e60028e799b4ef7b18835`. Before this handoff/evidence
+refresh, exact clean tree `80263df66ad989e9b6f621758d7fb328d07a7a4c` passed
+registered R0/R1 in 75.020 s and R3 in 11.337 s. Separate run-gate history
+records both exact-tree outcomes as PASS/exit 0. R0/R1 reported 1,391 tests
+passed with 100% line and branch coverage (5,040 statements and 1,744 branch
+arcs); R3 rejected all seven canaries. The daemon was down, so profiler-backed
+metrics were unavailable and did not affect the functional gate verdict.
+
+This checkpoint changes review instructions/evidence, so those receipts are
+not claimed for the resulting commit. R0/R1, R3, and doctor must be read/run
+again on the final review candidate before dispatch. The final review cycle is
+new: rounds 1–3 cover an earlier tree; use round4–round6 for this candidate.
+
+The old P1 R2 PASS on `4e5ff2d2a28d153195995df4c1e5a03a813af802` accounted
+for 125/125 candidates, all killed, but it is not evidence for this candidate.
+No exact-tree R2 or registered full gate has completed for `80263df6` or the
+resulting review checkpoint. Under RW-381, after short gates and Sol review
+are accepted, provisional merge may precede those long gates; R2 and the full
+gate then run asynchronously on an attached CIU worktree whose branch remains
+pinned to the judged commit. No release or daemon activation until both pass
+and any repairs are backported and rejudged.
