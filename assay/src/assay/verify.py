@@ -680,10 +680,7 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
         return
     judgment = document.get("judgment")
 
-    r1_claim = next(
-        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R1"),
-        None,
-    )
+    r1_claim = _raw_claim(claims, "R1")
     r1_judged = r1_claim is not None and "coverage" in r1_claim
     # wave-1 §6/A-264: R1 records its policy whenever R1 was ATTEMPTED, one
     # case wider than "rendered a payload" -- the closed set of exactly two
@@ -697,21 +694,21 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
         in ("BRANCH_UNAVAILABLE", "TARGET_NOT_MEASURED")
     )
     judgment_r1_present = isinstance(judgment, dict) and "r1" in judgment
-    if judgment_r1_present and not r1_attempted:
-        failures.append(
+    _raw_policy_iff_attempted(
+        judgment_r1_present,
+        r1_attempted,
+        orphan=(
             "judgment.r1 is declared without a corresponding R1 coverage "
             "claim or BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED terminal"
-        )
-    if r1_attempted and not judgment_r1_present:
-        failures.append(
+        ),
+        missing=(
             "an R1 coverage claim or BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED "
             "terminal is declared without a corresponding judgment.r1"
-        )
-
-    r2_claim = next(
-        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
-        None,
+        ),
+        failures=failures,
     )
+
+    r2_claim = _raw_claim(claims, "R2")
     r2_judged = r2_claim is not None and "mutation" in r2_claim
     # P21/A-183: the unsupported-capability terminal ALSO resolved and applied
     # the policy, so it records one. Worded from the raw document rather than
@@ -723,16 +720,19 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
     )
     judgment_r2 = judgment.get("r2") if isinstance(judgment, dict) else None
     judgment_r2_present = isinstance(judgment, dict) and "r2" in judgment
-    if judgment_r2_present and not r2_attempted:
-        failures.append(
+    _raw_policy_iff_attempted(
+        judgment_r2_present,
+        r2_attempted,
+        orphan=(
             "judgment.r2 is declared without a corresponding R2 mutation claim "
             "or unsupported-capability terminal"
-        )
-    if r2_attempted and not judgment_r2_present:
-        failures.append(
+        ),
+        missing=(
             "an R2 mutation claim or unsupported-capability terminal is "
             "declared without a corresponding judgment.r2"
-        )
+        ),
+        failures=failures,
+    )
     if r2_judged and judgment_r2_present and isinstance(judgment_r2, dict):
         mutation = r2_claim.get("mutation")
         operators = judgment_r2.get("operators")
@@ -771,21 +771,19 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
         _check_equivalence_pairing(r2_claim, judgment_r2, failures)
         _check_kill_attribution(r2_claim, judgment_r2, failures)
 
-    r3_claim = next(
-        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R3"),
-        None,
-    )
+    r3_claim = _raw_claim(claims, "R3")
     r3_judged = r3_claim is not None and "canary" in r3_claim
     judgment_r3 = judgment.get("r3") if isinstance(judgment, dict) else None
     judgment_r3_present = isinstance(judgment, dict) and "r3" in judgment
-    if judgment_r3_present and not r3_judged:
-        failures.append(
-            "judgment.r3 is declared without a corresponding R3 canary claim"
-        )
-    if r3_judged and not judgment_r3_present:
-        failures.append(
+    _raw_policy_iff_attempted(
+        judgment_r3_present,
+        r3_judged,
+        orphan="judgment.r3 is declared without a corresponding R3 canary claim",
+        missing=(
             "an R3 canary claim is declared without a corresponding judgment.r3"
-        )
+        ),
+        failures=failures,
+    )
     if r3_judged and judgment_r3_present and isinstance(judgment_r3, dict):
         canary = r3_claim.get("canary")
         if isinstance(canary, dict):
@@ -911,10 +909,7 @@ def _check_resolved_language_owns_every_operator(
     claims = document.get("claims")
     if not isinstance(claims, list):
         return
-    r2_claim = next(
-        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
-        None,
-    )
+    r2_claim = _raw_claim(claims, "R2")
     operators = [
         entry["operator"]
         for _, entry in _mutant_entries(_mutation_of(r2_claim))
@@ -1035,18 +1030,7 @@ def _check_ingested_r2_agrees_with_its_payload(
     assert isinstance(r2, dict)
 
     claims = document.get("claims")
-    r2_claim = (
-        next(
-            (
-                item
-                for item in claims
-                if isinstance(item, dict) and item.get("rigor") == "R2"
-            ),
-            None,
-        )
-        if isinstance(claims, list)
-        else None
-    )
+    r2_claim = _raw_claim(claims, "R2") if isinstance(claims, list) else None
     payload = _mutation_of(r2_claim)
     if payload is None:
         failures.append(
@@ -1518,10 +1502,7 @@ def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
     claims = document.get("claims")
     if not isinstance(claims, list):
         return
-    claim = next(
-        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
-        None,
-    )
+    claim = _raw_claim(claims, "R2")
     if claim is None:
         return
     reason = claim.get("reason_code")
@@ -1616,10 +1597,7 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
     claims = document.get("claims")
     if not isinstance(claims, list):
         return
-    claim = next(
-        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
-        None,
-    )
+    claim = _raw_claim(claims, "R2")
     mutation = _mutation_of(claim)
     if not isinstance(mutation, dict):
         return
@@ -1805,6 +1783,34 @@ def _check_b106_receipt(receipt: Any, bucket: str, failures: list[str]) -> None:
             failures.append(f"mutation witness {name} must equal 1")
     if bucket != "killed":
         failures.append("a mutation witness is legal only on a killed outcome")
+
+
+def _raw_claim(claims: list, rigor: str) -> dict | None:
+    """The first raw claim mapping of ``rigor``, or ``None``."""
+    return next(
+        (item for item in claims if isinstance(item, dict) and item.get("rigor") == rigor),
+        None,
+    )
+
+
+def _claim_of(verdict: Verdict, rigor: str) -> Claim | None:
+    """The first reconstructed claim of ``rigor``, or ``None``."""
+    return next((item for item in verdict.claims if item.rigor == rigor), None)
+
+
+def _raw_policy_iff_attempted(
+    present: bool,
+    attempted: bool,
+    *,
+    orphan: str,
+    missing: str,
+    failures: list[str],
+) -> None:
+    """Append ``orphan`` then ``missing`` for a policy/attempt mismatch."""
+    if present and not attempted:
+        failures.append(orphan)
+    if attempted and not present:
+        failures.append(missing)
 
 
 def _is_int(value: Any) -> bool:
@@ -2563,7 +2569,7 @@ def _check_r1_rederivation(verdict: Verdict, failures: list[str]) -> None:
     because of branches (zero missing LINES, at least one uncovered arc) is
     ``UNCOVERED_BRANCHES``, never ``UNCOVERED_LINES``.
     """
-    claim = next((item for item in verdict.claims if item.rigor == "R1"), None)
+    claim = _claim_of(verdict, "R1")
     if claim is None or claim.coverage is None:
         return
     policy = verdict.judgment.r1
@@ -2635,7 +2641,7 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
     a native document is FORBIDDEN from recording a floor precisely because a
     native R2 has none, so reading ``None`` here is reading a fact.
     """
-    claim = next((item for item in verdict.claims if item.rigor == "R2"), None)
+    claim = _claim_of(verdict, "R2")
     if claim is None:
         return
     if claim.reason_code is ReasonCode.MUTATION_UNSUPPORTED:
@@ -2682,9 +2688,7 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
         # construction. Accepting it keeps this check fail-safe against any
         # refusal path whose reason lands in this set.
         if claim.reason_code in _POST_BASELINE_R2_TERMINALS:
-            r0_sibling = next(
-                (item for item in verdict.claims if item.rigor == "R0"), None
-            )
+            r0_sibling = _claim_of(verdict, "R0")
             if (
                 r0_sibling is not None
                 and r0_sibling.status is not Outcome.PASS
@@ -2701,7 +2705,7 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
                 )
         return
     if claim.mutation is None:
-        r0_claim = next((item for item in verdict.claims if item.rigor == "R0"), None)
+        r0_claim = _claim_of(verdict, "R0")
         if r0_claim is None:
             # Nothing in the artifact records the baseline this claim reused,
             # so there is no honest comparison to make. The one status that
@@ -2810,7 +2814,7 @@ def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
     several. Only ``any``'s first ``PASS`` and an ``INCONCLUSIVE`` attempt
     end the run.
     """
-    claim = next((item for item in verdict.claims if item.rigor == "R3"), None)
+    claim = _claim_of(verdict, "R3")
     if claim is None or claim.canary is None:
         return
     judgment_r3 = None if verdict.judgment is None else verdict.judgment.r3
@@ -2957,7 +2961,7 @@ def _check_r4_rederivation(verdict: Verdict, failures: list[str]) -> None:
     outcome and code their own substrate raised, and a claim with no
     ``red_first`` payload is not re-derived here.
     """
-    claim = next((item for item in verdict.claims if item.rigor == "R4"), None)
+    claim = _claim_of(verdict, "R4")
     if claim is None or claim.red_first is None:
         return
     payload = claim.red_first

@@ -153,6 +153,8 @@ from .verdict import (
     SnapshotPolicy,
     WorktreeIntegrity,
     Verdict,
+    claim_carries,
+    claim_for,
     iso_utc,
     refusal_detail,
     rollup,
@@ -2158,8 +2160,8 @@ def assemble_verdict(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
-    r1_claim = next((claim for claim in claims if claim.rigor == "R1"), None)
-    r1_judged = r1_claim is not None and r1_claim.coverage is not None
+    r1_claim = claim_for(claims, "R1")
+    r1_judged = claim_carries(r1_claim, "coverage")
     judgment_r1 = None if judgment is None else judgment.r1
     if r1_judged and judgment_r1 is None:
         raise AssayError(

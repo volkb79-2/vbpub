@@ -150,6 +150,8 @@ __all__ = [
     "Outcome",
     "ReasonCode",
     "Verdict",
+    "claim_carries",
+    "claim_for",
     "iso_utc",
     "load_schema",
     "rollup",
@@ -3935,6 +3937,30 @@ def _check_nonempty(value: str, what: str) -> None:
         raise ValueError(f"{what} must be a non-empty string, got {value!r}")
 
 
+def claim_for(claims: Iterable[Claim], rigor: str) -> Claim | None:
+    """The first claim of ``rigor``, or ``None`` when there is none."""
+    return next((claim for claim in claims if claim.rigor == rigor), None)
+
+
+def claim_carries(claim: Claim | None, payload: str) -> bool:
+    """Whether ``claim`` exists and its ``payload`` attribute is set.
+
+    Public because the runner's own twin site asks the same question of the
+    claim it is about to render.
+    """
+    return claim is not None and getattr(claim, payload) is not None
+
+
+def _require_policy_iff_attempted(
+    policy: object | None, attempted: bool, *, orphan: str, missing: str
+) -> None:
+    """A recorded policy and an attempted rigor must appear together."""
+    if policy is not None and not attempted:
+        raise ValueError(orphan)
+    if policy is None and attempted:
+        raise ValueError(missing)
+
+
 @record
 class EvidenceDeclaration:
     """One externally sourced requirement, identified independently of rigor."""
@@ -4746,8 +4772,8 @@ class Verdict:
                 "judgment is present but no lane resolved; a policy for a "
                 "lane that never resolved describes nothing"
             )
-        r1_claim = next((claim for claim in self.claims if claim.rigor == "R1"), None)
-        r1_judged = r1_claim is not None and r1_claim.coverage is not None
+        r1_claim = claim_for(self.claims, "R1")
+        r1_judged = claim_carries(r1_claim, "coverage")
         # wave-1 §6, A-264 (forced by the independent pre-dispatch review):
         # R1 records its policy whenever R1 was ATTEMPTED, for exactly two
         # new payload-free terminals -- one case wider than "rendered a
@@ -4762,21 +4788,23 @@ class Verdict:
             in (ReasonCode.BRANCH_UNAVAILABLE, ReasonCode.TARGET_NOT_MEASURED)
         )
         judgment_r1 = None if self.judgment is None else self.judgment.r1
-        if judgment_r1 is not None and not r1_attempted:
-            raise ValueError(
+        _require_policy_iff_attempted(
+            judgment_r1,
+            r1_attempted,
+            orphan=(
                 "judgment.r1 is present but no R1 claim rendered a coverage "
                 "payload or one of BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED -- "
                 "a policy is recorded for a judgment that never happened"
-            )
-        if judgment_r1 is None and r1_attempted:
-            raise ValueError(
+            ),
+            missing=(
                 "the R1 claim rendered a coverage payload or one of "
                 "BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED but judgment.r1 is "
                 "absent -- an independent consumer cannot re-derive R1's "
                 "status without the policy that decided it"
-            )
+            ),
+        )
 
-        r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
+        r2_claim = claim_for(self.claims, "R2")
         # P21/A-183: R2 policy is recorded whenever R2 was actually ATTEMPTED,
         # which is one case wider than "rendered a payload". A lane whose
         # adapter has no mutation engine resolved and applied jobs/max_mutants/
@@ -4784,25 +4812,27 @@ class Verdict:
         # policy there would hide the cap a consumer needs to interpret the
         # refusal. A baseline that never passed is NOT attempted: R2's claim
         # then just propagates R0's own outcome and records no policy.
-        r2_judged = r2_claim is not None and r2_claim.mutation is not None
+        r2_judged = claim_carries(r2_claim, "mutation")
         r2_attempted = r2_judged or (
             r2_claim is not None
             and r2_claim.reason_code is ReasonCode.MUTATION_UNSUPPORTED
         )
         judgment_r2 = None if self.judgment is None else self.judgment.r2
-        if judgment_r2 is not None and not r2_attempted:
-            raise ValueError(
+        _require_policy_iff_attempted(
+            judgment_r2,
+            r2_attempted,
+            orphan=(
                 "judgment.r2 is present but no R2 claim rendered a mutation "
                 "payload or an unsupported-capability terminal -- a policy is "
                 "recorded for a judgment that never happened"
-            )
-        if judgment_r2 is None and r2_attempted:
-            raise ValueError(
+            ),
+            missing=(
                 "the R2 claim rendered a mutation payload or an "
                 "unsupported-capability terminal but judgment.r2 is absent -- "
                 "an independent consumer cannot re-derive R2's status without "
                 "the policy that decided it"
-            )
+            ),
+        )
         if judgment_r2 is not None:
             self._check_operator_language_agrees(judgment_r2)
         if r2_judged and judgment_r2 is not None:
@@ -4842,21 +4872,23 @@ class Verdict:
             # `(status, reason_code)` beside the producer.
             self._check_discarded_disposition(r2_claim, judgment_r2)
 
-        r3_claim = next((claim for claim in self.claims if claim.rigor == "R3"), None)
-        r3_judged = r3_claim is not None and r3_claim.canary is not None
+        r3_claim = claim_for(self.claims, "R3")
+        r3_judged = claim_carries(r3_claim, "canary")
         judgment_r3 = None if self.judgment is None else self.judgment.r3
-        if judgment_r3 is not None and not r3_judged:
-            raise ValueError(
+        _require_policy_iff_attempted(
+            judgment_r3,
+            r3_judged,
+            orphan=(
                 "judgment.r3 is present but no R3 claim rendered a canary "
                 "payload -- a policy is recorded for a judgment that never "
                 "happened"
-            )
-        if judgment_r3 is None and r3_judged:
-            raise ValueError(
+            ),
+            missing=(
                 "the R3 claim rendered a canary payload but judgment.r3 "
                 "is absent -- an independent consumer cannot re-derive R3's "
                 "status without the policy that decided it"
-            )
+            ),
+        )
         if r3_judged and judgment_r3 is not None:
             if r3_claim.canary.mechanism != judgment_r3.mechanism:
                 raise ValueError(
@@ -4887,21 +4919,23 @@ class Verdict:
 
         # F015/A-433: A-148's correspondence, restated for R4 exactly as the
         # R2 and R3 blocks above state it for their own tiers.
-        r4_claim = next((claim for claim in self.claims if claim.rigor == "R4"), None)
-        r4_judged = r4_claim is not None and r4_claim.red_first is not None
+        r4_claim = claim_for(self.claims, "R4")
+        r4_judged = claim_carries(r4_claim, "red_first")
         judgment_r4 = None if self.judgment is None else self.judgment.r4
-        if judgment_r4 is not None and not r4_judged:
-            raise ValueError(
+        _require_policy_iff_attempted(
+            judgment_r4,
+            r4_judged,
+            orphan=(
                 "judgment.r4 is present but no R4 claim rendered a red_first "
                 "payload -- a policy is recorded for a judgment that never "
                 "happened"
-            )
-        if judgment_r4 is None and r4_judged:
-            raise ValueError(
+            ),
+            missing=(
                 "the R4 claim rendered a red_first payload but judgment.r4 is "
                 "absent -- an independent consumer cannot re-derive R4's "
                 "status without the policy that decided it"
-            )
+            ),
+        )
         if r4_judged and judgment_r4 is not None:
             if r4_claim.red_first.tests != tuple(judgment_r4.tests):
                 raise ValueError(
@@ -4967,8 +5001,8 @@ class Verdict:
                 f"is qualified with the language that owns it, and a lane "
                 f"cannot apply another language's catalogue"
             )
-        r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
-        if r2_claim is None or r2_claim.mutation is None:
+        r2_claim = claim_for(self.claims, "R2")
+        if not claim_carries(r2_claim, "mutation"):
             return
         wrong_outcomes = sorted(
             {
@@ -4996,8 +5030,8 @@ class Verdict:
         document would claim assay's own engine produced a mutant on a lane
         assay never ran an engine for.
         """
-        r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
-        if r2_claim is None or r2_claim.mutation is None:
+        r2_claim = claim_for(self.claims, "R2")
+        if not claim_carries(r2_claim, "mutation"):
             return
         native = sorted(
             {
