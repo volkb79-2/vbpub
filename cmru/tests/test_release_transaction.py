@@ -593,7 +593,8 @@ def test_tester_gate_uses_explicit_container_workdir_and_no_shell(monkeypatch, t
     assert argv == [
         "docker", "run", "--cgroup-parent=dev-gates.slice", "--rm",
         "--mount", "type=bind,src=/host/repo,dst=/worktree",
-        "--workdir", "/worktree/cmru", "--memory", "3g", "--memory-swap", "16g", "--cpus", "1.5",
+        "--workdir", "/worktree/cmru", "--memory", "3g", "--memory-swap", "16g",
+        "--cpus", "1.5", "--cpu-period", "100000",
         "tester-unified:test",
         "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
     ]
@@ -604,6 +605,14 @@ def test_tester_gate_rejects_paths_outside_the_worktree(tmp_path):
         tester_gate.build_docker_command(
             tmp_path, "../ciu", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
             cgroup_parent="dev-gates.slice",
+        )
+
+
+def test_tester_gate_command_builder_rejects_unbounded_cpu_limit(tmp_path):
+    with pytest.raises(ValueError, match="minimum 0.00001 CPUs"):
+        tester_gate.build_docker_command(
+            tmp_path, ".", ["true"], image="tester-unified:test", memory="3g",
+            memory_swap="16g", cpus="0", cgroup_parent="dev-gates.slice",
         )
 
 

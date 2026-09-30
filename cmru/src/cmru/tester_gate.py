@@ -9,7 +9,9 @@ meaningful gate.
 from __future__ import annotations
 
 import argparse
+import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -17,6 +19,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -126,16 +129,23 @@ def _resolve_worktree_context(invocation_root: Path, relative_cwd: str) -> tuple
 
 _DIND_READY_TIMEOUT = 30.0
 
-# Flat, per-container safe bounds (host dev-tier cgroup governance rollout —
-# nyxloom/docs/plan-resource-governance.md + the mdt host-setup companion).
-# Deliberately NOT a fraction of dev.slice's own aggregate budget: every gate
-# container gets its own independent ceiling regardless of how many run
-# concurrently, on top of (not instead of) the tier's own aggregate cap.
+# Flat, per-container safe bounds for the tester workload (host dev-tier cgroup
+# governance rollout — nyxloom/docs/plan-resource-governance.md + the mdt
+# host-setup companion). They are not a fraction of the slice's aggregate cap.
+# The optional DinD sidecar currently receives only the gates slice; its
+# separate per-container resource policy remains an open CLI decision.
 #
 _SLICE_PROBE_IMAGE_ENV = "CMRU_TESTER_CGROUP_PROBE_IMAGE"
 _CPUS_ENV = "CMRU_TESTER_CPUS"
 _DIND_IMAGE_ENV = "CMRU_TESTER_DIND_IMAGE"
 _CGROUP_PARENT_ENV = "CMRU_TESTER_CGROUP_PARENT"
+_CPU_LIMIT_PATTERN = re.compile(r"\+?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
+_CPU_PERIOD_MICROSECONDS = 100_000
+_MIN_CPU_LIMIT = Decimal(1) / Decimal(_CPU_PERIOD_MICROSECONDS)
+_CPU_LIMIT_ERROR = (
+    "CPU limit must be a finite decimal Docker can enforce "
+    "(minimum 0.00001 CPUs)"
+)
 
 
 def _docker_run_argv(cgroup_parent: str, *arguments: str) -> list[str]:
@@ -409,9 +419,36 @@ def _resolve_required(explicit: str | None, env_name: str, label: str) -> str:
     )
 
 
+def _positive_cpu_limit(value: str) -> str:
+    """Require a CPU value Docker can turn into a nonzero limit."""
+    candidate = str(value).strip()
+    if not _CPU_LIMIT_PATTERN.fullmatch(candidate):
+        raise ValueError(_CPU_LIMIT_ERROR)
+    try:
+        parsed = Decimal(candidate)
+        as_float = float(parsed)
+        nano_cpus = as_float * 1_000_000_000
+        representable = (
+            math.isfinite(as_float)
+            and math.isfinite(nano_cpus)
+            and parsed >= _MIN_CPU_LIMIT
+            and 1 <= nano_cpus <= (2**63 - 1)
+        )
+    except (InvalidOperation, OverflowError, ValueError):
+        representable = False
+        parsed = Decimal(0)
+    if not representable or parsed <= 0:
+        raise ValueError(_CPU_LIMIT_ERROR)
+    return candidate
+
+
 def resolve_cpus(explicit: str | None) -> str:
     """Resolve the per-container CPU ceiling without a hidden source default."""
-    return _resolve_required(explicit, _CPUS_ENV, "CPU limit")
+    value = _resolve_required(explicit, _CPUS_ENV, "CPU limit")
+    try:
+        return _positive_cpu_limit(value)
+    except ValueError as exc:
+        raise SystemExit(f"tester-gate: {exc}") from exc
 
 
 def resolve_cgroup_probe_image(explicit: str | None) -> str:
@@ -533,6 +570,7 @@ def build_docker_command(
         raise ValueError("--cwd must be a relative path inside the current worktree")
     if not command:
         raise ValueError("tester-gate requires a command after '--'")
+    cpus = _positive_cpu_limit(cpus)
     host_root = _physical_path(repo_root)
     argv = _docker_run_argv(
         cgroup_parent,
@@ -542,6 +580,7 @@ def build_docker_command(
         "--memory", memory,
         "--memory-swap", memory_swap,
         "--cpus", cpus,
+        "--cpu-period", str(_CPU_PERIOD_MICROSECONDS),
     )
     common_dir = _git_common_dir(repo_root)
     if common_dir is not None:
@@ -610,7 +649,7 @@ def tester_gate_cli():
         (("--forward-cgroup-parent-gates-var",), "value forwarded as $CGROUP_PARENT_DEV_GATES", "SLICE", {"default": None}),
         (("--memory",), "Docker memory cap; defaults to $CMRU_TESTER_MEMORY", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY")}),
         (("--memory-swap",), "Docker combined memory-plus-swap total", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY_SWAP")}),
-        (("--cpus",), "CPU ceiling; otherwise read $CMRU_TESTER_CPUS", "N", {"default": None}),
+        (("--cpus",), "CPU ceiling >= 0.00001; otherwise read $CMRU_TESTER_CPUS", "N", {"default": None, "type": _positive_cpu_limit}),
         (("--cgroup-probe-image",), "host-systemd probe image; otherwise read $CMRU_TESTER_CGROUP_PROBE_IMAGE", "IMG", {"default": None}),
         (("--dind-image",), "nested Docker daemon image; required with --enable-docker", "IMG", {"default": None}),
         (("--device-read-iops",), "per-container read IOPS cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", "")}),
@@ -666,6 +705,9 @@ def _run_tester_gate(args, _runtime) -> int:
 
     cgroup_parent = resolve_cgroup_parent(args.cgroup_parent)
     probe_image = resolve_cgroup_probe_image(args.cgroup_probe_image)
+    memory = resolve_memory(args.memory)
+    memory_swap = resolve_memory_swap(args.memory_swap)
+    cpus = resolve_cpus(args.cpus)
     if dry_run:
         print(
             "[DRY RUN] Host gates-slice verification skipped; it starts a temporary "
@@ -698,10 +740,6 @@ def _run_tester_gate(args, _runtime) -> int:
             "[DRY RUN] Host IO capability probe skipped; it starts a temporary "
             "privileged container and will run during an actual launch."
         )
-
-    memory = resolve_memory(args.memory)
-    memory_swap = resolve_memory_swap(args.memory_swap)
-    cpus = resolve_cpus(args.cpus)
 
     forward_var = (
         getattr(args, "forward_cgroup_parent_var", None)

@@ -175,6 +175,27 @@ starts the gate, and places every helper and workload container in the declared 
 This makes the boundary honest: dry-run proves command construction, while a real launch
 proves host acceptance.
 
+### Tester-gate workload CPU ceiling
+
+The tester workload container must have a per-container CPU ceiling in addition to the
+aggregate gates slice. An empty value is already refused; a live Docker check showed that
+`--cpus 0` is accepted but records `NanoCpus=0`, `CpuQuota=0`, and `CpuPeriod=0`, which
+leaves the container without a per-container CPU limit. Live runs also showed values below
+`0.00001` CPUs produce `cpu.max = max 100000`, while `0.00001` produces a bounded quota.
+CMRU pins Docker's CPU period at 100000 microseconds and accepts only a finite CPU value of at
+least `0.00001` that Docker can represent, whether supplied through `--cpus` or
+`CMRU_TESTER_CPUS`. It validates the value before starting privileged host probes.
+
+The optional DinD sidecar is a separate container. It receives the same gates-slice parent,
+but currently has no per-container CPU or memory cap. The CMRU S-CLI.9 audit records this as
+an open policy decision because reusing workload limits can double the per-step resource
+envelope, while separate sidecar limits add required inputs for the Docker-enabled path.
+
+Docker also rejects a `--memory-swap` total below `--memory` before creating the gate
+workload. Keep the value documented as a combined memory-plus-swap total; it is not the
+swap-only amount. The canonical invocation and combination decisions live in
+[`S-CLI.9`](SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
+
 The get.py template is a package resource, not a path inferred from `__file__`.
 Source-checkout execution and installed-wheel execution therefore read the
 same shipped file. KI-26's installed-wheel lane builds the distribution,

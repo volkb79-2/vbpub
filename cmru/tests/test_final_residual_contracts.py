@@ -66,7 +66,18 @@ def test_consul_observed_and_signature_fail_closed_on_invalid_base64():
 def test_tester_gate_required_resource_resolution_prefers_explicit(monkeypatch):
     monkeypatch.setenv("CMRU_TESTER_CPUS", "2")
     assert tester_gate.resolve_cpus("1") == "1"
+    assert tester_gate.resolve_cpus("1.5") == "1.5"
+    assert tester_gate.resolve_cpus("0.00001") == "0.00001"
     assert tester_gate.resolve_cpus(None) == "2"
     monkeypatch.delenv("CMRU_TESTER_CPUS")
     with pytest.raises(SystemExit, match="CPU limit"):
         tester_gate.resolve_cpus(None)
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "0.000001")
+    with pytest.raises(SystemExit, match="minimum 0.00001 CPUs"):
+        tester_gate.resolve_cpus(None)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "NaN", "Infinity", "0.0000099", "bad"])
+def test_tester_gate_cpu_limit_must_be_positive_finite_and_representable(value):
+    with pytest.raises(SystemExit, match="minimum 0.00001 CPUs"):
+        tester_gate.resolve_cpus(value)

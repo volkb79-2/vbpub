@@ -510,6 +510,24 @@ def test_tester_gate_dry_run_prints_docker_argv_without_host_probes_or_launch(
         assert "dind:test" in output and "cmru-dry-run-dind-sidecar" in output
 
 
+@pytest.mark.parametrize("cpus", ["0", "-1", "NaN", "Infinity", "0.0000099"])
+def test_tester_gate_rejects_invalid_cpu_before_host_probe(monkeypatch, capsys, cpus):
+    monkeypatch.setattr(tester_gate, "_missing_orchestration_env", lambda _args: [])
+    monkeypatch.setattr(
+        tester_gate,
+        "check_slice_unit",
+        lambda *_: pytest.fail("invalid CPU limit reached the privileged host probe"),
+    )
+    status = tester_gate.main([
+        "--cwd", ".", "--image", "tester:test",
+        "--cgroup-parent", "gates.slice", "--cgroup-probe-image", "debian:test",
+        "--memory", "1g", "--memory-swap", "2g", "--cpus", cpus,
+        "--", "true",
+    ])
+    assert status == 2
+    assert "minimum 0.00001 CPUs" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "pushed, removed, remote_present, expected_error",
     [
