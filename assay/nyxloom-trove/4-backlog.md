@@ -106,8 +106,35 @@ items:
   - {id: B102, title: "Repo-wide DIRTY_TREE refusal for snapshot lanes; declared dirty_ignore globs plus --allow-dirty override marked in the verdict", type: feature, component: isolation, context_estimate: medium}
   - {id: B103, title: "Execution-interruption boundary: an orchestrator-proven receipt makes incomplete execution infrastructure/inconclusive, never a guessed functional PASS or FAIL (stub -- design carved on unmerged branch assay-b099-p35-repair, ID collision with main B099/A-448 only -- A-449/A-450 exist only on the branch, not yet on main, see report)", type: feature, component: execution, context_estimate: large}
   - {id: B104, title: "test_gate_qualify_dstdns_sql.py::test_capture_witness_end_to_end_matches_the_frozen_witness FAILS on unmodified main: the normalized verdict differs from the frozen v6 witness, and the verdict schema has moved on to v11 since (B070) -- cause unexamined (witness staleness vs. dstdns pin drift vs. a real regression); also names the hazard that a Docker-reaching test runs by default in the local suite when a socket is present", type: bugfix, component: gate}
-  - {id: B105, title: "Add retained full-source R0-R3 self-qualification evidence for Assay itself before M7; the Wave C release gate remains R0-only", type: bugfix, component: gate, context_estimate: large}
+  - {id: B105, title: "Add retained full-source R0-R3 self-qualification evidence for Assay itself before M7; complete within an 8-hour gate ceiling without increasing the approved RAM envelope", type: bugfix, component: gate, context_estimate: large}
   - {id: B106, title: "Incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence", type: feature, component: mutation, context_estimate: large}
+  - {id: B107, title: "Mutation liveness needs time-aligned evidence to distinguish candidate hangs from host or cgroup resource stalls", type: feature, component: liveness, context_estimate: large}
+  - {id: B108, title: "Deterministic mutation-campaign analysis and automatic post-lane closeout", type: feature, component: evidence, context_estimate: large}
+  - {id: B109, title: "B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes", type: feature, component: mutation, context_estimate: large}
+  - {id: B110, title: "B105 R2 exceeds the operator runtime ceiling; reduce repeated test work and qualify bounded execution", type: feature, component: gate, context_estimate: large}
+  - {id: B111, title: "B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test outer-events leak, B105 report-checker partial-scope refusal, snapshot guard tests", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B112, title: "B110 P1: B105 suite scope -- ignore test_python_qualification.py, drop --override-ini, tiered tests/zz_slow layout, dataclass contract test", type: feature, component: gate, context_estimate: medium}
+  - {id: B113, title: "B110 P2: loop-progress guards so single-operator mutants cannot spin or block scanners and pipe drains", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B114, title: "B110 P3: verdict v14 cold-witness kills with a proven no-coverage R2 command, manifests, hook/runtime fingerprints, liveness disclosure, and B105 report binding", type: feature, component: mutation, context_estimate: large}
+  - {id: B115, title: "B110 P4: bounded work-queue mutation executor with position-ordered progress", type: feature, component: mutation, context_estimate: medium}
+  - {id: B116, title: "B110 P5: cheaper fresh per-candidate snapshots (index refresh, incremental child-closure bound)", type: feature, component: isolation, context_estimate: medium}
+  - {id: B117, title: "B110 P6: one persisted campaign deadline and candidate process-group termination", type: feature, component: execution, context_estimate: medium}
+  - {id: B118, title: "B110 P7: non-qualifying pilot candidate selection and deterministic pilot selector", type: feature, component: cli, context_estimate: medium}
+  - {id: B119, title: "B110 P9: distributed/async mutation evidence -- identity-bound record import with conflict refusal, provisional/accepted status, resume consolidation", type: feature, component: mutation, context_estimate: large}
+  - {id: B120, title: "B110 P10: native Python equivalence ledger with stable site anchors and a same-commit ledger audit", type: feature, component: mutation, context_estimate: large}
+  - {id: B121, title: "B110 P11: isolation-unit execution model for R2 (decision-gated fallback)", type: feature, component: mutation, context_estimate: large}
+  - {id: B122, title: "Pluggable per-candidate scratch provider (write / reflink / filesystem-snapshot backends) with a prepared read-only base, lane declaration and verdict disclosure", type: feature, component: isolation, context_estimate: large}
+  - {id: B123, title: "Wave A: judge tests vs tooling tests -- move gate/release/packaging tests to gate/tests/, B105 lanes collect tests/ only, B105 binds a same-commit tester-unified pass (S1), drop --override-ini", type: refactor, component: tests, context_estimate: medium}
+  - {id: B124, title: "Wave A: retire cross-project qualification from assay (Topos P25 harness + 1.2.5 smoke, CMRU B006(a) harness, dstdns checkout dependency)", type: refactor, component: gate, context_estimate: medium}
+  - {id: B125, title: "Wave A: latest schema only -- retire historical verdict/lane schema gate phases and frozen templates; one refusal check per schema", type: refactor, component: gate, context_estimate: small}
+  - {id: B126, title: "Wave A: self-contained SQL/DDL qualification with assay-owned schemas and PostgreSQL container, broader situations, deduplicated cases", type: feature, component: sql, context_estimate: medium}
+  - {id: B127, title: "Wave A: move assay analyze into its own package in assay's distribution, with own tests and lane, outside B105's judge scope", type: refactor, component: analysis, context_estimate: medium}
+  - {id: B128, title: "Wave A: shallow snapshot for both B105 lanes once no test reads repository history", type: refactor, component: isolation, context_estimate: small}
+  - {id: B129, title: "Wave A: DRY consolidation of repeated judge rules (shared record decorator + reflective contract test, guard helpers, per-rigor helpers)", type: refactor, component: core, context_estimate: medium}
+  - {id: B130, title: "Wave A: component boundary map and import contracts; measure cross-component test coupling for a possible component-scoped R2", type: research, component: architecture, context_estimate: small}
+  - {id: B131, title: "R2 for the analysis package (own lane, own suite), after the v14 cold witness", type: feature, component: analysis, context_estimate: small}
+  - {id: B132, title: "SQL adapter emits mutants for constructs PostgreSQL may refuse (UNIQUE DEFERRABLE / NULLS NOT DISTINCT / INCLUDE / USING INDEX; FK MATCH FULL / DEFERRABLE / SET NULL (col)) -- measure on W5's harness", type: bug, component: sql, context_estimate: small}
+  - {id: B133, title: "SQL operator labels misdescribe their effect (NOT IN 'widening' narrows; drop-check also rewrites CREATE POLICY ... WITH CHECK)", type: bug, component: sql, context_estimate: small}
 ---
 
 # assay — backlog
@@ -154,10 +181,28 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
-- B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only)
+- B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
-- B106 — provenance-safe selective mutation reruns across source/test changes — OPEN (filed 2026-09-25 from CMRU's 494-candidate mutation campaign)
+- B106 — provenance-safe selective mutation reruns across source/test changes — DONE (`assay-v7.1.0`, merge `e5e9b95c`, A-461; registered tester-unified PASS). Inert for B105 until B112 drops `--override-ini` and B114 removes pytest-cov from the R2 command. It is listed here for one cycle only, since this section otherwise lists non-DONE items. Its acceptance boxes were not individually re-audited; the evidence is the Wave C P5 report.
+- B107 — time-aligned candidate liveness evidence to distinguish hangs from resource stalls — OPEN (filed 2026-09-26 from RG-55 P6 exact-tree R2 campaigns)
+- B108 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
+- B109 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
+- B110 — bounded B105 runtime without increasing the approved RAM envelope — OPEN, split 2026-09-28 into B111–B121 (plan `reports/assay-B110-PLAN-2026-09-28.md`; analysis `reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`; decisions A-465–A-474). B110 keeps the pilot and go/no-go.
+
+**B110 split (filed 2026-09-28; briefs in `reports/b110/`; not yet dispatched)**
+- B111 — P0 measured plan estimate, resource/phase evidence, liveness-test leak, report-checker refusal, snapshot guards — OPEN
+- B112 — P1 B105 suite scope (ignore PATH-wheel file, drop override, `zz_slow` tier, dataclass contract) — OPEN (after B111's leak fix)
+- B113 — P2 loop-progress guards — OPEN
+- B114 — P3 verdict v14 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — OPEN (integration branch `assay-b110-v14`; after B120's anchor design)
+- B115 — P4 work-queue executor — OPEN
+- B116 — P5 snapshot index refresh + incremental closure bound — OPEN
+- B117 — P6 persisted campaign deadline + process-group termination — OPEN
+- B118 — P7 non-qualifying pilot selection — OPEN
+- B108 phase 1 — P8 deterministic campaign analysis core (run-gate closeout stays phase 2) — OPEN
+- B119 — P9 distributed/async evidence import and consolidation — OPEN (after B108 phase 1; D7 defaults to NO until the operator answers; gate mode `b119-import`)
+- B120 — P10 native Python equivalence ledger + same-commit audit — OPEN (P10a design review first; P10c gate mode after P7b)
+- B121 — P11 isolation-unit execution model — OPEN, decision-gated (only after a pilot NO-GO and an operator decision)
 
 **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
 - B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
@@ -10650,24 +10695,26 @@ cross-repo-dependent, container-backed test to be in scope.
 - [x] the "Docker-reaching test runs by default in the local suite" hazard
       is documented; this closeout did not add an opt-in marker.
 
-## B105 — assay's own source has no full-source R2 lane, so its release carries no mutation evidence for assay itself
+## B105 — Assay's own source lacks a completed full-source mutation qualification
 
-**Status: OPEN — next package after the single Wave C release and required before M7 (operator agreement, 2026-09-25). The Wave C pre-release gate remains R0-only.**
+**Status: OPEN — the separate full-source R0–R3 self-qualification lane is present, but neither attempted campaign completed; a verifier-accepted full result is required before M7 (operator agreement, 2026-09-25).**
 
-**Evidence:** `assay/run-gate.toml` registers only `tester-unified`, and
-`assay.toml` declares that lane R0-only. The assay-v7.0.0 release controller
-record distinguishes the CIU lane's `INCONCLUSIVE/NO_MUTANTS`
+**Release evidence:** At assay-v7.0.0, `assay/run-gate.toml` registered only
+the R0 `tester-unified` lane. The release controller record distinguishes
+the CIU lane's `INCONCLUSIVE/NO_MUTANTS`
 (`CIU_GATE_EXIT=5`) from the CMRU campaign's no-candidate `RuntimeError`
 (`CMRU_MUTATION_EXIT=1`); neither result is a mutation pass. See
 [`assay-WAVE-B101-CONTROLLER-LOG.md`](reports/assay-WAVE-B101-CONTROLLER-LOG.md)
 "Release and final closeout".
 
 The Wave C release gate's PASS remains valid for its configured R0 acceptance
-suite; it does not imply R2 evidence for Assay's own source. B105 closes this
-gap after that release by adding a deliberately invoked self-qualification run
-through `tester-unified`, separate from the ordinary R0-only release lane. It
-must measure the exact final B105 source tree and retain the verifier-accepted
-report; code review alone is not evidence of qualification.
+suite; it does not imply R2 evidence for Assay's own source. B105 adds a
+deliberately invoked self-qualification run through `tester-unified`, separate
+from the ordinary R0-only release lane. That lane now exists, but the latest
+full attempt stopped after 15/3,760 candidates (an earlier attempt stopped
+after 38 completions). It must measure the exact final B105 source tree and
+retain the verifier-accepted report; code review and partial runs are not
+qualification evidence.
 
 ### B105 acceptance
 
@@ -10679,11 +10726,47 @@ report; code review alone is not evidence of qualification.
       100% branch floor; no source path disappears from the denominator by
       being absent from the diff. Any exception to the 100% floor requires an
       explicit decision and evidence before it can ship.
+- [ ] The isolated test command imports each baseline/mutant's own `src/`
+      tree and carries full commit history for tests that name older commits.
+      It explicitly deselects only the two release-tag audit tests, because
+      snapshots do not carry refs/tags; the ordinary checkout-based R0 release
+      gate continues to run those tests. A drift test pins these exclusions.
+      **Amended 2026-09-28 (A-468):** both self-qualification lanes also
+      `--ignore=tests/test_python_qualification.py`. That file exercises only
+      the unmutated PATH wheel and the committed 1.2.5 release wheel, never
+      snapshot `src/assay`, so it cannot kill a mutant or add coverage. It
+      stays at its P33-locked path and the release lane keeps running it. The
+      lanes drop `--override-ini=pythonpath=src` and rely on the drift-pinned
+      `pyproject.toml` `pythonpath = ["src", "analysis/src"]` (CD15, W2). Heavy tests are collected last
+      from `tests/zz_slow/`. The drift test pins the exact `--ignore` and
+      `--deselect` sets.
+      **Amended 2026-09-29 (A-475, Wave A W1):** the deselections are gone
+      because the two release-tag audit tests were removed, and
+      `tests/test_python_qualification.py` is deleted, so the A-468 `--ignore`
+      above never lands and no lane runs that file.
+      **Amended 2026-09-29 (A-476, Wave A W4, S1):** both lanes collect
+      `tests/` only, with no `--ignore`, `--deselect` or `--override-ini`; the
+      tooling tests live in `gate/tests/` and run in `tester-unified`. The full
+      `self-qualification` lane additionally requires the same-commit
+      registered `tester-unified` receipt
+      (`.assay/registered-gate/tester-unified.json`, written by
+      `tools/tester-unified-gate.sh` only after a green run at an unchanged
+      HEAD and tree, cleared at each launch): the driver pre-checks it with
+      `b105_report_check.py --receipt-only`, and the checker refuses a full
+      report without it. Run `./run-gate.py tester-unified` first. The
+      preflight needs no receipt. `gate/tests/test_self_lane.py` pins the
+      exact argv and the `pyproject.toml` values.
 - [ ] R2 runs native mutation over the full declared source target and
-      produces a complete, unsharded, verifier-accepted candidate inventory
-      and outcomes. No budget-limited, sentinel, partial, or no-candidate
-      result is described as an R2 pass. Surviving or equivalent mutants stay
-      visible and receive the disposition the configured contract requires.
+      produces a complete, verifier-accepted candidate inventory and outcomes.
+      Deterministic shards may execute the fixed inventory, but missing or
+      duplicate candidates are refused and final evidence is consolidated
+      into the ordinary complete verdict accepted by `assay verify`. No
+      budget-limited, sentinel, partial, or no-candidate result is described
+      as an R2 pass. Surviving or equivalent mutants stay visible and receive
+      the disposition the configured contract requires. **Clarified
+      2026-09-28 (A-465):** the only native-Python disposition for an
+      unkillable mutant is an entry in the reviewed equivalence ledger (B120),
+      audited at the qualifying commit. Every other candidate must be killed.
 - [ ] R3 executes the declared canary contract against the self-qualification
       source, with positive and negative controls proving the canary detects
       the intended change and the restoration.
@@ -10692,17 +10775,34 @@ report; code review alone is not evidence of qualification.
       passes `assay verify`, is retained with its source revision and gate log,
       and is produced inside `tester-unified`; this is required before M7
       starts.
-- [ ] The long R2 campaign uses the estate's `--resume --progress` contract
-      and remains independent of host load or scheduling. B106 selective reuse
-      may reduce later reruns only when current evidence proves each reused
-      result; an uncertain candidate runs fully.
+- [ ] A registered R0/R1 preflight uses the same full source inventory and
+      branch floor. The full gate verifies this preflight before starting R2,
+      so a red baseline or coverage report cannot trigger the long mutation
+      campaign. It retains coverage.py's raw JSON arcs outside the temporary
+      snapshot for exact branch-level review.
+- [ ] The full self-qualification gate targets completion within 6 hours and
+      has an 8-hour hard wall-clock ceiling covering preflight, R2, final
+      consolidation, verification, queueing, retries, and retained evidence.
+      Persist the campaign's start/deadline against its exact source, lane,
+      tool, and R2 plan identity before preflight or worker dispatch. `--resume`,
+      a replacement worker, or a Buildkite retry consumes the same remaining
+      time; none resets the campaign clock. Reaching the ceiling preserves
+      progress/state and reports an incomplete infrastructure run; it never
+      creates a candidate outcome or PASS. Candidate classification remains
+      independent of host load and scheduling. The R2 campaign uses the
+      estate's `--resume --progress` contract. B106 selective reuse may reduce
+      later reruns only when current evidence proves each reused result; an
+      uncertain candidate runs fully.
+- [ ] B110's structural runtime work is complete, reviewed, and shown to meet
+      this ceiling before B105's final qualification starts. A longer forecast
+      requires a changed test/execution plan, not a longer timeout.
 - [ ] README explains the self-qualification capability, DESIGN-GUIDE records
       why it is separate from the fast release lane, and CONSUMERS.md includes
       a pasteable invocation and report-verification example.
 
 ## B106 -- incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence
 
-**Status: OPEN (filed 2026-09-25 from CMRU's FEAT-03 review campaign).**
+**Status: DONE — shipped in `assay-v7.1.0` (merge `e5e9b95c`, A-461; registered `tester-unified` PASS recorded in `reports/assay-WAVE-C-P5-B106-REPORT.md`). Status line corrected 2026-09-28; it had still read OPEN. `--reuse-from` is inert for B105 until B112 drops `--override-ini` and B114 removes pytest-cov from the R2 command. (Filed 2026-09-25 from CMRU's FEAT-03 review campaign.)**
 
 **Observed use case:** CMRU's completed campaign at `e4f34c0c` ran 494
 candidates in 14,989.596 seconds (4h09m50s), killing 492 and leaving 2
@@ -10819,3 +10919,823 @@ RW-339/RW-341 and
 Session 17–18. Exact candidate state is under
 `.worktrees/rg55-p6-r2-final/scripts/cgroup-profiler/.assay/`; preserve both
 campaign trees and do not relabel the `hung` result as equivalent.
+
+## B108 — deterministic mutation-campaign analysis and automatic post-lane closeout
+
+**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns). Phased 2026-09-28: phase 1 is the deterministic `assay analyze campaign` core that the B110 pilot and survivor screen need (brief `reports/b110/P8-campaign-analysis-core.md`). Phase 2 is the automatic run-gate post-lane closeout and its `run-gate-project/SPEC.md` integration, and stays open.**
+
+**Observed need:** operators repeatedly call Assay and then write one-off
+Python/LLM analysis to answer basic campaign questions: how many candidates
+were planned, completed, and left pending; how outcomes divide among
+`killed`, `survived`, `equivalent`, `crashed`, `hung`, and
+`budget_exceeded`; which survivors and adverse outcomes need attention; how
+appended/resumed runs relate; where coverage is missing; and how long the
+remaining work may take. Examples include the 494-candidate CMRU campaign
+that filed B106, Assay's long B105 self-qualification, and RG-55,
+CLI-extended, Netcup, and PWMCP campaign reviews. Those investigations each
+needed ad hoc parsing or interpretation of evidence that Assay already
+produced.
+
+B100 provides a bounded live gate snapshot, and `assay analyze progress`
+segments progress streams and reports event facts. Neither provides a
+campaign-level, outcome-oriented closeout that combines the current plan,
+progress, verdict, and available coverage evidence. The result is a second
+tool call or custom parser after the lane, often followed by another LLM
+interpretation step.
+
+### Desired behavior
+
+- Add a deterministic `assay analyze` campaign summary that consumes
+  an explicitly named lane at an expected commit plus explicitly named
+  progress/verdict/coverage evidence, and emits both machine-readable JSON
+  and concise text. It derives the current plan from the lane declaration
+  rather than assuming a plan artifact exists. It reports planned, completed,
+  pending, resumed, rejudged, and (for B106) freshly replayed versus fully
+  executed candidates without double-counting appended runs. It lists
+  candidate IDs, source locations, operators, and outcome buckets for
+  survivors and adverse outcomes, rather than only totals. Candidate detail
+  is filterable and bounded; any truncation reports the full matching count
+  and a way to retrieve the remaining records.
+- Summarize terminal verdict status and reason, rigor, coverage floors and
+  uncovered source locations/arcs when present, campaign start/end and
+  elapsed time, and the named evidence artifacts with their identities. A
+  progress stream is never a verdict: incomplete or absent terminal evidence
+  remains incomplete, and only the verifier-accepted verdict plus actual
+  command exit can establish the gate result.
+- Report observed candidate durations and a clearly conditional remaining-time
+  estimate only when the sample is sufficient. Show the sample count and
+  measurement window; identify exclusions such as budget-exceeded, hung, or
+  interrupted candidates. Estimates are operator information only: host load,
+  elapsed time, candidate rate, and ETA must never change candidate selection,
+  verdict classification, or gate outcome; analysis introduces no
+  time-based acceptance threshold.
+- After a registered `kind = "assay"` lane, `run-gate` automatically invokes
+  this analysis inside the gate using its already-known lane, expected
+  commit, verdict, progress, and log paths, then retains the summary with the
+  gate evidence. A command lane that wraps Assay may opt in only by explicitly
+  declaring its analysis inputs; neither Assay nor `run-gate` guesses artifact
+  paths. Analysis failure is surfaced and cannot overwrite, mask, or promote
+  the original lane's exit or verdict.
+- Invalid, malformed, stale, truncated, or mismatched inputs are identified
+  by their actual condition; missing evidence is never displayed as zero
+  work, zero failures, or a complete campaign. The report stays bounded and
+  preserves separate run identities instead of folding retry history into a
+  misleading aggregate.
+
+### Acceptance
+
+- [x] Fixtures cover a fresh campaign, appended `--resume` runs, a
+      `--rejudge` run, B106 reuse/replay, and an interrupted campaign. The
+      summary's per-run and current-plan counts match the authoritative plan,
+      progress events, and verdict with no duplicate candidate accounting.
+- [x] Fixtures cover every canonical mutation outcome bucket, with exact
+      candidate IDs, paths, operators, and outcome attribution for survivors,
+      equivalents, hangs, crashes, and budget exhaustion. Missing, malformed,
+      stale-commit, wrong-lane, truncated, or verdict/progress-disagreeing
+      evidence never yields a complete or zero-failure summary.
+- [ ] A variable-duration fixture proves the estimate is explicitly
+      sample-qualified and diagnostic only; changing host-load metadata or
+      elapsed-time inputs cannot change the selected candidates or gate
+      outcome. A bounded candidate listing exposes its matching total and
+      never silently truncates survivor/adverse-outcome detail.
+- [x] Coverage summary identifies exact missing lines/branch arcs from the
+      supplied coverage artifact and distinguishes a missing artifact from a
+      genuinely complete zero-gap measurement.
+- [ ] A registered assay lane run through `run-gate` automatically retains
+      the machine-readable and text closeout in tester-unified gate evidence.
+      A command lane without explicit analysis declarations does not guess;
+      a closeout failure preserves the original command status and verdict.
+- [ ] README explains the analysis surface, DESIGN-GUIDE records its identity,
+      failure, and estimate rules, and CONSUMERS.md includes pasteable direct
+      and run-gate workflows. `run-gate-project/SPEC.md` documents the
+      automatic post-lane integration and its opt-in boundary for wrapped
+      Assay commands.
+
+## B109 — B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes
+
+**Status: OPEN (filed 2026-09-26 at operator request). 2026-09-28: the stable site anchor B109 needs is designed first by B120/P10a (A-465), which uses it as the equivalence-ledger key. B109 must reuse that anchor rather than define a second one. Its dependency-proof design depends on whether B121 (isolation units) is adopted.**
+
+**Observed limit:** B106 safely handles a changed tree by running the current
+baseline and rediscovering the current candidate set, then replaying an
+eligible prior killed candidate's current failure witness. Prior survivors
+and uncertain or changed candidates run the full current suite. Its candidate
+identity includes the candidate file's full source digest, byte span, and
+mutated-file digest. This is safe but conservative: changing a comment or an
+independent function in the same file invalidates every candidate identity in
+that file, even when the mutation site and the code/tests relevant to a prior
+kill did not change. When a source fix targets a survivor, the campaign should
+fully rejudge that survivor without automatically paying for full-suite runs
+of every previously killed, behaviorally independent candidate.
+
+### Desired behavior
+
+- Add an explicitly selected, opt-in reuse policy that can carry forward a
+  prior `killed` result when Assay has deterministic evidence that the
+  candidate's mutation semantics and its relevant judging dependency closure
+  are unchanged. Keep B106's current witness-replay/full-run policy available
+  as the conservative mode and fallback.
+- Separate stable candidate-site identity from whole-file byte identity. A
+  language adapter may use a semantic site fingerprint and unambiguous
+  structural anchor so unrelated comments, formatting, or edits elsewhere in
+  the file do not automatically invalidate a candidate. If the mutation site
+  moved ambiguously or its before/after transformation changed, it is not the
+  same candidate and must be rediscovered and judged normally.
+- Decide carry-forward per candidate, not per repository commit. Its proof
+  covers the mutation site and required program context, the prior failing
+  test node and its fixtures/plugins/conftest, relevant imports/helpers and
+  generated or installed dependencies, plus the lane command, configuration,
+  environment, and tool/runtime identities that can affect the result.
+  Record the prior verdict digest, current commit, candidate identity,
+  dependency-proof method/version, and the compared closure identities for
+  every carried outcome.
+- Always run the current R0 baseline and rediscover the complete current
+  candidate inventory. Previously surviving candidates still receive a full
+  current-suite run so a source/test fix can kill them. A prior kill whose
+  relevant closure changed is replayed using B106's current-witness path or
+  gets a full run. Unknown, dynamic, incomplete, or unsupported dependency
+  information never counts as proof of no impact and falls back to the
+  conservative policy.
+- A completed verdict is gate-acceptable only when every candidate in the
+  current inventory has exactly one outcome that is either freshly executed,
+  freshly witness-replayed under B106, or carried forward with a verifier-
+  accepted impact proof. Preserve provenance and disposition visibly; do not
+  relabel a carried result as freshly executed.
+
+### Acceptance
+
+- [ ] A changed-tree fixture fixes selected prior survivors. The fixed/new
+      survivors run fully; previously killed candidates outside the changed
+      dependency closures are carried forward under the opt-in policy, with
+      per-candidate proof, while the default B106 mode continues to replay
+      eligible kills.
+- [ ] Paired positive/negative fixtures show that a comment or independent
+      function edit can preserve identity only when the semantic site anchor
+      and impact proof remain unambiguous, while edits to a shared helper,
+      prior failing test, fixture, plugin/conftest, lane argv/env/config, or
+      relevant dependency invalidate the affected proof and trigger replay or
+      a full run.
+- [ ] Fixtures for dynamic imports, reflection, monkeypatching, unresolved
+      dependencies, and ambiguous site movement prove that missing impact
+      evidence always falls back; no unknown is interpreted as unchanged.
+- [ ] `assay verify` rejects carried-forward records with missing, stale,
+      mismatched, duplicated, or incomplete provenance and accepts a complete
+      mixed campaign only when current inventory coverage is exhaustive and
+      disjoint.
+- [ ] Before any verdict-schema or closed-vocabulary change, obtain the
+      operator-requested GPT-6-Luna xhigh design recommendation and independent
+      review. If v13 cannot express the required per-candidate proof, record
+      the needed schema contract before implementation.
+- [ ] README explains the opt-in and its limits, DESIGN-GUIDE specifies the
+      dependency-proof model and conservative fallback, and CONSUMERS.md gives
+      a pasteable survivor-fix workflow and explains which outcomes were
+      carried forward versus rerun.
+
+## B110 — B105 R2 exceeds the operator runtime ceiling; reduce repeated test work and qualify bounded execution
+
+**Status: OPEN (filed 2026-09-27 after stopping B105's full R2 attempt at the operator's 6–8 hour ceiling). Split 2026-09-28 into B111–B121 after an operator interview; see "B110 split" below. B110 itself keeps only the fixed pilot, the go/no-go decision, and the final qualifying runbook.**
+
+**Observed:** the B105 gate entered R2 with 3,760 candidates and 5,831 tests
+per candidate. Its first 15 completed candidates took a mean of 560.3 seconds
+each (8 killed, 7 survived); this is only an ordered opening prefix, so its
+outcome mix is not a reliable sample of the full plan. A straight-line
+extrapolation is about 585 worker-hours, or 24.4 days on one worker and 8.1
+days on three ideal, perfectly balanced workers. These estimates are
+diagnostic, not a verdict or a promise. The recorded invocation uses one
+mutation job and repeats the coverage-instrumented test command for each
+candidate. Dividing candidate IDs into shards changes scheduling but does not
+remove that repeated work. A shard union by itself is also not the ordinary,
+complete verdict that `assay verify` must accept. The attempt's partial
+progress and state are recorded in
+[`assay-B105-LOG.md`](reports/assay-B105-LOG.md).
+
+**Capacity scenario, not a forecast:** if the opening 7/15 survivor split and
+560.3-second candidate mean held, full-suite survivors alone would consume
+about 273 worker-hours, even if cold-killed candidates took zero time. Three
+perfectly balanced workers would still need about 91 hours. With one hour
+reserved for gate overhead, the scenario needs about 40 fully effective
+workers to fit 8 hours or 55 to fit the 6-hour target, before headroom. The
+prefix is not representative and its all-candidate mean is not a measured
+survivor mean; the bounded pilot must replace this scenario with measured
+survivor duration, early-kill rate, and real worker capacity. It does show why
+cold kills alone cannot be assumed to make three workers sufficient.
+
+The repository has Buildkite trigger/collector scripts, but its integration
+guide records no live Buildkite build or artifact download, and this host has
+no installed or active Buildkite agent. Remote worker capacity is therefore
+unmeasured; do not count Buildkite parallelism until agents are enrolled and a
+live acceptance proves artifact transfer.
+
+**Required throughput, not a forecast:** reserve one hour of the six-hour
+target for preflight, R3, queueing, retries, aggregation, and evidence
+collection. The remaining five hours are 18,000 candidate-worker seconds.
+For 3,760 candidates, the average R2 cost must be below 4.8 seconds with one
+worker, 9.6 seconds with two, or 14.4 seconds with three. The existing
+560.3-second opening-prefix mean is ordered and non-representative, but these
+figures make the capacity gap concrete: cold kills alone cannot be assumed to
+fit while survivors still execute a several-minute suite. Measure and reduce
+the complete suite's cost per candidate or establish real additional CPU
+capacity under the same per-worker RAM limits. A shard count changes
+scheduling, not work.
+
+The self-qualification claim remains full-source R0–R3 on one exact revision.
+It may change how R2 proves a candidate killed, but it may not silently run a
+smaller source target, drop tests for survivors, report an incomplete campaign
+as complete, or turn elapsed time or host load into a candidate outcome.
+The implementation must lower repeated work and keep the registered local
+worker cap at 2 GiB memory (with its existing 8 GiB combined memory-plus-swap
+limit); do not raise the local gate's admitted RAM budget or multiply local
+RAM with concurrent workers. More CPU is acceptable. Other hosts or Buildkite
+workers are options only when their real CPU and already-provisioned RAM
+capacity are measured and recorded per host; none is assumed to exist merely
+because a shard or pipeline can be described.
+
+### Desired behavior
+
+- Add an explicit cold-witness policy for native R2. A candidate may stop at
+  the first verified test-call failure and be reported as `killed` with a
+  distinct `witness-cold` execution record. The record must say that later
+  tests were not run: they could independently fail, hang, or crash, and this
+  outcome does not claim they were checked. This is an existential kill
+  witness, not a full-suite execution receipt. Survivors and uncertain or
+  unsupported executions run the full declared suite. The normal full-suite
+  policy remains the default outside the explicit opt-in. Use verdict v14's
+  reviewed hard-cut contract: `judgment.r2.cold_witness_kills` is explicit,
+  resume identity includes it, and the candidate execution mode is
+  `witness-cold` with exactly `{node_id, when: "call", outcome: "failed",
+  session_exit_status: 1, process_exit_status: 1}`; boolean values are not
+  integers for these exit fields. It is distinct from `witness-prefix`, carries
+  no prior-verdict identity, and needs no new lane key or reason code for this
+  first implementation.
+- Derive the mutation-only R2 command from the lane's declared command. Remove
+  only the three recognized B105 coverage options and add `-p
+  no:pytest_cov`; preserve test selection, order, working directory, and all
+  other arguments. Do not expose a free-form alternate selector that could
+  narrow the lane unnoticed. Permit only B105's exact
+  `--override-ini=pythonpath=src` after validating the snapshot config and
+  working directory; reject other or duplicate overrides and order-changing
+  or fail-fast options. The uninstrumented R2 baseline must pass, and ordered
+  runtime collection manifests (count, ordered node IDs, duplicates, and
+  canonical digest) must prove it selects the same tests as the coverage
+  baseline. Each candidate
+  must prove the same collection; a cold kill must also prove the actual
+  started-test prefix reached its witnessed call failure. If the argv shape,
+  collection, hook set, or receipt cannot be proved, run the full suite or
+  refuse the cold policy. Record the policy and effective command in resume
+  identity and verifier-accepted evidence.
+- The v14 R2 evidence must make those runtime proofs reviewable and bind them
+  to the submitted candidate inventory. Record a versioned transform plus the
+  declared, transformed, and effective argv; the resolved snapshot cwd and
+  pytest configuration identity; coverage-baseline and mutation-only-baseline
+  collection manifests; and a hook fingerprint for each baseline. Record one
+  candidate execution-evidence item for every candidate ID, with the command
+  variant, runtime collection result/digest, and hook fingerprint. A
+  `witness-cold` kill additionally records the ordered started-test prefix and
+  the index of the failed call; collection/setup/teardown/session errors make
+  the candidate uncertain and disqualify the cold receipt. The verifier
+  requires the evidence IDs to equal the mutation bucket IDs exactly and
+  checks cold-policy, command, manifest, and receipt relationships. The
+  source-bound B105 report checker verifies the declared lane command and
+  transform against the exact source revision; a self-reported argv hash is
+  not source proof.
+- Keep the no-coverage command deliberately narrow to B105. The exact
+  `tests/conftest.py::pytest_sessionfinish` archive hook is permitted only
+  when the four `ASSAY_B105_*` archive variables are absent, as in the full
+  lane; otherwise it is unsupported. Every other non-builtin pytest hook is
+  ineligible unless separately proven safe. Do not change plugin hooks
+  implicitly and call matching node IDs proof of runtime equivalence. The
+  intentional pytest-cov removal must be represented in the versioned command
+  transform and hook allowlist; the no-cov baseline must pass, and candidate
+  hooks must match its reviewed fingerprint. Any candidate mismatch falls
+  back to the original declared command or remains incomplete.
+- Treat coverage-derived source/test slices as research, not as proof of a
+  candidate outcome. A full-suite baseline does not prove an omitted-test
+  subset has the same fixtures, globals, or ordering; a subset control still
+  cannot prove that a slice failure persists in the full declared suite. If a
+  slice is ever trialed, a slice failure must be rerun under the full declared
+  command before it can count as killed, and a slice pass must continue to the
+  full suite before it can count as survived. This does not reduce survivor
+  work, so prioritize profiling and speeding the complete suite or measuring
+  additional CPU capacity instead.
+- Keep R0 and R1 full: the baseline suite and whole-target line/branch
+  coverage still run over the complete declared target. R2 skips repeated
+  coverage measurement only after the separate uninstrumented baseline and
+  collection-equivalence proof succeed. It never changes the inventory of
+  source files, candidates, or tests under consideration.
+- Permit deterministic candidate shards only over one immutable source,
+  lane, tool, and candidate-plan identity. Local workers stay inside the
+  existing 2 GiB per-gate cap and current local gate RAM budget. Additional
+  hosts may contribute only measured, already-provisioned capacity under each
+  host's own cgroup and RAM limits. Buildkite is optional and must have
+  configured agents, durable shard artifacts, and queue time included in the
+  overall budget before it is used.
+  Missing, duplicate, mismatched, or uncollected shards make the campaign
+  incomplete. Consolidation must rederive the full plan and produce one
+  ordinary complete verdict accepted by `assay verify`.
+- Persist one absolute campaign deadline before preflight/queueing, bound to
+  the exact source, lane, tool, and R2 plan. Resume, retry, Buildkite
+  reattachment, and worker replacement inherit that deadline instead of
+  receiving a fresh budget. State without a matching deadline cannot silently
+  start a new clock. The timer that runs inside the gate must stop the actual
+  campaign and allow its container/controller to collect logs and partial
+  state; run-gate's command-lane `budget` is advisory and is not sufficient as
+  the hard stop. Nyxloom's 8-hour timeout is only the outer failsafe.
+- Before another full campaign, run a fixed, hash-selected pilot stratified
+  across source files and mutation operators, capped at 90 minutes (absolute
+  stop at 2 hours). Measure early-witness rate, survivor time, per-worker
+  CPU/RAM, shard skew, and final consolidation cost. Use a clearly stated
+  confidence/sample limitation; do not extrapolate the first 15-candidate
+  prefix as representative. Start the full gate only when the
+  measured available capacity projects completion within 6 hours with
+  headroom. An 8-hour overall watchdog preserves state and produces an
+  incomplete infrastructure result, never a guessed candidate result or
+  PASS. ETA remains advisory and host load never changes classification.
+- If local CPU capacity cannot meet the target within the RAM ceiling, assess
+  existing remote workers and Buildkite against the same limits. If no
+  measured configuration fits, change the test/execution plan before another
+  full run; increasing the timeout is not a solution.
+
+### Acceptance
+
+- [ ] Verifier fixtures accept a valid cold call-failure receipt only for a
+      native `killed` candidate with the explicit cold policy enabled. Missing,
+      duplicate, malformed, mismatched, or non-call receipts; failures during
+      setup, collection, or teardown; and uncertain hooks cannot become a
+      cold kill. Survivors and uncertain cases execute the complete suite.
+- [ ] The v14 verifier requires the exact `witness-cold` mode and receipt,
+      rejects the mode when cold policy is false or absent, and rejects prior-
+      verdict/node fields on cold records. Resume/state identity changes when
+      the cold policy, effective command, transform version, or collection
+      manifest changes; exit fields reject booleans, and the receipt contains
+      exactly the five reviewed fields with no extra properties.
+- [ ] Adversarial fixtures prove the report labels unrun tests for cold kills
+      and does not claim full-suite execution; a later test that would hang or
+      crash remains undiscovered but does not erase the earlier verified kill
+      witness. The full-suite policy and all existing outcome rules remain
+      unchanged when cold mode is disabled.
+- [ ] The derived mutation command removes only the recognized coverage
+      options, adds only `-p no:pytest_cov`, and preserves every other
+      allowlisted argv element. Runtime collection manifests match in order
+      and content between the full-coverage baseline, uninstrumented R2
+      baseline, and every candidate; cold receipts bind to the actual started
+      prefix. The B105 `pytest_sessionfinish` archive hook and every other
+      non-builtin hook are proven safe for cold execution or refactored out of
+      the R2 path. Unsupported pytest/plugin behavior refuses cold execution
+      rather than weakening the proof.
+- [ ] The verifier and source-bound B105 checker bind the cold policy, exact
+      versioned argv transform, cwd/config, coverage and no-cov collection
+      manifests, hook fingerprints, per-candidate evidence set, and cold
+      started prefix. Candidate evidence IDs equal the candidate buckets;
+      a runtime collection or hook mismatch forces a full declared-command
+      retry or leaves that candidate incomplete. The archive-hook exception
+      is source-bound and only valid with all four archive variables absent.
+- [ ] Shard fixtures prove deterministic, disjoint, exhaustive candidate
+      coverage and reject source/plan/tool mismatches. Consolidation produces
+      a complete standard verdict that passes `assay verify`; stopping at the
+      watchdog retains resumable state but cannot pass the gate.
+- [ ] An injected-clock fixture proves that resumes, retries, queue delays,
+      and worker replacements consume one persisted absolute deadline; absent,
+      stale, or mismatched deadline evidence refuses the campaign rather than
+      granting a fresh 8-hour allowance. A live timeout stops the actual
+      in-gate command, collects its logs/state, and leaves no running gate
+      container behind.
+- [ ] A fixed, hash-selected pilot covers source files and mutation operators,
+      completes within 90 minutes or is stopped by 2 hours, and records the
+      real available worker profile, RAM ceiling, queue/aggregation overhead,
+      candidate outcome sample, per-candidate CPU/RAM and elapsed time, and a
+      stratified projection. Profile the complete suite's slow tests/fixtures
+      so any cost reduction keeps the full declared suite. For a 64-candidate
+      sample, include one candidate per candidate-bearing source file, all
+      four operators, then fill by the published hash rank.
+      No full campaign starts without a measured plan targeting at most 6
+      hours and fitting the approved RAM envelope; an 8-hour stop is
+      incomplete, with no candidate classification derived from load or time.
+- [ ] If Buildkite or remote workers are used, an acceptance gate verifies
+      agent availability, cgroup placement, memory bounds, artifact durability,
+      exact shard identity, and complete collection before accepting the
+      consolidated verdict. The feature also works without Buildkite when the
+      local measured profile meets the same budget.
+- [ ] README explains cold-witness results and their omitted-test limitation,
+      DESIGN-GUIDE records why one verified failure is sufficient and how the
+      runtime budget works, and CONSUMERS.md gives a pasteable opt-in and
+      shows the difference between cold kills, fully executed survivors, and
+      an incomplete timeout. Any Buildkite workflow documents its required
+      agent and memory contract.
+
+### B110 split (2026-09-28)
+
+An analysis-only session measured the retained evidence and ran an operator interview. Full report:
+`reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`; plan: `reports/assay-B110-PLAN-2026-09-28.md`;
+briefs: `reports/b110/`; decisions A-465–A-474.
+
+It established:
+- every killed candidate ran its whole collected suite (5,831 tests in 30eec294; 5,819 in e79);
+- a passing native campaign contains only kills and ledger-audited equivalents, so survivor cost belongs to a non-qualifying screen/fix loop;
+- 97.8 worker-hours per campaign went to a test file that can never kill a mutant;
+- 14 single-operator mutants can spin or block scanner loops.
+
+The acceptance items above are now owned as follows:
+
+| B110 acceptance item | Owner |
+|---|---|
+| cold receipt / v14 verifier / labelled unrun tests / derived command / B105 binding | B114 |
+| shard fixtures, consolidation to one ordinary verdict | B119 (consolidation), B111 (report-checker refusals) |
+| injected-clock persisted deadline, live timeout leaves no container or process behind | B117 |
+| fixed hash-selected pilot and projection | B118 (tooling) + **B110 (the pilot run and go/no-go)** |
+| Buildkite/remote acceptance | B119 (worker runbook; capacity counts as zero until measured) |
+| docs | each package, in its own branch |
+
+**Superseded details in the text above:**
+- "Permit only B105's exact `--override-ini=pythonpath=src`" is superseded by A-468: the lanes drop the override.
+- "falls back to the original declared command" and desired-behaviour bullet 1's "Survivors … run the full declared suite" are both refined by A-470. A completed, proof-matching no-cov run is the survivor's full run; only a proof mismatch falls back to the declared command.
+- "Record one candidate execution-evidence item for every candidate ID" and "Candidate evidence IDs equal the candidate buckets" are refined by A-470/A4:
+  - `evidence` is required on survivors and cold kills;
+  - it is optional on `full` kills, `crashed`, `hung` and `budget_exceeded`;
+  - it is forbidden on ledger equivalents and when cold is off.
+- "cold receipts bind to the actual started prefix" is implemented through the plugin's per-start check, `started_count`/`failed_call_index`, and the retained ordered manifest sidecar (B114/P3d).
+- The terminal draft's scenario "snapshot + collection ≈ 3,760 × 6.5–8 s" is corrected to ≈ 9.4–13.4 s per kill; see the analysis report §6. That phrase appears only in research record R0, not in the text above.
+- **Runtime transform-proof failures** are a whole-lane refusal (A-470 C1), not an R2-only claim.
+
+**B110 acceptance (remaining after the split; revised after the round-1 review):**
+- [ ] B111–B118, B108 phase 1, the v14 integration branch and the P7b gate modes are merged, independently reviewed, and gated. B120 (P10b + P10c) is also merged if the survivor screen leaves any equivalents.
+- [ ] **The fixed pilot (plan §7)** ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, within 90 minutes, stopped by 2 hours at the latest.
+  - `reports/assay-B110-PILOT-REPORT.md` records:
+    - the cold-kill rate with its interval;
+    - the snapshot, collection and prefix distributions;
+    - survivor durations;
+    - per-worker peak RSS and aggregate cgroup `memory.peak`;
+    - memory-full stall;
+    - a stratified p50/p90 projection with fixed overhead;
+    - shard skew;
+    - a survivor-screen cost projection.
+  - Consolidation cost is measured in B119, not in the pilot.
+- [ ] **Pilot GO (plan §8.1)** is recorded. NO-GO leads to an operator decision among B121, measured remote capacity (B119), or a further test-plan change; never to a longer timeout.
+- [ ] **Qualifying GO (plan §8.2)** is recorded after the screens and the ledger audit at X*.
+- [ ] The qualifying runbook (plan §9.3) is ready. The B105 lane's `jobs` is set from the pilot.
+
+## B111 — B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test leak, report-checker partial-scope refusal, snapshot guard tests
+
+**Status: IMPLEMENTED on branch `wave-a-w8-measurement` 2026-09-29 (Wave A package W8, brief `reports/wave-a/W8-measurement.md`; log `reports/wave-a/W8-LOG.md`); awaiting the controller's registered gate, review and merge. Filed 2026-09-28; original brief `reports/b110/P0-measurement-hygiene.md`.**
+
+**Observed:**
+- `assay plan` multiplies by a hard-coded 60 s (`cli.py:1786-1801`); CONSUMERS calls that an upper bound, but under `auto` it is a lower bound. The B105 plan said 62h40m against a measured ≈585 worker-hours.
+- Candidate events carry no CPU, RSS or phase timings, and setup/teardown durations are never forwarded.
+- `tests/test_liveness.py:581/601` write a `session_finish` into the outer candidate's events file, so any 30 s-silent test after them is marked `hung`.
+- `tools/b105_report_check.py` accepts a sharded or partial R2 inventory.
+- Disjoint-inode isolation (O2) is pinned only by an uncollected carve asset.
+
+**Acceptance:**
+- [ ] The brief's oracles pass.
+- [ ] `--baseline-from` estimates carry provenance.
+- [ ] Resource and phase evidence appears in candidate events and state records.
+- [ ] The leak is fixed, with a regression test.
+- [ ] The report checker refuses shard fields and partial inventories.
+- [ ] Guard tests G1–G5 pass on unchanged code.
+- [ ] Docs are synced.
+- [ ] tester-unified PASS.
+
+## B112 — B110 P1: B105 suite scope
+
+**Status: OPEN (filed 2026-09-28; A-468; brief `reports/b110/P1-suite-scope.md`; after B111's leak fix).**
+
+**Scope:**
+- `--ignore=tests/test_python_qualification.py` and removal of `--override-ini=pythonpath=src` in both self-qualification lanes, with drift tests;
+- the `tests/zz_slow/` tier (whole-file moves and splits; pinned paths untouched);
+- `tests/test_dataclass_contract.py` with its fixture.
+
+**Acceptance:**
+- [ ] The brief's oracles pass.
+- [ ] `self-qualification-preflight` passes R0/R1 with 100% line and branch coverage on the changed suite.
+- [ ] tester-unified PASS.
+
+## B113 — B110 P2: loop-progress guards
+
+**Status: OPEN (filed 2026-09-28; A-466; brief `reports/b110/P2-loop-guards.md`).**
+
+**Observed:** 14 source-level at-risk mutants, plus one at test level (15 in all), and 4 latent single-operator mutants can make a scanner cursor stall, move backwards, or grow memory without bound, or block a pipe drain:
+- go.py 292/321/323/330;
+- javascript.py 243/245/249;
+- sql_lex.py 193×3/195 (latent 270/273);
+- go_modfile.py 393;
+- git.py 335×2;
+- isolation.py 1388/1392 (latent);
+- liveness.py 1530 at test level.
+
+The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ever pass a native R2.
+
+**Acceptance:**
+- [ ] `errors.require_advance` at the named sites.
+- [ ] A drain rewrite with the exclusions fixture updated.
+- [ ] A watchdog on the real-child liveness tests.
+- [ ] Deterministic oracles for each guarded site.
+- [ ] tester-unified and preflight PASS.
+
+## B114 — B110 P3: verdict v14 cold-witness kills with a proven no-coverage R2 command
+
+**Status: OPEN (filed 2026-09-28; A-469/A-470/A-471; briefs `reports/b110/P3a-v14-schema-verify.md`, `P3b-r2-command-cold-witness.md`, `P3c-liveness-lane-keys.md`, `P3d-gate-report-binding.md`; integration branch `assay-b110-v14`).**
+
+**Scope:** the B110 cold-witness contract as resolved by A-470:
+- the `--cold-witness` opt-in;
+- the transform `assay-r2-pytest-nocov/1`;
+- coverage and no-cov baseline manifests;
+- hook and runtime fingerprints;
+- per-candidate `evidence`;
+- `witness-cold` and `ledger` execution modes;
+- `judgment.r2.{cold_witness_kills, r2_command, liveness.cpu_window_s/idle_floor_s, equivalence_ledger}`;
+- judge identity `/3`;
+- lane keys `liveness_cpu_window`/`liveness_idle_floor` (A-469);
+- B105 gate flag and source-bound report binding.
+
+**Acceptance:**
+- [ ] All four briefs' oracles pass.
+- [ ] One v14 hard cut, with golden fixtures, W9 frozen and W10 added.
+- [ ] The v13 → v14 cold start.
+- [ ] Docs are synced.
+- [ ] One tester-unified and one preflight PASS after the integration branch merges.
+
+## B115 — B110 P4: bounded work-queue mutation executor
+
+**Status: OPEN (filed 2026-09-28; A-467; brief `reports/b110/P4-work-queue-executor.md`).**
+
+**Scope:**
+- Replace fully joined waves with at most `jobs` candidates in flight, submitted in order.
+- Keep expiry, fatal, ordering and peak-pack semantics.
+- Write state records on completion.
+- Emit `candidate` progress in position order through a reorder buffer.
+
+**Acceptance:**
+- [ ] The existing executor tests stay green (one fake moves to real `Future`s).
+- [ ] New boundary oracles: max in flight, no wave barrier, ordered progress.
+- [ ] tester-unified PASS.
+
+## B116 — B110 P5: cheaper fresh per-candidate snapshots
+
+**Status: OPEN (filed 2026-09-28; A-472; brief `reports/b110/P5-snapshot-costs.md`; after B111's guard tests).**
+
+**Scope:**
+- C1: one `update-index --refresh` per materialization.
+- C2: child-closure bound as base ∪ delta.
+- C3/C4 are optional and measured separately.
+
+**Acceptance:**
+- [ ] Red-first operation-count, index-stat and closure-exactness oracles.
+- [ ] G1–G5 and every existing isolation test stay green.
+- [ ] tester-unified PASS.
+
+## B117 — B110 P6: one persisted campaign deadline and process-group termination
+
+**Status: OPEN (filed 2026-09-28; A-473; brief `reports/b110/P6-campaign-deadline.md`).**
+
+**Scope:**
+- `assay campaign init`;
+- `assay run --campaign-deadline`;
+- refusals for absent, stale or mismatched deadline evidence;
+- UTC→monotonic conversion once per process;
+- SIGTERM/SIGINT and expiry terminate every candidate process group;
+- gate-script and run-gate integration.
+
+**Acceptance:**
+- [ ] Injected-clock oracles.
+- [ ] A real-child termination oracle with no timing assertion.
+- [ ] tester-unified and preflight PASS.
+
+## B118 — B110 P7: non-qualifying pilot candidate selection
+
+**Status: OPEN (filed 2026-09-28; A-474; brief `reports/b110/P7-pilot-tooling.md`).**
+
+**Scope:**
+- `assay run --candidates-file` (no verdict, exit 6, R3 not run) and `--pilot-jobs`;
+- `selection_sha256` in progress;
+- the deterministic `tools/b110_pilot_select.py`;
+- the pilot runbook and report template;
+- P7b: the gate-script modes `b110-pilot` and `b110-screen` (non-qualifying survivor screen) and their run-gate lanes, after P6 and v14 merge;
+- a selection enables the state root and writes one record per executed candidate (C5);
+- a `PILOT-STATE` sentinel file.
+
+**Acceptance:**
+- [ ] The brief's oracles pass.
+- [ ] tester-unified PASS.
+
+## B119 — B110 P9: distributed/async mutation evidence
+
+**Status: OPEN (filed 2026-09-28; A-471; brief `reports/b110/P9-distributed-evidence.md`; depends on B108 phase 1, B112, B114 and B117. Pre-deadline records are refused by default (C8) until the operator answers plan §11.2.)**
+
+**Scope:**
+- `assay state import`: identity validation, conflict refusal, import receipt;
+- provisional inbox vs. accepted store;
+- consolidation by unsharded `--resume`;
+- a host-agnostic worker runbook (enrolment by measurement, fixed shard count, checksummed transfer).
+
+**Acceptance:**
+- [ ] Two-store, conflicting-record, foreign-identity and stale-tree fixtures.
+- [ ] Consolidation produces one ordinary verifier-accepted verdict.
+- [ ] tester-unified PASS.
+
+## B120 — B110 P10: native Python equivalence ledger with stable site anchors
+
+**Status: OPEN (filed 2026-09-28; A-465; brief `reports/b110/P10-equivalence-ledger.md`).**
+
+**Phases:**
+- P10a: the anchor and ledger design package, with a fresh-session design review before the v14 schema freezes.
+- P10c: the `b110-ledger-audit` gate mode, off the integration line after P7b.
+- P10b: the producer on `assay-b110-v14`.
+
+**Scope:**
+- the lane key `judge.mutation.equivalence_ledger`;
+- the TOML ledger;
+- `assay ledger audit` with its receipt;
+- the `--equivalence-audit` binding in the qualifying run;
+- `ledger` execution mode on `equivalent`;
+- verifier rules;
+- the `b110-ledger-audit` gate mode and run-gate lane.
+
+**Acceptance:**
+- [ ] The design review is accepted.
+- [ ] Anchor uniqueness and stability are proven on the real candidate plan.
+- [ ] Audit refusal oracles (killed entry, stale anchor, ambiguous anchor).
+- [ ] The qualifying run refuses a missing or mismatched audit.
+- [ ] tester-unified PASS.
+
+## B121 — B110 P11: isolation-unit execution model (decision-gated fallback)
+
+**Status: OPEN, decision-gated (filed 2026-09-28; A-467; brief `reports/b110/P11-isolation-unit-fallback.md`). Dispatch only after a B110 pilot NO-GO on the claim-preserving path and an explicit operator decision.**
+
+**The model:**
+- per-test-file fresh-process units;
+- the union of per-unit ordered manifests equals the declared manifest;
+- a per-unit dirt check;
+- a coverage-guided unit order per candidate. The coverage map orders units and never skips any.
+
+The kill semantics of a unit failure, and whether R1 stays single-process (the carver's recommendation) or combines per-unit coverage, are **open choices** in the P11 design packet. They are not fixed here.
+
+It changes the declared execution semantics (cross-file order dependence stops counting), so it needs its own decision and lane/verdict contract.
+
+## B122 — pluggable per-candidate scratch provider with a prepared read-only base
+
+**Status: OPEN, requirements only (filed 2026-09-29 by operator request). Not scheduled. Decide after the B110 pilot shows how much of the per-candidate cost is still snapshot and fixture setup.**
+
+**Why.** Each native-R2 candidate gets a fresh private git repository written from the commit's objects (`isolation.py` `_build`). After the proposed shallow and `assay/`-only snapshot shapes (B110 reuse report Part C, S4/S5), that costs ≈0.46 s per candidate (research R10 §3.2, one host, n=3). A copy-on-write (CoW) backend would save a further ≈0.3–0.4 s per candidate, which B105 does not need. The larger value is a **warm base**:
+- prepare once per lane: the materialized tree, a private `.git`, and mutant-independent artifacts such as rewritten **test** bytecode or fixture template repositories;
+- clone it per candidate, so collection and fixture costs are not repeated (research R9 RC4–RC6);
+- an immutable filesystem snapshot of the base is itself evidence that no candidate changed it. That could replace part of the per-candidate hash pass.
+
+**Requirements, whatever the backend:**
+1. **One seam in `isolation.py`:**
+   - `prepare_base(commit, lane) -> Base`: build from committed objects only, exactly as today's snapshot;
+   - `fork(base) -> CandidateDir`: a private, writable copy;
+   - `discard(candidate_dir)`.
+
+   Backends:
+   - `write` (today's behavior, the default);
+   - `reflink` (per-file `FICLONE`/`copy_file_range` on a reflink-capable filesystem; unprivileged);
+   - `fs-snapshot` (ZFS or btrfs through a host broker; see 6).
+2. **The base is never executed in.** No command, hook or interpreter runs in the base. It contains **no bytecode of `src`** (the stale-`.pyc` false-kill hazard: fixed mtime plus same-size mutants, analysis §7.2).
+3. **Warm state is declared, mutant-independent and digest-bound.** Only artifacts whose content cannot depend on the mutant may be pre-built into the base: test-module bytecode, template git repositories, downloaded wheels. They are listed in the lane, and their digests are recorded. pytest validates cached rewritten bytecode by source mtime and size only, so the carried set must be bound by content digest, and no test may depend on code-object paths (B110 review finding 5).
+4. **Per-candidate proof stays.**
+   - The candidate tree must equal the base plus exactly one mutation.
+   - With a read-only snapshot base, proof reduces to the mutated file, the child commit and the base snapshot identity.
+   - With `reflink` or `write`, today's hash/verify pass remains.
+   - P0's guard tests G1–G5 apply to every backend.
+5. **Declared, disclosed, fail-closed.**
+   - A lane key, for example `[lanes.X.isolation] scratch = "reflink:/path"`, selects the backend.
+   - The verdict records the backend, its identity (filesystem type, base snapshot name/digest) and the warm-state digests.
+   - A declared backend that is unavailable refuses the lane; there is no silent fallback to `write`.
+6. **No privilege in the gate container.**
+   - `reflink` needs none.
+   - `fs-snapshot` goes through a host broker, never `/dev/zfs` or root in the container. Reuse `nyxloom/tools/remote_mutation_zfs_broker.py`'s model: a Unix socket, a per-run capability token, an opted-in dataset property, an allowlisted prefix. That broker is `jobs=1` today; this needs one dataset per worker, rolled back to the base snapshot between candidates.
+7. **Concurrency and memory.**
+   - W concurrent forks for the B115 work queue.
+   - Disk-backed, not memory-backed: a tmpfs backend would count against the gate's 2 GiB cgroup. At most it is a small-footprint option.
+8. **Environment provisioning** belongs to mdt host-setup, not to assay:
+   - a reflink-capable XFS LV or a ZFS/btrfs dataset;
+   - a mount point bound into the gate containers (run-gate `RUN_GATE_EXTRA_MOUNTS`) and optionally the devcontainer;
+   - I/O under `dev-gates.slice`;
+   - for `fs-snapshot`, a socket-activated broker unit.
+
+   Assay only declares what it needs and verifies what it got.
+
+**Not in scope:**
+- hardlinks, alternates, or tree reuse between candidates without CoW (all forbidden: A-184/A-185, A-472);
+- in-place mutation of a shared tree;
+- overlay mounts inside the unprivileged container.
+
+**Evidence:**
+- `reports/assay-B110-REUSE-AND-TESTABILITY-2026-09-28.md` Part C (C3) and B4;
+- research `reports/b110/research/R10-snapshot-structural.md` §2–§4;
+- `reports/b110/research/R9-heavy-tests-structural.md` RC4–RC6;
+- `nyxloom/reference/TESTING-METHODOLOGY.md` "Host ZFS lifecycle".
+
+## Wave A (A-479): structure before the next release
+
+**Filed 2026-09-29 by operator decision.** All packages land in `assay-b110-landing`, which merges to main after the B107 fix. Plan and briefs: `reports/assay-WAVE-A-PLAN-2026-09-29.md`.
+
+## B123 — judge tests vs tooling tests, and the same-commit release-gate binding
+
+**Status: DONE on branch `wave-a-w4-test-split` (2026-09-29, W4; report `reports/wave-a/W4-REPORT.md`, A-476), after the controller's registered tester-unified PASS, the fresh review and the merge (merge hash pending).** Follow-up: the R9 RC8 caching of the static sweeps (B123/A-468(b)).
+- Move tests of the gate script, release builder, installed wheel/zipapp and packaging into `gate/tests/`. The registered gate runs both trees.
+- The B105 lanes collect `tests/` only and lose their `--ignore`/`--deselect` lists, except deselections that still apply to judge tests.
+- B105's definition of done and `tools/b105_report_check.py` require a registered `tester-unified` pass at the same commit.
+- Drop `--override-ini=pythonpath=src` and add a `pyproject.toml` drift test (A-468(c)).
+- This supersedes B112's ignore approach. B112's `zz_slow` tiering is re-decided after the split using P0's setup timings.
+
+## B124 — retire cross-project qualification from assay
+
+**Status: DONE (W1, merge hash pending: the controller fills it at merge; A-475) except the dstdns-checkout item, which closes with B126 (W5).** Remove:
+- the Topos P25 harness, its test file, the `topos-qualified` gate phase and the 1.2.5-wheel smoke, including the release-manifest fixtures used only by them;
+- the CMRU B006(a) harness, its tests and the `cmru-b006a-qualified` phase;
+- the dstdns-checkout dependency of SQL qualification (replaced by B126).
+
+Update the P25/P33 carve-asset locks, the docs, and the decisions they reference (A-205 superseded). Consumers qualify their own assay use.
+
+## B125 — latest schema only
+
+**Status: DONE (W1, merge hash pending: the controller fills it at merge; A-477).** The old-version acceptance paths that remain (`reuse.py` v12 cold start, ciu provenance schema 1) are reported in `reports/wave-a/W1-REPORT.md` and deferred to the v14 wave.
+- Retire the historical gate phases (verdict v5, lane schema v2 successors, the v6–v12 hard cut, the v13 P25/successor checks) and their frozen templates.
+- Keep one refusal test per schema proving that a non-current version is refused.
+- Identify any code path that still accepts or migrates an old version. Remove it if no current consumer needs it, or report it for a decision.
+
+## B126 — self-contained SQL/DDL qualification
+
+**Status: IMPLEMENTED on branch `wave-a-w5-sql` (2026-09-29, A-480; report `reports/wave-a/W5-REPORT.md`, log `W5-LOG.md`); DONE after the controller's registered tester-unified PASS (which now includes the SQL phase), the fresh review and the merge.**
+- Replace the dstdns-based SQL evidence with assay-owned schema fixtures (tables, constraints, triggers, indexes, views and functions as the adapter supports) and an assay-managed PostgreSQL container.
+- Cover more mutation situations than the dstdns corpus did.
+- Remove cases that exercise the same operator on the same construct without new information.
+- Record which situations are covered.
+
+**Evidence.** One assay-owned schema (`tests/fixtures/mutation/sql/qualification/01-schema.sql`), 24 tagged rows (`gate/python/fixtures/sql/matrix.json`), 21 probes, a PostgreSQL 18.6 container pinned by digest, two derivations (bucket per row; a real `assay run` witness) and three controls (O4-residue, M11, O5). The 171 sites of the former consumer corpus fall into 13 classes, each represented by a row; 11 rows are new. The class map is `reports/wave-a/W5-REPORT.md`. The evidence is an outer phase of the registered `tester-unified` gate.
+
+## B127 — `assay analyze` as its own package
+
+**Status: IMPLEMENTED on branch `wave-a-w2-analysis` (2026-09-29, A-478; report `reports/wave-a/W2-LOG.md`); DONE after the controller's registered tester-unified PASS, the fresh review and the merge. Analysis R2 is B131.**
+- Move `src/assay/analysis.py` and its tests into a separate top-level package with its own folder, tests and lane. It ships in the same wheel and zipapp.
+- Dependency is one-way (analysis → assay). `assay analyze` keeps working through a lazy CLI dispatch.
+- B105's scope and `b105_report_check.py` name the judge package explicitly.
+- B108 phase 1 (P8) is built in this package.
+
+## B128 — shallow snapshot for B105
+
+**Status: IMPLEMENTED on branch `wave-a-w7-shallow` (2026-09-29; report `reports/wave-a/W7-LOG.md`); the drift proof (`self-qualification-preflight` at the FULL and SHALLOW commits, identical counts) is the controller's run (CD44) and is pending.**
+- Set `snapshot_history = "shallow"` in both B105 lanes.
+- Update the `gate/tests/test_self_lane.py` pin and the lane comment.
+- Drift proof: one preflight showing the same collected, passed and skipped counts, with the `build_release` cases run, not skipped. If B123 moves those cases to `gate/tests/`, the proof covers the remaining repository-dependent judge tests instead.
+
+## B129 — DRY consolidation of repeated judge rules
+
+**Status: OPEN (reuse report S9; research R11 #1–#4).** Four changes:
+- a shared record decorator for the 148 `frozen`/`kw_only` dataclass flags, plus a reflective contract test (the former A-468(d));
+- per-side guard helpers for typed-field checks;
+- per-rigor "judgment present iff attempted" helpers, one per trust side;
+- the remaining same-side repeated decisions.
+
+Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookups or regexes merely to lower the mutant count is not allowed.
+
+## B130 — component boundaries
+
+**Status: Part 1 and Part 2 DONE on branch `wave-a-w3-boundaries` (2026-09-29; report `reports/wave-a/W3-REPORT-component-boundaries.md`); the component-scoped R2 recommendation there awaits an operator decision. Runs first in Wave A (stage 0, operator 2026-09-29).** Part 1 is research. Part 2 lands the import-contract test and a component-organized judge-test layout that later packages build on. Operator question behind it: "when we test python, the tests for react/go do not run?"
+- Map assay's components: core judge, per-language adapters, coverage/mutation/result parsers, analysis, gate tooling.
+- Add import contracts (for example, adapters depend only on core; core reaches adapters only through the registry).
+- Measure cross-component coupling: which tests execute which component's code, including through the registry and subprocesses, and whether any adapter's mutants are killed only by other components' tests.
+- Output: a recommendation on a component-scoped R2 model ("each component's mutants are killed by its own partition"). It would be a declared claim change like B121 and would need its own decision.
+
+## B131 — R2 for the analysis package
+
+**Status: OPEN, after the v14 wave (Wave A CD17).** The analysis package (A-478) gets an R0+R1 whole-target lane in Wave A. Add a mutation lane over its own suite once cold-witness kills make that cheap. Its ≈317 candidates then have their own evidence instead of none.
+
+## B132 — SQL constructs PostgreSQL may refuse
+
+**Status: OPEN (found by the W5 carve, 2026-09-29).** The SQL adapter generates mutation sites for:
+- `UNIQUE … DEFERRABLE`, `NULLS NOT DISTINCT`, `INCLUDE` and `USING INDEX` constraints;
+- FK clauses with `MATCH FULL`, `DEFERRABLE` or `SET NULL (col)`.
+
+That PostgreSQL rejects the mutated DDL is reasoned, not measured. If it does, one such construct on a changed line turns a consumer's lane into `ERROR`. Measure each construct on W5's harness, then either stop generating the site or classify the refusal explicitly.
+
+**Added by W5 (A-480; CD22).** W5's schema deliberately does not exercise these constructs, because a mutant PostgreSQL refuses is `crashed`, not a kill, and belongs to a hazard-construct probe rather than to the representative matrix:
+- *Unknown outcome:* `NOT NULL` dropped from an `IDENTITY`, `serial` or primary-key column; a string widen of an `IN` list on an enum column.
+- *Not reached by the schema:* generated expressions, `EVENT` triggers, quoted foreign-key targets, triggers created inside a `DO` block.
+
+All of it needs an ad-hoc-construct mode of `gate/python/qualify_sql.py`: a way to run one construct's mutant through the same apply/dump/test command and record the bucket, without adding a row to the matrix.
+
+**Measured SQLSTATE fact (W5 Work 0, CD53; PostgreSQL 18.6, the digest-pinned image).** A violated `ON DELETE RESTRICT` foreign key raises SQLSTATE **23001** (`restrict_violation`), not 23503; a violated `ON DELETE NO ACTION` (the default) still raises **23503** (`foreign_key_violation`). A probe or hazard-construct test that means "the foreign-key refusal happened" must catch both (`foreign_key_violation OR restrict_violation`); W5's K18 and K20 do, and K19 (NO ACTION) needs only 23503. Any `EXCEPTION WHEN foreign_key_violation` written against a RESTRICT key will not catch the refusal on 18.x.
+
+## B133 — SQL operator labels misdescribe their effect
+
+**Status: OPEN (found by the W5 carve).** Two operators do something other than their label says:
+- the `NOT IN` "widening" operator actually narrows the list;
+- drop-check also rewrites `CREATE POLICY … WITH CHECK`.
+
+Fix the labels or the behaviour, whichever the SQL design intends, and update the docs' operator table.
+
+## B134 — the git-marker refusal test depends on the host's `/tmp`
+
+**Status: OPEN (found 2026-09-29 during Wave A W3–W6).**
+
+`tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused` creates `tmp_path/a/b/c` and expects `_nearest_git_marker` to find no `.git` in any ancestor. On a host with a stray `/tmp/.git`, the walk finds that marker and the test fails. On this devcontainer the stray marker is an empty directory created 2026-09-28 22:17 by an unknown process. The failure is local only: gate containers have their own `/tmp`. But `git.py`'s refusal line (`:457`, `:459` after W6) is covered only by this test, so a local B105 coverage run misses it for an environmental reason.
+
+Fix: make the test hermetic. Give it an ancestor chain it controls: either stop the walk at a boundary the test passes in, or seam the root the walk ends at. Keep the refusal assertion exact. Also find out whether any assay test can create `.git` outside its own `tmp_path`.
+
+## B135 — the mutation witness ignores pytest 9's `pytest.toml`
+
+**Status: OPEN (found by the W4 review, 2026-09-29, `REVIEW-W4.md`).**
+
+`src/assay/mutation_witness.py:107` looks for these config files when deciding whether a lane's pytest `addopts` allow the sequential witness: `pytest.ini`, `.pytest.ini`, `pyproject.toml`, `tox.ini` and `setup.cfg`. pytest 9 also reads `pytest.toml` and `.pytest.toml`, and an empty `pytest.toml` takes precedence over `pyproject.toml`. So a consumer whose xdist `addopts` live in `pytest.toml` gets a witness decision based on the wrong file.
+
+Fix: add both names in pytest's own precedence order, and check the order against the installed pytest version. Test with a `pytest.toml` carrying `-n auto`, and prove it refuses. Record the precedence in DESIGN-GUIDE. Consumer-visible: the witness may then refuse a lane it used to accept.

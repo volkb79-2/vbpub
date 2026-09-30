@@ -26,8 +26,14 @@ linking against assay itself.
 ## Review evidence analysis
 
 `assay analyze` reduces the scripts needed to create and consume review
-evidence. It ships in the wheel and standalone zipapp alongside `assay run`
-and `assay verify`, and adds no runtime dependencies:
+evidence. It ships in the same wheel and standalone zipapp as `assay run`
+and `assay verify`, and adds no runtime dependencies. The code lives in its own
+top-level package, `assay_analysis` (`analysis/src/assay_analysis/`), which the
+CLI loads only when you run `assay analyze`; the judge (`src/assay`) never
+imports it, and B105 scores only `src/assay`. The analysis package has its own
+R0+R1 lane and tests (`analysis/tests/`). A source checkout needs both `src`
+and `analysis/src` on the path for `analyze`; an installed wheel or zipapp
+needs nothing extra:
 
 - `record` captures an explicit command, before/after Git identities and
   cleanliness, merged job output, and the actual job exit.
@@ -48,14 +54,31 @@ and `assay verify`, and adds no runtime dependencies:
   verdicts and progress to the current clean worktree's exact HEAD and tree.
 - `launcher` inspects an existing `tester-unified/run` evidence directory,
   including historical runs, at its explicitly expected commit.
+- `plan-estimate` projects a campaign's hours from an `assay plan` JSON file
+  and a progress stream that holds a completed baseline (a preflight or an R0/R1
+  run at the same commit). It is a measured, advisory projection: it never
+  classifies a candidate, and `assay plan` itself keeps its declared-budget
+  estimate and prints a stderr line pointing here.
+- `campaign` closes out one declared mutation lane from its committed lane
+  file, its progress stream and, when you have it, its verified verdict. It is
+  read-only: it never judges, never runs a test and never writes a file. It
+  counts every candidate once as its latest bucket, lists survivors and other
+  adverse candidates by id, path and operator, names why a campaign is not
+  complete, and exits 0 (complete PASS), 1 (complete, not PASS), 2 (evidence
+  error) or 3 (incomplete). Timing, ETA and `--project` estimates are
+  diagnostic: they never change the status or the exit code. See the
+  [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108).
 
 <!-- assay-analysis-example -->
 ```bash
 assay analyze verdict .assay/verdict-r2.json --expected-commit "$REVIEW_HEAD" --format text
 assay analyze progress .assay/progress-r2.jsonl --expected-commit "$REVIEW_HEAD"
+assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-self-qualification-preflight.jsonl --workers 3
 assay analyze report --expected-commit "$REVIEW_HEAD" \
   --verdict r2 .assay/verdict-r2.json \
   --progress r2 .assay/progress-r2.jsonl --log r2 "$GATE_LOG" --format text
+assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
+  --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json --command-exit 0
 ```
 
 Set `REVIEW_HEAD` to the full Git commit agreed with the controller and
@@ -644,6 +667,16 @@ itself declares. See
 for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
 a worked, pasteable lane.
 
+The adapter is qualified against a **real PostgreSQL 18.6** by assay's own gate
+(A-480), with no consumer checkout: an outer phase of the registered
+`tester-unified` gate runs `gate/python/qualify_sql.py` on the host after a green
+tester container, against assay's own schema
+(`tests/fixtures/mutation/sql/qualification/01-schema.sql`), a 24-row probe
+matrix and a witnessed `assay run`, in one digest-pinned, never-pulled container
+named `run-gate-assay-sql-<pid>-<epoch>`. A busy host or an absent image is an
+inconclusive run (`ASSAY_GATE_INCONCLUSIVE=`, exit 3), never a green one. See
+[§11 of the design guide](docs/DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126).
+
 The two B015 semantic families, `python:uuid-equality-swap` and
 `python:enum-comparison-swap`, are **withdrawn** (A-326). Measured
 over assay's own source they produced 87 sites, none of which
@@ -906,7 +939,13 @@ Two more CLI verbs round out the surface:
   useful for auditing what a project claims before trusting its gate.
 - `assay plan <mutation-lane>` discovers candidates through a private commit
   snapshot, reports total/per-file/per-operator counts and deterministic IDs,
-  and estimates runtime without running the lane command or any mutant.
+  and estimates runtime without running the lane command or any mutant. Its
+  JSON carries the `commit` and `tree` it was made at, and the estimate is the
+  declared budget (a placeholder when none is numeric), not a measurement; save
+  the JSON and pass it to `assay analyze plan-estimate` for a measured
+  projection. The B105 R2 driver plans first and its checker refuses a report
+  whose campaign is not exactly that complete, unsharded plan at the expected
+  commit and tree.
 - `assay verify <verdict.json>` independently re-checks that a verdict
   artifact is schema-conformant and internally self-consistent. It never
   re-runs a lane and is never the *sole* witness to a producer's
@@ -975,9 +1014,40 @@ you're changing assay itself:
   something is an oversight rather than a deliberate choice.
 - [`nyxloom-trove/handoffs/README.md`](nyxloom-trove/handoffs/README.md)
   tracks the current package queue and its dependency order.
-- The registered gate (`tools/tester-unified-gate.sh`, run only inside its
-  dedicated container, never the interactive devcontainer) is the only
-  accepted ship signal.
+- `./run-gate.py tester-unified` is the ordinary R0 release gate. It collects both
+  test trees (`tests/` and `gate/tests/`), and after a green run at a commit it writes
+  the same-commit receipt `.assay/registered-gate/tester-unified.json`
+  (`ASSAY_REGISTERED_GATE_RECEIPT=` names it). The
+  separately invoked `./run-gate.py self-qualification` requires that receipt for
+  its own commit and tree (run `./run-gate.py tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
+  R0-R3 qualification in `tester-unified`, writes its verdict, progress, and
+  raw baseline coverage arcs in
+  `.assay/coverage-self-qualification-preflight-snapshots/`, keyed by source
+  commit and tree under a separately reserved directory for each attempt, and verifies
+  each report against the captured source and lane before success. The full
+  mutation lane cannot overwrite the preflight coverage artifact. Before
+  starting mutation, it runs
+  the same full-source R0/R1 check as
+  `./run-gate.py self-qualification-preflight`; that preflight stops on a red
+  baseline or coverage floor. Both lanes build the selected commit as a
+  wheel, while each qualification snapshot imports its own source tree. The
+  full lane judges code imported from each
+  isolated snapshot. See the
+  [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
+  and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
+  The full-source attempt is currently unqualified: the latest run stopped at
+  15/3,760 candidates; an earlier attempt stopped after 38 completions. The
+  full R0–R3 Assay lane has a 5-hour per-invocation cap; reaching it is
+  incomplete. The in-container gate has a 7h30m timeout and Nyxloom has an
+  8-hour outer watchdog. Do not treat partial or timed-out state as a pass;
+  B110's structural rework and bounded pilot must land before another full
+  qualification attempt.
+
+  B110 also proposes an opt-in cold-witness policy, which is not shipped yet.
+  Under that policy, one verified test-call failure would be enough to classify
+  a candidate as killed; tests after the failure would be reported as unrun and
+  could independently fail, hang, or crash. Survivors and uncertain executions
+  would still run the full declared suite.
 
 ## Further reading
 
@@ -998,6 +1068,14 @@ you're changing assay itself:
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+There are two test trees. Judge tests (`tests/`, plus `analysis/tests/`) are organized by
+component under `tests/core/`, `tests/adapters/<lang>/` and `tests/parsers/`, and
+`tests/core/test_import_contracts.py` enforces the import boundaries between components and that
+no judge test reaches into the other tree; the rules are in the DESIGN-GUIDE section
+"Component boundaries and test layout". Tooling tests (`gate/tests/`: the gate script, the B105
+checker, the wheel and zipapp, packaging, lane-config drift) run only in the `tester-unified`
+gate; the B105 qualification lanes collect `tests/` alone.
 
 ### CLI diagnostics
 

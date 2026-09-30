@@ -1333,3 +1333,53 @@ workflow; `cmru.bundle` remains a library. The public bundle contract states
 that the normalized deterministic writer is guaranteed for `xztar`, while the
 other accepted archive formats use the platform archive writer. There is no
 bundle CLI help surface left to overstate this guarantee.
+
+### KI-35 — retained worktrees of published or ambiguous releases have no supported cleanup path — *open*
+
+**Reported by:** an estate worktree cleanup, 2026-09-28 (vbpub `main` at `c57cac82`).
+
+**Observed.** `cmru abandon --dry-run`, run from current source, classified the 24 retained
+`cmru-release-*` worktrees in the vbpub checkout at cleanup time as follows:
+- 5 abandonable candidates, abandoned in that cleanup: `20260925_131953-ciu`,
+  `20260925_133944-cmru`, `20260925_140101-cmru`, `20260925_141239-cmru`,
+  `20260925_211129-cmru`;
+- 19 withheld, the oldest dating from 2026-09-13.
+
+The withheld reasons (current tally of the 19):
+- 9: "original snapshot commit is unavailable; promotion state is ambiguous";
+- 5: "release scope metadata is missing, malformed, or ambiguous" (`20260925_130716-ciu`,
+  `cmru-release-dirty-sync`);
+- 3: "release result metadata records a published project" (for example
+  `20260919_170629-…`, which published assay-v6.5.0, and `20260925_203056-assay`, which published
+  assay-v7.1.0);
+- 1: release progress metadata is missing (`20260917_041022-all-891e9fce`);
+- 1: the untagged-publisher rule (`modern-debian-tools-python-debug`).
+
+Eight of the withheld worktrees also hold uncommitted generated package manifests. One more
+(`20260917_043157-all-d5847937`) has an empty index (4,644 staged deletions while the files remain
+on disk). Several branches still exist on `origin`.
+
+**Why it matters.** KI-29 correctly makes `abandon` fail closed on publication or ambiguity. That
+leaves no supported operation for a transaction that *succeeded* (published) yet kept its
+worktree, or whose metadata can no longer be proven. So these worktrees only accumulate: an
+operator must remove them with raw git, bypassing the sidecar and remote-ref bookkeeping that
+`abandon` exists to keep consistent. Together with KI-16, this is why a busy checkout collects
+dozens of release worktrees.
+
+**Also observed:** the devcontainer's installed `cmru` (`5.4.2.dev365+ge5e9b95c`) predates
+KI-29, so `cmru abandon` is unavailable from the installed CLI. There, only the removed
+`release --abandon` exists, and it still starts a fresh release after abandoning. The dry run
+above used the source tree. No released cmru (latest `cmru-v5.5.0`) contains `cmru abandon`:
+KI-29 is shipped in source only, and `CHANGES.md` `[Unreleased]` does not list it.
+
+**Wanted:**
+1. A distinct, dry-run-safe operation for **completed** transactions ("retire"): verify that the
+   published tag or release matches the transaction's recorded result, then remove the local
+   worktree, local branch, sidecars and the origin candidate ref, never the published tag or
+   assets.
+2. For **ambiguous** transactions: a report that says exactly which fact is missing and the
+   manual command that would resolve it, instead of a bare "withheld". This includes the
+empty-index worktree (`20260917_043157-all-d5847937`), where a raw-git removal is the most
+hazardous.
+3. Decide whether a successful release should remove its own worktree at the end, and if a
+   worktree is intentionally kept, why the release keeps it.

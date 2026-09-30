@@ -2,8 +2,9 @@
 # Registered Assay gate driver. The outer mode derives the host bind source,
 # verifies the configured gates cgroup through cgroup-parent.sh, launches
 # tester-unified with the network disabled, and emits the final receipt marker
-# only after Docker returns zero. The inner mode is invoked only inside that
-# container.
+# only after Docker returns zero AND the SQL qualification phase (W5, A-480)
+# has passed on the host, against a real PostgreSQL the tester container cannot
+# reach. The inner mode is invoked only inside that container.
 #
 # P24 (A-198-A-201): the wheel this gate self-hosts through is no longer built
 # from the bind-mounted worktree with an ambient-setuptools PYTHONPATH shim.
@@ -127,10 +128,11 @@ PYEOF
 # file list from `find`. `-print0`/`mapfile -d ''` because a path this gate
 # does not control could contain anything but a NUL.
 #
-# `gate/` stays out of scope: it was measured clean at B024 and is still, but
-# B062's acceptance widened this phase to `tests/`, and adding a third tree
-# on the way past would be exactly the unevidenced scope drift the original
-# deferral existed to prevent.
+# `gate/tests/` (the tooling tests, B123) is linted too, as its own array, so a
+# clone without it is refused rather than linted as nothing. The rest of `gate/`
+# (the distribution and qualification helpers) stays out of scope: it was
+# measured clean at B024 and is still, but widening past the test trees would be
+# unevidenced scope drift.
 run_lint_phase() {
   local scratch="$1"
   local -a test_sources
@@ -144,10 +146,24 @@ run_lint_phase() {
   )
   [[ ${#test_sources[@]} -gt 0 ]] \
     || die 'lint phase found no test sources to lint -- the tests/ tree is missing from the clone'
+  local -a analysis_sources
+  mapfile -d '' -t analysis_sources < <(
+    find -H "$scratch/clone/assay/analysis" -type f -name '*.py' -print0
+  )
+  [[ ${#analysis_sources[@]} -gt 0 ]] \
+    || die 'lint phase found no analysis sources to lint -- the analysis/ tree is missing from the clone'
+  local -a gate_test_sources
+  mapfile -d '' -t gate_test_sources < <(
+    find -H "$scratch/clone/assay/gate/tests" -type f -name '*.py' -print0
+  )
+  [[ ${#gate_test_sources[@]} -gt 0 ]] \
+    || die 'lint phase found no gate/tests sources to lint -- the gate/tests/ tree is missing from the clone'
   "$scratch/lint-venv/bin/python" -m pyflakes \
     "$scratch/clone/assay/src/assay" \
     "${test_sources[@]}" \
-    || die 'pyflakes reported findings in src/assay or tests/ (see the lines above)'
+    "${analysis_sources[@]}" \
+    "${gate_test_sources[@]}" \
+    || die 'pyflakes reported findings in src/assay, tests/, analysis/ or gate/tests/ (see the lines above)'
   echo 'ASSAY_GATE_PHASE=pyflakes-clean'
 }
 
@@ -361,17 +377,48 @@ run_self_hosted_lane() {
   echo 'ASSAY_GATE_PHASE=self-hosted-lane-passed'
 }
 
+# (A-478) The analysis package's own R0+R1 lane (`assay.toml` [lanes.analysis]),
+# run with the same installed assay as the self-hosted lane (PATH is already
+# exported by run_self_hosted_lane). No `require_emitted_*` here:
+# `--require-judge-provenance` binds this verdict.
+run_analysis_lane() {
+  local worktree="$1" scratch="$2"
+  cd "$worktree/assay"
+  if ! assay run analysis --file assay.toml --require-judge-provenance \
+      --resume --progress "$scratch/progress-analysis.jsonl" \
+      --verdict-json "$scratch/verdict-analysis.json"; then
+    echo 'ASSAY_GATE_DIAGNOSTIC=analysis-lane-red; inspecting its captured verdict' >&2
+    assay analyze verdict "$scratch/verdict-analysis.json" \
+      --expected-commit "$(git -C "$worktree" rev-parse HEAD)" --format text >&2 \
+      || echo 'ASSAY_GATE_DIAGNOSTIC=captured-verdict-unavailable-or-invalid' >&2
+    return 1
+  fi
+  assay verify "$scratch/verdict-analysis.json" || die 'assay verify refused the analysis lane verdict'
+  echo 'ASSAY_GATE_PHASE=analysis-lane-passed'
+}
+
 run_independent_witness() {
   local scratch="$1" run_venv_site="$2"
   PYTHONPATH="$run_venv_site" ASSAY_SELF_HOSTING_VERDICT="$scratch/verdict.json" \
-    /opt/tester-venv/bin/python -m pytest tests/test_self_hosting.py -q \
+    /opt/tester-venv/bin/python -m pytest gate/tests/test_self_hosting.py -q \
       --override-ini=pythonpath=
   echo 'ASSAY_GATE_PHASE=independent-self-hosting-passed'
+}
+
+# (B123, S1) The host binds the receipt to the HEAD it captured before launch;
+# the container proves it judged that same commit, at its start and at its end.
+require_expected_head() {
+  local worktree="$1"
+  if [[ -n "${ASSAY_GATE_EXPECTED_COMMIT:-}" ]]; then
+    [[ "$(git -C "$worktree" rev-parse HEAD)" == "$ASSAY_GATE_EXPECTED_COMMIT" ]] \
+      || die "worktree HEAD is not the commit the host captured ($ASSAY_GATE_EXPECTED_COMMIT)"
+  fi
 }
 
 run_inner() {
   local worktree="$1"
   validate_worktree "$worktree"
+  require_expected_head "$worktree"
 
   # The self-hosted lane below judges the ORIGINAL worktree, so its clean-tree
   # precondition requires the reviewed source to be committed. Refuse before
@@ -411,12 +458,10 @@ run_inner() {
   # identity and annotated-tag peel refusal -- boundaries this project paid
   # for with real incidents and which v5 does not touch. The three
   # template-coupled tests compare against P26's locked v4 templates, which
-  # A-222 freezes as historical evidence rather than rewriting; their SHAPE
-  # coverage moves into P33's own suite
-  # (`test_p26_attestation_shapes_survive_v5`, which reads those same locked
-  # templates and bumps only `schema_version` in memory, so no locked byte
-  # moves). The fourth deselection is the marker test, which asserts this
-  # very invocation's own wiring.
+  # A-222 freezes as historical evidence rather than rewriting. After A-477
+  # the three template-coupled P26 nodes stay deselected; their historical
+  # successors are retired and not executed. The fourth deselection is the
+  # marker test, which asserts this very invocation's own wiring.
   #
   # `test_all_structural_and_aggregate_bounds_precede_every_git_call` is
   # deliberately NOT deselected: it tests ordering, not artifact shape.
@@ -425,9 +470,9 @@ run_inner() {
   # locked P26 nodes below, all of which build a `schema_version = 1`
   # document via the frozen `_lane_document` helper. Historical carve assets
   # are not rewritten to pretend they were authored for v2 (WI-1's own rule),
-  # so these four are deselected here rather than edited, and each gets a
+  # so these four are deselected here rather than edited, and each has a
   # named, one-for-one v2 successor in `test_lane_schema_v2_locked_
-  # successors.py`, run below as part of this same phase. A combined
+  # successors.py`, which now runs only in the self-hosted lane. A combined
   # omnibus successor is forbidden -- a lost behaviour must stay visible.
   #
   # The `--deselect` values are ROOTDIR-RELATIVE NODEIDS, not `$worktree`
@@ -453,252 +498,8 @@ run_inner() {
       --deselect nyxloom-trove/carve-assets/P26/test_acceptance.py::test_direct_r0_uses_the_existing_deadline_remainder_not_a_fresh_budget
   echo 'ASSAY_GATE_PHASE=attestation-hardened'
 
-  # P33: the locked v5 acceptance suite, run the same way against the same
-  # installed wheel. It carries forward the artifact-shape coverage the four
-  # deselections above gave up, and adds v5's own contract: the hoisted
-  # `judgment.resolved`, the per-language operator vocabulary, the
-  # `equivalent` bucket and its pairing, kill attribution, and helper
-  # correspondence. Every negative in it is differential -- it asserts the
-  # unmodified control verifies clean in the same test that asserts the
-  # injected defect does not -- so none can pass on a version mismatch.
-  #
-  # B006a/A-269/WI-1: the same LANE_SCHEMA_VERSION bump reddens five more
-  # locked nodes here, all built by the frozen `_load_lane` helper (a
-  # `schema_version = 1`, rigor R0+R2 document). Same treatment: deselected,
-  # never edited, each with a named v2 successor below.
-  #
-  # Wave-1/A-261/A-262/A-264 (amended by A-269): `VERDICT_SCHEMA_VERSION`
-  # 5 -> 6 is a HARD CUT (A-261), and `assay.verify`'s schema-version guard
-  # is a short-circuit: it returns a single failure and never reaches any
-  # downstream field check. That single fact reddens 26 more locked nodes
-  # below, MEASURED (not read off the source) by implementing v6, running
-  # this module unmodified with `--tb=short`, and inspecting every failure
-  # individually. All 26 failed for exactly this one cause -- two directly
-  # (`test_schema_identity_is_internally_consistent` and
-  # `test_shipped_schema_is_byte_identical_to_the_locked_asset` assert the
-  # literal v5 `$id`/byte-identity), the other 24 because every negative in
-  # this suite is differential (`refuses_only_the_defect`,
-  # `test_acceptance_v5.py:72`) and its own control -- a v5-shaped document
-  # -- no longer verifies clean under a v6 verifier before the specific
-  # defect under test is ever reached. None is a regression; the hard cut
-  # is behaving exactly as specified. Each gets a named v6 successor in
-  # `carve-assets/W1/test_acceptance_v6.py`, run below, against its OWN
-  # `expected/` templates -- the six v5 templates here stay frozen and are
-  # never rewritten into v6.
-  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
-  PYTHONPATH= ASSAY_P26_PROJECT_ROOT="$worktree/assay" \
-    "$scratch/run-venv/bin/python" -m pytest \
-      "$worktree/assay/nyxloom-trove/carve-assets/P33/test_acceptance_v5.py" \
-      -q -p no:randomly --override-ini=pythonpath= \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_fixture_itself_loads_today \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_refuses_a_cross_language_operator \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_accepts_a_matching_language_operator \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_names_kill_signal_artifact_as_reserved_for_p34 \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_names_equivalence_artifact_as_reserved_for_p34 \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_schema_identity_is_internally_consistent \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_shipped_schema_is_byte_identical_to_the_locked_asset \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_a_v5_artifact_missing_judgment_resolved_is_refused \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_a_cross_language_operator_is_refused \
-      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_locked_v5_template_is_accepted[missing-tool-v5-template.json]" \
-      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_locked_v5_template_is_accepted[sql-r2-v5-template.json]" \
-      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_locked_v5_template_is_accepted[ca1-r3-no-base-v5-template.json]" \
-      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_locked_v5_template_is_accepted[ca4-all-equivalent-v5-template.json]" \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_p26_attestation_shapes_survive_v5 \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca1_r0r3_lane_needs_no_base \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca1_an_r2_lane_without_base_is_refused \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca3_two_independent_violations_produce_two_failures \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca4_all_equivalent_is_inconclusive_not_pass \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca4_equivalent_mutants_do_not_count_as_survived \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_kill_signal_is_rejected_outside_the_killed_bucket \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_helpers_entry_requires_a_correspondingly_judged_claim \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca9_payload_free_all_mutants_equivalent_is_refused \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca9_all_mutants_equivalent_is_bound_to_r2 \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_base_is_forbidden_unless_r1_or_r2 \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca10_declared_attribution_requires_a_kill_signal_artifact \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca10_declared_requires_a_kill_signal_on_every_killed_entry \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca10_unattributed_forbids_a_kill_signal_on_a_killed_entry \
-      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_p25_v5_siblings_validate[pass-v4-template.json-p25-pass-v5-template.json]" \
-      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_p25_v5_siblings_validate[missing-v4-template.json-p25-missing-v5-template.json]" \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_helpers_executable_code_requires_a_payload_bearing_claim \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_helpers_is_omitted_when_no_helper_ran
-  echo 'ASSAY_GATE_PHASE=verdict-v5-accepted'
-
-  # B006a/A-269/WI-1: the nine one-for-one v2 successors for the nine locked
-  # nodes deselected in the two phases just above. Same installed-wheel
-  # pattern (cleared PYTHONPATH, run-venv interpreter, pytest ini override)
-  # as the two locked suites it carries forward -- this is the "same
-  # installed-wheel gate invocation" WI-1 names, run once, immediately after
-  # both deselections it exists to cover.
-  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
-  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/tests/test_lane_schema_v2_locked_successors.py" \
-    -q -p no:randomly --override-ini=pythonpath=
-  echo 'ASSAY_GATE_PHASE=lane-schema-v2-successors-verified'
-
-  # Wave-1: the 26 one-for-one v6 successors for the 26 locked P33 nodes
-  # deselected just above by the schema-version hard cut, and W2's own v7
-  # successors beside them. Same installed-wheel pattern as every locked
-  # suite this gate carries forward.
-  #
-  # B035/A-329: `VERDICT_SCHEMA_VERSION` 7 -> 8 does to W2 exactly what 6 -> 7
-  # did to W1, so W2 now gets W1's treatment rather than a new one. Both
-  # suites must COLLECT -- that is what proves they were not quietly deleted
-  # -- but their controls are intentionally v6 and v7 documents which a v8
-  # verifier must reject, so running either module as though its controls
-  # were still valid would assert the opposite of the hard cut. One raw
-  # verifier probe over BOTH generations' frozen `expected/` documents is the
-  # honest oracle, and it is stronger than the two suites were: it names the
-  # single diagnostic each document must produce, with nothing downstream of
-  # it. Their positive coverage lived on in W4's own v8 successors -- which
-  # the v9 cut has now demoted here too; see the next paragraph.
-  #
-  # A-359 (wave B, the producer cut): 8 -> 9 does to W4 exactly what 7 -> 8
-  # did to W2, so W4 JOINS this demotion rather than getting a treatment of
-  # its own -- collect-only here, hard-cut-probed below. Its positive coverage
-  # lives on in W5's v9 successors, run for real further down. Nothing about
-  # W4 is deleted or rewritten: `carve-assets/W4/` is the historical record of
-  # what was proved under the contract that existed at the time.
-  #
-  # Wave D (the v10 integrity cut): 9 -> 10 does to W5 exactly what 8 -> 9 did
-  # to W4, so W5 JOINS the same demotion -- collect-only here, hard-cut-probed
-  # below -- and its positive coverage lives on in W6's v10 successors, run
-  # for real further down. `carve-assets/W5/` is untouched by that cut.
-  #
-  # B070 (the v11 discarded-mutants cut): 10 -> 11 does to W6 exactly what
-  # 9 -> 10 did to W5, so W6 JOINS the same demotion and its positive coverage
-  # lives on in W7's v11 successors. `carve-assets/W6/` is untouched by that
-  # cut -- `git diff` over it is empty, and the hard-cut probe below is what
-  # proves its nine documents are now refused rather than migrated.
-  # B101 (the v12 isolation/dirty provenance cut): W7's v11 contract was the
-  # live successor at that generation. W7 and W8 now stay frozen as historical
-  # suites; this v13 verifier must hard-cut their documents instead of trying
-  # to run W8's v12-positive assertions against a v13 wheel.
-  for locked in \
-    "nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
-    "nyxloom-trove/carve-assets/W2/test_acceptance_v7.py" \
-    "nyxloom-trove/carve-assets/W4/test_acceptance_v8.py" \
-    "nyxloom-trove/carve-assets/W5/test_acceptance_v9.py" \
-    "nyxloom-trove/carve-assets/W6/test_acceptance_v10.py" \
-    "nyxloom-trove/carve-assets/W7/test_acceptance_v11.py" \
-    "nyxloom-trove/carve-assets/W8/test_acceptance_v12.py"
-  do
-    # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
-    PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-      "$worktree/assay/$locked" \
-      -q -p no:randomly --override-ini=pythonpath= --co -q >/dev/null
-  done
-  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
-  PYTHONPATH= "$scratch/run-venv/bin/python" - "$worktree/assay" <<'PYEOF'
-import json
-import sys
-from pathlib import Path
-
-from assay.verdict import VERDICT_SCHEMA_VERSION
-from assay.verify import verify_document
-
-assert VERDICT_SCHEMA_VERSION == 13
-root = Path(sys.argv[1]) / "nyxloom-trove" / "carve-assets"
-checked = 0
-for wave, version in (
-    ("W1", 6),
-    ("W2", 7),
-    ("W4", 8),
-    ("W5", 9),
-    ("W6", 10),
-    ("W7", 11),
-    ("W8", 12),
-):
-    expected = root / wave / "expected"
-    paths = sorted(expected.glob("*.json"))
-    assert paths, f"{wave}/expected holds no frozen templates to check"
-    for path in paths:
-        document = json.loads(path.read_text())
-        failures = verify_document(document)
-        assert failures == [
-            f"schema_version {version} is not this verifier's version "
-            f"{VERDICT_SCHEMA_VERSION}: a "
-            f"verdict artifact is rejected, never upgraded in place -- "
-            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is "
-            f"{VERDICT_SCHEMA_VERSION}"
-        ], (wave, path.name, failures)
-        checked += 1
-print(f"v6-v12 hard-cut guard passed for {checked} frozen templates")
-PYEOF
-  echo 'ASSAY_GATE_PHASE=verdict-v6-v12-hard-cut-verified'
-
-  # W9 records the v13 P25 qualification successors. It checks the frozen
-  # schema copy and confirms both current templates verify clean while the
-  # historical W8 P25 controls hit the v13 hard cut.
-  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
-  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/nyxloom-trove/carve-assets/W9/test_acceptance_v13.py" \
-    -q -p no:randomly --override-ini=pythonpath=
-  echo 'ASSAY_GATE_PHASE=verdict-v13-p25-successors-verified'
-
-  # W8's v12-positive R3/R4 controls have no native mutation outcomes and
-  # remain valid under the v13 contract. Keep v13 successors for those shapes
-  # before the historical W8 suite is reduced to collection and hard-cut
-  # checks. Run against the installed wheel, with source-tree imports disabled.
-  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
-  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/tests/test_verdict_v13_successors.py" \
-    -q -p no:randomly --override-ini=pythonpath=
-
-  # B106/v13's candidate identity, exhaustive inventory and execution
-  # provenance contract. The marker is reachable only after both these
-  # v13 R3/R4 successors and all B106 witness/reuse/verifier checks pass against
-  # the installed artifact.
-  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
-  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/tests/test_b106_reuse_and_witness.py" \
-    -q -p no:randomly --override-ini=pythonpath=
-  echo 'ASSAY_GATE_PHASE=verdict-v13-successors-verified'
-
   run_self_hosted_lane "$worktree" "$scratch" "$version" "$wheel"
-
-  # P25: qualifies the CURRENT run-venv Assay (plus a separately
-  # hash-installed clean-tagged 1.2.5 release wheel) against a disposable,
-  # pinned, prospective Topos tree -- never the real Topos checkout, never a
-  # Docker launch of its own outer gate. `--source-repo` is $worktree itself
-  # (the repository top, where the pinned `topos/` tree actually lives, as a
-  # sibling of `assay/`), never the private clone `make_exact_oid_clone`
-  # made (that clone is sparse to `assay/` only). The harness's own success
-  # marker is required exactly once before the gate's own phase marker is
-  # printed -- a failing harness exits non-zero under `set -e` and this
-  # function never reaches either line.
-  local topos_marker
-  topos_marker="$(
-    "$scratch/run-venv/bin/python" "$worktree/assay/gate/python/qualify_topos.py" \
-      --source-repo "$worktree" \
-      --scratch "$scratch/p25-topos" \
-      --current-assay "$scratch/run-venv/bin/assay" \
-      --current-version "$version"
-  )"
-  [[ "$topos_marker" == "ASSAY_P25_TOPOS_QUALIFIED=1" ]] || \
-    die "P25 Topos qualification did not emit its success marker exactly once"
-  echo 'ASSAY_GATE_PHASE=topos-qualified'
-
-  # B006(a) WI-5: qualifies the CURRENT run-venv Assay against a disposable,
-  # pinned, full-repository checkout of CMRU while Topos's three unsafe
-  # symlink fixtures stay tracked -- the end-to-end proof that
-  # `snapshot_selection = "repository-minus-unsafe-symlinks"` unblocks a real
-  # consumer's R1/R2/R3 claims. `--source-repo` is $worktree itself, exactly
-  # as P25's own invocation above; this is a disposable qualification gate
-  # phase, never a permanent CMRU lane (`cmru/assay.toml` stays untouched and
-  # R0-only in the real checkout). Inserted immediately after
-  # `topos-qualified` and before the independent witness, per O7.
-  local cmru_b006a_marker
-  cmru_b006a_marker="$(
-    "$scratch/run-venv/bin/python" "$worktree/assay/gate/python/qualify_cmru_b006a.py" \
-      --source-repo "$worktree" \
-      --scratch "$scratch/b006a-cmru" \
-      --current-assay "$scratch/run-venv/bin/assay" \
-      --current-version "$version"
-  )"
-  [[ "$cmru_b006a_marker" == "ASSAY_B006A_CMRU_QUALIFIED=1" ]] || \
-    die "B006(a) CMRU qualification did not emit its success marker exactly once"
-  echo "$cmru_b006a_marker"
-  echo 'ASSAY_GATE_PHASE=cmru-b006a-qualified'
+  run_analysis_lane "$worktree" "$scratch"
 
   run_independent_witness "$scratch" "$run_venv_site"
 
@@ -708,16 +509,28 @@ PYEOF
   # reviewer actually needs. Its closure is built here, next to its only use.
   build_lint_venv "$scratch" "$distribution"
   run_lint_phase "$scratch"
+  require_expected_head "$worktree"
 }
 
 _assay_gate_container_name=""
 _assay_gate_container_launch_attempted=0
 _assay_gate_container_started=0
 _assay_gate_logs_pid=""
+_assay_gate_receipt_to_clear=""
+_assay_sql_container_name=""
+_assay_sql_scratch=""
 
 cleanup_assay_gate_container() {
   local result=$?
   trap - EXIT
+  # (W5) The SQL phase's throwaway PostgreSQL container and clone. Nothing may
+  # run before `local result=$?` / `trap - EXIT` above: any command resets `$?`.
+  if [[ -n "$_assay_sql_container_name" ]]; then
+    docker rm -f -v "$_assay_sql_container_name" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$_assay_sql_scratch" ]]; then
+    rm -rf -- "$_assay_sql_scratch" || true
+  fi
   if [[ -n "$_assay_gate_logs_pid" ]]; then
     kill "$_assay_gate_logs_pid" >/dev/null 2>&1 || true
     wait "$_assay_gate_logs_pid" >/dev/null 2>&1 || true
@@ -735,6 +548,12 @@ cleanup_assay_gate_container() {
     # the named container. Best-effort removal closes that ambiguous window.
     docker rm -f "$_assay_gate_container_name" >/dev/null 2>&1 || true
     _assay_gate_container_launch_attempted=0
+  fi
+  # (B123, S1) After launch, a non-zero exit never leaves a receipt behind: not
+  # one the container itself wrote into the bind-mounted worktree, and not one a
+  # concurrent run wrote after this run's own clear.
+  if [[ $result -ne 0 && -n "$_assay_gate_receipt_to_clear" ]]; then
+    rm -f "$_assay_gate_receipt_to_clear"
   fi
   exit "$result"
 }
@@ -758,6 +577,7 @@ run_registered_tester_container() {
     --init \
     --cgroup-parent="$cgroup_parent" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    -e "ASSAY_GATE_EXPECTED_COMMIT=${ASSAY_GATE_EXPECTED_COMMIT:-}" \
     "${forwarded_env[@]}" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
@@ -788,6 +608,128 @@ run_registered_tester_container() {
   return "$wait_status"
 }
 
+# --- the S1 receipt (B123) ---------------------------------------------------
+#
+# The full `self-qualification` lane requires proof that the registered
+# tester-unified gate passed at the very commit and tree it judges. That proof is
+# `assay/.assay/registered-gate/tester-unified.json`, written by the HOST script
+# only after the container exits zero and HEAD and its tree are unchanged, and
+# removed at every launch and again on any non-zero exit after it, so a red run
+# at the same commit leaves no receipt, whoever wrote one during it.
+# The document is exactly {"schema_version": 1, "lane": "tester-unified",
+# "commit": C, "tree": T}: the host script cannot see anything more, and commit
+# plus tree plus the clear-on-launch rule already bind "the latest run passed".
+
+clear_registered_gate_receipt() {
+  local worktree="$1"
+  rm -f "$worktree/assay/.assay/registered-gate/tester-unified.json"
+}
+
+write_registered_gate_receipt() {
+  local worktree="$1" commit="$2" tree="$3" dir tmp
+  [[ "$commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+    || die "refusing a receipt for a malformed commit id: $commit"
+  [[ "$tree" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+    || die "refusing a receipt for a malformed tree id: $tree"
+  dir="$worktree/assay/.assay/registered-gate"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.receipt.XXXXXX")" || die "cannot create a receipt file in $dir"
+  printf '{"schema_version": 1, "lane": "tester-unified", "commit": "%s", "tree": "%s"}\n' \
+    "$commit" "$tree" > "$tmp"
+  chmod 0644 "$tmp"   # the self-qualification container reads it
+  mv -f "$tmp" "$dir/tester-unified.json"
+}
+
+finish_registered_gate() {
+  local worktree="$1" commit="$2" tree="$3"
+  [[ "$(git -C "$worktree" rev-parse HEAD)" == "$commit" \
+    && "$(git -C "$worktree" rev-parse 'HEAD^{tree}')" == "$tree" ]] \
+    || die 'HEAD changed during the registered gate; no receipt'
+  write_registered_gate_receipt "$worktree" "$commit" "$tree"
+  echo "ASSAY_REGISTERED_GATE_RECEIPT=$worktree/assay/.assay/registered-gate/tester-unified.json"
+  echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'
+}
+
+# --- the SQL qualification phase (W5, A-480) ----------------------------------
+#
+# Real-PostgreSQL evidence the tester container cannot produce (it has no Docker
+# socket). It runs on the HOST, only after a green tester container (a red one
+# already ended the script under `set -e`), from a private exact-OID clone of the
+# gated commit, with the host `python3` (>= 3.11) and one throwaway container in
+# the gates cgroup. Reads the caller's `worktree` (bash dynamic scope).
+# Exit 3 from the harness means the environment could not answer: the gate passes
+# it through as exit 3 (no receipt, no COMPLETE); every other failure is real.
+run_sql_qualification() {
+  local commit="$1" cgroup="$2" out rc=0 shared_args=()
+  # (CD50) The harness opt-in follows the gate's, and only for the exact value 1.
+  if [[ "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" == 1 ]]; then
+    shared_args=(--allow-shared-host)
+  fi
+  _assay_sql_scratch="$(mktemp -d)" || die 'cannot create the SQL scratch directory'
+  make_exact_oid_clone "$worktree" "$_assay_sql_scratch"
+  [[ "$(git -C "$_assay_sql_scratch/clone" rev-parse HEAD)" == "$commit" ]] \
+    || die "SQL clone is not the gated commit $commit"
+  _assay_sql_container_name="run-gate-assay-sql-${BASHPID}-$(date +%s)"
+  out="$(nice -n 19 python3 -I "$_assay_sql_scratch/clone/assay/gate/python/qualify_sql.py" \
+    --scratch "$_assay_sql_scratch/sql" \
+    --container-name "$_assay_sql_container_name" \
+    --cgroup-parent "$cgroup" \
+    ${shared_args[@]+"${shared_args[@]}"})" || rc=$?
+  if [[ $rc -eq 3 ]]; then
+    echo 'ASSAY_GATE_DIAGNOSTIC=sql-qualification-inconclusive'
+    printf 'ASSAY_GATE_INCONCLUSIVE=sql-qualification — rerun\n' >&2
+    exit 3
+  fi
+  [[ $rc -eq 0 ]] || die "SQL qualification failed (exit $rc)"
+  [[ "$out" == 'ASSAY_SQL_QUALIFIED=1' ]] || die 'SQL qualification printed no exact marker'
+  rm -rf -- "$_assay_sql_scratch"
+  _assay_sql_scratch=""
+  _assay_sql_container_name=""
+  echo 'ASSAY_GATE_PHASE=sql-qualified'
+}
+
+run_registered_gate() {
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names assay_names commit tree
+  # (CD50) The shared-host opt-in is validated before anything else, so a typo
+  # never launches and never touches the receipt.
+  case "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" in
+    '' | 1) ;;
+    *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1' ;;
+  esac
+  # (CD32) One `docker ps`, no waiting: another session's gate on this shared host
+  # makes this run inconclusive before it captures, clears or builds anything.
+  # A `docker ps` that fails cannot show the host is free, so it is inconclusive too.
+  if ! listing="$(docker ps --no-trunc --format '{{.Names}}')"; then
+    echo 'ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun' >&2
+    exit 3
+  fi
+  names="$(printf '%s\n' "$listing" | grep '^run-gate-' | paste -sd, -)" || true
+  if [[ "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" == 1 ]]; then
+    # (CD50) Other projects' gates may run alongside; another assay gate may not.
+    assay_names="$(printf '%s\n' "$listing" | grep '^run-gate-assay-' | paste -sd, -)" || true
+    if [[ -n "$assay_names" ]]; then
+      echo "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: $assay_names" >&2
+      exit 3
+    fi
+    if [[ -n "$names" ]]; then
+      echo "ASSAY_GATE_SHARED_HOST=$names"
+    fi
+  elif [[ -n "$names" ]]; then
+    echo "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: $names" >&2
+    exit 3
+  fi
+  commit="$(git -C "$worktree" rev-parse HEAD)" || die "cannot resolve HEAD of $worktree"
+  tree="$(git -C "$worktree" rev-parse 'HEAD^{tree}')" || die "cannot resolve the tree of $worktree"
+  clear_registered_gate_receipt "$worktree"
+  _assay_gate_receipt_to_clear="$worktree/assay/.assay/registered-gate/tester-unified.json"
+  trap cleanup_assay_gate_container EXIT
+  # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
+  # the container's own status, so a red container never reaches the receipt.
+  ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
+  run_sql_qualification "$commit" "$cgroup_parent"
+  finish_registered_gate "$worktree" "$commit" "$tree"
+}
+
 # --- entry points ------------------------------------------------------------
 
 if [[ ${1:-} == "--inner" ]]; then
@@ -816,6 +758,4 @@ fi
 [[ -n "$host_repo_root" ]] || die 'the host repository bind source is empty'
 [[ "$host_repo_root" != *$'\n'* ]] || die 'multiple host repository bind sources were returned'
 
-run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
-
-echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'
+run_registered_gate "$worktree" "$host_repo_root" "$cgroup_parent"

@@ -1,0 +1,715 @@
+"""P-ship (A-247/A-249): `gate/distribution/build_release.py`, the release
+builder cmru invokes as assay's `build` step.
+
+Every check here exists because the property it pins was either found broken by
+measurement during this work, or is a fail-closed guard the integration path
+cannot reach:
+
+* **The zipapp must be built from the WHEEL.** From `src/` it carries no
+  `.dist-info`, reports `0+unknown`, and emits verdicts recording that as
+  `assay_version` -- which `assay verify` then accepts. Silent unattributable
+  output.
+* **`__main__.py` must call `sys.exit(main(...))`.** `zipapp -m` generates
+  `assay.cli.main()` and drops the return value, so every FAIL/ERROR verdict
+  would exit 0 at the one boundary a consumer reads.
+* **Reproducibility took two fixes, both found by running two builds.**
+  `SOURCE_DATE_EPOCH` from HEAD's commit (the wheel differed:
+  `93a562cb...` vs `5f35bb65...`), then stripping `direct_url.json` and the
+  `bin/` shim's `RECORD` line (the zipapp still differed after the wheel was
+  fixed, because both embed the builder's own paths).
+* **A manifest is emitted only for a TAGGED build.** `release_wheel.py`'s
+  grammar accepts `.devN+g<sha>` -- it validates the spelling, and pre/post/dev
+  suffixes are legal PEP 440 -- so A-200's "SCM development builds are not
+  release manifests" had nothing enforcing it until here.
+
+The end-to-end tests really build, twice, offline from the committed wheelhouse.
+That costs ~20s and is the point: the previous two reproducibility claims in
+this session were both false, and only running it twice showed that.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import tomllib
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from gate.tests.support import PROJECT_ROOT, REPO_ROOT, requires_parent_repository
+
+# (B063) `build_release.build(REPO_ROOT, ...)` runs real git against the
+# monorepo checkout. Outside it there is no such repository, and a skip
+# naming that is the true answer — see `support.requires_parent_repository`
+# for the rejected alternative.
+pytestmark = requires_parent_repository
+
+DISTRIBUTION = PROJECT_ROOT / "gate" / "distribution"
+BUILDER = DISTRIBUTION / "build_release.py"
+GATE_SCRIPT = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
+
+sys.path.insert(0, str(DISTRIBUTION))
+import build_release  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Structure and the cross-witness on the pinned closure
+# ---------------------------------------------------------------------------
+
+
+def test_the_builder_is_a_standalone_stdlib_only_module():
+    """A consumer runs the release path before assay is installed anywhere, so
+    the builder may not import assay -- the same constraint `release_wheel.py`
+    is already held to."""
+    assert BUILDER.is_file()
+    source = BUILDER.read_text(encoding="utf-8")
+    # AST, not a text match: the builder EMBEDS the generated `__main__.py`,
+    # which necessarily contains `from assay.cli import main` as a string
+    # literal. A regex over the file reads that as an import and reddens on the
+    # one line that is supposed to be there -- `test_dependency_purity.py`
+    # already uses AST for exactly this reason.
+    import ast
+
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+    assert "assay" not in imported, (
+        f"the release builder must not import the package it builds; got {sorted(imported)}"
+    )
+    # It DOES import its sibling helper, deliberately, rather than restating
+    # A-200's manifest grammar.
+    assert "release_wheel" in imported
+
+
+def test_locked_pins_agree_with_the_gate_scripts_independent_transcription():
+    """Two builders, two derivations, one closure.
+
+    `build_release.py` reads `build-requirements.txt`; the registered gate
+    hand-transcribes the same five in its own heredoc. Neither is allowed to
+    drift, and comparing them is what makes the duplication a cross-witness
+    rather than a second place to be wrong.
+    """
+    pins = build_release.locked_pins(DISTRIBUTION / "build-requirements.txt")
+    gate_source = GATE_SCRIPT.read_text(encoding="utf-8")
+    transcribed = dict(
+        re.findall(r'^\s*"([A-Za-z0-9._-]+)":\s*"([^"]+)",\s*$', gate_source, re.M)
+    )
+    assert transcribed, "the gate script no longer carries its pin transcription"
+    assert pins == {k.replace("_", "-").lower(): v for k, v in transcribed.items()}
+
+
+def test_the_tag_glob_is_the_same_one_pyproject_and_cmru_use():
+    """A release versioned off another product's tag is the failure this pins.
+
+    The monorepo carries `ciu-v*`, `topos-v*`, `cmru-v*` and more on one tag
+    line; three independent files have to agree on which of them is assay's.
+    """
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    describe = pyproject["tool"]["setuptools_scm"]["git_describe_command"]
+    assert build_release.TAG_GLOB in describe, describe
+    assert pyproject["tool"]["setuptools_scm"]["tag_regex"].startswith(
+        "^" + build_release.TAG_GLOB.rstrip("*")
+    )
+    cmru = tomllib.loads((PROJECT_ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    assert cmru["project"]["prefix"] == build_release.TAG_GLOB.rstrip("*")
+
+
+def test_the_generated_zipapp_entry_point_propagates_the_exit_code():
+    """The source-level half of the `zipapp -m` trap: the generated entry point
+    must pass `main`'s return value to `sys.exit`, not discard it."""
+    assert "sys.exit(main(sys.argv[1:]))" in build_release.ZIPAPP_MAIN
+
+
+def test_zipapps_own_generated_main_really_does_drop_the_return_value():
+    """The premise behind writing `__main__.py` by hand, proved rather than
+    asserted: if a future Python ever makes `zipapp -m` propagate the exit
+    code, this reddens and the hand-written file can be reconsidered."""
+    import zipapp as zipapp_module
+
+    generated = zipapp_module.MAIN_TEMPLATE.format(module="assay.cli", fn="main")
+    assert "sys.exit" not in generated, generated
+
+
+# ---------------------------------------------------------------------------
+# `head_release_tag` -- the discriminator every version rule leans on
+# ---------------------------------------------------------------------------
+
+
+def _repo(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    for argv in (
+        ["git", "init", "-q", "."],
+        ["git", "config", "user.email", "t@example.invalid"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(argv, cwd=path, check=True, capture_output=True)
+    (path / "seed.txt").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=path, check=True, capture_output=True)
+    return path
+
+
+def _commit(path: Path, name: str) -> None:
+    (path / name).write_text(name, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", name], cwd=path, check=True, capture_output=True)
+
+
+def test_head_release_tag_finds_a_matching_tag_on_head(tmp_path: Path):
+    repo = _repo(tmp_path / "r")
+    subprocess.run(["git", "tag", "-a", "assay-v1.2.3", "-m", "r"], cwd=repo,
+                   check=True, capture_output=True)
+    assert build_release.head_release_tag(repo) == "assay-v1.2.3"
+
+
+def test_head_release_tag_is_none_with_no_tag_at_all(tmp_path: Path):
+    assert build_release.head_release_tag(_repo(tmp_path / "r")) is None
+
+
+def test_head_release_tag_ignores_another_products_tag_on_head(tmp_path: Path):
+    """The whole monorepo shares one tag line. A `ciu-v*` tag on assay's HEAD
+    must not make this look like an assay release."""
+    repo = _repo(tmp_path / "r")
+    subprocess.run(["git", "tag", "-a", "ciu-v4.0.0", "-m", "r"], cwd=repo,
+                   check=True, capture_output=True)
+    assert build_release.head_release_tag(repo) is None
+
+
+def test_head_release_tag_refuses_a_tag_that_is_merely_REACHABLE(tmp_path: Path):
+    """`--exact-match`, not plain `describe`: without it every commit after a
+    release would report that release's tag and publish as it."""
+    repo = _repo(tmp_path / "r")
+    subprocess.run(["git", "tag", "-a", "assay-v1.2.3", "-m", "r"], cwd=repo,
+                   check=True, capture_output=True)
+    _commit(repo, "later.txt")
+    assert build_release.head_release_tag(repo) is None
+
+
+# ---------------------------------------------------------------------------
+# The version guards, driven directly
+# ---------------------------------------------------------------------------
+
+
+def _fake_wheel(directory: Path, version: str, *, metadata_version: str | None = None) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    wheel = directory / f"assay-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            f"assay-{version}.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: assay\nVersion: "
+            f"{metadata_version or version}\n\n",
+        )
+    return wheel
+
+
+class _StubVenv:
+    """Stands in for the build venv on the guard paths, which never reach pip.
+
+    `build_wheel` runs pip FIRST, so these tests monkeypatch `_run` away and
+    then drive the checks that follow it. That is the only way to reach the
+    guards: a real build cannot produce a placeholder version, which is the
+    point of the guards.
+    """
+
+
+@pytest.fixture()
+def no_pip(monkeypatch):
+    monkeypatch.setattr(build_release, "_run", lambda *a, **k: "")
+
+
+@pytest.mark.parametrize("placeholder", sorted(build_release.PLACEHOLDER_VERSIONS))
+def test_a_placeholder_version_is_refused_tagged_or_not(tmp_path, no_pip, placeholder):
+    _fake_wheel(tmp_path / "out", placeholder)
+    for tag in (None, f"assay-v{placeholder}"):
+        with pytest.raises(build_release.ReleaseBuildError, match="placeholder"):
+            build_release.build_wheel(
+                tmp_path / "venv", tmp_path / "clone", tmp_path / "out",
+                source_date_epoch="0", tag=tag,
+            )
+
+
+def test_the_fallback_version_is_refused_on_an_untagged_build(tmp_path, no_pip):
+    _fake_wheel(tmp_path / "out", build_release.FALLBACK_VERSION)
+    with pytest.raises(build_release.ReleaseBuildError, match="fallback_version"):
+        build_release.build_wheel(
+            tmp_path / "venv", tmp_path / "clone", tmp_path / "out",
+            source_date_epoch="0", tag=None,
+        )
+
+
+def test_the_same_version_is_ACCEPTED_when_a_tag_actually_names_it(tmp_path, no_pip):
+    """The differential half, and the reason the fallback is not simply
+    blacklisted: `0.1.0` is both pyproject's `fallback_version` and a perfectly
+    legitimate future `assay-v0.1.0` release. The tag is the discriminator, not
+    the spelling."""
+    version = build_release.FALLBACK_VERSION
+    _fake_wheel(tmp_path / "out", version)
+    wheel, resolved = build_release.build_wheel(
+        tmp_path / "venv", tmp_path / "clone", tmp_path / "out",
+        source_date_epoch="0", tag=f"assay-v{version}",
+    )
+    assert resolved == version
+    assert wheel.name == f"assay-{version}-py3-none-any.whl"
+
+
+def test_a_wheel_whose_version_disagrees_with_its_tag_is_refused(tmp_path, no_pip):
+    """The fail-closed guard the integration path cannot reach (the private
+    clone hides working-tree dirt, and two tags on one commit do not disagree).
+    Driven here so it is exercised rather than merely present."""
+    _fake_wheel(tmp_path / "out", "9.9.9")
+    with pytest.raises(build_release.ReleaseBuildError, match="not '1.0.0'"):
+        build_release.build_wheel(
+            tmp_path / "venv", tmp_path / "clone", tmp_path / "out",
+            source_date_epoch="0", tag="assay-v1.0.0",
+        )
+
+
+def test_a_wheel_whose_filename_and_metadata_disagree_is_refused(tmp_path, no_pip):
+    _fake_wheel(tmp_path / "out", "1.2.3", metadata_version="4.5.6")
+    with pytest.raises(build_release.ReleaseBuildError, match="METADATA version"):
+        build_release.build_wheel(
+            tmp_path / "venv", tmp_path / "clone", tmp_path / "out",
+            source_date_epoch="0", tag=None,
+        )
+
+
+def test_more_than_one_wheel_in_the_output_is_refused(tmp_path, no_pip):
+    _fake_wheel(tmp_path / "out", "1.2.3")
+    _fake_wheel(tmp_path / "out", "1.2.4")
+    with pytest.raises(build_release.ReleaseBuildError, match="exactly one"):
+        build_release.build_wheel(
+            tmp_path / "venv", tmp_path / "clone", tmp_path / "out",
+            source_date_epoch="0", tag=None,
+        )
+
+
+def test_commit_epoch_is_heads_own_timestamp_not_the_clock(tmp_path):
+    repo = _repo(tmp_path / "r")
+    expected = subprocess.run(
+        ["git", "log", "-1", "--format=%ct", "HEAD"], cwd=repo,
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert build_release.commit_epoch(repo) == expected
+
+
+# ---------------------------------------------------------------------------
+# `_strip_installation_metadata` -- the second reproducibility fix
+# ---------------------------------------------------------------------------
+
+
+def test_stripping_removes_direct_url_and_prunes_record_to_what_exists(tmp_path: Path):
+    staging = tmp_path / "staging"
+    dist_info = staging / "assay-1.2.3.dist-info"
+    dist_info.mkdir(parents=True)
+    (staging / "assay").mkdir()
+    (staging / "assay" / "__init__.py").write_text("", encoding="utf-8")
+    (dist_info / "METADATA").write_text("Name: assay\n", encoding="utf-8")
+    (dist_info / "direct_url.json").write_text('{"url": "file:///tmp/whatever"}', encoding="utf-8")
+    (dist_info / "RECORD").write_text(
+        "../../bin/assay,sha256=aaa,189\n"
+        "assay/__init__.py,sha256=bbb,0\n"
+        "assay-1.2.3.dist-info/METADATA,sha256=ccc,13\n"
+        "assay-1.2.3.dist-info/direct_url.json,sha256=ddd,30\n",
+        encoding="utf-8",
+    )
+
+    build_release._strip_installation_metadata(dist_info)
+
+    assert not (dist_info / "direct_url.json").exists()
+    kept = (dist_info / "RECORD").read_text(encoding="utf-8").splitlines()
+    assert kept == [
+        "assay/__init__.py,sha256=bbb,0",
+        "assay-1.2.3.dist-info/METADATA,sha256=ccc,13",
+    ], kept
+
+
+def test_stripping_keeps_metadata_because_that_is_what_reports_the_version(tmp_path: Path):
+    """`importlib.metadata.version()` reads METADATA, never RECORD -- so the
+    pruning above cannot be what makes a zipapp report `0+unknown`."""
+    dist_info = tmp_path / "assay-1.2.3.dist-info"
+    dist_info.mkdir(parents=True)
+    (dist_info / "METADATA").write_text("Name: assay\nVersion: 1.2.3\n", encoding="utf-8")
+    build_release._strip_installation_metadata(dist_info)
+    assert (dist_info / "METADATA").is_file()
+
+
+def test_the_sha256_sidecar_is_in_sha256sum_c_format(tmp_path: Path):
+    artifact = tmp_path / "assay-1.2.3.pyz"
+    artifact.write_bytes(b"payload")
+    sidecar = build_release.write_sha256_sidecar(artifact)
+    assert sidecar.name == "assay-1.2.3.pyz.sha256"
+    line = sidecar.read_text(encoding="utf-8")
+    assert re.fullmatch(r"[0-9a-f]{64}  assay-1\.2\.3\.pyz\n", line), line
+    check = subprocess.run(
+        ["sha256sum", "-c", sidecar.name], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+
+
+# ---------------------------------------------------------------------------
+# End to end, against the real repository, offline
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def built(tmp_path_factory) -> dict:
+    """One real release build of the current HEAD, plus a second into a
+    DIFFERENT directory so reproducibility is a real claim rather than
+    same-path luck.
+
+    **(B060/A-411) Each `--outdir` is a `dist/` INSIDE an otherwise-empty
+    directory of its own**, and that enclosing directory is returned. It is
+    the shape the acceptance criterion names (`--outdir <repo>/assay/dist`),
+    and it makes "the builder wrote nothing beside its outdir" a checkable
+    outcome — see
+    :func:`test_a_build_writes_nothing_outside_its_own_outdir`. Building
+    straight into `mktemp()` could not express that: the pytest tmp root has
+    other things in it.
+    """
+    first_root = tmp_path_factory.mktemp("release-a")
+    second_root = tmp_path_factory.mktemp("release-b")
+    first = first_root / "dist"
+    second = second_root / "dist"
+    artifacts = build_release.build(REPO_ROOT, first)
+    again = build_release.build(REPO_ROOT, second)
+    return {
+        "first": artifacts,
+        "second": again,
+        "first_root": first_root,
+        "second_root": second_root,
+    }
+
+
+def test_a_build_writes_nothing_outside_its_own_outdir(built):
+    """B060/A-411, asserted as an OUTCOME rather than as "the staging path is
+    a TemporaryDirectory".
+
+    `build_zipapp` used to install into `outdir.parent / "zipapp-staging"`
+    and never remove it, so the obvious in-repository invocation
+    (`--outdir assay/dist`) left `assay/zipapp-staging/` behind. That path is
+    not gitignored, so the next run of the self-hosted gate lane saw an
+    untracked directory in the tree it was judging and refused
+    `NO_MEASUREMENT`/`DIRTY_TREE` — correctly, for a cause with nothing to do
+    with the change under judgment.
+
+    This is the check that goes red if a future edit reintroduces one: the
+    enclosing directory contains the outdir and NOTHING else, on both builds.
+    It says nothing about HOW the staging tree is kept out of the way, so it
+    survives any of the three shapes B060 lists.
+    """
+    for key, root in (("first", "first_root"), ("second", "second_root")):
+        enclosing = built[root]
+        assert [entry.name for entry in sorted(enclosing.iterdir())] == ["dist"], (
+            f"{key} build left something beside its outdir: "
+            f"{sorted(p.name for p in enclosing.iterdir())}"
+        )
+        assert built[key].wheel.parent == enclosing / "dist"
+
+
+def test_the_real_build_produces_a_wheel_a_zipapp_and_both_sidecars(built):
+    artifacts = built["first"]
+    assert artifacts.wheel.is_file()
+    assert artifacts.zipapp.is_file()
+    assert artifacts.wheel.with_name(artifacts.wheel.name + ".sha256").is_file()
+    assert artifacts.zipapp.with_name(artifacts.zipapp.name + ".sha256").is_file()
+
+
+def test_two_builds_of_one_commit_are_byte_identical(built):
+    """cmru S9.4. Both halves matter: the wheel needed `SOURCE_DATE_EPOCH`, and
+    the zipapp additionally needed the installation metadata stripped."""
+    first, second = built["first"], built["second"]
+    assert first.wheel.read_bytes() == second.wheel.read_bytes(), "wheel is not reproducible"
+    assert first.zipapp.read_bytes() == second.zipapp.read_bytes(), "zipapp is not reproducible"
+
+
+def test_an_untagged_build_emits_no_release_manifest(built):
+    """A-200's policy, mechanically enforced for the first time. The repository
+    carries no `assay-v*` tag, so this is the live path today."""
+    artifacts = built["first"]
+    assert artifacts.tagged is False
+    assert artifacts.manifest is None
+    assert not (artifacts.wheel.parent / "release-manifest.json").exists()
+
+
+def test_the_untagged_build_still_carries_a_real_scm_identity(built):
+    version = built["first"].version
+    assert version not in build_release.PLACEHOLDER_VERSIONS
+    assert version != build_release.FALLBACK_VERSION
+    assert re.match(r"\A[0-9]+\.[0-9]+\.[0-9]+", version), version
+
+
+def test_the_zipapp_reports_the_wheels_version_and_never_the_source_fallback(built):
+    """The finding this builder exists around: from `src/` this prints
+    `assay 0+unknown`."""
+    artifacts = built["first"]
+    out = subprocess.run(
+        [sys.executable, str(artifacts.zipapp), "--version"],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == f"assay {artifacts.version}", out.stdout
+
+
+def test_the_zipapp_reads_its_packaged_schema_from_inside_the_archive(built):
+    """A-029's contract has to survive the packaging change:
+    `importlib.resources.files()` must resolve inside a zip."""
+    artifacts = built["first"]
+    probe = (
+        "from assay.verdict import VERDICT_SCHEMA_VERSION, load_schema, schema_text;"
+        "import assay;"
+        "print(VERDICT_SCHEMA_VERSION, load_schema()['$id'], len(schema_text()),"
+        " assay.__file__)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    version, schema_id, length, origin = out.stdout.split()
+    assert schema_id == f"urn:assay:schema:verdict:{version}"
+    assert int(length) > 1000
+    assert str(artifacts.zipapp) in origin, origin
+
+
+def test_the_zipapp_verifies_a_real_artifact_and_refuses_a_foreign_version(built):
+    artifacts = built["first"]
+
+    good = subprocess.run(
+        [sys.executable, str(artifacts.zipapp), "verify",
+         str(PROJECT_ROOT / "tests" / "fixtures" / "verdicts" / "r2_pass_with_judgment.json")],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert good.returncode == 0, good.stderr
+
+    v4 = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P21" / "expected" / "combined-pass-v4.json"
+    foreign = subprocess.run(
+        [sys.executable, str(artifacts.zipapp), "verify", str(v4)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert foreign.returncode == 1, foreign.stdout
+    assert "is not this verifier's version" in foreign.stderr
+
+
+def test_the_zipapp_propagates_a_nonzero_exit_from_a_failing_lane(built, tmp_path):
+    """The `zipapp -m` trap, end to end through the real artifact. With the
+    generated entry point this exits 0 and a FAIL reads as success."""
+    artifacts = built["first"]
+    repo = _repo(tmp_path / "consumer")
+    (repo / ".gitignore").write_text("verdict.json\n", encoding="utf-8")
+    (repo / "assay.toml").write_text(
+        'schema_version = 2\n'
+        "[lanes.failing]\n"
+        'scope = "S1"\nrigor = ["R0"]\nenforcement = "gate"\n'
+        'argv = ["/bin/false"]\nenv = {}\nenv_passthrough = ["PATH"]\n'
+        'budget = "1m"\nallow_argv_append = false\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "lane"], cwd=repo, check=True, capture_output=True)
+
+    verdict = repo / "verdict.json"
+    out = subprocess.run(
+        [sys.executable, str(artifacts.zipapp), "run", "failing",
+         "--verdict-json", str(verdict)],
+        cwd=repo, capture_output=True, text=True, timeout=300,
+    )
+    assert out.returncode != 0, "a FAIL verdict exited 0 through the zipapp"
+    document = json.loads(verdict.read_text(encoding="utf-8"))
+    assert document["outcome"] == "FAIL"
+    assert document["exit_code"] == out.returncode
+    assert document["assay_version"] == artifacts.version, (
+        "the zipapp recorded a version that is not the wheel's"
+    )
+
+
+def test_the_zipapp_runs_analyze_from_the_one_archive(built):
+    """(A-478) One zipapp holds both packages: `analyze` finds `assay_analysis`
+    inside the archive, prints the headline, and keeps its exit codes."""
+    artifacts = built["first"]
+
+    # `-S`: no site-packages, so an `assay_analysis` installed in the running
+    # interpreter (the gate's run venv) cannot stand in for a missing one.
+    helped = subprocess.run(
+        [sys.executable, "-S", str(artifacts.zipapp), "analyze", "--help"],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert helped.returncode == 0, helped.stderr
+    assert helped.stdout.splitlines()[0] == f"ASSAY {artifacts.version} — declared-lane judge"
+
+    refused = subprocess.run(
+        [sys.executable, "-S", str(artifacts.zipapp), "analyze", "report",
+         "--expected-commit", "a" * 40, "--verdict", "lane", "/nonexistent"],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert json.loads(refused.stdout)["lanes"][0]["status"] == "evidence_error"
+
+    origin = subprocess.run(
+        [sys.executable, "-S", "-c", "import assay_analysis; print(assay_analysis.__file__)"],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert origin.returncode == 0, origin.stderr
+    assert str(artifacts.zipapp) in origin.stdout, origin.stdout
+
+
+def test_the_wheel_holds_both_packages_their_schemas_and_no_tests(built):
+    with zipfile.ZipFile(built["first"].wheel) as archive:
+        names = set(archive.namelist())
+
+    for required in (
+        "assay_analysis/__init__.py",
+        "assay_analysis/campaign.py",
+        "assay_analysis/cli.py",
+        "assay_analysis/evidence.py",
+        "assay_analysis/plan_estimate.py",
+        "assay/schemas/analysis-archive.schema.json",
+        "assay/schemas/analysis-campaign.schema.json",
+        "assay/schemas/analysis-receipt.schema.json",
+        "assay/schemas/analysis-report.schema.json",
+    ):
+        assert required in names, required
+    assert "assay/analysis.py" not in names
+    assert not any(n.startswith(("analysis/", "tests/", "assay/tests/")) for n in names)
+    assert not any(n.startswith("assay_analysis/") and "test" in n for n in names)
+
+
+def test_the_archive_carries_no_builder_specific_paths(built):
+    """Both reproducibility culprits, asserted as absences so a future change
+    that reintroduces either is caught by name rather than by a hash diff."""
+    artifacts = built["first"]
+    with zipfile.ZipFile(artifacts.zipapp) as archive:
+        names = archive.namelist()
+        assert not any(n.endswith("direct_url.json") for n in names), names
+        assert not any(n.startswith("bin/") for n in names), names
+        assert not any("__pycache__" in n for n in names), names
+        record = next(n for n in names if n.endswith(".dist-info/RECORD"))
+        assert b"../../bin/assay" not in archive.read(record)
+        assert any(n.endswith(".dist-info/METADATA") for n in names), names
+        assert "__main__.py" in names
+
+
+def test_the_zipapps_own_sha256_is_what_identify_judge_records(built):
+    """(B018/A-327) The zipapp branch of `provenance.identify_judge`, proven
+    against a REAL `.pyz` rather than a stand-in `Distribution`.
+
+    This closes a citation that was briefly false: `provenance.py` and
+    `test_cli_provenance_and_request_base.py` both claimed the zipapp form was
+    exercised against a genuinely built artifact, while the only real-artifact
+    coverage in the suite was the WHEEL's (`test_standalone.py`). A stand-in
+    cannot show that `zipimport` really reports the archive path a running
+    `.pyz` was loaded from, which is the single fact the whole branch rests on
+    -- and it is also where the measured `zipp.Path` / `pathlib.Path` TypeError
+    lives, so a regression there would otherwise surface only in production.
+
+    The digest is recomputed from the file's own bytes, so the assertion is
+    against the artifact rather than against another copy of the code that
+    produced it.
+    """
+    artifacts = built["first"]
+    probe = (
+        "import json;"
+        "from assay import provenance;"
+        "identity, reason = provenance.identify_judge();"
+        "print(json.dumps("
+        "{'reason': reason} if identity is None else identity.to_dict()))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    identity = json.loads(out.stdout)
+    assert "reason" not in identity, (
+        f"a real zipapp must identify itself, but it refused: {identity}"
+    )
+    assert identity["artifact"] == "zipapp", identity
+    assert identity["name"] == "assay", identity
+    assert identity["version"] == artifacts.version, identity
+    assert identity["digest_algorithm"] == "sha256", identity
+    assert identity["digest"] == hashlib.sha256(
+        artifacts.zipapp.read_bytes()
+    ).hexdigest(), "the recorded digest is not the .pyz's own sha256"
+
+
+#: A-403's regression guard, run against the REAL zipapp this module already
+#: builds. Every assertion below is about assay's own code reading its own
+#: artifact; no Go toolchain is involved and none is needed (A-042/A-043).
+_ORACLE_STAGING_PROBE = """\
+import json, pathlib
+from assay.adapters import go_stmtpos as go
+
+helper_dir = pathlib.Path(str(go.HELPER_DIR))
+result = {
+    "helper_dir": str(helper_dir),
+    "helper_dir_holds_a_real_file": (helper_dir / "stmtpos.go").is_file(),
+}
+with go._staged_helper(None) as staged:
+    result["staged"] = str(staged)
+    result["names"] = sorted(p.name for p in staged.iterdir())
+    result["source"] = (staged / "stmtpos.go").read_text(encoding="utf-8")
+    result["gomod"] = (staged / "go.mod").read_text(encoding="utf-8")
+    result["staged_is_a_real_directory"] = staged.is_dir()
+print(json.dumps(result))
+"""
+
+
+def test_the_zipapp_can_stage_the_go_oracle_into_a_real_directory(built):
+    """A-403, the defect this test was written from: `go run .` takes a
+    working DIRECTORY, and inside a zipapp the helper's files are zip members,
+    so `HELPER_DIR` names a path that does not exist. The adapter refused with
+    "assay's Go statement-position oracle is missing from the installation"
+    for an oracle that was in the artifact the whole time -- and the zipapp is
+    the ONLY install path into `tester-unified-go` (A-402: an inherited
+    interpreter, no pip, no ensurepip), so that refusal was every Go
+    consumer's experience.
+
+    Asserted against the real built artifact rather than a synthetic zip,
+    because the thing under test is whether the SHIPPED file can be read out
+    of the SHIPPED archive."""
+    artifacts = built["first"]
+    out = subprocess.run(
+        [sys.executable, "-c", _ORACLE_STAGING_PROBE],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+
+    # Vacuity guard, and the precondition the defect needs: inside the zipapp
+    # `HELPER_DIR` really is NOT a directory on disk. If a future packaging
+    # change ever materialises it, this test stops proving anything about the
+    # staging path and must be re-pointed rather than left green.
+    assert str(artifacts.zipapp) in result["helper_dir"], result
+    assert result["helper_dir_holds_a_real_file"] is False, (
+        "the zipapp's HELPER_DIR resolved to a real file, so this test no "
+        f"longer exercises the staging path it exists for: {result}"
+    )
+
+    assert result["staged_is_a_real_directory"] is True, result
+    assert str(artifacts.zipapp) not in result["staged"], result
+    assert result["names"] == ["go.mod", "stmtpos.go"], result
+
+    source_dir = PROJECT_ROOT / "src" / "assay" / "helpers" / "go" / "stmtpos"
+    assert result["source"] == (source_dir / "stmtpos.go").read_text(encoding="utf-8")
+    assert result["gomod"] == (source_dir / "go.mod").read_text(encoding="utf-8")
+
+
+def test_the_zipapps_recorded_digest_matches_its_shipped_sidecar(built):
+    """The build writes an `<artifact>.sha256` sidecar for consumers to check,
+    and the verdict now records a digest for the same purpose. If those two
+    ever disagree, one of them is lying to whoever is checking, so they are
+    pinned to each other rather than each to the file in isolation."""
+    artifacts = built["first"]
+    sidecar = artifacts.zipapp.with_name(artifacts.zipapp.name + ".sha256")
+    recorded = sidecar.read_text(encoding="utf-8").split()[0]
+    assert recorded == hashlib.sha256(artifacts.zipapp.read_bytes()).hexdigest()

@@ -8,10 +8,11 @@ Reasonix). Repo-wide rules; each project adds its own specifics under its
 nyxloom's cross-project doctrine lives **with the product**, never copied into a
 trove: `reference/AUTHORING.md` (handoff contract), `reference/STANDARD.md`
 (trove spec), `reference/DOCTRINE.md` (operational lessons — gates, evidence,
-review, merge discipline). A project adds to or overrides any of them with the
-**same-named sibling** in its own `nyxloom-trove/` — read canonical first, then
-the sibling, which refines (never replaces) it. Everything below is *this repo's*
-delta on top of that doctrine.
+review, merge discipline). Project-specific additions or overrides live in the
+**same-named sibling** in that project's `nyxloom-trove/`. Read canonical first,
+then the sibling: it may refine or define project-scoped exceptions to particular
+rules, but it does not replace the canonical document as a whole. Everything
+below is *this repo's* delta on top of that doctrine.
 
 **Working on nyxloom itself?** Also read **`nyxloom/nyxloom-trove/DOCTRINE.md`**
 (its project delta: structlog reserved-key traps, and `build_dispatch`'s hard
@@ -52,7 +53,8 @@ Codex home explicit:
 
 ```bash
 export CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"
-export CODEX_HOME="$HOME/.codex2"
+# Use "$HOME/.codex2" instead only when the operator directs.
+export CODEX_HOME="$HOME/.codex"
 printf '%s' "$PROMPT" |
   codex exec -m gpt-6-sol \
     -c 'model_reasoning_effort="xhigh"' \
@@ -191,14 +193,16 @@ every `kind = "assay"` lane, and a gate that calls `assay run` directly (assay's
 own) passes them itself. Both are no-ops on an R0/R1 lane; on a mutation lane
 they are what lets a budget-capped retry continue instead of restarting from
 mutant #1. Resume state and the progress stream live under the git-ignored
-`.assay/`, never in the judged tree. Use the latest released Assay version
-available. Verify that it satisfies the consuming project's currently declared
-judge floor and passes that project's current preflight (run-gate R-38;
-`--state-dir` is B066). If it does not, resolve the availability or
+`.assay/`, never in the judged tree. For consumers outside this monorepo, use
+the latest released Assay version available and verify it satisfies the
+consumer's current declared judge floor and passes its current preflight
+(including run-gate R-38's resume/progress requirements and any required
+`--state-dir` support). If it does not, resolve the availability or
 compatibility mismatch; do not silently fall back to an older release. Do not
 infer today's minimum from historical version numbers in old instructions or
-reports. For in-repo consumers, follow the source-backed installation rule
-below instead of pinning a versioned zipapp.
+reports. For in-repo consumers, use the source-backed installation rule below;
+it takes precedence over released-wheel selection for this same-repository
+boundary.
 
 ## Consuming assay from inside vbpub (estate-wide, 2026-08-27)
 
@@ -215,10 +219,22 @@ OUTSIDE this repo (`assay/docs/CONSUMERS.md`) — the two docs are for two
 different trust boundaries, not two options for the same one.
 
 ## Worktree protocol
-Parallel implementation runs in `.worktrees/<branch>` (branch from `main`).
-Merge serially onto `main` with `--no-ff`; expect minor overlap reconciliation.
-Keep packages small + non-overlapping to parallelize. Each worktree has its own
-index, so `git add`/`commit` there is private and safe.
+Use isolated Git worktrees for parallel implementation. In vbpub, the default
+is `.worktrees/<branch>`, based on the task's declared base (normally current
+`main`). When a task needs a CIU-managed identity or a CIU/gate-visible checkout,
+use the supported `ciu worktree create` or `adopt` flow and read
+`ciu/docs/CONSUMERS.md` first. CIU treats its generated identity record and live
+Git path/branch as one contract: inspect with `ciu worktree inspect`, and do not
+move, rename, or hand-edit a managed checkout/record to make them agree. Do not
+leave a managed checkout detached or on a branch different from its record. A
+temporary detach required by an exact-tree test is permitted, but restore the
+recorded branch before invoking any CIU lifecycle command. CIU deliberately
+refuses a record/Git mismatch rather than silently repairing it; preserve the
+checkout and ask for direction before changing its identity.
+Merge serially onto the task's integration branch (normally `main`) with
+`--no-ff`; expect minor overlap reconciliation. Keep packages small +
+non-overlapping to parallelize. Each worktree has its own index, so
+`git add`/`commit` there is private and safe.
 
 ## Committing from the shared `main` checkout
 The main checkout (`/workspaces/vbpub`) is shared: another agent's serial merge

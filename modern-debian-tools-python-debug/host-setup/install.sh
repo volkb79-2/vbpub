@@ -270,6 +270,10 @@ case "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" in
   terminate|report-only) ;;
   *) echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY must be exactly terminate or report-only" >&2; exit 2 ;;
 esac
+case "${DEVCONTAINER_MISSING_BIND_SOURCE_POLICY:-}" in
+  create-by-spelling|fail) ;;
+  *) echo "ERROR: DEVCONTAINER_MISSING_BIND_SOURCE_POLICY must be exactly create-by-spelling or fail" >&2; exit 2 ;;
+esac
 if [ -z "${DEV_BUILDKITD_IMAGE:-}" ]; then
   echo "ERROR: DEV_BUILDKITD_IMAGE is empty; refusing to start the managed BuildKit service" >&2
   exit 2

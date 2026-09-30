@@ -69,12 +69,12 @@ failure this whole seam exists to remove.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from ..records import positional_record
 from pathlib import Path, PurePosixPath
 from typing import Iterator
 
 from .. import safeio
-from ..errors import AssayError, Outcome, ReasonCode
+from ..errors import AssayError, Outcome, ReasonCode, require_advance
 
 __all__ = [
     "MAX_GO_MOD_BYTES",
@@ -95,7 +95,7 @@ _PUNCTUATION = frozenset("()[]{},")
 _MODULE_FILE_NAME = "go.mod"
 
 
-@dataclass(frozen=True)
+@positional_record
 class ModuleDeclaration:
     """A module path together with the ``go.mod`` it was read out of.
 
@@ -390,7 +390,7 @@ def _tokens(text: str, *, source: str) -> Iterator[tuple[str, str]]:
             continue
         if text.startswith("//", index):
             newline = text.find("\n", index)
-            index = length if newline == -1 else newline
+            index = require_advance(index, length if newline == -1 else newline)
             continue
         if text.startswith("/*", index):
             raise _refuse(
@@ -420,13 +420,6 @@ def _tokens(text: str, *, source: str) -> Iterator[tuple[str, str]]:
                     f"\"mod files must use // comments (not /* */ comments)\""
                 )
             index += 1
-        if index == start:
-            # Unreachable for any input `isIdent` accepts; a non-printable
-            # rune would land here rather than looping forever.
-            raise _refuse(
-                f"{source!r} contains the unexpected input character "
-                f"{text[start]!r}"
-            )
         yield ("ident", text[start:index])
 
 

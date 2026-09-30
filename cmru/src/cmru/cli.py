@@ -315,9 +315,18 @@ def _create_bound_cmru_launcher(directory: Path) -> Path:
 
     launcher = directory / "cmru"
     module_root = Path(__file__).resolve().parent.parent
+    repo_root = module_root.parent.parent
+    import_roots = [module_root]
+    for relative in (
+        Path("libraries/cli-extended/src"),
+        Path("libraries/worktree/src"),
+    ):
+        source_root = repo_root / relative
+        if source_root.is_dir():
+            import_roots.append(source_root)
     program = (
         "import sys; "
-        f"sys.path.insert(0, {str(module_root)!r}); "
+        f"sys.path[:0] = {[str(path) for path in import_roots]!r}; "
         "from cmru.cli import main; "
         "raise SystemExit(main())"
     )

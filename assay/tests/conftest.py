@@ -23,8 +23,8 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
-import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -53,10 +53,172 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
     f"expected assay's project root at {PROJECT_ROOT}, but there is no "
     f"pyproject.toml there"
 )
+#: The `tests/` directory. Moved test files use this instead of their own
+#: `__file__`, which changes when a file changes folder (B130).
+TESTS_ROOT = PROJECT_ROOT / "tests"
 
-#: The monorepo checkout `assay/` sits in — a real repository only when the
-#: tree is IN that checkout (B063).
-REPO_ROOT = PROJECT_ROOT.parent
+
+@pytest.fixture(autouse=True)
+def _no_ambient_color(monkeypatch):
+    """Help and CLI output must not depend on the caller's terminal colour settings (Python 3.14 argparse colours --help under FORCE_COLOR)."""
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("PYTHON_COLORS", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Retain preflight coverage JSON without replacing different evidence.
+
+    The preflight's verifier report carries summary lines, while this artifact
+    retains the exact coverage.py arcs needed to review each missing branch.
+    The registered preflight supplies these values; ordinary and full mutation
+    lane runs leave them unset. Repeated equivalent baseline sessions
+    are harmless, but different coverage evidence may never replace the report.
+    Coverage.py's generated timestamp is ignored for equivalence; the original
+    raw report remains retained.
+    """
+    del session, exitstatus
+    source_name = os.environ.get("ASSAY_B105_COVERAGE_SOURCE")
+    archive_dir_name = os.environ.get("ASSAY_B105_COVERAGE_ARCHIVE_DIR")
+    source_commit = os.environ.get("ASSAY_B105_SOURCE_COMMIT")
+    source_tree = os.environ.get("ASSAY_B105_SOURCE_TREE")
+    identity = (archive_dir_name, source_commit, source_tree)
+    if source_name is None and all(value is None for value in identity):
+        return
+    if source_name is None or any(value is None for value in identity):
+        raise RuntimeError(
+            "B105 coverage export requires the source path, attempt directory, "
+            "and source commit/tree"
+        )
+
+    source = Path(source_name)
+    archive_dir = Path(archive_dir_name)
+    if source.is_absolute() or ".." in source.parts:
+        raise RuntimeError("B105 coverage source must stay within the snapshot")
+    if not archive_dir.is_absolute():
+        raise RuntimeError("B105 coverage archive directory must be absolute")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_commit):
+        raise RuntimeError("B105 source commit must be a full Git object id")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_tree):
+        raise RuntimeError("B105 source tree must be a full Git object id")
+    if not re.fullmatch(r"attempt\.[A-Za-z0-9]{8}", archive_dir.name):
+        raise RuntimeError(
+            "B105 coverage archive directory must be a unique attempt directory"
+        )
+    archive = archive_dir / (
+        "coverage-self-qualification-preflight-snapshot-"
+        f"{source_commit}-{source_tree}.json"
+    )
+
+    source_info = source.lstat()
+    if not stat.S_ISREG(source_info.st_mode):
+        raise RuntimeError(f"B105 coverage source is not a regular file: {source}")
+    try:
+        coverage_document = json.loads(source.read_text(encoding="utf-8"))
+        exclusion_map = json.loads(
+            (PROJECT_ROOT / "tests/fixtures/b105-coverage-exclusions.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        _validate_b105_exclusion_inventory(coverage_document, exclusion_map)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"B105 coverage exclusion check failed: {exc}") from exc
+    if source.resolve() == archive.resolve(strict=False):
+        raise RuntimeError("B105 coverage source and archive path must differ")
+    if not archive_dir.is_dir() or archive_dir.is_symlink():
+        raise RuntimeError(
+            f"B105 coverage archive directory is not a real directory: {archive_dir}"
+        )
+
+    temporary = archive.with_name(f".{archive.name}.{os.getpid()}.tmp")
+    try:
+        with source.open("rb") as input_stream, temporary.open(
+            "xb"
+        ) as output_stream:
+            shutil.copyfileobj(input_stream, output_stream)
+        try:
+            os.link(temporary, archive)
+        except FileExistsError:
+            try:
+                archive_info = archive.lstat()
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "B105 coverage archive disappeared during creation"
+                ) from exc
+            if not stat.S_ISREG(archive_info.st_mode):
+                raise RuntimeError(
+                    f"B105 coverage archive is not a regular file: {archive}"
+                )
+            if not _same_coverage_evidence(temporary, archive):
+                raise RuntimeError(
+                    "refusing to overwrite retained B105 baseline coverage "
+                    "with different coverage evidence"
+                )
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _same_coverage_evidence(left: Path, right: Path) -> bool:
+    """Compare coverage records while excluding coverage.py's run timestamp."""
+    try:
+        left_document = json.loads(left.read_text(encoding="utf-8"))
+        right_document = json.loads(right.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    for document in (left_document, right_document):
+        metadata = document.get("meta") if isinstance(document, dict) else None
+        if isinstance(metadata, dict):
+            metadata.pop("timestamp", None)
+    return left_document == right_document
+
+
+def _validate_b105_exclusion_inventory(coverage_document, exclusion_map) -> None:
+    """Require the raw coverage report's exclusions to match the reviewed map."""
+    if not isinstance(coverage_document, dict) or not isinstance(
+        coverage_document.get("files"), dict
+    ):
+        raise ValueError("raw coverage JSON has no files object")
+    if not isinstance(exclusion_map, dict) or exclusion_map.get("format") != 1:
+        raise ValueError("the checked-in B105 exclusion map has an unknown format")
+    expected_files = exclusion_map.get("files")
+    if not isinstance(expected_files, dict):
+        raise ValueError("the checked-in B105 exclusion map has no files object")
+
+    expected = {}
+    for path, entry in expected_files.items():
+        if (
+            not isinstance(path, str)
+            or not isinstance(entry, dict)
+            or not isinstance(entry.get("lines"), list)
+            or not entry["lines"]
+            or any(type(line) is not int or line < 1 for line in entry["lines"])
+            or len(entry["lines"]) != len(set(entry["lines"]))
+            or not isinstance(entry.get("reason"), str)
+            or not entry["reason"].strip()
+        ):
+            raise ValueError(f"malformed reviewed B105 exclusion entry for {path!r}")
+        expected[path] = sorted(entry["lines"])
+
+    actual = {}
+    for path, record in coverage_document["files"].items():
+        if not isinstance(path, str) or not isinstance(record, dict):
+            raise ValueError("raw coverage JSON contains a malformed file record")
+        excluded = record.get("excluded_lines", [])
+        if (
+            not isinstance(excluded, list)
+            or any(type(line) is not int or line < 1 for line in excluded)
+            or len(excluded) != len(set(excluded))
+        ):
+            raise ValueError(f"raw coverage exclusions are malformed for {path!r}")
+        if excluded:
+            actual[path] = sorted(excluded)
+    if actual != expected:
+        missing = {path: lines for path, lines in expected.items() if actual.get(path) != lines}
+        unexpected = {path: lines for path, lines in actual.items() if expected.get(path) != lines}
+        raise ValueError(
+            f"raw exclusions differ from the reviewed inventory; expected={missing!r}, "
+            f"unexpected_or_changed={unexpected!r}"
+        )
 
 
 def native_outcome(**fields):
@@ -116,67 +278,6 @@ def native_mutation(**fields):
     fields.setdefault("candidate_ids", candidate_ids)
     return Mutation(**fields)
 
-
-def _parent_repository_toplevel() -> Path | None:
-    """:data:`REPO_ROOT`'s own git work-tree top, or ``None`` when
-    :data:`REPO_ROOT` is not the top of a real work tree (B063).
-
-    Asks git rather than looking for a ``.git`` marker, because a linked
-    worktree's marker is a gitfile and a submodule's is a redirect — "is
-    there a repository here" is git's question to answer, not a filesystem
-    heuristic's.
-
-    The toplevel is compared, not merely tested for existence: a module that
-    needs THIS monorepo (to read `cmru/assay.toml`, to `git archive` the
-    pinned commit, to walk sibling projects) is not served by assay having
-    been copied into some unrelated repository's subdirectory, where every
-    such read would fail confusingly instead of skipping honestly.
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    try:
-        return Path(proc.stdout.strip()).resolve()
-    except OSError:  # pragma: no cover - a path git printed but we cannot resolve
-        return None
-
-
-#: (B063) Apply as ``pytestmark`` in any module that shells out to
-#: ``git -C REPO_ROOT``. Three modules did so unconditionally, and R-1
-#: measured the cost from a ``cp -r`` copy of ``assay/`` outside the vbpub
-#: checkout: **11 failed, 13 errors**, constant on every copy, all 24 in
-#: those three modules — a noisy floor a real regression would have had to be
-#: spotted against, which is exactly what happened during Wave D's mutation
-#: testing.
-#:
-#: **Skip-with-a-named-reason, not resolve-from-context.** The rejected
-#: alternative was `git rev-parse --show-toplevel` from ``PROJECT_ROOT`` to
-#: find *some* repository to use instead. It was rejected because these
-#: modules are testing a property of the CHECKOUT — that assay sits inside
-#: the monorepo whose other projects and whose history they read — not a
-#: property of assay. When that property is false, "there is no repository
-#: here" is the true answer; reaching further up the tree to find a
-#: different repository would answer a question nobody asked, and would make
-#: the result depend on what happened to be above the copy.
-_PARENT_TOPLEVEL = _parent_repository_toplevel()
-requires_parent_repository = pytest.mark.skipif(
-    _PARENT_TOPLEVEL != REPO_ROOT.resolve(),
-    reason=(
-        f"this module reads the monorepo checkout at {REPO_ROOT} with real git "
-        f"commands, and it is not the top of a git work tree here (git reported "
-        f"{_PARENT_TOPLEVEL}); assay is being run from a copy or a bind of the "
-        f"project directory alone, so there is no parent repository to read "
-        f"(B063)"
-    ),
-)
 
 #: P09's canary fixture (`tests/fixtures/canary/python/`) is a real, committed
 #: pytest project — `pkg/greet.py` + `tests/test_greet.py` — that
@@ -1061,10 +1162,10 @@ def as_statement_attributed(profile):
     correction instead, through
     :func:`assay.statement_attribution.attribute_statements` with real oracle
     blocks -- see :func:`load_go_statement_oracle` and its two committed
-    documents, ``tests/test_statement_attribution_go_witnesses.py`` (the
-    frozen P27 witnesses), ``tests/test_adapters_go_union_fidelity.py`` and
-    ``tests/test_canary_go_pipeline.py`` (the regenerated fixtures, F008-A4),
-    and ``tests/test_runner_statement_attribution_wiring.py`` (the runner
+    documents, ``tests/adapters/go/test_statement_attribution_go_witnesses.py`` (the
+    frozen P27 witnesses), ``tests/adapters/go/test_adapters_go_union_fidelity.py`` and
+    ``tests/adapters/go/test_canary_go_pipeline.py`` (the regenerated fixtures, F008-A4),
+    and ``tests/core/test_runner_statement_attribution_wiring.py`` (the runner
     seam).
 
     Renamed from ``as_pre_oracle_attributed`` when F008-A4 landed: every
@@ -1221,123 +1322,3 @@ def why_invalid(validator: Draft202012Validator, instance: dict) -> list[str]:
     accepted. Assert against this, not against a bare boolean.
     """
     return [error.message for error in validator.iter_errors(instance)]
-
-
-# --- assay, built and installed with nothing else present ---------------------
-#
-# Hoisted here from tests/test_dependency_purity.py so P01b's packaging oracle
-# and P01a's purity oracle share ONE build; nine more packages would otherwise
-# each inherit a copy of a subtle two-environment procedure (A-070).
-
-
-def _build_backend_home() -> Path:
-    """Locate an importable setuptools, by DERIVATION from this interpreter.
-
-    The scratch venv is built with ``--no-build-isolation --no-index`` so that
-    nothing is fetched from a network. That needs the build backend to be
-    importable from somewhere, and the honest way to find it is to ask the
-    interpreters we already have rather than to hardcode a container path.
-    """
-    probe = "import setuptools, pathlib; print(pathlib.Path(setuptools.__file__).parent.parent)"
-    candidates = [Path(sys.executable), Path(sys.base_prefix) / "bin" / "python3"]
-    for exe in candidates:
-        if not exe.exists():
-            continue
-        proc = subprocess.run([str(exe), "-c", probe], capture_output=True, text=True)
-        if proc.returncode == 0:
-            return Path(proc.stdout.strip())
-    raise AssertionError(
-        f"no interpreter among {candidates} can import setuptools, so the "
-        f"offline scratch-venv install cannot be built"
-    )
-
-
-def _clean_env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-
-
-@dataclass(frozen=True)
-class Standalone:
-    """assay, built and installed with nothing else present."""
-
-    venv: Path
-    wheel: Path
-
-    def run(self, *argv: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [str(self.venv / "bin" / argv[0]), *argv[1:]],
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        )
-
-
-@pytest.fixture(scope="session")
-def standalone(tmp_path_factory) -> Standalone:
-    """Build assay's wheel and install it into a venv that has nothing else.
-
-    Build and install are two subprocesses with two different environments, on
-    purpose (A-070). The build needs ``setuptools`` on ``PYTHONPATH``; if that
-    ``PYTHONPATH`` were also present for the *install*, pip would resolve
-    requirements against whatever else happens to live in that directory and a
-    declared runtime dependency could be silently considered satisfied — the
-    venv would no longer contain "only assay" in the sense the claim needs.
-    So the install runs with a clean environment and ``--no-index``: nothing to
-    fetch from, nothing to leak in.
-
-    The copied source tree is deliberately ``pyproject.toml`` + ``src/`` only,
-    with no MANIFEST and no VCS plugin available, so a data file reaches the
-    wheel ONLY if ``[tool.setuptools.package-data]`` puts it there. That is what
-    makes the packaging oracle able to fail.
-    """
-    tmp = tmp_path_factory.mktemp("standalone")
-    source = tmp / "assay-src"
-    source.mkdir()
-    shutil.copy(PROJECT_ROOT / "pyproject.toml", source / "pyproject.toml")
-    shutil.copytree(
-        PROJECT_ROOT / "src",
-        source / "src",
-        ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"),
-    )
-
-    venv = tmp / "venv"
-    base = Path(sys.base_prefix) / "bin" / "python3"
-    creator = str(base if base.exists() else sys.executable)
-    subprocess.run([creator, "-m", "venv", str(venv)], check=True, capture_output=True)
-    python = venv / "bin" / "python"
-    assert python.exists(), "the fresh venv has no interpreter"
-
-    wheels = tmp / "wheels"
-    build_env = _clean_env()
-    build_env["PYTHONPATH"] = str(_build_backend_home())
-    built = subprocess.run(
-        [
-            str(python),
-            "-m",
-            "pip",
-            "wheel",
-            "--no-build-isolation",
-            "--no-deps",
-            "--wheel-dir",
-            str(wheels),
-            str(source),
-        ],
-        capture_output=True,
-        text=True,
-        env=build_env,
-    )
-    assert built.returncode == 0, f"wheel build failed:\n{built.stdout}\n{built.stderr}"
-    candidates = sorted(wheels.glob("assay-*.whl"))
-    assert len(candidates) == 1, f"expected one assay wheel, got {candidates}"
-
-    installed = subprocess.run(
-        [str(python), "-m", "pip", "install", "--no-index", str(candidates[0])],
-        capture_output=True,
-        text=True,
-        env=_clean_env(),
-    )
-    assert installed.returncode == 0, (
-        "offline install failed — with zero runtime dependencies there is "
-        f"nothing to resolve:\n{installed.stdout}\n{installed.stderr}"
-    )
-    return Standalone(venv=venv, wheel=candidates[0])

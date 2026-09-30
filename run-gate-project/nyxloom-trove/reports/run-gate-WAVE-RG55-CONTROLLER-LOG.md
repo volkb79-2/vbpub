@@ -5421,3 +5421,109 @@ return `bad-policy`; the consumer's profiling fallback must remain
 non-blocking and preserve the lane-local verdict path. Scope `container`
 continues to use the exact target-container `cgroup.kill` under the guards
 from RW-379.
+
+### RW-381 — 2026-09-30 03:31:40Z — resume checkpoint: P1 rejudge and closeout
+
+RG-45 and RG-54 are now closed in the run-gate backlog by commit `6e1d6984`.
+The entries retain their cross-project provenance and state the remaining
+product boundary; this does not change the P1 judged tree.
+
+P1's current R2 campaign is the correct isolated pre-P1-base tree
+`4e5ff2d2a28d153195995df4c1e5a03a813af802`, running in
+`run-gate-rg55-p1-r2-isolated-r2-2191033-1790737267` since 03:01:07Z with
+3 CPUs in `dev-gates.slice`. At the 03:27:58Z observation it had accounted
+for 31/125 candidates, all killed, and was still running; no verdict exists
+yet. Preserve its HEAD and wait at least 25 minutes between routine progress
+reads.
+
+The fresh P1 Sol review is operating in the separate final-review worktree.
+It found that omitted `ctl start` options were serialized as JSON null and
+that the package contract mirror was stale; both corrections and focused
+oracles are committed there as `d5076b81`. This is not a final review verdict.
+If those fixes remain in the accepted product diff, the exact corrected tree
+needs fresh mutation evidence; the in-flight R2 on `4e5ff2d2` does not judge
+`d5076b81`.
+
+### RW-382 — 2026-09-30 16:52:02Z — retain the no-broker trust model for RG-55
+
+Operator decision recorded as D-32 in
+`DESIGN-2026-09-12-liveness-placement-admission.md`: RG-55 keeps the direct
+daemon-to-systemd bridge and does not add a host broker for this single-
+operator, rootful-Docker deployment. The operator/run-gate principal has
+unrestricted Docker API access, which is already host-administrator authority;
+a broker cannot protect that principal from the host. The added privileged
+service and protocol are not justified for this deployment's trust boundary.
+
+This is an explicit trust-model choice, not a finding that daemon-side
+allowlists contain arbitrary daemon compromise. The current daemon retains
+host system-bus, writable cgroupfs, DAMON sysfs, and privileged-container
+authority. Its Python request/path checks constrain normal behavior, not a
+compromised process. Do not describe this as least-privilege or as
+kernel-enforced containment under D-15. Keep the cockpit on the ctl protocol;
+do not mount the host system bus into it. A future broker remains an option
+if the caller trust boundary changes or daemon-compromise containment becomes
+a requirement; that change must remove all direct daemon bypasses and mediate
+DAMON authority as well as cgroup/systemd operations.
+
+### RW-383 — 2026-09-30 16:55:49Z — refresh RG-55 release status after P1 R2 termination
+
+The P1 R2 campaign described as running in RW-381 is terminal. The separate
+Assay receipt on exact tree
+`4e5ff2d2a28d153195995df4c1e5a03a813af802` records R0 PASS and R2 PASS:
+125/125 candidates killed, zero survivors, budget-exceeded, crashed, or
+equivalent; it ran 2026-09-30 03:01:13Z–04:40:02Z. This is useful evidence
+for that exact tree, not automatically for later source changes. The fresh
+P1 review follow-up `d5076b81` recorded in RW-381 is not present in this
+checkout's Git object database; its code/evidence must be reconciled into the
+authoritative P1 candidate. If those fixes are included, the exact resulting
+tree still needs the required short gates, R2, final review disposition, and
+registered full gate before release. P1 remains only provisionally merged;
+cgprofile 1.0.0 is not released and the host daemon is not running.
+
+P6 remains unmerged at branch tip `a98b443f`. Its available R2 receipt is a
+FAIL on older tree `b3df5602`: 300/312 killed and 12 survived; it is not
+current-tip evidence. Its round-6 live probe found direct placement under
+`dev-gates.slice` refused because the loaded slice is not delegated. D-31/A3
+now records the delegated per-lane scope correction and D-32 keeps it
+broker-free, but the corrected scope lifecycle, exact-tip gates/R2, live
+start/restore/kill probes, fresh Sol acceptance, and full gate remain to be
+completed. cgprofile 1.1.0 is not released; no cgprofile release tag or
+running host singleton was found.
+
+P2/P4/P5 run-gate releases are present through 23.9.1, `run-gate` is
+installed at rev 46, and the footprint manifest is tracked. Assay 7.2.0 is
+installed. The SPEC-V8 D.6 note is present. RG-55 is nevertheless not closed:
+the final wave report does not exist, the dstdns adoption brief still has
+⟨P3⟩ placeholders, and the live carrier/DAMON-overhead closeout is absent.
+No dstdns files were read or changed for this checkpoint. RG-55 worktrees
+remain and must be cleaned only after preserving required evidence and
+finishing the release/closeout work.
+
+### RW-384 — 2026-09-30 17:24:23Z — apply A3 delegated-scope placement; keep host bus daemon-only
+
+The host read-only preflight confirms systemd 257.13, loaded
+`dev-gates.slice` at `/dev.slice/dev-gates.slice`, `Delegate=no`,
+`CPUQuotaPerSecUSec=5s` (five CPUs), and `MemoryMax=1610612736` bytes. This
+is the expected capacity boundary; do not set `Delegate=yes` on the slice.
+P6 must create one transient per-lane scope beneath it with the required
+controllers delegated, use the returned `ControlGroup`, and manage only the
+`rg-<token>` child below that scope. The live manager and cgroup-v2 ordering
+must prove creation, migration, controller enablement, stop/restore, and
+failure rollback before this is releasable.
+
+The cockpit currently has no `/run/cgprofile` mount because it has not been
+rebuilt, and no host system-bus socket. A3 needs no new cockpit mount: keep
+the existing host `/run/cgprofile` bind for the consumer socket; keep
+`/run/dbus/system_bus_socket` mounted only into cgprofile's daemon container.
+Do not alter the operator's dirty mdt template or the live `/workspaces/dstdns`
+configuration. The authorized `host-escape systemctl show` preflight also ran
+mdt's idempotent cgroup-mount doctor, which restored
+`nsdelegate,memory_recursiveprot,memory_hugetlb_accounting`; it reported the
+result explicitly. No unit or workload was changed by the preflight.
+
+The old P6 implementation writes directly below the non-delegated slice and
+is superseded by A3; its old R2 receipt is not transferable. D-32 remains in
+force: this is still the no-broker design, with its existing privileged
+daemon authority documented honestly. P1's current-main candidate is
+`b88d4f07` (five Sol follow-up commits replayed); exact-tree gates, a fresh
+Sol review, complete R2, and the registered full gate are outstanding.

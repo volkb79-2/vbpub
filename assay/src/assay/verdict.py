@@ -56,9 +56,8 @@ cherry-picks keys. assay carries its own names.
 from __future__ import annotations
 
 import json
-import math
 import re
-from dataclasses import dataclass
+from .records import record
 from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
@@ -72,6 +71,16 @@ from .config import (
     SNAPSHOT_SELECTIONS,
 )
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
+from .guards import (
+    is_aware,
+    is_finite_positive,
+    is_int_at_least,
+    is_nonempty_str,
+    is_percentage,
+    is_real,
+    is_sha256_hex,
+    is_strict_int,
+)
 from .candidate_identity import candidate_id_from_fields
 from .vocabulary import (
     INGESTED_OPERATOR_RE,
@@ -141,6 +150,8 @@ __all__ = [
     "Outcome",
     "ReasonCode",
     "Verdict",
+    "claim_carries",
+    "claim_for",
     "iso_utc",
     "load_schema",
     "rollup",
@@ -609,7 +620,7 @@ def iso_utc(moment: datetime) -> str:
     cannot be placed on a timeline is not evidence, and guessing the zone is the
     invention §4.2a forbids.
     """
-    if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
+    if not is_aware(moment):
         raise ValueError(f"timestamp {moment!r} is naive; an explicit offset is required")
     return moment.isoformat()
 
@@ -661,12 +672,6 @@ def _check_reason_code(
             f"valid: {sorted(REASON_CODES[outcome])}"
         )
 
-
-#: (P21/A-182) the lowercase-hex SHA-256 spelling every mutant identity's
-#: `replacement_sha256` must use. Uppercase is refused rather than folded:
-#: the hash is an IDENTITY component, and two spellings of one hash would
-#: make two records of the same site look like two different sites.
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 #: The hard product ceiling on candidate discovery (A-163). `max_mutants` is
 #: declared in `1..10_000`, so a bounded observation is at most `max + 1`.
@@ -735,7 +740,7 @@ def _check_wire_path(value: Any, what: str) -> None:
     (a Go module rooted at its own repository top declares exactly that).
     Widening this grammar to cover it would reject a truthful policy record.
     """
-    if not isinstance(value, str) or not value:
+    if not is_nonempty_str(value):
         raise ValueError(f"{what} must be a non-empty string, got {value!r}")
     if "\\" in value:
         raise ValueError(
@@ -774,7 +779,7 @@ def _instant(value: str, what: str) -> datetime:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"{what} {value!r} is not a real timestamp: {exc}") from exc
-    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+    if not is_aware(parsed):
         raise ValueError(f"{what} {value!r} carries no usable UTC offset")
     return parsed
 
@@ -792,7 +797,7 @@ def _check_line_location_mapping(value: Any, what: str) -> None:
     if not isinstance(value, Mapping):
         raise ValueError(f"{what} must be a mapping, got {value!r}")
     for path, lines in value.items():
-        if not isinstance(path, str) or not path:
+        if not is_nonempty_str(path):
             raise ValueError(f"{what} key must be a non-empty string, got {path!r}")
         if not isinstance(lines, frozenset) or not lines:
             raise ValueError(
@@ -801,7 +806,7 @@ def _check_line_location_mapping(value: Any, what: str) -> None:
                 f"omitted from the mapping entirely"
             )
         for line in lines:
-            if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            if not is_int_at_least(line, 1):
                 raise ValueError(
                     f"{what}[{path!r}] must contain only positive line "
                     f"numbers, got {line!r}"
@@ -817,7 +822,7 @@ def _check_file_tuple(value: Any, what: str) -> None:
     if not isinstance(value, tuple):
         raise ValueError(f"{what} must be a tuple, got {value!r}")
     for path in value:
-        if not isinstance(path, str) or not path:
+        if not is_nonempty_str(path):
             raise ValueError(f"{what} entries must be non-empty strings, got {path!r}")
     if len(set(value)) != len(value):
         raise ValueError(f"{what} contains a duplicate: {list(value)}")
@@ -825,7 +830,7 @@ def _check_file_tuple(value: Any, what: str) -> None:
         raise ValueError(f"{what} must be sorted, got {list(value)}")
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Coverage:
     """The R1 claim payload: changed-line coverage, and why its denominator is
     what it is.
@@ -902,7 +907,7 @@ class Coverage:
     #: same shape :attr:`files_missing_coverage` already established.
     files_with_unclassified_lines: tuple[str, ...] = ()
     #: (P16) changed, considered lines the coverage artifact classifies
-    #: EXCLUDED (``pragma: no cover`` and its format-specific equivalents),
+    #: EXCLUDED (a no-cover marker and its format-specific equivalents),
     #: keyed exactly like :attr:`missing_lines` — a file contributing none
     #: is ABSENT, never present with an empty frozenset. Always present
     #: (possibly empty), the same "empty means known-and-empty" discipline
@@ -949,15 +954,10 @@ class Coverage:
     files_with_missing_branch_lines: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        for name in ("covered", "executable", "considered"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise ValueError(f"coverage.{name} must be an integer, got {value!r}")
-            if value < 0:
-                raise ValueError(f"coverage.{name} must not be negative, got {value}")
-        if isinstance(self.pct, bool) or not isinstance(self.pct, (int, float)):
+        _require_non_negative_ints(self, ("covered", "executable", "considered"), "coverage")
+        if not is_real(self.pct):
             raise ValueError(f"coverage.pct must be a number, got {self.pct!r}")
-        if not 0.0 <= float(self.pct) <= 100.0:
+        if not is_percentage(float(self.pct)):
             raise ValueError(
                 f"coverage.pct must be a percentage between 0 and 100, got {self.pct}"
             )
@@ -1210,7 +1210,7 @@ class Coverage:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CanaryAttempt:
     """ONE canary target's own record (B007/A-432, schema v10): the evidence
     a cause-sensitive canary produces for a single declared target, carried
@@ -1404,7 +1404,7 @@ class CanaryAttempt:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CanaryResult:
     """The R3 claim payload at schema v10 (B007/A-432): one ``mechanism`` and
     an ORDERED, bounded array of :class:`CanaryAttempt` records, one per
@@ -1470,7 +1470,7 @@ class CanaryResult:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationWitnessReceipt:
     """Minimal current-run pytest evidence for one failed call phase."""
 
@@ -1495,7 +1495,7 @@ class MutationWitnessReceipt:
             )
         for name in ("session_exit_status", "process_exit_status"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value != 1:
+            if not is_strict_int(value) or value != 1:
                 raise ValueError(f"mutation witness {name} must equal 1")
 
     def to_dict(self) -> dict[str, Any]:
@@ -1508,7 +1508,7 @@ class MutationWitnessReceipt:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationExecution:
     """How a native candidate reached its recorded outcome."""
 
@@ -1540,16 +1540,13 @@ class MutationExecution:
             return
         if self.witness is None:
             raise ValueError("witness-prefix execution requires a witness receipt")
-        if (
-            not isinstance(self.prior_verdict_sha256, str)
-            or not _SHA256_RE.fullmatch(self.prior_verdict_sha256)
-        ):
+        if not is_sha256_hex(self.prior_verdict_sha256):
             raise ValueError(
                 "witness-prefix prior_verdict_sha256 must be a SHA-256 digest"
             )
         for name in ("prior_node_id", "current_node_id"):
             value = getattr(self, name)
-            if not isinstance(value, str) or not value:
+            if not is_nonempty_str(value):
                 raise ValueError(f"witness-prefix {name} must be a non-empty string")
             try:
                 size = len(value.encode("utf-8"))
@@ -1581,7 +1578,7 @@ class MutationExecution:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutantOutcome:
     """One mutant's identity, projected for the R2 artifact (A-116): the
     lightweight subset of :class:`~assay.mutation.Mutant`'s own identity a
@@ -1650,7 +1647,7 @@ class MutantOutcome:
         _check_wire_path(self.path, "MutantOutcome.path")
         for name in ("lineno", "start_byte", "end_byte"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise ValueError(
                     f"MutantOutcome.{name} must be an integer, got {value!r}"
                 )
@@ -1666,9 +1663,7 @@ class MutantOutcome:
                 f"empty or reversed; a mutation site always replaces at least "
                 f"one byte"
             )
-        if not isinstance(self.replacement_sha256, str) or not _SHA256_RE.fullmatch(
-            self.replacement_sha256
-        ):
+        if not is_sha256_hex(self.replacement_sha256):
             raise ValueError(
                 f"MutantOutcome.replacement_sha256 must be 64 lowercase hex "
                 f"characters, got {self.replacement_sha256!r}"
@@ -1717,7 +1712,7 @@ class MutantOutcome:
                 )
             for name in ("candidate_id", "source_sha256", "mutated_file_sha256"):
                 value = getattr(self, name)
-                if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+                if not is_sha256_hex(value):
                     raise ValueError(
                         f"MutantOutcome.{name} must be a lowercase SHA-256 digest"
                     )
@@ -1802,7 +1797,7 @@ def _check_mutant_outcome_tuple(value: Any, what: str) -> None:
         )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Mutation:
     """The R2 claim payload (P12, A-116): baseline-gated mutation execution
     against changed-line mutants, isolated per mutant, bounded by a
@@ -1891,12 +1886,7 @@ class Mutation:
     budget_per_candidate_derived_s: float | None = None
 
     def __post_init__(self) -> None:
-        for name in ("candidate_count", "total"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise ValueError(f"mutation.{name} must be an integer, got {value!r}")
-            if value < 0:
-                raise ValueError(f"mutation.{name} must not be negative, got {value}")
+        _require_non_negative_ints(self, ("candidate_count", "total"), "mutation")
         # (B070 fix round 1) The bound this object can state alone is the
         # WIDEST any producer may legally reach, because a `Mutation` cannot
         # see `judgment.r2.producer`. The tighter NATIVE ceiling
@@ -1924,18 +1914,13 @@ class Mutation:
             if len(self.candidate_ids) != len(set(self.candidate_ids)):
                 raise ValueError("mutation.candidate_ids contains a duplicate")
             for candidate in self.candidate_ids:
-                if not isinstance(candidate, str) or len(candidate) != 64 or any(
-                    character not in "0123456789abcdef" for character in candidate
-                ):
+                if not is_sha256_hex(candidate):
                     raise ValueError(
                         f"mutation.candidate_ids entry must be a 64-character "
                         f"hexadecimal digest, got {candidate!r}"
                     )
         if self.budget_per_candidate_derived_s is not None and (
-            isinstance(self.budget_per_candidate_derived_s, bool)
-            or not isinstance(self.budget_per_candidate_derived_s, (int, float))
-            or not math.isfinite(self.budget_per_candidate_derived_s)
-            or self.budget_per_candidate_derived_s <= 0
+            not is_finite_positive(self.budget_per_candidate_derived_s)
         ):
             raise ValueError(
                 "mutation.budget_per_candidate_derived_s must be a positive "
@@ -2061,13 +2046,6 @@ class Mutation:
                 f"attempted was first observed as a candidate, so "
                 f"candidate_count is never below total"
             )
-        if self.candidate_count > MAX_INGESTED_MUTANTS:  # pragma: no cover
-            # Already refused in __post_init__; restated so this method's own
-            # three-shape statement is closed rather than resting on a caller.
-            raise ValueError(
-                f"mutation.candidate_count ({self.candidate_count}) exceeds "
-                f"the document ceiling {MAX_INGESTED_MUTANTS:,}"
-            )
 
     @property
     def is_limit_sentinel(self) -> bool:
@@ -2106,7 +2084,7 @@ class Mutation:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgeProvenance:
     """(B018/A-327) WHICH build of assay produced this verdict.
 
@@ -2155,11 +2133,7 @@ class JudgeProvenance:
         # Lowercase is part of the contract, not a formatting preference: a
         # consumer comparing against its own resolved digest compares strings,
         # and two spellings of one digest would not be equal.
-        if (
-            not isinstance(self.digest, str)
-            or len(self.digest) != 64
-            or any(character not in "0123456789abcdef" for character in self.digest)
-        ):
+        if not is_sha256_hex(self.digest):
             raise ValueError(
                 f"judge_provenance.digest must be exactly 64 lowercase "
                 f"hexadecimal characters, got {self.digest!r}"
@@ -2175,7 +2149,7 @@ class JudgeProvenance:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentResolved:
     """(P33/V5-1) What was judged, shared by every computed tier above R0.
 
@@ -2255,7 +2229,7 @@ class JudgmentResolved:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentR1:
     """The effective R1 policy (P16, sol finding 2): the coverage
     format+artifact spelling the run used, and the ``fail_under`` floor and
@@ -2349,13 +2323,11 @@ class JudgmentR1:
         if self.coverage_producer is not None:
             _check_nonempty(self.coverage_producer, "judgment.r1.coverage_producer")
         _check_nonempty(self.coverage_artifact, "judgment.r1.coverage_artifact")
-        if isinstance(self.fail_under, bool) or not isinstance(
-            self.fail_under, (int, float)
-        ):
+        if not is_real(self.fail_under):
             raise ValueError(
                 f"judgment.r1.fail_under must be a number, got {self.fail_under!r}"
             )
-        if not 0.0 <= float(self.fail_under) <= 100.0:
+        if not is_percentage(float(self.fail_under)):
             raise ValueError(
                 f"judgment.r1.fail_under must be a percentage between 0 and "
                 f"100, got {self.fail_under}"
@@ -2452,7 +2424,7 @@ class JudgmentR1:
 MUTATION_PRODUCERS: tuple[str, ...] = ("native", "ingested")
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SourcePosition:
     """(B046, schema v9) One position in the judged source: a project-root-
     relative wire path and a one-based line.
@@ -2469,7 +2441,7 @@ class SourcePosition:
 
     def __post_init__(self) -> None:
         _check_wire_path(self.path, "source position path")
-        if isinstance(self.lineno, bool) or not isinstance(self.lineno, int):
+        if not is_strict_int(self.lineno):
             raise ValueError(
                 f"source position lineno must be an integer, got {self.lineno!r}"
             )
@@ -2486,7 +2458,7 @@ class SourcePosition:
         return {"path": self.path, "lineno": self.lineno}
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationProducerTool:
     """(B046, schema v9) The identity of the foreign mutation tool whose
     report assay ingested, copied VERBATIM from that report.
@@ -2527,7 +2499,7 @@ class MutationProducerTool:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentR2:
     """Populated by ``assay run``'s own R2 CLI wiring (P18) whenever the
     rendered R2 claim carries a ``mutation`` payload. The mutation policy
@@ -2890,11 +2862,11 @@ class JudgmentR2:
     def _check_native_policy(self) -> None:
         """The v8 rules, unchanged in substance, now reached only under
         ``producer = "native"``."""
-        if isinstance(self.jobs, bool) or not isinstance(self.jobs, int):
+        if not is_strict_int(self.jobs):
             raise ValueError(f"judgment.r2.jobs must be an integer, got {self.jobs!r}")
         if self.jobs < 1:
             raise ValueError(f"judgment.r2.jobs must be >= 1, got {self.jobs}")
-        if isinstance(self.max_mutants, bool) or not isinstance(self.max_mutants, int):
+        if not is_strict_int(self.max_mutants):
             raise ValueError(
                 f"judgment.r2.max_mutants must be an integer, got "
                 f"{self.max_mutants!r}"
@@ -2928,10 +2900,7 @@ class JudgmentR2:
                 f"{list(self.operators)}"
             )
         if self.budget_per_candidate_derived_s is not None and (
-            isinstance(self.budget_per_candidate_derived_s, bool)
-            or not isinstance(self.budget_per_candidate_derived_s, (int, float))
-            or not math.isfinite(self.budget_per_candidate_derived_s)
-            or self.budget_per_candidate_derived_s <= 0
+            not is_finite_positive(self.budget_per_candidate_derived_s)
         ):
             raise ValueError(
                 "judgment.r2.budget_per_candidate_derived_s must be a "
@@ -2955,12 +2924,12 @@ class JudgmentR2:
                 raise ValueError(
                     f"judgment.r2.liveness.active must be a bool, got {active!r}"
                 )
-            if not isinstance(reason, str) or not reason:
+            if not is_nonempty_str(reason):
                 raise ValueError(
                     "judgment.r2.liveness.reason must be a non-empty string, "
                     f"got {reason!r}"
                 )
-            if plugin is not None and (not isinstance(plugin, str) or not plugin):
+            if plugin is not None and not is_nonempty_str(plugin):
                 raise ValueError(
                     "judgment.r2.liveness.plugin must be a non-empty string "
                     f"or None, got {plugin!r}"
@@ -3028,13 +2997,11 @@ class JudgmentR2:
         # B050/A-427: byte-identical to `judgment.r1.fail_under`'s own two
         # checks, deliberately -- the same quantity at a different tier, and
         # two spellings of one policy number is how they drift.
-        if isinstance(self.fail_under, bool) or not isinstance(
-            self.fail_under, (int, float)
-        ):
+        if not is_real(self.fail_under):
             raise ValueError(
                 f"judgment.r2.fail_under must be a number, got {self.fail_under!r}"
             )
-        if not 0.0 <= float(self.fail_under) <= 100.0:
+        if not is_percentage(float(self.fail_under)):
             raise ValueError(
                 f"judgment.r2.fail_under must be a percentage between 0 and "
                 f"100, got {self.fail_under}"
@@ -3117,7 +3084,7 @@ class JudgmentR2:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentR3:
     """Populated by ``assay run``'s own isolated R3 CLI wiring (P19)
     whenever the rendered R3 claim carries a ``canary`` payload. The canary
@@ -3205,7 +3172,7 @@ class JudgmentR3:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentR4:
     """(F015/M7, A-433 as amended by A-434, schema v10) the effective R4
     policy: red-first, ``fail-before/pass-after``.
@@ -3267,7 +3234,7 @@ class JudgmentR4:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class RedFirstResult:
     """(F015/M7, A-433/A-434, schema v10) the R4 claim payload: BOTH recorded
     outcomes, so a consumer re-derives the status rather than trusting it.
@@ -3335,7 +3302,7 @@ class RedFirstResult:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Judgment:
     """The resolved judge policy for whichever declared rigor levels
     actually rendered a real computed judgment (P16). P18/P19 populate
@@ -3476,7 +3443,7 @@ class Judgment:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class RefusalDetail:
     """(B053/DA-D2(c), A-428, A-439) One refusal's sentence, already bounded.
 
@@ -3509,7 +3476,7 @@ class RefusalDetail:
                 f"UTF-8 bytes, over the {CLAIM_DETAIL_BYTES}-byte bound -- "
                 f"build it with refusal_detail(), which does the truncation"
             )
-        if isinstance(self.dropped_bytes, bool) or not isinstance(self.dropped_bytes, int):
+        if not is_strict_int(self.dropped_bytes):
             raise ValueError(
                 f"RefusalDetail.dropped_bytes must be an integer, got "
                 f"{self.dropped_bytes!r}"
@@ -3559,7 +3526,7 @@ def refusal_detail(message: str) -> RefusalDetail | None:
     )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Claim:
     """One COMPUTED declared rigor level's evidence (A-024)."""
 
@@ -3746,9 +3713,7 @@ class Claim:
             )
         if (
             self.detail_dropped_bytes is None
-            or isinstance(self.detail_dropped_bytes, bool)
-            or not isinstance(self.detail_dropped_bytes, int)
-            or self.detail_dropped_bytes < 0
+            or not is_int_at_least(self.detail_dropped_bytes, 0)
         ):
             raise ValueError(
                 f"claim[{self.rigor}]: detail requires detail_dropped_bytes as "
@@ -3958,11 +3923,49 @@ class Claim:
 
 
 def _check_nonempty(value: str, what: str) -> None:
-    if not isinstance(value, str) or not value:
+    if not is_nonempty_str(value):
         raise ValueError(f"{what} must be a non-empty string, got {value!r}")
 
 
-@dataclass(frozen=True, kw_only=True)
+def _require_non_negative_ints(obj: object, names: Iterable[str], prefix: str) -> None:
+    """Each named attribute of *obj* must be a strict int that is not negative.
+
+    Messages are ``"{prefix}.{name} must be an integer, got ..."`` and
+    ``"{prefix}.{name} must not be negative, got ..."``.
+    """
+    for name in names:
+        value = getattr(obj, name)
+        if not is_strict_int(value):
+            raise ValueError(f"{prefix}.{name} must be an integer, got {value!r}")
+        if value < 0:
+            raise ValueError(f"{prefix}.{name} must not be negative, got {value}")
+
+
+def claim_for(claims: Iterable[Claim], rigor: str) -> Claim | None:
+    """The first claim of ``rigor``, or ``None`` when there is none."""
+    return next((claim for claim in claims if claim.rigor == rigor), None)
+
+
+def claim_carries(claim: Claim | None, payload: str) -> bool:
+    """Whether ``claim`` exists and its ``payload`` attribute is set.
+
+    Public because the runner's own twin site asks the same question of the
+    claim it is about to render.
+    """
+    return claim is not None and getattr(claim, payload) is not None
+
+
+def _require_policy_iff_attempted(
+    policy: object | None, attempted: bool, *, orphan: str, missing: str
+) -> None:
+    """A recorded policy and an attempted rigor must appear together."""
+    if policy is not None and not attempted:
+        raise ValueError(orphan)
+    if policy is None and attempted:
+        raise ValueError(missing)
+
+
+@record
 class EvidenceDeclaration:
     """One externally sourced requirement, identified independently of rigor."""
 
@@ -3985,7 +3988,7 @@ class EvidenceDeclaration:
         return {"source": self.source, "key": self.key}
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Evidence:
     """One adjudicated or attested result, keyed by ``(source, key)``.
 
@@ -4097,7 +4100,7 @@ class Evidence:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Helper:
     """(P33/V5-5) one external helper an adapter actually INVOKED.
 
@@ -4142,7 +4145,7 @@ class Helper:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotPolicy:
     """(B006(a)/A-269, ``W1-CARVE-B006a-project-scope.md`` §5) the
     lane-selected initial worktree materialisation policy -- a POLICY
@@ -4284,7 +4287,7 @@ class SnapshotPolicy:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class WorktreeIntegrity:
     """The explicit dirt policy applied before a snapshot lane ran.
 
@@ -4335,7 +4338,7 @@ class WorktreeIntegrity:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Verdict:
     """One verdict: one lane, one commit (§7).
 
@@ -4443,7 +4446,7 @@ class Verdict:
             raise ValueError(f"outcome must be an Outcome, got {self.outcome!r}")
         for name in ("lane", "commit", "assay_version"):
             value = getattr(self, name)
-            if not isinstance(value, str) or not value:
+            if not is_nonempty_str(value):
                 raise ValueError(f"{name!r} must be a non-empty string, got {value!r}")
         for name in ("started", "ended"):
             value = getattr(self, name)
@@ -4497,7 +4500,7 @@ class Verdict:
             "result_stderr_dropped_bytes",
         ):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            if not is_int_at_least(value, 0):
                 raise ValueError(f"{name} must be a non-negative integer")
 
         _check_reason_code(self.outcome, self.reason_code, "verdict")
@@ -4773,8 +4776,8 @@ class Verdict:
                 "judgment is present but no lane resolved; a policy for a "
                 "lane that never resolved describes nothing"
             )
-        r1_claim = next((claim for claim in self.claims if claim.rigor == "R1"), None)
-        r1_judged = r1_claim is not None and r1_claim.coverage is not None
+        r1_claim = claim_for(self.claims, "R1")
+        r1_judged = claim_carries(r1_claim, "coverage")
         # wave-1 §6, A-264 (forced by the independent pre-dispatch review):
         # R1 records its policy whenever R1 was ATTEMPTED, for exactly two
         # new payload-free terminals -- one case wider than "rendered a
@@ -4789,21 +4792,23 @@ class Verdict:
             in (ReasonCode.BRANCH_UNAVAILABLE, ReasonCode.TARGET_NOT_MEASURED)
         )
         judgment_r1 = None if self.judgment is None else self.judgment.r1
-        if judgment_r1 is not None and not r1_attempted:
-            raise ValueError(
+        _require_policy_iff_attempted(
+            judgment_r1,
+            r1_attempted,
+            orphan=(
                 "judgment.r1 is present but no R1 claim rendered a coverage "
                 "payload or one of BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED -- "
                 "a policy is recorded for a judgment that never happened"
-            )
-        if judgment_r1 is None and r1_attempted:
-            raise ValueError(
+            ),
+            missing=(
                 "the R1 claim rendered a coverage payload or one of "
                 "BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED but judgment.r1 is "
                 "absent -- an independent consumer cannot re-derive R1's "
                 "status without the policy that decided it"
-            )
+            ),
+        )
 
-        r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
+        r2_claim = claim_for(self.claims, "R2")
         # P21/A-183: R2 policy is recorded whenever R2 was actually ATTEMPTED,
         # which is one case wider than "rendered a payload". A lane whose
         # adapter has no mutation engine resolved and applied jobs/max_mutants/
@@ -4811,25 +4816,27 @@ class Verdict:
         # policy there would hide the cap a consumer needs to interpret the
         # refusal. A baseline that never passed is NOT attempted: R2's claim
         # then just propagates R0's own outcome and records no policy.
-        r2_judged = r2_claim is not None and r2_claim.mutation is not None
+        r2_judged = claim_carries(r2_claim, "mutation")
         r2_attempted = r2_judged or (
             r2_claim is not None
             and r2_claim.reason_code is ReasonCode.MUTATION_UNSUPPORTED
         )
         judgment_r2 = None if self.judgment is None else self.judgment.r2
-        if judgment_r2 is not None and not r2_attempted:
-            raise ValueError(
+        _require_policy_iff_attempted(
+            judgment_r2,
+            r2_attempted,
+            orphan=(
                 "judgment.r2 is present but no R2 claim rendered a mutation "
                 "payload or an unsupported-capability terminal -- a policy is "
                 "recorded for a judgment that never happened"
-            )
-        if judgment_r2 is None and r2_attempted:
-            raise ValueError(
+            ),
+            missing=(
                 "the R2 claim rendered a mutation payload or an "
                 "unsupported-capability terminal but judgment.r2 is absent -- "
                 "an independent consumer cannot re-derive R2's status without "
                 "the policy that decided it"
-            )
+            ),
+        )
         if judgment_r2 is not None:
             self._check_operator_language_agrees(judgment_r2)
         if r2_judged and judgment_r2 is not None:
@@ -4869,21 +4876,23 @@ class Verdict:
             # `(status, reason_code)` beside the producer.
             self._check_discarded_disposition(r2_claim, judgment_r2)
 
-        r3_claim = next((claim for claim in self.claims if claim.rigor == "R3"), None)
-        r3_judged = r3_claim is not None and r3_claim.canary is not None
+        r3_claim = claim_for(self.claims, "R3")
+        r3_judged = claim_carries(r3_claim, "canary")
         judgment_r3 = None if self.judgment is None else self.judgment.r3
-        if judgment_r3 is not None and not r3_judged:
-            raise ValueError(
+        _require_policy_iff_attempted(
+            judgment_r3,
+            r3_judged,
+            orphan=(
                 "judgment.r3 is present but no R3 claim rendered a canary "
                 "payload -- a policy is recorded for a judgment that never "
                 "happened"
-            )
-        if judgment_r3 is None and r3_judged:
-            raise ValueError(
+            ),
+            missing=(
                 "the R3 claim rendered a canary payload but judgment.r3 "
                 "is absent -- an independent consumer cannot re-derive R3's "
                 "status without the policy that decided it"
-            )
+            ),
+        )
         if r3_judged and judgment_r3 is not None:
             if r3_claim.canary.mechanism != judgment_r3.mechanism:
                 raise ValueError(
@@ -4914,21 +4923,23 @@ class Verdict:
 
         # F015/A-433: A-148's correspondence, restated for R4 exactly as the
         # R2 and R3 blocks above state it for their own tiers.
-        r4_claim = next((claim for claim in self.claims if claim.rigor == "R4"), None)
-        r4_judged = r4_claim is not None and r4_claim.red_first is not None
+        r4_claim = claim_for(self.claims, "R4")
+        r4_judged = claim_carries(r4_claim, "red_first")
         judgment_r4 = None if self.judgment is None else self.judgment.r4
-        if judgment_r4 is not None and not r4_judged:
-            raise ValueError(
+        _require_policy_iff_attempted(
+            judgment_r4,
+            r4_judged,
+            orphan=(
                 "judgment.r4 is present but no R4 claim rendered a red_first "
                 "payload -- a policy is recorded for a judgment that never "
                 "happened"
-            )
-        if judgment_r4 is None and r4_judged:
-            raise ValueError(
+            ),
+            missing=(
                 "the R4 claim rendered a red_first payload but judgment.r4 is "
                 "absent -- an independent consumer cannot re-derive R4's "
                 "status without the policy that decided it"
-            )
+            ),
+        )
         if r4_judged and judgment_r4 is not None:
             if r4_claim.red_first.tests != tuple(judgment_r4.tests):
                 raise ValueError(
@@ -4994,8 +5005,8 @@ class Verdict:
                 f"is qualified with the language that owns it, and a lane "
                 f"cannot apply another language's catalogue"
             )
-        r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
-        if r2_claim is None or r2_claim.mutation is None:
+        r2_claim = claim_for(self.claims, "R2")
+        if not claim_carries(r2_claim, "mutation"):
             return
         wrong_outcomes = sorted(
             {
@@ -5023,8 +5034,8 @@ class Verdict:
         document would claim assay's own engine produced a mutant on a lane
         assay never ran an engine for.
         """
-        r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
-        if r2_claim is None or r2_claim.mutation is None:
+        r2_claim = claim_for(self.claims, "R2")
+        if not claim_carries(r2_claim, "mutation"):
             return
         native = sorted(
             {

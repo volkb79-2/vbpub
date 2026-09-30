@@ -126,6 +126,36 @@ class BuildKitGovernanceTests(unittest.TestCase):
         for value in ("", "*test-runner*  *other*", "$(touch /tmp/pwned)", "foo;bar"):
             self.assertIsNotNone(WIZARD.validate_watcher_patterns(value), value)
 
+    def test_wizard_configures_closed_devcontainer_missing_source_policy(self) -> None:
+        self.assertIsNone(WIZARD.validate_missing_bind_source_policy("create-by-spelling"))
+        self.assertIsNone(WIZARD.validate_missing_bind_source_policy("fail"))
+        self.assertIsNotNone(WIZARD.validate_missing_bind_source_policy("guess"))
+        self.assertIs(
+            WIZARD._config_value_validators()["DEVCONTAINER_MISSING_BIND_SOURCE_POLICY"],
+            WIZARD.validate_missing_bind_source_policy,
+        )
+
+        with mock.patch.object(WIZARD, "walk_key", return_value="fail") as walk, \
+             mock.patch.object(WIZARD, "out") as output:
+            values = WIZARD.step_devcontainer_bootstrap(
+                {}, {"DEVCONTAINER_MISSING_BIND_SOURCE_POLICY": "create-by-spelling"}
+            )
+
+        self.assertEqual(values, {"DEVCONTAINER_MISSING_BIND_SOURCE_POLICY": "fail"})
+        self.assertEqual(
+            walk.call_args.args[:2],
+            (
+                "Missing devcontainer bind-source policy (create-by-spelling or fail)",
+                "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY",
+            ),
+        )
+        self.assertIs(walk.call_args.kwargs["validate"], WIZARD.validate_missing_bind_source_policy)
+        self.assertTrue(any("source ending in `/` creates a directory" in call.args[0] for call in output.call_args_list))
+
+        install_script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("case \"${DEVCONTAINER_MISSING_BIND_SOURCE_POLICY:-}\" in", install_script)
+        self.assertIn("create-by-spelling|fail)", install_script)
+
     def test_wizard_discovery_handles_missing_and_invalid_host_facts(self) -> None:
         def missing(argv, **kwargs):
             raise FileNotFoundError

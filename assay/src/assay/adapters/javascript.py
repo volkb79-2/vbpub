@@ -169,10 +169,11 @@ imports ``subprocess``, and does no work a toolchain could be required for.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from ..records import record
 from pathlib import Path
 from typing import Literal, Sequence
 
+from ..errors import require_advance
 from ..mutation import MutationSite
 from .base import Remaining, StatementBlockReport, StatementSpan
 
@@ -255,7 +256,7 @@ def _strip_comments(text: str) -> str | None:
         for index in range(i, end):
             if chars[index] != "\n":
                 chars[index] = " "
-        i = end
+        i = require_advance(i, end)
     return "".join(chars)
 
 
@@ -469,7 +470,7 @@ def _inject_uncovered_line(text: str) -> tuple[str, str]:
     )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JavaScriptAdapter:
     """The JavaScript/TypeScript :class:`~assay.adapters.base.LanguageAdapter`
     (B036): five attributes and seven methods against the protocol frozen by

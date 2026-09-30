@@ -11,7 +11,7 @@ The one invariant, from which every exclusion follows:
     assay never renders a judgement it cannot make deterministically.
 
 **Zero runtime dependencies — stdlib only** (A-005), enforced mechanically by
-``tests/test_dependency_purity.py``.
+``gate/tests/test_dependency_purity.py``.
 """
 
 from __future__ import annotations

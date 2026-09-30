@@ -4,6 +4,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-ec95f86b1edd] - 2026-09-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=ec95f86b1edd51315be821b5b3f966423b96452d -->
+
+### Added
+- feat(mdt): persist codex profiles across disconnects (69ae760b)
+- feat(mdt): classify missing bind sources by spelling (5e2c95d9)
+
+### Fixed
+- fix(mdt): seal BuildKit socket path before permission change (0af1b2d7)
+- fix(mdt): escape systemd stat format specifiers (0d7f8df4)
+- fix(mdt): grant docker group access to BuildKit socket (51248fdc)
+- fix(mdt): expose parser to user image layer (7d6757f8)
+- fix(mdt): make build inputs readable under release umask (6981838f)
+- fix(mdt): expose staged version inputs to image user (133dd1d6)
+
+### Changed
+- merge: integrate origin main with local main (9f3158f0)
+- doc(mdt): plan do not use user home (c4dbc4f8)
+
 ## [source-f10a9ada3ccd] - 2026-09-22
 <!-- cmru: generated -->
 <!-- cmru: source-end=f10a9ada3ccd8234bff1376b879ef2329f973552 -->

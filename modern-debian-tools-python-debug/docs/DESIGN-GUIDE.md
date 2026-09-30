@@ -37,6 +37,42 @@ MDT has no owned HTTP/OpenAPI contract. Hypothesis is used for pure
 configuration invariants where generated values are meaningful; Schemathesis
 would add no evidence to this product.
 
+## Managed BuildKit socket access
+
+The rootless BuildKit process creates its Unix socket with its container
+uid/gid, which may be translated by Docker `userns-remap` and need not match
+the host `docker` group. A setgid parent alone does not repair that: a live
+rootless BuildKit probe created the socket as `1000:1000`. Host setup waits for
+the socket, makes its root-owned parent non-writable, rechecks that the
+endpoint is a non-symlink socket, then compares socket owner and daemon uid
+inside the same container namespace. Only then does it change the socket to
+host group `docker`, mode `0660`. Locking the parent before the privileged
+`chgrp`/`chmod` closes a path-replacement race; the next start temporarily
+restores directory mode `01777` for socket creation. This shares the BuildKit
+API only with principals already trusted for Docker access; it does not make
+the socket world-accessible.
+
+## Bootstrap uses the source filesystem type
+
+Devcontainer bind-mount syntax declares a source and target but has no
+source-kind field. Names and suffixes do not identify a missing source's type:
+`.gitconfig` is usually a file, while `.ssh` is a directory, and custom dotfiles
+can be either. The host bootstrap checks existing host sources by their actual
+filesystem type, regardless of name or suffix. For missing sources, the
+`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` setting controls whether MDT creates
+the path or refuses it. The shipped default, `create-by-spelling`, interprets a
+trailing `/` as a directory and no trailing `/` as an empty regular file. The
+`fail` option requires every `$HOME` source managed by the bootstrap to exist
+before Docker starts. The marker is an MDT bootstrap convention, not Docker
+mount metadata; the shipped template marks every directory source with `/`. See the
+[consumer example](CONSUMERS.md#optional-git-config-mount).
+
+The template puts Codex's shared SQLite database under the persistent `.codex` mount with
+`CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`, so profile data survives a rebuild.
+It sets `shutdownAction: "none"` so closing the attached Dev Containers session leaves the
+container available. Adoption details are in the
+[consumer guide](CONSUMERS.md#codex-profile-state-and-container-lifetime).
+
 ## Release relationship
 
 The `release` run-gate lane contains the image release-flow tests and is the
