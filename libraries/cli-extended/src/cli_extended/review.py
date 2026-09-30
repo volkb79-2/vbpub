@@ -272,16 +272,21 @@ def load_cli_review_catalog(path: str | Path) -> ReviewCatalog:
         if not isinstance(retirement_reason, str):
             raise ReviewCatalogError(f"{location}.retirement_reason must be a string")
         if state == "active":
-            required = {
-                "decision": decision,
-                "reviewed_signature": signature,
-                "rationale": rationale.strip() or None,
-                "expected_exit_status": expected_status,
-                "invocation": True if invocation_declared else None,
-                "effects": True if effects_declared else None,
-                "test_ids": test_ids or None,
-            }
-            missing = [name for name, value in required.items() if value is None]
+            missing = []
+            if decision is None:
+                missing.append("decision")
+            if signature is None:
+                missing.append("reviewed_signature")
+            if not rationale.strip():
+                missing.append("rationale")
+            if expected_status is None:
+                missing.append("expected_exit_status")
+            if not invocation_declared:
+                missing.append("invocation")
+            if not effects_declared:
+                missing.append("effects")
+            if not test_ids:
+                missing.append("test_ids")
             if missing:
                 raise ReviewCatalogError(
                     f"{location} active case is missing: " + ", ".join(missing)
@@ -401,10 +406,15 @@ def render_cli_surface_markdown(
         for action in route.get("actions", []):
             label = "/".join(action.get("flags", ())) if action["kind"] == "option" else action["name"]
             shape = action.get("metavar")
-            if action["kind"] == "option" and action.get("nargs") is not None:
-                shape = {"metavar": shape, "nargs": action["nargs"]}
             if action["kind"] == "argument":
                 shape = {"metavar": shape, "nargs": action["nargs"]}
+            elif action["kind"] == "option":
+                if action.get("nargs") is not None:
+                    shape = {"metavar": shape, "nargs": action["nargs"]}
+            else:
+                raise SurfaceSpecError(
+                    f"unsupported surface action kind {action['kind']!r}"
+                )
             details = {
                 "choices": action.get("choices"),
                 "default": action.get("effective_default", action.get("default")),
@@ -454,7 +464,11 @@ def render_cli_surface_markdown(
             if case and case.invocation_declared
             else ""
         )
-        expected_status = case.expected_exit_status if case else ""
+        expected_status = (
+            case.expected_exit_status
+            if case and case.expected_exit_status is not None
+            else ""
+        )
         effects = (
             "; ".join(case.effects)
             if case and case.effects
@@ -471,7 +485,13 @@ def render_cli_surface_markdown(
             else ""
         )
         test_ids = ", ".join(case.test_ids) if case else ""
-        rationale = case.rationale if case else "Add a product-owned decision and test reference."
+        rationale = (
+            case.retirement_reason
+            if case and case.state == "retired"
+            else case.rationale
+            if case
+            else "Add a product-owned decision and test reference."
+        )
         lines.append(
             "| " + " | ".join(
                 _markdown_cell(value)
@@ -614,8 +634,7 @@ def _review_findings(
 ) -> list[str]:
     def is_negative_number(token: str) -> bool:
         return (
-            len(token) > 1
-            and token[0] == "-"
+            token.startswith("-")
             and token[1:].replace(".", "", 1).isdigit()
         )
 
@@ -626,7 +645,7 @@ def _review_findings(
 
         def option_is_available(action: Mapping[str, Any]) -> bool:
             parser_path = tuple(action.get("parser_path", ()))
-            if depth == 0 and not path:
+            if not path:
                 return not parser_path
             if depth == 0:
                 return bool(action.get("placement", {}).get("before_verb", False))
@@ -707,15 +726,11 @@ def _review_findings(
         if nargs is None:
             if inline:
                 return index + 1
-            return (
-                index + 2
-                if index + 1 < len(argv) and not is_option_boundary(index + 1)
-                else index + 1
-            )
+            return index + 2 if not is_option_boundary(index + 1) else index + 1
         if isinstance(nargs, int):
             additional = max(nargs - 1, 0) if inline else nargs
             end = index + 1
-            while end < len(argv) and end < index + 1 + additional:
+            while end < index + 1 + additional:
                 if is_option_boundary(end):
                     break
                 end += 1
@@ -723,14 +738,14 @@ def _review_findings(
         if nargs == "?":
             if inline:
                 return index + 1
-            if index + 1 < len(argv) and not is_option_boundary(index + 1):
+            if not is_option_boundary(index + 1):
                 return index + 2
             return index + 1
         if nargs in {"*", "+"}:
             if inline:
                 return index + 1
             end = index + 1
-            while end < len(argv) and not is_option_boundary(end):
+            while not is_option_boundary(end):
                 end += 1
             return end
         return index + 1
@@ -758,14 +773,14 @@ def _review_findings(
                 index += 1
                 continue
             token = argv[index]
-            if token == "--" and options_enabled.get(path_depth, True):
+            if token == "--" and options_enabled[path_depth]:
                 options_enabled[path_depth] = False
                 index += 1
                 continue
             option, separator, inline_value = token.partition("=")
             action = (
                 action_for_option(route, option, path_depth)
-                if options_enabled.get(path_depth, True)
+                if options_enabled[path_depth]
                 else None
             )
             if action is not None:
@@ -789,7 +804,7 @@ def _review_findings(
                 continue
             if (
                 token.startswith("-")
-                and options_enabled.get(path_depth, True)
+                and options_enabled[path_depth]
                 and not is_negative_number(token)
             ):
                 index += 1
@@ -878,7 +893,6 @@ def _review_findings(
                 {
                     "action": action,
                     "remaining": int(action.get("minimum_values", 1)),
-                    "optional_used": False,
                 }
                 for action in route.get("actions", ())
                 if action.get("kind") == "argument"
@@ -891,7 +905,7 @@ def _review_findings(
 
         def consumes_parent_positional(depth: int, is_command: bool) -> bool:
             actions = positional_states.get(depth, ())
-            index = positional_indexes.get(depth, 0)
+            index = positional_indexes[depth]
             while index < len(actions):
                 state = actions[index]
                 action = state["action"]
@@ -900,10 +914,9 @@ def _review_findings(
                     state["remaining"] -= 1
                     positional_indexes[depth] = index
                     return True
-                if nargs == "?" and not state["optional_used"]:
+                if nargs == "?":
                     if is_command:
                         return False
-                    state["optional_used"] = True
                     positional_indexes[depth] = index + 1
                     return True
                 if nargs in {"*", "+"}:
@@ -921,7 +934,7 @@ def _review_findings(
         while index < len(argv) and segment < len(accepted_by_position):
             token = argv[index]
             if token == "--":
-                if options_enabled.get(segment, True):
+                if options_enabled[segment]:
                     options_enabled[segment] = False
                     index += 1
                     continue
@@ -938,7 +951,7 @@ def _review_findings(
             option, separator, _value = token.partition("=")
             action = (
                 action_for_option(route, option, segment)
-                if options_enabled.get(segment, True)
+                if options_enabled[segment]
                 else None
             )
             if action is not None:
@@ -953,7 +966,7 @@ def _review_findings(
                 continue
             if (
                 token.startswith("-")
-                and options_enabled.get(segment, True)
+                and options_enabled[segment]
                 and not is_negative_number(token)
             ):
                 return None
@@ -1057,18 +1070,22 @@ def _review_findings(
                     ),
                     None,
                 )
-                if action is not None and has_invalid_flag_value(action):
+                if action is None:
+                    findings.append(
+                        f"semantic review candidate {case_id} references unknown "
+                        f"required option {option_id}"
+                    )
+                    continue
+                if has_invalid_flag_value(action):
                     findings.append(
                         f"minimum invocation for {case_id} supplies an inline value to flag-only option {option_id}"
                     )
-                active_occurrences = (
-                    active_option_occurrences(action) if action is not None else []
-                )
-                if action is not None and not active_occurrences:
+                active_occurrences = active_option_occurrences(action)
+                if not active_occurrences:
                     findings.append(
                         f"minimum invocation for {case_id} omits required option {option_id}"
                     )
-                elif action is not None and any(
+                elif any(
                     len(values) < _minimum_values(action.get("nargs"))
                     for _spelling, values, _inline in active_occurrences
                 ):
@@ -1280,7 +1297,7 @@ def render_cli_review_template(
             )
             continue
         encoded_id = json.dumps(case_id, ensure_ascii=False)
-        encoded_signature = json.dumps(candidate["signature"], ensure_ascii=False)
+        encoded_signature = json.dumps(candidate["signature"])
         lines.extend(
             (
                 f"# Candidate kind: {candidate.get('kind', 'unknown')}",

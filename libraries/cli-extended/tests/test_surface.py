@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from enum import Enum
 
 import pytest
@@ -20,16 +21,20 @@ from cli_extended import (
 )
 from cli_extended.surface import (
     _canonical_flag,
+    _callable_label,
     _describe_parser,
     _effective_default,
     _generate_candidates,
     _minimum_values,
     _mutex_groups,
     _normalize,
+    _ParserActionContext,
     _route_id,
     _safe_choice_values,
     _scope,
+    _signature,
     _surface_action,
+    _action_surface_id,
     _walk_registered_cli,
 )
 
@@ -161,7 +166,14 @@ def test_surface_export_is_deterministic_and_describes_installed_parser_tree():
     ] == [[], ["inspect"], ["inspect", "detail"]]
     assert inspect["subcommands"] == [detail["id"]]
     assert detail["aliases"] == ["d"]
+    assert inspect["parser_configured_by_callback"] is True
     assert actions["shared-profile"]["scope"] == "global"
+    assert any(
+        action["id"] == (
+            "option:route:entrypoint:surface-demo/inspect/--profile-file"
+        )
+        for action in inspect["actions"]
+    )
     assert actions["shared-profile"]["placement"] == {
         "before_verb": True,
         "after_verb": True,
@@ -210,6 +222,19 @@ def test_surface_export_is_deterministic_and_describes_installed_parser_tree():
     assert any(
         candidate["kind"] == "interaction"
         and candidate["shape"]["interaction_id"] == "format-and-force"
+        for candidate in first["candidates"]
+    )
+    minimum = next(
+        candidate
+        for candidate in first["candidates"]
+        if candidate["kind"] == "minimum"
+        and candidate["route_id"] == inspect["id"]
+    )
+    assert "shared-profile" in minimum["shape"]["defaulted_options"]
+    force_id = "option:route:entrypoint:surface-demo/inspect/--force"
+    assert not any(
+        candidate["kind"] == "exclusive-member"
+        and candidate["members"] == [force_id]
         for candidate in first["candidates"]
     )
     assert first["syntax_complete"] is True
@@ -290,6 +315,7 @@ def test_surface_refuses_to_certify_unmodeled_parser_token_syntax(
 
     assert surface["syntax_complete"] is False
     assert any(finding in item for item in surface["incomplete"])
+    assert any("parser show" in item for item in surface["incomplete"])
 
 
 def test_surface_candidates_include_each_argument_option_alias_choice_and_exclusion():
@@ -426,6 +452,11 @@ def test_surface_rejects_duplicate_local_ids_bad_interactions_and_candidate_over
         )
     with pytest.raises(SurfaceLimitError, match="more than 1 candidates"):
         export_cli_surface(app, max_candidates=1)
+    routes = export_cli_surface(app, max_candidates=4096)["routes"]
+    candidates = _generate_candidates(routes, (), max_candidates=4096)
+    assert _generate_candidates(routes, (), max_candidates=len(candidates)) == candidates
+    with pytest.raises(SurfaceLimitError):
+        _generate_candidates(routes, (), max_candidates=len(candidates) - 1)
     with pytest.raises(ValueError, match="must be positive"):
         export_cli_surface(app, max_candidates=0)
     with pytest.raises(TypeError, match="must be an integer"):
@@ -474,11 +505,33 @@ def test_required_nested_subcommand_is_a_prefix_not_a_false_invocation_candidate
     actions = {action["flags"][0]: action for action in child_route["actions"]}
     assert actions["--before-child"]["before_nested_subcommand"] is True
     assert actions["--limit"]["before_nested_subcommand"] is False
+    assert actions["--before-child"]["id"] == (
+        "option:route:entrypoint:surface-demo/run/apply/parser:run/--before-child"
+    )
+    assert actions["--limit"]["id"] == (
+        "option:route:entrypoint:surface-demo/run/apply/--limit"
+    )
     parsed = app.parser.parse_args(
         ["run", "--before-child", "apply", "--limit", "3"]
     )
     assert parsed.before_child is True
     assert parsed.limit == 3
+
+
+def test_leaf_positional_is_not_misreported_as_a_parent_argument():
+    def configure(parser):
+        child = parser.add_subparsers(dest="operation").add_parser("detail")
+        child.add_argument("resource")
+
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+    registry.register(
+        VerbSpec("inspect", description="inspect", configure=configure, handler=lambda *_: 0)
+    )
+    surface = export_cli_surface(registry.build())
+    detail = next(route for route in surface["routes"] if route["path"] == ["inspect", "detail"])
+    resource = next(action for action in detail["actions"] if action["kind"] == "argument")
+    assert resource["parser_path"] == ["inspect", "detail"]
+    assert resource["before_nested_subcommand"] is False
 
 
 def test_surface_single_command_retains_metadata_and_standalone_defaults():
@@ -521,6 +574,85 @@ def test_surface_requires_a_registered_cli_and_surfaces_json_is_valid():
     assert json.loads(render_cli_surface_json(surface)) == surface
 
 
+def test_surface_signatures_are_canonical_for_unicode_payloads():
+    payload = {"z": "last", "a": "café"}
+    reversed_payload = {"a": "café", "z": "last"}
+    expected = "sha256:" + hashlib.sha256(
+        json.dumps(
+            {"schema_version": 2, "payload": payload},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert _signature(2, payload) == expected
+    assert _signature(2, payload) == _signature(2, reversed_payload)
+
+
+def test_candidate_choice_ids_hash_unicode_values_without_ascii_escaping():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect",
+            arguments=(
+                ArgumentSpec("format", "format", parser_kwargs={"choices": ("café",)}),
+            ),
+            options=(
+                OptionSpec(("--mode",), "mode", parser_kwargs={"choices": ("café",)}),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    candidates = export_cli_surface(registry.build())["candidates"]
+    suffix = hashlib.sha256(json.dumps("café", ensure_ascii=False).encode("utf-8")).hexdigest()[:10]
+    choice_ids = {
+        candidate["id"]
+        for candidate in candidates
+        if candidate["kind"] in {"argument-choice", "option-choice"}
+    }
+    assert f"case:route:entrypoint:surface-demo/inspect/argument-choice/argument:route:entrypoint:surface-demo/inspect/format/{suffix}" in choice_ids
+    assert any(candidate_id.endswith(f"/{suffix}") for candidate_id in choice_ids)
+
+
+def test_surface_json_renderer_keeps_sorted_unicode_keys_and_rejects_nonfinite_values():
+    rendered = render_cli_surface_json({"z": "last", "a": "café"})
+    assert rendered.index('"a"') < rendered.index('"z"')
+    assert '"a": "café"' in rendered
+    assert "\\u00e9" not in rendered
+    with pytest.raises(ValueError, match="Out of range float values"):
+        render_cli_surface_json({"not-finite": float("nan")})
+
+
+def test_callable_labels_fall_back_when_only_one_import_attribute_is_a_string():
+    class Parser:
+        def __call__(self, value):
+            return value
+
+    parse = Parser()
+    parse.__module__ = "consumer.handlers"
+    parse.__qualname__ = None
+    assert _callable_label(parse) == f"{type(parse).__module__}.{type(parse).__qualname__}"
+
+
+def test_parser_action_context_is_frozen():
+    parser = argparse.ArgumentParser(add_help=False)
+    context = _ParserActionContext(
+        parser_path=("run",),
+        allow_abbrev=False,
+        prefix_chars="-",
+        fromfile_prefix_chars=None,
+        actions=(),
+        option_specs=(),
+        argument_specs=(),
+        group_titles={},
+        mutex_groups={},
+    )
+    assert parser is not None
+    with pytest.raises(FrozenInstanceError):
+        context.allow_abbrev = True
+
+
 def test_surface_normalization_handles_supported_and_opaque_values_deterministically():
     class State(Enum):
         READY = "ready"
@@ -542,6 +674,7 @@ def test_surface_normalization_handles_supported_and_opaque_values_deterministic
     }
     assert _normalize(("a", "b"), path="x", opaque=opaque) == ["a", "b"]
     assert _normalize({"z", "a"}, path="x", opaque=opaque) == ["a", "z"]
+    assert _normalize({"é", "zz"}, path="x", opaque=opaque) == ["zz", "é"]
     assert _normalize(str, path="x", opaque=opaque) == {"callable": "builtins.str"}
     assert _normalize(lambda value: value, path="x", opaque=opaque)["callable"].startswith(
         "test_surface."
@@ -560,11 +693,15 @@ def test_surface_minimum_value_and_choice_helpers_cover_nargs_shapes():
     assert _minimum_values(argparse.PARSER) == 1
     assert _minimum_values("?") == 0
     assert _canonical_flag(("-q",)) == "-q"
+    assert _action_surface_id(
+        "option", "route:test/run", ("run",), (), "--global"
+    ) == "option:route:test/run/parser:<root>/--global"
 
     opaque = []
     assert _safe_choice_values(None, path="x.choices", opaque=opaque) is None
     assert _safe_choice_values(("a", "b"), path="x.choices", opaque=opaque) == ["a", "b"]
     assert _safe_choice_values({"b", "a"}, path="x.choices", opaque=opaque) == ["a", "b"]
+    assert _safe_choice_values({"é", "zz"}, path="x.choices", opaque=opaque) == ["zz", "é"]
     assert _safe_choice_values(range(2), path="x.choices", opaque=opaque) == {
         "opaque": "builtins.range"
     }
@@ -588,6 +725,11 @@ def test_surface_action_scope_defaults_and_custom_action_are_described():
     global_spec = OptionSpec(("--global",), "global", parser_kwargs={"default": argparse.SUPPRESS})
     global_action = parser.add_argument("--global", default=argparse.SUPPRESS)
     common_action = parser.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS)
+    json_action = parser.add_argument("--json", action="store_true")
+    progress_action = parser.add_argument("--progress", action="store_true")
+    confirmation_action = parser.add_argument("--yes", action="store_true")
+    integer_action = parser.add_argument("--integer", type=int)
+    many_argument = parser.add_argument("many", nargs="*")
     local_spec = OptionSpec(("--local",), "local")
     local_action = parser.add_argument("--local")
     custom_unregistered = parser.add_argument("--unregistered")
@@ -602,6 +744,8 @@ def test_surface_action_scope_defaults_and_custom_action_are_described():
 
     assert _scope(global_action, option_specs=(), global_options=(global_spec,), single_command=False)[0] == "global"
     assert _scope(common_action, option_specs=(), global_options=(), single_command=False)[0] == "common"
+    for action in (json_action, progress_action, confirmation_action):
+        assert _scope(action, option_specs=(), global_options=(), single_command=False)[0] == "common"
     assert _scope(local_action, option_specs=(local_spec,), global_options=(), single_command=False)[0] == "verb-local"
     assert _scope(custom_unregistered, option_specs=(), global_options=(), single_command=True)[0] == "custom"
 
@@ -622,8 +766,89 @@ def test_surface_action_scope_defaults_and_custom_action_are_described():
         )
 
     assert describe(hidden)["description"] is None
+    assert describe(hidden)["hidden"] is True
     assert describe(custom)["description"] == "custom"
     assert any(field.endswith(".action") for field in opaque)
+    opaque_after_custom = list(opaque)
+    assert describe(local_action)["action"] == "argparse._StoreAction"
+    assert opaque == opaque_after_custom
+    assert describe(integer_action)["type"] == {"callable": "builtins.int"}
+    assert describe(integer_action)["metavar"] is None
+    assert describe(local_action)["exclusive_group"] is None
+    assert describe(local_action)["exclusive_required"] is False
+    many = describe(many_argument)
+    assert many["required"] is False
+    assert many["minimum_values"] == 0
+    assert many["metavar"] == "MANY"
+
+
+def test_library_help_actions_are_not_reported_as_opaque_custom_actions():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+    registry.register(VerbSpec("inspect", description="inspect", handler=lambda *_: 0))
+    app = registry.build()
+    opaque = []
+    for parser in (app.parser, app.command_parsers["inspect"]):
+        for action in parser._actions:
+            if "--help" not in action.option_strings and "--version" not in action.option_strings:
+                continue
+            _surface_action(
+                action,
+                route_id="route:entrypoint:surface-demo/inspect",
+                route_path=("inspect",),
+                parser_path=(),
+                option_specs=(),
+                argument_specs=(),
+                global_options=(),
+                single_command=False,
+                group_titles={},
+                mutex_groups={},
+                opaque=opaque,
+            )
+    assert opaque == []
+
+    spoofed_help = type(
+        "_HelpAction", (argparse.Action,), {"__module__": "cli_extended.parser"}
+    )
+    custom_parser = argparse.ArgumentParser(add_help=False)
+    spoofed = custom_parser.add_argument("--spoofed", action=spoofed_help)
+    _surface_action(
+        spoofed,
+        route_id="route:entrypoint:surface-demo/inspect",
+        route_path=("inspect",),
+        parser_path=("inspect",),
+        option_specs=(),
+        argument_specs=(),
+        global_options=(),
+        single_command=False,
+        group_titles={},
+        mutex_groups={},
+        opaque=opaque,
+    )
+    assert any(field.endswith(".action") for field in opaque)
+
+
+def test_nested_routes_keep_their_own_ids_and_parser_descriptions():
+    def configure(parser):
+        parser.add_subparsers(dest="operation").add_parser(
+            "detail", description="Detailed operation."
+        )
+
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="Inspect one item.",
+            surface_id="stable-inspect",
+            configure=configure,
+            handler=lambda *_: 0,
+        )
+    )
+    routes = export_cli_surface(registry.build())["routes"]
+    route_by_path = {tuple(route["path"]): route for route in routes}
+    assert route_by_path[("inspect",)]["id"] == "stable-inspect"
+    nested = route_by_path[("inspect", "detail")]
+    assert nested["id"] == "route:entrypoint:surface-demo/inspect/detail"
+    assert nested["description"] == "Detailed operation."
 
 
 def test_surface_exclusive_group_ids_and_conflicting_declarations():
@@ -656,6 +881,43 @@ def test_surface_exclusive_group_ids_and_conflicting_declarations():
         )
 
 
+def test_candidate_dimensions_keep_non_library_common_options_and_reject_empty_interactions():
+    route = {
+        "id": "route:test/run",
+        "path": ["run"],
+        "kind": "invocation",
+        "confirmation": False,
+        "actions": [
+            {
+                "id": "option:custom-common",
+                "kind": "option",
+                "flags": ["--project-format"],
+                "scope": "common",
+                "exclusive_group": None,
+                "exclusive_required": False,
+                "required": False,
+                "default": None,
+                "choices": None,
+                "parser_path": ["run"],
+                "placement": {"before_verb": False},
+                "hidden": False,
+            }
+        ],
+    }
+    candidates = _generate_candidates([route], (), max_candidates=10)
+    assert any(
+        candidate["kind"] == "option-spelling"
+        and candidate["shape"]["spelling"] == "--project-format"
+        for candidate in candidates
+    )
+    with pytest.raises(SurfaceError, match="non-empty string list"):
+        _generate_candidates(
+            [route],
+            ({"id": "empty", "route_id": route["id"], "option_ids": []},),
+            max_candidates=10,
+        )
+
+
 def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
     assert _route_id("entry", VerbSpec("run", surface_id="stable-run", description="run"), ("run",)) == "stable-run"
 
@@ -674,10 +936,34 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
     routes = {route["id"]: route for route in delegated_surface["routes"]}
     group = routes["route:entrypoint:surface-demo/plugins"]
     assert group["kind"] == "delegate-group"
+    assert group["parser_configured_by_callback"] is False
+    assert group["syntax_complete"] is True
     assert group["subcommands"] == [
         "route:entrypoint:surface-demo/plugins/alpha",
         "route:entrypoint:surface-demo/plugins/beta",
     ]
+
+    configured_parent = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Configured delegate."
+    )
+    configured_parent.register(
+        VerbSpec(
+            "plugins",
+            description="plugin commands",
+            delegate=child.build(),
+            configure=lambda parser: parser.add_argument("--plugin-scope"),
+        )
+    )
+    configured_surface = export_cli_surface(configured_parent.build())
+    configured_group = next(
+        route
+        for route in configured_surface["routes"]
+        if route["kind"] == "delegate-group"
+    )
+    assert configured_group["parser_configured_by_callback"] is True
+    assert configured_group["syntax_complete"] is False
+    assert any("delegate-group parser callback syntax is not represented" in reason
+               for reason in configured_surface["incomplete"])
 
     single_child = CliRegistry(
         child_identity,
@@ -707,6 +993,15 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
     assert delegated_route["id"] == "route:entrypoint:surface-demo/adapter"
     assert delegated_route["delegated_metadata"][0]["name"] == "run"
 
+    simple = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Simple commands."
+    )
+    simple.register(
+        VerbSpec("show", description="show one item", handler=lambda *_: 0)
+    )
+    simple_route = export_cli_surface(simple.build())["routes"][0]
+    assert simple_route["parser_configured_by_callback"] is False
+
     no_child_registry = replace(single_child.build(), registered_verbs=())
     incomplete_single: list[str] = []
     fallback_single = _walk_registered_cli(
@@ -729,6 +1024,13 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
     )
     assert incomplete
     assert any(route["path"] == ["inspect"] for route in fallback_routes)
+    assert fallback_routes[0]["confirmation"] is False
+    assert fallback_routes[0]["parser_configured_by_callback"] is False
+    assert any(
+        action.get("scope") == "common"
+        and action["placement"]["single_command_invocation"] is False
+        for action in fallback_routes[0]["actions"]
+    )
 
     missing_parser = _complex_cli()
     missing_parser.command_parsers.pop("inspect")

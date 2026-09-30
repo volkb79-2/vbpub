@@ -22,6 +22,8 @@ from .parser import (
     OptionSpec,
     RegisteredCli,
     VerbSpec,
+    _HelpAction,
+    _VersionAction,
     _common_option_specs,
 )
 
@@ -86,7 +88,7 @@ def _normalize(value: Any, *, path: str, opaque: list[str]) -> Any:
         return sorted(
             normalized,
             key=lambda item: json.dumps(
-                item, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                item, separators=(",", ":"), ensure_ascii=False
             ),
         )
     if callable(value):
@@ -275,7 +277,7 @@ def _safe_choice_values(
     if isinstance(value, (set, frozenset)):
         normalized.sort(
             key=lambda item: json.dumps(
-                item, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                item, separators=(",", ":"), ensure_ascii=False
             )
         )
     return normalized
@@ -343,11 +345,8 @@ def _surface_action(
             opaque=opaque,
         )
         action_label = f"{type(action).__module__}.{type(action).__qualname__}"
-        library_builtin_action = (
-            type(action).__module__ == "cli_extended.parser"
-            and type(action).__name__ in {"_HelpAction", "_VersionAction"}
-        )
-        if not type(action).__module__.startswith("argparse") and not library_builtin_action:
+        library_builtin_action = type(action) in {_HelpAction, _VersionAction}
+        if type(action).__module__ != "argparse" and not library_builtin_action:
             opaque.append(f"{surface_id}.action")
         description = (
             selected_spec.description
@@ -550,8 +549,8 @@ def _describe_parser(
         ),
     )
     for setting in parser_settings:
-        setting_path = " ".join(setting.get("parser_path", ())) or "<entrypoint>"
-        prefix_chars = setting.get("prefix_chars", "-")
+        setting_path = " ".join(setting["parser_path"]) or "<entrypoint>"
+        prefix_chars = setting["prefix_chars"]
         if prefix_chars != "-":
             local_incomplete.append(
                 f"{route_id}: parser {setting_path} has unsupported "
@@ -768,46 +767,51 @@ def _walk_registered_cli(
                     )
                 )
             else:
-                records.append(
-                    {
-                        "id": route_id,
-                        "path": list(path),
-                        "kind": "delegate-group",
-                        "description": spec.description,
-                        "summary": spec.summary,
-                        "group": spec.group,
-                        "behavior": list(spec.behavior_labels),
-                        "confirmation": spec.confirmation_enabled,
-                        "synopsis_override": spec.synopsis,
-                        "usage_override": None,
-                        "parser_settings": list(parser_settings_for_children),
-                        "aliases": [],
-                        "parser_configured_by_callback": False,
-                        "actions": [],
-                        "opaque_fields": [],
-                        "syntax_complete": True,
-                        "delegated_metadata": [],
-                        "subcommands": [],
-                    }
-                )
-                delegated_records = _walk_registered_cli(
-                        delegate,
-                        entrypoint_id=entrypoint_id,
-                        path_prefix=path,
-                        inherited_specs=(spec,),
-                        inherited_globals=globals_here,
-                        inherited_parser_settings=parser_settings_for_children,
-                        incomplete=incomplete,
+                group_record = {
+                    "id": route_id,
+                    "path": list(path),
+                    "kind": "delegate-group",
+                    "description": spec.description,
+                    "summary": spec.summary,
+                    "group": spec.group,
+                    "behavior": list(spec.behavior_labels),
+                    "confirmation": spec.confirmation_enabled,
+                    "synopsis_override": spec.synopsis,
+                    "usage_override": None,
+                    "parser_settings": list(parser_settings_for_children),
+                    "aliases": [],
+                    "parser_configured_by_callback": spec.configure is not None,
+                    "actions": [],
+                    "opaque_fields": [],
+                    "delegated_metadata": [],
+                    "subcommands": [],
+                }
+                if spec.configure is not None:
+                    incomplete.append(
+                        f"{route_id}: delegate-group parser callback syntax is not represented"
                     )
-                records[-1]["subcommands"] = [
+                delegated_records = _walk_registered_cli(
+                    delegate,
+                    entrypoint_id=entrypoint_id,
+                    path_prefix=path,
+                    inherited_specs=(spec,),
+                    inherited_globals=globals_here,
+                    inherited_parser_settings=parser_settings_for_children,
+                    incomplete=incomplete,
+                )
+                group_record["subcommands"] = [
                     child["id"]
                     for child in delegated_records
                     if len(child.get("path", ())) == len(path) + 1
                 ]
-                records[-1]["syntax_complete"] = all(
-                    child.get("syntax_complete", False)
-                    for child in delegated_records
+                group_record["syntax_complete"] = (
+                    spec.configure is None
+                    and all(
+                        child["syntax_complete"]
+                        for child in delegated_records
+                    )
                 )
+                records.append(group_record)
                 records.extend(delegated_records)
             continue
         parser = app.command_parsers.get(spec.name)
@@ -908,7 +912,7 @@ def _generate_candidates(
             "synopsis_override": route.get("synopsis_override"),
             "usage_override": route.get("usage_override"),
             "behavior": route.get("behavior", []),
-            "confirmation": route.get("confirmation", False),
+            "confirmation": route["confirmation"],
             "group": route.get("group"),
             "parser_settings": route.get("parser_settings", []),
         }
@@ -976,11 +980,12 @@ def _generate_candidates(
             str(action["id"])
             for action in option_actions
             if action["required"]
-            or action.get("default") not in (None, {"kind": "suppressed"})
+            or action.get("effective_default", action.get("default"))
+            not in (None, {"kind": "suppressed"})
         ] + [
             str(action["id"])
             for members in groups.values()
-            if members and members[0].get("exclusive_required")
+            if members[0].get("exclusive_required")
             for action in members
         ]
         if route.get("kind") != "route-prefix":
@@ -999,12 +1004,13 @@ def _generate_candidates(
                     "required_options": [action["id"] for action in option_actions if action["required"]],
                     "defaulted_options": [
                         action["id"] for action in option_actions
-                        if action.get("default") not in (None, {"kind": "suppressed"})
+                        if action.get("effective_default", action.get("default"))
+                        not in (None, {"kind": "suppressed"})
                     ],
                     "required_exclusive_groups": {
                         group_id: [action["id"] for action in members]
                         for group_id, members in sorted(groups.items())
-                        if members and members[0].get("exclusive_required")
+                        if members[0].get("exclusive_required")
                     },
                     },
             )
@@ -1023,7 +1029,7 @@ def _generate_candidates(
             )
             for value in action["choices"] if isinstance(action["choices"], list) else ():
                 value_key = hashlib.sha256(
-                    json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                    json.dumps(value, ensure_ascii=False).encode("utf-8")
                 ).hexdigest()[:10]
                 add_for_route(
                     route,
@@ -1045,7 +1051,7 @@ def _generate_candidates(
             choices = action["choices"]
             for value in choices if isinstance(choices, list) else ():
                 value_key = hashlib.sha256(
-                    json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                    json.dumps(value, ensure_ascii=False).encode("utf-8")
                 ).hexdigest()[:10]
                 add_for_route(
                     route,

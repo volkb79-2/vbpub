@@ -26,7 +26,9 @@ from cli_extended import (
 from cli_extended.review import (
     SURFACE_END_MARKER,
     SURFACE_START_MARKER,
+    SurfaceReport,
     _case_status,
+    _markdown_cell,
     _parse_interaction_groups,
     _replace_generated_region,
     _review_findings,
@@ -161,6 +163,29 @@ def _case_for_candidate(
     )
 
 
+def _findings_for_invocation(
+    candidate,
+    route,
+    invocation,
+    *,
+    route_prefixes=(),
+    allow_abbrev=False,
+):
+    case = _case_for_candidate(candidate, invocation)
+    return _review_findings(
+        {
+            "entrypoint": {
+                "command": "audit-tool",
+                "allow_abbrev": allow_abbrev,
+            },
+            "routes": [*route_prefixes, route],
+            "candidates": [candidate],
+            "syntax_complete": True,
+        },
+        ReviewCatalog("audit-tool", 8, (), (case,)),
+    )
+
+
 def _write_catalog(path: Path, surface, *, active=True, extra_case=None):
     lines = [
         "schema_version = 1",
@@ -252,6 +277,36 @@ def test_catalog_loads_declared_empty_invocation_and_effects(tmp_path):
     assert catalog.cases[0].effects_declared is True
 
 
+def test_review_record_types_are_immutable():
+    from dataclasses import FrozenInstanceError
+
+    case = ReviewCase(
+        case_id="case:one",
+        state="pending",
+        decision=None,
+        reviewed_signature=None,
+        rationale="",
+        invocation=(),
+        invocation_declared=False,
+        expected_exit_status=None,
+        expected_stdout_contains="",
+        expected_stderr_contains="",
+        effects=(),
+        effects_declared=False,
+        test_ids=(),
+        retirement_reason="",
+    )
+    catalog = ReviewCatalog("audit-tool", 8, (), (case,))
+    report = SurfaceReport(("pending",))
+
+    with pytest.raises(FrozenInstanceError):
+        case.case_id = "case:changed"
+    with pytest.raises(FrozenInstanceError):
+        catalog.cli_id = "different-tool"
+    with pytest.raises(FrozenInstanceError):
+        report.findings = ()
+
+
 def test_catalog_rejects_bad_schema_fields_and_case_records(tmp_path):
     path = tmp_path / "catalog.toml"
     invalid_documents = (
@@ -277,6 +332,35 @@ def test_catalog_rejects_bad_schema_fields_and_case_records(tmp_path):
     for content, message in invalid_documents:
         path.write_text(content, encoding="utf-8")
         with pytest.raises(ReviewCatalogError, match=message):
+            load_cli_review_catalog(path)
+
+    path.write_text(
+        'schema_version = 1\ncli_id = "audit-tool"\nmax_candidates = 1\n',
+        encoding="utf-8",
+    )
+    assert load_cli_review_catalog(path).max_candidates == 1
+
+    active_cases_missing_fields = (
+        (
+            'schema_version = 1\ncli_id = "audit-tool"\n'
+            '[[cases]]\nid = "missing-invocation"\nstate = "active"\n'
+            'decision = "accept"\nreviewed_signature = "sha256:x"\n'
+            'rationale = "reviewed"\nexpected_exit_status = 0\n'
+            'effects = []\ntest_ids = ["test.py::test_case"]',
+            "invocation",
+        ),
+        (
+            'schema_version = 1\ncli_id = "audit-tool"\n'
+            '[[cases]]\nid = "missing-effects"\nstate = "active"\n'
+            'decision = "accept"\nreviewed_signature = "sha256:x"\n'
+            'rationale = "reviewed"\ninvocation = []\nexpected_exit_status = 0\n'
+            'test_ids = ["test.py::test_case"]',
+            "effects",
+        ),
+    )
+    for content, field in active_cases_missing_fields:
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(ReviewCatalogError, match=field):
             load_cli_review_catalog(path)
 
     path.write_text("not = [toml", encoding="utf-8")
@@ -353,7 +437,9 @@ def test_catalog_loader_rejects_unrepresentable_toml_shapes(tmp_path, monkeypatc
                 load_cli_review_catalog(path)
 
 
-def test_replace_generated_region_preserves_prefix_newlines_and_rejects_nested_markers():
+def test_replace_generated_region_preserves_prefix_newlines_and_rejects_nested_markers(
+    monkeypatch,
+):
     text = f"prefix\n{SURFACE_START_MARKER}\nold\n{SURFACE_END_MARKER}"
     updated = _replace_generated_region(text, "new generated section\n")
     assert updated.startswith(f"prefix\n{SURFACE_START_MARKER}\n")
@@ -369,6 +455,18 @@ def test_replace_generated_region_preserves_prefix_newlines_and_rejects_nested_m
             f"{SURFACE_START_MARKER}\n{SURFACE_START_MARKER}\n{SURFACE_END_MARKER}\n{SURFACE_END_MARKER}",
             "new",
         )
+    with pytest.raises(SurfaceSpecError, match="reversed or nested"):
+        _replace_generated_region(
+            f"{SURFACE_END_MARKER}\nold\n{SURFACE_START_MARKER}\n",
+            "new",
+        )
+    monkeypatch.setattr("cli_extended.review.SURFACE_END_MARKER", SURFACE_START_MARKER)
+    with pytest.raises(SurfaceSpecError, match="reversed or nested"):
+        _replace_generated_region(f"{SURFACE_START_MARKER}\n", "new")
+
+
+def test_markdown_cells_render_unicode_json_with_sorted_keys():
+    assert _markdown_cell({"z": "last", "a": "café"}) == '{"a": "café", "z": "last"}'
 
 
 def test_generated_text_writes_are_atomic_preserve_mode_and_clean_up_failures(
@@ -426,6 +524,14 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
         "members": ["option:parent", "argument:child"],
         "shape": {"values": [1, 2]},
     }
+    pending_candidate = {
+        "id": "case:pending",
+        "route_id": "route:entrypoint:audit-tool",
+        "signature": "sha256:pending",
+        "kind": "minimum",
+        "members": [],
+        "shape": {},
+    }
     retired = ReviewCase(
         case_id=candidate["id"],
         state="retired",
@@ -458,6 +564,38 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
         test_ids=(),
         retirement_reason="",
     )
+    stale_retired = ReviewCase(
+        case_id="case:retired-removed",
+        state="retired",
+        decision="refuse",
+        reviewed_signature="sha256:old",
+        rationale="removed route",
+        invocation=(),
+        invocation_declared=True,
+        expected_exit_status=2,
+        expected_stdout_contains="",
+        expected_stderr_contains="",
+        effects=(),
+        effects_declared=True,
+        test_ids=("tests/test_old.py::test_retired",),
+        retirement_reason="route removed",
+    )
+    pending = ReviewCase(
+        case_id=pending_candidate["id"],
+        state="pending",
+        decision=None,
+        reviewed_signature=None,
+        rationale="",
+        invocation=(),
+        invocation_declared=True,
+        expected_exit_status=None,
+        expected_stdout_contains="",
+        expected_stderr_contains="",
+        effects=(),
+        effects_declared=True,
+        test_ids=(),
+        retirement_reason="",
+    )
     surface = {
         "schema_version": 1,
         "entrypoint": {"command": "audit-tool"},
@@ -475,6 +613,14 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                 "group": "CHANGE",
                 "behavior": ["mutating"],
                 "syntax_complete": False,
+                "parser_settings": [
+                    {
+                        "parser_path": [],
+                        "allow_abbrev": False,
+                        "prefix_chars": "-",
+                        "fromfile_prefix_chars": None,
+                    }
+                ],
                 "actions": [
                     {
                         "id": "option:parent",
@@ -493,6 +639,22 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                         "help_group": "OPTIONS",
                     },
                     {
+                        "id": "option:run-flag",
+                        "kind": "option",
+                        "flags": ["--flag"],
+                        "nargs": 0,
+                        "metavar": None,
+                        "required": False,
+                        "choices": None,
+                        "effective_default": False,
+                        "exclusive_group": None,
+                        "scope": "verb-local",
+                        "placement": {"before_verb": False, "after_verb": True},
+                        "parser_path": ["inspect"],
+                        "before_nested_subcommand": True,
+                        "help_group": "OPTIONS",
+                    },
+                    {
                         "id": "argument:child",
                         "kind": "argument",
                         "name": "resource",
@@ -505,13 +667,35 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                         "scope": "positional",
                     },
                 ],
-            }
+            },
+            {
+                "id": "route:entrypoint:audit-tool",
+                "path": [],
+                "kind": "invocation",
+                "aliases": [],
+                "subcommand_groups": [],
+                "description": None,
+                "group": None,
+                "behavior": [],
+                "syntax_complete": True,
+                "parser_settings": [
+                    {
+                        "parser_path": [],
+                        "allow_abbrev": False,
+                        "prefix_chars": "-",
+                        "fromfile_prefix_chars": None,
+                    }
+                ],
+                "actions": [],
+            },
         ],
-        "candidates": [candidate],
+        "candidates": [candidate, pending_candidate],
         "syntax_complete": False,
         "incomplete": ["uninspectable callback field | reason"],
     }
-    catalog = ReviewCatalog("audit-tool", 8, (), (retired, stale_active))
+    catalog = ReviewCatalog(
+        "audit-tool", 8, (), (retired, stale_active, stale_retired, pending)
+    )
     markdown = render_cli_surface_markdown(surface, catalog)
 
     assert "route-prefix" in markdown
@@ -522,7 +706,36 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
     assert "STALE: disposition required" in markdown
     assert "Surface inventory is incomplete" in markdown
     assert "uninspectable callback field \\| reason" in markdown
+    assert "inspect run (aliases: r)" in markdown
+    assert "Run an operation." in markdown
+    assert "CHANGE" in markdown
+    assert "parser settings" in markdown.lower()
+    assert "<entrypoint>: allow_abbrev=no," in markdown
+    assert "VALUE" in markdown and '"nargs": null' not in markdown
+    assert "--flag" in markdown and '"nargs": 0' in markdown
+    assert '"nargs": 2' in markdown
+    assert "parser inspect" in markdown
+    assert '"nargs": 2' in markdown
+    assert "refuse" in markdown
+    assert "route removed" in markdown
+    assert "old action" in markdown
+    assert "route removed" in markdown
     assert _case_status(candidate, catalog.cases_by_id)[0].startswith("REVIEW REQUIRED")
+    retired_row = next(line for line in markdown.splitlines() if line.startswith("| case:inspect/run |"))
+    assert "route removed" in retired_row
+    assert "old route" not in retired_row
+    pending_row = next(line for line in markdown.splitlines() if line.startswith("| case:pending |"))
+    assert "| PENDING |" in pending_row
+    assert "null" not in pending_row
+    root_row = next(line for line in markdown.splitlines() if line.startswith("| route:entrypoint:audit-tool |"))
+    assert "audit-tool" in root_row and "<entrypoint>" in root_row
+    assert "null" not in root_row
+
+    missing_completeness = dict(surface)
+    missing_completeness.pop("syntax_complete")
+    assert "Surface inventory is incomplete" in render_cli_surface_markdown(
+        missing_completeness, catalog
+    )
 
 
 def test_case_status_and_template_cover_signature_and_retirement_lifecycle(tmp_path):
@@ -547,6 +760,12 @@ def test_case_status_and_template_cover_signature_and_retirement_lifecycle(tmp_p
     )
     assert "retired case is active again" in retired_template
     assert "Current generated signature" in changed_template
+    unicode_candidate = {**candidate, "id": "case:inspect/café"}
+    unicode_template = render_cli_review_template(
+        {"candidates": [unicode_candidate]}, ReviewCatalog("audit-tool", 8, (), ())
+    )
+    assert 'id = "case:inspect/café"' in unicode_template
+    assert "\\u00e9" not in unicode_template
     assert app is not None and review.exists()
 
 
@@ -597,6 +816,56 @@ def test_review_findings_reports_missing_decisions_stale_records_and_incomplete_
     assert "incomplete parser syntax: custom syntax" in findings
 
 
+def test_empty_single_command_invocation_is_valid_when_no_argument_is_required():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [],
+        "parser_settings": [],
+    }
+    candidate = {
+        "id": "case:minimum",
+        "route_id": route["id"],
+        "signature": "sha256:current",
+        "kind": "minimum",
+        "members": [],
+        "shape": {"required_arguments": []},
+    }
+    case = _case_for_candidate(candidate, [])
+    findings = _review_findings(
+        {
+            "entrypoint": {"command": "audit-tool", "allow_abbrev": False},
+            "routes": [route],
+            "candidates": [candidate],
+            "syntax_complete": True,
+        },
+        ReviewCatalog("audit-tool", 8, (), (case,)),
+    )
+    assert findings == []
+
+
+def test_surface_markdown_rejects_unknown_action_kinds():
+    surface = {
+        "schema_version": 1,
+        "entrypoint": {"command": "audit-tool"},
+        "routes": [
+            {
+                "id": "route:entrypoint:audit-tool",
+                "path": [],
+                "actions": [
+                    {"id": "custom:unknown", "kind": "custom", "name": "custom"}
+                ],
+            }
+        ],
+        "candidates": [],
+    }
+
+    with pytest.raises(SurfaceSpecError, match="unsupported surface action kind 'custom'"):
+        render_cli_surface_markdown(surface, ReviewCatalog("audit-tool", 8, (), ()))
+
+
 def test_review_findings_checks_minimum_alias_positional_and_option_semantics():
     route_id = "route:entrypoint:audit-tool/inspect"
     actions = [
@@ -636,6 +905,179 @@ def test_review_findings_checks_minimum_alias_positional_and_option_semantics():
     assert any("omits its reviewed option spelling" in item for item in findings)
     assert any("omits a value for --needed" in item for item in findings)
     assert any("does not supply its reviewed option choice" in item for item in findings)
+
+
+def test_review_lexer_handles_negative_values_and_missing_option_values_at_end():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "parser_settings": [
+            {
+                "parser_path": ["inspect"],
+                "allow_abbrev": False,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": "",
+            }
+        ],
+        "actions": [
+            {
+                "id": "option:count",
+                "kind": "option",
+                "flags": ["--count"],
+                "nargs": None,
+                "minimum_values": 1,
+                "required": False,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:count",
+        "route_id": route_id,
+        "signature": "sha256:count",
+        "kind": "option-spelling",
+        "members": ["option:count"],
+        "shape": {"spelling": "--count"},
+    }
+    catalog = ReviewCatalog(
+        "audit-tool",
+        8,
+        (),
+        (_case_for_candidate(candidate, ["inspect", "--count", "-1"]),),
+    )
+    surface = {
+        "entrypoint": {"allow_abbrev": False},
+        "routes": [route],
+        "candidates": [candidate],
+        "syntax_complete": True,
+    }
+    assert _review_findings(surface, catalog) == []
+
+    missing_value = ReviewCatalog(
+        "audit-tool",
+        8,
+        (),
+        (_case_for_candidate(candidate, ["inspect", "--count"]),),
+    )
+    findings = _review_findings(surface, missing_value)
+    assert any("omits a value for --count" in item for item in findings)
+
+
+@pytest.mark.parametrize("nargs", (None, "?"))
+def test_review_route_lexer_does_not_consume_extra_parent_positionals(nargs):
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    route_id = "route:entrypoint:audit-tool/inspect/apply"
+    argument = {
+        "id": "argument:parent",
+        "kind": "argument",
+        "name": "parent",
+        "nargs": nargs,
+        "minimum_values": 0 if nargs == "?" else 1,
+        "required": nargs is None,
+        "parser_path": ["inspect"],
+        "before_nested_subcommand": True,
+    }
+    route = {
+        "id": route_id,
+        "path": ["inspect", "apply"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [argument],
+        "parser_settings": [],
+    }
+    candidate = {
+        "id": f"case:extra-parent-{nargs}",
+        "route_id": route_id,
+        "signature": "sha256:extra-parent",
+        "kind": "minimum",
+        "members": [],
+        "shape": {},
+    }
+    case = _case_for_candidate(
+        candidate, ["inspect", "first", "second", "apply"]
+    )
+    surface = {
+        "entrypoint": {"allow_abbrev": False},
+        "routes": [prefix, route],
+        "candidates": [candidate],
+        "syntax_complete": True,
+    }
+
+    findings = _review_findings(
+        surface, ReviewCatalog("audit-tool", 8, (), (case,))
+    )
+    assert any("omits its command path" in item for item in findings)
+
+
+def test_review_candidate_argument_ids_take_precedence_over_member_fallbacks():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "argument:first",
+                "kind": "argument",
+                "name": "first",
+                "nargs": None,
+                "minimum_values": 1,
+                "required": True,
+                "choices": ["good"],
+                "parser_path": ["inspect"],
+            },
+            {
+                "id": "argument:second",
+                "kind": "argument",
+                "name": "second",
+                "nargs": "?",
+                "minimum_values": 0,
+                "required": False,
+                "choices": None,
+                "parser_path": ["inspect"],
+            },
+        ],
+    }
+    choice = {
+        "id": "case:choice",
+        "route_id": route_id,
+        "signature": "sha256:choice",
+        "kind": "argument-choice",
+        "members": ["argument:second"],
+        "shape": {"argument_id": "argument:first", "choice": "good"},
+    }
+    shape = {
+        "id": "case:shape",
+        "route_id": route_id,
+        "signature": "sha256:shape",
+        "kind": "argument-shape",
+        "members": ["argument:second"],
+        "shape": {"argument_id": "argument:first"},
+    }
+    cases = (
+        _case_for_candidate(choice, ["inspect", "good"]),
+        _case_for_candidate(shape, ["inspect", "good"]),
+    )
+    findings = _review_findings(
+        {
+            "entrypoint": {"allow_abbrev": False},
+            "routes": [route],
+            "candidates": [choice, shape],
+            "syntax_complete": True,
+        },
+        ReviewCatalog("audit-tool", 8, (), cases),
+    )
+    assert findings == []
 
 
 def test_review_invocation_lexer_handles_option_arities_and_delimiters():
@@ -1336,6 +1778,267 @@ def test_review_route_lexer_skips_option_values_and_stops_at_delimiter(
     assert missing_path is not has_route
 
 
+def test_review_route_lexer_does_not_abbreviate_short_options_or_ignore_scope():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "parser_settings": [
+            {
+                "parser_path": ["inspect"],
+                "allow_abbrev": True,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+            }
+        ],
+        "actions": [
+            {
+                "id": "option:quiet",
+                "kind": "option",
+                "flags": ["-q"],
+                "nargs": 0,
+                "required": False,
+                "parser_path": ["inspect"],
+                "placement": {"before_verb": False},
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:quiet-spelling",
+        "route_id": route_id,
+        "signature": "sha256:quiet",
+        "kind": "option-spelling",
+        "members": ["option:quiet"],
+        "shape": {"spelling": "-q"},
+    }
+    findings = _findings_for_invocation(candidate, route, ["inspect", "-"])
+    assert any("omits its reviewed option spelling" in item for item in findings)
+
+    route["actions"][0]["placement"]["before_verb"] = False
+    route["actions"][0]["parser_path"] = ["inspect"]
+    findings = _findings_for_invocation(candidate, route, ["-q", "inspect"])
+    assert any("omits its command path" in item for item in findings)
+
+
+def test_review_route_lexer_uses_entrypoint_abbreviation_policy_when_parser_settings_are_missing():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:profile",
+                "kind": "option",
+                "flags": ["--profile"],
+                "nargs": None,
+                "required": False,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:profile-spelling",
+        "route_id": route_id,
+        "signature": "sha256:profile",
+        "kind": "option-spelling",
+        "members": ["option:profile"],
+        "shape": {"spelling": "--profile"},
+    }
+    findings = _findings_for_invocation(
+        candidate, route, ["inspect", "--pro", "work"], allow_abbrev=False
+    )
+    assert any("omits its reviewed option spelling" in item for item in findings)
+
+
+def test_review_route_lexer_does_not_accept_options_after_a_delimiter():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:force",
+                "kind": "option",
+                "flags": ["--force"],
+                "nargs": 0,
+                "required": False,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:force-spelling",
+        "route_id": route_id,
+        "signature": "sha256:force",
+        "kind": "option-spelling",
+        "members": ["option:force"],
+        "shape": {"spelling": "--force"},
+    }
+    findings = _findings_for_invocation(
+        candidate, route, ["inspect", "--", "--force"]
+    )
+    assert any("omits its reviewed option spelling" in item for item in findings)
+
+
+def test_review_route_lexer_stops_at_fixed_and_option_boundaries():
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    route_id = "route:entrypoint:audit-tool/inspect/detail"
+    route = {
+        "id": route_id,
+        "path": ["inspect", "detail"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:pair",
+                "kind": "option",
+                "flags": ["--pair"],
+                "nargs": 2,
+                "required": False,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:pair-route",
+        "route_id": route_id,
+        "signature": "sha256:pair",
+        "kind": "other",
+        "members": [],
+        "shape": {},
+    }
+    assert _findings_for_invocation(
+        candidate,
+        route,
+        ["inspect", "--pair", "one", "two", "detail"],
+        route_prefixes=(prefix,),
+    ) == []
+
+    route["actions"] = [
+        {
+            "id": "option:many",
+            "kind": "option",
+            "flags": ["--many"],
+            "nargs": "*",
+            "required": False,
+            "parser_path": ["inspect"],
+        },
+        {
+            "id": "option:stop",
+            "kind": "option",
+            "flags": ["--stop"],
+            "nargs": 0,
+            "required": False,
+            "parser_path": ["inspect"],
+        },
+    ]
+    assert _findings_for_invocation(
+        candidate,
+        route,
+        ["inspect", "--many", "one", "--stop", "detail"],
+        route_prefixes=(prefix,),
+    ) == []
+
+
+def test_review_minimum_checks_the_exact_number_of_required_argument_values():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "argument:pair",
+                "kind": "argument",
+                "name": "pair",
+                "nargs": 2,
+                "minimum_values": 2,
+                "required": True,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:pair-minimum",
+        "route_id": route_id,
+        "signature": "sha256:pair-minimum",
+        "kind": "minimum",
+        "members": [],
+        "shape": {
+            "required_arguments": ["argument:pair"],
+            "required_argument_values": {"argument:pair": 2},
+        },
+    }
+    assert _findings_for_invocation(candidate, route, ["inspect", "one", "two"]) == []
+    findings = _findings_for_invocation(candidate, route, ["inspect", "one"])
+    assert any("omits required positional argument" in item for item in findings)
+
+
+def test_review_minimum_reports_unknown_required_options_without_false_certification():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:present",
+                "kind": "option",
+                "flags": ["--present"],
+                "nargs": 0,
+                "required": False,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:unknown-required-option",
+        "route_id": route_id,
+        "signature": "sha256:unknown-option",
+        "kind": "minimum",
+        "members": [],
+        "shape": {"required_options": ["option:missing"]},
+    }
+    findings = _findings_for_invocation(
+        candidate, route, ["inspect", "--present"]
+    )
+    assert any("references unknown required option option:missing" in item for item in findings)
+
+
+def test_review_route_alias_check_handles_an_empty_command_position_list():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [],
+    }
+    candidate = {
+        "id": "case:impossible-alias",
+        "route_id": route["id"],
+        "signature": "sha256:alias",
+        "kind": "route-alias",
+        "members": [],
+        "shape": {"alias": "alternate"},
+    }
+    findings = _findings_for_invocation(candidate, route, [])
+    assert any("omits its command alias" in item for item in findings)
+
+
 def test_review_route_lexer_accepts_unambiguous_long_option_abbreviation():
     prefix = {
         "id": "route:entrypoint:audit-tool/inspect",
@@ -2031,6 +2734,13 @@ def test_case_test_helper_rejects_malformed_and_duplicate_catalog_references():
     assert duplicate_tests.cases[0].test_ids
 
 
+@pytest.mark.parametrize("marker_args", ((), ("",), (42,), ("case:a", "case:b")))
+def test_case_test_helper_requires_one_nonempty_string_marker_argument(marker_args):
+    malformed = _Item("test_file.py::test_case", (_Marker("cli_case", *marker_args),))
+    with pytest.raises(AssertionError, match="empty or malformed"):
+        assert_cli_case_tests([malformed], _one_case_catalog())
+
+
 def test_surface_cli_uses_the_same_workflow_and_reports_check_status(tmp_path, monkeypatch, capsys):
     import cli_extended.surface_cli as surface_cli
 
@@ -2120,6 +2830,33 @@ def test_surface_cli_factory_loader_validates_and_calls_imported_target(monkeypa
     )
     with pytest.raises(ImportError, match="missing module"):
         surface_cli._load_factory("consumer.cli:build_cli")
+
+
+@pytest.mark.parametrize("specification", ("module", ":build_cli", "module:"))
+def test_surface_cli_factory_loader_rejects_each_incomplete_factory_component(
+    specification,
+):
+    import cli_extended.surface_cli as surface_cli
+
+    with pytest.raises(ValueError, match="module:callable"):
+        surface_cli._load_factory(specification)
+
+
+def test_surface_cli_requires_factory_review_manifest_and_spec(tmp_path, monkeypatch):
+    import cli_extended.surface_cli as surface_cli
+
+    app, _surface, review, manifest, spec = _make_files(tmp_path, active=True)
+    with pytest.raises(SystemExit):
+        surface_cli._argument_parser().parse_args(["--review", str(review), "template"])
+    with pytest.raises(SystemExit):
+        surface_cli._argument_parser().parse_args(["--factory", "consumer.cli:build", "template"])
+
+    monkeypatch.setattr(surface_cli, "_load_factory", lambda _name: app)
+    common = ["--factory", "consumer.cli:build", "--review", str(review)]
+    with pytest.raises(SystemExit):
+        surface_cli.main([*common, "--manifest", str(manifest), "check"])
+    with pytest.raises(SystemExit):
+        surface_cli.main([*common, "--spec", str(spec), "check"])
 
 
 def test_surface_cli_module_entrypoint_runs_main(tmp_path, monkeypatch, capsys):

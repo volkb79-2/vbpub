@@ -421,6 +421,17 @@ def test_registry_defaults_to_usage_instead_of_a_no_argument_action():
     assert invoked == []
 
 
+def test_registered_cli_defaults_to_multiverb_and_disallows_abbreviations():
+    app = parser_module.RegisteredCli(
+        identity=IDENTITY,
+        parser=ExtendedArgumentParser(prog="tool", identity=IDENTITY),
+        handlers={},
+        command_parsers={},
+    )
+    assert app.single_command is False
+    assert app.allow_abbrev is False
+
+
 def test_unknown_verb_never_falls_through_to_a_default_handler():
     parser = ExtendedArgumentParser(prog="tool", identity=IDENTITY)
     add_common_options(parser, IDENTITY)
