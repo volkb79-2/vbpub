@@ -18,6 +18,7 @@ CANONICAL_DOCS = (
     PACKAGE_ROOT / "docs" / "DESIGN-GUIDE.md",
     PACKAGE_ROOT / "docs" / "CONSUMERS.md",
 )
+LINK_CHECK_DOCS = (*CANONICAL_DOCS, PACKAGE_ROOT / "BACKLOG.md")
 FENCED_BLOCK = re.compile(r"^```([\w-]*)[^\n]*\n(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 INLINE_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
@@ -73,8 +74,8 @@ def test_review_catalog_closed_vocabularies_are_documented():
         assert f"`{value}`" in corpus, f"review catalog value {value!r} is undocumented"
 
 
-def test_canonical_document_markdown_links_and_anchors_resolve():
-    for source_path in CANONICAL_DOCS:
+def test_library_document_markdown_links_and_anchors_resolve():
+    for source_path in LINK_CHECK_DOCS:
         source = _without_fenced_blocks(source_path.read_text(encoding="utf-8"))
         for match in INLINE_LINK.finditer(source):
             destination = match.group(1).split(maxsplit=1)[0].strip("<>")

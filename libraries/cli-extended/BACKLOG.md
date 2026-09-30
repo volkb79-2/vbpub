@@ -91,7 +91,7 @@ consumer; test the installed entrypoint with a startup sentinel.
 
 **Provenance:** Nyxloom P114 found and fixed service startup before argument
 handling; see
-[`P114 execution log`](../../nyxloom/nyxloom-trove/reports/nyxloom-P114-LOG.md).
+[Nyxloom command ownership guidance](../../nyxloom/docs/CLI-REFERENCE.md#command-ownership).
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 

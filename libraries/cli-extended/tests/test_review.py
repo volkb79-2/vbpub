@@ -1466,6 +1466,46 @@ def test_review_route_lexer_uses_abbreviation_policy_at_parser_depth(
     assert any("omits its command path" in item for item in findings) is expected_missing_path
 
 
+def test_review_accepts_abbreviation_from_exported_registered_parser_settings():
+    registry = CliRegistry(
+        IDENTITY,
+        prog="audit-tool",
+        description="audit CLI parser settings",
+        allow_abbrev=False,
+    )
+
+    def configure(parser: argparse.ArgumentParser) -> None:
+        parser.allow_abbrev = True
+
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one item",
+            options=(OptionSpec(("--profile",), "select a profile"),),
+            configure=configure,
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    assert app.command_parsers["inspect"].parse_args(["--prof", "work"]).profile == "work"
+
+    surface = export_cli_surface(app)
+    cases = tuple(
+        _case_for_candidate(
+            candidate,
+            ["inspect", "--prof", "work"]
+            if candidate["kind"] == "minimum"
+            else _candidate_argv(candidate, surface),
+        )
+        for candidate in surface["candidates"]
+    )
+
+    assert not _review_findings(
+        surface,
+        ReviewCatalog("audit-tool", 4, (), cases),
+    )
+
+
 @pytest.mark.parametrize(
     "invocation",
     (["--", "inspect", "d"], ["inspect", "--", "d"]),
