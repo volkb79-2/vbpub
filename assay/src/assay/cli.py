@@ -1245,6 +1245,21 @@ def _run_reserved(
             }
         )
 
+    def _deliver_verdict(verdict: Verdict) -> int:
+        """(B129) Write the artifact (when one was asked for), close the
+        stream, print the summary, and return the exit code. Nested, because
+        it closes over `destination`, `args`, `out` and `_emit_verdict_written`.
+        """
+        if destination is not None:
+            # Exactly once, and the summary is printed only after it succeeded:
+            # a run that could not deliver the artifact it was asked for must not
+            # also print a line that reads like a completed run (A-181).
+            runner.write_verdict(verdict, destination)
+        _emit_verdict_written(verdict)
+        if args.verdict_json != "-":
+            _print_run_summary(verdict, out)
+        return verdict.exit_code
+
     try:
         commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
     except AssayError as exc:
@@ -1328,12 +1343,7 @@ def _run_reserved(
             declared_evidence=declared_evidence,
         )
         _emit_run_header(commit)
-        if destination is not None:
-            runner.write_verdict(verdict, destination)
-        _emit_verdict_written(verdict)
-        if args.verdict_json != "-":
-            _print_run_summary(verdict, out)
-        return verdict.exit_code
+        return _deliver_verdict(verdict)
 
     # (B064) The commit label exists from here on, so the stream gets its
     # header before any further work -- attestation, adapter resolution and
@@ -1416,12 +1426,7 @@ def _run_reserved(
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
-            if destination is not None:
-                runner.write_verdict(verdict, destination)
-            _emit_verdict_written(verdict)
-            if args.verdict_json != "-":
-                _print_run_summary(verdict, out)
-            return verdict.exit_code
+            return _deliver_verdict(verdict)
         else:
             # Merge back into the lane's own declared order -- see the
             # comment above this block for why concatenation alone is not
@@ -1553,15 +1558,7 @@ def _run_reserved(
                 evidence=evidence,
                 declared_evidence=declared_evidence,
             )
-    if destination is not None:
-        # Exactly once, and the summary is printed only after it succeeded:
-        # a run that could not deliver the artifact it was asked for must not
-        # also print a line that reads like a completed run (A-181).
-        runner.write_verdict(verdict, destination)
-    _emit_verdict_written(verdict)
-    if args.verdict_json != "-":
-        _print_run_summary(verdict, out)
-    return verdict.exit_code
+    return _deliver_verdict(verdict)
 
 
 def _print_run_summary(verdict: Verdict, out: TextIO) -> None:

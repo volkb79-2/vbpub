@@ -1260,14 +1260,7 @@ class _EventProgressReader:
 
     def __init__(self, candidate_pid: int | None) -> None:
         self._candidate_pid = _valid_pid(candidate_pid)
-        self._path: Path | None = None
-        self._identity: tuple[int, int] | None = None
-        self._offset = 0
-        self._pending = b""
-        self._count = 0
-        self._has_finish = False
-        self._all_finish_pids_valid = True
-        self._candidate_finish_seen = False
+        self._reset()
 
     def _reset(
         self,

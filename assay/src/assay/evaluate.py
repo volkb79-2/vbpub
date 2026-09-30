@@ -430,6 +430,14 @@ def _is_considered(
     return True
 
 
+def _branch_only_shortfall(
+    missing_lines: Mapping[str, frozenset[int]], covered: int, total: int
+) -> bool:
+    """Whether a missed floor is purely a branch shortfall: no missing LINES
+    and at least one uncovered arc (*covered* < *total*)."""
+    return not missing_lines and covered < total
+
+
 def evaluate_coverage(
     *,
     added: AddedLines,
@@ -675,7 +683,7 @@ def evaluate_coverage(
         # branches -- zero missing LINES, at least one uncovered arc -- is
         # UNCOVERED_BRANCHES, never UNCOVERED_LINES. "Which mechanism
         # refused" is the distinction this project exists to keep.
-        if not missing_lines and total_branches_covered < total_branches_total:
+        if _branch_only_shortfall(missing_lines, total_branches_covered, total_branches_total):
             reason_code = ReasonCode.UNCOVERED_BRANCHES
         else:
             reason_code = ReasonCode.UNCOVERED_LINES
@@ -1304,7 +1312,7 @@ def evaluate_targets(
         reason_code: ReasonCode | None = ReasonCode.EXCLUDED_LINES
     elif pct < fail_under:
         outcome = Outcome.FAIL
-        if not missing_lines and total_branches_covered < total_branches_total:
+        if _branch_only_shortfall(missing_lines, total_branches_covered, total_branches_total):
             reason_code = ReasonCode.UNCOVERED_BRANCHES
         else:
             reason_code = ReasonCode.UNCOVERED_LINES

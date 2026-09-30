@@ -954,12 +954,7 @@ class Coverage:
     files_with_missing_branch_lines: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        for name in ("covered", "executable", "considered"):
-            value = getattr(self, name)
-            if not is_strict_int(value):
-                raise ValueError(f"coverage.{name} must be an integer, got {value!r}")
-            if value < 0:
-                raise ValueError(f"coverage.{name} must not be negative, got {value}")
+        _require_non_negative_ints(self, ("covered", "executable", "considered"), "coverage")
         if not is_real(self.pct):
             raise ValueError(f"coverage.pct must be a number, got {self.pct!r}")
         if not is_percentage(float(self.pct)):
@@ -1891,12 +1886,7 @@ class Mutation:
     budget_per_candidate_derived_s: float | None = None
 
     def __post_init__(self) -> None:
-        for name in ("candidate_count", "total"):
-            value = getattr(self, name)
-            if not is_strict_int(value):
-                raise ValueError(f"mutation.{name} must be an integer, got {value!r}")
-            if value < 0:
-                raise ValueError(f"mutation.{name} must not be negative, got {value}")
+        _require_non_negative_ints(self, ("candidate_count", "total"), "mutation")
         # (B070 fix round 1) The bound this object can state alone is the
         # WIDEST any producer may legally reach, because a `Mutation` cannot
         # see `judgment.r2.producer`. The tighter NATIVE ceiling
@@ -3935,6 +3925,20 @@ class Claim:
 def _check_nonempty(value: str, what: str) -> None:
     if not is_nonempty_str(value):
         raise ValueError(f"{what} must be a non-empty string, got {value!r}")
+
+
+def _require_non_negative_ints(obj: object, names: Iterable[str], prefix: str) -> None:
+    """Each named attribute of *obj* must be a strict int that is not negative.
+
+    Messages are ``"{prefix}.{name} must be an integer, got ..."`` and
+    ``"{prefix}.{name} must not be negative, got ..."``.
+    """
+    for name in names:
+        value = getattr(obj, name)
+        if not is_strict_int(value):
+            raise ValueError(f"{prefix}.{name} must be an integer, got {value!r}")
+        if value < 0:
+            raise ValueError(f"{prefix}.{name} must not be negative, got {value}")
 
 
 def claim_for(claims: Iterable[Claim], rigor: str) -> Claim | None:

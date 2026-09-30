@@ -234,6 +234,15 @@ def read_coverage_artifact(
     )
 
 
+def _capability(capabilities: set[bool]) -> str:
+    """``"unavailable"`` when every record lacks the capability, else ``"reported"``.
+
+    *capabilities* is the already-checked (one-element) set of per-record
+    "is absent" facts; mixed sets are refused by the caller before this runs.
+    """
+    return "unavailable" if capabilities == {True} else "reported"
+
+
 def derive_exclusion_capability(profile: CoverageProfile) -> str:
     """Whether *profile*'s FORMAT could report exclusions at all (P21/A-183).
 
@@ -266,7 +275,7 @@ def derive_exclusion_capability(profile: CoverageProfile) -> str:
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         )
-    return "unavailable" if capabilities == {True} else "reported"
+    return _capability(capabilities)
 
 
 def derive_branch_capability(profile: CoverageProfile) -> str:
@@ -306,7 +315,7 @@ def derive_branch_capability(profile: CoverageProfile) -> str:
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         )
-    return "unavailable" if capabilities == {True} else "reported"
+    return _capability(capabilities)
 
 
 def check_empty_coverage(profile: CoverageProfile) -> None:

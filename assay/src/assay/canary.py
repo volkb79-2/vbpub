@@ -209,6 +209,11 @@ def _apply_mechanism(
     return None
 
 
+def _r1_unreached(r0_claim: Claim, lane: Lane) -> bool:
+    """Whether R1 is not evaluated: R0 did not PASS, or the lane has no R1."""
+    return r0_claim.status is not Outcome.PASS or "R1" not in lane.rigor
+
+
 def _run_pipeline(
     lane: Lane,
     *,
@@ -264,7 +269,7 @@ def _run_pipeline(
         result_report=None,
     )
     r0_claim = build_r0_claim(result)
-    if r0_claim.status is not Outcome.PASS or "R1" not in lane.rigor:
+    if _r1_unreached(r0_claim, lane):
         return r0_claim.status, r0_claim.reason_code
     r1_claim = evaluate_r1(
         lane, repo=repo, project_root=project_root, base=base_commit, adapter=adapter
@@ -419,7 +424,7 @@ def _judge_unit(
     history. ``None`` only where no changed-line R1 reads a base at all.
     """
     r0_claim = build_r0_claim(unit.result)
-    if r0_claim.status is not Outcome.PASS or "R1" not in lane.rigor:
+    if _r1_unreached(r0_claim, lane):
         return r0_claim.status, r0_claim.reason_code
     if unit.profile_error is not None:
         return unit.profile_error.outcome, unit.profile_error.reason_code

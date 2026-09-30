@@ -227,6 +227,11 @@ def read_internal_receipt(path: Path) -> dict[str, Any] | None:
     return document if isinstance(document, dict) else None
 
 
+def _is_false(receipt: dict[str, Any], key: str) -> bool:
+    """Whether *receipt* carries *key* as the literal ``False`` (never falsy)."""
+    return receipt.get(key) is False
+
+
 def witness_from_receipt(
     receipt: dict[str, Any] | None, *, process_exit_status: int | None
 ) -> dict[str, Any] | None:
@@ -240,14 +245,14 @@ def witness_from_receipt(
         return None
     if type(process_exit_status) is not int or process_exit_status != 1:
         return None
-    if receipt.get("unsupported") is not False:
+    if not _is_false(receipt, "unsupported"):
         return None
     node_id = receipt.get("witness_node_id")
     if not isinstance(node_id, str) or not _bounded_node_id(node_id):
         return None
     if receipt.get("witness_when") != "call" or receipt.get("witness_outcome") != "failed":
         return None
-    if receipt.get("auxiliary_failure") is not False:
+    if not _is_false(receipt, "auxiliary_failure"):
         return None
     target_count = receipt.get("target_count")
     if target_count is not None and (
@@ -282,7 +287,7 @@ def replay_witness_from_receipt(
         return None
     if receipt.get("stopped_at_target") is not True:
         return None
-    if receipt.get("earlier_failure") is not False:
+    if not _is_false(receipt, "earlier_failure"):
         return None
     return witness
 

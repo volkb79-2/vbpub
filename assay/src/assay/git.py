@@ -214,6 +214,24 @@ def _git_failed(message: str) -> AssayError:
     return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.GIT_FAILED)
 
 
+def _zero_true_one_false(returncode: int, stderr: bytes, label: str) -> bool:
+    """Read a git exit code that means 0 is ``True``, 1 is ``False``.
+
+    Any other code is a typed Git failure naming *label* and the first 200
+    characters of *stderr* (B129: the one shared reading of the three
+    ``check-ignore -q`` / ``merge-base --is-ancestor`` / ``diff --quiet``
+    exit-code conventions).
+    """
+    if returncode == 0:
+        return True
+    if returncode == 1:
+        return False
+    raise _git_failed(
+        f"{label} failed ({returncode}): "
+        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+    )
+
+
 def _sample_remaining(remaining: Remaining | None) -> float | None:
     """Sample *remaining* once, or ``None`` when no lane deadline applies.
 
@@ -951,14 +969,7 @@ def path_is_ignored(
         remaining=remaining,
         literal_pathspecs=False,
     )
-    if returncode == 0:
-        return True
-    if returncode == 1:
-        return False
-    raise _git_failed(
-        f"git check-ignore {relative_path} failed ({returncode}): "
-        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
-    )
+    return _zero_true_one_false(returncode, stderr, f"git check-ignore {relative_path}")
 
 
 def ignore_rule_source(repo: Path, relative_path: str) -> str | None:
@@ -1025,14 +1036,7 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str, *, remaining: Remain
     returncode, _, stderr = _run_raw(
         repo, "merge-base", "--is-ancestor", ancestor, descendant, remaining=remaining
     )
-    if returncode == 0:
-        return True
-    if returncode == 1:
-        return False
-    raise _git_failed(
-        f"git merge-base --is-ancestor failed ({returncode}): "
-        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
-    )
+    return _zero_true_one_false(returncode, stderr, "git merge-base --is-ancestor")
 
 
 def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining) -> str | None:
@@ -1096,14 +1100,7 @@ def path_is_current(
         repo, "diff", "--quiet", "--exit-code", before, after, "--", path,
         remaining=remaining,
     )
-    if returncode == 0:
-        return True
-    if returncode == 1:
-        return False
-    raise _git_failed(
-        f"git diff --quiet failed ({returncode}): "
-        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
-    )
+    return _zero_true_one_false(returncode, stderr, "git diff --quiet")
 
 
 # --------------------------------------------------------------------------
