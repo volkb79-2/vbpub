@@ -150,27 +150,40 @@ grep -qF 'buildkitd.toml.in' "$INSTALL_SH" \
 pass "managed BuildKit TOML renders its configured solver parallelism"
 
 # Rootless BuildKit creates its socket with the mapped user's gid, so the
-# directory's group alone is not authoritative. The unit must keep the
-# runtime directory sticky and validate/grant access to only the socket.
+# directory's group alone is not authoritative. Keep the parent writable only
+# while BuildKit binds, then seal it before root changes socket permissions.
 BUILDKIT_UNIT_OUT="$TMP/mdt-buildkitd.service"
 render "$HERE/units/mdt-buildkitd.service.in" "$BUILDKIT_UNIT_OUT"
 grep -qxF 'RuntimeDirectoryMode=01777' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit runtime directory is not sticky"
+grep -qxF 'ExecStartPre=/bin/chmod 01777 /run/mdt-buildkitd' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit service does not restore its writable bind directory before restart"
+grep -qxF 'ExecStartPre=/bin/rm -f /run/mdt-buildkitd/buildkitd.sock' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit service does not remove a stale socket before restart"
 grep -qF 'ExecStartPost=/bin/sh -ec' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit service has no socket-readiness permission step"
 grep -qF '[ ! -L "$socket" ]' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit permission step does not reject symlink substitution"
+grep -qF '/bin/chmod 0711 /run/mdt-buildkitd' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit permission step does not lock directory entry changes"
 grep -qF 'socket_uid" = "$daemon_uid' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit permission step does not verify socket ownership"
+grep -qF 'docker exec mdt-buildkitd stat -c %%u /run/buildkit/buildkitd.sock' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit ownership comparison is not made inside its user namespace"
+if grep -qF '/usr/bin/stat -c %%u "$socket"' "$BUILDKIT_UNIT_OUT"; then
+  fail "managed BuildKit ownership comparison incorrectly uses the host uid namespace"
+fi
 grep -qF '/bin/chgrp docker "$socket"' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit socket is not assigned to the existing docker group"
 grep -qF '/bin/chmod 0660 "$socket"' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit socket is not restricted to owner and docker group"
 POSTSTART_UNIT_LINE="$(grep '^ExecStartPost=' "$BUILDKIT_UNIT_OUT")"
-for format in u g a; do
+for format in g a; do
   grep -qF "stat -c %%$format \"\$socket\"" <<<"$POSTSTART_UNIT_LINE" \
     || fail "managed BuildKit stat format %$format is not escaped for systemd"
 done
+[[ "$POSTSTART_UNIT_LINE" == *'/bin/chmod 0711 /run/mdt-buildkitd; if [ ! -S "$socket" ] || [ -L "$socket" ]; then'*'docker exec mdt-buildkitd stat -c %%u /run/buildkit/buildkitd.sock'*'/bin/chgrp docker "$socket"'* ]] \
+  || fail "managed BuildKit must seal and revalidate its directory before changing socket ownership"
 # systemd consumes %% as one literal percent before /bin/sh runs. Any percent
 # left after removing those escapes would be interpreted as a unit specifier,
 # not passed through as shell text (e.g. %u becomes the manager's user name).

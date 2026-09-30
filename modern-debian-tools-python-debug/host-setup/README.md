@@ -150,13 +150,16 @@ normal backend for MDT builds, including release builds. The service is a
 plain `docker run --cgroup-parent=dev-buildkitd.slice`; it does not rely on a
 Buildx container-driver cgroup option.
 
-The runtime directory is sticky so other local users cannot replace the
-socket after it is created. Before systemd reports the service ready, its
-post-start check confirms the socket is a real socket owned by the running
-container user, then assigns only that socket to the host `docker` group with
-mode `0660`. Devcontainer clients must receive the same host group; the
-directory itself is never made broadly readable as a substitute for socket
-permissions.
+The runtime directory is writable while rootless BuildKit creates its socket.
+Before systemd reports the service ready, the post-start check makes the
+root-owned directory non-writable (mode `0711`), rechecks that the endpoint is
+a real socket, verifies its owner from inside the service container's user
+namespace, then assigns the socket to host group `docker` with mode `0660`.
+The next service start restores the bind directory to mode `01777` and removes
+any stale socket before launching BuildKit. This closes a path-replacement
+race and keeps the owner check valid with Docker `userns-remap`. Devcontainer
+clients must receive the same host group; the directory itself is never made
+broadly writable as a substitute for socket permissions.
 
 The installer verifies Docker and Buildx before changing host state, waits for
 the service socket, verifies the service container's image/cgroup/labels, then

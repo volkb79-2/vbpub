@@ -39,16 +39,19 @@ would add no evidence to this product.
 
 ## Managed BuildKit socket access
 
-The rootless BuildKit process creates its Unix socket with its host-mapped
-uid/gid, which need not match the host `docker` group. A setgid parent alone
-does not repair that: a live rootless BuildKit probe still created the socket
-as `1000:1000`. Host setup therefore waits for the actual socket, verifies it
-is a non-symlink socket owned by the running service container's effective
-uid, and changes only that inode to group `docker`, mode `0660`, before the
-service becomes ready. The sticky runtime directory prevents unrelated local
-users from replacing or deleting the socket after it appears. This shares the
-BuildKit API only with principals already trusted for Docker access; it does
-not make the socket world-accessible.
+The rootless BuildKit process creates its Unix socket with its container
+uid/gid, which may be translated by Docker `userns-remap` and need not match
+the host `docker` group. A setgid parent alone does not repair that: a live
+rootless BuildKit probe created the socket as `1000:1000`. Host setup waits for
+the socket, makes its root-owned parent non-writable, rechecks that the
+endpoint is a non-symlink socket, then compares socket owner and daemon uid
+inside the same container namespace. Only then does it change the socket to
+host group `docker`, mode `0660`. Locking the parent before the privileged
+`chgrp`/`chmod` closes a path-replacement race; the next start temporarily
+restores directory mode `01777` for socket creation. This shares the BuildKit
+API only with principals already trusted for Docker access; it does not make
+the socket world-accessible.
+
 ## Bootstrap uses the source filesystem type
 
 Devcontainer bind-mount syntax declares a source and target but has no

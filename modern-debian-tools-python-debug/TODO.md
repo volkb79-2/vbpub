@@ -104,15 +104,19 @@ Filed 2026-09-24 after a live devcontainer connection failed with
 `/run/mdt-buildkitd/buildkitd.sock` as `1000:1000` mode `0660`. The parent
 directory's permissive mode did not grant permission to connect to the socket.
 
-Fix in branch `rg55-buildkit-socket-gid`: retain a sticky runtime directory;
-before systemd marks the service ready, verify the endpoint is a non-symlink
-socket owned by the running container user, then set only that socket to the
-host `docker` group and mode `0660`. Consumer instructions now require the
-existing host `DOCKER_GID` supplementary group and explicitly reject making
-the socket world-accessible. Live acceptance passed after applying the same
-socket ownership/mode correction: `docker buildx inspect mdt-managed` reported
-the remote builder running. Independent review on 2026-09-30 found that
-systemd would expand the `stat` format strings `%u`, `%g`, and `%a` before the
-shell; these are now escaped as `%%u`, `%%g`, and `%%a`, with a renderer
-assertion for the escaping. The registered gate remains pending before this
-branch can merge.
+Fix: retain a sticky runtime directory while BuildKit creates the socket;
+before systemd marks the service ready, seal the root-owned directory against
+entry changes, verify the endpoint is a non-symlink socket owned by the
+running container user, then set only that socket to host group `docker` and
+mode `0660`. Ownership is compared inside the container's user namespace, so
+Docker `userns-remap` does not create a false mismatch. Each restart restores
+the writable directory and removes a stale socket before BuildKit starts.
+Consumer instructions require the existing host `DOCKER_GID` supplementary
+group and explicitly reject making the socket world-accessible. Live
+acceptance passed after applying the same socket ownership/mode correction:
+`docker buildx inspect mdt-managed` reported the remote builder running.
+Independent review on 2026-09-30 found that systemd expands `stat` format
+strings before the shell; escaped specifiers, directory sealing, and the
+namespace-relative owner check now have renderer assertions. The registered
+smoke and release gates pass on the integrated candidate, and the final
+independent review found no further actionable regressions.

@@ -143,6 +143,9 @@ receive that same supplementary group (the MDT template wires it from the
 host's `DOCKER_GID`). Do not make the socket world-accessible to work around a
 group mismatch; check `id` in the consumer and `stat` on the host socket. See
 the [socket-access design](DESIGN-GUIDE.md#managed-buildkit-socket-access).
+The service seals its runtime directory after socket creation and compares
+ownership within the container's user namespace, so host-side UID remapping
+does not require manual `chown` or a directory permission change.
 
 ```bash
 docker build -t example:dev .
