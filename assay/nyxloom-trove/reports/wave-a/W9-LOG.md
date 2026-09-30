@@ -69,3 +69,22 @@ Every break is an Edit on `campaign.py` (or the named file), observed red, rever
 | group 1 | W9 | O24 (option) | `..._oracles.py::test_o24_the_pilot_candidates_file_option_does_not_exist` | `--candidates-file` added to the parser | red, sole break |
 | group 1 | W9 | O24 (event) | `..._oracles.py::test_o24_a_pilot_selection_in_the_progress_stream_is_an_evidence_error` | the `selection_sha256` refusal disabled | red |
 | group 1 | W9 | O26 | `..._oracles.py::test_o26_verdict_and_no_verdict_documents_validate_against_the_schema` | `{"type": "null"}` deleted from the schema's `verdict` | red, sole break |
+| group 2 | W9 | O4 (bucket) | `test_analysis_campaign_state.py::test_o4_a_state_record_bucket_that_disagrees_with_the_verdict_names_the_file` (this file is `..._state.py` below) | `if False and disagreements:` (silently prefer one source) | red; also pins the `state` error-source word (CD51 Q1) |
+| group 2 | W9 | O4 (identity) | `..._state.py::test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused` | `_identity_reproduces` check skipped in `_state_entry`; separately the `candidate_id != stem` check disabled | red for each, sole break in the second run |
+| group 2 | W9 | O5 F2 | `..._state.py::test_o5_f2_a_resumed_run_at_a_new_judge_counts_only_its_own_events` | the `candidates`-event judge ignored (`if False:`) | red |
+| group 2 | W9 | O5 F2b | `..._state.py::test_o5_f2b_current_judge_records_without_an_event_are_unreconciled` | `elif True:` (eventless records always counted) | red |
+| group 2 | W9 | O5 F2c (paired) | `..._state.py::test_o5_f2c_without_a_judge_in_the_event_it_is_derived_from_paired_records` | `elif False:` on the paired-judge branch | red |
+| group 2 | W9 | O5 F2c (two judges) | `..._state.py::test_o5_f2c_two_paired_judges_leave_the_judge_unknown_and_count_nothing` | `len(paired_judges) >= 1` (raises on two judges) | red, sole break |
+| group 2 | W9 | O22 (unverified) | `..._state.py::test_o22_an_old_hung_record_without_evidence_is_not_counted` | predicate replaced by `lambda value: True` (the brief's negative) | red (also the resumed-valid and input-B tests) |
+| group 2 | W9 | O22 (resumed valid) | `..._state.py::test_o22_a_hung_record_with_valid_evidence_is_counted_when_resumed` | same predicate break and `elif True:` | red (shared break) |
+| group 2 | W9 | O22 input A | `..._state.py::test_o22_input_a_a_verdict_resolved_hung_record_without_evidence_does_not_block` | blocker condition replaced by `True` (also red under the paired-judge break) | red |
+| group 2 | W9 | O22 input B | `..._state.py::test_o22_input_b_an_event_with_valid_evidence_beats_an_older_invalid_record` | `_liveness` reads the record before the event | red, sole break (after the fixture's record was given invalid evidence) |
+| group 2 | W9 | O23 (absent/None) | `..._state.py::test_o23_a_hung_row_without_evidence_is_absent_and_a_killed_row_has_none` | `_liveness` returns `(None, None)` for missing evidence | red |
+| group 2 | W9 | O23 (event before record) | `..._state.py::test_o23_a_hung_row_reads_its_event_evidence_before_its_record` | `_liveness` reads the record first | red |
+| group 2 | W9 | O14a | `..._state.py::test_o14a_a_witness_cold_event_is_counted_without_a_code_change` | mode counter filtered to `("full", "witness-prefix")` (hard-coded list) | red |
+| group 2 | W9 | O8 | `..._state.py::test_o8_timing_and_resources_never_change_classification` | verdict-mode bucket forced to `hung` when `elapsed_seconds > 1000` | red |
+| group 2 | W9 | O9 (size class) | `..._state.py::test_o9_the_size_class_is_taken_from_plan_rows_at_the_boundaries` | `_size_class` `<= 10` -> `< 10` | red |
+| group 2 | W9 | O9 (fallbacks) | `..._state.py::test_o9_fallbacks_step_from_the_stratum_to_the_operator_to_everything` | pool threshold `>= 3` | red |
+| group 2 | W9 | O9 (under 20) | `..._state.py::test_o9_a_basis_under_twenty_samples_is_an_object_with_its_reason` | `len(samples) < 3` | red |
+| group 2 | W9 | O9 (`--project` pairing) | `..._state.py::test_o9_project_needs_a_jobs_count_in_range[extra0,extra1]` | pairing check `if False:` | red |
+| group 2 | W9 | O9 (jobs range) | `..._state.py::test_o9_project_needs_a_jobs_count_in_range[extra2,extra3,extra4]` and `test_o9_the_library_entry_refuses_a_jobs_count_out_of_range` | `_project_jobs` `1 <=` -> `0 <=`; `<= 100`; `except` value 1; library `0 <=` | red for each |
