@@ -80,6 +80,9 @@ is newline-delimited.
 An independent real AF_UNIX `SessionServer` probe sent
 `{"verb":"version","args":{},"contract":1}` without a newline and then
 `shutdown(SHUT_WR)`. The server returned a successful version response.
+I reproduced the same result through the built daemon's live socket. In that
+same instance, a newline-terminated v1 flat `stop` request was correctly
+refused by name with `bad-argument`.
 The same path would dispatch state-changing verbs. Return on EOF unless a
 newline was received. Add an actual-socket test that sends a complete JSON
 object without `\n`, checks that no response or side effect occurs, and
@@ -121,10 +124,17 @@ confirms a subsequent valid connection still works.
   `CGPROFILE_ALLOW_UIDS=0` received the shaped `peer-refused` error while
   root exec `version` succeeded. A malformed allowlist `0,` made the daemon
   exit 2 before serving. A relative symlink at `ctl.sock` was replaced by
-  the real socket without altering its decoy target. `version` and `gc`
-  responses matched across live exec/socket carriers; `host` and `status`
-  had matching shapes but their live metrics/timestamps changed between
-  calls. The shipped carrier parity test passed separately.
+  the real socket without altering its decoy target. A separate root:root
+  `0770` scratch directory yielded root:root `0660` socket, denied a UID
+  1000 client, logged the documented root-only INFO, and kept root exec
+  serving. A further live sweep invoked `version`, `host`, `status`, `start`,
+  `stop`, `report`, `gc`, and an unknown-session `watch` through both
+  carriers. `version`, `gc`, `report`, and unknown-session `watch` matched
+  exactly; `host` and `status` matched in shape while live readings changed;
+  independent `start`/`stop` sessions returned the same document keys with
+  their own identities and sample counts. Three targeted deterministic tests
+  for socket goldens, every non-streaming verb's exact carrier parity, and
+  the successful `watch` stream golden passed (`3 passed in 1.01s`).
 - Live `ctl host` showed `gates_slice.present=true` with the authored
   `/dev.slice/dev-gates.slice`, and `daemon_slice` at `/cgprofile.slice`
   (`memory.min=134217728`, `memory.high=805306368`). The placed watch
@@ -142,10 +152,10 @@ confirms a subsequent valid connection still works.
 
 ## Claims not independently closed in this review
 
-The actual-socket live probes did not obtain stable byte-for-byte comparisons
-for every verb on both carriers; `host` and `status` contain changing host
-data, and the remaining verbs were exercised through a mix of carriers plus
-the shipped parity test. I did not obtain a live host-level forced
+The live carrier sweeps could not obtain byte-for-byte equality for volatile
+`host`/`status` readings or for independently started sessions; the shipped
+fixed-clock parity test covers exact document equality. I did not obtain a
+live host-level forced
 mapping/attachment refusal that leaves an owned leaf, nor inspect a live
 `events.jsonl` origin-path row after restoration. I did not finish a fresh
 current-tree R2/full gate or independently reconstruct the controller's
