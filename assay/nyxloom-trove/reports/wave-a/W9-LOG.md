@@ -1,6 +1,6 @@
 # W9 LOG (B108 phase 1, `assay analyze campaign`)
 
-Base: `40317e29` (W8 reviewed head). Branch `wave-a-w9-campaign`. STATUS: in progress.
+Base: `40317e29` (W8 reviewed head). Branch `wave-a-w9-campaign`. STATUS: checkpoint 3 after step 3a (`c71bd31b`); see `W9-CONTINUATION.md` for the remaining P8 behaviour steps.
 
 ## Draft sha256 (pre-edit, `reports/wave-a/b108-draft-20260927/`)
 ```
@@ -13,7 +13,182 @@ eb5585414886feba6b05668a708dae12c53907bd5e713d38238abc6e853239cb  tracked-change
 ## Commits
 | step | commit | content |
 |---|---|---|
-| J | (see below) | J1-J5: `_discover_plan_jobs`/`_PlanDiscovery`, `_plan_rows_from_jobs`, `PlanRow`, `plan_jobs`, `candidate_identity_fields`, four public aliases, `candidates`-event `judge_sha256`; O16a, O20 tests |
+| J | `814494ac` | J1-J5: `_discover_plan_jobs`/`_PlanDiscovery`, `_plan_rows_from_jobs`, `PlanRow`, `plan_jobs`, `candidate_identity_fields`, four public aliases, `candidates`-event `judge_sha256`; O16a, O20 tests |
+| port | `e251f6ef` | draft ported (edits 1-9); analysis 290 passed; deviations: `ALLOWED_JUDGE_MODULES` +6 modules; draft test :251 inversion deferred to step 3 (needs status row 3); dead code removed from `_run_summary` |
+| 3a | `c71bd31b` | exit mapping 0/1/3, closed 7-key `evidence_error` document on stdout (+ stderr line, exit 2), `qualifying: true`, schema `oneOf` document/evidenceError; analysis 293 passed. The :251 test now expects exit 1 (BUDGET_EXCEEDED verdict, still `complete`) until step d inverts it |
+| Q1 | `94e1f616` | CD51 Q1: `errors[].source` is the refused input (`_staged` decorator + `stage.name` markers in `campaign()`); `test_cd51_an_error_source_names_the_refused_input` pins 7 vocabulary words (all but `state`) |
+| 3b-3f code | `70ab9239` | optional `--verdict`; `--state-dir`, `--request-base`, `--project`/`--project-jobs`; section C identity check; `EvidenceErrors`; CD40-ordered `_reconcile_state`; 20-key rows, `adverse`, `unresolved`, `complete_blockers`, `reclassified`, `campaign.selected_total`; `MIN_ETA_SAMPLE = 20` ETA object; pure `project()`; closed schema (`analysis-campaign.schema.json` rewritten); analysis/tests 300 passed. Deviation: sub-steps b-f went in ONE code commit (the closed document shape and the schema are shared, so a partial state cannot validate). Oracle tests for O2-O10, O12-O14a, O17-O19, O22-O26 are NOT written yet |
+
+## QUESTIONS (numbered; each took the conservative reading)
+1. (SUPERSEDED by CD51 Q1: `errors[].source` is the refused input from a fixed vocabulary.)
+2. (CLOSED by CD51 Q2: `reclassified` item is `{candidate_id, source, runs: [{run_id, bucket}], state_bucket}`.)
+3. With an UNKNOWN current judge (C25 yields none) no record counts; in-plan, in-selection records that do not pair with a same-bucket latest-run event are reported as `state.unreconciled` (they block `complete`). Paired records only enrich rows.
+4. The v14 `evidence` object's key names are not defined before v14: `started_count` reads `evidence.started_count` (non-negative int) and `evidence_command` reads `evidence.command` (str); anything else is `null`.
+5. Blocker `terminal_disagrees` is also raised in verdict mode when the latest run has NO terminal event (a present-but-different terminal stays an `evidence_error`).
+6. No verdict plus `--coverage` on an R1 lane is an `evidence_error` (the artifact cannot be re-verified without a verdict R1 claim). No verdict plus R1 lane without `--coverage`: `not_supplied` (blocks complete).
+7. `campaign.selected_total` is added (P8 "Counts"; CD39 names only `execution_mode_counts` inside `campaign`). `unresolved.candidates` is a sorted list of candidate id strings capped at `--limit`.
+8. "Never-started" `budget_exceeded` (status row 3) is read literally: no `candidate` event in the latest run, even when a counted state record exists for it.
+
+9. Never-started `budget_exceeded` candidates (status row 3): `outcomes`, `adverse` and `candidate_details` keep the verdict's bucket for them, but `completed_total` excludes them and `pending_total` includes them, so `no_remaining_work` is never claimed for a timed-out campaign.
+10. `projection.bases.<basis>` with fewer than 20 samples is an object whose `fallback_counts`, `serial_seconds_p50/p90` are `null` and `reason` is `"insufficient_sample"` (a bare `null` cannot carry the reason); a basis that computed has `reason: null`. `wall_seconds_*` are `null` when the `killed` basis is insufficient.
+11. Stage tags for CD51 Q1: root/`--expected-commit`/scalar checks and the `--command-exit` mismatch -> `arguments`; lane file/lane lookup -> `lane`; verdict read/verify/policy/inventory checks (including verdict-vs-plan inventory) -> `verdict`; plan build, plan-row identity -> `plan`; per-run stream checks (including progress-vs-verdict per-candidate disagreement) -> `progress`; latest-run-vs-verdict scope/terminal checks, `--log` -> `input`; state dir/records -> `state`; `--coverage` -> `coverage`.
+12. (SUPERSEDED by CD55 Q12: `--command-exit` without `--verdict` is an `evidence_error`, `source: "arguments"`, message `--command-exit requires --verdict`; `command_exit_not_observed` is present exactly when `--command-exit` is absent.)
+13. `projection.fixed_components.other` subtracts a missing coverage/r2 source as 0 (the missing source stays listed in `fixed_components_missing`); every duration is clamped at >= 0.
+14. Without a verdict, a candidate event outside the latest run's selection is refused; the message is now the same for verdict mode (`latest progress run includes candidates outside its selected scope`).
+15. Candidate-event `cpu_seconds`, `peak_rss_bytes`, `phase_seconds`, `startup_seconds` that break W8's shapes are refused as a progress `evidence_error` instead of being copied verbatim.
+16. `--project`/`--project-jobs` pairing is enforced in `run_campaign_command` with `parser.error` (SystemExit 2, argparse usage text), the `--project-jobs` range by an argparse `type`.
+17. The hung-evidence fallback to a state record (row `liveness_*`) reads only current-judge, in-selection records (counted, unreconciled or unverified-hung); stale-judge records are never a source.
+18. In verdict mode the ETA can say `no_remaining_work` while the status is `incomplete` (progress stream cut, verdict already resolves every candidate).
+
+19. **Real bug found by O19 and fixed (not a design choice):** `_check_verdict_against_lane` read `lane.judge.coverage.fail_under`, but `CoverageConfig` has only `format`/`artifact`/`producer` (`fail_under` lives on `JudgeConfig`), so any R1 lane raised `AttributeError` before the coverage check. Fixed to `lane.judge.fail_under`; the `--coverage`-free path never reached it in mocked tests.
+20. **Real bug found by O19 and fixed:** `_coverage_artifact_summary` called `read_bounded_file(...)` without the keyword-only `limit`, so `--coverage` on any real R1 lane raised `TypeError`. Fixed with the judge's own `coverage.MAX_COVERAGE_ARTIFACT_BYTES` (16 MiB), the bound `assay.coverage` already applies to the same artifact.
+21. O19 residual: the lane command writes `cov.json` inside the run's isolated snapshot, so it does not exist in the worktree after `assay run`. The O19 test writes the same bytes into the worktree before the analysis (the analysis reads only from the worktree and never the snapshot). No design change made; the closeout workflow needs the artifact at the declared path. Recorded for CONSUMERS.
+    Controller ruling (binding): Q19 and Q20 accepted as real bug fixes; Q21 accepted as documented behaviour (CONSUMERS paragraph, O19 technique as the example, no code change).
+22. **Real bug found by O15 and fixed (not a design choice):** `_check_verdict_against_lane` compared the verdict's R2 policy `mode` to `lane.judge.mode`, which is `None` when the lane omits `judge.mode` (config.py:838: "None means changed_lines"), while every real verdict records the effective `"changed_lines"`. A campaign over a real R2 run of any lane without `judge.mode` therefore failed with "R2 verdict policy mode differs from the named lane declaration". Fixed with the runner's own resolution (`runner.py:4933`: `mode or "changed_lines"`); the earlier hand-built fixtures all declared `mode` explicitly, so only a real run could reach it.
+23. (PROVISIONAL, step 3a in progress) Raises found UNREACHABLE by reading, each guarded by an earlier check in `_read_progress`, kept (no pragma, no deletion), to be confirmed by a failed attempt before the final LOG: line 296 (`if not runs` after `all_runs[-1]` commit == expected has already appended that run), 604 (`candidates` while phase is neither header nor resume: phase sweep hits the repeat check at 602 first, ended/terminal are refused earlier by `_read_progress` at 280/282), 688 (second `end` is refused at 282), 695 and 697 (a second `verdict_written`/terminal is refused at 280), 704 (any event after end/terminal is refused at 280/282). Line 710 (unsupported event kind) is unverified: it needs a PROGRESS_EVENTS name that `_run_summary` does not handle. Consequence: `analysis/tests` cannot reach 100% without a pragma; the controller decides delete-vs-keep (Q23 is the question).
+
+## Q23 under CD58 (checkpoint 8, commit `2181a9e8`): dominated raises deleted, none pragma'd
+
+`analysis/src/assay_analysis/campaign.py` lost these raises. Each was first attacked with crafted input in a scratch table; every input was refused earlier, so the raise cannot fire.
+
+| Old raise (function) | Dominating check | Argument |
+|---|---|---|
+| `progress has no run at expected commit` after `if not runs` (`_read_progress`, old :296) | the `all_runs[-1]...commit != expected` guard just above, plus the `if commit == expected: runs.append(current)` in the run branch | a non-empty `all_runs` whose last run has commit `expected` has appended that run to `runs` |
+| `progress candidates milestone is out of order` (`_run_summary`, old :604) | `phase` is `header`/`resume` unless `candidates_event` is set (then the "repeats its candidates milestone" raise fires first) or the run ended (the reader's "sweep events after end" raise fires first); `shard` never sets `phase` (a `shard`+`candidates` scratch run was accepted, not refused) | no other phase value can reach a `candidates` event |
+| `repeats its end milestone` (old :688) | `_read_progress` `sweep_end_seen and event != verdict_written` -> "sweep events after end" | any second `end` is refused by the reader |
+| `repeats its verdict_written terminal` / `repeats its terminal` (old :695/:697) | `_read_progress` `terminal_seen` -> "events after verdict_written"; `phase == "terminal"` is set only together with `terminal` | any second `verdict_written` is refused by the reader |
+| `progress event ... follows the run terminal` (old :704) | the same two reader guards: after `end` only `verdict_written`, after `verdict_written` nothing | `run` events never reach `events` (they `continue`) |
+| `progress event ... is not supported` (old :710) | `_read_progress` `event.get("event") not in PROGRESS_EVENTS`; the `_run_summary` chain names every member of `assay.mutation.PROGRESS_EVENTS` (checked at `src/assay/mutation.py:850-873`) | the `elif kind in {...}` became two plain `elif` arms; an event outside the set never gets here |
+| `_candidate_outcomes`: bucket not a list; non-object outcome; invalid `candidate_id`; id in two outcomes | `_read_verified_verdict` `evidence.verify_text(text)` (`campaign.py` "invalid Assay verdict"), which runs on every verdict before `_candidate_outcomes` | scratch table: string, object, null bucket; number and string outcomes; `"zz"` id; one id in `killed` and `equivalent`; one id twice in `killed` all gave `invalid Assay verdict: ...` |
+| `_verdict_inventory`: no v13 inventory; inventory malformed or duplicated; pre-submission verdict with outcomes; outcomes do not exhaust the inventory | the same `verify_text` ("a completed native mutation scope requires candidate_ids", "mutation.candidate_ids contains a malformed digest / duplicate", "mutation.total (0) must equal the number of recorded identities", "native mutation.candidate_ids must equal the IDs listed across every outcome bucket") | scratch table gave the verifier's message for each input |
+
+`_verdict_inventory` also lost its now-unused `buckets_in_verdict` parameter. `test_analysis_campaign_verdict_refusals.py::DOMINATED` pins that every one of these inputs is still refused by the verifier (`invalid Assay verdict: `, `source: "verdict"`), so a weakened verifier goes red. The reachable rows there are `verdict-allow-dirty-overrides` (old :180), `outcome-field-differs-from-plan` and `inventory-differs-from-plan` (a self-consistent shorter inventory).
+
+## Step 3a: raise -> case id map (early partial draft; the COMPLETE map is in "Checkpoint 11" below)
+
+| raise (message fragment) | case id (file) |
+|---|---|
+| state: schema_version / bucket / execution (2 shapes) / judge digest / not a JSON object / symlink / oversize / directory missing / directory is a file | `STATE_CASES` rows and `test_a_state_record_over_the_size_limit_is_refused` in `test_analysis_campaign_state_refusals.py` |
+| `command exit must be a non-negative integer`, `detail offset ...`, `detail limit ...`, `outcome filters contain duplicates`, `gate log artifact is missing` | rows `command-exit-negative`, `offset-negative`, `limit-zero`, `outcome-duplicated`, `gate-log-missing` in `..._refusals.py` |
+| `--allow-dirty overrides`, verdict field/inventory differs from the plan | `REACHABLE` rows in `test_analysis_campaign_verdict_refusals.py` |
+| `outcome filters must use` (library only: argparse `choices` refuses first) | OWED: direct `campaign(buckets=[...])` test |
+
+Pins added without a controlled break yet (OWED, do them first next session): `MAX_SAMPLE_IDS` (`test_a_state_sample_lists_at_most_ten_sorted_ids_and_the_full_count`), `errors_truncated`/`MAX_ERRORS` (`test_more_than_ten_state_failures_are_truncated_with_the_flag`), the `state` source of every state row, the CD58 `DOMINATED` pin (break: drop `evidence.verify_text` failure raise in `_read_verified_verdict`).
+
+## Checkpoint 9: owed controlled breaks and the coverage block (commit after `2181a9e8`)
+
+The four owed breaks were applied by Edit to `campaign.py`, observed red, reverted by Edit (`git diff -- analysis/src` showed only the intended CD58 deletions afterwards), and the suite was re-run green.
+
+| pin | break | red |
+|---|---|---|
+| `MAX_SAMPLE_IDS` 10 | `MAX_SAMPLE_IDS = 9` | `test_a_state_sample_lists_at_most_ten_sorted_ids_and_the_full_count` |
+| `state` error source (both raise sites of `_read_state`/disagreement list) | `"source": "input"` at both sites | 7 `STATE_CASES` rows, the size-limit test, `test_o4_a_state_record_bucket_that_disagrees_with_the_verdict_names_the_file`, `test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused` (10 tests) |
+| `DOMINATED` (14 verifier-refused inputs) | `failures = []` in place of `evidence.verify_text(text)` in `_read_verified_verdict` | all 14 `DOMINATED` rows, plus `verdict-fails-verification` in the refusals table |
+| `errors_truncated` | `"errors_truncated": False` | `test_more_than_ten_state_failures_are_truncated_with_the_flag` |
+| `MAX_ERRORS` | `MAX_ERRORS = 11` | the same test (length 11, flag false) |
+
+### Coverage block under CD58 (`test_analysis_campaign_coverage_refusals.py`, real R1 run)
+
+Each raise was attacked with an edited artifact or an edited (unsigned) verdict first. Reachable ones are rows in `REFUSALS` or their own tests: `re-evaluation disagrees ... 'status'` (`artifact-key-repeated`) and `... 'coverage'` (`artifact-arc-on-a-judged-line-added`), `R1 verdict policy 'allow_excluded' differs` (`verdict-policy-field-differs`), `R1 verdict policy differs` at the lane check (`verdict-policy-artifact-differs`), `coverage cannot be reverified without --verdict`, `coverage artifact ... differs from lane-declared artifact`, and the missing-artifact report (`artifact_status: missing`, not a raise). Positive tests pin what must not be refused (a key outside the repository, an unresolvable key, an arc on a line the verdict does not judge) and the lcov `format_does_not_expose_exact_destinations` status.
+
+Deleted (nothing pragma'd); dominating check in the same row:
+
+| deleted raise | dominating check |
+|---|---|
+| `lane declares R1 but the verified verdict has no R1 claim` | a verdict with an R1 policy and no R1 claim fails `verify_text` (`judgment.r1 is declared without a corresponding R1 coverage claim`, seen); a verdict with no R1 policy fails `_check_verdict_against_lane` `R1 verdict policy differs` (`coverage_artifact` None != declared) |
+| `R1 lane resolves no coverage adapter` | `LaneConfigError: declares rigor ['R0'], which reads none of judge.{...}`: a lane with `judge.coverage` always declares R1 or R2 (scratch-checked with `load_lane_file`) |
+| `coverage artifact branch capability differs from verified verdict` | the R1 re-evaluation compares the whole `coverage` object, which carries `branch_capability`, both derived by `derive_branch_capability(profile)` |
+| `coverage.py artifact has no files object` | `parse_coverage_artifact` (`meta.branch_coverage is true, but no file record carries ...`, seen for `files={}`, a non-dict record) |
+| `multiple keys for judged file` | a repeated key (`./src/mod.py`, even with an empty record) fails the re-evaluation `status` (seen) |
+| `lacks judged file` (2 raises), `lacks missing branch arcs`, `malformed branch arc`, `has no missing arcs for verdict-reported branch lines`, `lacks normalized branch counts`, `missing-arc destinations do not match its parsed branch counts` | `parse_coverage_artifact` (`'missing_branches' is str, expected list`, `contains a malformed arc [7]`, `[7, True]`, `repeats an arc identity`, `FileCoverage.branches has line(s) [100] ...`) and the re-evaluation `coverage` (`no arcs`, `arc on a judged line`, `wrong line` all disagree, seen) |
+| `coverage artifact reports branch arcs that the verdict says were unavailable`, `verified verdict has an unknown branch_capability` | verifier (`coverage.branch_capability must be one of ['reported', 'unavailable']`, and `unavailable ... names branch data`, both seen) and the re-evaluation `coverage` comparison |
+| `_check_verdict_against_lane` `verdict commit differs from current expected HEAD` (the `head` parameter went with it) | `_read_verified_verdict(path, expected=head)` refuses any other commit against the same `head` immediately before |
+
+## Checkpoint 10: `campaign.py` at 100% line+branch, no pragma (495 `analysis/tests` passed)
+
+Every previously uncovered line/arc is now reached by a table row or pin. CD58 attempts, in order:
+
+| campaign.py site (old line) | reached by | result |
+|---|---|---|
+| lane path is a committed directory (:211) | `lane-file-directory` (refusals table) | reachable |
+| `cannot read lane file` (:216-217) | `lane-file-unreadable` (`_read_artifact` fails for `label == "lane file"` only) | reachable |
+| `lane has no mutation plan` + `_lane_plan` unsupported return (:311) | `plan-unsupported` (real `_lane_plan`, `assay.cli.plan_jobs` returns `UNSUPPORTED`) | reachable |
+| `plan base cannot be reconstructed without --verdict or --request-base` (:1398) | `plan-base-needs-verdict-or-request-base` (lane committed with `base_source = "request"`) | reachable; `--request-base` value reaches the planner: `test_request_base_reaches_the_planner_for_a_lane_that_delegates_its_base` |
+| `reconstructed plan base differs` (:1405) | `plan-base-differs-from-verdict` | reachable |
+| `R2 verdict policy jobs differs` (:1381) | `verdict-r2-policy-differs` | reachable |
+| non-native lane `not_supported` (:1408) | `test_a_non_native_mutation_lane_is_reported_not_supported` (lane declares `mutation.format`; an edited verdict with `producer = "ingested"` is refused by `verify_text`, so the lane route is the one) | reachable |
+| progress candidate without a verdict outcome (:608) | `progress-candidate-outside-the-verdict-shard` (verdict for shard 0/2, unsharded progress recording both) | reachable |
+| `latest progress selected inventory differs` (:1579) | `progress-shard-differs-from-verdict` | reachable |
+| `latest progress run includes candidates outside its selected scope` (:1582) | `progress-candidate-outside-its-shard` (no verdict) | reachable |
+| `_identity_reproduces` ValueError (:811-812) | `test_o16b...[digest-absent, byte-span-invalid]` | reachable |
+| non-`reported` branch capability (474->501) | `test_a_verdict_that_reports_no_branch_capability_yields_no_arc_detail` (real R1 run, `meta.branch_coverage` false) | reachable |
+| in-repo key that is not the judged file (491->484) | `key-for-another-file-in-the-repository` | reachable |
+| `_fixed_components` (:1318-1333) | three `test_projection_*` tests | reachable |
+| `reclassified` `state_vs_progress` (:950) | `test_a_state_bucket_that_disagrees_with_the_progress_event_is_reclassified_not_hidden` | reachable |
+| `if candidate_id in selection` false (1079->1078) | `test_an_earlier_runs_candidate_outside_the_latest_selection_is_not_counted` | reachable |
+| `--format text` with `--project` (:1934) | `test_the_text_format_prints_the_projection_line_only_with_project` | reachable |
+| positive `--log` read | `test_a_readable_gate_log_is_recorded_as_evidence_and_never_parsed` | reachable |
+| library `outcome filters must use` (:1511) | `test_the_library_entry_refuses_an_outcome_filter_outside_the_six_buckets` (argparse `choices` dominates the CLI route) | reachable through the library |
+| `_candidate_outcomes` `candidate_id is None` branch (523->521) | DELETED under CD58; `DOMINATED` gained `outcome-id-absent` and `outcome-id-null`, both refused by `verify_text` | dominated |
+
+OWED at this checkpoint (controlled breaks for the new pins; Edit break -> red -> Edit revert -> log a row here): `plan-unsupported` (`if plan["status"] == "unsupported"` off), `--request-base` pass-through (`request_base` replaced by `None` in `_reconstruct_plan`), the `terminal_disagrees` blocker (`test_a_verdict_campaign_whose_stream_has_no_terminal_event_...`; `("terminal_disagrees", False)`), `phase_seconds`/`startup_seconds` shapes (`_optional_object` returns the value unchanged), `started_count`/`evidence_command` (`_typed` returns the value unchanged), `state_vs_progress` (item not appended), the fixed-component pins (`coverage = span("direct")` first, `other` without `- (r2 or 0.0)`), the earlier-run pin (`sorted(selection)` -> `sorted(seen)` in `_resolutions`), `--log` (`artifacts["log"]` not set), `no branch capability` (arc detail computed when capability is not `reported`), `not_supported` (branch returns `not_applicable`), the shard-scope rows (`progress-*`: each check `if False`).
+
+## Checkpoint 11: owed controlled breaks done, the complete raise -> case id map, one more CD58 deletion (496 `analysis/tests` passed)
+
+Every owed break below was applied by Edit to `campaign.py`, each target test was run singly (a batch of orthogonal breaks was applied at once, and each test was run alone against it; the failure text names the broken site), then every break was reverted by Edit. `git diff -- analysis/src` after the reverts shows only the CD58 deletion in the next paragraph. Rows are appended to "Campaign oracle traceability".
+
+Two owed pins were WEAK and were strengthened before their break was accepted (a break that leaves a green test is a finding, not a pass):
+
+- `_optional_object` returning the value unchanged left `test_a_row_carries_the_phase_and_startup_objects_with_exactly_their_keys` green (`10 == 10.0`). The test now also asserts that every non-null value is a `float`; it is red under the break.
+- `coverage = span("direct")` before `span("baseline")` left every projection test green (no test had both spans). New test `test_projection_prefers_the_baseline_span_over_the_direct_span` (spans `direct` 2 s and `baseline` 5 s); it is red under the swap.
+
+One owed break named the wrong site and exposed a redundant condition (CD58, deletion, no behaviour change): `for candidate_id in sorted(selection)` -> `sorted(seen)` was green because `_resolutions` collected `seen`/`history` only `if candidate_id in selection`, and the loop that reads them iterates `selection`, so the filter was unobservable (`if True:` in its place: green). The filter was deleted, `_resolutions` now iterates `sorted(selection)` over an unfiltered `seen`, and `test_an_earlier_runs_candidate_outside_the_latest_selection_is_not_counted` is red under `sorted(seen)` (4 candidates reported instead of 2). Nothing pragma'd.
+
+### The complete raise -> case id map (every `raise` in `campaign.py`, 116 sites, by line at HEAD of this checkpoint)
+
+All ids are parametrized rows of `test_every_campaign_refusal_is_reachable[<id>]` (`test_analysis_campaign_refusals.py`) unless another test is named. Each row asserts its fragment is in the message and that the source word is right.
+
+| raise line(s) | message | case id |
+|---|---|---|
+| 90 / 93 | candidate `elapsed_seconds` must be a number / finite and non-negative | `elapsed-not-a-number` / `elapsed-negative` |
+| 106 | `phase_seconds`/`startup_seconds` shape | `phase-seconds-shape` (and the float pin in `test_analysis_campaign_residual.py`) |
+| 112 / 116 / 118 | `emitted_at` empty / not ISO / no timezone | `emitted-at-empty` / `emitted-at-not-iso` / `emitted-at-no-timezone` |
+| 132 | `<label> artifact is missing` | `progress-missing`; `gate-log-missing`; `test_cd51_an_error_source_names_the_refused_input[verdict]` |
+| 134 / 138 / 140 / 150 / 156 | open / not regular / over the limit / grew while reading / changed while reading | `progress-symlink` / `progress-directory` / `progress-oversize-declared` / `progress-oversize-while-reading` / `progress-changed-while-reading` (state records: `record-symlink`, `test_a_state_record_over_the_size_limit_is_refused`) |
+| 172 / 176 | verdict not UTF-8 / fails `verify_text` | `verdict-not-utf8` / `verdict-fails-verification` (+ the `DOMINATED` rows of `test_analysis_campaign_verdict_refusals.py`) |
+| 180 | `--allow-dirty` overrides | `verdict-allow-dirty-overrides` (`..._verdict_refusals.py`) |
+| 185 | verdict commit differs | `test_analysis_campaign_verdicts.py::test_o18_a_stale_commit_verdict_is_an_evidence_error` |
+| 194 / 198 / 202 / 211 / 217 / 219 | lane file symlink / outside worktree / not a single committed path / not a committed regular file / unreadable / bytes differ | `lane-file-symlink` / `lane-file-outside-worktree` / `lane-file-untracked` / `lane-file-directory` / `lane-file-unreadable` / `lane-file-edited` |
+| 232 / 236 / 245 | progress not UTF-8 / torn final record / malformed event | `progress-not-utf8` / `progress-torn-with-verdict` (+ `test_o12_a_torn_final_record_is_an_evidence_error_with_a_verdict`) / `progress-unknown-event` |
+| 251 / 253 / 270 / 273 / 276 / 278 / 280 / 282 | run commit not full / run names another lane / too many runs / event before first run / conflicting commit / wrong lane / events after `verdict_written` / sweep events after `end` | `run-commit-not-full` / `run-wrong-lane` / `too-many-runs` / `event-before-first-run` / `event-conflicting-commit` / `event-wrong-lane` / `event-after-terminal` / `sweep-event-after-end` |
+| 289 / 291 | no run at the expected commit / latest run is for another commit | `no-run-at-all` / `latest-run-other-commit` |
+| 374 | coverage artifact for a lane with no R1 declaration | `test_analysis_campaign.py::test_cd51_an_error_source_names_the_refused_input[coverage]` |
+| 389 / 393 | coverage without `--verdict` / a path other than the declared artifact | `test_analysis_campaign_coverage_refusals.py::test_coverage_without_a_verdict_is_an_evidence_error` / `::test_a_coverage_path_other_than_the_declared_artifact_is_an_evidence_error` |
+| 438 / 459 | R1 policy field differs / re-evaluation disagrees (`status`, `coverage`) | `verdict-policy-field-differs` / `artifact-key-repeated`, `artifact-arc-on-a-judged-line-added` (`..._coverage_refusals.py`) |
+| 551 / 553 / 556 | candidates repeated / pilot selection / bad `judge_sha256` | `candidates-repeated` / `candidates-pilot-selection` (+ `test_o24_a_pilot_selection_in_the_progress_stream_is_an_evidence_error`) / `candidates-bad-judge` |
+| 561 / 563 / 567 / 569 / 574 / 576 | shard / resume / resume_merged repeated and out of order | `shard-repeated` / `shard-out-of-order` / `resume-repeated` / `resume-out-of-order` / `resume-merged-repeated` / `resume-merged-out-of-order` |
+| 580 / 583 / 585 / 587 / 589 / 593 / 598 / 600 | candidate before `candidates` / invalid id / repeated / outside the plan / unknown bucket / field differs from the plan / invalid index / repeated index | `candidate-before-candidates` / `candidate-invalid-id` / `candidate-repeated` / `candidate-outside-plan` / `candidate-unknown-bucket` / `candidate-field-differs` / `candidate-invalid-index` / `candidate-index-repeated` |
+| 607 / 612 | progress candidate not in the verdict / bucket disagrees with the verdict | `progress-candidate-outside-the-verdict-shard` / `test_analysis_campaign_verdicts.py::test_progress_and_verdict_outcomes_must_agree` |
+| 635 | end out of order | `end-out-of-order` |
+| 663 / 667 / 670 | shard malformed / invalid / selected_total differs | `shard-malformed` / `shard-invalid` / `shard-selected-differs` |
+| 677 / 684 / 687 / 689 / 691 / 693 | integer totals / candidate_total / selected_total / reconcile / events exceed pending | `selected-total-not-integer` / `resumed-total-negative` / `candidate-total-differs` / `selected-total-differs` / `totals-do-not-reconcile` / `events-exceed-pending` |
+| 697 / 699 / 702 / 704 | index outside the range / not contiguous / event total disagrees / mutation events without candidates | `index-outside-range` / `index-not-contiguous` / `event-total-disagrees` / `mutation-events-without-candidates` |
+| 708 / 712 | resume_merged without resume / count differs | `merged-without-resume` / `merged-count-differs` |
+| 718 / 720 / 723 / 725 / 727 / 730 / 732 / 743 / 748 | end total / buckets not canonical / bucket negative / no candidates / pre-submission after candidates / total differs / buckets do not reconcile / disagree with the verdict / terminal exit_code | `end-total-not-integer` / `end-buckets-not-canonical` / `end-bucket-negative` / `end-without-candidates` / `end-reason-after-candidates` / `end-total-differs` / `end-buckets-do-not-reconcile` / `end-buckets-disagree-with-verdict` / `terminal-exit-code-not-integer` |
+| 826 | plan row identity does not reproduce | `test_analysis_campaign_oracles.py::test_o16b_a_plan_row_whose_identity_inputs_do_not_reproduce_its_id_is_refused` |
+| 835 / 837 / 839 / 842 / 846 / 849 / 856 / 868 | state: schema / id vs name / identity / bucket / execution / judge digest / directory / not an object | `STATE_CASES` in `test_analysis_campaign_state_refusals.py` (`schema-version`, `bucket-unknown`, `execution-not-object`, `execution-mode-unknown`, `judge-not-digest`, `record-not-object`, `directory-missing`, `directory-is-a-file`); 837/839 by `test_analysis_campaign_state.py::test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused` |
+| 826 / 873 / 938 | aggregated `EvidenceErrors` (plan rows, state rows, state vs verdict) | the same state rows; 938 `test_analysis_campaign_state.py::test_o4_a_state_record_bucket_that_disagrees_with_the_verdict_names_the_file` |
+| 1361 / 1372 / 1383 | verdict lane differs / R1 policy differs / R2 policy differs | `test_analysis_campaign_verdicts.py::test_o18_a_verdict_for_another_lane_is_an_evidence_error` / `verdict-policy-artifact-differs` (`..._coverage_refusals.py`) / `verdict-r2-policy-differs` |
+| 1400 / 1405 / 1407 | plan base needs verdict or request base / no mutation plan / base differs | `plan-base-needs-verdict-or-request-base` / `plan-unsupported` / `plan-base-differs-from-verdict` |
+| 1456 / 1461 | verdict inventory / outcome field differs from the plan | `inventory-differs-from-plan` / `outcome-field-differs-from-plan` (`..._verdict_refusals.py`) |
+| 1498 / 1500 / 1502 / 1504 | command exit / `--command-exit` needs a verdict / offset / limit | `command-exit-negative` / `test_analysis_campaign.py::test_cd55_q12_command_exit_without_a_verdict_is_an_evidence_error` / `offset-negative` / `limit-zero` |
+| 1510 / 1825 | project jobs (library / argparse type) | `test_analysis_campaign_state.py::test_o9_the_library_entry_refuses_a_jobs_count_out_of_range` / `::test_o9_project_needs_a_jobs_count_in_range[...]` |
+| 1513 / 1515 | outcome filter outside the buckets / duplicates | `test_the_library_entry_refuses_an_outcome_filter_outside_the_six_buckets` (`..._residual.py`) / `outcome-duplicated` |
+| 1543 | plan has duplicate or malformed identities | `test_analysis_campaign.py::test_cd51_an_error_source_names_the_refused_input[plan]` |
+| 1581 / 1584 / 1594 | latest progress inventory differs / outside its scope / terminal disagrees | `progress-shard-differs-from-verdict` / `progress-candidate-outside-its-shard` / `test_cd51_an_error_source_names_the_refused_input[input]` |
+| 1610 | observed command exit differs | `test_analysis_campaign.py::test_o1_a_command_exit_that_differs_from_the_verdict_is_an_evidence_error` |
+
+CD58 deletions (raises that cannot fire) are listed in "Q23 under CD58" and "Coverage block under CD58"; the `_candidate_outcomes` `candidate_id is None` branch and the `_resolutions` `in selection` filter are the two non-raise deletions.
 
 ## Judge oracles (J step)
 Positive: `tests/core/test_cli_plan_jobs.py` 11 passed; `tests/core/test_mutation_candidates_event_judge.py` 2 passed; O21 set (`test_b105_cli_boundaries`, `test_cli_plan_estimate_hint`, `test_mutation_judge_identity*`, `test_mutation_progress_budget_plan`, `test_b106_reuse_and_witness`, `test_cli_provenance_and_request_base`, `test_import_contracts`, `test_cli_run`) 360 passed, 1 skipped, all unmodified.
@@ -23,3 +198,104 @@ Positive: `tests/core/test_cli_plan_jobs.py` 11 passed; `tests/core/test_mutatio
 | O20 | `test_o20_the_candidates_event_carries_the_judge_every_record_carries` | `**({"judge_sha256": judge} ...)` removed from the `candidates` event | red, reverted, green |
 | O16a (vii) | `test_o16a_vii_allow_dirty_reaches_the_integrity_probe` | `allow_dirty=False` hard-coded in `_cmd_plan`'s discovery call | red, reverted, green |
 | O16a (viii) | `test_o16a_viii_the_reuse_command_is_resolved_only_when_reuse_is_requested` | `resolve_reuse_command=reuse_source is None` (inverted) | red, reverted, green |
+
+## Campaign oracle traceability (work | owner | oracle | test id | controlled break | failures)
+Every break is an Edit on `campaign.py` (or the named file), observed red, reverted by Edit, observed green. Nothing broken is committed. Test ids are in `analysis/tests/test_analysis_campaign.py` unless named.
+
+| work | owner | oracle | test id | controlled break | failures |
+|---|---|---|---|---|---|
+| CD55 Q12 | W9 | CD55 | `test_cd55_q12_command_exit_without_a_verdict_is_an_evidence_error` | the `--command-exit requires --verdict` guard disabled (`if False and ...`) | 1 failed |
+| group 1 | W9 | O1 (no `--command-exit`) | `test_analysis_campaign_oracles.py::test_o1_a_pass_campaign_without_command_exit_is_incomplete` | `("command_exit_not_observed", False)` in the blocker set | red (also breaks the other command-exit blocker checks) |
+| group 1 | W9 | O3 | `..._oracles.py::test_o3_without_a_verdict_the_result_is_never_complete` | `("no_verdict", False)` | red |
+| group 1 | W9 | O2 | `..._oracles.py::test_o2_appended_resume_runs_count_each_candidate_once` | `completed_total = sum(run["fresh_candidate_events"] ...)` (summing candidate events across runs: 9, not 8) | red |
+| group 1 | W9 | O6 | `..._oracles.py::test_o6_a_candidate_reclassified_between_runs_is_counted_once_as_its_latest_bucket` | `reclassified` guard `> 1` -> `> 5` | red |
+| group 1 | W9 | O7 (19 samples) | `..._oracles.py::test_o7_nineteen_samples_give_no_eta` | `MIN_ETA_SAMPLE = 5` (the WIP threshold) | red (also fails the schema `const 20`) |
+| group 1 | W9 | O7 (20 samples) | `..._oracles.py::test_o7_twenty_samples_use_nearest_rank_percentiles` | `_nearest_rank` replaced by the median (p50 10.5) | red, sole break |
+| group 1 | W9 | O10 | `..._oracles.py::test_o10_the_adverse_page_reports_its_total_and_next_offset` | `_page` `next_offset` hard-coded `None` (silent truncation) | red |
+| group 1 | W9 | O12 (no verdict) | `..._oracles.py::test_o12_a_torn_final_record_is_incomplete_without_a_verdict` | `tolerate_torn=False` (the WIP always refuses) | red |
+| group 1 | W9 | O12 (verdict) | `..._oracles.py::test_o12_a_torn_final_record_is_an_evidence_error_with_a_verdict` | `tolerate_torn=True` (always accepts) | red, sole break |
+| group 1 | W9 | O13 | `..._oracles.py::test_o13_the_schema_rejects_documents_that_break_its_closed_shape` | `"additionalProperties": false` removed from the `timing` schema | red, sole break |
+| group 1 | W9 | O16b | `..._oracles.py::test_o16b_a_plan_row_whose_identity_inputs_do_not_reproduce_its_id_is_refused` | `_identity_reproduces` returns `True` | red |
+| group 1 | W9 | O24 (option) | `..._oracles.py::test_o24_the_pilot_candidates_file_option_does_not_exist` | `--candidates-file` added to the parser | red, sole break |
+| group 1 | W9 | O24 (event) | `..._oracles.py::test_o24_a_pilot_selection_in_the_progress_stream_is_an_evidence_error` | the `selection_sha256` refusal disabled | red |
+| group 1 | W9 | O26 | `..._oracles.py::test_o26_verdict_and_no_verdict_documents_validate_against_the_schema` | `{"type": "null"}` deleted from the schema's `verdict` | red, sole break |
+| group 2 | W9 | O4 (bucket) | `test_analysis_campaign_state.py::test_o4_a_state_record_bucket_that_disagrees_with_the_verdict_names_the_file` (this file is `..._state.py` below) | `if False and disagreements:` (silently prefer one source) | red; also pins the `state` error-source word (CD51 Q1) |
+| group 2 | W9 | O4 (identity) | `..._state.py::test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused` | `_identity_reproduces` check skipped in `_state_entry`; separately the `candidate_id != stem` check disabled | red for each, sole break in the second run |
+| group 2 | W9 | O5 F2 | `..._state.py::test_o5_f2_a_resumed_run_at_a_new_judge_counts_only_its_own_events` | the `candidates`-event judge ignored (`if False:`) | red |
+| group 2 | W9 | O5 F2b | `..._state.py::test_o5_f2b_current_judge_records_without_an_event_are_unreconciled` | `elif True:` (eventless records always counted) | red |
+| group 2 | W9 | O5 F2c (paired) | `..._state.py::test_o5_f2c_without_a_judge_in_the_event_it_is_derived_from_paired_records` | `elif False:` on the paired-judge branch | red |
+| group 2 | W9 | O5 F2c (two judges) | `..._state.py::test_o5_f2c_two_paired_judges_leave_the_judge_unknown_and_count_nothing` | `len(paired_judges) >= 1` (raises on two judges) | red, sole break |
+| group 2 | W9 | O22 (unverified) | `..._state.py::test_o22_an_old_hung_record_without_evidence_is_not_counted` | predicate replaced by `lambda value: True` (the brief's negative) | red (also the resumed-valid and input-B tests) |
+| group 2 | W9 | O22 (resumed valid) | `..._state.py::test_o22_a_hung_record_with_valid_evidence_is_counted_when_resumed` | same predicate break and `elif True:` | red (shared break) |
+| group 2 | W9 | O22 input A | `..._state.py::test_o22_input_a_a_verdict_resolved_hung_record_without_evidence_does_not_block` | blocker condition replaced by `True` (also red under the paired-judge break) | red |
+| group 2 | W9 | O22 input B | `..._state.py::test_o22_input_b_an_event_with_valid_evidence_beats_an_older_invalid_record` | `_liveness` reads the record before the event | red, sole break (after the fixture's record was given invalid evidence) |
+| group 2 | W9 | O23 (absent/None) | `..._state.py::test_o23_a_hung_row_without_evidence_is_absent_and_a_killed_row_has_none` | `_liveness` returns `(None, None)` for missing evidence | red |
+| group 2 | W9 | O23 (event before record) | `..._state.py::test_o23_a_hung_row_reads_its_event_evidence_before_its_record` | `_liveness` reads the record first | red |
+| group 2 | W9 | O14a | `..._state.py::test_o14a_a_witness_cold_event_is_counted_without_a_code_change` | mode counter filtered to `("full", "witness-prefix")` (hard-coded list) | red |
+| group 2 | W9 | O8 | `..._state.py::test_o8_timing_and_resources_never_change_classification` | verdict-mode bucket forced to `hung` when `elapsed_seconds > 1000` | red |
+| group 2 | W9 | O9 (size class) | `..._state.py::test_o9_the_size_class_is_taken_from_plan_rows_at_the_boundaries` | `_size_class` `<= 10` -> `< 10` | red |
+| group 2 | W9 | O9 (fallbacks) | `..._state.py::test_o9_fallbacks_step_from_the_stratum_to_the_operator_to_everything` | pool threshold `>= 3` | red |
+| group 2 | W9 | O9 (under 20) | `..._state.py::test_o9_a_basis_under_twenty_samples_is_an_object_with_its_reason` | `len(samples) < 3` | red |
+| group 2 | W9 | O9 (`--project` pairing) | `..._state.py::test_o9_project_needs_a_jobs_count_in_range[extra0,extra1]` | pairing check `if False:` | red |
+| group 3 | W9 | O17 F1 (200 unstarted, `LANE_TIMEOUT`) | `..._verdicts.py::test_o17_f1_a_lane_timeout_with_two_hundred_unstarted_candidates_is_incomplete` | `("lane_timeout_or_unstarted", lane_timeout_row)` -> `False` | red (run singly under the batch) |
+| group 3 | W9 | O17 F4 (sharded PASS never complete) | `..._verdicts.py::test_o17_f4_a_sharded_pass_verdict_is_never_a_complete_campaign` | drop `and expected_ids == plan_id_set` from `complete_inventory` | red (singly) |
+| group 3 | W9 | O18 (six buckets, exact counts, adverse ids/paths/operators) | `..._verdicts.py::test_o18_all_six_buckets_are_counted_and_the_adverse_candidates_named` | `ADVERSE_BUCKETS` drops `"hung"` | red (singly) |
+| group 3 | W9 | O18 (stale commit) | `..._verdicts.py::test_o18_a_stale_commit_verdict_is_an_evidence_error` | `_read_verified_verdict` commit check -> `if False:` (the later lane check words it differently, so the exact message goes red) | red (singly) |
+| group 3 | W9 | O18 (wrong lane) | `..._verdicts.py::test_o18_a_verdict_for_another_lane_is_an_evidence_error` | `_check_verdict_against_lane` lane check -> `if False:` | red (singly) |
+| group 3 | W9 | O19 (real R1 run, exact missing line + arc) | `..._real.py::test_o19_coverage_reverifies_the_artifact_and_lists_the_gaps_exactly` | `arcs.extend(rows)` -> `arcs.extend(rows[:0])`; also reverting either Q19/Q20 fix | red for each |
+| group 3 | W9 | O19 (no `--coverage`: `not_supplied`, declared artifact absent and never read) | `..._real.py::test_o19_without_coverage_the_declared_artifact_is_never_read` | `not_supplied` branch returns `missing_branch_arcs: []` (gap shown as zero) | red (singly) |
+| group 2 | W9 | O9 (jobs range) | `..._state.py::test_o9_project_needs_a_jobs_count_in_range[extra2,extra3,extra4]` and `test_o9_the_library_entry_refuses_a_jobs_count_out_of_range` | `_project_jobs` `1 <=` -> `0 <=`; `<= 100`; `except` value 1; library `0 <=` | red for each |
+| group 3 | W9 | O15 (REAL R2 planner, `--rejudge` second run: `completed_total 2`, `rejudged_total 1`, per-run events 2/1, `resumed_total`, `judge_sha256_source`, `state.counted 2`) | `..._real.py::test_o15_a_real_rejudge_run_is_counted_once_and_records_its_resumed_event` | (a) the Q22 fix reverted (`"mode": lane.judge.mode`): the campaign refuses the real verdict; (b) `rejudged_total = 0`; (c) the `candidates-event` judge branch `if False and ...` | red for each (b: `(2, 0) == (2, 1)`; c: `'paired-records' == 'candidates-event'`); `--reuse-from` half is a recorded residual (needs a pytest lane) |
+| group 3 | W9 | O25 (no private judge name) | `test_analysis_package_boundary.py::test_analysis_reaches_no_private_judge_name` | `assay_cli.plan_jobs(` -> `assay_cli._plan_jobs(` in `_lane_plan` (a `from assay import cli as assay_cli` private use) | red (the same run also crashed O15, expected) |
+| group 3 | W9 | Q18 (`no_remaining_work` under an `incomplete` closeout) | `test_analysis_campaign.py::test_interrupted_progress_produces_an_incomplete_closeout` | `elif pending == 0:` -> `elif False:` in `_timing` | red (also `test_complete_campaign_json_and_text_bind_plan_progress_and_verdict`) |
+| checkpoint 11 | W9 | `plan-unsupported` | `..._refusals.py::test_every_campaign_refusal_is_reachable[plan-unsupported]` | `if False and plan["status"] == "unsupported":` in `_reconstruct_plan` | red (message became `reconstructed plan base differs ...`) |
+| checkpoint 11 | W9 | `--request-base` pass-through | `..._residual.py::test_request_base_reaches_the_planner_for_a_lane_that_delegates_its_base` | `request_base` replaced by `None` in the `_lane_plan` call | red (`[None] == ['feature-base']`) |
+| checkpoint 11 | W9 | `terminal_disagrees` blocker | `..._residual.py::test_a_verdict_campaign_whose_stream_has_no_terminal_event_is_incomplete_for_that_reason_alone` | `("terminal_disagrees", False)` | red (`(0, '') == (3, '')`) |
+| checkpoint 11 | W9 | `phase_seconds`/`startup_seconds` shapes | `..._residual.py::test_a_row_carries_the_phase_and_startup_objects_with_exactly_their_keys` | `_optional_object` returns the value unchanged | GREEN at first (`10 == 10.0`); float assertion added; then red |
+| checkpoint 11 | W9 | `started_count`/`evidence_command` typed reads | `..._residual.py::test_started_count_and_evidence_command_are_typed_reads_of_the_recorded_evidence` | `_typed` returns the value unchanged | red (schema validation of the emitted document fails on `True`/`5`) |
+| checkpoint 11 | W9 | `state_vs_progress` | `..._residual.py::test_a_state_bucket_that_disagrees_with_the_progress_event_is_reclassified_not_hidden` | `if False:` on the append | red (`[] == [{...state_vs_progress...}]`) |
+| checkpoint 11 | W9 | fixed component: `baseline` before `direct` | `..._residual.py::test_projection_prefers_the_baseline_span_over_the_direct_span` (NEW) | `span("direct")` first | GREEN under the old tests; new test added; then red (`coverage_baseline` 2.0 not 5.0) |
+| checkpoint 11 | W9 | fixed component: `other` subtracts `r2` | `..._residual.py::test_projection_fixed_overhead_reads_the_baseline_spans_and_the_first_candidate` | `other = max(0.0, elapsed - (coverage or 0.0))` | red (sole break, run alone after the batch was reverted) |
+| checkpoint 11 | W9 | earlier-run pin | `..._residual.py::test_an_earlier_runs_candidate_outside_the_latest_selection_is_not_counted` | `sorted(selection)` -> `sorted(seen)` after the CD58 deletion of the `in selection` filter | GREEN with `if True:` in place of the filter (redundant condition, deleted); red under `sorted(seen)` (4 == 2) |
+| checkpoint 11 | W9 | `--log` | `..._residual.py::test_a_readable_gate_log_is_recorded_as_evidence_and_never_parsed` | `artifacts["log"]` not assigned | red (`KeyError: 'log'`) |
+| checkpoint 11 | W9 | no branch capability | `..._coverage_refusals.py::test_a_verdict_that_reports_no_branch_capability_yields_no_arc_detail` | `if True:` in place of `if expected_capability == "reported":` | red (`exact_from_coverage_py_artifact_and_reverified_r1` != `unavailable`) |
+| checkpoint 11 | W9 | `not_supported` | `..._residual.py::test_a_non_native_mutation_lane_is_reported_not_supported` | the branch returns `not_applicable` | red |
+| checkpoint 11 | W9 | shard-scope rows | `progress-candidate-outside-the-verdict-shard`, `progress-shard-differs-from-verdict`, `progress-candidate-outside-its-shard` | `if False and outcome is None:` (`TypeError` instead of a refusal); `if False and verdict ...` at `:1580`; `if False and not set(...) <= scope:` | red for each (the last two: no `errors` key, i.e. accepted) |
+
+## QUESTIONS added at checkpoint 11 (conservative reading taken)
+
+24. The brief asks the DESIGN-GUIDE for "the CD20 counting rule", but CD20 in `CARVER-DECISIONS.md` only fixes the P8 rebase and the read-only hung-row evidence. I documented the counting rule that the code and O2/O6/O22/CD40 pin (one count per candidate as its latest bucket; `reclassified` for a changed bucket; the CD40 rule order; hung rows read-only), and attributed it to "CD20, CD40". If a different rule was meant, only the DESIGN-GUIDE subsection changes.
+25. The B100 subsection of `docs/CONSUMERS.md` has no heading of its own after its first paragraph (the record/receipt/collect text follows it and runs to the end of the file), and the "Package boundary (A-478)" section is the last one in `docs/DESIGN-GUIDE.md`. "After the B100 subsection" therefore cannot mean between two headings without detaching that trailing text; the new CONSUMERS subsection is appended at the end of the file, and the DESIGN-GUIDE one directly after the package-boundary bullets (also the end of the file).
+
+## For the controller's gate run
+
+Branch `wave-a-w9-campaign`, project dir `assay/`. Last code commit `14bc8588`; docs commit `33076c79`.
+
+- Registered gate: `cd <worktree>/assay && python ./run-gate.py tester-unified > <log> 2>&1`; in a SEPARATE step read `ASSAY_GATE_PHASE=analysis-lane-passed`, `ASSAY_GATE_CONTAINER_EXIT=0` and `ASSAY_REGISTERED_GATE_COMPLETE=1`. `ASSAY_GATE_INCONCLUSIVE=host busy` (exit 3, CD32) is not a result: rerun later.
+- Local evidence (serial, `nice -n 19 ionice -c3`, no container): `tests` 5501 collected, 5500 passed + 1 known B134 failure (`test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused`, environmental) + 1 skipped; coverage over `src/assay` with branches 99% total, the only miss `src/assay/git.py:459` (that same B134 line); every judge file W9 touched is at 100%. `analysis/tests` 496 collected and passed, `assay_analysis` 2037 statements / 986 branches at 100%, `campaign.py` 979 / 440 at 100%, `grep -c pragma` = 0. `gate/tests` 382 collected, 371 passed, 11 skipped (includes `test_distribution_build_release.py`). Docs test `tests/core/test_docs_examples_and_vocabulary.py` 46 passed.
+- The gate must judge: `analysis` lane (R0+R1 whole target at 100% line and branch), the B105 judge lane over the J step files (`src/assay/cli.py`, `src/assay/mutation.py`), and the O15/O18/O19 real-run tests in `analysis/tests/test_analysis_campaign_real.py`.
+- Consumer-visible: `assay analyze campaign`; the additive surfaces named in `CHANGES.md` `[Unreleased]`; docs in README, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`; B108 boxes 1, 2 and 4 ticked (box 3, the variable-duration fixture, and box 5 onward are not W9's).
+
+## Review fixes (W9R)
+
+Source: `REVIEW-W9.md`, accepted whole by CD60. No QUESTIONS were raised (the review and CD60 leave nothing open). Code fix commit `e7127416` (W9R-1, W9R-2); tests, O2 assert and docs commit `d2e4b0b3`. The code fix was applied with Edit calls, not `git apply`.
+
+| finding | fix | test | controlled break | result |
+|---|---|---|---|---|
+| W9R-1 | `complete_inventory` gains `and (lane_timeout_row or len(events) == latest["pending_total"])` | `test_a_pending_candidate_without_an_event_is_not_exhausted`, `test_a_stream_with_no_candidate_events_is_not_exhausted` (`..._residual.py`) | before the fix: both tests written and run on the unfixed code | red before the fix (`complete`, exit 0), green after |
+| W9R-2 | `_no_state()` and `_reconcile_state` return `resume_shortfall` (`current is not None and len(eventless) < latest["resumed_total"]`); the `state_unreconciled` blocker also fires on it; output shape unchanged | `test_a_resume_claim_with_no_backing_record_in_the_store_is_unreconciled` (`..._state.py`) | before the fix: written and run on the unfixed code | red before the fix (`complete`, exit 0), green after |
+| W9R-3 | test only | `test_a_never_started_leftover_under_a_non_timeout_reason_is_unresolved` (`..._verdicts.py`) | delete `or bool(never_started)` from `lane_timeout_row` | red with the clause deleted, green restored |
+| W9R-4 | test only | `test_q3_an_unknown_judge_leaves_unpaired_records_unreconciled` (`..._state.py`) | replace the `current is None` `unreconciled` list by `[]` | red with the list emptied, green restored |
+| W9R-5 | test only | `test_a_terminal_that_differs_in_any_one_field_from_the_verdict_is_refused[outcome-FAIL / exit_code-1 / reason_code-LANE_TIMEOUT]` (`..._residual.py`) | delete the `outcome` leg; delete the `exit_code` leg; delete the `reason_code` leg (one at a time) | exactly the matching parameter is red for each deletion; all green restored |
+| W9R-6 | test only: one assert in `test_o2_appended_resume_runs_count_each_candidate_once` (`campaign["resumed_total"] == 7 and campaign["rejudged_total"] == 1`) | `..._oracles.py` | `campaign.resumed_total` / `rejudged_total` summed over `run_summaries` | red with the sum (12 and 1 wrong readings), green restored |
+| W9R-7 | `docs/CONSUMERS.md`: a missing parent directory of the coverage artifact is an `evidence_error`; the artifact path must be git-ignored | `tests/core/test_docs_examples_and_vocabulary.py` | not applicable | 46 passed |
+
+Post-fix evidence (serial, foreground, `nice -n 19 ionice -c3`, no container, `COVERAGE_FILE` in scratch so no `.coverage` in the tree):
+- `analysis/tests`: 504 passed; coverage over `analysis/src/assay_analysis` with branches is 100% line and 100% branch for `campaign.py`, `cli.py`, `evidence.py`, `plan_estimate.py`, no pragma.
+- `gate/tests`: 371 passed, 11 skipped.
+
+- V-1 (controller-accepted, follow-up to W9R-2): `resume_shortfall` was `current is not None and ...`, so an unknown judge (no `judge_sha256` on the `candidates` event, no paired records) let a `resume` claim with an empty state store finish `complete`. It is now `latest["resumed_total"] > (len(eventless) if current is not None else 0)`: records under an unknown judge cannot vouch for completion (CD51 Q3). Test `test_unknown_judge_empty_state_resume_claim` (`..._state.py`): red before the fix (`(0, "complete")`), green after; the no-over-correction tests (a resumed campaign whose state records cover every resumed candidate stays `complete`) still pass. `analysis/tests`: 505 passed, 100% line and branch over `assay_analysis`, no pragma. Full default testpaths: 6005 passed, 1 skipped; the one deselected test, `tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused`, fails only because this host has a stray `/tmp/.git` (an ancestor of `tmp_path`), which is unrelated to W9.
+
+READY-FOR-GATE d2e4b0b3 (superseded by the V-1 line below)
+
+READY-FOR-GATE 883a74de

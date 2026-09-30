@@ -154,6 +154,7 @@ def test_the_analysis_package_imports_nothing_outside_the_stdlib_and_assay():
     assert offenders == {}, f"non-stdlib imports found: {offenders}"
     assert {p.name for p in files} == {
         "__init__.py",
+        "campaign.py",
         "cli.py",
         "evidence.py",
         "plan_estimate.py",

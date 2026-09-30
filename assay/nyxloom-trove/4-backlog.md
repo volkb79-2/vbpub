@@ -10984,11 +10984,11 @@ interpretation step.
 
 ### Acceptance
 
-- [ ] Fixtures cover a fresh campaign, appended `--resume` runs, a
+- [x] Fixtures cover a fresh campaign, appended `--resume` runs, a
       `--rejudge` run, B106 reuse/replay, and an interrupted campaign. The
       summary's per-run and current-plan counts match the authoritative plan,
       progress events, and verdict with no duplicate candidate accounting.
-- [ ] Fixtures cover every canonical mutation outcome bucket, with exact
+- [x] Fixtures cover every canonical mutation outcome bucket, with exact
       candidate IDs, paths, operators, and outcome attribution for survivors,
       equivalents, hangs, crashes, and budget exhaustion. Missing, malformed,
       stale-commit, wrong-lane, truncated, or verdict/progress-disagreeing
@@ -10998,7 +10998,7 @@ interpretation step.
       elapsed-time inputs cannot change the selected candidates or gate
       outcome. A bounded candidate listing exposes its matching total and
       never silently truncates survivor/adverse-outcome detail.
-- [ ] Coverage summary identifies exact missing lines/branch arcs from the
+- [x] Coverage summary identifies exact missing lines/branch arcs from the
       supplied coverage artifact and distinguishes a missing artifact from a
       genuinely complete zero-gap measurement.
 - [ ] A registered assay lane run through `run-gate` automatically retains

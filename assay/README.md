@@ -59,6 +59,15 @@ needs nothing extra:
   run at the same commit). It is a measured, advisory projection: it never
   classifies a candidate, and `assay plan` itself keeps its declared-budget
   estimate and prints a stderr line pointing here.
+- `campaign` closes out one declared mutation lane from its committed lane
+  file, its progress stream and, when you have it, its verified verdict. It is
+  read-only: it never judges, never runs a test and never writes a file. It
+  counts every candidate once as its latest bucket, lists survivors and other
+  adverse candidates by id, path and operator, names why a campaign is not
+  complete, and exits 0 (complete PASS), 1 (complete, not PASS), 2 (evidence
+  error) or 3 (incomplete). Timing, ETA and `--project` estimates are
+  diagnostic: they never change the status or the exit code. See the
+  [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108).
 
 <!-- assay-analysis-example -->
 ```bash
@@ -68,6 +77,8 @@ assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-sel
 assay analyze report --expected-commit "$REVIEW_HEAD" \
   --verdict r2 .assay/verdict-r2.json \
   --progress r2 .assay/progress-r2.jsonl --log r2 "$GATE_LOG" --format text
+assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
+  --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json --command-exit 0
 ```
 
 Set `REVIEW_HEAD` to the full Git commit agreed with the controller and

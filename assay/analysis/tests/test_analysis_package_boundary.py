@@ -122,7 +122,20 @@ def _analysis_sources() -> dict[str, str]:
 #: ``ANALYSIS_DEPS`` pinned this set while analysis lived in ``src/assay``;
 #: adding a module here is a reviewed change.
 ALLOWED_JUDGE_MODULES = frozenset(
-    {"assay", "assay.cli", "assay.errors", "assay.git", "assay.mutation", "assay.verify"}
+    {
+        "assay",
+        "assay.candidate_identity",
+        "assay.cli",
+        "assay.config",
+        "assay.coverage",
+        "assay.errors",
+        "assay.git",
+        "assay.mutation",
+        "assay.runner",
+        "assay.safeio",
+        "assay.verdict",
+        "assay.verify",
+    }
 )
 
 
@@ -157,6 +170,7 @@ def test_analysis_reaches_no_private_judge_name():
     sources = _analysis_sources()
     assert set(sources) == {  # guard the guard
         "assay_analysis/__init__.py",
+        "assay_analysis/campaign.py",
         "assay_analysis/cli.py",
         "assay_analysis/evidence.py",
         "assay_analysis/plan_estimate.py",
