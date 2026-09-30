@@ -77,7 +77,10 @@ def test_tester_gate_required_resource_resolution_prefers_explicit(monkeypatch):
         tester_gate.resolve_cpus(None)
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "NaN", "Infinity", "0.0000099", "bad"])
+@pytest.mark.parametrize("value", [
+    "0", "-1", "NaN", "Infinity", "0.0000099", "bad",
+    "1e99999999999999999999999999",
+])
 def test_tester_gate_cpu_limit_must_be_positive_finite_and_representable(value):
     with pytest.raises(SystemExit, match="minimum 0.00001 CPUs"):
         tester_gate.resolve_cpus(value)
