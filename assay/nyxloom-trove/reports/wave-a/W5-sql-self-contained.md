@@ -116,16 +116,16 @@ K14 31 uq | P; C(1,NULL,1,NULL,200); C(2,NULL,1,NULL,300) | unique_violation
 K15 19 fk | C(1,999,NULL,NULL,1) | foreign_key_violation
 K16 24 fk | C(1,NULL,999,NULL,1) | foreign_key_violation
 K17 38 fk | INSERT INTO shipment VALUES (1,999) | foreign_key_violation
-K18 25 wd | P; C(1,NULL,1,NULL,1); DELETE FROM parent WHERE id=1 | foreign_key_violation
+K18 25 wd | P; C(1,NULL,1,NULL,1); DELETE FROM parent WHERE id=1 | foreign_key_violation OR restrict_violation (CD53)
 K19 19 wd | P; C(1,1,NULL,NULL,1); DELETE FROM parent WHERE id=1 | foreign_key_violation
-K20 38 wd | C(1,NULL,NULL,NULL,1); INSERT INTO shipment VALUES (1,1); DELETE FROM child WHERE id=1 | foreign_key_violation
+K20 38 wd | C(1,NULL,NULL,NULL,1); INSERT INTO shipment VALUES (1,1); DELETE FROM child WHERE id=1 | foreign_key_violation OR restrict_violation (CD53)
 K21 57 tg | P; UPDATE parent SET label='q' WHERE id=1 | raise_exception
 K22 64 tg | P; C(1,1,NULL,NULL,1) | require (SELECT count(*) FROM audit)=1
 K23 72 tg | INSERT INTO parent_labels VALUES (1,'v') | require EXISTS (SELECT 1 FROM parent WHERE id=1)
 K24 13 wi | A(priority,1,'a',4) | check_violation
 K25 11 wi | -
 ```
-**Probes, verbatim (Decided CD28):** `F/sql/tests/<id>.sql` per killed row, LF endings; sha256 of all 21 concatenated in id order `12f564d919d9575c71c2cee44b7f762f47cc00a7153a7c06e33f31afe14d0ce0` (4673 bytes). Form A (a condition), shown for K11; single-statement rows have no setup lines:
+**Probes, verbatim (Decided CD28):** `F/sql/tests/<id>.sql` per killed row, LF endings; sha256 of all 21 concatenated in id order `b5c4eb283dc01ec3d8b15f2441363d5bea9312a49e025bd9eaf318086fd41e10` (4717 bytes; amended by CD53: K18 and K20 catch `foreign_key_violation OR restrict_violation`, because PostgreSQL 18.6 raises SQLSTATE 23001 for `ON DELETE RESTRICT`; the original digest was `12f564d9…0ce0`, 4673 bytes). Form A (a condition), shown for K11; single-statement rows have no setup lines:
 ```sql
 BEGIN;
 DO $$
@@ -214,7 +214,7 @@ Entry: W4's tester call → `run_sql_qualification "<W4's captured commit>" "$cg
 5. Wiring, T7. `docker ps`; CLI with `--witness-out`, review each row, then without. Docs, decisions, backlog, gate.
 
 ## Oracles (each negative applied, seen red, reverted, logged)
-- **T0** sha256: schema `b7b07e97…3af1`; 21 probes concatenated `12f564d9…0ce0`. The check is a function `verify_fixture_hashes(schema_path, fixture_root)`. Negative: call it on a tmp copy with one extra byte and require it to raise.
+- **T0** sha256: schema `b7b07e97…3af1`; 21 probes concatenated `b5c4eb28…1e10` (CD53). The check is a function `verify_fixture_hashes(schema_path, fixture_root)`. Negative: call it on a tmp copy with one extra byte and require it to raise.
 - **T1** `check_sites` passes. Negatives: `x integer NOT NULL,` added → red naming that line; line 14 without `UNIQUE` → red naming K10; K06/K25 operators swapped in a matrix copy → red naming both.
 - **T2** unique ids and `(line, operator)`; tags ↔ rows; each operator has a killed row; probe file iff killed, both ways. Negatives: remove `K05.sql`; add `K02.sql`.
 - **T3** `derive_bucket` five branches; equal dump with exit 1 → `equivalent`; exit 1 with `{K24}` for K05 → raises. `parse_failed_ids`: `none`, two ids, malformed → raises.

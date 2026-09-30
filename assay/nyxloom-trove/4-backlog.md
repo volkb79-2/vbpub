@@ -11655,11 +11655,13 @@ Update the P25/P33 carve-asset locks, the docs, and the decisions they reference
 
 ## B126 — self-contained SQL/DDL qualification
 
-**Status: OPEN (A-480).**
+**Status: IMPLEMENTED on branch `wave-a-w5-sql` (2026-09-29, A-480; report `reports/wave-a/W5-REPORT.md`, log `W5-LOG.md`); DONE after the controller's registered tester-unified PASS (which now includes the SQL phase), the fresh review and the merge.**
 - Replace the dstdns-based SQL evidence with assay-owned schema fixtures (tables, constraints, triggers, indexes, views and functions as the adapter supports) and an assay-managed PostgreSQL container.
 - Cover more mutation situations than the dstdns corpus did.
 - Remove cases that exercise the same operator on the same construct without new information.
 - Record which situations are covered.
+
+**Evidence.** One assay-owned schema (`tests/fixtures/mutation/sql/qualification/01-schema.sql`), 24 tagged rows (`gate/python/fixtures/sql/matrix.json`), 21 probes, a PostgreSQL 18.6 container pinned by digest, two derivations (bucket per row; a real `assay run` witness) and three controls (O4-residue, M11, O5). The 171 sites of the former consumer corpus fall into 13 classes, each represented by a row; 11 rows are new. The class map is `reports/wave-a/W5-REPORT.md`. The evidence is an outer phase of the registered `tester-unified` gate.
 
 ## B127 — `assay analyze` as its own package
 
@@ -11705,6 +11707,14 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 - FK clauses with `MATCH FULL`, `DEFERRABLE` or `SET NULL (col)`.
 
 That PostgreSQL rejects the mutated DDL is reasoned, not measured. If it does, one such construct on a changed line turns a consumer's lane into `ERROR`. Measure each construct on W5's harness, then either stop generating the site or classify the refusal explicitly.
+
+**Added by W5 (A-480; CD22).** W5's schema deliberately does not exercise these constructs, because a mutant PostgreSQL refuses is `crashed`, not a kill, and belongs to a hazard-construct probe rather than to the representative matrix:
+- *Unknown outcome:* `NOT NULL` dropped from an `IDENTITY`, `serial` or primary-key column; a string widen of an `IN` list on an enum column.
+- *Not reached by the schema:* generated expressions, `EVENT` triggers, quoted foreign-key targets, triggers created inside a `DO` block.
+
+All of it needs an ad-hoc-construct mode of `gate/python/qualify_sql.py`: a way to run one construct's mutant through the same apply/dump/test command and record the bucket, without adding a row to the matrix.
+
+**Measured SQLSTATE fact (W5 Work 0, CD53; PostgreSQL 18.6, the digest-pinned image).** A violated `ON DELETE RESTRICT` foreign key raises SQLSTATE **23001** (`restrict_violation`), not 23503; a violated `ON DELETE NO ACTION` (the default) still raises **23503** (`foreign_key_violation`). A probe or hazard-construct test that means "the foreign-key refusal happened" must catch both (`foreign_key_violation OR restrict_violation`); W5's K18 and K20 do, and K19 (NO ACTION) needs only 23503. Any `EXCEPTION WHEN foreign_key_violation` written against a RESTRICT key will not catch the refusal on 18.x.
 
 ## B133 — SQL operator labels misdescribe their effect
 

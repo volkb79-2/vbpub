@@ -570,7 +570,7 @@ def test_run_lane_direct_r0_path_still_fails_without_the_declaration(
 #
 # Round-1 blocker 1. dstdns's `ui_unit` -- RG-45's own confirmed live
 # reproduction -- declares `rigor = ["R0", "R1"]`
-# (`/workspaces/dstdns/assay.toml`), so `run_lane` dispatches it to
+# (its own `assay.toml`), so `run_lane` dispatches it to
 # `_run_higher_rigor_lane` and it NEVER reaches the direct branch above. Its
 # R0 command runs inside `_run_prepared_lane`'s baseline
 # `_execute_snapshot_unit`, and that unit's `CommandResult` is what

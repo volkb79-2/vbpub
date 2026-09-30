@@ -26,7 +26,7 @@ def test_a_nested_tests_directory_file_is_a_test_path():
 
 
 def test_a_singular_test_directory_is_also_a_test_path():
-    """SQL's own rule is deliberately wider than Python's: dstdns-shaped
+    """SQL's own rule is deliberately wider than Python's: SQL project
     layouts are not consistent about ``tests/`` vs ``test/``, so both are
     recognised segments (unlike ``PythonAdapter``, which only recognises
     ``tests/``)."""

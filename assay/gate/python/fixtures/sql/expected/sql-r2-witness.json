@@ -1,0 +1,506 @@
+{
+  "argv_appended": [],
+  "argv_declared": [
+    "sh",
+    "tools/witness-gate.sh"
+  ],
+  "argv_effective": [
+    "sh",
+    "tools/witness-gate.sh"
+  ],
+  "argv_modified": false,
+  "assay_version": "@ASSAY_VERSION@",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "mutation": {
+        "budget_exceeded": [],
+        "candidate_count": 24,
+        "candidate_ids": [
+          "97186bdc83e730802494d5f5898374c72fb7c584d9baf4da96b490a0f666360c",
+          "d2a71e5853b4f26fffa8a0f904d36abb5cce58cd16e9ec0f552ba3f7ed29e757",
+          "5177642fc6ad6bcebf4f13b0e80305caf084aa6f68398b73d801018dbe929e22",
+          "a145f256bf76224dfff1dbda9f18dc4c319796cc0c229ed4099d5fc22fa577a1",
+          "4050e477ca81059f3e13bfcb46ea36314cb0a5ce7207931a3e7f2433cc59f109",
+          "d5a9927a0452c8df64c0ca586daba969fe378b370632161de2d5e78dce30e28e",
+          "afe9b6bd5490e93f28a87bbeddb282034f4327e2f3c0a29deb751cf26faca9b6",
+          "6a6646326ac691c73a1f2c5f1498f46cfa35beb7730e3a1b1518202e42fea538",
+          "4ca153d34efb6570c7d1d69853244e4068c0e0e5e5609a7c68663d23c06bf297",
+          "2f7b188786af711152c1f09550bdcdab3590777cbac9c2bd2b86dcb7f311892d",
+          "8819c525a0a01bc38173ceae42a6552d8bf57831bafb125daa1843023eba0560",
+          "5c5b33af3bff014d5943c55b309b8dab22b832b9b02d5ddd7c8ade51a7ccf92e",
+          "3c430fa55f047c4500c70e4fdd09ae09d914cf1e5a8d74159008f276a170b77f",
+          "2dff2a15d38083c6302eaf7e0b71b4d08b96c6c0374ce8675eee61e8d5cf3039",
+          "7e1c02f7cbabfa7896c6100a9d3313d7f03aa1abc41fd6277f8708018630f181",
+          "a6f7dd8568b1d06a166d0c0d388585b5d65f4c378a0ac1e6f494a4b1d326291a",
+          "2f9494f22f4b3adc2a7b934a0296d56f441b529e00c4efc7feba2da7c9a87090",
+          "f84222b55596d41bd9d2afa766d92259fb92460e94ec1e24806e91c176661ae5",
+          "b3571e8517ff0bf0eea99d524826e33733b2c734766865191edfdfa0c9610894",
+          "52b7c7cb9deed8903ab17129bef9a081cf6922fa13027791a10d88d96fd1573e",
+          "4c54a493e8f1ddcf7fd63f5e84bbae5725806a07f01a6efb6cad78ad5e5bf2e1",
+          "16cadf77b7e4aa4c8eff24300499cc85b774e4ee873fc06ea1bc5f4736ddb731",
+          "1e4b8fe970d63db675579f958661ce5945918b7b91ac65ad483bd2209436e423",
+          "96d5aea45422f3784cf19a49fbca799e6915f88a8d00fef7b344ebf451f519d0"
+        ],
+        "crashed": [],
+        "equivalent": [
+          {
+            "candidate_id": "4c54a493e8f1ddcf7fd63f5e84bbae5725806a07f01a6efb6cad78ad5e5bf2e1",
+            "description": "CHECK (...) -> CHECK (true)",
+            "end_byte": 1927,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 44,
+            "mutated_file_sha256": "191a1c116573d583fbc3fb4395e9fe0f5c870f66c4b54383205e66484985657a",
+            "operator": "sql:drop-check",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 1912
+          }
+        ],
+        "hung": [],
+        "killed": [
+          {
+            "candidate_id": "97186bdc83e730802494d5f5898374c72fb7c584d9baf4da96b490a0f666360c",
+            "description": "NOT NULL -> NULL",
+            "end_byte": 262,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K04",
+            "lineno": 5,
+            "mutated_file_sha256": "6d8e502629c8bc704e599aa8889ad75d54bb9b2a5ed35e0f22d6d272e1e948a4",
+            "operator": "sql:drop-not-null",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 254
+          },
+          {
+            "candidate_id": "d2a71e5853b4f26fffa8a0f904d36abb5cce58cd16e9ec0f552ba3f7ed29e757",
+            "description": "CHECK (...) -> CHECK (true)",
+            "end_byte": 291,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K08",
+            "lineno": 6,
+            "mutated_file_sha256": "b791c08bb2e1e5c36f9a7a11c0f6c89b793e9315de87d9d863a35a54268a6687",
+            "operator": "sql:drop-check",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 274
+          },
+          {
+            "candidate_id": "5177642fc6ad6bcebf4f13b0e80305caf084aa6f68398b73d801018dbe929e22",
+            "description": "NOT NULL -> NULL",
+            "end_byte": 371,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K01",
+            "lineno": 9,
+            "mutated_file_sha256": "f16e5b4251880c773d9d09dfb2d2338db42ceeaaa9f78604b9bcdb9b470f0ddb",
+            "operator": "sql:drop-not-null",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 363
+          },
+          {
+            "candidate_id": "4050e477ca81059f3e13bfcb46ea36314cb0a5ce7207931a3e7f2433cc59f109",
+            "description": "CHECK (...) -> CHECK (true)",
+            "end_byte": 465,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K06",
+            "lineno": 11,
+            "mutated_file_sha256": "695805a27b1dc349eafbdf89b2666bacdc72e31d4c0d8646730f8211f23018db",
+            "operator": "sql:drop-check",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 432
+          },
+          {
+            "candidate_id": "afe9b6bd5490e93f28a87bbeddb282034f4327e2f3c0a29deb751cf26faca9b6",
+            "description": "CHECK (...) -> CHECK (true)",
+            "end_byte": 578,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K05,K24",
+            "lineno": 13,
+            "mutated_file_sha256": "c99deb460108322e244b1ce92c8aabaf3ce0966643cc55bffa1a3259832aabfd",
+            "operator": "sql:drop-check",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 549
+          },
+          {
+            "candidate_id": "6a6646326ac691c73a1f2c5f1498f46cfa35beb7730e3a1b1518202e42fea538",
+            "description": "IN (...) widened with 4",
+            "end_byte": 577,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K24",
+            "lineno": 13,
+            "mutated_file_sha256": "0e246594e3788138bf07284d00b2eba50e6ecc58feb54c4501f7ddf4ddeaff30",
+            "operator": "sql:widen-check-in",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "a90e5f2d959b0d1202dbc2277b970fbd43cffbbbf01c476d2ef925af2bb5cd30",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 576
+          },
+          {
+            "candidate_id": "4ca153d34efb6570c7d1d69853244e4068c0e0e5e5609a7c68663d23c06bf297",
+            "description": "UNIQUE -> CHECK (true)",
+            "end_byte": 613,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K10",
+            "lineno": 14,
+            "mutated_file_sha256": "a4094c21ccf5bfbdccd04d7eccc2f8a78db65ddb3f48052728df5bbda7e04bd3",
+            "operator": "sql:drop-unique",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 607
+          },
+          {
+            "candidate_id": "2f7b188786af711152c1f09550bdcdab3590777cbac9c2bd2b86dcb7f311892d",
+            "description": "REFERENCES ... -> CHECK (true)",
+            "end_byte": 782,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K15,K19",
+            "lineno": 19,
+            "mutated_file_sha256": "e46acfa7970d65f67363e19889976e4fcd9e6aaa9f0f069d7c93803009b85497",
+            "operator": "sql:drop-foreign-key",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 740
+          },
+          {
+            "candidate_id": "8819c525a0a01bc38173ceae42a6552d8bf57831bafb125daa1843023eba0560",
+            "description": "ON DELETE NO ACTION -> ON DELETE CASCADE",
+            "end_byte": 782,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K19",
+            "lineno": 19,
+            "mutated_file_sha256": "964c7b79d12b44595742945aeb72da82e769f52eb37e57820ccfb2dd20ba7aab",
+            "operator": "sql:weaken-delete-action",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 773
+          },
+          {
+            "candidate_id": "5c5b33af3bff014d5943c55b309b8dab22b832b9b02d5ddd7c8ade51a7ccf92e",
+            "description": "UNIQUE -> CHECK (true)",
+            "end_byte": 905,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K11",
+            "lineno": 23,
+            "mutated_file_sha256": "08cef318732140a6c85d72bd666583575f7c9b266ef1e82b13c4ac23d1e7de18",
+            "operator": "sql:drop-unique",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 881
+          },
+          {
+            "candidate_id": "3c430fa55f047c4500c70e4fdd09ae09d914cf1e5a8d74159008f276a170b77f",
+            "description": "FOREIGN KEY (...) REFERENCES ... -> CHECK (true)",
+            "end_byte": 1039,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K16,K18",
+            "lineno": 24,
+            "mutated_file_sha256": "32e58c0c21212874909949ed62112175aeff5fb8a6cf39041bc27845c754a436",
+            "operator": "sql:drop-foreign-key",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 944
+          },
+          {
+            "candidate_id": "2dff2a15d38083c6302eaf7e0b71b4d08b96c6c0374ce8675eee61e8d5cf3039",
+            "description": "ON DELETE RESTRICT -> ON DELETE CASCADE",
+            "end_byte": 1021,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K18",
+            "lineno": 25,
+            "mutated_file_sha256": "24ae235c1406cadb2ddde38c6d5ca5c7b4b867d51a02978101df711af48ac1f8",
+            "operator": "sql:weaken-delete-action",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 1013
+          },
+          {
+            "candidate_id": "7e1c02f7cbabfa7896c6100a9d3313d7f03aa1abc41fd6277f8708018630f181",
+            "description": "SET NOT NULL -> DROP NOT NULL",
+            "end_byte": 1099,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K03",
+            "lineno": 27,
+            "mutated_file_sha256": "21b1572bc83088512ea14f491e129029cb4279118f6d61209f5e67d76285e71f",
+            "operator": "sql:drop-not-null",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "c0bfc598cb20360c87dbb3bbf888cfd41d6eca2d2c1003e06871bc328ad71b14",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 1087
+          },
+          {
+            "candidate_id": "a6f7dd8568b1d06a166d0c0d388585b5d65f4c378a0ac1e6f494a4b1d326291a",
+            "description": "CHECK (...) -> CHECK (true)",
+            "end_byte": 1177,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K07",
+            "lineno": 28,
+            "mutated_file_sha256": "8c4324db35c5b5934c9d81a5e88d6b03551c92882e3a5eb742b1ae45e612e9ec",
+            "operator": "sql:drop-check",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 1162
+          },
+          {
+            "candidate_id": "2f9494f22f4b3adc2a7b934a0296d56f441b529e00c4efc7feba2da7c9a87090",
+            "description": "CREATE UNIQUE INDEX -> CREATE INDEX",
+            "end_byte": 1268,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K13",
+            "lineno": 30,
+            "mutated_file_sha256": "e6db3f550589a5342e6331a86f8bfffe5143491f8a79637d5ed8cf3ca73f2141",
+            "operator": "sql:drop-unique",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "f72c69d56240d662918da2a012e6420655b21fccd4e21ab7931ddc0d4bbe5376",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 1249
+          },
+          {
+            "candidate_id": "f84222b55596d41bd9d2afa766d92259fb92460e94ec1e24806e91c176661ae5",
+            "description": "CREATE UNIQUE INDEX -> CREATE INDEX",
+            "end_byte": 1334,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K14",
+            "lineno": 31,
+            "mutated_file_sha256": "cf5a45478a763ac0af668c3d97df561a432b4427da3ef27bdea413f0e02d05c1",
+            "operator": "sql:drop-unique",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "f72c69d56240d662918da2a012e6420655b21fccd4e21ab7931ddc0d4bbe5376",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 1315
+          },
+          {
+            "candidate_id": "b3571e8517ff0bf0eea99d524826e33733b2c734766865191edfdfa0c9610894",
+            "description": "FOREIGN KEY (...) REFERENCES ... -> CHECK (true)",
+            "end_byte": 1721,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K17,K20",
+            "lineno": 38,
+            "mutated_file_sha256": "21aacfd29e94dfbfec218ec420bd7aab392244bd0026121e97690bed39084135",
+            "operator": "sql:drop-foreign-key",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 1658
+          },
+          {
+            "candidate_id": "52b7c7cb9deed8903ab17129bef9a081cf6922fa13027791a10d88d96fd1573e",
+            "description": "ON DELETE RESTRICT -> ON DELETE CASCADE",
+            "end_byte": 1721,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K20",
+            "lineno": 38,
+            "mutated_file_sha256": "75f6ae6f99009192464efb8b4c24449dac684ec0b4491274ebdc38e6dd4ae917",
+            "operator": "sql:weaken-delete-action",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 1713
+          },
+          {
+            "candidate_id": "16cadf77b7e4aa4c8eff24300499cc85b774e4ee873fc06ea1bc5f4736ddb731",
+            "description": "CREATE TRIGGER ...; -> SELECT 1;",
+            "end_byte": 2383,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K21",
+            "lineno": 57,
+            "mutated_file_sha256": "7187fd28579b7fae247734e8dd9032a6e09d11ee05a8b165c4df7c553e8ee689",
+            "operator": "sql:drop-trigger",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 2273
+          },
+          {
+            "candidate_id": "1e4b8fe970d63db675579f958661ce5945918b7b91ac65ad483bd2209436e423",
+            "description": "CREATE TRIGGER ...; -> SELECT 1;",
+            "end_byte": 2678,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K22",
+            "lineno": 64,
+            "mutated_file_sha256": "b55d7e4cf5a9fc877f19a775ab354646f8d6f303a1896de326b009a5470c77ad",
+            "operator": "sql:drop-trigger",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 2532
+          },
+          {
+            "candidate_id": "96d5aea45422f3784cf19a49fbca799e6915f88a8d00fef7b344ebf451f519d0",
+            "description": "CREATE TRIGGER ...; -> SELECT 1;",
+            "end_byte": 3060,
+            "execution": {
+              "mode": "full"
+            },
+            "kill_signal": "schema test command failed (exit 1): ASSAY_SQL_FAILED=K23",
+            "lineno": 72,
+            "mutated_file_sha256": "f993bf871bb01b6ecca288b3ee78c716188add265cee7f4ecaecbd0f4d2fe9b6",
+            "operator": "sql:drop-trigger",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 2914
+          }
+        ],
+        "survived": [
+          {
+            "candidate_id": "a145f256bf76224dfff1dbda9f18dc4c319796cc0c229ed4099d5fc22fa577a1",
+            "description": "NOT NULL -> NULL",
+            "end_byte": 402,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 10,
+            "mutated_file_sha256": "b2ab8d325905cf0b33ce409718edded474218325a5529e2888731a0a14780474",
+            "operator": "sql:drop-not-null",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 394
+          },
+          {
+            "candidate_id": "d5a9927a0452c8df64c0ca586daba969fe378b370632161de2d5e78dce30e28e",
+            "description": "IN (...) widened with '__assay_widened__'",
+            "end_byte": 464,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 11,
+            "mutated_file_sha256": "e5e0bf3bc5afd17aaf8952c0f1da22680a0df176a6cc7ba366801fc39aa48260",
+            "operator": "sql:widen-check-in",
+            "path": "db/schema/01-schema.sql",
+            "replacement_sha256": "80e15b3d3b954f7f0fec09f006b5e69aa0a2954b7bbdeaac1a818f4a05df9912",
+            "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
+            "start_byte": 463
+          }
+        ],
+        "total": 24
+      },
+      "reason_code": "MUTANTS_SURVIVED",
+      "rigor": "R2",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "@HEAD_OID@",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "ended": "@ENDED@",
+  "enforcement": "gate",
+  "env_declared": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "env_effective": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "evidence": [],
+  "exit_code": 1,
+  "judgment": {
+    "r2": {
+      "equivalence_artifact": ".assay/schema-dump.sql",
+      "jobs": 1,
+      "kill_attribution": "declared",
+      "kill_signal_artifact": ".assay/kill-signal.txt",
+      "liveness": {
+        "active": false,
+        "plugin": null,
+        "reason": "language-not-python"
+      },
+      "max_mutants": 24,
+      "mode": "changed_lines",
+      "operators": [
+        "sql:drop-check",
+        "sql:drop-unique",
+        "sql:drop-not-null",
+        "sql:drop-foreign-key",
+        "sql:weaken-delete-action",
+        "sql:drop-trigger",
+        "sql:widen-check-in"
+      ],
+      "producer": "native"
+    },
+    "resolved": {
+      "base": "@BASE_OID@",
+      "base_resolution": "merge-base",
+      "language": "sql",
+      "source_roots": [
+        "db/schema"
+      ]
+    }
+  },
+  "lane": "sql_qualification",
+  "outcome": "FAIL",
+  "reason_code": "MUTANTS_SURVIVED",
+  "schema_version": 13,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "started": "@STARTED@"
+}

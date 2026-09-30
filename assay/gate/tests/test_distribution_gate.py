@@ -79,6 +79,13 @@ def gate_functions(tmp_path_factory) -> Path:
     return out
 
 
+def _host_environ() -> dict[str, str]:
+    """The caller's environment minus the CD50 opt-in (CD54): a shell that exports
+    `ASSAY_GATE_ALLOW_SHARED_HOST` must not flip a test's result. Tests of the opt-in
+    set it explicitly on the environment they pass."""
+    return {k: v for k, v in os.environ.items() if k != "ASSAY_GATE_ALLOW_SHARED_HOST"}
+
+
 def run_bash(
     snippet: str,
     *,
@@ -91,7 +98,7 @@ def run_bash(
         ["bash", "-c", script],
         capture_output=True,
         text=True,
-        env=env,
+        env=_host_environ() if env is None else env,
         timeout=timeout,  # failsafe only; no assertion depends on elapsed time
     )
 
@@ -164,7 +171,7 @@ def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
     )
     fake_docker.chmod(0o755)
     env = {
-        **os.environ,
+        **_host_environ(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_CALLS": str(calls_path),
         "DOCKER_WAIT_STATUS": "17",
@@ -454,7 +461,7 @@ def test_self_hosted_lane_failure_is_never_laundered_into_success(
     wheel = tmp_path / "assay-9.9.9-py3-none-any.whl"
     wheel.write_bytes(b"not really a wheel, but a real file to hash")
 
-    env = {**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+    env = {**_host_environ(), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
     proc = run_bash(
         f'run_self_hosted_lane "{worktree}" "{scratch}" "9.9.9" "{wheel}"',
         gate_functions=gate_functions,
@@ -478,7 +485,7 @@ def _run_analysis_lane(tmp_path: Path, gate_functions: Path, *, stub_body: str):
     return run_bash(
         f'run_analysis_lane "{worktree}" "{scratch}"',
         gate_functions=gate_functions,
-        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        env={**_host_environ(), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
     )
 
 
@@ -620,7 +627,7 @@ def _self_hosted_lane_fixture(
         worktree=worktree,
         scratch=scratch,
         wheel=wheel,
-        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        env={**_host_environ(), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
     )
 
 
@@ -678,7 +685,7 @@ def test_self_hosted_lane_refuses_a_verdict_carrying_no_judge_identity(
     proc = run_bash(
         f'run_self_hosted_lane "{worktree}" "{scratch}" "9.9.9" "{wheel}"',
         gate_functions=gate_functions,
-        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        env={**_host_environ(), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
     )
     assert proc.returncode != 0
     assert "ASSAY_GATE_PHASE=self-hosted-lane-passed" not in proc.stdout
@@ -715,7 +722,7 @@ def test_the_self_hosted_lane_demands_the_judge_identity_from_assay_itself(
     run_bash(
         f'run_self_hosted_lane "{worktree}" "{scratch}" "9.9.9" "{wheel}"',
         gate_functions=gate_functions,
-        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        env={**_host_environ(), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
     )
     assert argv_log.read_text().splitlines() == [
         "run",
@@ -1186,7 +1193,7 @@ def _docker_stub(tmp_path: Path, ps_output: str) -> tuple[dict[str, str], Path]:
     )
     stub.chmod(0o755)
     env = {
-        **os.environ,
+        **_host_environ(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_STUB_LOG": str(log),
         "DOCKER_STUB_PS": ps_output,
@@ -1363,6 +1370,7 @@ def test_a_green_container_yields_the_receipt_and_exactly_one_complete_marker(
 
     proc = run_bash(
         "run_registered_tester_container() { echo stubbed-tester; }\n"
+        "run_sql_qualification() { :; }\n"  # W5: the SQL phase has its own tests (test_qualify_sql.py, T7)
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1415,6 +1423,7 @@ def test_a_host_running_only_other_containers_proceeds_to_the_tester(
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
         f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
         gate_functions=gate_functions,
         env=env,
@@ -1423,6 +1432,90 @@ def test_a_host_running_only_other_containers_proceeds_to_the_tester(
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "LAUNCHED" in proc.stdout
     assert (worktree / RECEIPT_RELATIVE).is_file()
+
+
+def test_the_shared_host_opt_in_lets_other_projects_gates_run_alongside_and_prints_them(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """CD50 (G1): `ASSAY_GATE_ALLOW_SHARED_HOST=1` tolerates other projects' `run-gate-*`
+    containers, names them on stdout and runs the normal gate; the receipt is unchanged."""
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    env, log = _docker_stub(tmp_path, "run-gate-x\nrun-gate-y\nother\n")
+    env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "1"
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo LAUNCHED; }\n"
+        "run_sql_qualification() { :; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LAUNCHED" in proc.stdout
+    assert "ASSAY_GATE_SHARED_HOST=run-gate-x,run-gate-y" in proc.stdout.splitlines()
+    receipt = worktree / RECEIPT_RELATIVE
+    assert json.loads(receipt.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "lane": "tester-unified",
+        "commit": commit,
+        "tree": tree,
+    }
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+
+
+def test_the_shared_host_opt_in_still_refuses_another_assay_gate(tmp_path: Path, gate_functions: Path) -> None:
+    """CD50 (G2): one assay gate at a time, opt-in or not."""
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    earlier = worktree / RECEIPT_RELATIVE
+    earlier.parent.mkdir(parents=True)
+    earlier.write_bytes(b'{"an earlier": "receipt"}\n')
+    before = earlier.read_bytes()
+    env, log = _docker_stub(tmp_path, "run-gate-assay-selfhosted-1-2-3\nrun-gate-x\n")
+    env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "1"
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo LAUNCHED; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: run-gate-assay-selfhosted-1-2-3" in proc.stderr
+    assert "run-gate-x" not in proc.stderr
+    assert earlier.read_bytes() == before
+    assert "LAUNCHED" not in proc.stdout
+    assert "ASSAY_GATE_SHARED_HOST" not in proc.stdout
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and calls[0].startswith("ps "), calls
+
+
+def test_a_shared_host_opt_in_value_other_than_empty_or_one_is_refused_before_docker(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """CD50 (G3): a typo never launches, never touches the receipt and never reaches docker."""
+    worktree, commit, tree = _receipt_worktree(tmp_path)
+    earlier = worktree / RECEIPT_RELATIVE
+    earlier.parent.mkdir(parents=True)
+    earlier.write_bytes(b'{"an earlier": "receipt"}\n')
+    before = earlier.read_bytes()
+    env, log = _docker_stub(tmp_path, "")
+    env["ASSAY_GATE_ALLOW_SHARED_HOST"] = "yes"
+
+    proc = run_bash(
+        "run_registered_tester_container() { echo LAUNCHED; }\n"
+        f'run_registered_gate "{worktree}" "/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1" in proc.stderr
+    assert earlier.read_bytes() == before
+    assert "LAUNCHED" not in proc.stdout
+    assert not log.exists()  # zero docker calls
 
 
 def test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt(
@@ -1437,7 +1530,7 @@ def test_a_failing_docker_ps_is_inconclusive_and_leaves_the_receipt(
     docker = fake_bin / "docker"
     docker.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
     docker.chmod(0o755)
-    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+    env = {**_host_environ(), "PATH": f"{fake_bin}:{os.environ['PATH']}"}
 
     proc = run_bash(
         "run_registered_tester_container() { echo LAUNCHED; }\n"

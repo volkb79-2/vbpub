@@ -1,13 +1,11 @@
 #!/bin/sh
-# assay P34/W9 -- the SELF-CONTAINED dstdns schema qualification gate (A-280).
+# assay SQL qualification -- the self-contained schema gate (A-480, A-280).
 #
-# dstdns's OWN scripts/schema-gate.sh (blob 88de912d, retained only as
-# evidence of what the consumer has today -- W3-CARVE-P34-sql-adapter.md
-# §6/W9, decisions.md A-280) is not runnable inside an assay snapshot: it
-# writes no dump at all, exits 2 immediately because its first positional
-# argument is mandatory, and drives docker against the DEPLOYED app network.
-# This file is P34's own replacement -- the shape of a real consumer lane's
-# `argv`, and the one this harness actually executes end to end.
+# This is the shape of a real consumer lane's `argv`, and the one command the
+# qualification harness (gate/python/qualify_sql.py) executes end to end
+# inside its throwaway PostgreSQL container. It applies assay's own numbered
+# schema files, dumps the catalog, then runs the probes; it names no consumer
+# script and needs nothing outside the container.
 #
 # ORDERING IS THE WHOLE POINT (A-279/A-288, measured and frozen at
 # nyxloom-trove/carve-assets/W3/): `apply && dump && test`, NEVER
@@ -29,17 +27,13 @@
 # the two dumps are not byte-identical, naming `\restrict` in the message.
 #
 # REQUIRED ENVIRONMENT (fail-fast; no silent defaults):
-#   SCHEMA_GATE_INIT_SCRIPTS_DIR  directory of numbered *.sql files to apply,
-#                                 in `[0-9][0-9]*.sql` glob order, excluding
-#                                 95-*/99-* (marker/seed -- dstdns's own
-#                                 scripts/schema-apply.sh applies those
-#                                 separately; this gate judges SCHEMA only).
+#   SCHEMA_GATE_INIT_SCRIPTS_DIR  directory of numbered `[0-9][0-9]-*.sql`
+#                                 files to apply, in glob order
 #   SCHEMA_GATE_DBNAME            target database (already CREATEd)
 #   SCHEMA_GATE_DUMP_PATH         where the equivalence-artifact dump lands
 #   SCHEMA_GATE_KILL_SIGNAL_PATH  where a failing test's signal is written
 #   SCHEMA_GATE_RESTRICT_KEY      the pinned `pg_dump --restrict-key` value
-#   SCHEMA_GATE_TEST_CMD          the project's own schema-test command,
-#                                 run via `sh -c`
+#   SCHEMA_GATE_TEST_CMD          the schema-test command, run via `sh -c`
 set -eu
 
 SCRIPT_DIR="${SCHEMA_GATE_INIT_SCRIPTS_DIR:?SCHEMA_GATE_INIT_SCRIPTS_DIR is required}"
@@ -53,10 +47,7 @@ TEST_CMD="${SCHEMA_GATE_TEST_CMD:?SCHEMA_GATE_TEST_CMD is required}"
 
 # --- 1. apply -----------------------------------------------------------
 echo "[schema-gate] --- apply (${SCRIPT_DIR}) ---"
-for sql_file in "$SCRIPT_DIR"/[0-9][0-9]*.sql; do
-    case "$(basename "$sql_file")" in
-        95-*|99-*) continue ;;   # marker/seed -- excluded, mirrors dstdns's own schema-apply.sh
-    esac
+for sql_file in "$SCRIPT_DIR"/[0-9][0-9]-*.sql; do
     [ -f "$sql_file" ] || continue
     echo "[schema-gate] applying: $(basename "$sql_file")"
     psql -v ON_ERROR_STOP=1 -U postgres -d "$DB_NAME" -f "$sql_file"
@@ -81,11 +72,15 @@ rm -f "${DUMP_PATH}.verify"
 # The dump above has ALREADY landed, unconditionally -- this step's own exit
 # status changes nothing about that (A-279's ordering).
 echo "[schema-gate] --- test ---"
+out="$(mktemp)"
 set +e
-sh -c "$TEST_CMD"
+sh -c "$TEST_CMD" >"$out" 2>&1
 rc=$?
 set -e
+cat "$out"
 if [ "$rc" -ne 0 ]; then
-    echo "schema test command failed (exit ${rc}) against database ${DB_NAME}: ${TEST_CMD}" > "$KILL_SIGNAL_PATH"
+    line="$(grep '^ASSAY_SQL_FAILED=' "$out" | tail -n 1)"
+    printf 'schema test command failed (exit %s): %s\n' "$rc" "${line:-ASSAY_SQL_FAILED=none}" > "$KILL_SIGNAL_PATH"
 fi
+rm -f "$out"
 exit "$rc"

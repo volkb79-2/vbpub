@@ -2055,7 +2055,7 @@ report without a matching receipt. The preflight lane needs none. Run
 worktree and with no commit in between: any later commit, a docs-only or merge
 commit included, needs a fresh `tester-unified` run first. A
 gate started while another `run-gate-*` container runs exits 3 with
-`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`).
+`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1` (CD50) lets the gate run alongside other projects' `run-gate-*` containers, printing `ASSAY_GATE_SHARED_HOST=<names>` on stdout; the gate still refuses any other `run-gate-assay-*` container (the standalone harness's `--allow-shared-host` refuses only another `run-gate-assay-sql-*` one), any other value of the variable is an error, and the receipt is unchanged.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. This interim budget
@@ -3045,6 +3045,73 @@ for the worked shape, including how to make the companion `pg_dump`
 reproducibility obligation red-on-violation in your own gate rather than
 trusted silently.
 
+### How the SQL adapter is qualified against a real PostgreSQL (A-480, B126)
+
+The mask/lexer tests prove which bytes assay replaces; only a real catalog can
+say the replacement *means* something. The gate proves that with assay's own
+material and no consumer checkout. It runs as an **outer phase of the
+registered `tester-unified` gate**: the tester container has no Docker socket,
+so after it exits green the host script builds an exact-OID clone of the gated
+commit and runs `gate/python/qualify_sql.py` from it with the host `python3`
+(>= 3.11). A red tester ends the script first, so PostgreSQL never runs after a
+red tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified` between the
+tester and the receipt.
+
+**Inputs, all in the repository.** The schema is
+`tests/fixtures/mutation/sql/qualification/01-schema.sql` (sha256 pinned in
+`qualify_sql.py`); its `-- [Knn]` tags name the rows of
+`gate/python/fixtures/sql/matrix.json`, one row per mutation site (24 rows:
+`K01`-`K25`, `K12` unused). The image is
+`postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2`
+(PostgreSQL 18.6), pinned by digest and **never pulled**: an absent image is an
+inconclusive run. One container runs at a time, `--network none`, `--cpus 1`,
+`--memory 512m`, on a 256 MiB tmpfs data directory, in the gate's own cgroup
+slice, named `run-gate-assay-sql-<pid>-<epoch>` so a peer's `docker ps` sees
+it; it is removed by its exact name on every path, including SIGTERM. Before
+`docker run` the harness looks once at `docker ps`: any other `run-gate-*`
+container makes the run **inconclusive** (exit 3, `host busy`); it never polls. With `--allow-shared-host` (CD50; the gate passes it when `ASSAY_GATE_ALLOW_SHARED_HOST=1`) other projects' `run-gate-*` containers are tolerated and named on stderr as `ASSAY_SQL_SHARED_HOST=<names>`, but another `run-gate-assay-sql-*` container is still `host busy`.
+
+**Two derivations, no assertion of the consumer's.** Each row's mutant is
+applied to a fresh database and its bucket is *derived*, never trusted: the
+apply/dump/test command runs the row's probe files, and (1) no dump means
+`crashed`, (2) a dump equal to the baseline dump means `equivalent`, (3) exit 0
+means `survived`, (4) a failing probe run whose kill signal names the row means
+`killed`, (5) anything else is an error. The derived bucket must equal the
+matrix's `expected`. The same matrix is then checked again, row by row, against
+the verdict of a **real `assay run`** over a disposable repository whose lane
+runs the same probes (the witness), and the normalized verdict is compared with
+the committed `expected/sql-r2-witness.json`. An incomplete witness (hung or
+budget-exceeded entries, `LANE_TIMEOUT`) is inconclusive and is checked before
+the FAIL requirement.
+
+**The residue premise, now a loud failure.** The old premise was that a mutant
+re-applied onto a database that already carries the schema silently does
+nothing. The qualification schema is deliberately not idempotent (`CREATE DOMAIN
+posint` twice fails), so the harness records the opposite as a control
+(**O4-residue**): on one database the unmutated apply exits 0, then the `K01`
+mutant exits non-zero with no dump (`crashed`). A second control (**M11**) is a
+hand-built naive string widen of an integer `IN` list that PostgreSQL refuses
+(`crashed`). The `pg_dump` trap is a third (**O5**): two dumps without
+`--restrict-key` differ.
+
+**Which cases exist (the dedupe rule).** A case is kept only if it differs from
+every kept one in replacement form, span shape (recogniser branch; text after
+it), enclosing object, lexical context (top level, executed or inert `DO`),
+catalog effect (A-289) or bucket (one deliberate survivor per replacement
+branch). Names, types and trigger timing do not count. The rows are the
+representatives of the 13 classes into which the 171 sites of the former
+consumer corpus fall; the class map is
+`nyxloom-trove/reports/wave-a/W5-REPORT.md`. `K02` and `K25` survive by design
+(a `DEFAULT` hides the dropped `NOT NULL`; no realistic test inserts
+`__assay_widened__`), and `K09` is equivalent (an inert guard).
+
+**Exit codes.** 0 with `ASSAY_SQL_QUALIFIED=1` on stdout; 1 a failed premise;
+3 inconclusive (docker unavailable, image absent, host busy, a failing
+`docker ps`, readiness failsafe, a timeout, a name in use, docker
+environment lost mid-run, an incomplete witness), which the gate
+passes through as its own exit 3 with `ASSAY_GATE_INCONCLUSIVE=sql-qualification
+— rerun` and no receipt.
+
 ### Component boundaries and test layout
 
 The judge (`src/assay`) is one package with named components, and
@@ -3078,7 +3145,8 @@ same test file; it also requires unique test basenames and forbids extra
 `__init__.py` or `conftest.py` files (only `tests/conftest.py` exists).
 Fixtures stay in `tests/fixtures/`, and moved tests reach them through
 `TESTS_ROOT` and `PROJECT_ROOT` from `tests/conftest.py`, not through their own
-`__file__`. The `tests/` root holds only `conftest.py` and `fixtures/`: the
+`__file__`. The `tests/` root holds only `conftest.py`, `fixtures/` and `__init__`-free
+`*_support.py` helpers shared across component folders (CD23): the
 tooling tests moved to `gate/tests/` (B123), and the same test file forbids a
 judge test from importing `gate` or requesting the wheel-building `standalone`
 fixture. The layout is organization only: it claims nothing about which tests
