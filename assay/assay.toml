@@ -76,8 +76,14 @@ allow_argv_append = false
 # being measured, through pyproject's own `pythonpath = ["src", "analysis/src"]`:
 # no `--override-ini` (a `-o` token makes a lane ineligible for the mutation
 # witness, `mutation_witness.py`). No collected judge test reads history or tags
-# (A-475), and snapshot_history stays "full" until W7. The two B105 lanes below
-# are identical apart from their report path and env passthrough.
+# (A-475), so both lanes use the A-451 default snapshot_history = "shallow" (B128,
+# W7): the lanes declare no judge.base, so the seed carries only the judged
+# commit, and tests/core/test_snapshot_history_shallow.py proves a shallow
+# baseline snapshot cannot resolve HEAD~1 (an R2 mutant or R3 canary child's
+# HEAD~1 is the judged commit itself). The two B105 lanes below share their argv
+# apart from the report path, their isolation and their judge targets; the full
+# lane adds R2/R3 with mutation and canary, and the preflight adds the B105
+# coverage-archive env passthrough.
 [lanes.self-qualification]
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
@@ -97,7 +103,7 @@ allow_argv_append = false
 
 [lanes.self-qualification.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
-snapshot_history = "full"
+snapshot_history = "shallow"
 unsafe_symlink_omissions = [
   "topos/tests/fixtures/inspect_files/_danger/passwd_link",
   "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
@@ -203,7 +209,7 @@ allow_argv_append = false
 
 [lanes.self-qualification-preflight.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
-snapshot_history = "full"
+snapshot_history = "shallow"
 unsafe_symlink_omissions = [
   "topos/tests/fixtures/inspect_files/_danger/passwd_link",
   "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",

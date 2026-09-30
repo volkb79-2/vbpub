@@ -15,6 +15,7 @@ implies.  The layout claims nothing about which tests kill which mutants.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 from conftest import PROJECT_ROOT, TESTS_ROOT
@@ -410,5 +411,10 @@ def test_the_separation_check_names_each_kind_of_violation():
 
 
 def test_the_tests_root_holds_only_conftest_and_fixtures():
+    """CD23 (amended): besides the component folders, ``conftest.py`` and
+    ``fixtures/``, the root may hold only ``__init__``-free ``*_support.py``
+    helper modules shared across component folders (W6's scanner guards);
+    never a test module."""
     entries = sorted(p.name for p in TESTS_ROOT.iterdir() if p.name != "__pycache__" and not p.name.startswith("."))
-    assert entries == ["adapters", "conftest.py", "core", "fixtures", "parsers"]
+    support = [name for name in entries if re.fullmatch(r"(?!test_)[a-z0-9_]+_support\.py", name)]
+    assert [name for name in entries if name not in support] == ["adapters", "conftest.py", "core", "fixtures", "parsers"]

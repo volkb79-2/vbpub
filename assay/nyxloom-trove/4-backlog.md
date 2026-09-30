@@ -11671,7 +11671,7 @@ Update the P25/P33 carve-asset locks, the docs, and the decisions they reference
 
 ## B128 — shallow snapshot for B105
 
-**Status: OPEN (reuse report S4; after B124 removes the only history reader).**
+**Status: IMPLEMENTED on branch `wave-a-w7-shallow` (2026-09-29; report `reports/wave-a/W7-LOG.md`); the drift proof (`self-qualification-preflight` at the FULL and SHALLOW commits, identical counts) is the controller's run (CD44) and is pending.**
 - Set `snapshot_history = "shallow"` in both B105 lanes.
 - Update the `gate/tests/test_self_lane.py` pin and the lane comment.
 - Drift proof: one preflight showing the same collected, passed and skipped counts, with the `build_release` cases run, not skipped. If B123 moves those cases to `gate/tests/`, the proof covers the remaining repository-dependent judge tests instead.
