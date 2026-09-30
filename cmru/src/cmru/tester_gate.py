@@ -423,7 +423,7 @@ def _positive_cpu_limit(value: str) -> str:
     """Require a CPU value Docker can turn into a nonzero limit."""
     candidate = str(value).strip()
     if not _CPU_LIMIT_PATTERN.fullmatch(candidate):
-        raise ValueError(_CPU_LIMIT_ERROR)
+        raise argparse.ArgumentTypeError(_CPU_LIMIT_ERROR)
     try:
         parsed = Decimal(candidate)
         as_float = float(parsed)
@@ -438,7 +438,7 @@ def _positive_cpu_limit(value: str) -> str:
         representable = False
         parsed = Decimal(0)
     if not representable or parsed <= 0:
-        raise ValueError(_CPU_LIMIT_ERROR)
+        raise argparse.ArgumentTypeError(_CPU_LIMIT_ERROR)
     return candidate
 
 
@@ -447,7 +447,7 @@ def resolve_cpus(explicit: str | None) -> str:
     value = _resolve_required(explicit, _CPUS_ENV, "CPU limit")
     try:
         return _positive_cpu_limit(value)
-    except ValueError as exc:
+    except argparse.ArgumentTypeError as exc:
         raise SystemExit(f"tester-gate: {exc}") from exc
 
 
@@ -570,7 +570,10 @@ def build_docker_command(
         raise ValueError("--cwd must be a relative path inside the current worktree")
     if not command:
         raise ValueError("tester-gate requires a command after '--'")
-    cpus = _positive_cpu_limit(cpus)
+    try:
+        cpus = _positive_cpu_limit(cpus)
+    except argparse.ArgumentTypeError as exc:
+        raise ValueError(str(exc)) from exc
     host_root = _physical_path(repo_root)
     argv = _docker_run_argv(
         cgroup_parent,
