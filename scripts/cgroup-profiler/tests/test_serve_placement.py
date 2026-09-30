@@ -1164,14 +1164,35 @@ class TestLeafMembershipVerification:
             f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cgroup.procs"
         )
 
+    @pytest.mark.parametrize("capture_error", [None, "place-refused:capture-test"])
     def test_unrecorded_leaf_member_requires_a_capturable_identity(
+        self, tmp_path, monkeypatch, capture_error,
+    ):
+        _root, lane = self._ready_lane(tmp_path)
+        monkeypatch.setattr(lane, "_owned_cgroup_pids", lambda _cgroup: [101, 102])
+
+        def cannot_capture(_pid):
+            if capture_error is not None:
+                lane.error = capture_error
+            return None
+
+        monkeypatch.setattr(lane, "_capture_pid", cannot_capture)
+        assert lane._verify_leaf_membership() is False
+        assert lane.error == (
+            capture_error or placement.REFUSED_IDENTITY_UNAVAILABLE
+        )
+
+    def test_late_leaf_member_inherits_a_live_journaled_ancestor_identity(
         self, tmp_path, monkeypatch,
     ):
         _root, lane = self._ready_lane(tmp_path)
         monkeypatch.setattr(lane, "_owned_cgroup_pids", lambda _cgroup: [101, 102])
-        monkeypatch.setattr(lane, "_capture_pid", lambda _pid: None)
-        assert lane._verify_leaf_membership() is False
-        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        monkeypatch.setattr(lane, "_pid_cgroup", lambda _pid: lane.leaf_cgroup)
+
+        assert lane._verify_leaf_membership() is True
+        assert lane.error is None
+        assert lane.pid_records[102]["origin_cgroup"] == lane.pid_records[101]["origin_cgroup"]
+        assert lane.pid_records[102]["state"] == "leaf"
 
     @pytest.mark.parametrize(
         ("failure", "same_process", "pid_exists", "pid_cgroup", "expected_state"),
