@@ -421,8 +421,52 @@ def test_normalize_verdict_refuses_an_empty_timestamp(field: str) -> None:
         )
 
 
-#: PENDING (re-added with the witness file, Work step 5): the compare/round-trip
-#: tests and the witness-is-current-schema test, saved in the W5 scratchpad.
+_PLACEHOLDERS = {
+    "@ASSAY_VERSION@": "9.9.9",
+    "@HEAD_OID@": "1" * 40,
+    "@BASE_OID@": "2" * 40,
+    "@STARTED@": "2026-08-18T00:00:00+00:00",
+    "@ENDED@": "2026-08-18T00:01:00+00:00",
+}
+
+
+def _witness_as_actual() -> dict:
+    def replace(value):
+        if isinstance(value, str) and value in _PLACEHOLDERS:
+            return _PLACEHOLDERS[value]
+        if isinstance(value, list):
+            return [replace(item) for item in value]
+        if isinstance(value, dict):
+            return {key: replace(item) for key, item in value.items()}
+        return value
+
+    return replace(json.loads(_WITNESS_PATH.read_text(encoding="utf-8")))
+
+
+def test_compare_with_witness_accepts_the_committed_witness_round_tripped() -> None:
+    q.compare_with_witness(
+        _witness_as_actual(), _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40
+    )  # must not raise
+
+
+def test_compare_with_witness_refuses_a_corrupted_mutation_bucket() -> None:
+    actual = _witness_as_actual()
+    actual["claims"][1]["mutation"]["killed"] = []
+    with pytest.raises(q.QualificationError, match="differs from the frozen witness"):
+        q.compare_with_witness(actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
+
+
+def test_the_witness_is_the_current_schema_and_says_what_it_judged() -> None:
+    document = json.loads(_WITNESS_PATH.read_text(encoding="utf-8"))
+    assert document["schema_version"] == q.VERDICT_SCHEMA_VERSION
+    assert document["judgment"]["r2"]["mode"] == "changed_lines"
+    assert document["judgment"]["resolved"]["language"] == "sql"
+    assert document["judgment"]["resolved"]["source_roots"] == ["db/schema"]
+    assert document["outcome"] == "FAIL" and document["reason_code"] == "MUTANTS_SURVIVED"
+    matrix = _matrix()
+    mutation = document["claims"][1]["mutation"]
+    q.cross_check(document, matrix)  # the committed witness itself satisfies the matrix, row by row
+    assert mutation["total"] == 24
 
 
 def test_require_witness_commit_matches_accepts_the_disposable_head() -> None:
