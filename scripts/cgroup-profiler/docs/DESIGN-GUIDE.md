@@ -6,12 +6,22 @@ feature list is in [`README.md`](../README.md); worked adoption belongs in
 
 ## Daemon safety and placement
 
-The daemon is a host-view observer. D-15 deliberately excludes host mutation:
-`serve` has no capability-changing option, does not import `TempCaps`, has no
-Docker socket, and writes only its session volume plus the DAMON admin sysfs
-state required to observe DAMON. A consumer that needs a cap change must use a
+The daemon is a host-view observer. D-15 excludes cap mutation from its normal
+code paths: `serve` has no capability-changing option, does not import
+`TempCaps`, has no Docker socket, and writes its session volume plus the DAMON
+admin sysfs state required to observe DAMON. A consumer that needs a cap change must use a
 separate, explicitly authorized tool; adding a hidden fallback here would make
 the observer change the workload it is measuring.
+
+These are code and deployment choices, not kernel-enforced containment of a
+compromised privileged daemon. An operator with unrestricted Docker access
+already has host-administrator authority. The P1 stack does not mount the host
+system bus or writable host cgroup tree; the later v1.1 placement bridge adds
+those daemon-side authorities. D-32 keeps that bridge direct, without a
+broker. A compromised daemon with those mounts can use their authority beyond
+the Python request checks, including system-bus, cgroupfs, and DAMON writes.
+The read-only host views and private namespaces do not make this a
+least-privilege service.
 
 Host visibility does not require joining host namespaces. Both daemon and
 one-shot helper keep private PID/cgroup namespaces and bind the host cgroup

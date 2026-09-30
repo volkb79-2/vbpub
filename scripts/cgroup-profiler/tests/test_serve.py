@@ -1948,20 +1948,30 @@ def test_real_socket_round_trip_version_and_bad_request(tmp_path):
         assert not os.path.exists(socket_path)
 
 
+def _start_ready_socket_server(server):
+    """Start the real accept loop after publishing its bind as a sync point."""
+    ready = threading.Event()
+    bind = server._bind
+
+    def bind_and_signal():
+        bind()
+        ready.set()
+
+    server._bind = bind_and_signal
+    thread = threading.Thread(target=server._accept_loop, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=60.0)  # failsafe if bind itself cannot complete
+    return thread
+
+
 def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
     socket_path = str(tmp_path / "ctl.sock")
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
         accept_timeout=0.05,
     )
-    thread = threading.Thread(target=server._accept_loop, daemon=True)
-    thread.start()
+    thread = _start_ready_socket_server(server)
     try:
-        deadline = time.monotonic() + 5.0
-        while not os.path.exists(socket_path) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert os.path.exists(socket_path)
-
         malformed = [
             [],
             None,
@@ -1981,7 +1991,7 @@ def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
         ]
         for request in malformed:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(2.0)
+                client.settimeout(60.0)
                 client.connect(socket_path)
                 client.sendall((json.dumps(request) + "\n").encode("utf-8"))
                 response = json.loads(client.recv(65536).decode("utf-8"))
@@ -1991,7 +2001,7 @@ def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
 
             # A malformed peer must not consume the accept loop.
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(2.0)
+                client.settimeout(60.0)
                 client.connect(socket_path)
                 client.sendall(b'{"verb":"version"}\n')
                 version = json.loads(client.recv(65536).decode("utf-8"))
@@ -1999,7 +2009,7 @@ def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
             assert version["contract"] == 1
     finally:
         server.request_shutdown()
-        thread.join(timeout=5.0)
+        thread.join(timeout=60.0)
         assert not thread.is_alive()
 
 
@@ -2020,14 +2030,8 @@ def test_ctl_start_optional_damon_round_trips_over_real_socket(
         "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
         "--scope", "container", *damon_option, "--meta", "{}",
     ]
-    thread = threading.Thread(target=simple_server._accept_loop, daemon=True)
-    thread.start()
+    thread = _start_ready_socket_server(simple_server)
     try:
-        deadline = time.monotonic() + 5.0  # suite failsafe, not a product deadline
-        while not os.path.exists(socket_path) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert os.path.exists(socket_path)
-
         assert cg.main(argv) == 0
         output = capsys.readouterr().out.splitlines()
         assert len(output) == 1
@@ -2039,7 +2043,7 @@ def test_ctl_start_optional_damon_round_trips_over_real_socket(
         assert cg.main(["ctl", "stop", response["session"], "--socket", socket_path]) == 0
     finally:
         simple_server.request_shutdown()
-        thread.join(timeout=5.0)
+        thread.join(timeout=60.0)
         assert not thread.is_alive()
 
 
@@ -2059,14 +2063,8 @@ def test_real_socket_distinguishes_absent_target_from_unreadable_cgroup_tree(
         "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
         "--scope", "container", "--meta", "{}",
     ]
-    thread = threading.Thread(target=server._accept_loop, daemon=True)
-    thread.start()
+    thread = _start_ready_socket_server(server)
     try:
-        deadline = time.monotonic() + 5.0  # suite failsafe
-        while not os.path.exists(socket_path) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert os.path.exists(socket_path)
-
         assert cg.main(argv) == 2
         absent = capsys.readouterr()
         absent_response = json.loads(absent.out)
@@ -2085,7 +2083,7 @@ def test_real_socket_distinguishes_absent_target_from_unreadable_cgroup_tree(
         assert json.loads(healthy.out)["contract"] == 1
     finally:
         server.request_shutdown()
-        thread.join(timeout=5.0)
+        thread.join(timeout=60.0)
         assert not thread.is_alive()
 
 

@@ -60,7 +60,11 @@ sessions resolve direct PIDs in that target cgroup, match the exact token in
 host `/proc`, then walk those owners' process trees.
 The daemon has no Docker socket and does not accept `--cap`; it writes session
 data under `/var/lib/cgprofile/sessions` and its own DAMON kdamonds under
-sysfs.
+sysfs during normal operation. Grant daemon control only to operators already
+trusted with host-administrator Docker access. The privileged container's
+mounts and Python checks do not confine a compromised daemon; see the
+[trust boundary](DESIGN-GUIDE.md#daemon-safety-and-placement). Keep any v1.1
+host system-bus mount daemon-side, never in the cockpit.
 
 When running the one-shot helper from a cockpit, placement is checked before
 the collector starts. The default verifier is the local `tester-unified:local`

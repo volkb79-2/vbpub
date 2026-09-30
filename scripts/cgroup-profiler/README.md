@@ -130,8 +130,11 @@ profiling — that would add exactly the load the tool exists to measure.
 RG-55 added a second, always-on mode: a host daemon that run-gate (or anyone
 else) talks to over a Unix socket instead of spawning a collector per lane.
 It keeps PID/cgroup namespaces private and receives explicit read-only host
-`/proc` and cgroup-v2 mounts; only its DAMON interface and session storage are
-writable. It is `scripts/cgroup-profiler/`'s own **standalone ciu root** —
+`/proc` and cgroup-v2 mounts. Its code writes session storage and DAMON sysfs
+during normal operation. The service is privileged, so these mounts and code
+checks do not contain a compromised daemon; see the
+[trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). It is
+`scripts/cgroup-profiler/`'s own **standalone ciu root** —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
 
 ```bash
@@ -196,8 +199,8 @@ The daemon's version response is contract major 1:
   on every `stop`, or on demand via `ctl gc --json`. A live session is
   never pruned.
 - The daemon keeps PID and cgroup namespaces private. Its host observation
-  comes from explicit read-only `/proc` and cgroup-v2 binds; DAMON retains
-  only its separately mounted sysfs write surface. `ciu up` is the managed
+  comes from explicit read-only `/proc` and cgroup-v2 binds; normal DAMON
+  operation uses its separately mounted sysfs write surface. `ciu up` is the managed
   lifecycle and must preserve those settings—there is no host-namespace
   fallback launcher.
 
