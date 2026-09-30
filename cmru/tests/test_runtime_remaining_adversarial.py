@@ -69,7 +69,10 @@ def test_agent_cli_enroll_and_status_use_persisted_state(monkeypatch, capsys):
     monkeypatch.setattr("cmru.agent.state.ensure_state_dir", lambda scope: None)
     monkeypatch.setattr("cmru.agent.state.write_node_id", lambda value, scope: state.update(node=value))
     monkeypatch.setattr("cmru.agent.state.write_identity", lambda value, scope: state.update(identity=value))
-    args = SimpleNamespace(node_id="node", landscape="land", token="t", minisign_pubkey="pub", scope="user")
+    args = SimpleNamespace(
+        node_id="node", landscape="land", token="t", minisign_pubkey="pub",
+        scope="user", dry_run=False,
+    )
     assert agent_cli.cmd_enroll(args) == 0 and state["node"] == "node"
     monkeypatch.setattr("cmru.agent.state.read_node_id", lambda scope: "node")
     monkeypatch.setattr("cmru.agent.state.read_observed", lambda scope: None)
@@ -116,12 +119,12 @@ def test_handlers_refuse_oci_repack_and_missing_prerequisites(monkeypatch):
 
 def test_tester_gate_slice_probe_distinguishes_real_transient_and_missing(monkeypatch):
     monkeypatch.setattr(tester_gate.shutil, "which", lambda _: None)
-    assert tester_gate.check_slice_unit("dev.slice", "probe")[0] is None
+    assert tester_gate.check_slice_unit("dev.slice", "probe", "dev-gates.slice")[0] is None
     monkeypatch.setattr(tester_gate.shutil, "which", lambda _: "/usr/bin/docker")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
         stdout="LoadState=loaded\nFragmentPath=\n", stderr="", returncode=0))
-    ok, note = tester_gate.check_slice_unit("typo.slice", "probe")
+    ok, note = tester_gate.check_slice_unit("typo.slice", "probe", "dev-gates.slice")
     assert ok is False and "TRANSIENT" in note
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
         stdout="LoadState=loaded\nFragmentPath=/etc/systemd/system/dev.slice\n", stderr="", returncode=0))
-    assert tester_gate.check_slice_unit("dev.slice", "probe")[0] is True
+    assert tester_gate.check_slice_unit("dev.slice", "probe", "dev-gates.slice")[0] is True

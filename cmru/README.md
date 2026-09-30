@@ -255,6 +255,20 @@ combined memory/swap, CPU ceiling, host-systemd probe image, and the host gates 
 uses `--enable-docker` must also declare its nested-Docker image. The stock `wheel-build`
 handler requires an explicit wheel-builder image. These are release inputs, not CMRU
 defaults; pin immutable digests in a production contract.
+The CPU ceiling must be a finite decimal Docker can enforce (at least `0.00001` CPUs). CMRU
+pins Docker's CPU period to 100000 microseconds because zero or smaller values would otherwise
+be rounded to no per-container CPU bound; it refuses those values before host probes.
+See the [tester-gate CPU ceiling rationale](docs/DESIGN-GUIDE.md#tester-gate-workload-cpu-ceiling).
+These CPU and memory inputs currently bound the tester workload; the optional DinD sidecar
+shares the gates slice but has no separate per-container resource cap yet, as recorded in
+[the canonical CLI audit](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
+
+`cmru tester-gate --dry-run` prints the exact workload Docker command and, when
+`--enable-docker` is selected, the DinD startup command. It starts no container and skips
+host slice and IO-support checks because those checks use temporary privileged containers.
+The output names this limitation. Actual runs perform the checks before starting the gate;
+the checks, DinD sidecar, and workload all use the configured gates cgroup parent. See
+[the tester-gate contract](docs/SPEC.md#s26a--tester-gate-environment-preflight-ki-17).
 
 ## Release history is automatic
 

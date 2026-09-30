@@ -251,12 +251,10 @@ def run_project_step(
     # load_config. Derive the execution root again from the selected repository
     # snapshot so the same contract always targets the child worktree, never the
     # caller checkout.
-    if project_root_override is None and not project.cwd:
-        raise RuntimeError(f"{project.name}: derived project working directory is absent")
     project_root = (
         Path(project_root_override).resolve()
         if project_root_override is not None
-        else resolve_cwd(repo_root, project.cwd)
+        else resolve_cwd(repo_root, _project_working_directory(project))
     )
     step = (project.runner_steps or {}).get(step_name)
     if step is None:
@@ -368,6 +366,14 @@ def resolve_cwd(repo_root: Path, raw_cwd: str) -> Path:
     if cwd_path.is_absolute():
         return cwd_path
     return (repo_root / cwd_path).resolve()
+
+
+def _project_working_directory(project: "ProjectConfig") -> str:
+    """Return the project-relative directory derived from its config path."""
+    cwd = project.cwd
+    if not cwd:
+        raise RuntimeError(f"{project.name}: derived project working directory is absent")
+    return cwd
 
 
 def parse_commands(config_path: Path, repo_root: Path, step_name: str, raw_commands: list) -> List[Command]:
@@ -1385,7 +1391,7 @@ def _orchestrate(args=None) -> None:
                 raise RuntimeError(
                     f"{project.name}: required declared step {step_name!r} is absent"
                 )
-            project_root = resolve_cwd(repo_root, project.cwd or ".")
+            project_root = resolve_cwd(repo_root, _project_working_directory(project))
             for line in render_step_plan(step, project_root):
                 log_info(f"[DRY RUN] {project.name}:{step_name}: {line}")
         log_info("[DRY RUN] No project command was started.")
@@ -2145,7 +2151,7 @@ def _commit_prepared_generated(repo_root: Path, project: "ProjectConfig") -> boo
     into a post-publish commit.  This deliberately checks the entire worktree so
     a prepare script cannot hide an unrelated mutation behind one allowlisted file.
     """
-    cwd = project.cwd or project.name
+    cwd = _project_working_directory(project)
     declared_outputs = [*project.commit_generated]
     changelog = getattr(project, "changelog", None)
     if changelog:
@@ -2383,7 +2389,7 @@ def _dispatch(args, runtime):
                 step_config = (project.runner_steps or {}).get(step)
                 if step_config is None:
                     raise RuntimeError(f"{name}: required declared step {step!r} is absent")
-                project_root = resolve_cwd(repo_root, project.cwd or ".")
+                project_root = resolve_cwd(repo_root, _project_working_directory(project))
                 for line in render_step_plan(step_config, project_root):
                     log_info(f"[DRY RUN] {name}:{step}: {line}")
             return
@@ -2624,7 +2630,7 @@ def _dispatch(args, runtime):
         if vargs.minor or vargs.major or vargs.set_version:
             ignored_overrides = [
                 name for name in selected_names
-                if not getattr(configs[name], "git_tag", True)
+                if not configs[name].git_tag
                 or _version_strategy(configs[name]).startswith("external:")
             ]
             if ignored_overrides:
@@ -2924,17 +2930,6 @@ def _dispatch(args, runtime):
          _execution_mode, _step_project_order, cleanup, github_config, env_config) = load_config(cfg_path)
         selected_names = _select_projects(cfg_path, vargs.target, configs, project_order)
 
-        exclusive_modes = [
-            ("--remove-assets", vargs.remove_assets),
-            ("--delete-unmanaged-release-tag", vargs.delete_unmanaged_release_tag),
-            ("--delete-build-output", vargs.delete_build_output),
-            ("--discard-build-worktree", vargs.discard_build_worktree),
-        ]
-        selected_modes = [name for name, value in exclusive_modes if value]
-        if vargs.dry_run and not selected_modes:
-            # No mode means the configured project cleanup policy, so dry-run is valid.
-            pass
-
         if vargs.delete_unmanaged_release_tag:
             if len(selected_names) != 1:
                 _usage_error("--delete-unmanaged-release-tag requires exactly one project target")
@@ -3003,7 +2998,7 @@ def _dispatch(args, runtime):
         action(True)
         if vargs.dry_run:
             return
-        if not (getattr(vargs, "yes", False) or runtime.confirm(
+        if not (vargs.yes or runtime.confirm(
             "Apply the cleanup actions listed above?"
         )):
             return

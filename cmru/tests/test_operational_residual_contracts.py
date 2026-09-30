@@ -52,12 +52,12 @@ def test_release_latest_resolution_ignores_drafts_and_prereleases():
 def test_tester_gate_slice_probe_surfaces_probe_failure_and_nonloaded_units(monkeypatch):
     monkeypatch.setattr(tester_gate.shutil, "which", lambda _: "/usr/bin/docker")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("probe failed")))
-    ok, note = tester_gate.check_slice_unit("dev.slice", "probe")
+    ok, note = tester_gate.check_slice_unit("dev.slice", "probe", "dev-gates.slice")
     assert ok is False and "probe failed" in note
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *a, **k: SimpleNamespace(
         stdout="LoadState=not-found\nFragmentPath=\n", stderr="", returncode=0,
     ))
-    ok, note = tester_gate.check_slice_unit("missing.slice", "probe")
+    ok, note = tester_gate.check_slice_unit("missing.slice", "probe", "dev-gates.slice")
     assert ok is False and "not installed" in note
 
 
@@ -85,5 +85,5 @@ def test_handlers_wheel_glob_normalizes_distribution_name():
 
 def test_tester_gate_unloaded_probe_without_docker_is_explicit_skip(monkeypatch):
     monkeypatch.setattr(tester_gate.shutil, "which", lambda _: None)
-    ok, note = tester_gate.check_slice_unit("dev.slice", "probe")
+    ok, note = tester_gate.check_slice_unit("dev.slice", "probe", "dev-gates.slice")
     assert ok is None and "no docker" in note

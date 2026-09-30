@@ -34,7 +34,7 @@ def test_handler_required_environment_error_names_missing_variable(monkeypatch, 
 def test_tester_gate_slice_probe_empty_load_state_fails_closed(monkeypatch):
     monkeypatch.setattr(tester_gate.shutil, "which", lambda _: "/usr/bin/docker")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="", stderr="probe stderr", returncode=0))
-    ok, note = tester_gate.check_slice_unit("unknown.slice", "probe")
+    ok, note = tester_gate.check_slice_unit("unknown.slice", "probe", "dev-gates.slice")
     assert ok is False and "could not determine" in note
 
 

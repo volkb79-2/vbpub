@@ -24,7 +24,9 @@ def test_transaction_git_and_divergence_failures_preserve_repair_guidance(monkey
 
 
 def test_transaction_scope_and_result_records_are_sorted_and_validated(tmp_path, monkeypatch):
-    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path / ".git")
+    common_git_dir = tmp_path / ".git"
+    common_git_dir.mkdir()
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: common_git_dir)
     workspace = _workspace(tmp_path, tmp_path / "child", "cmru/release/tok")
     transaction.write_release_scope(tmp_path, workspace, ["z", "a"])
     assert transaction.read_release_scope(tmp_path, workspace) == ["a", "z"]

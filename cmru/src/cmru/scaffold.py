@@ -438,7 +438,7 @@ def init_main(argv: list[str] | None = None) -> int:
     return init_cli().run(argv=argv)
 
 
-def _run_init(args, _runtime) -> int:
+def _run_init(args, _runtime) -> None:
     plan = collect_plan(vars(args), Path.cwd())
     root = Path(plan["root"])
     files = build_files(plan, root)
@@ -449,7 +449,7 @@ def _run_init(args, _runtime) -> int:
     validate(files, root)
     if args.dry_run:
         print("[DRY RUN] Validated plan only; no files were written.")
-        return 0
+        return
     if not _yes_no(
         _required_prompt("Write these validated files? (yes/no)"),
         "write confirmation",
@@ -466,4 +466,3 @@ def _run_init(args, _runtime) -> int:
         "  2. Put credentials in the gitignored cmru.secret.toml.\n"
         "  3. Dry-run the estate graph: `cmru dependencies` then `cmru run`.\n"
     )
-    return 0

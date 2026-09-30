@@ -80,7 +80,7 @@ def test_standards_reports_missing_project_marker(tmp_path):
 def test_standards_update_only_touches_project_marker_and_rechecks(tmp_path):
     config, project = _config(tmp_path)
 
-    standards_main(["demo", "--config", str(config), "--update"])
+    assert standards_main(["demo", "--config", str(config), "--update"]) == 0
 
     updated = project.read_text(encoding="utf-8")
     assert "[project]\ntemplate_revision = 4\n" in updated

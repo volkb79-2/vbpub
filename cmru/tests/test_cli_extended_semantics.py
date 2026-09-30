@@ -58,6 +58,7 @@ def test_run_dry_run_respects_step_first_project_order_and_rejects_bad_plans(
     assert "May append build arguments from environment variables: TAG" in output
     assert "May append --no-cache when NO_CACHE=1" in output
     assert "Sets step environment keys: MODE" in output
+    assert f"cwd={tmp_path / 'alpha' / 'src'}" in output
 
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(
         tmp_path, projects, mode="step-first", step_order={"build": ["missing"]},
@@ -70,6 +71,14 @@ def test_run_dry_run_respects_step_first_project_order_and_rejects_bad_plans(
         mode="step-first",
     ))
     with pytest.raises(RuntimeError, match="required declared step 'build' is absent"):
+        cli.main(["run", "alpha", "--dry-run"])
+
+    project_without_cwd = SimpleNamespace(**{**vars(alpha), "cwd": None})
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda _path: _loaded(tmp_path, {"alpha": project_without_cwd}),
+    )
+    with pytest.raises(RuntimeError, match="derived project working directory is absent"):
         cli.main(["run", "alpha", "--dry-run"])
 
 
@@ -471,15 +480,15 @@ def test_tester_gate_dry_run_prints_docker_argv_without_host_probes_or_launch(
     monkeypatch, tmp_path, capsys, enable_docker,
 ):
     monkeypatch.setattr(tester_gate, "_missing_orchestration_env", lambda _args: [])
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "loaded"))
+    monkeypatch.setattr(
+        tester_gate, "check_slice_unit",
+        lambda *_: pytest.fail("dry-run ran a privileged host slice probe"),
+    )
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_: (tmp_path, "cmru"))
+    monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: tmp_path)
+    monkeypatch.setattr(tester_gate, "_git_common_dir", lambda _path: None)
     monkeypatch.setattr(tester_gate, "_probe_io_support", lambda *_: pytest.fail("dry-run probed privileged Docker IO"))
     monkeypatch.setattr(tester_gate, "dind_sidecar", lambda *_: pytest.fail("dry-run launched DinD"))
-    calls = []
-    monkeypatch.setattr(
-        tester_gate, "build_docker_command",
-        lambda *args, **kwargs: calls.append((args, kwargs)) or ["docker", "run", "tester", *args[2]],
-    )
     if enable_docker:
         monkeypatch.setattr(tester_gate, "resolve_dind_image", lambda _value: "dind:test")
 
@@ -493,8 +502,30 @@ def test_tester_gate_dry_run_prints_docker_argv_without_host_probes_or_launch(
     argv += ["--device-read-iops", "/dev/sda:10", "--", "pytest", "-q"]
     assert tester_gate.main(argv) == 0
     output = capsys.readouterr().out
-    assert "DRY RUN" in output and "docker run tester pytest -q" in output
-    assert calls[0][1].get("sidecar_name") == ("cmru-dry-run-dind-sidecar" if enable_docker else None)
+    assert "Host gates-slice verification skipped" in output
+    assert "docker run --cgroup-parent=gates.slice --rm" in output
+    assert "tester:test pytest -q" in output
+    assert ("docker run --cgroup-parent=gates.slice -d --rm --privileged" in output) is enable_docker
+    if enable_docker:
+        assert "dind:test" in output and "cmru-dry-run-dind-sidecar" in output
+
+
+@pytest.mark.parametrize("cpus", ["0", "-1", "NaN", "Infinity", "0.0000099"])
+def test_tester_gate_rejects_invalid_cpu_before_host_probe(monkeypatch, capsys, cpus):
+    monkeypatch.setattr(tester_gate, "_missing_orchestration_env", lambda _args: [])
+    monkeypatch.setattr(
+        tester_gate,
+        "check_slice_unit",
+        lambda *_: pytest.fail("invalid CPU limit reached the privileged host probe"),
+    )
+    status = tester_gate.main([
+        "--cwd", ".", "--image", "tester:test",
+        "--cgroup-parent", "gates.slice", "--cgroup-probe-image", "debian:test",
+        "--memory", "1g", "--memory-swap", "2g", "--cpus", cpus,
+        "--", "true",
+    ])
+    assert status == 2
+    assert "minimum 0.00001 CPUs" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

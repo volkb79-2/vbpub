@@ -104,7 +104,7 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 
 ### FEAT-03 — `cmru versions`: multi-source dependency resolution with an age window — *implemented*
-**Status:** the core implementation is on `feat/cmru-feat03-age-window-20260923`; this change extends it with configurable shipped-dependency discovery, rolling OCI digest checks, and nine-project adoption. The tester-unified coverage lane is rerun for this change before release.
+**Status:** the core resolver and estate-wide age-window tracking shipped in `cmru-v5.5.0`. Follow-on coverage—configurable shipped/all dependency discovery, selected Python extras, project-local requirements manifests, rolling OCI digest checks, and the nine-project adoption—is in `main` and listed under `[Unreleased]` in `CHANGES.md`. Rerun the CMRU tester-unified coverage lane on the release candidate before release.
 **SPEC:** `S-CLI.6`, `S2.7`, `V29`.
 
 `cmru versions init` derives supported targets from Python, npm, and Go manifests;
@@ -777,45 +777,20 @@ blind. Add a regression fixture: a retained worktree whose branch is a bare
 `cmru-release-...-<hash>` name (today's actual release-branch shape) must list without
 crashing, in both plain and `--json` output.
 
-### KI-22 — a release's tag is pushed before build/publish; a build failure reverts `origin/main` but leaves the tag pointing at reverted content, and it goes undetected
+### KI-22 — a failed publication could revert `origin/main` while leaving a misleading tag — *resolved 2026-09-19*
 
-**Status:** open (filed 2026-08-31, same incident as KI-21).
+**Status:** resolved by `1a7b5941` (`cmru: promote release candidates after publication`).
+That release-order change moved promotion after tag, build, and publication. A build or
+publication failure therefore leaves `origin/main` at its last completed project and retains
+the unpromoted candidate branch; it no longer auto-reverts an already-promoted commit while
+leaving a tag behind. The release transaction contract and failure-path tests record this
+ordering (`docs/RELEASE-TRANSACTIONS.md`; `tests/test_cli_release_revert_outcomes_adversarial.py`).
 
-**Mechanism.** The release transaction's step order is: prepare → gate → **promote
-`origin/main`** → **tag + push tag** → build → publish. When build/publish fails (this
-incident: `wheel-builder:local` image absent locally, a `docker run --rm ... wheel-builder:local`
-pull-access-denied), the transaction's own failure handler reverts `origin/main` with an
-auto-generated `revert:` commit — but does **not** delete or move the tag it already pushed
-one step earlier. The tag (e.g. `run-gate-v23.1.0`) is left pointing at the now-reverted
-commit, which remains a real ancestor of the reverted `main` (the revert adds an inverse
-commit on top; it does not rewrite history) — so `S12.2b`'s three-state classification reads
-this as the ordinary **"behind"** case (case 3: ordinary, ancestor tag, ancestor of HEAD) and
-silently skips it as "genuinely unchanged" on the next `cmru release` invocation, rather than
-recognizing it as the "ahead"-shaped half-completed-release anomaly `S12.2b` case 2 already has
-a named remedy for (`--allow-tag-ahead-of-head`). The tag therefore permanently names a commit
-with no corresponding published wheel, undetectably to a later release run — which is exactly
-the state `S12.2c` says "a hand-made tag is indistinguishable from a completed release" warns
-about, just reached by cmru's own transaction instead of an operator.
-
-**Live recovery used (not a fix, a workaround):** `git tag -d <tag> && git push origin
-:refs/tags/<tag>`, then re-run `cmru release --project <name>` fresh from the already-reverted
-`main` (confirmed byte-identical to pre-prep content via `git diff`) — this re-created the
-tag correctly once the actual root cause (missing docker image) was fixed, and the second
-attempt built, published, and promoted cleanly.
-
-**Proposed fix.** Either (a) don't push the tag until build+publish have both succeeded — move
-tag creation/push to after `publish`, so a build/publish failure has nothing to revert on the
-tag side at all; or (b) if the tag must be pushed early (some ordering reason not evaluated
-here), the failure-handler's auto-revert must also delete/move the now-orphaned tag it just
-pushed, so a subsequent release run hits a clean "nothing tagged yet" state instead of a
-silent, permanent S12.2b-case-3 false skip.
-
-**Oracles.** A release whose build/publish step fails after the tag-push (fault-injected, e.g.
-point the wheel-builder image at a nonexistent tag) must leave the repository in a state where
-a subsequent `cmru release --project <name>` either (a) proceeds to actually build/publish
-against the SAME tag (fix a), or (b) refuses/re-prepares rather than silently reporting
-"Unchanged, skipping" (fix b) — never the latter with no operator-visible signal that nothing
-was ever actually published for that tag.
+The original silent-skip scenario is also guarded by S12.2b: a tag strictly ahead of
+`origin/main` is refused by default, and the override is explicit. The candidate can be
+inspected and resumed under KI-06. Durable retry after tagging/publication has begun remains
+open under KI-06; this resolution does not claim that a failed post-tag publication can
+always resume automatically.
 
 ### KI-23 — a hand-authored pre-release CHANGES.md draft (`## [X.Y.Z] - UNRELEASED`) is silently duplicated, never folded, by `generate_release_changelog` — *FIXED 2026-09-08 (minimal fix a)*
 
@@ -1269,8 +1244,12 @@ so under what rules? No CMRU implementation change is part of the assay wave.
 
 ### KI-31 — transaction child nests a relative project config path twice
 
-**Status:** OPEN 2026-09-23; reproduced with CMRU
-`5.4.2.dev262+ge434b293` during assay Wave C P0.
+**Status:** FIXED 2026-09-25 by `0e96f960` (`fix(cmru): resolve child worktree project configs correctly`).
+The child loader now uses project paths already loaded from the execution worktree rather
+than remapping them a second time. The regression oracle
+`tests/test_workspace_adversarial_review.py::test_load_config_uses_project_paths_already_loaded_from_child`
+proves the project config resolves once from the child worktree. The following report is the
+historical reproduction against the earlier code.
 
 Exact commands, full stdout/stderr, exit markers and cleanup results for a
 fresh reproduction are in
@@ -1304,9 +1283,9 @@ as a reported workaround until its exact implementation is recovered and
 verified. The failed probe transactions were not promoted and were removed by
 targeted CMRU abandonment; no older retained release worktree was touched.
 
-Add a regression oracle that distinguishes one correct project-root remap
-from zero or two prefixes, and pin both the default relative-config path and
-the supported absolute-config route before changing the remapper.
+The old reproduction and failed workaround attempts above are retained as
+historical evidence; they describe the pre-fix code and do not represent current
+behavior.
 
 ### KI-32 — controller rollback tag can disagree with its manifest identity — *resolved*
 

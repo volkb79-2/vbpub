@@ -658,7 +658,7 @@ def runner_cli():
     return registry.build()
 
 
-def _run_step_cli(args, _runtime) -> int:
+def _run_step_cli(args, _runtime) -> int | None:
     if args.show_run_details:
         os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
     if args.log_append:
@@ -701,7 +701,7 @@ def _run_step_cli(args, _runtime) -> int:
         project_root = project.project_root
         for line in render_step_plan(step, project_root):
             print(f"[DRY RUN] {names[0]}:{args.step}: {line}")
-        return 0
+        return
     forge = load_forge_config(config_path)
     project_path = (
         forge.orchestration.project_configs[names[0]]
@@ -709,7 +709,6 @@ def _run_step_cli(args, _runtime) -> int:
         else config_path
     )
     run_step(project_path, args.step)
-    return 0
 
 
 if __name__ == "__main__":
