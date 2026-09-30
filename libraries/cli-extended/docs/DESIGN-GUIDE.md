@@ -195,6 +195,44 @@ review kept its active handler adapter and library APIs, removed unused module
 CLI aliases, and retained standalone `get.py` parsing because it runs without
 the CMRU wheel.
 
+## Keep a generated surface and a human semantic record
+
+A single full TOML/JSON CLI definition would still need Python handlers and
+custom parser callbacks. It would introduce a second executable grammar and
+force adopters to prove that the registry and external file stay synchronized.
+Keep `CliRegistry` as the source for parser registration, help, and dispatch.
+Export its built argparse tree after callbacks have run so callback-added
+syntax is visible, and mark fields the exporter cannot enumerate as
+incomplete.
+
+Syntax alone does not say whether `--dry-run` without a selector is meaningful,
+what a command will read or change, or whether an output mode is valid during a
+refresh. Keep those decisions in a small product-owned TOML review catalog.
+The consumer's canonical CLI specification is the readable publication: the
+library replaces only a clearly marked generated region containing the live
+surface and decision/test table. The adjacent JSON manifest makes parser
+changes easy to diff mechanically. The catalog remains human-edited, so reruns
+cannot erase rationale, expected effects, or test links.
+
+The candidate generator is deliberately bounded and symbolic. It covers
+minimum syntax, positional shapes and choices, option aliases and choices,
+mutually exclusive alternatives/conflicts, parser subcommand aliases, and
+explicit product interaction groups. It does not fabricate resource names,
+predict acceptance, or try every subset of every option. Option names and help
+copy are not evidence for behavior. Relevant syntax changes alter candidate
+signatures and request a new decision; removed records stay stale until an
+owner explicitly retires them with a reason.
+
+The shared sync/check/template command means adopters do not implement parser
+walkers, a candidate enumerator, a Markdown table renderer, or merge logic.
+The companion pytest assertion confirms that active catalog records point to
+collected node IDs carrying their `cli_case` markers. That check proves
+collection/linkage only. The product test must still invoke its real registered
+CLI and assert output, exit status, validation timing, and filesystem/state/
+network/credential effects; the normal gate proves that test passes.
+This boundary makes semantic review auditable without asking a generic library
+to invent product truth.
+
 ## Prove the shared contract at each rigor level
 
 The package gate separates ordinary behavior and coverage (R0/R1), mutation

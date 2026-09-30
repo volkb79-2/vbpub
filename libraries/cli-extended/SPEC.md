@@ -463,6 +463,14 @@ automatic colour and `--color` may explicitly override `NO_COLOR`; JSON,
 version output, and primary result data never use ANSI colour. Supplying both
 explicit controls is an invocation error rather than a last-option-wins rule.
 
+`CliOutput.color_enabled(stream)` is the public stream-specific query for a
+consumer-owned renderer. With no explicit switch it reports TTY plus
+`NO_COLOR`; `--color` forces true and `--no-color` forces false. The result
+does not override the plain-output requirement: a consumer that emits JSON or
+another machine-readable result must keep it free of ANSI, including when
+`--color` was supplied. Query the actual destination stream because stdout
+and stderr can have different terminal states.
+
 ### Progress
 
 Long-running verbs that provide progress should expose the following modes:
@@ -651,3 +659,113 @@ tools; other rows remain future work and were not re-audited here.
 The Debian installer and Netcup tools are the current first-party consumers.
 The standard itself is repository-wide; this scoped migration does not claim
 or require that every repository CLI is converted at once.
+
+## 13. Generated CLI surface and semantic review
+
+The canonical product CLI specification MUST contain both the current grammar
+inventory and the product-owned semantic review for each supported verb and
+option. `cli-extended` provides helpers to export the built `RegisteredCli`,
+render a bounded review checklist, synchronize a generated Markdown region,
+and check generated files and semantic decisions. This process does not
+replace product review of the verbs, groupings, option meanings, or effects.
+
+The executable grammar source remains the Python `CliRegistry`. A TOML review
+catalog stores human decisions and option-interaction groups; it MUST NOT be
+treated as a second parser definition. A generated JSON manifest records the
+installed argparse tree after `configure(parser)` callbacks and delegated
+registries have been applied. The consumer's canonical CLI specification
+embeds generated Markdown between exactly one pair of these standalone lines:
+
+```markdown
+<!-- cli-extended-surface:start -->
+<!-- cli-extended-surface:end -->
+```
+
+The generator MUST update only the manifest and the text between those
+markers. It MUST preserve all text and line endings outside the marked region,
+and MUST NOT write or reserialize the TOML catalog. Missing, duplicated,
+reversed, or nested markers are errors. Sync may write new generated files
+while reporting pending decisions so a grammar change is reviewable; check is
+read-only and exits unsuccessfully on manifest/spec drift, missing or pending
+cases, changed signatures, stale cases without explicit retirement, or
+uninspectable syntax.
+
+The machine surface includes route paths and parser subcommand aliases,
+delegated paths, positional and option IDs/shapes, option aliases, defaults,
+choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
+labels, and actions added by parser callbacks. Registered `surface_id` values
+preserve identity through a rename; otherwise default IDs are derived from the
+route and the declared verb/argument/option spelling. Route IDs are unique;
+action IDs are unique within their route. Help wording is not identity.
+
+Nested parser routes carry forward every action from their parent parser that
+is accepted before the nested command word. Each action records its parser
+path and whether it must appear before a nested subcommand; options belonging
+to the nested parser are recorded at that deeper path. A parser that requires
+a nested command is a route prefix, not a runnable invocation candidate. Its
+executable child routes contain the inherited parent arguments and options.
+Multiple nested subparser groups at one parser depth are marked incomplete
+until the exporter can represent their invocation order without ambiguity.
+
+The generated checklist is a bounded set of review dimensions, not a set of
+invented executable examples or inferred outcomes. It covers minimum valid
+invocation syntax,
+each positional shape and enumerable choice, each product-owned option
+spelling and choice, exclusive alternatives/conflicting pairs, parser route
+aliases, and catalog-declared option interactions. It MUST NOT enumerate the
+full power set of switches. The default cap is 512 candidates; a product may
+raise the cap explicitly. The exporter MUST fail on overflow instead of
+truncating. The standard library owns its common controls such as verbosity,
+color, and progress behavior; their syntax remains in the manifest, while
+product-sensitive common options (`--json`, `--yes`, and `--debug-raw`) remain
+review candidates. A product-specific common-option interaction belongs in
+its TOML catalog.
+
+Callable converters and custom argparse actions are reported by stable import
+label and marked opaque. An opaque validator does not make otherwise visible
+syntax incomplete; product cases and tests still own its accepted values and
+failure boundary. An unenumerable parser field or missing parser route MUST
+make the surface incomplete and fail check. The exporter MUST never discard a
+field or serialize an unstable object representation to imply completeness.
+
+The TOML catalog has `schema_version = 1`, `cli_id`, optional
+`max_candidates`, `interaction_groups`, and `[[cases]]` records. Each active
+case MUST contain a generated stable ID, `decision = "accept"` or `"refuse"`,
+the current `reviewed_signature`, a rationale, explicit invocation argv,
+expected process status, explicit effects (including `[]` when there are none),
+and one or more exact pytest node IDs. Invocation argv is passed to
+`RegisteredCli.run()` and excludes the executable name. It MUST contain real
+product-owned values; the generator does not guess selectors, UUIDs, paths, or
+provider names. An empty argv is valid only for a genuine no-token
+single-command case. A retired case MUST stay in the catalog with a human
+retirement reason; if that ID appears again, it requires explicit
+reactivation and review.
+
+Candidate signatures cover the relevant route and parser shape, including
+aliases, defaults, choices, requiredness, action/nargs, scope/placement,
+exclusive relationships, behavior labels, and synopsis overrides. Descriptions
+and help wording are excluded so copy edits do not force semantic reapproval.
+Changed relevant shape requires a new decision. Removed decisions remain in
+the generated specification until a person retires them; the generator never
+deletes rationale, effects, or test references.
+
+The provided `python -m cli_extended.surface_cli` command accepts an
+import-safe `--factory module:callable` that returns the consumer's
+`RegisteredCli`. `sync`, `template`, and `check` are the supported operations;
+consumers do not write a parser walker, table renderer, or region merge.
+`assert_cli_case_tests(collected_items, catalog)` verifies that each active
+case's exact node IDs are collected and carry matching
+`pytest.mark.cli_case(case_id)` markers. It rejects unknown/non-active markers
+and statically skipped referenced items where their skip condition is
+literally true. This proves collection/linkage only: a test can still be weak
+or fail. The consumer's normal gate MUST execute the referenced behavior tests
+and assert the expected output, status, and side-effect boundary.
+
+When adding, removing, renaming, or changing a public command or option, the
+consumer MUST review both the generated grammar diff and the semantic table.
+That product review should ask whether the verb and grouping still match real
+operator workflows, whether any alias is legacy-only, what each omitted or
+defaulted value does, which options conflict or depend on one another, and
+which files, state, network, credentials, confirmation, and output each case
+can affect. The generic library reports surface facts; it does not decide
+whether a product supports the right use cases.

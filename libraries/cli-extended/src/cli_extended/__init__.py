@@ -30,6 +30,28 @@ from .parser import (
 )
 from .progress import ProgressMode, ProgressRenderer
 from .prompts import PromptCancelled, PromptDriver
+from .review import (
+    REVIEW_SCHEMA_VERSION,
+    ReviewCatalog,
+    ReviewCatalogError,
+    ReviewCase,
+    SurfaceReport,
+    SurfaceSpecError,
+    assert_cli_case_tests,
+    check_cli_surface,
+    load_cli_review_catalog,
+    render_cli_review_template,
+    render_cli_surface_markdown,
+    sync_cli_surface,
+)
+from .surface import (
+    DEFAULT_MAX_CANDIDATES,
+    SURFACE_SCHEMA_VERSION,
+    SurfaceError,
+    SurfaceLimitError,
+    export_cli_surface,
+    render_cli_surface_json,
+)
 from .testing import assert_cli_contract
 
 __all__ = [
@@ -49,18 +71,35 @@ __all__ = [
     "ProgressRenderer",
     "PromptCancelled",
     "PromptDriver",
+    "REVIEW_SCHEMA_VERSION",
     "RegisteredCli",
+    "ReviewCatalog",
+    "ReviewCatalogError",
+    "ReviewCase",
+    "DEFAULT_MAX_CANDIDATES",
+    "SURFACE_SCHEMA_VERSION",
+    "SurfaceError",
+    "SurfaceLimitError",
+    "SurfaceReport",
+    "SurfaceSpecError",
     "UsageError",
     "VerbGroup",
     "VerbSpec",
     "VersionLookupError",
     "add_common_options",
+    "assert_cli_case_tests",
     "assert_cli_contract",
+    "check_cli_surface",
     "discover_command_parsers",
     "install_logging",
+    "load_cli_review_catalog",
     "logging_context",
     "redact_text",
     "redact_value",
+    "render_cli_review_template",
+    "render_cli_surface_json",
+    "render_cli_surface_markdown",
     "run_cli",
+    "sync_cli_surface",
     "uninstall_logging",
 ]

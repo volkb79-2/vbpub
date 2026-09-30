@@ -33,6 +33,9 @@ targets = [
   "src/cli_extended/parser.py",
   "src/cli_extended/progress.py",
   "src/cli_extended/prompts.py",
+  "src/cli_extended/review.py",
+  "src/cli_extended/surface.py",
+  "src/cli_extended/surface_cli.py",
   "src/cli_extended/testing.py",
 ]
 fail_under = 100.0

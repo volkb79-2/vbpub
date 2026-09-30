@@ -155,15 +155,18 @@ rationale, or evidence. A check mode should fail on grammar drift, missing
 semantic coverage, unresolved stale entries, or pending review. This makes
 regeneration repeatable while keeping product decisions durable.
 
-The current library can render Markdown help from registrations, but it does
-not yet expose a stable machine-readable CLI manifest or a merge-aware
-specification generator. Generated help is not a substitute for the semantic
-audit. CMRU's
-[`S-CLI.9`](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
-grammar and semantic tables are hand-authored today, with gate checks that
-compare the documented grammar to the live registered parsers.
+#### Current generator coverage
 
-Future inventory and test helpers should start from the built registry and
+The library exposes a stable machine-readable CLI manifest and a merge-aware
+specification generator alongside Markdown help. Generated help is not a
+substitute for the semantic audit. CMRU's
+[`S-CLI.9`](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
+grammar and semantic tables remain hand-authored, with gate checks that
+compare the documented grammar to the live registered parsers. The shared
+catalog/generator workflow is now available for consumer adoption; existing
+product specs remain canonical until their owners migrate them deliberately.
+
+Surface export and test helpers start from the built registry and
 publish a stable interface for verbs, delegated command paths, positional
 shapes, declared flags and aliases, option action/value shape, requiredness,
 choices, defaults, exclusive groups, and option scope. Custom parser callbacks
@@ -172,16 +175,142 @@ the exporter must not quietly omit syntax it cannot understand. Use stable
 IDs rather than rendered help text as join keys so wording and table layout can
 change without losing semantic history.
 
-Do not enumerate every subset of every option: the invocation space grows
-exponentially and most combinations do not express a distinct interaction.
-Generate a bounded review/test checklist from declared constraints and
-consumer-marked interaction groups: the minimum invocation, each required or
-exclusive alternative, both sides of every dependency or forbidden
-combination, and pairwise cases for options declared to interact. The product
-then records whether each candidate is accepted or refused, why, and which
-test proves the parser, handler, or side-effect result. A generic parser test
-can prove declared grammar constraints; only the consumer can prove
-configuration-dependent meaning, output, and effects.
+The generator does not enumerate every subset of every option: the invocation
+space grows exponentially. It generates the minimum route, positional shapes
+and choices, option spellings and choices, exclusive alternatives/conflicts,
+aliases, and each explicitly declared interaction. Product owners name the
+meaningful conditional or forbidden combinations in the TOML catalog; the
+library gives them stable IDs and signatures without guessing argv values or
+outcomes. The product records whether each case is accepted or refused, why,
+and which test proves parser, handler, or side-effect behavior. The shared
+pytest helper checks that each referenced node is collected and marked; the
+consumer's normal gate runs the test and checks its assertions.
+
+#### Adopt the generator
+
+Add two lines around one generated region in the product's canonical CLI
+specification:
+
+```markdown
+<!-- cli-extended-surface:start -->
+<!-- cli-extended-surface:end -->
+```
+
+Expose an import-safe factory that returns the normal `RegisteredCli`; it must
+not call `app.run()` while being imported. Then use the shared command from the
+project root:
+
+```bash
+python -m cli_extended.surface_cli \
+  --factory example.cli:build_cli \
+  --review docs/cli-review.toml \
+  --manifest docs/cli-surface.json \
+  --spec docs/SPEC.md sync
+
+python -m cli_extended.surface_cli \
+  --factory example.cli:build_cli \
+  --review docs/cli-review.toml template
+
+python -m cli_extended.surface_cli \
+  --factory example.cli:build_cli \
+  --review docs/cli-review.toml \
+  --manifest docs/cli-surface.json \
+  --spec docs/SPEC.md check
+```
+
+`sync` updates only the JSON manifest and marked Markdown region. It never
+rewrites the TOML decisions or bytes outside the markers. It still writes the
+new grammar when it reports pending reviews, so the diff makes additions and
+signature changes visible. `template` prints TOML rows for new cases and
+instructions for changed or reappeared cases; the product owner reviews them
+and updates the catalog by hand. `check` is read-only and fails on stale
+generated files, missing/pending cases, changed signatures, unretired removed
+cases, or syntax the exporter could not enumerate. The default checklist cap
+is 512; set `max_candidates` in the catalog or use the explicit command-line
+override to raise it. Overflow is an error, never silent truncation.
+
+The manifest starts from the built parser tree, including options and nested
+actions added in `configure(parser)` and delegated CLIs. For a nested parser,
+it carries parent actions onto the child route and records which parser level
+accepts each argument or option. A required-subcommand parent is listed as a
+route prefix; semantic cases belong to runnable descendants. Multiple nested
+subparser groups at one parser level make the inventory incomplete so `check`
+cannot certify an ambiguous route. The manifest reports spellings,
+aliases, choices, defaults, requiredness, argument shape, exclusive groups,
+scope, placement, synopsis, and callback-added actions. A custom value
+converter is marked opaque while the parser syntax remains inventoried; an
+unenumerable grammar field makes the surface incomplete. Set `surface_id` on a
+declaration to preserve its semantic identity through a rename. IDs are unique
+within a route; descriptions and help wording are not identifiers.
+
+The generated checklist is symbolic. It covers minimum executable syntax, positional
+shapes and enumerated choices, option spellings and choices, exclusive
+alternatives and conflicts, parser subcommand aliases, plus combinations in
+catalog `interaction_groups`. It does not invent real argument values, decide
+whether a combination is valid, or expand the power set of all switches.
+Library-owned common controls such as `--quiet`, `--debug`, `--color`, and
+`--progress` stay in the grammar table and rely on the library's normative
+contract. `--json`, `--yes`, and `--debug-raw` are also consumer review cases;
+declare an interaction when any common option participates in a product rule.
+
+An active `[[cases]]` record must contain a stable generated `id`,
+`decision = "accept"` or `"refuse"`, the current `reviewed_signature`, a
+rationale, `invocation`, `expected_exit_status`, `effects`, and one or more
+exact pytest `test_ids`. `invocation` is the argv passed to `app.run()` and
+excludes the executable name; include the real verb path and product-owned
+values. An empty invocation is valid only for a real no-token single-command
+case. Empty `effects = []` explicitly means the case has no effects. Keep a
+removed case in the catalog and set `state = "retired"` plus a reason only
+after a product review. Do not accept the expected decision from generated
+names, help text, or an AI-drafted table without verifying it against the
+handler and tests.
+
+Mark the behavior tests and register the shared assertion once at pytest
+collection:
+
+```toml
+# pyproject.toml
+[tool.pytest.ini_options]
+markers = ["cli_case(case_id): links a behavior test to a reviewed CLI case"]
+```
+
+```python
+# tests/conftest.py
+from pathlib import Path
+
+from cli_extended import assert_cli_case_tests, load_cli_review_catalog
+
+
+def pytest_collection_finish(session):
+    catalog = load_cli_review_catalog(Path("docs/cli-review.toml"))
+    assert_cli_case_tests(session.items, catalog)
+```
+
+```python
+import pytest
+
+
+@pytest.mark.cli_case(
+    "case:route:entrypoint:example/tool-deps/interaction:refresh-output/refresh-json"
+)
+def test_refresh_rejects_json():
+    # Exercise the registered CLI and assert status, output, and effects.
+    ...
+```
+
+The helper confirms that each exact node ID is collected and marked for its
+case, and rejects unknown or inactive case markers. It cannot prove an
+assertion is strong or that the test passed; the normal test gate must execute
+these marked behavioral tests. One test may carry several `cli_case` markers.
+
+CMRU's `tool-deps` is a useful first interaction example: declare
+`--dry-run`/`--refresh`, then `--refresh` with `--json` and
+`--allow-stale-tool-deps`; CMRU still owns the conditional rule and side-effect
+assertions. Netcup can map `monitor-task show TASK_UUID --poll` to its parser
+refusal test, and `show --json` / `watch --poll` to response-redaction and
+polling tests. The converter's UUID checks are opaque runtime validation, not
+missing CLI syntax. The CMRU and Netcup specs are examples only; adopting the
+new catalog in either product is a separate change.
 
 Use `OptionSpec` metadata for constraints argparse can express, such as
 choices and required mutually exclusive alternatives. Conditional rules such
@@ -300,6 +429,22 @@ they can be copied, piped, or parsed. Use `runtime.output.info()`, `warn()`,
 `error()`, and `hint()` for human diagnostics; keep domain result tables
 uncolored unless the product has a separately documented, tested rendering
 contract.
+
+If a consumer owns a styled primary result, query the same stream-specific
+policy instead of repeating TTY/`NO_COLOR` checks:
+
+```python
+color = (
+    not runtime.json_mode
+    and runtime.output.color_enabled(runtime.output.stdout)
+)
+render_result(result, color=color)
+```
+
+`color_enabled(stream)` reports the CLI policy; it does not sanitize a
+consumer's renderer. The consumer must keep JSON and other machine output plain
+even when `--color` is explicit. Pass stdout for a primary result and stderr
+for a diagnostic renderer; the two streams can have different TTY state.
 
 The standard recipe is simply to let `RegisteredCli.run()` own dispatch and
 rendering:

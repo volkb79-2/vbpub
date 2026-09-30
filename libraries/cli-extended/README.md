@@ -251,7 +251,10 @@ and primary results remain plain; JSON is never decorated with ANSI. The CLI
 boundary applies the policy, so use `app.run()` rather than printing parser
 help directly. Consumers should use `runtime.output.info/warn/error/hint()` for
 diagnostics and should not add ANSI sequences or a second color library for
-severity tags.
+severity tags. A custom primary renderer can query
+`runtime.output.color_enabled(runtime.output.stdout)` or pass its stderr stream
+for diagnostics; consumers must still keep JSON plain by disabling color when
+`runtime.json_mode` is true.
 
 For a real executable, the package provides a black-box contract assertion:
 
@@ -295,6 +298,40 @@ See [`SPEC.md`](SPEC.md) for the complete behavioral contract;
 responsibility guidance; [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md)
 for the design rationale; and [`BACKLOG.md`](BACKLOG.md) for open library
 follow-ups.
+
+## Keep the canonical CLI spec in sync
+
+`RegisteredCli` can export its built parser tree as stable JSON and generate a
+bounded semantic-review checklist. `cli-extended` also loads a product-owned
+TOML decision catalog, updates a marked Markdown section in the product's
+canonical CLI spec, reports signature/stale-case changes, and supplies a pytest
+collection assertion for exact node IDs and `cli_case` markers. Consumers keep
+one runtime grammar in `CliRegistry` and their semantic decisions in the
+catalog; the library owns the repeatable export, diff, and marker plumbing.
+
+Expose an import-safe function such as `example.cli:build_cli` that returns the
+consumer's `RegisteredCli`, then run:
+
+```bash
+python -m cli_extended.surface_cli \
+  --factory example.cli:build_cli \
+  --review docs/cli-review.toml \
+  --manifest docs/cli-surface.json \
+  --spec docs/SPEC.md sync
+
+python -m cli_extended.surface_cli \
+  --factory example.cli:build_cli \
+  --review docs/cli-review.toml \
+  --manifest docs/cli-surface.json \
+  --spec docs/SPEC.md check
+```
+
+Use the `template` action to print missing case rows and instructions for
+changed decisions. Sync never edits the TOML or content outside the marked
+spec region. Candidates are review prompts, not guessed executable commands or
+predicted outcomes. The shared [consumer workflow](docs/CONSUMERS.md#adopt-the-generator)
+shows the catalog, pytest marker, and adoption lifecycle; the [design guide](docs/DESIGN-GUIDE.md#keep-a-generated-surface-and-a-human-semantic-record)
+explains why the Python registry remains the grammar source.
 
 ## Test and gate
 

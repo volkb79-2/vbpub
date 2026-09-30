@@ -1,11 +1,11 @@
 # cli-extended backlog
 
-Open usability gaps for the shared CLI contract layer. Items here are
-proposals; they are not scheduled work.
+Follow-up decisions for the shared CLI contract layer. Open items need more
+evidence; closed items retain their resolution for future maintainers.
 
 ## CLI-EXT-01 — expose the shared colour policy to consumer renderers
 
-**Status:** Open  
+**Status:** Closed — supported API
 **Type:** Feature  
 **Area:** Output and terminal policy
 
@@ -17,12 +17,14 @@ Pygments renderer on stdout) has no documented contract for asking the shared
 layer whether that destination should receive ANSI, so consumers can duplicate
 the policy or rely on a method that is not named in the consumer guidance.
 
-Promote a stream-specific colour-policy query as supported consumer API, either
-by documenting and stabilizing `CliOutput.color_enabled(stream)` or by exposing
-a small public helper with the same policy. Document how consumers pass that
-result into their renderer, how stdout and stderr may differ, and the guarantee
-that machine-readable JSON remains free of ANSI. Add a pasteable consumer
-example and contract coverage when implemented.
+`CliOutput.color_enabled(stream)` is the supported public API. The consumer
+guide shows how to pass it to a primary renderer, distinguishes stdout from
+stderr, and requires consumers to keep JSON plain even when color is forced.
+Direct contract coverage exercises stream-specific TTY state, `NO_COLOR`, and
+explicit switches.
+
+**Resolution:** No new wrapper API was needed; the implementation already
+existed and only needed a clear contract and direct tests.
 
 **Provenance:** nyxloom's session extractor uses Rich and Pygments for its own
 primary stdout rendering and currently implements terminal detection in its
@@ -31,7 +33,7 @@ cli-extended's existing TTY/`NO_COLOR` policy.
 
 ## CLI-EXT-02 — evaluate declarative conditional option constraints
 
-**Status:** Open
+**Status:** Open — evidence gap
 
 **Type:** Feature investigation
 
@@ -41,18 +43,23 @@ The registry can express choices, required values, and required or optional
 mutually exclusive groups. A consumer may still need rules such as “`--dry-run`
 requires `--update`/`--write`/`--refresh`” or “this option applies only when a
 particular mode is selected.” CMRU's adoption review found several such
-relationships implemented as post-parse handler checks. If an accepted option
-has no effect in an unsupported combination, the parser can be syntactically
-correct while the CLI contract is semantically false.
+relationships implemented as post-parse handler checks. The semantic review
+catalog can inventory and test these combinations, but it does not declare
+parser-time dependencies or conflicts.
 
 Evaluate a structured way to declare simple option dependencies and
 forbidden combinations so the registry can reject them consistently and
 reflect them in generated help/reference metadata. Keep rules that depend on
 loaded product configuration, runtime state, or domain data in the consumer.
-Before adding a public API, confirm that the same relationship is needed by
-more than one consumer and define how it composes with optional commands,
-delegated registries, global options, custom parsers, and synopsis generation.
-The consumer still owns the reason for the rule and its user-facing remedy.
+Current evidence is insufficient for a general conditional-constraint API.
+CMRU needs selector-gated dry-run/refresh and output-mode refusals. Netcup's
+monitor/no-monitor pair is already expressible as a mutually exclusive group;
+`show --poll` is naturally scoped to `watch`, so neither supplies a second
+adopter for the same new relationship. Reopen when another consumer
+demonstrates a distinct condition that cannot be expressed with current
+metadata and handler validation. Any proposal must define composition with
+delegates, globals, callbacks, and synopsis generation. The consumer owns the
+reason and user-facing remedy.
 
 **Provenance:** CMRU's semantic audit found selector-gated dry-run options and
 mode-dependent helper inputs; see
@@ -60,7 +67,7 @@ mode-dependent helper inputs; see
 
 ## CLI-EXT-03 — assess a lazy service-entrypoint pattern
 
-**Status:** Open
+**Status:** Closed — documentation pattern
 
 **Type:** Feature investigation
 
@@ -73,12 +80,14 @@ can keep service imports inside a lightweight handler and use
 `single_command=True, no_args_action=True`. Nyxloom's `nyxloomd --help` was
 initially handled after daemon startup and needed a pre-runtime argument path.
 
-Document and validate the lazy-handler pattern first. If multiple adopters
-cannot use it cleanly, evaluate a public lazy-handler or service-entrypoint
-helper that preserves the shared parser contract without requiring a second
-parser. Keep daemon lifecycle, credentials, and state ownership in the
-consumer. Any API proposal must prove that help/version/errors do not invoke
-the service and that the valid no-argument invocation does.
+The existing lazy-handler pattern is documented: construct the registry
+without starting the service and import/start the service inside the selected
+handler. `single_command=True, no_args_action=True` supports a deliberate
+no-argument action while preserving side-effect-free help/version/errors. No
+shared lazy-handler API is needed unless a real adopter cannot use this pattern.
+
+**Resolution:** Keep daemon lifecycle, credentials, and state ownership in the
+consumer; test the installed entrypoint with a startup sentinel.
 
 **Provenance:** Nyxloom P114 found and fixed service startup before argument
 handling; see
@@ -86,42 +95,37 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Open
+**Status:** In implementation — registered gate pending
 
-**Type:** Feature investigation
+**Type:** Feature
 
 **Area:** Registry introspection and consumer contract testing
 
-Consumers need to review semantic combinations systematically, but their
-canonical CLI specs often repeat syntax by hand. `CliRegistry` retains the
-declarations and can render help Markdown, yet it has no stable machine-readable
-surface export or merge-aware way to regenerate a consumer's spec. Replacing a
-whole document during regeneration would risk deleting product-owned semantic
-decisions and test evidence.
+`CliRegistry` remains the executable grammar source. The implementation adds a
+versioned JSON surface exporter, bounded candidate generation, and consumer
+helpers for a TOML semantic catalog, a marked-region Markdown renderer/sync,
+read-only drift checking, review templates, and pytest node/marker linkage.
+It includes delegated registries and callback-added argparse actions. Nested
+routes carry parent-parser actions forward and identify parser-depth placement;
+required-subcommand prefixes do not produce false executable candidates.
 
-Evaluate a public registry manifest and consumer-facing helpers that produce a
-diffable grammar inventory and bounded invocation checklist. The manifest
-should cover registered and delegated command paths, positional shapes,
-option spellings/aliases and value shapes, requiredness, choices, defaults,
-exclusive groups, and scope. It must identify syntax supplied through custom
-parser callbacks rather than silently certify an incomplete inventory.
-Interaction candidates should come from declared constraints and
-consumer-marked relationships; do not generate the full option power set.
+The generated checklist includes minimum valid syntax, positional shapes and
+enumerable values, option spellings and choices, exclusive alternatives and
+conflicts, nested aliases, and each explicitly declared option interaction.
+It is symbolic: adopters supply real invocation argv, outcomes, effects,
+rationale, and test node IDs. Generation never rewrites the TOML catalog or
+deletes stale decisions. Sync owns only a marked region in the canonical CLI
+spec and a JSON manifest; check detects changed signatures, stale files,
+pending decisions, stale records, and syntax that cannot be inventoried. The
+shared pytest helper checks exact collection and marker linkage; the consumer's
+gate still proves test behavior.
 
-The consumer's canonical CLI spec remains the home for semantic truth. Any
-generator must update only its owned region, join semantic rows through stable
-surface/option IDs, retain stale decisions after removal until explicit human
-disposition, and show additions/changes as reviewable diffs. A check mode should
-detect syntax drift and require semantic coverage/re-review without inventing
-the expected outcome. Generic helpers can exercise parser outcomes; consumers
-must still assert domain rules, diagnostics, and effects at their own boundary.
-Coordinate constraint metadata with CLI-EXT-02, but keep export/regeneration
-useful for consumers whose existing parser constraints are already sufficient.
+No second grammar DSL or conditional-option runtime API was added. CLI-EXT-02
+remains open because that is a separate evidence-gated question.
 
-**Provenance:** CMRU's S-CLI.9 contains a manually authored grammar inventory
-and semantic result table; tests compare the inventory with registered
-parsers, but the rows are not generated. Its adoption review showed that a
-repeatable inventory plus durable human review data would make later CLI
-changes easier to detect and re-judge.
+**Provenance:** CMRU's S-CLI.9 was a manually maintained grammar inventory and
+semantic result table. Independent review of the plan clarified that Python
+registrations should stay authoritative and generated Markdown should be a
+view over retained semantic decisions, not a replacement for them.
 
 **Related:** CLI-EXT-02 — declarative conditional option constraints.
