@@ -1007,7 +1007,7 @@ def _cli_config(tmp_path, *, cmru_tool_deps=(), assay_prefix="assay-v"):
 def test_tool_deps_main_reports_no_op_when_nothing_is_declared(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("cmru.cli._resolve_config", lambda cfg: tmp_path / "cmru.orchestration.toml")
     monkeypatch.setattr("cmru.cli.load_config", lambda cfg: _cli_config(tmp_path))
-    tool_deps.tool_deps_main([])
+    assert tool_deps.tool_deps_main([]) == 0
     out = capsys.readouterr().out
     assert "no project declares a tool dependency" in out
 
@@ -1080,7 +1080,7 @@ def test_tool_deps_main_passes_and_exits_zero(monkeypatch, tmp_path, capsys):
     )
     monkeypatch.setattr(tool_deps, "_download_asset", lambda *a, **k: b"payload")
 
-    tool_deps.tool_deps_main([])  # must NOT raise SystemExit
+    assert tool_deps.tool_deps_main([]) == 0
     out = capsys.readouterr().out
     assert "OK" in out
 
@@ -1132,7 +1132,7 @@ def test_tool_deps_main_allow_stale_downgrades_to_a_pass(monkeypatch, tmp_path, 
     )
     monkeypatch.setattr(tool_deps, "_download_asset", lambda *a, **k: b"payload")
 
-    tool_deps.tool_deps_main(["--allow-stale-tool-deps"])  # must NOT raise
+    assert tool_deps.tool_deps_main(["--allow-stale-tool-deps"]) == 0
     assert "OK" in capsys.readouterr().out
 
 
@@ -1197,6 +1197,6 @@ def test_tool_deps_main_refresh_success(monkeypatch, tmp_path, capsys):
         tool_deps, "refresh_tool_dependency",
         lambda **kwargs: _dep(version="2.1.0", path="tools/assay/assay-2.1.0.pyz", sha256="c" * 64),
     )
-    tool_deps.tool_deps_main(["--refresh", "assay"])  # must NOT raise
+    assert tool_deps.tool_deps_main(["--refresh", "assay"]) == 0
     out = capsys.readouterr().out
     assert "cmru: assay 1.0.0 -> 2.1.0" in out

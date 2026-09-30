@@ -91,6 +91,10 @@ investigation.
    has for preserving the rest of the host's existing cgroup2 mount state;
    this ask is about auditing that command itself, not something `mdt
    doctor` changes either way.
+6. **DONE (2026-09-27):** add useful help at the top-level and each
+   subcommand, make `host-escape --help` show usage instead of treating it as
+   a command to run on the host, and reject invalid target arguments before
+   starting the privileged helper.
 
 _Captured 2026-09-08 from a live gstammtisch investigation (soulmask periodic
 stall incident); filed by Claude per operator request ("how about mdt ships a
@@ -120,3 +124,22 @@ strings before the shell; escaped specifiers, directory sealing, and the
 namespace-relative owner check now have renderer assertions. The registered
 smoke and release gates pass on the integrated candidate, and the final
 independent review found no further actionable regressions.
+
+## Feature request: one canonical io.cost coefficient generator — DONE 2026-09-27
+
+Both MDT host setup and `scripts/debian-install-v2/tools/iocost-calibrate.sh`
+now consume `tools/iocost_coef_gen.py`, generated from the pristine Linux
+vendor source plus the ordered patch series. The generated header records the
+source and patch hashes; `tools/build-iocost-generator.py --check` detects
+drift. The patch set includes LVM/dm discovery, explicit file-target support,
+no-COW fallback, safer argument handling, and raw partition sysfs lookup.
+
+Partition creation, formatting, mounting, benchmarking, and cleanup are still
+not automated. MDT requires its persistent benchmark file to share a
+filesystem with Docker data. For future installer integration, prefer a
+mounted file target on a dedicated partition; do not add partition surgery
+without the existing plan/apply/readback/rollback path. See
+`host-setup/plan-iocost-integration.md` and
+`scripts/debian-install-v2/IO-BENCHMARK-DESIGN.md`.
+
+_Captured 2026-09-27 after a live runtime-path audit._

@@ -521,7 +521,6 @@ def refresh_tool_dependency(
         print(
             f"[DRY RUN] Would write {new_absolute}, its sha256 sidecar, and update "
             f"{config_path}; would remove old pin files if present.",
-            flush=True,
         )
     else:
         new_absolute.parent.mkdir(parents=True, exist_ok=True)
@@ -622,7 +621,7 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> int:
     return tool_deps_cli().run(argv=argv)
 
 
-def _run_tool_deps(args, _runtime) -> int:
+def _run_tool_deps(args, _runtime) -> None:
     from cmru.cli_support import TargetSelectionError, select_target_names
 
     # Import lazily: cli dispatches this verb, and is itself the configuration
@@ -688,7 +687,7 @@ def _run_tool_deps(args, _runtime) -> int:
             owner=github_config.owner, repo=github_config.repo, timeout=args.timeout,
             dry_run=args.dry_run,
         )
-        return 0
+        return
 
     statuses: list[ToolDependencyStatus] = []
     for name in selected:
@@ -704,7 +703,7 @@ def _run_tool_deps(args, _runtime) -> int:
             print(json.dumps([]))
         else:
             print("[INFO] cmru tool-deps: no project declares a tool dependency.", flush=True)
-        return 0
+        return
 
     if args.json:
         print(json.dumps([status_as_dict(s) for s in statuses], indent=2, sort_keys=True))
@@ -725,12 +724,11 @@ def _run_tool_deps(args, _runtime) -> int:
     if not args.json:
         plural = "y is" if len(statuses) == 1 else "ies are"
         print(f"[INFO] cmru tool-deps: {len(statuses)} declared dependenc{plural} OK.", flush=True)
-    return 0
 
 
 def _run_refresh(
     *, projects: Mapping[str, object], selected: Iterable[str], provider_id: str,
-    owner: str, repo: str, timeout: int, dry_run: bool = False,
+    owner: str, repo: str, timeout: int, dry_run: bool,
 ) -> None:
     if provider_id not in projects:
         print(f"[ERROR] cmru tool-deps --refresh: unknown project {provider_id!r}", file=sys.stderr, flush=True)

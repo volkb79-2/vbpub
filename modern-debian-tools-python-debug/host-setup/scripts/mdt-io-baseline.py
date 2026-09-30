@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Measure and write the MDT disk IO benchmark results with the kernel io.cost matrix.
 
-The benchmark implementation is the vendored Linux ``iocost_coef_gen.py``
-already used by ``scripts/debian-install-v2``. This adapter gives MDT the
-same six measurements, but always uses a file target: measuring a raw device
-would be destructive. The file is retained so the results can record the
+MDT installs the generated shared artifact from
+``scripts/debian-install-v2/tools/iocost_coef_gen.py`` to
+``/usr/local/lib/mdt``; debian-install-v2's calibration script invokes that
+same file. It is generated from the pristine upstream copy plus the reviewed
+patch series under ``debian_install_v2/vendor/``. MDT always uses a persistent
+file target: measuring a raw device would be destructive. The current identity
+check requires that the test file and Docker data directory share one
+filesystem, so a separate scratch partition is not yet supported. The retained file records the
 filesystem/device on which the numbers were obtained.
 
 The runtime cap consumer receives four derived ceilings: the lower sequential
@@ -73,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser = MdtArgumentParser(
         prog="mdt-io-baseline.py",
         description=(
-            "Run the official kernel io.cost coefficient matrix against a "
+            "Run the shared Linux-derived io.cost coefficient matrix against a "
             "persistent file target and write identity-bound MDT benchmark "
             "results. Host shell only; a container invocation is refused."
         ),
@@ -84,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default=os.environ.get("IO_BASELINE_ENV", str(OUT)), help="benchmark-results file (default: IO_BASELINE_ENV or /var/lib/mdt/io-baseline.env)")
     parser.add_argument("--testfile", default=os.environ.get("IO_BASELINE_TESTFILE", DEFAULT_TESTFILE), help="persistent file target (default: IO_BASELINE_TESTFILE or /var/lib/mdt/iocost-coef-fio.testfile)")
     parser.add_argument("--generator", default=os.environ.get("IOCOST_COEF_GENERATOR", DEFAULT_GENERATOR), help="iocost_coef_gen.py path")
-    parser.add_argument("--testfile-size-gb", type=float, default=float(os.environ.get("IO_BASELINE_SIZE_GB", DEFAULT_SIZE_GB)), metavar="GIGABYTES", help=f"file size passed to the official generator (default: {DEFAULT_SIZE_GB})")
+    parser.add_argument("--testfile-size-gb", type=float, default=float(os.environ.get("IO_BASELINE_SIZE_GB", DEFAULT_SIZE_GB)), metavar="GIGABYTES", help=f"file size passed to the shared generator (default: {DEFAULT_SIZE_GB})")
     parser.add_argument("--duration", type=lambda value: positive_int(value, "--duration"), default=positive_int(os.environ.get("IO_BASELINE_DURATION", DEFAULT_DURATION), "IO_BASELINE_DURATION"), metavar="SECONDS", help=f"duration of each of the six matrix runs (default: {DEFAULT_DURATION})")
     parser.add_argument("--numjobs", type=lambda value: positive_int(value, "--numjobs"), default=positive_int(os.environ.get("IO_BASELINE_NUMJOBS", DEFAULT_NUMJOBS), "IO_BASELINE_NUMJOBS"), metavar="JOBS", help=f"parallel fio jobs per matrix run (default: {DEFAULT_NUMJOBS})")
     return parser.parse_args()
@@ -378,10 +382,10 @@ def run(args: argparse.Namespace) -> int:
         return 0
     generator = discover_generator(Path(args.generator))
     if generator is None:
-        print(f"ERROR: official iocost coefficient generator not found: {args.generator}", file=sys.stderr)
+        print(f"ERROR: shared iocost coefficient generator not found: {args.generator}", file=sys.stderr)
         return 1
     if shutil.which("fio") is None or shutil.which("pv") is None:
-        print("ERROR: the official generator needs fio and pv (install fio and pv)", file=sys.stderr)
+        print("ERROR: the shared generator needs fio and pv (install fio and pv)", file=sys.stderr)
         return 1
     expected_size = int(args.testfile_size_gb * 2**30)
     if testfile.exists() and testfile.stat().st_size != expected_size:
@@ -400,19 +404,19 @@ def run(args: argparse.Namespace) -> int:
         "--testfile-size-gb", str(args.testfile_size_gb), "--duration", str(args.duration),
         "--numjobs", str(args.numjobs),
     ]
-    print("Running official io.cost coefficient benchmark: six fio runs, about "
+    print("Running shared Linux-derived io.cost coefficient benchmark: six fio runs, about "
           f"{args.duration * 6 // 60} minutes minimum; the target disk will be saturated.")
     try:
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=None, text=True, check=False)
     except OSError as exc:
-        print(f"ERROR: could not start official generator: {exc}", file=sys.stderr)
+        print(f"ERROR: could not start shared generator: {exc}", file=sys.stderr)
         return 1
     if result.returncode != 0:
-        print(f"ERROR: official io.cost benchmark exited {result.returncode}; existing benchmark results remain untouched", file=sys.stderr)
+        print(f"ERROR: shared io.cost benchmark exited {result.returncode}; existing benchmark results remain untouched", file=sys.stderr)
         return result.returncode
     match = RESULT_RE.search(result.stdout or "")
     if not match:
-        print("ERROR: official generator returned no parseable coefficient line; existing benchmark results remain untouched", file=sys.stderr)
+        print("ERROR: shared generator returned no parseable coefficient line; existing benchmark results remain untouched", file=sys.stderr)
         return 1
     if match.group("devno") != identity["DEVNO"]:
         print(f"ERROR: device identity changed during benchmark ({identity['DEVNO']} before, {match.group('devno')} reported)", file=sys.stderr)

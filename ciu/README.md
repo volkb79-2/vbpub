@@ -66,6 +66,17 @@ copyable commands and config are in [docs/CONSUMERS.md](docs/CONSUMERS.md).
   that governance uses. CIU verifies a configured slice rather than silently
   letting Docker create an unbounded transient one.
 
+CIU governance does not add per-container RAM, swap, reservation, CPU, IOPS,
+or bandwidth caps by default. Set the corresponding keys in a stack's
+`[<root>.governance]` table or the global `[governance]` table only when the
+project wants those limits; service-authored Compose keys remain authoritative.
+The host's parent-slice limits continue to apply independently. See the
+[pasteable consumer example](docs/CONSUMERS.md#configure-ciu-resource-limits)
+and the [design rationale](docs/DESIGN-GUIDE.md#governance-resource-limits).
+Fresh `ciu init` scaffolds the complete `[governance]` table with
+`enabled = false` and every cap unset, so operators can review and configure
+the options in their generated config.
+
 ## Two ways to ship a stack
 
 A project maintainer can offer **both** deploy paths from the same repository,

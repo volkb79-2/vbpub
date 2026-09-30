@@ -122,6 +122,10 @@ restatement of the technical detail below it.
      this block is actually unreleased -- see 2026-09-11's entry under
      7.12.0 for why. -->
 
+### Changed
+- Governance injects per-container memory, CPU, and IO limits only when configured. Omitted read/write IOPS no longer add caps; `read_iops = 0` is an explicit derivation opt-in.
+- `ciu init` emits the complete, disabled governance table with no resource caps configured.
+
 ## [7.13.0] - 2026-09-11
 <!-- cmru: generated -->
 <!-- cmru: source-end=764f9c5a2e24b83d524969ce244775bc070412b8 -->

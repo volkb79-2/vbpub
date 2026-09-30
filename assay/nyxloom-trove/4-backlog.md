@@ -135,6 +135,12 @@ items:
   - {id: B131, title: "R2 for the analysis package (own lane, own suite), after the v14 cold witness", type: feature, component: analysis, context_estimate: small}
   - {id: B132, title: "SQL adapter emits mutants for constructs PostgreSQL may refuse (UNIQUE DEFERRABLE / NULLS NOT DISTINCT / INCLUDE / USING INDEX; FK MATCH FULL / DEFERRABLE / SET NULL (col)) -- measure on W5's harness", type: bug, component: sql, context_estimate: small}
   - {id: B133, title: "SQL operator labels misdescribe their effect (NOT IN 'widening' narrows; drop-check also rewrites CREATE POLICY ... WITH CHECK)", type: bug, component: sql, context_estimate: small}
+  - {id: B136, title: "assay analyze plan-estimate never checks that the baseline progress file belongs to the planned lane (assay plan JSON carries no lane name), so a foreign lane's baseline yields plausible budget numbers", type: bugfix, component: analysis, context_estimate: small}
+  - {id: B137, title: "assay plan / analyze plan-estimate cannot estimate an ingested (Stryker) JavaScript R2 lane; no provisional-ceiling source for its first-run budget", type: feature, component: analysis, context_estimate: medium}
+  - {id: B138, title: "docs/CONSUMERS.md has no consolidated v12 -> v13 migration section (v11 -> v12 has one); the v13 facts are scattered", type: feature, component: docs, context_estimate: small}
+  - {id: B139, title: "assay-cli SKILL.md 'What this build evaluates' omits JavaScript R2 by Stryker-report ingestion (B046)", type: bugfix, component: docs, context_estimate: small}
+  - {id: B140, title: "no project-level default for a lane's env_passthrough: every new lane must repeat the project's common names, and a missing one fails the lane's first run COMMAND_FAILED", type: feature, component: config, context_estimate: small}
+  - {id: B141, title: "changed-lines lanes cannot scope to files: judge.source_roots must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests", type: feature, component: config, context_estimate: small}
 ---
 
 # assay — backlog
@@ -11739,3 +11745,81 @@ Fix: make the test hermetic. Give it an ancestor chain it controls: either stop 
 `src/assay/mutation_witness.py:107` looks for these config files when deciding whether a lane's pytest `addopts` allow the sequential witness: `pytest.ini`, `.pytest.ini`, `pyproject.toml`, `tox.ini` and `setup.cfg`. pytest 9 also reads `pytest.toml` and `.pytest.toml`, and an empty `pytest.toml` takes precedence over `pyproject.toml`. So a consumer whose xdist `addopts` live in `pytest.toml` gets a witness decision based on the wrong file.
 
 Fix: add both names in pytest's own precedence order, and check the order against the installed pytest version. Test with a `pytest.toml` carrying `-n auto`, and prove it refuses. Record the precedence in DESIGN-GUIDE. Consumer-visible: the witness may then refuse a lane it used to accept.
+
+## B136 — `plan-estimate` does not bind the baseline progress file to the planned lane
+
+**Status: OPEN (filed 2026-09-30 from dstdns; observed in assay CLI 7.2.0; dstdns evidence `nyxloom-trove/decisions.md` D-572 section 3 at dstdns@682c7ef4).**
+
+**Observed (source-grounded):** `analysis/src/assay_analysis/plan_estimate.py` `_plan()` (l.34-54) requires `commit`, `tree`, `candidate_count` and `candidates` from the `assay plan` JSON. That JSON carries no lane name. `_segments()` (l.57-80) does read each progress `run` header's `lane` and refuses a progress file that mixes several lanes, but nothing compares that lane to the plan's. `plan_estimate()` (l.130-148) checks only `run.commit == plan.commit`. A baseline progress file from a different lane at the same commit therefore yields a plausible `candidate_count * baseline_seconds` estimate.
+
+**Why assay owns it:** only assay knows both artifacts; a consumer cannot detect the mix-up from the numbers, which look reasonable (D-572 used a hand-applied formula because of exactly this trust gap).
+
+**Proposed contract:** add `lane` (and ideally the lane file digest) to the `assay plan` JSON (additive), and make `plan-estimate` refuse with a named error when the progress run header's `lane` differs from the plan's, or when either side lacks it (a plan from before the change is refused like the existing pre-7.2.0 plan refusal).
+
+**Oracles:** (1) plan for lane A plus a baseline progress file for lane B at the same commit is refused by name. (2) A matching pair still estimates. (3) A controlled wrong implementation that compares only the commit must fail oracle 1.
+
+**Spec owner:** B111 (plan-estimate) and the analysis package's design notes in DESIGN-GUIDE.
+
+## B137 — no plan estimate for an ingested JavaScript R2 lane
+
+**Status: OPEN (filed 2026-09-30 from dstdns; source-grounded, not reproduced live against a dstdns JS lane).**
+
+**Observed:** JavaScript R2 is judged by ingesting StrykerJS's report (B046; the lane's own argv runs Stryker). The JS adapter's `generate_mutation_sites` is unconditionally `UNSUPPORTED` (`src/assay/cli.py` `_resolve_declared_adapters` comments around l.579-660), so `assay plan` has no candidate rows for such a lane (`cli.plan_jobs` returns `"UNSUPPORTED"` / refuses), and `plan-estimate` requires a plan with `candidate_count` candidates. A consumer configuring the first R2 budget for a Stryker lane therefore has no assay-side estimate source at all.
+
+**Why assay owns it:** the candidate count of an ingested run is known only from the producer's report; assay already parses that report format at judging time.
+
+**Proposed contract:** either (a) let `plan-estimate` accept the count from a prior ingested report (`--report` mutant count) plus a baseline progress file, or (b) state in CONSUMERS (B046 section) that ingested lanes are not plannable and give the recommended first-run budget procedure. Refuse by name rather than fail as an unsupported adapter.
+
+**Oracles:** a fixture Stryker report plus baseline progress yields an estimate with provenance naming the report; a native-lane plan is unchanged; a controlled wrong implementation that silently uses 0 candidates must fail.
+
+**Spec owner:** B046 / B111.
+
+## B138 — no consolidated v12 to v13 migration section in CONSUMERS.md
+
+**Status: OPEN (filed 2026-09-30 from dstdns, which is pending the 7.0.0 cutover, P219).**
+
+**Observed:** `docs/CONSUMERS.md` has "Migration notes (v11 -> v12)" (l.~2998) and a historical v10 -> v11 section, but nothing for v12 -> v13. The v13 facts are scattered: the `MutantOutcome.identity` note (l.~2836), the reuse/cold-start paragraph (l.~2883, "A v12 verdict is a cold start"), "Adopting a v2-capable release" (l.~2975, `assay verify` rejects v12), and the 7.0.0 CHANGES entry.
+
+**Why assay owns it:** consumers pinning a release read CONSUMERS.md as the cutover checklist; a hard-cut schema bump without one makes each consumer rediscover the list.
+
+**Proposed contract:** add "Migration notes (v12 -> v13)" listing: what `assay verify` now refuses, what archived verdicts need regenerating, what reuse does on a v12 prior, any lane-file changes, and the order of consumer steps. Note: B125 (latest schema only) may intend to prune historical notes; decide whether the most recent cut is exempt.
+
+**Oracle:** a docs test or checklist that every `schema_version` bump in CHANGES has a matching CONSUMERS migration heading.
+
+## B139 — the assay-cli skill omits JavaScript R2 by Stryker ingestion
+
+**Status: OPEN (filed 2026-09-30 from dstdns).**
+
+**Observed:** the canonical `assay/.claude/skills/assay-cli/SKILL.md` section "What this build evaluates" (l.97-102) lists "R0, Python R1, Python R2, Python R3, JavaScript R1, Go R1, SQL R2". CONSUMERS.md (l.1267-1273, B046 section l.1887) documents JavaScript R2 by ingestion of the lane's own StrykerJS report. An agent following the skill concludes JS R2 is a capability gap and may route around it, which the same paragraph tells it not to do.
+
+**Proposed fix:** add "JavaScript R2 (ingested Stryker report, B046)" and point at CONSUMERS. Do not edit dstdns's vendored copy; it syncs from the canonical skill.
+
+**Oracle:** a test that derives the skill's capability list from `assay lanes --json` capability output or from the registry and compares it, so the list cannot drift again (controlled wrong: remove an entry and see it fail).
+
+## B140 — no project-level default for `env_passthrough`
+
+**Status: OPEN (filed 2026-09-30 from dstdns; 118 of dstdns's lanes declare `env_passthrough`, only about 40 carry `BUILD_VERSION`).**
+
+**Observed:** `src/assay/config.py` (l.1555) reads `table["env_passthrough"]` per lane with no inherited default, and the file-level schema has no defaults table. dstdns has a common set of names (BUILD_VERSION and others) that every lane needs; a new lane that omits one fails its first run `COMMAND_FAILED` (for example a test that reads `BUILD_VERSION`), after a full run's cost, and the fix is to add the name and rerun.
+
+**Why assay owns it:** only assay resolves the lane command's environment; the consumer can only repeat names lane by lane (or generate the file).
+
+**Proposed contract:** an optional project-level `[defaults] env_passthrough = [...]` (additive, unioned with the lane's own list, order-stable, deduplicated), refused by name if a default collides with a lane `env` fixed value (the existing P15 A-067 rule). The verdict should still record the effective list so evidence stays faithful. Weigh this against the 4.2a shadowing-default hazard: the default must be explicit in the consumer's own file, never built into assay.
+
+**Oracles:** a lane inheriting the default sees the variable; a lane-level `env` fixed value with the same name refuses; the verdict's effective `env_passthrough` lists the union; a controlled wrong implementation that applies the default only to lanes declaring an empty list must fail.
+
+## B141 — changed-lines lanes cannot scope to files: `judge.source_roots` must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests
+
+**Status: OPEN (filed 2026-09-30 from dstdns, P214/P2xx R2 campaign, `nyxloom-trove/decisions.md` D-577; source-grounded for the directory requirement, the false-survivor mechanism is dstdns's measured rationale for D-577, not re-run here).**
+
+**Observed:** `src/assay/config.py` (l.~3655) rejects any `judge.source_roots` entry that is not an existing directory (`if not resolved.is_dir(): raise LaneConfigError(... does not exist under the project root)`); `measurability.py` (l.~52-84) selects changed files by `is_relative_to(root)` for the roots. A changed-lines R2 lane (`base_source = "request"`) whose package owns one or two files in a shared directory therefore must declare the whole directory. Run at a later HEAD than its package's merge, the changed-line set (base..HEAD) also contains OTHER packages' edits to sibling files in that directory; those lines are mutated and judged against THIS lane's test suite, which does not cover them, yielding false survivors.
+
+**Expected:** a lane can name exactly the files it owns, or the changed-line set is limited to the lane's declared targets.
+
+**Why it matters (dstdns):** dstdns works around it by running such lanes only at their own package's merge commit (D-577), which serializes R2 behind merges and forbids coalescing changed-lines lanes at a later HEAD.
+
+**Proposed fix direction:** (a) allow `judge.source_roots` entries that name a regular file (same containment and existence checks; `is_relative_to` becomes equality for a file root), or (b) for `judge.mode = "changed_lines"` accept `judge.targets` as a filter on the changed-line set (intersection with source_roots), refusing a target outside the roots. Either must keep the typo guard (A-016/A-035: a root matching nothing must not yield 0/0 PASS).
+
+**Oracles:** a file-level root excludes a changed sibling file in the same directory from judgment; a directory root behaves unchanged; a root naming a missing file refuses by name; a controlled wrong implementation that treats a file root as its parent directory must fail the sibling-exclusion oracle.
+
+**Found in:** dstdns 2026-09-30, R2 campaign package P214 (changed-lines lanes), decision D-577.

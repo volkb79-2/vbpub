@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ciu import scaffold  # noqa: E402
+from ciu import governance, scaffold  # noqa: E402
 
 
 @pytest.fixture
@@ -59,6 +59,20 @@ def test_init_writes_tree_and_renders_clean(workdir):
     parsed = tomllib.loads(rendered)
     assert parsed["deploy"]["project_name"] == "demo"
     assert parsed["deploy"]["network_name"] == "$DOCKER_NETWORK_INTERNAL"
+    # CIU-110: `ciu init` exposes every current governance setting as active
+    # config data, not a commented-out fragment, while its defaults add no
+    # per-container caps.
+    generated_governance = parsed["governance"]
+    assert set(generated_governance) == set(governance.GOVERNANCE_DEFAULTS)
+    assert generated_governance["enabled"] is False
+    assert generated_governance["mem_limit"] == ""
+    assert generated_governance["mem_swap_limit"] == ""
+    assert generated_governance["mem_reservation"] == ""
+    assert generated_governance["cpus"] == ""
+    assert generated_governance["read_iops"] == ""
+    assert generated_governance["write_iops"] == 0
+    assert generated_governance["memory_profile"]["default"]["ksm"] == "preload"
+    assert generated_governance["memory_profile"]["services"] == {}
     # Review-blocker guard: ownership facts ship with the template.
     shared = parsed["deploy"]["env"]["shared"]
     assert {"CONTAINER_UID", "DOCKER_GID", "REPO_ROOT", "PHYSICAL_REPO_ROOT"} <= set(shared)

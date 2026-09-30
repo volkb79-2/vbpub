@@ -9,7 +9,9 @@ meaningful gate.
 from __future__ import annotations
 
 import argparse
+import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -17,6 +19,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -126,16 +129,31 @@ def _resolve_worktree_context(invocation_root: Path, relative_cwd: str) -> tuple
 
 _DIND_READY_TIMEOUT = 30.0
 
-# Flat, per-container safe bounds (host dev-tier cgroup governance rollout —
-# nyxloom/docs/plan-resource-governance.md + the mdt host-setup companion).
-# Deliberately NOT a fraction of dev.slice's own aggregate budget: every gate
-# container gets its own independent ceiling regardless of how many run
-# concurrently, on top of (not instead of) the tier's own aggregate cap.
+# Flat, per-container safe bounds for the tester workload (host dev-tier cgroup
+# governance rollout — nyxloom/docs/plan-resource-governance.md + the mdt
+# host-setup companion). They are not a fraction of the slice's aggregate cap.
+# The optional DinD sidecar currently receives only the gates slice; its
+# separate per-container resource policy remains an open CLI decision.
 #
 _SLICE_PROBE_IMAGE_ENV = "CMRU_TESTER_CGROUP_PROBE_IMAGE"
 _CPUS_ENV = "CMRU_TESTER_CPUS"
 _DIND_IMAGE_ENV = "CMRU_TESTER_DIND_IMAGE"
 _CGROUP_PARENT_ENV = "CMRU_TESTER_CGROUP_PARENT"
+_CPU_LIMIT_PATTERN = re.compile(r"\+?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
+_CPU_PERIOD_MICROSECONDS = 100_000
+_MIN_CPU_LIMIT = Decimal(1) / Decimal(_CPU_PERIOD_MICROSECONDS)
+_CPU_LIMIT_ERROR = (
+    "CPU limit must be a finite decimal Docker can enforce "
+    "(minimum 0.00001 CPUs)"
+)
+
+
+def _docker_run_argv(cgroup_parent: str, *arguments: str) -> list[str]:
+    """Start every helper and workload container inside the declared tier."""
+    parent = cgroup_parent.strip()
+    if not parent:
+        raise ValueError("tester-gate Docker containers require a cgroup parent")
+    return ["docker", "run", f"--cgroup-parent={parent}", *arguments]
 
 # The orchestration-injected environment every tester-gate step depends on
 # (KI-17). These are normally supplied by ``cmru.orchestration.toml [env]`` and
@@ -155,7 +173,9 @@ REQUIRED_TESTER_ENV = (
 )
 
 
-def check_slice_unit(slice_name: str, probe_image: str) -> tuple[bool | None, str]:
+def check_slice_unit(
+    slice_name: str, probe_image: str, cgroup_parent: str,
+) -> tuple[bool | None, str]:
     """Probe whether a systemd slice UNIT is genuinely installed on the DOCKER
     HOST (not this process's own host/mount namespace).
 
@@ -211,12 +231,12 @@ def check_slice_unit(slice_name: str, probe_image: str) -> tuple[bool | None, st
 
     try:
         result = subprocess.run(
-            [
-                "docker", "run", "--rm", "--privileged", "--pid=host", probe_image,
+            _docker_run_argv(
+                cgroup_parent, "--rm", "--privileged", "--pid=host", probe_image,
                 "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "-p",
                 "systemctl", "show", slice_name,
                 "--property=LoadState,FragmentPath", "--no-pager",
-            ],
+            ),
             capture_output=True,
             text=True,
             timeout=30,
@@ -250,7 +270,9 @@ def check_slice_unit(slice_name: str, probe_image: str) -> tuple[bool | None, st
     )
 
 
-def _probe_io_support(probe_image: str) -> tuple[bool | None, str]:
+def _probe_io_support(
+    probe_image: str, cgroup_parent: str,
+) -> tuple[bool | None, str]:
     """Whether the DOCKER HOST's cgroup hierarchy supports per-device blkio
     throttling — required before passing any ``--device-*-bps/iops`` flag.
 
@@ -273,11 +295,11 @@ def _probe_io_support(probe_image: str) -> tuple[bool | None, str]:
         )
     try:
         result = subprocess.run(
-            [
-                "docker", "run", "--rm", "--privileged", "--pid=host", probe_image,
+            _docker_run_argv(
+                cgroup_parent, "--rm", "--privileged", "--pid=host", probe_image,
                 "sh", "-c",
                 "stat -fc %T /sys/fs/cgroup; cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null",
-            ],
+            ),
             capture_output=True, text=True, timeout=30, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -397,9 +419,36 @@ def _resolve_required(explicit: str | None, env_name: str, label: str) -> str:
     )
 
 
+def _positive_cpu_limit(value: str) -> str:
+    """Require a CPU value Docker can turn into a nonzero limit."""
+    candidate = str(value).strip()
+    if not _CPU_LIMIT_PATTERN.fullmatch(candidate):
+        raise argparse.ArgumentTypeError(_CPU_LIMIT_ERROR)
+    try:
+        parsed = Decimal(candidate)
+        as_float = float(parsed)
+        nano_cpus = as_float * 1_000_000_000
+        representable = (
+            math.isfinite(as_float)
+            and math.isfinite(nano_cpus)
+            and parsed >= _MIN_CPU_LIMIT
+            and 1 <= nano_cpus <= (2**63 - 1)
+        )
+    except (InvalidOperation, OverflowError, ValueError):
+        representable = False
+        parsed = Decimal(0)
+    if not representable or parsed <= 0:
+        raise argparse.ArgumentTypeError(_CPU_LIMIT_ERROR)
+    return candidate
+
+
 def resolve_cpus(explicit: str | None) -> str:
     """Resolve the per-container CPU ceiling without a hidden source default."""
-    return _resolve_required(explicit, _CPUS_ENV, "CPU limit")
+    value = _resolve_required(explicit, _CPUS_ENV, "CPU limit")
+    try:
+        return _positive_cpu_limit(value)
+    except argparse.ArgumentTypeError as exc:
+        raise SystemExit(f"tester-gate: {exc}") from exc
 
 
 def resolve_cgroup_probe_image(explicit: str | None) -> str:
@@ -420,8 +469,17 @@ def _dind_ready(name: str) -> bool:
     return probe.returncode == 0 and bool(probe.stdout.strip())
 
 
+def _dind_start_argv(image: str, name: str, cgroup_parent: str) -> list[str]:
+    return _docker_run_argv(
+        cgroup_parent, "-d", "--rm", "--privileged", "--name", name,
+        "-e", "DOCKER_TLS_CERTDIR=", image,
+    )
+
+
 @contextmanager
-def dind_sidecar(image: str, ready_timeout: float = _DIND_READY_TIMEOUT) -> Iterator[str]:
+def dind_sidecar(
+    image: str, *, cgroup_parent: str, ready_timeout: float = _DIND_READY_TIMEOUT,
+) -> Iterator[str]:
     """Start an ephemeral, fully isolated nested Docker daemon; yield its
     container name once ready. Always torn down, even on failure.
 
@@ -435,8 +493,7 @@ def dind_sidecar(image: str, ready_timeout: float = _DIND_READY_TIMEOUT) -> Iter
     """
     name = f"cmru-tester-dind-{uuid.uuid4().hex[:12]}"
     subprocess.run(
-        ["docker", "run", "-d", "--rm", "--privileged", "--name", name,
-         "-e", "DOCKER_TLS_CERTDIR=", image],
+        _dind_start_argv(image, name, cgroup_parent),
         check=True, capture_output=True, text=True,
     )
     try:
@@ -458,7 +515,7 @@ def build_docker_command(
     command: Sequence[str],
     *,
     image: str,
-    cgroup_parent: str = "",
+    cgroup_parent: str,
     cgroup_parent_dev_background: str = "",
     cgroup_parent_dev_gates: str = "",
     sidecar_name: str | None = None,
@@ -513,21 +570,25 @@ def build_docker_command(
         raise ValueError("--cwd must be a relative path inside the current worktree")
     if not command:
         raise ValueError("tester-gate requires a command after '--'")
+    try:
+        cpus = _positive_cpu_limit(cpus)
+    except argparse.ArgumentTypeError as exc:
+        raise ValueError(str(exc)) from exc
     host_root = _physical_path(repo_root)
-    argv = [
-        "docker", "run", "--rm",
+    argv = _docker_run_argv(
+        cgroup_parent,
+        "--rm",
         "--mount", f"type=bind,src={host_root},dst=/worktree",
         "--workdir", str(Path("/worktree") / relative),
         "--memory", memory,
         "--memory-swap", memory_swap,
         "--cpus", cpus,
-    ]
+        "--cpu-period", str(_CPU_PERIOD_MICROSECONDS),
+    )
     common_dir = _git_common_dir(repo_root)
     if common_dir is not None:
         host_common_dir = _physical_path(common_dir)
         argv += ["--mount", f"type=bind,src={host_common_dir},dst={common_dir},readonly"]
-    if cgroup_parent:
-        argv.append(f"--cgroup-parent={cgroup_parent}")
     if device_read_iops:
         argv += ["--device-read-iops", device_read_iops]
     if device_write_iops:
@@ -591,7 +652,7 @@ def tester_gate_cli():
         (("--forward-cgroup-parent-gates-var",), "value forwarded as $CGROUP_PARENT_DEV_GATES", "SLICE", {"default": None}),
         (("--memory",), "Docker memory cap; defaults to $CMRU_TESTER_MEMORY", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY")}),
         (("--memory-swap",), "Docker combined memory-plus-swap total", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY_SWAP")}),
-        (("--cpus",), "CPU ceiling; otherwise read $CMRU_TESTER_CPUS", "N", {"default": None}),
+        (("--cpus",), "CPU ceiling >= 0.00001; otherwise read $CMRU_TESTER_CPUS", "N", {"default": None, "type": _positive_cpu_limit}),
         (("--cgroup-probe-image",), "host-systemd probe image; otherwise read $CMRU_TESTER_CGROUP_PROBE_IMAGE", "IMG", {"default": None}),
         (("--dind-image",), "nested Docker daemon image; required with --enable-docker", "IMG", {"default": None}),
         (("--device-read-iops",), "per-container read IOPS cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", "")}),
@@ -626,7 +687,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_tester_gate(args, _runtime) -> int:
-    dry_run = bool(getattr(args, "dry_run", False))
+    dry_run = args.dry_run
     command = list(args.command)
     if command[:1] == ["--"]:
         command = command[1:]
@@ -647,14 +708,20 @@ def _run_tester_gate(args, _runtime) -> int:
 
     cgroup_parent = resolve_cgroup_parent(args.cgroup_parent)
     probe_image = resolve_cgroup_probe_image(args.cgroup_probe_image)
-    if cgroup_parent:
-        exists, note = check_slice_unit(cgroup_parent, probe_image)
+    memory = resolve_memory(args.memory)
+    memory_swap = resolve_memory_swap(args.memory_swap)
+    cpus = resolve_cpus(args.cpus)
+    if dry_run:
+        print(
+            "[DRY RUN] Host gates-slice verification skipped; it starts a temporary "
+            "privileged container and will run during an actual launch."
+        )
+    else:
+        exists, note = check_slice_unit(cgroup_parent, probe_image, cgroup_parent)
         if exists is False:
             raise SystemExit(f"tester-gate: refusing to launch — {note}")
         if exists is None:
             print(f"[WARN] tester-gate: {note}", file=sys.stderr)
-    else:  # pragma: no cover - resolve_cgroup_parent fails closed above
-        raise SystemExit("tester-gate: cgroup parent is required")
 
     device_caps = [dc.strip() for dc in (
         args.device_read_iops, args.device_write_iops,
@@ -663,7 +730,7 @@ def _run_tester_gate(args, _runtime) -> int:
     args.device_read_iops, args.device_write_iops = device_caps[0], device_caps[1]
     args.device_read_bps, args.device_write_bps = device_caps[2], device_caps[3]
     if any(device_caps) and not dry_run:
-        io_ok, io_note = _probe_io_support(probe_image)
+        io_ok, io_note = _probe_io_support(probe_image, cgroup_parent)
         if io_ok is False:
             raise SystemExit(
                 "tester-gate: refusing to launch — device IO caps requested but "
@@ -676,10 +743,6 @@ def _run_tester_gate(args, _runtime) -> int:
             "[DRY RUN] Host IO capability probe skipped; it starts a temporary "
             "privileged container and will run during an actual launch."
         )
-
-    memory = resolve_memory(args.memory)
-    memory_swap = resolve_memory_swap(args.memory_swap)
-    cpus = resolve_cpus(args.cpus)
 
     forward_var = (
         getattr(args, "forward_cgroup_parent_var", None)
@@ -709,11 +772,15 @@ def _run_tester_gate(args, _runtime) -> int:
     if dry_run:
         if args.enable_docker:
             dind_image = resolve_dind_image(args.dind_image)
+            dind_name = "cmru-dry-run-dind-sidecar"
+            print(
+                "[DRY RUN] "
+                + shlex.join(_dind_start_argv(dind_image, dind_name, cgroup_parent))
+            )
             docker_argv = build_docker_command(
                 repo_root, container_cwd, command,
-                sidecar_name="cmru-dry-run-dind-sidecar", **build_kwargs,
+                sidecar_name=dind_name, **build_kwargs,
             )
-            print(f"[DRY RUN] Would start nested Docker daemon image {dind_image}")
         else:
             docker_argv = build_docker_command(
                 repo_root, container_cwd, command, **build_kwargs,
@@ -723,7 +790,7 @@ def _run_tester_gate(args, _runtime) -> int:
 
     if args.enable_docker:
         dind_image = resolve_dind_image(args.dind_image)
-        with dind_sidecar(dind_image) as sidecar:
+        with dind_sidecar(dind_image, cgroup_parent=cgroup_parent) as sidecar:
             docker_argv = build_docker_command(
                 repo_root, container_cwd, command, sidecar_name=sidecar, **build_kwargs,
             )

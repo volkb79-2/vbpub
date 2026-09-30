@@ -135,7 +135,7 @@ def resolve_cli():
     return registry.build()
 
 
-def _run_resolve(args, _runtime) -> int:
+def _run_resolve(args, _runtime) -> int | None:
     """Perform one fully parsed resolve invocation."""
     from cmru.cli_support import TargetSelectionError, select_target_names
 
@@ -209,7 +209,7 @@ def _run_resolve(args, _runtime) -> int:
             f"===== Resolve Project: {name.upper()} =====\n{format_result(result, 'url')}"
             for name, result in results.items()
         ))
-    return 0
+    return
 
 
 def resolve_main(argv: Optional[list] = None) -> int:

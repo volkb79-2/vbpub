@@ -3,7 +3,8 @@
 Status: `Config.run_io_benchmark`/`io_benchmark_duration_s`/
 `io_benchmark_max_size_gb` exist (`debian_install_v2/config.py`) and the
 kernel's own `iocost_coef_gen.py` is vendored (`debian_install_v2/vendor/`).
-Nothing in `installer.py` invokes it yet. This note captures the design
+MDT host setup and `iocost-calibrate.sh` consume the shared generated
+artifact from `tools/`; nothing in `installer.py` invokes it yet. This note captures the design
 worked out 2026-09-09 so the actual partition-surgery integration can be
 built as its own careful, reviewed pass — the same way
 `CASE-B-ROOT-SHRINK-DESIGN.md` preceded that feature's implementation,
@@ -32,7 +33,7 @@ landed before any code was written:
    separate, later decision — see `debian_install_v2/README.md`'s "Not yet
    in v2" section.
 
-## The `--testdev`-vs-partition problem — RESOLVED via a vendored patch
+## The `--testdev`-vs-partition problem — RESOLVED in the shared patch series
 
 `iocost_coef_gen.py --testdev DEV` runs destructive tests directly against
 whatever device it's given — explicitly documented as destroying
@@ -48,20 +49,26 @@ correct for `/dev/vda` (`/sys/block/vda/queue/...` exists), but **wrong for
 a partition** (`/sys/block/vda7` does not exist; only `/sys/block/vda/vda7`
 does). Pointed at a partition, it fails outright trying to open that path.
 
-**Resolved, not worked around**: `debian_install_v2/vendor/0001-testdev-
-resolve-partition-to-parent-for-sysfs.patch` is a 9-line patch that reuses
-the script's own `dir_to_dev()` partition→whole-device resolution
+**Resolved, not worked around**: the shared generator patch
+`debian_install_v2/vendor/0001-testdev-resolve-partition-to-parent-for-sysfs.patch`
+reuses the script's own partition→whole-device resolution
 (`glob.glob('/sys/block/*/' + devname)`) for `--testdev`'s `devname` too —
 but only for the two sysfs lookups; `devno`/`testfile` (what fio actually
 reads/writes) stay exactly the partition given on the command line.
 Elevator/nomerges genuinely are whole-queue properties shared across every
-partition of a disk, so widening only those two lookups is correct. This
-keeps the benchmark on the tool's primary, highest-fidelity raw-device
-mode — no format+mount detour, no filesystem-layer overhead on the
-numbers, and the vendored copy itself stays byte-identical to upstream
-(the patch applies on top of it at deploy/invoke time — see
-`vendor/README.md` for the exact `patch -p1`/drift-check invocation, and
-never hand-edit the vendored file itself).
+partition of a disk, so widening only those two lookups is correct. The
+preferred throwaway-partition flow is still to format and mount that partition
+then run in file-target mode, avoiding raw-device writes. Raw `--testdev`
+partition support remains available for an operator who deliberately accepts
+its destructive target semantics. Both carried patches are applied when the
+single shared runtime artifact is generated; see `vendor/README.md` and
+`tools/build-iocost-generator.py`.
+
+The mounted file-target mode also writes data: setup fills a new target with
+random data and fio overwrites it during measurement. Use a dedicated
+disposable scratch path. An existing target is reused only if it is a
+single-link regular file with the requested size; mismatched paths are
+refused without unlinking or replacing them.
 
 ## Sizing and duration (operator-specified, 2026-09-09)
 
