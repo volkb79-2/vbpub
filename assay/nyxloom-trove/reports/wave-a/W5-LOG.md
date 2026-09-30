@@ -253,6 +253,10 @@ and replacement `NULL`:
 - `test_drop_not_null_at_the_very_start_of_the_text_is_a_bare_site`: `NOT NULL;` (span 0..8, line 1) and `\nNOT NULL;` (span 1..9, line 2).
 - `test_drop_not_null_directly_after_punctuation_is_a_bare_site`: `(NOT NULL)` (1..9), `...(a INT,NOT NULL)` (22..30), `...(a INT, NOT NULL)` (23..31),
   and `(` + newline + space before it (line 2, 18..26).
+- Reviewer-found surviving mutant closed: if `_preceding_word`'s whitespace loop also skipped `(` (or `,`), a keyword before the punctuation would leak through.
+  Added a fifth case to the punctuation test: `SET (NOT NULL);` -> bare `NOT NULL -> NULL`, span 5..13, span text `NOT NULL`, replacement `NULL`.
+- Controlled break, in a SCRATCH copy only (worktree untouched): the first `while` in `_preceding_word` also skipped `b"("`. The new case went red
+  (`'SET NOT NULL -> DROP NOT NULL' != 'NOT NULL -> NULL'`); the file is green (63 passed) on the real source.
 
 **Coverage.** Serial `pytest tests --cov=src/assay --cov-branch` (`env -u FORCE_COLOR nice -n 19 ionice -c3`): 5489 passed, 1 skipped, 1 failed (the known
 environmental B134 `test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused`). `sql.py:157` is now executed. The only other missing line in `src/assay`

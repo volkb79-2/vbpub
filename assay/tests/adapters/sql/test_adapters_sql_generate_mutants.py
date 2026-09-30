@@ -231,6 +231,16 @@ def test_drop_not_null_directly_after_punctuation_is_a_bare_site():
     assert _span_text(source, site) == b"NOT NULL"
     assert site.replacement == b"NULL"
 
+    # A real keyword BEFORE the punctuation must not leak through it:
+    # "SET (" is 5 bytes, so the span is 5..13.
+    source = "SET (NOT NULL);\n"
+    site = _one_site(source, "sql:drop-not-null")
+    assert site.description == "NOT NULL -> NULL"
+    assert site.lineno == 1
+    assert (site.start_byte, site.end_byte) == (5, 13)
+    assert _span_text(source, site) == b"NOT NULL"
+    assert site.replacement == b"NULL"
+
 
 def test_drop_not_null_alter_form_replaces_set_not_null_with_drop_not_null():
     """The mirror of rule 2: this is BOTH the operator's own alter-form span
