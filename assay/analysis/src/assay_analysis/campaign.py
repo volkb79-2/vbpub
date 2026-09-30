@@ -1437,7 +1437,7 @@ def _check_verdict_against_lane(verdict: dict, *, lane_name: str, head: str, lan
             "jobs": mutation_policy.jobs,
             "max_mutants": mutation_policy.max_mutants,
             "operators": list(mutation_policy.operators),
-            "mode": lane.judge.mode,
+            "mode": lane.judge.mode if lane.judge.mode is not None else "changed_lines",
         }
         for key, expected_value in expected_policy.items():
             if r2_policy.get(key) != expected_value:
