@@ -64,7 +64,7 @@ eb5585414886feba6b05668a708dae12c53907bd5e713d38238abc6e853239cb  tracked-change
 
 `_verdict_inventory` also lost its now-unused `buckets_in_verdict` parameter. `test_analysis_campaign_verdict_refusals.py::DOMINATED` pins that every one of these inputs is still refused by the verifier (`invalid Assay verdict: `, `source: "verdict"`), so a weakened verifier goes red. The reachable rows there are `verdict-allow-dirty-overrides` (old :180), `outcome-field-differs-from-plan` and `inventory-differs-from-plan` (a self-consistent shorter inventory).
 
-## Step 3a: raise -> case id map (partial; complete it at the end from `grep -n "raise "`)
+## Step 3a: raise -> case id map (early partial draft; the COMPLETE map is in "Checkpoint 11" below)
 
 | raise (message fragment) | case id (file) |
 |---|---|
@@ -133,6 +133,63 @@ Every previously uncovered line/arc is now reached by a table row or pin. CD58 a
 
 OWED at this checkpoint (controlled breaks for the new pins; Edit break -> red -> Edit revert -> log a row here): `plan-unsupported` (`if plan["status"] == "unsupported"` off), `--request-base` pass-through (`request_base` replaced by `None` in `_reconstruct_plan`), the `terminal_disagrees` blocker (`test_a_verdict_campaign_whose_stream_has_no_terminal_event_...`; `("terminal_disagrees", False)`), `phase_seconds`/`startup_seconds` shapes (`_optional_object` returns the value unchanged), `started_count`/`evidence_command` (`_typed` returns the value unchanged), `state_vs_progress` (item not appended), the fixed-component pins (`coverage = span("direct")` first, `other` without `- (r2 or 0.0)`), the earlier-run pin (`sorted(selection)` -> `sorted(seen)` in `_resolutions`), `--log` (`artifacts["log"]` not set), `no branch capability` (arc detail computed when capability is not `reported`), `not_supported` (branch returns `not_applicable`), the shard-scope rows (`progress-*`: each check `if False`).
 
+## Checkpoint 11: owed controlled breaks done, the complete raise -> case id map, one more CD58 deletion (496 `analysis/tests` passed)
+
+Every owed break below was applied by Edit to `campaign.py`, each target test was run singly (a batch of orthogonal breaks was applied at once, and each test was run alone against it; the failure text names the broken site), then every break was reverted by Edit. `git diff -- analysis/src` after the reverts shows only the CD58 deletion in the next paragraph. Rows are appended to "Campaign oracle traceability".
+
+Two owed pins were WEAK and were strengthened before their break was accepted (a break that leaves a green test is a finding, not a pass):
+
+- `_optional_object` returning the value unchanged left `test_a_row_carries_the_phase_and_startup_objects_with_exactly_their_keys` green (`10 == 10.0`). The test now also asserts that every non-null value is a `float`; it is red under the break.
+- `coverage = span("direct")` before `span("baseline")` left every projection test green (no test had both spans). New test `test_projection_prefers_the_baseline_span_over_the_direct_span` (spans `direct` 2 s and `baseline` 5 s); it is red under the swap.
+
+One owed break named the wrong site and exposed a redundant condition (CD58, deletion, no behaviour change): `for candidate_id in sorted(selection)` -> `sorted(seen)` was green because `_resolutions` collected `seen`/`history` only `if candidate_id in selection`, and the loop that reads them iterates `selection`, so the filter was unobservable (`if True:` in its place: green). The filter was deleted, `_resolutions` now iterates `sorted(selection)` over an unfiltered `seen`, and `test_an_earlier_runs_candidate_outside_the_latest_selection_is_not_counted` is red under `sorted(seen)` (4 candidates reported instead of 2). Nothing pragma'd.
+
+### The complete raise -> case id map (every `raise` in `campaign.py`, 116 sites, by line at HEAD of this checkpoint)
+
+All ids are parametrized rows of `test_every_campaign_refusal_is_reachable[<id>]` (`test_analysis_campaign_refusals.py`) unless another test is named. Each row asserts its fragment is in the message and that the source word is right.
+
+| raise line(s) | message | case id |
+|---|---|---|
+| 90 / 93 | candidate `elapsed_seconds` must be a number / finite and non-negative | `elapsed-not-a-number` / `elapsed-negative` |
+| 106 | `phase_seconds`/`startup_seconds` shape | `phase-seconds-shape` (and the float pin in `test_analysis_campaign_residual.py`) |
+| 112 / 116 / 118 | `emitted_at` empty / not ISO / no timezone | `emitted-at-empty` / `emitted-at-not-iso` / `emitted-at-no-timezone` |
+| 132 | `<label> artifact is missing` | `progress-missing`; `gate-log-missing`; `test_cd51_an_error_source_names_the_refused_input[verdict]` |
+| 134 / 138 / 140 / 150 / 156 | open / not regular / over the limit / grew while reading / changed while reading | `progress-symlink` / `progress-directory` / `progress-oversize-declared` / `progress-oversize-while-reading` / `progress-changed-while-reading` (state records: `record-symlink`, `test_a_state_record_over_the_size_limit_is_refused`) |
+| 172 / 176 | verdict not UTF-8 / fails `verify_text` | `verdict-not-utf8` / `verdict-fails-verification` (+ the `DOMINATED` rows of `test_analysis_campaign_verdict_refusals.py`) |
+| 180 | `--allow-dirty` overrides | `verdict-allow-dirty-overrides` (`..._verdict_refusals.py`) |
+| 185 | verdict commit differs | `test_analysis_campaign_verdicts.py::test_o18_a_stale_commit_verdict_is_an_evidence_error` |
+| 194 / 198 / 202 / 211 / 217 / 219 | lane file symlink / outside worktree / not a single committed path / not a committed regular file / unreadable / bytes differ | `lane-file-symlink` / `lane-file-outside-worktree` / `lane-file-untracked` / `lane-file-directory` / `lane-file-unreadable` / `lane-file-edited` |
+| 232 / 236 / 245 | progress not UTF-8 / torn final record / malformed event | `progress-not-utf8` / `progress-torn-with-verdict` (+ `test_o12_a_torn_final_record_is_an_evidence_error_with_a_verdict`) / `progress-unknown-event` |
+| 251 / 253 / 270 / 273 / 276 / 278 / 280 / 282 | run commit not full / run names another lane / too many runs / event before first run / conflicting commit / wrong lane / events after `verdict_written` / sweep events after `end` | `run-commit-not-full` / `run-wrong-lane` / `too-many-runs` / `event-before-first-run` / `event-conflicting-commit` / `event-wrong-lane` / `event-after-terminal` / `sweep-event-after-end` |
+| 289 / 291 | no run at the expected commit / latest run is for another commit | `no-run-at-all` / `latest-run-other-commit` |
+| 374 | coverage artifact for a lane with no R1 declaration | `test_analysis_campaign.py::test_cd51_an_error_source_names_the_refused_input[coverage]` |
+| 389 / 393 | coverage without `--verdict` / a path other than the declared artifact | `test_analysis_campaign_coverage_refusals.py::test_coverage_without_a_verdict_is_an_evidence_error` / `::test_a_coverage_path_other_than_the_declared_artifact_is_an_evidence_error` |
+| 438 / 459 | R1 policy field differs / re-evaluation disagrees (`status`, `coverage`) | `verdict-policy-field-differs` / `artifact-key-repeated`, `artifact-arc-on-a-judged-line-added` (`..._coverage_refusals.py`) |
+| 551 / 553 / 556 | candidates repeated / pilot selection / bad `judge_sha256` | `candidates-repeated` / `candidates-pilot-selection` (+ `test_o24_a_pilot_selection_in_the_progress_stream_is_an_evidence_error`) / `candidates-bad-judge` |
+| 561 / 563 / 567 / 569 / 574 / 576 | shard / resume / resume_merged repeated and out of order | `shard-repeated` / `shard-out-of-order` / `resume-repeated` / `resume-out-of-order` / `resume-merged-repeated` / `resume-merged-out-of-order` |
+| 580 / 583 / 585 / 587 / 589 / 593 / 598 / 600 | candidate before `candidates` / invalid id / repeated / outside the plan / unknown bucket / field differs from the plan / invalid index / repeated index | `candidate-before-candidates` / `candidate-invalid-id` / `candidate-repeated` / `candidate-outside-plan` / `candidate-unknown-bucket` / `candidate-field-differs` / `candidate-invalid-index` / `candidate-index-repeated` |
+| 607 / 612 | progress candidate not in the verdict / bucket disagrees with the verdict | `progress-candidate-outside-the-verdict-shard` / `test_analysis_campaign_verdicts.py::test_progress_and_verdict_outcomes_must_agree` |
+| 635 | end out of order | `end-out-of-order` |
+| 663 / 667 / 670 | shard malformed / invalid / selected_total differs | `shard-malformed` / `shard-invalid` / `shard-selected-differs` |
+| 677 / 684 / 687 / 689 / 691 / 693 | integer totals / candidate_total / selected_total / reconcile / events exceed pending | `selected-total-not-integer` / `resumed-total-negative` / `candidate-total-differs` / `selected-total-differs` / `totals-do-not-reconcile` / `events-exceed-pending` |
+| 697 / 699 / 702 / 704 | index outside the range / not contiguous / event total disagrees / mutation events without candidates | `index-outside-range` / `index-not-contiguous` / `event-total-disagrees` / `mutation-events-without-candidates` |
+| 708 / 712 | resume_merged without resume / count differs | `merged-without-resume` / `merged-count-differs` |
+| 718 / 720 / 723 / 725 / 727 / 730 / 732 / 743 / 748 | end total / buckets not canonical / bucket negative / no candidates / pre-submission after candidates / total differs / buckets do not reconcile / disagree with the verdict / terminal exit_code | `end-total-not-integer` / `end-buckets-not-canonical` / `end-bucket-negative` / `end-without-candidates` / `end-reason-after-candidates` / `end-total-differs` / `end-buckets-do-not-reconcile` / `end-buckets-disagree-with-verdict` / `terminal-exit-code-not-integer` |
+| 826 | plan row identity does not reproduce | `test_analysis_campaign_oracles.py::test_o16b_a_plan_row_whose_identity_inputs_do_not_reproduce_its_id_is_refused` |
+| 835 / 837 / 839 / 842 / 846 / 849 / 856 / 868 | state: schema / id vs name / identity / bucket / execution / judge digest / directory / not an object | `STATE_CASES` in `test_analysis_campaign_state_refusals.py` (`schema-version`, `bucket-unknown`, `execution-not-object`, `execution-mode-unknown`, `judge-not-digest`, `record-not-object`, `directory-missing`, `directory-is-a-file`); 837/839 by `test_analysis_campaign_state.py::test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused` |
+| 826 / 873 / 938 | aggregated `EvidenceErrors` (plan rows, state rows, state vs verdict) | the same state rows; 938 `test_analysis_campaign_state.py::test_o4_a_state_record_bucket_that_disagrees_with_the_verdict_names_the_file` |
+| 1361 / 1372 / 1383 | verdict lane differs / R1 policy differs / R2 policy differs | `test_analysis_campaign_verdicts.py::test_o18_a_verdict_for_another_lane_is_an_evidence_error` / `verdict-policy-artifact-differs` (`..._coverage_refusals.py`) / `verdict-r2-policy-differs` |
+| 1400 / 1405 / 1407 | plan base needs verdict or request base / no mutation plan / base differs | `plan-base-needs-verdict-or-request-base` / `plan-unsupported` / `plan-base-differs-from-verdict` |
+| 1456 / 1461 | verdict inventory / outcome field differs from the plan | `inventory-differs-from-plan` / `outcome-field-differs-from-plan` (`..._verdict_refusals.py`) |
+| 1498 / 1500 / 1502 / 1504 | command exit / `--command-exit` needs a verdict / offset / limit | `command-exit-negative` / `test_analysis_campaign.py::test_cd55_q12_command_exit_without_a_verdict_is_an_evidence_error` / `offset-negative` / `limit-zero` |
+| 1510 / 1825 | project jobs (library / argparse type) | `test_analysis_campaign_state.py::test_o9_the_library_entry_refuses_a_jobs_count_out_of_range` / `::test_o9_project_needs_a_jobs_count_in_range[...]` |
+| 1513 / 1515 | outcome filter outside the buckets / duplicates | `test_the_library_entry_refuses_an_outcome_filter_outside_the_six_buckets` (`..._residual.py`) / `outcome-duplicated` |
+| 1543 | plan has duplicate or malformed identities | `test_analysis_campaign.py::test_cd51_an_error_source_names_the_refused_input[plan]` |
+| 1581 / 1584 / 1594 | latest progress inventory differs / outside its scope / terminal disagrees | `progress-shard-differs-from-verdict` / `progress-candidate-outside-its-shard` / `test_cd51_an_error_source_names_the_refused_input[input]` |
+| 1610 | observed command exit differs | `test_analysis_campaign.py::test_o1_a_command_exit_that_differs_from_the_verdict_is_an_evidence_error` |
+
+CD58 deletions (raises that cannot fire) are listed in "Q23 under CD58" and "Coverage block under CD58"; the `_candidate_outcomes` `candidate_id is None` branch and the `_resolutions` `in selection` filter are the two non-raise deletions.
+
 ## Judge oracles (J step)
 Positive: `tests/core/test_cli_plan_jobs.py` 11 passed; `tests/core/test_mutation_candidates_event_judge.py` 2 passed; O21 set (`test_b105_cli_boundaries`, `test_cli_plan_estimate_hint`, `test_mutation_judge_identity*`, `test_mutation_progress_budget_plan`, `test_b106_reuse_and_witness`, `test_cli_provenance_and_request_base`, `test_import_contracts`, `test_cli_run`) 360 passed, 1 skipped, all unmodified.
 
@@ -191,3 +248,16 @@ Every break is an Edit on `campaign.py` (or the named file), observed red, rever
 | group 3 | W9 | O15 (REAL R2 planner, `--rejudge` second run: `completed_total 2`, `rejudged_total 1`, per-run events 2/1, `resumed_total`, `judge_sha256_source`, `state.counted 2`) | `..._real.py::test_o15_a_real_rejudge_run_is_counted_once_and_records_its_resumed_event` | (a) the Q22 fix reverted (`"mode": lane.judge.mode`): the campaign refuses the real verdict; (b) `rejudged_total = 0`; (c) the `candidates-event` judge branch `if False and ...` | red for each (b: `(2, 0) == (2, 1)`; c: `'paired-records' == 'candidates-event'`); `--reuse-from` half is a recorded residual (needs a pytest lane) |
 | group 3 | W9 | O25 (no private judge name) | `test_analysis_package_boundary.py::test_analysis_reaches_no_private_judge_name` | `assay_cli.plan_jobs(` -> `assay_cli._plan_jobs(` in `_lane_plan` (a `from assay import cli as assay_cli` private use) | red (the same run also crashed O15, expected) |
 | group 3 | W9 | Q18 (`no_remaining_work` under an `incomplete` closeout) | `test_analysis_campaign.py::test_interrupted_progress_produces_an_incomplete_closeout` | `elif pending == 0:` -> `elif False:` in `_timing` | red (also `test_complete_campaign_json_and_text_bind_plan_progress_and_verdict`) |
+| checkpoint 11 | W9 | `plan-unsupported` | `..._refusals.py::test_every_campaign_refusal_is_reachable[plan-unsupported]` | `if False and plan["status"] == "unsupported":` in `_reconstruct_plan` | red (message became `reconstructed plan base differs ...`) |
+| checkpoint 11 | W9 | `--request-base` pass-through | `..._residual.py::test_request_base_reaches_the_planner_for_a_lane_that_delegates_its_base` | `request_base` replaced by `None` in the `_lane_plan` call | red (`[None] == ['feature-base']`) |
+| checkpoint 11 | W9 | `terminal_disagrees` blocker | `..._residual.py::test_a_verdict_campaign_whose_stream_has_no_terminal_event_is_incomplete_for_that_reason_alone` | `("terminal_disagrees", False)` | red (`(0, '') == (3, '')`) |
+| checkpoint 11 | W9 | `phase_seconds`/`startup_seconds` shapes | `..._residual.py::test_a_row_carries_the_phase_and_startup_objects_with_exactly_their_keys` | `_optional_object` returns the value unchanged | GREEN at first (`10 == 10.0`); float assertion added; then red |
+| checkpoint 11 | W9 | `started_count`/`evidence_command` typed reads | `..._residual.py::test_started_count_and_evidence_command_are_typed_reads_of_the_recorded_evidence` | `_typed` returns the value unchanged | red (schema validation of the emitted document fails on `True`/`5`) |
+| checkpoint 11 | W9 | `state_vs_progress` | `..._residual.py::test_a_state_bucket_that_disagrees_with_the_progress_event_is_reclassified_not_hidden` | `if False:` on the append | red (`[] == [{...state_vs_progress...}]`) |
+| checkpoint 11 | W9 | fixed component: `baseline` before `direct` | `..._residual.py::test_projection_prefers_the_baseline_span_over_the_direct_span` (NEW) | `span("direct")` first | GREEN under the old tests; new test added; then red (`coverage_baseline` 2.0 not 5.0) |
+| checkpoint 11 | W9 | fixed component: `other` subtracts `r2` | `..._residual.py::test_projection_fixed_overhead_reads_the_baseline_spans_and_the_first_candidate` | `other = max(0.0, elapsed - (coverage or 0.0))` | red (sole break, run alone after the batch was reverted) |
+| checkpoint 11 | W9 | earlier-run pin | `..._residual.py::test_an_earlier_runs_candidate_outside_the_latest_selection_is_not_counted` | `sorted(selection)` -> `sorted(seen)` after the CD58 deletion of the `in selection` filter | GREEN with `if True:` in place of the filter (redundant condition, deleted); red under `sorted(seen)` (4 == 2) |
+| checkpoint 11 | W9 | `--log` | `..._residual.py::test_a_readable_gate_log_is_recorded_as_evidence_and_never_parsed` | `artifacts["log"]` not assigned | red (`KeyError: 'log'`) |
+| checkpoint 11 | W9 | no branch capability | `..._coverage_refusals.py::test_a_verdict_that_reports_no_branch_capability_yields_no_arc_detail` | `if True:` in place of `if expected_capability == "reported":` | red (`exact_from_coverage_py_artifact_and_reverified_r1` != `unavailable`) |
+| checkpoint 11 | W9 | `not_supported` | `..._residual.py::test_a_non_native_mutation_lane_is_reported_not_supported` | the branch returns `not_applicable` | red |
+| checkpoint 11 | W9 | shard-scope rows | `progress-candidate-outside-the-verdict-shard`, `progress-shard-differs-from-verdict`, `progress-candidate-outside-its-shard` | `if False and outcome is None:` (`TypeError` instead of a refusal); `if False and verdict ...` at `:1580`; `if False and not set(...) <= scope:` | red for each (the last two: no `errors` key, i.e. accepted) |

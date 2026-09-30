@@ -194,6 +194,17 @@ def test_projection_falls_back_to_the_direct_span_and_the_plan_events_r2_baselin
     assert missing == ["r3"]
 
 
+def test_projection_prefers_the_baseline_span_over_the_direct_span(tmp_path, monkeypatch):
+    root, head, _rows, progress = _stream(
+        tmp_path, monkeypatch,
+        extra_events=[_command_finished("direct", 2, 4), _command_finished("baseline", 1, 6)],
+    )
+    _code, _err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "2"))
+    components, _measured, missing = _fixed(document)
+    assert components == {"coverage_baseline": 5.0, "r2_baseline": None, "other": 5.0}
+    assert missing == ["r2_baseline", "r3"]
+
+
 def test_projection_names_every_fixed_component_it_could_not_measure(tmp_path, monkeypatch):
     root, head, _rows, progress = _stream(tmp_path, monkeypatch, executed=[], end=False)
     _code, _err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "2"))
@@ -240,6 +251,10 @@ def test_a_row_carries_the_phase_and_startup_objects_with_exactly_their_keys(tmp
     }
     assert set(by_id[first]["phase_seconds"]) == {"materialize", "command", "integrity", "teardown"}
     assert by_id[first]["startup_seconds"] == {"to_session_start": 5.0, "to_first_test": None}
+    for shape in ("phase_seconds", "startup_seconds"):
+        assert all(
+            type(value) is float for value in by_id[first][shape].values() if value is not None
+        ), shape
     for other in rows[1:]:
         assert by_id[other["id"]]["phase_seconds"] is None
         assert by_id[other["id"]]["startup_seconds"] is None

@@ -1075,11 +1075,14 @@ def _resolutions(
     history: dict[str, list[dict]] = {}
     for run in scope:
         for candidate_id, event in run["_candidate_events"].items():
-            if candidate_id in selection:
-                seen[candidate_id] = (event, run["run_id"])
-                history.setdefault(candidate_id, []).append(
-                    {"run_id": run["run_id"], "bucket": event["outcome_bucket"]}
-                )
+            seen[candidate_id] = (event, run["run_id"])
+            history.setdefault(candidate_id, []).append(
+                {"run_id": run["run_id"], "bucket": event["outcome_bucket"]}
+            )
+    # CD58: the loop is over ``selection``, so an earlier run's candidate outside it is
+    # never read from ``seen``/``history``; an ``if candidate_id in selection`` filter
+    # while collecting them was unobservable (the loop bound is pinned by
+    # ``test_an_earlier_runs_candidate_outside_the_latest_selection_is_not_counted``).
     for candidate_id in sorted(selection):
         record = state["counted"].get(candidate_id)
         if candidate_id in seen:
