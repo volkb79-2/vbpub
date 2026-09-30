@@ -26,6 +26,28 @@ from assay_analysis import campaign as campaign_api
 J_X, J_X1 = support.JUDGE_A, support.JUDGE_B
 
 
+# ---- W9R-2 ----------------------------------------------------------------
+
+def test_a_resume_claim_with_no_backing_record_in_the_store_is_unreconciled(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+
+    def change(records):
+        records[:] = [r for r in records if r["event"] != "candidate"]
+        i = next(i for i, r in enumerate(records) if r["event"] == "candidates")
+        records[i]["pending_total"] = 0
+        records[i]["judge_sha256"] = support.JUDGE_A
+        records.insert(i, {"event": "resume", "resumed_total": records[i]["selected_total"],
+                           "rejected_total": 0, "rejudged_total": 0})
+
+    _rewrite_progress(progress, change)
+    state = tmp_path / "state"
+    state.mkdir()
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0, extra=("--state-dir", str(state)))
+    doc = json.loads(out)
+    assert (code, doc["status"]) == (3, "incomplete")
+    assert "state_unreconciled" in doc["complete_blockers"]
+
+
 # ---- O4 -------------------------------------------------------------------
 
 def _set_judge(progress, judge):

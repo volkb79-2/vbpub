@@ -883,6 +883,7 @@ def _no_state() -> dict:
     """The store view when ``--state-dir`` was not supplied."""
     return {
         "output": None, "counted": {}, "current": {}, "unverified_ids": set(), "reclassified": [],
+        "resume_shortfall": False,
     }
 
 
@@ -978,6 +979,7 @@ def _reconcile_state(
         "current": {entry["id"]: entry for entry in same_judge},
         "unverified_ids": unverified_ids,
         "reclassified": reclassified,
+        "resume_shortfall": current is not None and len(eventless) < latest["resumed_total"],
     }
 
 
@@ -1692,6 +1694,7 @@ def campaign(
         and latest["candidate_milestone"]
         and latest["sweep_end_present"]
         and latest["sweep_end_reason"] is None
+        and (lane_timeout_row or len(events) == latest["pending_total"])
         and verdict_ids == expected_ids
         and expected_ids == plan_id_set
         and total_outcomes == len(expected_ids)
@@ -1728,7 +1731,8 @@ def campaign(
             ("coverage_not_reverified", coverage_blocks),
             (
                 "state_unreconciled",
-                state["output"] is not None and state["output"]["unreconciled"]["count"] > 0,
+                state["output"] is not None
+                and (state["output"]["unreconciled"]["count"] > 0 or state["resume_shortfall"]),
             ),
             (
                 "unverified_hung_records",

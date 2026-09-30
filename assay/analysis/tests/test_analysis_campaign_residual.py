@@ -19,6 +19,7 @@ from analysis.tests.test_analysis_campaign import (
     _invoke,
     _plan_rows,
     _repository,
+    _rewrite_progress,
     _validate,
     _write_progress,
 )
@@ -328,3 +329,27 @@ def test_an_earlier_runs_candidate_outside_the_latest_selection_is_not_counted(t
     reported = set(_candidate_rows(document))
     assert reported == set(assigned)
     assert not reported & set(outside)
+
+
+# ---- W9R-1 ----------------------------------------------------------------
+
+def test_a_pending_candidate_without_an_event_is_not_exhausted(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+
+    def change(records):
+        indexes = [i for i, r in enumerate(records) if r["event"] == "candidate"]
+        del records[indexes[-1]]
+
+    _rewrite_progress(progress, change)
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+    doc = json.loads(out)
+    assert (code, doc["status"], doc["complete_blockers"]) == (3, "incomplete", ["inventory_not_exhausted"])
+
+
+def test_a_stream_with_no_candidate_events_is_not_exhausted(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    _rewrite_progress(progress, lambda records: records.__setitem__(
+        slice(None), [r for r in records if r["event"] != "candidate"]))
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+    doc = json.loads(out)
+    assert (code, doc["status"], doc["complete_blockers"]) == (3, "incomplete", ["inventory_not_exhausted"])
