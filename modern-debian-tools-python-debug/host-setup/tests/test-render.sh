@@ -166,6 +166,17 @@ grep -qF '/bin/chgrp docker "$socket"' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit socket is not assigned to the existing docker group"
 grep -qF '/bin/chmod 0660 "$socket"' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit socket is not restricted to owner and docker group"
+POSTSTART_UNIT_LINE="$(grep '^ExecStartPost=' "$BUILDKIT_UNIT_OUT")"
+for format in u g a; do
+  grep -qF "stat -c %%$format \"\$socket\"" <<<"$POSTSTART_UNIT_LINE" \
+    || fail "managed BuildKit stat format %$format is not escaped for systemd"
+done
+# systemd consumes %% as one literal percent before /bin/sh runs. Any percent
+# left after removing those escapes would be interpreted as a unit specifier,
+# not passed through as shell text (e.g. %u becomes the manager's user name).
+if printf '%s\n' "$POSTSTART_UNIT_LINE" | sed 's/%%//g' | grep -q '%'; then
+  fail "managed BuildKit post-start command contains an unescaped systemd specifier"
+fi
 POSTSTART_SCRIPT="$(sed -n "s/^ExecStartPost=\/bin\/sh -ec '\(.*\)'$/\1/p" "$BUILDKIT_UNIT_OUT")"
 [ -n "$POSTSTART_SCRIPT" ] \
   || fail "could not extract the managed BuildKit post-start command"

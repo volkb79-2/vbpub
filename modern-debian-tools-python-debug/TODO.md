@@ -111,5 +111,8 @@ host `docker` group and mode `0660`. Consumer instructions now require the
 existing host `DOCKER_GID` supplementary group and explicitly reject making
 the socket world-accessible. Live acceptance passed after applying the same
 socket ownership/mode correction: `docker buildx inspect mdt-managed` reported
-the remote builder running. Registered gate and independent review remain
-pending before this branch can merge and release.
+the remote builder running. Independent review on 2026-09-30 found that
+systemd would expand the `stat` format strings `%u`, `%g`, and `%a` before the
+shell; these are now escaped as `%%u`, `%%g`, and `%%a`, with a renderer
+assertion for the escaping. The registered gate remains pending before this
+branch can merge.

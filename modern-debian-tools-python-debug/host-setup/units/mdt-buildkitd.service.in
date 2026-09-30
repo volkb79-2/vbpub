@@ -90,7 +90,8 @@ ExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \
 # real daemon socket, reject symlinks and sockets not owned by the container's
 # effective uid, then expose it only to the existing Docker-trust group. The
 # sticky RuntimeDirectory prevents another uid from replacing it after bind.
-ExecStartPost=/bin/sh -ec 'attempt=0; while [ "$attempt" -lt 100 ]; do socket=/run/mdt-buildkitd/buildkitd.sock; if [ -S "$socket" ] && [ ! -L "$socket" ]; then socket_uid=$(/usr/bin/stat -c %u "$socket"); if daemon_uid=$(/usr/bin/docker exec mdt-buildkitd id -u 2>/dev/null) && [ "$socket_uid" = "$daemon_uid" ]; then /bin/chgrp docker "$socket"; /bin/chmod 0660 "$socket"; socket_group=$(/usr/bin/stat -c %g "$socket"); docker_gid=$(/usr/bin/getent group docker | /usr/bin/cut -d: -f3); socket_mode=$(/usr/bin/stat -c %a "$socket"); [ "$socket_group" = "$docker_gid" ] && [ "$socket_mode" = 660 ]; exit $?; fi; fi; attempt=$((attempt + 1)); sleep 0.1; done; echo "BuildKit socket did not become safe and docker-group-accessible" >&2; exit 1'
+# Double each percent sign so systemd passes stat's format specifiers through.
+ExecStartPost=/bin/sh -ec 'attempt=0; while [ "$attempt" -lt 100 ]; do socket=/run/mdt-buildkitd/buildkitd.sock; if [ -S "$socket" ] && [ ! -L "$socket" ]; then socket_uid=$(/usr/bin/stat -c %%u "$socket"); if daemon_uid=$(/usr/bin/docker exec mdt-buildkitd id -u 2>/dev/null) && [ "$socket_uid" = "$daemon_uid" ]; then /bin/chgrp docker "$socket"; /bin/chmod 0660 "$socket"; socket_group=$(/usr/bin/stat -c %%g "$socket"); docker_gid=$(/usr/bin/getent group docker | /usr/bin/cut -d: -f3); socket_mode=$(/usr/bin/stat -c %%a "$socket"); [ "$socket_group" = "$docker_gid" ] && [ "$socket_mode" = 660 ]; exit $?; fi; fi; attempt=$((attempt + 1)); sleep 0.1; done; echo "BuildKit socket did not become safe and docker-group-accessible" >&2; exit 1'
 ExecStop=/usr/bin/docker stop -t 30 mdt-buildkitd
 Restart=on-failure
 RestartSec=5
