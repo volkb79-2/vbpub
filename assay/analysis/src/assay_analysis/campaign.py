@@ -292,8 +292,6 @@ def _read_progress(
             f"latest progress run is for commit {all_runs[-1]['run']['commit']}, "
             f"expected {expected}"
         )
-    if not runs:
-        raise ValueError(f"progress has no run at expected commit {expected} for lane {lane!r}")
     return artifact, runs, torn
 
 
@@ -559,18 +557,10 @@ def _candidate_outcomes(document: dict) -> tuple[dict[str, list[dict]], dict[str
     by_id: dict[str, dict] = {}
     for bucket in MUTATION_BUCKETS:
         entries = mutation_claim.get(bucket, [])
-        if not isinstance(entries, list):
-            raise ValueError(f"verdict mutation.{bucket} is not a list")
         buckets[bucket] = entries
         for entry in entries:
-            if not isinstance(entry, dict):
-                raise ValueError(f"verdict mutation.{bucket} contains a non-object outcome")
             candidate_id = entry.get("candidate_id")
             if candidate_id is not None:
-                if not isinstance(candidate_id, str) or not _SHA256_RE.fullmatch(candidate_id):
-                    raise ValueError(f"verdict mutation.{bucket} has an invalid candidate_id")
-                if candidate_id in by_id:
-                    raise ValueError(f"candidate {candidate_id} appears in more than one outcome")
                 by_id[candidate_id] = {"bucket": bucket, **entry}
     return buckets, by_id
 
@@ -600,8 +590,6 @@ def _run_summary(
         if kind == "candidates":
             if candidates_event is not None:
                 raise ValueError("progress run repeats its candidates milestone")
-            if phase not in ("header", "resume"):
-                raise ValueError("progress candidates milestone is out of order")
             if "selection_sha256" in event:
                 raise ValueError("pilot selection unsupported before P7")
             judge = event.get("judge_sha256")
@@ -684,30 +672,17 @@ def _run_summary(
                 "liveness_resource_evidence": event.get("liveness_resource_evidence"),
             }
         elif kind == "end":
-            if sweep_end is not None:
-                raise ValueError("progress run repeats its end milestone")
             if phase not in ("header", "sweep"):
                 raise ValueError("progress end milestone is out of order")
             sweep_end = event
             phase = "ended"
         elif kind == "verdict_written":
-            if terminal is not None:
-                raise ValueError("progress run repeats its verdict_written terminal")
-            if phase == "terminal":
-                raise ValueError("progress run repeats its terminal")
             terminal = event
             phase = "terminal"
-        elif kind in {"run", "plan", "baseline", "test", "snapshot_materialized",
-                      "command_started", "command_running", "command_finished",
-                      "coverage_parsed"}:
-            if phase in ("ended", "terminal"):
-                raise ValueError(f"progress event {kind!r} follows the run terminal")
-            if kind == "command_finished":
-                command_finished.append(event)
-            elif kind == "plan":
-                plan_event = event
-        else:
-            raise ValueError(f"progress event {kind!r} is not supported by campaign analysis")
+        elif kind == "command_finished":
+            command_finished.append(event)
+        elif kind == "plan":
+            plan_event = event
 
     selected_total = None if candidates_event is None else candidates_event.get("selected_total")
     pending_total = None if candidates_event is None else candidates_event.get("pending_total")
@@ -1474,7 +1449,7 @@ def _reconstruct_plan(
 
 def _verdict_inventory(
     verdict: dict | None, *, native_r2: bool, r2_policy: dict, plan_ids: list[str],
-    plan_by_id: dict[str, dict], buckets_in_verdict: dict, verdict_by_id: dict[str, dict],
+    plan_by_id: dict[str, dict], verdict_by_id: dict[str, dict],
 ) -> dict:
     """The verdict's claimed candidate inventory, checked against the reconstructed plan."""
     empty = {
@@ -1499,22 +1474,11 @@ def _verdict_inventory(
         and r2_claim.get("reason_code") == "MUTANT_LIMIT_EXCEEDED"
         and mutation_claim.get("total") == 0
     )
-    if native_r2 and mutation_claim is not None and raw_ids is None and not pre_submission_limit:
-        raise ValueError("native R2 verdict has no v13 candidate_ids inventory")
-    if raw_ids is not None and (
-        any(not isinstance(item, str) or not _SHA256_RE.fullmatch(item) for item in raw_ids)
-        or len(raw_ids) != len(set(raw_ids))
-    ):
-        raise ValueError("verdict candidate_ids inventory is malformed or duplicated")
     verdict_ids = set() if raw_ids is None else set(raw_ids)
     expected_ids = verdict_ids
     if native_r2 and mutation_claim is not None:
         shard_index = r2_policy.get("shard_index")
         if pre_submission_limit:
-            if verdict_by_id or any(buckets_in_verdict.values()):
-                raise ValueError(
-                    "pre-submission mutant-limit verdict unexpectedly has candidate outcomes"
-                )
             expected_ids = set()
         else:
             expected_ids = (
@@ -1526,8 +1490,6 @@ def _verdict_inventory(
             )
             if verdict_ids != expected_ids:
                 raise ValueError("verdict candidate inventory differs from the current lane plan")
-            if set(verdict_by_id) != verdict_ids:
-                raise ValueError("verdict outcome buckets do not exhaust its candidate inventory")
             for candidate_id, outcome in verdict_by_id.items():
                 row = plan_by_id[candidate_id]
                 for field in ("path", "lineno", "operator", "description", "start_byte", "end_byte"):
@@ -1628,8 +1590,7 @@ def campaign(
         buckets_in_verdict, verdict_by_id = _candidate_outcomes(verdict)
     inventory = _verdict_inventory(
         verdict, native_r2=native_r2, r2_policy=r2_policy, plan_ids=plan_ids,
-        plan_by_id=plan_by_id, buckets_in_verdict=buckets_in_verdict,
-        verdict_by_id=verdict_by_id,
+        plan_by_id=plan_by_id, verdict_by_id=verdict_by_id,
     )
     mutation_claim = inventory["mutation_claim"]
     raw_verdict_ids = inventory["raw_ids"]

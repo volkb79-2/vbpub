@@ -218,6 +218,19 @@ def _lane_edited(env):
     return {}
 
 
+def _options(**options):
+    """Replace a harness option (``command_exit``, ``extra``, ...) without touching the fixture."""
+
+    def mutate(env):
+        return options
+
+    return mutate
+
+
+def _log_missing(env):
+    return {"extra": ("--log", str(env.tmp_path / "absent-gate.log"))}
+
+
 RESUME = {"event": "resume", "resumed_total": 0, "rejected_total": 0, "rejudged_total": 0}
 SHARD = {"event": "shard", "shard_index": 0, "shard_count": 1, "selected_total": 2}
 MERGED = {"event": "resume_merged", "resumed_total": 0}
@@ -339,6 +352,16 @@ CASES = (
     ("lane-file-outside-worktree", _lane_outside, "lane file must be inside the expected worktree"),
     ("lane-file-untracked", _lane_untracked, "lane file is not a single committed path"),
     ("lane-file-edited", _lane_edited, "lane file bytes differ from the expected committed tree"),
+    # -- argument checks -----------------------------------------------------------------
+    ("command-exit-negative", _options(command_exit=-1), "command exit must be a non-negative integer"),
+    ("offset-negative", _options(extra=("--offset", "-1")), "detail offset must be a non-negative integer"),
+    ("limit-zero", _options(extra=("--limit", "0")), "detail limit must be between 1 and"),
+    (
+        "outcome-duplicated",
+        _options(extra=("--outcome", "killed", "--outcome", "killed")),
+        "outcome filters contain duplicates",
+    ),
+    ("gate-log-missing", _log_missing, "gate log artifact is missing"),
 )
 
 
