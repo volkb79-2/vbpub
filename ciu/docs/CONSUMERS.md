@@ -1659,3 +1659,42 @@ Check the installed console entrypoint before selecting a CIU verb:
     ciu --version
 
 It prints `ciu <version>` on stdout, exits 0, and writes nothing to stderr.
+
+## Configure CIU resource limits
+
+Governance can place a stack without adding per-container resource caps.
+Memory and CPU controls are unset by default. IOPS controls are also unset:
+`read_iops = 0` explicitly opts into baseline-derived capping, while
+`write_iops = 0` means no write IOPS cap. `read_bps` and `write_bps` default
+to zero (uncapped). Set only the limits this workload needs in its stack's or
+global governance table:
+
+```toml
+[app.governance]
+enabled = true
+mem_limit = "4g"          # optional RAM cap
+mem_swap_limit = "8g"     # optional combined RAM+swap total
+mem_reservation = "1g"    # optional memory.low protection
+cpus = "2"                # optional CPU quota
+read_iops = 0              # explicit opt-in to baseline-derived read cap
+write_iops = 400           # explicit write cap; omit or use 0 for no cap
+```
+
+The stack's `[app.governance]` overrides matching values from the global
+`[governance]` table. A value authored directly on a Compose service still
+wins for that service. An empty string leaves memory, CPU, or read IOPS unset;
+`read_iops = 0` has the documented derive meaning only when the key is
+explicitly present. The Compose key CIU emits for `mem_swap_limit` is
+`memswap_limit`; its value is the combined RAM+swap total, not swap alone.
+If the measured read IOPS formula produces zero, CIU refuses to omit the
+requested cap; set a positive read value or update the baseline.
+See [CONFIG.md](CONFIG.md) for the full configuration guide and
+[SPEC S15](SPEC.md#s15--stack-wide-resource-governance-cgroups) for the
+normative behavior.
+
+Existing stacks that relied on CIU's previous implicit values must now set
+the limits they still want in the global or stack table. Those former values
+were `mem_limit = "1g"`, `mem_swap_limit = "17g"`,
+`mem_reservation = "256m"`, baseline-derived `read_iops = 0`, and
+`write_iops = 400`. CIU does not migrate them into consumer config
+automatically.

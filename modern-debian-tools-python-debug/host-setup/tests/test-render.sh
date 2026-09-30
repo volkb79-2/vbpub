@@ -372,7 +372,7 @@ else
   GOV_RC=$?
 fi
 if [ "$GOV_RC" -ne 0 ]; then
-  sed -n '1,240p' "$GOVERNANCE_TEST_OUT"
+  tail -n 240 "$GOVERNANCE_TEST_OUT"
   fail "focused BuildKit governance tests failed"
 fi
 echo "GOVERNANCE_TEST_EXIT=$GOV_RC"

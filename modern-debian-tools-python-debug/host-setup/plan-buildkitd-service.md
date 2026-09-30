@@ -245,8 +245,9 @@ a plain non-wizard `install.sh` leaves an existing config untouched.
   the unit + slice + named volume, matches the existing "Uninstall" section's
   style.
 - **No normal coexistence:** accidental Buildx worker containers are handled by
-  the installed guard (`terminate` by default, `report-only` when explicitly
-  configured). The host-managed service remains the only normal backend.
+  the installed guard (`report-only` by default; `terminate` only after an
+  explicit policy choice and wizard confirmation). The host-managed service
+  remains the only normal backend.
 
 ## 8. Remaining open questions
 

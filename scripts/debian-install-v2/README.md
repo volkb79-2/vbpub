@@ -156,18 +156,18 @@ that still sets `run_geekbench`, `run_ssh_setup`, `swap_ram_solution`,
 `pre_shrink_root_extra_gb`, or `extend_root` — these were deliberately not
 ported, not merely forgotten.
 
-An io.cost calibration benchmark is planned but not yet built: `config.py`
-has the (currently inert) `run_io_benchmark`/`io_benchmark_duration_s`/
-`io_benchmark_max_size_gb` fields, and the kernel's own official
-`tools/cgroup/iocost_coef_gen.py` is vendored (`debian_install_v2/vendor/`)
-rather than reimplementing a bespoke fio job. A real `--testdev`-vs-
-partition bug found while vendoring it is already resolved as a carried
-patch (`debian_install_v2/vendor/0001-*.patch`, applied at deploy/invoke
-time — the vendored copy itself stays untouched). See `IO-BENCHMARK-
-DESIGN.md` for the full design and why the actual partition-surgery
-integration (create/benchmark/delete a throwaway partition) is
-deliberately deferred to its own reviewed pass rather than built inline
-here.
+An io.cost calibration benchmark is planned but not wired into the v2
+installer: `config.py` has the currently inert `run_io_benchmark`/
+`io_benchmark_duration_s`/`io_benchmark_max_size_gb` fields. MDT host setup
+and this project's manual `iocost-calibrate.sh` already consume one generated
+copy of the kernel's `tools/cgroup/iocost_coef_gen.py`, built from the pristine
+vendor source and reviewed patches. Its raw `--testdev` mode resolves partition
+sysfs paths, while a mounted file target avoids destructive raw-device mode.
+The mounted target must still be a dedicated disposable scratch file because
+calibration overwrites its contents; the tool refuses mismatched existing
+targets instead of replacing them.
+See `IO-BENCHMARK-DESIGN.md` for the installer integration plan; partition
+creation and cleanup remain a separate safety review.
 
 ## Is this the right tool for everything?
 

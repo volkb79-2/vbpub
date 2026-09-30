@@ -9,4 +9,9 @@ set -euo pipefail
 if [[ $# -eq 0 ]]; then
     exec mdt host-shell
 fi
+case "$1" in
+    -h|--help|help)
+        exec mdt --help
+        ;;
+esac
 exec mdt host-exec "$@"

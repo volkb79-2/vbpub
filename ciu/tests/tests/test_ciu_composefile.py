@@ -802,9 +802,9 @@ class TestGenerateOverlayGovernance:
         assert "secrets" not in doc
         redis = doc["services"]["redis"]
         assert redis["cgroup_parent"] == "besteffort.slice"
-        assert redis["mem_limit"] == "1g"
-        assert redis["memswap_limit"] == "17g"
-        assert redis["mem_reservation"] == "256m"
+        assert "mem_limit" not in redis
+        assert "memswap_limit" not in redis
+        assert "mem_reservation" not in redis
         assert redis["blkio_config"] == {
             "device_read_iops": [{"path": "/dev/vda", "rate": 100}],
             "device_write_iops": [{"path": "/dev/vda", "rate": 400}],
@@ -827,7 +827,11 @@ class TestGenerateOverlayGovernance:
         )
         path = generate_overlay(
             stack, {}, [], compose_yaml_text=compose_yaml,
-            governance={"enabled": True},
+            governance={
+                "enabled": True,
+                "mem_swap_limit": "17g",
+                "mem_reservation": "256m",
+            },
         )
         doc = yaml.safe_load(path.read_text())
         redis = doc["services"]["redis"]
@@ -836,7 +840,7 @@ class TestGenerateOverlayGovernance:
         assert redis["cgroup_parent"] == "besteffort.slice"
         assert redis["memswap_limit"] == "17g"
         assert redis["mem_reservation"] == "256m"
-        assert "blkio_config" in redis
+        assert "blkio_config" not in redis
 
     def test_author_sets_all_five_keys_service_absent_from_overlay_s15_3(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -926,7 +930,7 @@ class TestGenerateOverlayGovernance:
     def test_read_iops_derivation_from_baseline_flows_through_overlay_s15_4(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """S15.4 end-to-end: read_iops=0 (default) derives 2/3 of the baseline RIOPS_MAX."""
+        """S15.4 end-to-end: explicit read_iops=0 derives 2/3 of baseline RIOPS_MAX."""
         import yaml
 
         stack = self._stack(tmp_path, monkeypatch)
@@ -943,11 +947,33 @@ class TestGenerateOverlayGovernance:
         compose_yaml = "services:\n  redis:\n    image: redis\n"
         path = generate_overlay(
             stack, {}, [], compose_yaml_text=compose_yaml,
-            governance={"enabled": True},  # read_iops omitted -> defaults to 0 -> derive
+            governance={"enabled": True, "read_iops": 0},
         )
         doc = yaml.safe_load(path.read_text())
         rate = doc["services"]["redis"]["blkio_config"]["device_read_iops"][0]["rate"]
         assert rate == 600  # 900 * 2 // 3
+
+    def test_omitted_read_iops_stays_uncapped_even_with_baseline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import yaml
+
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        baseline = tmp_path / "io-baseline.env"
+        baseline.write_text("RIOPS_MAX=900\n", encoding="utf-8")
+        monkeypatch.delenv(governance_mod.BASELINE_PATH_ENV_VAR, raising=False)
+        monkeypatch.setattr(governance_mod, "DEFAULT_BASELINE_PATH", baseline)
+        monkeypatch.setattr(
+            governance_mod, "HOST_TOOLING_BASELINE_PATH", tmp_path / "host-tooling-missing.env"
+        )
+        path = generate_overlay(
+            stack, {}, [],
+            compose_yaml_text="services:\n  redis:\n    image: redis\n",
+            governance={"enabled": True},
+        )
+        doc = yaml.safe_load(path.read_text())
+        assert "blkio_config" not in doc["services"]["redis"]
 
     def test_read_iops_no_baseline_falls_back_s15_4(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
@@ -967,7 +993,7 @@ class TestGenerateOverlayGovernance:
         compose_yaml = "services:\n  redis:\n    image: redis\n"
         path = generate_overlay(
             stack, {}, [], compose_yaml_text=compose_yaml,
-            governance={"enabled": True},
+            governance={"enabled": True, "read_iops": 0},
         )
         doc = yaml.safe_load(path.read_text())
         rate = doc["services"]["redis"]["blkio_config"]["device_read_iops"][0]["rate"]

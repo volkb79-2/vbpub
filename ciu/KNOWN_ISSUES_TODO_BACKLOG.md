@@ -4362,7 +4362,20 @@ This goes against our rules of "no defaults in code". *Any* default must only be
 For cgroup limits, if none are explicitly set, none shall be applied. 
 The values we can potentially use should be set in the commented default ciu global config file. 
 
-Do a test pass that our `ciu init` writes complete config files with *all* tables/values/structures the user might want to activate (remove comments). 
+Do a test pass that our `ciu init` writes complete config files with *all* tables/values/structures the user might want to activate (remove comments).
+
+**RESOLVED 2026-09-27.** `governance.py` no longer adds its old RAM, swap,
+reservation, read-IOPS, or write-IOPS defaults to a service. Missing/empty
+`read_iops` is uncapped; only an explicit `read_iops = 0` opts into measured
+derivation. Positive read/write values are explicit caps. The generated
+`ciu.global.defaults.toml.j2` now contains every current governance setting
+as editable TOML (including nested memory-profile tables), starts disabled,
+and defaults every cap to unset/zero. `tests/test_init_scaffolding.py`
+compares its parsed key set with the shipped loader defaults and checks the
+uncapped policy; governance unit and compose-overlay tests cover omitted and
+explicit one-direction IOPS behavior. See D-013/D-014 and SPEC S15/S19.
+If baseline derivation computes a zero cap, the overlay now refuses to render
+instead of silently omitting the explicitly requested cap.
 
 ## CIU-111
 
@@ -4376,4 +4389,4 @@ proceed with this integration.
 
 ## CIU-112
 
-`worktree lacks ciu instance identity so ciu won't clean them` - if people now start using `ciu worktree` to create a worktree: does it work when there is no riu root in the repo? and does the tear down/removal work? both should be possible. removal might give a warning, i do not see a reason to refuse? 
+`worktree lacks ciu instance identity so ciu won't clean them` - if people now start using `ciu worktree` to create a worktree: does it work when there is no riu root in the repo? and does the tear down/removal work? both should be possible. removal might give a warning, i do not see a reason to refuse?
