@@ -56,7 +56,6 @@ cherry-picks keys. assay carries its own names.
 from __future__ import annotations
 
 import json
-import math
 import re
 from .records import record
 from datetime import datetime, timezone
@@ -72,6 +71,16 @@ from .config import (
     SNAPSHOT_SELECTIONS,
 )
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
+from .guards import (
+    is_aware,
+    is_finite_positive,
+    is_int_at_least,
+    is_nonempty_str,
+    is_percentage,
+    is_real,
+    is_sha256_hex,
+    is_strict_int,
+)
 from .candidate_identity import candidate_id_from_fields
 from .vocabulary import (
     INGESTED_OPERATOR_RE,
@@ -609,7 +618,7 @@ def iso_utc(moment: datetime) -> str:
     cannot be placed on a timeline is not evidence, and guessing the zone is the
     invention §4.2a forbids.
     """
-    if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
+    if not is_aware(moment):
         raise ValueError(f"timestamp {moment!r} is naive; an explicit offset is required")
     return moment.isoformat()
 
@@ -661,12 +670,6 @@ def _check_reason_code(
             f"valid: {sorted(REASON_CODES[outcome])}"
         )
 
-
-#: (P21/A-182) the lowercase-hex SHA-256 spelling every mutant identity's
-#: `replacement_sha256` must use. Uppercase is refused rather than folded:
-#: the hash is an IDENTITY component, and two spellings of one hash would
-#: make two records of the same site look like two different sites.
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 #: The hard product ceiling on candidate discovery (A-163). `max_mutants` is
 #: declared in `1..10_000`, so a bounded observation is at most `max + 1`.
@@ -735,7 +738,7 @@ def _check_wire_path(value: Any, what: str) -> None:
     (a Go module rooted at its own repository top declares exactly that).
     Widening this grammar to cover it would reject a truthful policy record.
     """
-    if not isinstance(value, str) or not value:
+    if not is_nonempty_str(value):
         raise ValueError(f"{what} must be a non-empty string, got {value!r}")
     if "\\" in value:
         raise ValueError(
@@ -774,7 +777,7 @@ def _instant(value: str, what: str) -> datetime:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"{what} {value!r} is not a real timestamp: {exc}") from exc
-    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+    if not is_aware(parsed):
         raise ValueError(f"{what} {value!r} carries no usable UTC offset")
     return parsed
 
@@ -792,7 +795,7 @@ def _check_line_location_mapping(value: Any, what: str) -> None:
     if not isinstance(value, Mapping):
         raise ValueError(f"{what} must be a mapping, got {value!r}")
     for path, lines in value.items():
-        if not isinstance(path, str) or not path:
+        if not is_nonempty_str(path):
             raise ValueError(f"{what} key must be a non-empty string, got {path!r}")
         if not isinstance(lines, frozenset) or not lines:
             raise ValueError(
@@ -801,7 +804,7 @@ def _check_line_location_mapping(value: Any, what: str) -> None:
                 f"omitted from the mapping entirely"
             )
         for line in lines:
-            if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            if not is_int_at_least(line, 1):
                 raise ValueError(
                     f"{what}[{path!r}] must contain only positive line "
                     f"numbers, got {line!r}"
@@ -817,7 +820,7 @@ def _check_file_tuple(value: Any, what: str) -> None:
     if not isinstance(value, tuple):
         raise ValueError(f"{what} must be a tuple, got {value!r}")
     for path in value:
-        if not isinstance(path, str) or not path:
+        if not is_nonempty_str(path):
             raise ValueError(f"{what} entries must be non-empty strings, got {path!r}")
     if len(set(value)) != len(value):
         raise ValueError(f"{what} contains a duplicate: {list(value)}")
@@ -951,13 +954,13 @@ class Coverage:
     def __post_init__(self) -> None:
         for name in ("covered", "executable", "considered"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise ValueError(f"coverage.{name} must be an integer, got {value!r}")
             if value < 0:
                 raise ValueError(f"coverage.{name} must not be negative, got {value}")
-        if isinstance(self.pct, bool) or not isinstance(self.pct, (int, float)):
+        if not is_real(self.pct):
             raise ValueError(f"coverage.pct must be a number, got {self.pct!r}")
-        if not 0.0 <= float(self.pct) <= 100.0:
+        if not is_percentage(float(self.pct)):
             raise ValueError(
                 f"coverage.pct must be a percentage between 0 and 100, got {self.pct}"
             )
@@ -1495,7 +1498,7 @@ class MutationWitnessReceipt:
             )
         for name in ("session_exit_status", "process_exit_status"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value != 1:
+            if not is_strict_int(value) or value != 1:
                 raise ValueError(f"mutation witness {name} must equal 1")
 
     def to_dict(self) -> dict[str, Any]:
@@ -1540,16 +1543,13 @@ class MutationExecution:
             return
         if self.witness is None:
             raise ValueError("witness-prefix execution requires a witness receipt")
-        if (
-            not isinstance(self.prior_verdict_sha256, str)
-            or not _SHA256_RE.fullmatch(self.prior_verdict_sha256)
-        ):
+        if not is_sha256_hex(self.prior_verdict_sha256):
             raise ValueError(
                 "witness-prefix prior_verdict_sha256 must be a SHA-256 digest"
             )
         for name in ("prior_node_id", "current_node_id"):
             value = getattr(self, name)
-            if not isinstance(value, str) or not value:
+            if not is_nonempty_str(value):
                 raise ValueError(f"witness-prefix {name} must be a non-empty string")
             try:
                 size = len(value.encode("utf-8"))
@@ -1650,7 +1650,7 @@ class MutantOutcome:
         _check_wire_path(self.path, "MutantOutcome.path")
         for name in ("lineno", "start_byte", "end_byte"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise ValueError(
                     f"MutantOutcome.{name} must be an integer, got {value!r}"
                 )
@@ -1666,9 +1666,7 @@ class MutantOutcome:
                 f"empty or reversed; a mutation site always replaces at least "
                 f"one byte"
             )
-        if not isinstance(self.replacement_sha256, str) or not _SHA256_RE.fullmatch(
-            self.replacement_sha256
-        ):
+        if not is_sha256_hex(self.replacement_sha256):
             raise ValueError(
                 f"MutantOutcome.replacement_sha256 must be 64 lowercase hex "
                 f"characters, got {self.replacement_sha256!r}"
@@ -1717,7 +1715,7 @@ class MutantOutcome:
                 )
             for name in ("candidate_id", "source_sha256", "mutated_file_sha256"):
                 value = getattr(self, name)
-                if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+                if not is_sha256_hex(value):
                     raise ValueError(
                         f"MutantOutcome.{name} must be a lowercase SHA-256 digest"
                     )
@@ -1893,7 +1891,7 @@ class Mutation:
     def __post_init__(self) -> None:
         for name in ("candidate_count", "total"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise ValueError(f"mutation.{name} must be an integer, got {value!r}")
             if value < 0:
                 raise ValueError(f"mutation.{name} must not be negative, got {value}")
@@ -1924,18 +1922,13 @@ class Mutation:
             if len(self.candidate_ids) != len(set(self.candidate_ids)):
                 raise ValueError("mutation.candidate_ids contains a duplicate")
             for candidate in self.candidate_ids:
-                if not isinstance(candidate, str) or len(candidate) != 64 or any(
-                    character not in "0123456789abcdef" for character in candidate
-                ):
+                if not is_sha256_hex(candidate):
                     raise ValueError(
                         f"mutation.candidate_ids entry must be a 64-character "
                         f"hexadecimal digest, got {candidate!r}"
                     )
         if self.budget_per_candidate_derived_s is not None and (
-            isinstance(self.budget_per_candidate_derived_s, bool)
-            or not isinstance(self.budget_per_candidate_derived_s, (int, float))
-            or not math.isfinite(self.budget_per_candidate_derived_s)
-            or self.budget_per_candidate_derived_s <= 0
+            not is_finite_positive(self.budget_per_candidate_derived_s)
         ):
             raise ValueError(
                 "mutation.budget_per_candidate_derived_s must be a positive "
@@ -2148,11 +2141,7 @@ class JudgeProvenance:
         # Lowercase is part of the contract, not a formatting preference: a
         # consumer comparing against its own resolved digest compares strings,
         # and two spellings of one digest would not be equal.
-        if (
-            not isinstance(self.digest, str)
-            or len(self.digest) != 64
-            or any(character not in "0123456789abcdef" for character in self.digest)
-        ):
+        if not is_sha256_hex(self.digest):
             raise ValueError(
                 f"judge_provenance.digest must be exactly 64 lowercase "
                 f"hexadecimal characters, got {self.digest!r}"
@@ -2342,13 +2331,11 @@ class JudgmentR1:
         if self.coverage_producer is not None:
             _check_nonempty(self.coverage_producer, "judgment.r1.coverage_producer")
         _check_nonempty(self.coverage_artifact, "judgment.r1.coverage_artifact")
-        if isinstance(self.fail_under, bool) or not isinstance(
-            self.fail_under, (int, float)
-        ):
+        if not is_real(self.fail_under):
             raise ValueError(
                 f"judgment.r1.fail_under must be a number, got {self.fail_under!r}"
             )
-        if not 0.0 <= float(self.fail_under) <= 100.0:
+        if not is_percentage(float(self.fail_under)):
             raise ValueError(
                 f"judgment.r1.fail_under must be a percentage between 0 and "
                 f"100, got {self.fail_under}"
@@ -2462,7 +2449,7 @@ class SourcePosition:
 
     def __post_init__(self) -> None:
         _check_wire_path(self.path, "source position path")
-        if isinstance(self.lineno, bool) or not isinstance(self.lineno, int):
+        if not is_strict_int(self.lineno):
             raise ValueError(
                 f"source position lineno must be an integer, got {self.lineno!r}"
             )
@@ -2883,11 +2870,11 @@ class JudgmentR2:
     def _check_native_policy(self) -> None:
         """The v8 rules, unchanged in substance, now reached only under
         ``producer = "native"``."""
-        if isinstance(self.jobs, bool) or not isinstance(self.jobs, int):
+        if not is_strict_int(self.jobs):
             raise ValueError(f"judgment.r2.jobs must be an integer, got {self.jobs!r}")
         if self.jobs < 1:
             raise ValueError(f"judgment.r2.jobs must be >= 1, got {self.jobs}")
-        if isinstance(self.max_mutants, bool) or not isinstance(self.max_mutants, int):
+        if not is_strict_int(self.max_mutants):
             raise ValueError(
                 f"judgment.r2.max_mutants must be an integer, got "
                 f"{self.max_mutants!r}"
@@ -2921,10 +2908,7 @@ class JudgmentR2:
                 f"{list(self.operators)}"
             )
         if self.budget_per_candidate_derived_s is not None and (
-            isinstance(self.budget_per_candidate_derived_s, bool)
-            or not isinstance(self.budget_per_candidate_derived_s, (int, float))
-            or not math.isfinite(self.budget_per_candidate_derived_s)
-            or self.budget_per_candidate_derived_s <= 0
+            not is_finite_positive(self.budget_per_candidate_derived_s)
         ):
             raise ValueError(
                 "judgment.r2.budget_per_candidate_derived_s must be a "
@@ -2948,12 +2932,12 @@ class JudgmentR2:
                 raise ValueError(
                     f"judgment.r2.liveness.active must be a bool, got {active!r}"
                 )
-            if not isinstance(reason, str) or not reason:
+            if not is_nonempty_str(reason):
                 raise ValueError(
                     "judgment.r2.liveness.reason must be a non-empty string, "
                     f"got {reason!r}"
                 )
-            if plugin is not None and (not isinstance(plugin, str) or not plugin):
+            if plugin is not None and not is_nonempty_str(plugin):
                 raise ValueError(
                     "judgment.r2.liveness.plugin must be a non-empty string "
                     f"or None, got {plugin!r}"
@@ -3021,13 +3005,11 @@ class JudgmentR2:
         # B050/A-427: byte-identical to `judgment.r1.fail_under`'s own two
         # checks, deliberately -- the same quantity at a different tier, and
         # two spellings of one policy number is how they drift.
-        if isinstance(self.fail_under, bool) or not isinstance(
-            self.fail_under, (int, float)
-        ):
+        if not is_real(self.fail_under):
             raise ValueError(
                 f"judgment.r2.fail_under must be a number, got {self.fail_under!r}"
             )
-        if not 0.0 <= float(self.fail_under) <= 100.0:
+        if not is_percentage(float(self.fail_under)):
             raise ValueError(
                 f"judgment.r2.fail_under must be a percentage between 0 and "
                 f"100, got {self.fail_under}"
@@ -3502,7 +3484,7 @@ class RefusalDetail:
                 f"UTF-8 bytes, over the {CLAIM_DETAIL_BYTES}-byte bound -- "
                 f"build it with refusal_detail(), which does the truncation"
             )
-        if isinstance(self.dropped_bytes, bool) or not isinstance(self.dropped_bytes, int):
+        if not is_strict_int(self.dropped_bytes):
             raise ValueError(
                 f"RefusalDetail.dropped_bytes must be an integer, got "
                 f"{self.dropped_bytes!r}"
@@ -3739,9 +3721,7 @@ class Claim:
             )
         if (
             self.detail_dropped_bytes is None
-            or isinstance(self.detail_dropped_bytes, bool)
-            or not isinstance(self.detail_dropped_bytes, int)
-            or self.detail_dropped_bytes < 0
+            or not is_int_at_least(self.detail_dropped_bytes, 0)
         ):
             raise ValueError(
                 f"claim[{self.rigor}]: detail requires detail_dropped_bytes as "
@@ -3951,7 +3931,7 @@ class Claim:
 
 
 def _check_nonempty(value: str, what: str) -> None:
-    if not isinstance(value, str) or not value:
+    if not is_nonempty_str(value):
         raise ValueError(f"{what} must be a non-empty string, got {value!r}")
 
 
@@ -4436,7 +4416,7 @@ class Verdict:
             raise ValueError(f"outcome must be an Outcome, got {self.outcome!r}")
         for name in ("lane", "commit", "assay_version"):
             value = getattr(self, name)
-            if not isinstance(value, str) or not value:
+            if not is_nonempty_str(value):
                 raise ValueError(f"{name!r} must be a non-empty string, got {value!r}")
         for name in ("started", "ended"):
             value = getattr(self, name)
@@ -4490,7 +4470,7 @@ class Verdict:
             "result_stderr_dropped_bytes",
         ):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            if not is_int_at_least(value, 0):
                 raise ValueError(f"{name} must be a non-negative integer")
 
         _check_reason_code(self.outcome, self.reason_code, "verdict")

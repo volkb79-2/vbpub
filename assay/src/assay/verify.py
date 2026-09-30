@@ -389,7 +389,7 @@ def _raw_mutant_identity(entry: object) -> tuple | None:
     if not isinstance(fields[4], str):
         return None
     for value in (fields[1], fields[2]):
-        if isinstance(value, bool) or not isinstance(value, int):
+        if not _is_int(value):
             return None
     return fields
 
@@ -475,7 +475,7 @@ def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
     if isinstance(link_paths, list):
         encoded_links: list[bytes] = []
         for index, path in enumerate(link_paths):
-            if not isinstance(path, str) or not path:
+            if not _is_text(path):
                 failures.append(
                     f"snapshot_policy.link_paths[{index}] must be a non-empty "
                     f"string"
@@ -508,7 +508,7 @@ def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
         return
     encoded: list[bytes] = []
     for index, path in enumerate(omissions):
-        if not isinstance(path, str) or not path:
+        if not _is_text(path):
             failures.append(
                 f"snapshot_policy.unsafe_symlink_omissions[{index}] must be "
                 f"a non-empty string"
@@ -1182,12 +1182,7 @@ def _check_ingested_r2_agrees_with_its_payload(
                 )
         total = payload.get("total")
         candidate_count = payload.get("candidate_count")
-        if (
-            isinstance(total, int)
-            and not isinstance(total, bool)
-            and isinstance(candidate_count, int)
-            and not isinstance(candidate_count, bool)
-        ):
+        if _is_int(total) and _is_int(candidate_count):
             residual = candidate_count - total
             if residual != len(discarded):
                 failures.append(
@@ -1556,7 +1551,7 @@ def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
     sizes = [
         len(mutation[name]) for name in buckets if isinstance(mutation.get(name), list)
     ]
-    if len(sizes) == len(buckets) and isinstance(total, int) and not isinstance(total, bool):
+    if len(sizes) == len(buckets) and _is_int(total):
         if total != sum(sizes):
             failures.append(
                 f"the R2 mutation payload says {total} attempted mutant(s) but "
@@ -1574,9 +1569,9 @@ def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
     policy = document.get("judgment")
     policy_r2 = policy.get("r2") if isinstance(policy, dict) else None
     max_mutants = policy_r2.get("max_mutants") if isinstance(policy_r2, dict) else None
-    if not isinstance(candidate_count, int) or isinstance(candidate_count, bool):
+    if not _is_int(candidate_count):
         return
-    if not isinstance(max_mutants, int) or isinstance(max_mutants, bool):
+    if not _is_int(max_mutants):
         return
     if total == 0 and candidate_count > 0:
         if candidate_count != max_mutants + 1:
@@ -1591,7 +1586,7 @@ def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
                 f"the R2 payload has the pre-submission refusal shape but the "
                 f"claim reports {reason!r} rather than MUTANT_LIMIT_EXCEEDED"
             )
-    elif isinstance(total, int) and not isinstance(total, bool):
+    elif _is_int(total):
         if total > max_mutants:
             failures.append(
                 f"the R2 payload attempted {total} mutant(s) against a declared "
@@ -1660,10 +1655,8 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
     reason = claim.get("reason_code") if isinstance(claim, dict) else None
     sentinel = (
         total == 0
-        and isinstance(candidate_count, int)
-        and not isinstance(candidate_count, bool)
-        and isinstance(max_mutants, int)
-        and not isinstance(max_mutants, bool)
+        and _is_int(candidate_count)
+        and _is_int(max_mutants)
         and candidate_count == max_mutants + 1
         and reason == "MUTANT_LIMIT_EXCEEDED"
     )
@@ -1814,6 +1807,14 @@ def _check_b106_receipt(receipt: Any, bucket: str, failures: list[str]) -> None:
         failures.append("a mutation witness is legal only on a killed outcome")
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_text(value: Any) -> bool:
+    return isinstance(value, str) and value != ""
+
+
 def _is_sha256_digest(value: Any) -> bool:
     return (
         isinstance(value, str)
@@ -1823,7 +1824,7 @@ def _is_sha256_digest(value: Any) -> bool:
 
 
 def _is_bounded_node_id(value: Any) -> bool:
-    if not isinstance(value, str) or not value:
+    if not _is_text(value):
         return False
     try:
         return len(value.encode("utf-8")) <= 4096
