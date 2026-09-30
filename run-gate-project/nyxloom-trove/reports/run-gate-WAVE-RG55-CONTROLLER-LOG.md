@@ -5300,3 +5300,25 @@ return `bad-policy`; the consumer's profiling fallback must remain
 non-blocking and preserve the lane-local verdict path. Scope `container`
 continues to use the exact target-container `cgroup.kill` under the guards
 from RW-379.
+
+### RW-381 — 2026-09-30 03:31:40Z — resume checkpoint: P1 rejudge and closeout
+
+RG-45 and RG-54 are now closed in the run-gate backlog by commit `6e1d6984`.
+The entries retain their cross-project provenance and state the remaining
+product boundary; this does not change the P1 judged tree.
+
+P1's current R2 campaign is the correct isolated pre-P1-base tree
+`4e5ff2d2a28d153195995df4c1e5a03a813af802`, running in
+`run-gate-rg55-p1-r2-isolated-r2-2191033-1790737267` since 03:01:07Z with
+3 CPUs in `dev-gates.slice`. At the 03:27:58Z observation it had accounted
+for 31/125 candidates, all killed, and was still running; no verdict exists
+yet. Preserve its HEAD and wait at least 25 minutes between routine progress
+reads.
+
+The fresh P1 Sol review is operating in the separate final-review worktree.
+It found that omitted `ctl start` options were serialized as JSON null and
+that the package contract mirror was stale; both corrections and focused
+oracles are committed there as `d5076b81`. This is not a final review verdict.
+If those fixes remain in the accepted product diff, the exact corrected tree
+needs fresh mutation evidence; the in-flight R2 on `4e5ff2d2` does not judge
+`d5076b81`.
