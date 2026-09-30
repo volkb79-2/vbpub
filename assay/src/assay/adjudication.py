@@ -82,6 +82,7 @@ from typing import Callable, Mapping, Sequence
 
 from . import git, safeio
 from .errors import AssayError, Outcome, ReasonCode
+from .guards import is_strict_int
 from .verdict import Evidence, EvidenceDeclaration
 
 __all__ = [
@@ -178,11 +179,7 @@ def evaluate_provenance(document_bytes: bytes, head: str) -> tuple[Outcome, Reas
     # explicitly so a document carrying JSON `true` cannot pass this check by
     # coincidence -- a check this project has no measured need for, but a
     # silent accident it must not have either.
-    if (
-        not isinstance(schema_version, int)
-        or isinstance(schema_version, bool)
-        or schema_version not in _ACCEPTED_SCHEMA_VERSIONS
-    ):
+    if not is_strict_int(schema_version) or schema_version not in _ACCEPTED_SCHEMA_VERSIONS:
         return Outcome.ERROR, ReasonCode.FORMAT_MISMATCH
     overall = document.get("overall")
     if overall not in _KNOWN_OVERALL_VALUES:

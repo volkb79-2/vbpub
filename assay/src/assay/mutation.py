@@ -121,6 +121,7 @@ from . import git, liveness, safeio
 from .candidate_identity import candidate_id_from_fields
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
+from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
 from .mutation_witness import inject_witness_plugin as _inject_witness_plugin
@@ -353,7 +354,7 @@ class MutationSite:
     def __post_init__(self) -> None:
         for name in ("start_byte", "end_byte", "lineno"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise ValueError(
                     f"MutationSite.{name} must be an integer, got {value!r}"
                 )
@@ -493,7 +494,7 @@ class MutationTarget:
                 f"omitted from the target list"
             )
         for line in self.lines:
-            if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            if not is_int_at_least(line, 1):
                 raise ValueError(
                     f"MutationTarget.lines must contain only positive line "
                     f"numbers, got {line!r}"
@@ -711,7 +712,7 @@ def collect_mutation_sites(
     With no targets at all the result is the supported empty tuple: no
     language analysis was required, so nothing can be said about capability.
     """
-    if isinstance(limit, bool) or not isinstance(limit, int):
+    if not is_strict_int(limit):
         raise ValueError(f"collect_mutation_sites limit must be an integer, got {limit!r}")
     if not 1 <= limit <= MAX_CANDIDATE_CEILING:
         raise ValueError(
@@ -1821,7 +1822,7 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
                 f"unsupported shard schema_version {version!r}; expected "
                 f"{MUTATION_STATE_SCHEMA_VERSION}"
             )
-        if not isinstance(lane, str) or not lane or not isinstance(commit, str) or not commit:
+        if not is_nonempty_str(lane) or not is_nonempty_str(commit):
             raise MutationStateError("shard lane and commit must be non-empty strings")
         if (
             isinstance(shard_index, bool)
@@ -2396,11 +2397,11 @@ def run_mutation(
     can never be equal, so no mutant could ever be recorded ``equivalent``,
     hiding exactly the fault the carve's own A-279 finding was about).
     """
-    if isinstance(jobs, bool) or not isinstance(jobs, int):
+    if not is_strict_int(jobs):
         raise ValueError(f"run_mutation jobs must be an integer, got {jobs!r}")
     if jobs < 1:
         raise ValueError(f"run_mutation jobs must be >= 1, got {jobs}")
-    if isinstance(max_mutants, bool) or not isinstance(max_mutants, int):
+    if not is_strict_int(max_mutants):
         raise ValueError(
             f"run_mutation max_mutants must be an integer, got {max_mutants!r}"
         )
@@ -2417,11 +2418,8 @@ def run_mutation(
             "baseline's own artifact bytes (or its own EXEC_FAILED refusal, "
             "when the baseline never wrote it) before calling this function"
         )
-    if budget_per_candidate_seconds is not None and (
-        isinstance(budget_per_candidate_seconds, bool)
-        or not isinstance(budget_per_candidate_seconds, (int, float))
-        or not math.isfinite(budget_per_candidate_seconds)
-        or budget_per_candidate_seconds <= 0
+    if budget_per_candidate_seconds is not None and not is_finite_positive(
+        budget_per_candidate_seconds
     ):
         raise ValueError(
             "run_mutation budget_per_candidate_seconds must be a positive "

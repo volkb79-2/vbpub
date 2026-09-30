@@ -121,6 +121,7 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .guards import is_finite_positive, is_nonempty_str, is_positive_or_inf, is_real
 from .adapters.base import HelperInvocation
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
@@ -242,22 +243,13 @@ class LaneDeadline:
         and only ``None`` -- for ``budget = "unbounded"``; every other
         invalid value is refused exactly as before.
         """
-        if budget_seconds is not None and (
-            isinstance(budget_seconds, bool)
-            or not isinstance(budget_seconds, (int, float))
-            or not math.isfinite(budget_seconds)
-            or budget_seconds <= 0
-        ):
+        if budget_seconds is not None and not is_finite_positive(budget_seconds):
             raise ValueError(
                 f"budget_seconds must be a positive finite number or None, "
                 f"got {budget_seconds!r}"
             )
         started = monotonic()
-        if (
-            isinstance(started, bool)
-            or not isinstance(started, (int, float))
-            or not math.isfinite(started)
-        ):
+        if not is_real(started) or not math.isfinite(started):
             raise ValueError(f"monotonic clock returned invalid value {started!r}")
         if budget_seconds is None:
             return cls(expires_at=math.inf, monotonic=monotonic)
@@ -281,12 +273,7 @@ class LaneDeadline:
         """
         if seconds is None:
             return self
-        if (
-            isinstance(seconds, bool)
-            or not isinstance(seconds, (int, float))
-            or not math.isfinite(seconds)
-            or seconds <= 0
-        ):
+        if not is_finite_positive(seconds):
             raise ValueError(
                 f"tightened seconds must be a positive finite number or None, "
                 f"got {seconds!r}"
@@ -865,7 +852,7 @@ def resolve_command_plan(
                         node = None
                         break
                     node = node[part]
-                if not isinstance(node, str) or not node:
+                if not is_nonempty_str(node):
                     raise AssayError(
                         f"infrastructure fact {name!r} derived {expression!r} is absent, "
                         f"not a string, or empty",
@@ -1156,12 +1143,7 @@ def execute_plan(
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
     because only it owns an ephemeral, assay-managed checkout.
     """
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or (not math.isfinite(timeout) and timeout != math.inf)
-        or timeout <= 0
-    ):
+    if not is_positive_or_inf(timeout):
         raise ValueError(
             f"timeout must be a positive finite number or math.inf, got {timeout!r}"
         )

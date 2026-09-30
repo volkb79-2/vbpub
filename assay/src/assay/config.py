@@ -73,6 +73,7 @@ from .errors import LaneConfigError
 # the registry lived in `assay.mutation`.
 from .liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_TRUE, argv_invokes_pytest
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
+from .guards import is_nonempty_str, is_percentage, is_real, is_strict_int
 from .records import positional_record
 # (B078) The result-report reader registry, imported at module level for
 # `FORMAT_REGISTRY`'s own reason (A-068): `result_report.format` is closed
@@ -1474,7 +1475,7 @@ def _load_schema_version(document: Mapping[str, Any], file_path: Path) -> int:
             f"(this assay understands schema_version = {LANE_SCHEMA_VERSION})"
         )
     value = document["schema_version"]
-    if not isinstance(value, int) or isinstance(value, bool):
+    if not is_strict_int(value):
         raise LaneConfigError(
             f"{file_path}: 'schema_version' must be an integer, got {_type_name(value)}"
         )
@@ -1594,11 +1595,11 @@ def _load_lane(
             )
         parsed_facts: dict[str, str] = {}
         for key, declaration in raw_infrastructure.items():
-            if not isinstance(key, str) or not key:
+            if not is_nonempty_str(key):
                 raise LaneConfigError(
                     f"{where}: infrastructure names must be non-empty strings"
                 )
-            if not isinstance(declaration, str) or not declaration:
+            if not is_nonempty_str(declaration):
                 raise LaneConfigError(
                     f"{where}: 'infrastructure.{key}' must be a non-empty string, "
                     f"got {_type_name(declaration)}"
@@ -2522,7 +2523,7 @@ def _load_judge(
     fail_under = None
     if "fail_under" in table:
         fail_under = _as_float(table["fail_under"], where, "judge.fail_under")
-        if not 0.0 <= fail_under <= 100.0:
+        if not is_percentage(fail_under):
             raise LaneConfigError(
                 f"{where}: 'judge.fail_under' must be a percentage between 0 and "
                 f"100, got {fail_under}"
@@ -2615,7 +2616,7 @@ def _validate_evidence_dir(value: Any, where: str, field_name: str) -> str:
     this is NOT shared across that module boundary, only within this one.
     """
     label = f"judge.{field_name}"
-    if not isinstance(value, str) or not value:
+    if not is_nonempty_str(value):
         raise LaneConfigError(
             f"{where}: '{label}' must be a non-empty string, "
             f"got {_type_name(value)}"
@@ -2988,7 +2989,7 @@ def _load_mutation(
                 f"{where}: missing required field 'judge.mutation.{field}'"
             )
     jobs = value["jobs"]
-    if isinstance(jobs, bool) or not isinstance(jobs, int):
+    if not is_strict_int(jobs):
         raise LaneConfigError(
             f"{where}: 'judge.mutation.jobs' must be an integer, got "
             f"{_type_name(jobs)}"
@@ -2998,7 +2999,7 @@ def _load_mutation(
             f"{where}: 'judge.mutation.jobs' must be a positive integer, got {jobs}"
         )
     max_mutants = value["max_mutants"]
-    if isinstance(max_mutants, bool) or not isinstance(max_mutants, int):
+    if not is_strict_int(max_mutants):
         raise LaneConfigError(
             f"{where}: 'judge.mutation.max_mutants' must be an integer, got "
             f"{_type_name(max_mutants)}"
@@ -3115,7 +3116,7 @@ def _load_mutation(
             )
     budget_per_candidate = value.get("budget_per_candidate")
     if budget_per_candidate is not None:
-        if not isinstance(budget_per_candidate, str) or not budget_per_candidate:
+        if not is_nonempty_str(budget_per_candidate):
             raise LaneConfigError(
                 f"{where}: 'judge.mutation.budget_per_candidate' must be a "
                 f"non-empty string, got {_type_name(budget_per_candidate)}"
@@ -3203,7 +3204,7 @@ def _load_mutation(
             ("shard_index", shard_index),
             ("shard_count", shard_count),
         ):
-            if isinstance(number, bool) or not isinstance(number, int):
+            if not is_strict_int(number):
                 raise LaneConfigError(
                     f"{where}: 'judge.mutation.{field}' must be an integer, got {_type_name(number)}"
                 )
@@ -3300,7 +3301,7 @@ def _load_ingested_mutation(
         value["artifact"], where, project_root, "judge.mutation.artifact"
     )
     fail_under = _as_float(value["fail_under"], where, "judge.mutation.fail_under")
-    if not 0.0 <= fail_under <= 100.0:
+    if not is_percentage(fail_under):
         raise LaneConfigError(
             f"{where}: 'judge.mutation.fail_under' must be in 0.0..100.0, got "
             f"{fail_under}"
@@ -3522,7 +3523,7 @@ def _load_canary(
     # author writes the two per-unit bounds identically.
     budget_per_attempt = value.get("budget_per_attempt")
     if budget_per_attempt is not None:
-        if not isinstance(budget_per_attempt, str) or not budget_per_attempt:
+        if not is_nonempty_str(budget_per_attempt):
             raise LaneConfigError(
                 f"{where}: 'judge.canary.budget_per_attempt' must be a "
                 f"non-empty string, got {_type_name(budget_per_attempt)}"
@@ -3686,7 +3687,7 @@ def _as_bool(value: Any, where: str, field: str) -> bool:
 
 
 def _as_float(value: Any, where: str, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if not is_real(value):
         raise LaneConfigError(
             f"{where}: {field!r} must be a number, got {_type_name(value)}"
         )

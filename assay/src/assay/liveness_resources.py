@@ -14,6 +14,8 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from .guards import is_int_at_least
+
 
 RESOURCE_SNAPSHOT_SCHEMA_VERSION = 1
 _PRESSURE_NAMES = ("cpu", "memory", "io")
@@ -130,7 +132,7 @@ def read_liveness_resources(
     snapshots; this function never interprets a missing source as zero.
     ``proc_root`` is injectable for deterministic namespace-resolution tests.
     """
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+    if not is_int_at_least(pid, 1):
         return {
             "schema_version": RESOURCE_SNAPSHOT_SCHEMA_VERSION,
             "status": "unavailable",

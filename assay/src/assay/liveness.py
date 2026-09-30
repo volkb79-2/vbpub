@@ -89,6 +89,7 @@ from typing import (
 )
 
 from .errors import AssayError, Outcome, ReasonCode
+from .guards import is_int_at_least, is_real
 from .liveness_resources import compare_resource_snapshots, read_liveness_resources
 
 if TYPE_CHECKING:  # pragma: no cover -- annotation-only import; importing at runtime creates a cycle
@@ -764,7 +765,7 @@ def _valid_pid(value: Any) -> int | None:
     The parser trusts only the pid stamped by the producer; it never tries to
     resolve a descriptive xdist worker name or consult the process table.
     """
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    if not is_int_at_least(value, 1):
         return None
     return value
 
@@ -869,7 +870,7 @@ def baseline_slowest_test_s(baseline_events_path: "Path | None") -> float | None
     slowest_test_s: float | None = None
     for record in _iter_test_events(baseline_events_path):
         duration = record.get("duration_s")
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+        if not is_real(duration):
             continue
         if slowest_test_s is None or duration > slowest_test_s:
             slowest_test_s = duration
@@ -899,7 +900,7 @@ def _finite_number(value: Any) -> float | int | None:
     ``None``. An int too large for a float is not finite for this purpose."""
     import math
 
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if not is_real(value):
         return None
     try:
         return value if math.isfinite(value) else None
@@ -1068,7 +1069,7 @@ def baseline_event_gaps(
     timestamped: list[tuple[float, Any, int | None]] = []
     for record in records:
         stamp = record.get("t")
-        if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+        if not is_real(stamp):
             continue
         if not stamps:
             first_event = record.get("event")

@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
-import math
 import os
 import re
 import shutil
@@ -50,6 +49,7 @@ from typing import Callable, ContextManager, Iterator, Mapping, Sequence
 from . import git as _git
 from .config import IsolationConfig
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode, require_advance
+from .guards import is_int_at_least, is_positive_or_inf
 
 __all__ = [
     "DEFAULT_SNAPSHOT_LIMITS",
@@ -133,7 +133,7 @@ class SnapshotLimits:
         """Reject booleans/non-positive/incoherent bounds."""
         for name in self.__dataclass_fields__:
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            if not is_int_at_least(value, 1):
                 raise ValueError(f"{name} must be a positive integer, got {value!r}")
         if self.max_blob_bytes > self.max_total_object_bytes:
             raise ValueError(
@@ -1119,12 +1119,7 @@ def _check_timeout(timeout: float) -> None:
     # `_git._P22Deadline`, which converts it to the "no timeout" spelling its
     # own two consumers accept. Every other non-finite value (NaN, -inf) is
     # refused exactly as before.
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or (not math.isfinite(timeout) and timeout != math.inf)
-        or timeout <= 0
-    ):
+    if not is_positive_or_inf(timeout):
         raise ValueError(
             f"timeout must be a positive finite number or math.inf, got {timeout!r}"
         )
