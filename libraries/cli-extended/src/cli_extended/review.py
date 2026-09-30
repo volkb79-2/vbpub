@@ -352,8 +352,8 @@ def render_cli_surface_markdown(
         "",
         "### Command routes",
         "",
-        "| Surface ID | Route kind | Invocation path | Nested commands | Description | Group | Behavior | Parser completeness |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Surface ID | Route kind | Invocation path | Nested commands | Description | Group | Behavior | Parser settings | Parser completeness |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for route in surface["routes"]:
         path = " ".join(route["path"]) or surface["entrypoint"]["command"]
@@ -365,6 +365,13 @@ def render_cli_surface_markdown(
             if group.get("required"):
                 label += " (required)"
             nested_commands.append(f"{group.get('destination')}: {label}")
+        parser_settings = "; ".join(
+            f"{' '.join(setting.get('parser_path', ())) or '<entrypoint>'}: "
+            f"allow_abbrev={'yes' if setting.get('allow_abbrev') else 'no'}, "
+            f"prefix_chars={setting.get('prefix_chars')!r}, "
+            f"fromfile_prefix_chars={setting.get('fromfile_prefix_chars')!r}"
+            for setting in route.get("parser_settings", ())
+        )
         lines.append(
             "| " + " | ".join(
                 _markdown_cell(value)
@@ -376,6 +383,7 @@ def render_cli_surface_markdown(
                     route.get("description") or "",
                     route.get("group") or "",
                     ", ".join(route.get("behavior", [])),
+                    parser_settings,
                     "complete" if route.get("syntax_complete") else "incomplete",
                 )
             ) + " |"
@@ -636,7 +644,21 @@ def _review_findings(
                 available.append((len(parser_path), action))
         if available:
             return max(available, key=lambda pair: pair[0])[1]
-        if not surface.get("entrypoint", {}).get("allow_abbrev"):
+        parser_path = path[:depth]
+        parser_settings = next(
+            (
+                settings
+                for settings in route.get("parser_settings", ())
+                if tuple(settings.get("parser_path", ())) == parser_path
+            ),
+            None,
+        )
+        allow_abbrev = (
+            parser_settings.get("allow_abbrev")
+            if parser_settings is not None
+            else surface.get("entrypoint", {}).get("allow_abbrev", False)
+        )
+        if not allow_abbrev:
             return None
         matches = [
             (str(flag), action)

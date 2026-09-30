@@ -696,7 +696,11 @@ atomic; check mode detects a stop that leaves the pair at different revisions.
 The machine surface includes route paths and parser subcommand aliases,
 delegated paths, positional and option IDs/shapes, option aliases, defaults,
 choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
-labels, and actions added by parser callbacks. Registered `surface_id` values
+labels, parser-scoped `allow_abbrev`, and actions added by parser callbacks.
+The JSON surface schema version is `2`; each route records `parser_settings`
+along its path. Each setting contains `parser_path`, `allow_abbrev`,
+`prefix_chars`, and `fromfile_prefix_chars`. Changing abbreviation policy
+changes relevant candidate signatures. Registered `surface_id` values
 preserve identity through a rename; otherwise default IDs are derived from the
 route and the declared verb/argument/option spelling. Route IDs are unique;
 action IDs are unique within their route. Help wording is not identity.
@@ -752,7 +756,11 @@ positional yielding to a registered nested command. For `argument-shape` and
 `argument-choice` candidates, it MUST assign tokens to the named positional
 action at its parser depth; finding the same text in a sibling positional does
 not satisfy the candidate. A flag-only option with an inline value is not a
-valid occurrence. In a generated minimum case, a required option counts only
+valid occurrence. It MUST resolve long-option abbreviations using the
+`allow_abbrev` setting of the parser at that depth. A non-default `prefix_chars`
+or enabled `fromfile_prefix_chars` MUST make the surface incomplete until the
+checker can represent those token rules. In a generated minimum case, a
+required option counts only
 when it is an active option token, its declared minimum values are supplied,
 and exactly one alternative is present for each required exclusive group. It
 MUST NOT call `RegisteredCli.run()`,

@@ -1382,6 +1382,91 @@ def test_review_route_lexer_accepts_unambiguous_long_option_abbreviation():
 
 
 @pytest.mark.parametrize(
+    ("root_abbrev", "verb_abbrev", "expected_missing_path"),
+    ((False, True, False), (True, False, True)),
+)
+def test_review_route_lexer_uses_abbreviation_policy_at_parser_depth(
+    root_abbrev: bool,
+    verb_abbrev: bool,
+    expected_missing_path: bool,
+):
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+        "parser_settings": [
+            {
+                "parser_path": [],
+                "allow_abbrev": root_abbrev,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+            }
+        ],
+    }
+    leaf = {
+        "id": "route:entrypoint:audit-tool/inspect/detail",
+        "path": ["inspect", "detail"],
+        "aliases": ["d"],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:profile",
+                "kind": "option",
+                "flags": ["--profile"],
+                "nargs": None,
+                "parser_path": ["inspect"],
+            }
+        ],
+        "parser_settings": [
+            {
+                "parser_path": [],
+                "allow_abbrev": root_abbrev,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+            },
+            {
+                "parser_path": ["inspect"],
+                "allow_abbrev": verb_abbrev,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+            },
+            {
+                "parser_path": ["inspect", "detail"],
+                "allow_abbrev": False,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+            },
+        ],
+    }
+    candidate = {
+        "id": "case:detail-alias",
+        "route_id": leaf["id"],
+        "signature": "s",
+        "kind": "route-alias",
+        "members": [],
+        "shape": {"alias": "d"},
+    }
+    case = _case_for_candidate(
+        candidate,
+        ["inspect", "--prof", "work", "d"],
+    )
+
+    findings = _review_findings(
+        {
+            "entrypoint": {"allow_abbrev": root_abbrev},
+            "routes": [prefix, leaf],
+            "candidates": [candidate],
+            "syntax_complete": True,
+        },
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+
+    assert any("omits its command path" in item for item in findings) is expected_missing_path
+
+
+@pytest.mark.parametrize(
     "invocation",
     (["--", "inspect", "d"], ["inspect", "--", "d"]),
 )
@@ -1700,7 +1785,7 @@ def test_sync_is_idempotent_preserves_outside_bytes_and_never_rewrites_catalog(t
     assert synced.endswith(suffix)
     assert b"\r\nAfter\r\n" in synced
     assert review.read_bytes() == original_review
-    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 2
     assert SURFACE_START_MARKER.encode() in synced
     assert SURFACE_END_MARKER.encode() in synced
 

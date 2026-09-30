@@ -25,7 +25,7 @@ from .parser import (
     _common_option_specs,
 )
 
-SURFACE_SCHEMA_VERSION = 1
+SURFACE_SCHEMA_VERSION = 2
 DEFAULT_MAX_CANDIDATES = 512
 _LIBRARY_OWNED_COMMON_OPTIONS = {
     "--help", "--version", "--log-level", "--quiet", "--debug", "--verbose",
@@ -460,6 +460,9 @@ class _ParserActionContext:
     """Actions and their declarations at one argparse parser depth."""
 
     parser_path: tuple[str, ...]
+    allow_abbrev: bool
+    prefix_chars: str
+    fromfile_prefix_chars: str | None
     actions: tuple[argparse.Action, ...]
     option_specs: tuple[OptionSpec, ...]
     argument_specs: tuple[ArgumentSpec, ...]
@@ -483,6 +486,7 @@ def _describe_parser(
     single_command: bool,
     incomplete: list[str],
     inherited_contexts: tuple[_ParserActionContext, ...] = (),
+    inherited_parser_settings: tuple[Mapping[str, Any], ...] = (),
     nested_route: bool = False,
     child_aliases: tuple[str, ...] = (),
     child_help: str | None = None,
@@ -523,6 +527,9 @@ def _describe_parser(
 
     context = _ParserActionContext(
         parser_path=path,
+        allow_abbrev=bool(parser.allow_abbrev),
+        prefix_chars=str(parser.prefix_chars),
+        fromfile_prefix_chars=parser.fromfile_prefix_chars,
         actions=tuple(local_actions),
         option_specs=option_specs,
         argument_specs=argument_specs,
@@ -530,6 +537,33 @@ def _describe_parser(
         mutex_groups=mutex_groups,
     )
     contexts = (*inherited_contexts, context)
+    parser_settings = (
+        *inherited_parser_settings,
+        *(
+            {
+                "parser_path": list(action_context.parser_path),
+                "allow_abbrev": action_context.allow_abbrev,
+                "prefix_chars": action_context.prefix_chars,
+                "fromfile_prefix_chars": action_context.fromfile_prefix_chars,
+            }
+            for action_context in contexts
+        ),
+    )
+    for setting in parser_settings:
+        setting_path = " ".join(setting.get("parser_path", ())) or "<entrypoint>"
+        prefix_chars = setting.get("prefix_chars", "-")
+        if prefix_chars != "-":
+            local_incomplete.append(
+                f"{route_id}: parser {setting_path} has unsupported "
+                f"prefix_chars {prefix_chars!r}"
+            )
+        fromfile_prefix_chars = setting.get("fromfile_prefix_chars")
+        if fromfile_prefix_chars is not None:
+            local_incomplete.append(
+                f"{route_id}: parser {setting_path} uses unsupported "
+                f"argument-file expansion via "
+                f"fromfile_prefix_chars={fromfile_prefix_chars!r}"
+            )
     for action_context in contexts:
         for action in action_context.actions:
             actions.append(
@@ -613,6 +647,7 @@ def _describe_parser(
         "confirmation": selected_spec.confirmation_enabled if selected_spec else False,
         "synopsis_override": selected_spec.synopsis if selected_spec else None,
         "usage_override": parser.usage,
+        "parser_settings": list(parser_settings),
         "aliases": list(child_aliases),
         "parser_configured_by_callback": bool(
             any(spec.configure is not None for spec in verb_specs)
@@ -646,6 +681,7 @@ def _describe_parser(
             single_command=single_command,
             incomplete=incomplete,
             inherited_contexts=contexts,
+            inherited_parser_settings=inherited_parser_settings,
             nested_route=True,
             child_aliases=tuple(aliases),
             child_help=help_text,
@@ -663,6 +699,7 @@ def _walk_registered_cli(
     path_prefix: tuple[str, ...],
     inherited_specs: tuple[VerbSpec, ...] = (),
     inherited_globals: tuple[OptionSpec, ...] = (),
+    inherited_parser_settings: tuple[Mapping[str, Any], ...] = (),
     single_command_route: str | None = None,
     incomplete: list[str],
 ) -> list[dict[str, Any]]:
@@ -686,6 +723,7 @@ def _walk_registered_cli(
             global_options=globals_here,
             single_command=True,
             incomplete=incomplete,
+            inherited_parser_settings=inherited_parser_settings,
         )
         records[0]["id"] = route_id
         return records
@@ -700,9 +738,17 @@ def _walk_registered_cli(
             global_options=globals_here,
             single_command=False,
             incomplete=incomplete,
+            inherited_parser_settings=inherited_parser_settings,
         )
 
     records: list[dict[str, Any]] = []
+    root_parser_settings = {
+        "parser_path": list(path_prefix),
+        "allow_abbrev": bool(app.parser.allow_abbrev),
+        "prefix_chars": str(app.parser.prefix_chars),
+        "fromfile_prefix_chars": app.parser.fromfile_prefix_chars,
+    }
+    parser_settings_for_children = (*inherited_parser_settings, root_parser_settings)
     for spec in app.registered_verbs:
         path = (*path_prefix, spec.name)
         route_id = _route_id(entrypoint_id, spec, path)
@@ -716,6 +762,7 @@ def _walk_registered_cli(
                         path_prefix=path,
                         inherited_specs=(spec,),
                         inherited_globals=globals_here,
+                        inherited_parser_settings=parser_settings_for_children,
                         single_command_route=route_id,
                         incomplete=incomplete,
                     )
@@ -733,6 +780,7 @@ def _walk_registered_cli(
                         "confirmation": spec.confirmation_enabled,
                         "synopsis_override": spec.synopsis,
                         "usage_override": None,
+                        "parser_settings": list(parser_settings_for_children),
                         "aliases": [],
                         "parser_configured_by_callback": False,
                         "actions": [],
@@ -748,6 +796,7 @@ def _walk_registered_cli(
                         path_prefix=path,
                         inherited_specs=(spec,),
                         inherited_globals=globals_here,
+                        inherited_parser_settings=parser_settings_for_children,
                         incomplete=incomplete,
                     )
                 records[-1]["subcommands"] = [
@@ -774,6 +823,7 @@ def _walk_registered_cli(
                 global_options=globals_here,
                 single_command=False,
                 incomplete=incomplete,
+                inherited_parser_settings=parser_settings_for_children,
             )
         )
     return records
@@ -860,6 +910,7 @@ def _generate_candidates(
             "behavior": route.get("behavior", []),
             "confirmation": route.get("confirmation", False),
             "group": route.get("group"),
+            "parser_settings": route.get("parser_settings", []),
         }
         member_shapes = []
         for member_id in sorted(set(members)):
@@ -1133,7 +1184,9 @@ def export_cli_surface(
             "prog": app.parser.prog,
             "single_command": app.single_command,
             "no_args_action": app.no_args_action,
-            "allow_abbrev": app.allow_abbrev,
+            "allow_abbrev": bool(app.parser.allow_abbrev),
+            "prefix_chars": app.parser.prefix_chars,
+            "fromfile_prefix_chars": app.parser.fromfile_prefix_chars,
             "builtins": ["help", "help <verb>", "version", "--help", "--version"],
         },
         "routes": routes,

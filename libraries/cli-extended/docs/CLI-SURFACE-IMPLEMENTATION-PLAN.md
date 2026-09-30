@@ -98,6 +98,18 @@ and its monitor-task example is about per-verb scoping. That public API is
 deferred. CLI-EXT-04 proceeds independently on the metadata the registry
 already exposes.
 
+## Final grammar audit
+
+A final code audit found that `VerbSpec.configure()` can change
+`allow_abbrev` on one parser without changing the registry-wide setting. The
+first checker draft used the registry value at every depth, which could accept
+or refuse an abbreviated option incorrectly. The surface now exports parser
+settings at each route depth, includes them in case signatures, and resolves
+abbreviations using the owning parser. Since the checker does not model custom
+`prefix_chars` or `fromfile_prefix_chars`, those settings make the surface
+incomplete and fail check mode. The initial mutation run was stopped at
+138/807 candidates; only the final-source R2 run can provide gate evidence.
+
 ## Consumer workflows this should support
 
 ### CMRU: constraint-heavy command with mutation boundaries
@@ -160,6 +172,8 @@ added argparse arguments. Emit:
 
 - executable identity and invocation path, including root options accepted
   before and after a verb;
+- parser settings at each path depth, including `allow_abbrev`,
+  `prefix_chars`, and `fromfile_prefix_chars`;
 - verb ID/name, description, semantic group, behavior/confirmation labels,
   and delegated-command path;
 - positional name, display shape, requiredness, `nargs`, choices, default,
@@ -365,7 +379,9 @@ items, and consumer docs show the annotations to add.
 - Surface output includes nested delegated commands and callback-added
   argparse actions, aliases, option scope/placement, positionals,
   choices/defaults, existing required/exclusive metadata, and actual common
-  options. Output is byte-stable across repeat runs. Nonserializable values
+  options. It includes parser-scoped abbreviation policy in signatures and
+  marks custom option prefixes or argument-file expansion incomplete. Output
+  is byte-stable across repeat runs. Nonserializable values
   and custom action behavior are marked opaque or incomplete, never omitted.
 - Candidate count is bounded by a documented default maximum of 512 (with an
   explicit per-call override) and fails without truncation when exceeded.
@@ -388,8 +404,11 @@ items, and consumer docs show the annotations to add.
   terminators, required parent positionals, and a nested route after a
   `REMAINDER` positional. Positional candidate values are assigned to the
   registered action at the matching parser depth, and flag-only options reject
-  inline values. They also recognize options on a single-command entrypoint
-  with an empty route path. They do not execute parser callbacks.
+  inline values. Long-option abbreviations follow the `allow_abbrev` value for
+  each parser depth. Non-default `prefix_chars` and enabled
+  `fromfile_prefix_chars` make the inventory incomplete. They also recognize
+  options on a single-command entrypoint with an empty route path. They do not
+  execute parser callbacks.
 - Marker parsing fails if either boundary is absent, duplicated, reversed, or
   nested; repeated sync is idempotent. TOML comments and all catalog fields
   remain unchanged during sync.

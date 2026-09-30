@@ -139,7 +139,26 @@ def test_surface_export_is_deterministic_and_describes_installed_parser_tree():
 
     assert render_cli_surface_json(first) == render_cli_surface_json(second)
     assert first["entrypoint"]["allow_abbrev"] is False
+    assert first["entrypoint"]["prefix_chars"] == "-"
+    assert first["entrypoint"]["fromfile_prefix_chars"] is None
     assert first["entrypoint"]["single_command"] is False
+    assert inspect["parser_settings"] == [
+        {
+            "parser_path": [],
+            "allow_abbrev": False,
+            "prefix_chars": "-",
+            "fromfile_prefix_chars": None,
+        },
+        {
+            "parser_path": ["inspect"],
+            "allow_abbrev": False,
+            "prefix_chars": "-",
+            "fromfile_prefix_chars": None,
+        },
+    ]
+    assert [
+        setting["parser_path"] for setting in detail["parser_settings"]
+    ] == [[], ["inspect"], ["inspect", "detail"]]
     assert inspect["subcommands"] == [detail["id"]]
     assert detail["aliases"] == ["d"]
     assert actions["shared-profile"]["scope"] == "global"
@@ -194,6 +213,83 @@ def test_surface_export_is_deterministic_and_describes_installed_parser_tree():
         for candidate in first["candidates"]
     )
     assert first["syntax_complete"] is True
+
+
+def test_surface_signature_tracks_parser_scoped_abbreviation_policy():
+    def build_surface(allow_abbrev: bool):
+        registry = CliRegistry(
+            IDENTITY,
+            prog="surface-demo",
+            description="inspect sample commands",
+            allow_abbrev=False,
+        )
+
+        def configure(parser: argparse.ArgumentParser) -> None:
+            parser.allow_abbrev = allow_abbrev
+
+        registry.register(
+            VerbSpec(
+                "show",
+                description="show one item",
+                options=(OptionSpec(("--profile",), "select profile"),),
+                configure=configure,
+                handler=lambda *_: 0,
+            )
+        )
+        return export_cli_surface(registry.build())
+
+    abbreviated = build_surface(True)
+    exact = build_surface(False)
+    abbreviated_route = abbreviated["routes"][0]
+    exact_route = exact["routes"][0]
+    assert abbreviated_route["parser_settings"][-1]["allow_abbrev"] is True
+    abbreviated_case = next(
+        candidate
+        for candidate in abbreviated["candidates"]
+        if candidate["kind"] == "option-spelling"
+        and candidate["shape"].get("spelling") == "--profile"
+    )
+    exact_case = next(
+        candidate
+        for candidate in exact["candidates"]
+        if candidate["kind"] == "option-spelling"
+        and candidate["shape"].get("spelling") == "--profile"
+    )
+    assert abbreviated_case["signature"] != exact_case["signature"]
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "finding"),
+    (
+        ("prefix_chars", "+-", "has unsupported prefix_chars"),
+        ("fromfile_prefix_chars", "@", "argument-file expansion"),
+    ),
+)
+def test_surface_refuses_to_certify_unmodeled_parser_token_syntax(
+    setting: str, value: str, finding: str
+):
+    registry = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="inspect sample commands",
+    )
+
+    def configure(parser: argparse.ArgumentParser) -> None:
+        setattr(parser, setting, value)
+
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one item",
+            configure=configure,
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any(finding in item for item in surface["incomplete"])
 
 
 def test_surface_candidates_include_each_argument_option_alias_choice_and_exclusion():

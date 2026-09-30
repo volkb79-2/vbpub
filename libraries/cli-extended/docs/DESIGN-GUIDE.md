@@ -235,9 +235,13 @@ option arity and scope, parser-depth `--` terminators, and parent positionals
 before nested commands. For positional candidates, it assigns supplied values
 to the named action at the matching parser depth; another positional using the
 same text does not satisfy it. It also rejects an inline value on a flag-only
-option. It deliberately does not call `parse_args`, custom converters/actions,
-or handlers, because a documentation check must not execute consumer behavior.
-The linked test is the oracle for parser acceptance and product semantics.
+option. It records `allow_abbrev` at each parser depth and uses that parser's
+setting when recognizing options. A callback that changes `prefix_chars` or
+enables `fromfile_prefix_chars` makes the inventory incomplete until the
+structural checker can model that token syntax. It deliberately does not call
+`parse_args`, custom converters/actions, or handlers, because a documentation
+check must not execute consumer behavior. The linked test is the oracle for
+parser acceptance and product semantics.
 Each generated file is replaced atomically. A stop between the two output
 replacements is visible as drift on the next check.
 This boundary makes semantic review auditable without asking a generic library

@@ -108,6 +108,9 @@ read-only drift checking, review templates, and pytest node/marker linkage.
 It includes delegated registries and callback-added argparse actions. Nested
 routes carry parent-parser actions forward and identify parser-depth placement;
 required-subcommand prefixes do not produce false executable candidates.
+Parser-scoped `allow_abbrev` is exported, included in candidate signatures, and
+used when checking the invocation at each parser depth. Unsupported custom
+`prefix_chars` and `fromfile_prefix_chars` make the inventory incomplete.
 
 The generated checklist includes minimum valid syntax, positional shapes and
 enumerable values, option spellings and choices, exclusive alternatives and

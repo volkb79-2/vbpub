@@ -264,11 +264,16 @@ route prefix; semantic cases belong to runnable descendants. Multiple nested
 subparser groups at one parser level make the inventory incomplete so `check`
 cannot certify an ambiguous route. The manifest reports spellings,
 aliases, choices, defaults, requiredness, argument shape, exclusive groups,
-scope, placement, synopsis, and callback-added actions. A custom value
-converter is marked opaque while the parser syntax remains inventoried; an
-unenumerable grammar field makes the surface incomplete. Set `surface_id` on a
-declaration to preserve its semantic identity through a rename. IDs are unique
-within a route; descriptions and help wording are not identifiers.
+scope, placement, synopsis, parser-scoped `allow_abbrev`, and callback-added
+actions. A change to abbreviation policy changes case signatures. The checker
+uses the policy for the parser that owns each option, including when a callback
+configures a nested parser. Custom `prefix_chars` and argparse argument-file
+expansion (`fromfile_prefix_chars`) make the surface incomplete because the
+structural checker does not model their token syntax. A custom value converter
+is marked opaque while the parser syntax remains inventoried; an unenumerable
+grammar field makes the surface incomplete. Set `surface_id` on a declaration
+to preserve its semantic identity through a rename. IDs are unique within a
+route; descriptions and help wording are not identifiers.
 
 The generated checklist is symbolic. It covers minimum executable syntax, positional
 shapes and enumerated choices, option spellings and choices, exclusive

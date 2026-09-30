@@ -310,7 +310,10 @@ one runtime grammar in `CliRegistry` and their semantic decisions in the
 catalog; the library owns the repeatable export, diff, and marker plumbing.
 The checker sanity-checks supplied argv against route placement and argument
 shape. It tracks recognized option arity, scope, parser depth, `--` terminators,
-and required parent positionals. Positional values must reach the registered
+parser-scoped abbreviation policy, and required parent positionals. The
+manifest records each parser's `allow_abbrev` setting. Custom `prefix_chars`
+and argparse argument-file expansion are marked incomplete until the checker
+can model them. Positional values must reach the registered
 argument being reviewed; a matching token in a sibling position is not enough.
 Minimum cases must supply required option values and exactly one alternative
 from each required exclusive group. A flag-only option cannot use `--flag=value`.
