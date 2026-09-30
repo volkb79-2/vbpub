@@ -793,8 +793,8 @@ def test_host_snapshot_matches_host_v1(tmp_path):
 # ── RG-55 C5: `gates_slice` / `daemon_slice` (contract §8.5, D-29) ─────────
 
 def _build_gates_and_daemon_tree(tmp_path: Path) -> Path:
-    """`fixtures/contract/frames/4` PLUS a populated `dev-gates.slice` (two
-    `rg-*` leaves and one non-`rg-*` sibling that must be filtered out) and
+    """`fixtures/contract/frames/4` PLUS two delegated scope/leaf pairs under
+    `dev-gates.slice` and one non-profiler scope that must be filtered out, and
     a populated top-level `cgprofile.slice` -- exactly the tree
     `tests/fixtures/rg55/host-v1.1.json` was generated from, so a change to
     either the fixture-building code here or `_gates_slice_snapshot`/
@@ -807,11 +807,14 @@ def _build_gates_and_daemon_tree(tmp_path: Path) -> Path:
         memory_current=2147483648, memory_max="6442450944", memory_high="4294967296",
         cpu_max="500000 100000", swap_current=0,
     ))
-    (root / "dev.slice" / "dev-gates.slice" / "rg-b7f3a1c9").mkdir(parents=True)
-    (root / "dev.slice" / "dev-gates.slice" / "rg-04d8e2aa").mkdir(parents=True)
-    # NOT an `rg-*` leaf -- proves the whitelist filter in _gates_slice_snapshot,
-    # not just that `list_children` works.
-    (root / "dev.slice" / "dev-gates.slice" / "some-container.scope").mkdir(parents=True)
+    gates = "dev.slice/dev-gates.slice"
+    for token in ("04d8e2aa", "b7f3a1c9"):
+        scope = f"{gates}/rg-profile-{token}.scope"
+        write_cgroup(root, scope, cgroup_files())
+        write_cgroup(root, f"{scope}/rg-{token}", cgroup_files())
+    # NOT a profiler-owned scope -- proves the scope-name filter in
+    # _gates_slice_snapshot, not just that list_children works.
+    write_cgroup(root, f"{gates}/some-container.scope", cgroup_files())
     write_cgroup(root, "cgprofile.slice", cgroup_files(
         memory_min="134217728", memory_high="805306368",
     ))

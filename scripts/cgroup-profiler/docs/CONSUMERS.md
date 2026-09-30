@@ -215,7 +215,7 @@ scope intact rather than killing or deleting processes it cannot safely
 restore. The host system bus is mounted only into the daemon, not into the
 cockpit. The complete ownership and security rationale, including the
 deferred broker option, is in the
-  [`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3--placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+  [`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 For `--progress-stream`, provide a regular NDJSON file path inside the lane;
 the daemon ignores a FIFO, device, or unfinished line. A placement request with an existing
 `rg-<token>` leaf ordinarily starts unplaced with `placement.error` set. Use a fresh

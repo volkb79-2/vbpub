@@ -24,11 +24,11 @@ container cgroup and refuses an existing scope/leaf: an orphan or symlink
 might belong to another lane. The guard covers enabling required controllers
 only at the delegated scope root and creation/removal of only the session's
 leaf. Process moves go through the systemd manager; no raw write to the
-systemd-owned gates slice or origin cgroup is used. The daemon's host cgroup-v2
-bind is therefore writable: Linux cgroupfs placement cannot work through a
-read-only bind. This is a deliberate, bounded application-level exception to
-observation-only operation, not a kernel sandbox or general host-control
-surface.
+systemd-owned gates slice or origin cgroup is used. The daemon's host
+cgroup-v2 bind is therefore writable: Linux cgroupfs placement cannot work
+through a read-only bind. This is a deliberate, bounded application-level
+exception to observation-only operation, not a kernel sandbox or general
+host-control surface.
 
 ### Why placement uses a delegated scope
 
@@ -83,7 +83,7 @@ approximate process-RSS substitute. A future design that starts work inside
 the leaf before allocations, or reports a separately named RSS/PSS estimate,
 would have different adoption and accuracy costs and needs its own contract.
 The detailed metric-source and disclosure rules are in the
-[`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3--placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+[`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
 The daemon's host system bus is separate from the consumer control socket. The
 cockpit receives only the cgprofile ctl surface; it does not need the system
@@ -97,7 +97,7 @@ and its own tested identity/path validation. A broker that can perform the
 same host-root operations and trusts the daemon's claims may merely move the
 compromise point. The detailed no-broker decision and future broker tradeoffs
 are recorded in the
-[`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3--placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+[`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
 Stall enforcement never signals a numeric PID: the daemon keeps a private PID
 namespace, so host PIDs from its read-only proc view are observations, not

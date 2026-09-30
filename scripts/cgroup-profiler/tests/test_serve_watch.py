@@ -691,8 +691,46 @@ class TestWatchStream:
         assert server._sessions[SESSION_ID].finished is False
         server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
 
-    def test_the_end_reason_is_killed_after_an_enforced_kill(self, streaming_server):
+    def test_the_end_reason_is_killed_when_watch_records_enforcement(
+        self, streaming_server, monkeypatch,
+    ):
         server = streaming_server
+
+        class _PlacedForWatch:
+            """Isolate end-event behavior from the cgroup transaction.
+
+            `test_serve_placement.py` owns the real delegated-scope and
+            `cgroup.kill` writes. This test supplies the placed-session state
+            needed to exercise the watch end-event contract.
+            """
+            error = None
+            leaf_abs = None
+
+            def __init__(self):
+                self.placed = False
+
+            def apply(self, _pids):
+                self.placed = True
+
+            def migrate(self, _pids):
+                return 0
+
+            def leaf_readings(self):
+                return {"psi_full_avg10": None, "memory_high_applied": False}
+
+            def block(self):
+                return {
+                    "requested": True,
+                    "leaf": "fake-delegated-leaf" if self.placed else None,
+                    "applied": {}, "pids_moved": 0, "error": None,
+                }
+
+            def release(self):
+                self.placed = False
+
+        monkeypatch.setattr(
+            server, "_make_placement", lambda **_kwargs: _PlacedForWatch()
+        )
         gates_files = dict(cgroup_files())
         gates_files["memory.max"] = str(6 * 1024 * 1024 * 1024)
         gates_files["cpu.max"] = "500000 100000"

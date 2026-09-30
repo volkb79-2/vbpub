@@ -5599,3 +5599,21 @@ as 5e040b43 (lint on that isolated Nyxloom worktree passed). Until the
 vocabulary is extended, `nyxloom lint` in this package has this one known CFG1
 failure; it does not replace or weaken the registered coverage gate. Keep the
 limitation visible in review and final reporting.
+
+### RW-389 — 2026-09-30 20:20:55Z — repair exact-tree R0/R1 regressions found by D-31
+
+Registered `r0-r1` on exact tree `831a789e` ran 149.423 s and failed (exit 1)
+in `cgprofile-gate-3454297-1790798830`, with `NanoCpus=3000000000` under
+loaded `dev-gates.slice`. The separately read history record matches the
+tree and exit; the gate suite had 1,795 passes and 16 failures. Failures were
+fixture/document drift caused by D-31: the subtree `/proc/stat` fake stopped
+at `ppid` after production began requiring field-22 start-time identity; the
+host snapshot fake still put leaves directly under the slice; the watch
+stream test asked a fake `/proc` tree to prove a real host placement; and two
+docs assertions exposed a stale safety sentence wrap and an obsolete A3 link
+slug. The implementation was not weakened: updated the identity fixture,
+modeled scope→leaf in the host oracle, isolated the stream contract with an
+explicit placed-session test double (real transaction remains covered by the
+placement suite), and corrected the prose links. The affected-file suite now
+passes 441 tests with 6 skipped in 72.84 s. This is local evidence only; the
+exact commit changed and fresh registered R0/R1 plus R3 remain required.

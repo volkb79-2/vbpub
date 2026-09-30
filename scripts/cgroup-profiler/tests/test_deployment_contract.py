@@ -47,4 +47,7 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     assert target in consumers
     assert "## Daemon safety and placement" in design
     assert "one-shot helper also keeps its host cgroup bind read-only" in design
-    assert "daemon's host cgroup-v2 bind is therefore\nwritable" in design
+    assert (
+        "daemon's host cgroup-v2 bind is therefore writable"
+        in " ".join(design.split())
+    )

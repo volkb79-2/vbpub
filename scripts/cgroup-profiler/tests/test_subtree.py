@@ -40,10 +40,14 @@ def mkproc(
     """
     pdir = root / str(pid)
     pdir.mkdir(parents=True, exist_ok=True)
-    # proc(5): fields after the last ')' are state, ppid, pgrp, session, ...
-    # Padding to a handful of zero fields is enough — _parse_ppid only reads
-    # index 1 (ppid).
-    (pdir / "stat").write_text(f"{pid} (proc{pid}) S {ppid} 0 0 0 0 0 0\n")
+    # proc(5): field 22 (starttime) distinguishes a live token owner from a
+    # later process that reused its PID. Populate through that field; the old
+    # short fixture was enough for _parse_ppid but made every owner look
+    # identity-indeterminate after the reuse guard was added.
+    stat_fields = ["S", str(ppid)] + ["0"] * 17 + [str(pid)]
+    (pdir / "stat").write_text(
+        f"{pid} (proc{pid}) " + " ".join(stat_fields) + "\n"
+    )
     if cgroup is not None:
         (pdir / "cgroup").write_text(cgroup)
     if environ is not None:

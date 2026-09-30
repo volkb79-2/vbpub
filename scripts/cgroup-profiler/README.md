@@ -321,7 +321,7 @@ The daemon's version response is contract major 1:
   there is no host-namespace fallback launcher. This raw manager bridge is an
   operational authority path, not a sandbox against daemon compromise; the
   rationale and deferred broker option are in the
-  [RG-55 placement design](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3--placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+  [RG-55 placement design](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
 ## Relationship to the neighbours
 
