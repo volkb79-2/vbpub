@@ -442,7 +442,7 @@ class SessionServer:
         target_spec = req.get("target")
         scope = req.get("scope")
         token = req.get("token")
-        damon_req = req.get("damon") or self.damon_default
+        damon_req = req.get("damon", self.damon_default)
         interval_req = req.get("interval")
         meta = req.get("meta")
 
@@ -455,7 +455,9 @@ class SessionServer:
             raise RequestError("bad-argument", "--scope must be 'container' or 'container-shared'")
         if damon_req not in ("on", "off"):
             raise RequestError("bad-argument", "--damon must be 'on' or 'off'")
-        if token is not None and not _TOKEN_RE.match(token):
+        if token is not None and (
+            not isinstance(token, str) or not _TOKEN_RE.fullmatch(token)
+        ):
             raise RequestError("bad-argument", "--token must match [A-Za-z0-9._-]{8,64}")
         if not isinstance(meta, dict):
             raise RequestError("bad-argument", "--meta must be a JSON object")
@@ -1142,7 +1144,15 @@ class SessionServer:
     # ── dispatch / socket loop ───────────────────────────────────────────
 
     def _dispatch(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(req, dict):
+            return self._error_response(
+                "bad-argument", "request must be a JSON object"
+            )
         verb = req.get("verb")
+        if not isinstance(verb, str):
+            return self._error_response(
+                "bad-argument", "request verb must be a string"
+            )
         handlers = {
             "version": self.handle_version,
             "start": self.handle_start,
@@ -1228,6 +1238,9 @@ class SessionServer:
                     # reply — the same client-visible shape an ordinary
                     # connection drop already has (contract §1.3: exit 3,
                     # "daemon fault"), just without the blast radius.
+                    # `_dispatch` rejects non-object requests and non-string
+                    # verbs before a handler can throw, so the log can retain
+                    # the useful verb without trusting malformed JSON shapes.
                     print(
                         f"cgprofile: unhandled error handling verb "
                         f"{req.get('verb')!r}: {type(exc).__name__}: {exc}",
