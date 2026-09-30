@@ -18,7 +18,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   claim/policy helpers in `verdict`, and same-side helpers in git, isolation,
   liveness_resources, runner, mutation, cli, evaluate and coverage; the raw
   verifier `assay.verify` keeps its own independent copies (A-182). Messages,
-  exception types, reason codes and public names are unchanged; mutation
+  exception types and reason codes are unchanged, and `assay.verdict.__all__`
+  gains only `claim_for` and `claim_carries` (the runner uses both); mutation
   candidates in `src/assay` fall from 3733 to 3367. Assay-internal: no
   consumer-facing change (B129)
 - chore(assay): assay's own two B105 self-qualification lanes now use the
