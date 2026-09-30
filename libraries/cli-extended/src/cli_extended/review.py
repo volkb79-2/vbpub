@@ -631,18 +631,141 @@ def _review_findings(
                 accepted.update(str(alias) for alias in prefix_route.get("aliases", ()))
             accepted_by_position.append(accepted)
 
-        def find(segment: int, start: int) -> tuple[int, ...] | None:
-            if segment == len(accepted_by_position):
-                return ()
-            accepted = accepted_by_position[segment]
-            for index in range(start, len(argv)):
-                if argv[index] in accepted:
-                    following = find(segment + 1, index + 1)
-                    if following is not None:
-                        return (index, *following)
-            return None
+        def action_for_option(option: str, depth: int) -> Mapping[str, Any] | None:
+            available: list[tuple[int, Mapping[str, Any]]] = []
+            for action in route.get("actions", ()):
+                if action.get("kind") != "option":
+                    continue
+                parser_path = tuple(action.get("parser_path", ()))
+                if depth == 0:
+                    accepted_here = bool(
+                        action.get("placement", {}).get("before_verb", False)
+                    )
+                else:
+                    accepted_here = parser_path == path[:depth]
+                if not accepted_here:
+                    continue
+                flags = tuple(str(flag) for flag in action.get("flags", ()))
+                if option in flags:
+                    available.append((len(parser_path), action))
+            if not available and surface.get("entrypoint", {}).get("allow_abbrev"):
+                matches = [
+                    (str(flag), action)
+                    for action in route.get("actions", ())
+                    if action.get("kind") == "option"
+                    and (
+                        action.get("placement", {}).get("before_verb", False)
+                        if depth == 0
+                        else tuple(action.get("parser_path", ())) == path[:depth]
+                    )
+                    for flag in action.get("flags", ())
+                    if str(flag).startswith("--") and str(flag).startswith(option)
+                ]
+                matched_flags = {flag for flag, _action in matches}
+                if len(matched_flags) == 1:
+                    available.extend(
+                        (len(tuple(action.get("parser_path", ()))), action)
+                        for _flag, action in matches
+                    )
+            if not available:
+                return None
+            return max(available, key=lambda pair: pair[0])[1]
 
-        return find(0, 0)
+        def option_end(index: int, action: Mapping[str, Any], inline: bool) -> int:
+            if inline:
+                nargs = action.get("nargs")
+                additional = nargs - 1 if isinstance(nargs, int) and nargs > 1 else 0
+                return min(index + 1 + additional, len(argv))
+            nargs = action.get("nargs")
+            if nargs == 0:
+                return index + 1
+            if nargs is None:
+                return min(index + 2, len(argv))
+            if isinstance(nargs, int):
+                return min(index + 1 + nargs, len(argv))
+            if nargs == "?":
+                if index + 1 < len(argv) and not argv[index + 1].startswith("-"):
+                    return index + 2
+                return index + 1
+            if nargs in {"*", "+"}:
+                end = index + 1
+                while end < len(argv) and not argv[end].startswith("-"):
+                    end += 1
+                return end
+            if nargs in {"...", "A..."}:
+                return len(argv)
+            return index + 1
+
+        positional_states = {
+            depth: [
+                {
+                    "action": action,
+                    "remaining": int(action.get("minimum_values", 1)),
+                    "optional_used": False,
+                }
+                for action in route.get("actions", ())
+                if action.get("kind") == "argument"
+                and action.get("before_nested_subcommand")
+                and tuple(action.get("parser_path", ())) == path[:depth]
+            ]
+            for depth in range(len(path))
+        }
+        positional_indexes = {depth: 0 for depth in positional_states}
+
+        def consumes_parent_positional(depth: int, is_command: bool) -> bool:
+            actions = positional_states.get(depth, ())
+            index = positional_indexes.get(depth, 0)
+            while index < len(actions):
+                state = actions[index]
+                action = state["action"]
+                nargs = action.get("nargs")
+                if state["remaining"]:
+                    state["remaining"] -= 1
+                    positional_indexes[depth] = index
+                    return True
+                if nargs == "?" and not state["optional_used"]:
+                    if is_command:
+                        return False
+                    state["optional_used"] = True
+                    positional_indexes[depth] = index + 1
+                    return True
+                if nargs in {"*", "+"}:
+                    return not is_command
+                if nargs in {"...", "A..."}:
+                    return True
+                index += 1
+                positional_indexes[depth] = index
+            return False
+
+        positions: list[int] = []
+        segment = 0
+        index = 0
+        while index < len(argv) and segment < len(accepted_by_position):
+            token = argv[index]
+            if token == "--":
+                return None
+            if token in accepted_by_position[segment]:
+                if consumes_parent_positional(segment, True):
+                    index += 1
+                    continue
+                positions.append(index)
+                segment += 1
+                index += 1
+                continue
+            option, separator, _value = token.partition("=")
+            action = action_for_option(option, segment)
+            if action is not None:
+                index = option_end(index, action, bool(separator))
+                continue
+            if token.startswith("-"):
+                return None
+            if consumes_parent_positional(segment, False):
+                index += 1
+                continue
+            return None
+        if segment == len(accepted_by_position):
+            return tuple(positions)
+        return None
 
     def positional_tokens(
         argv: Sequence[str],

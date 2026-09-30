@@ -1,6 +1,7 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Independently reviewed; revised plan ready for implementation  
+**Status:** Implemented; final registered R2/R3 gate evidence pending
+
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04  
 **Decision owner:** cli-extended maintainers and adopting product owners
 

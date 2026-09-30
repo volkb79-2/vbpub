@@ -704,7 +704,29 @@ def test_review_findings_matches_nested_path_after_skipping_unrelated_tokens():
         "path": ["inspect", "detail"],
         "aliases": ["d"],
         "kind": "invocation",
-        "actions": [],
+        "actions": [
+            {
+                "id": "option:global",
+                "kind": "option",
+                "flags": ["--global"],
+                "nargs": None,
+                "parser_path": [],
+                "placement": {"before_verb": True},
+            },
+            {
+                "id": "option:parent",
+                "kind": "option",
+                "flags": ["--parent"],
+                "nargs": None,
+                "parser_path": ["inspect"],
+            },
+            {
+                "id": "argument:parent-arg",
+                "kind": "argument",
+                "name": "resource",
+                "parser_path": ["inspect"],
+            },
+        ],
     }
     candidate = {
         "id": "case:nested-path",
@@ -714,12 +736,288 @@ def test_review_findings_matches_nested_path_after_skipping_unrelated_tokens():
         "members": [],
         "shape": {},
     }
-    case = _case_for_candidate(candidate, ["--global", "i", "unknown", "detail"])
+    case = _case_for_candidate(
+        candidate,
+        ["--global", "profile.toml", "i", "--parent", "value", "detail"],
+    )
     findings = _review_findings(
         {"routes": [prefix, leaf], "candidates": [candidate], "syntax_complete": True},
         ReviewCatalog("audit-tool", 4, (), (case,)),
     )
     assert not any("omits its command path" in item for item in findings)
+
+
+def test_review_findings_does_not_match_command_names_consumed_as_option_values():
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    leaf = {
+        "id": "route:entrypoint:audit-tool/inspect/detail",
+        "path": ["inspect", "detail"],
+        "aliases": ["d"],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:profile",
+                "kind": "option",
+                "flags": ["--profile"],
+                "nargs": None,
+                "parser_path": [],
+                "placement": {"before_verb": True},
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:detail-alias",
+        "route_id": leaf["id"],
+        "signature": "s",
+        "kind": "route-alias",
+        "members": [],
+        "shape": {"alias": "d"},
+    }
+    case = _case_for_candidate(candidate, ["--profile", "inspect", "d"])
+    findings = _review_findings(
+        {"routes": [prefix, leaf], "candidates": [candidate], "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    assert any("omits its command path" in item for item in findings)
+    assert any("omits its command alias" in item for item in findings)
+
+
+@pytest.mark.parametrize(
+    ("nargs", "invocation", "has_route"),
+    (
+        (None, ["--value", "inspect", "detail", "d"], False),
+        (0, ["--flag", "inspect", "d"], True),
+        (2, ["--pair", "first", "second", "inspect", "d"], True),
+        (2, ["--pair=first", "inspect", "detail", "d"], False),
+        ("?", ["--maybe", "inspect", "detail", "d"], False),
+        ("*", ["--many", "inspect", "detail", "d"], False),
+        ("+", ["--some", "inspect", "detail", "d"], False),
+        ("...", ["--rest", "inspect", "detail", "d"], False),
+        ("A...", ["--parser", "inspect", "detail", "d"], False),
+        ("odd", ["--odd", "inspect", "d"], True),
+        (None, ["--", "inspect", "detail", "d"], False),
+    ),
+)
+def test_review_route_lexer_skips_option_values_and_stops_at_delimiter(
+    nargs, invocation, has_route
+):
+    flag_by_nargs = {
+        None: "--value",
+        0: "--flag",
+        2: "--pair",
+        "?": "--maybe",
+        "*": "--many",
+        "+": "--some",
+        "...": "--rest",
+        "A...": "--parser",
+        "odd": "--odd",
+    }
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    leaf = {
+        "id": "route:entrypoint:audit-tool/inspect/detail",
+        "path": ["inspect", "detail"],
+        "aliases": ["d"],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:value",
+                "kind": "option",
+                "flags": [flag_by_nargs[nargs]],
+                "nargs": nargs,
+                "parser_path": [],
+                "placement": {"before_verb": True},
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:detail-alias",
+        "route_id": leaf["id"],
+        "signature": "s",
+        "kind": "route-alias",
+        "members": [],
+        "shape": {"alias": "d"},
+    }
+    case = _case_for_candidate(candidate, invocation)
+    findings = _review_findings(
+        {"routes": [prefix, leaf], "candidates": [candidate], "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    missing_path = any("omits its command path" in item for item in findings)
+    assert missing_path is not has_route
+
+
+def test_review_route_lexer_accepts_unambiguous_long_option_abbreviation():
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    leaf = {
+        "id": "route:entrypoint:audit-tool/inspect/detail",
+        "path": ["inspect", "detail"],
+        "aliases": ["d"],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:profile",
+                "kind": "option",
+                "flags": ["--profile"],
+                "nargs": None,
+                "parser_path": [],
+                "placement": {"before_verb": True},
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:detail-alias",
+        "route_id": leaf["id"],
+        "signature": "s",
+        "kind": "route-alias",
+        "members": [],
+        "shape": {"alias": "d"},
+    }
+    case = _case_for_candidate(candidate, ["--prof", "inspect", "d"])
+    findings = _review_findings(
+        {
+            "entrypoint": {"allow_abbrev": True},
+            "routes": [prefix, leaf],
+            "candidates": [candidate],
+            "syntax_complete": True,
+        },
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    assert any("omits its command path" in item for item in findings)
+
+
+def test_review_route_lexer_does_not_certify_ambiguous_long_option_abbreviation():
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    leaf = {
+        "id": "route:entrypoint:audit-tool/inspect/detail",
+        "path": ["inspect", "detail"],
+        "aliases": ["d"],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:profile",
+                "kind": "option",
+                "flags": ["--profile"],
+                "nargs": None,
+                "parser_path": [],
+                "placement": {"before_verb": True},
+            },
+            {
+                "id": "option:project",
+                "kind": "option",
+                "flags": ["--project"],
+                "nargs": None,
+                "parser_path": [],
+                "placement": {"before_verb": True},
+            },
+        ],
+    }
+    candidate = {
+        "id": "case:detail-alias",
+        "route_id": leaf["id"],
+        "signature": "s",
+        "kind": "route-alias",
+        "members": [],
+        "shape": {"alias": "d"},
+    }
+    case = _case_for_candidate(candidate, ["--pro", "inspect", "d"])
+    findings = _review_findings(
+        {
+            "entrypoint": {"allow_abbrev": True},
+            "routes": [prefix, leaf],
+            "candidates": [candidate],
+            "syntax_complete": True,
+        },
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    assert any("omits its command path" in item for item in findings)
+
+
+@pytest.mark.parametrize(
+    ("actions", "invocation", "allow_abbrev", "path_missing"),
+    (
+        (
+            (
+                {"flags": ["--maybe"], "nargs": "?", "parser_path": []},
+                {"flags": ["--switch"], "nargs": 0, "parser_path": []},
+            ),
+            ["--maybe", "--switch", "inspect", "detail"],
+            False,
+            False,
+        ),
+        (({"flags": ["--nested"], "nargs": None, "parser_path": ["inspect"]},), ["--nested", "inspect", "detail"], False, True),
+        (({"flags": ["--profile", "--progress"], "nargs": None, "parser_path": [], "placement": {"before_verb": True}},), ["--pro", "inspect", "detail"], True, True),
+    ),
+)
+def test_review_route_lexer_rejects_ambiguous_or_out_of_scope_options(
+    actions, invocation, allow_abbrev, path_missing
+):
+    route_id = "route:entrypoint:audit-tool/inspect/detail"
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    option_actions = [
+        {
+            "id": f"option:{index}",
+            "kind": "option",
+            "placement": {"before_verb": not action.get("parser_path")},
+            **action,
+        }
+        for index, action in enumerate(actions)
+    ]
+    route = {
+        "id": route_id,
+        "path": ["inspect", "detail"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": option_actions,
+    }
+    candidate = {
+        "id": "case:lexer",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "other",
+        "members": [],
+        "shape": {},
+    }
+    case = _case_for_candidate(candidate, invocation)
+    findings = _review_findings(
+        {
+            "entrypoint": {"allow_abbrev": allow_abbrev},
+            "routes": [prefix, route],
+            "candidates": [candidate],
+            "syntax_complete": True,
+        },
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    assert any("omits its command path" in item for item in findings) is path_missing
 
 
 def test_review_findings_handles_nested_path_without_prefix_route_or_complete_match():
