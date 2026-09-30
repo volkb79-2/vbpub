@@ -111,7 +111,7 @@ import threading
 import time
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, replace as _dataclass_replace
+from dataclasses import replace as _dataclass_replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -121,6 +121,7 @@ from . import git, liveness, safeio
 from .candidate_identity import candidate_id_from_fields
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
+from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
 from .mutation_witness import inject_witness_plugin as _inject_witness_plugin
@@ -129,6 +130,7 @@ from .mutation_witness import read_internal_receipt as _read_witness_receipt
 from .mutation_witness import replay_witness_from_receipt as _replay_witness_from_receipt
 from .mutation_witness import supports_sequential_pytest
 from .mutation_witness import witness_from_receipt as _witness_from_receipt
+from .records import record
 from .verdict import (
     DISCARD_REASONS,
     MUTATION_BUCKETS,
@@ -176,6 +178,7 @@ __all__ = [
     "byte_offset",
     "collect_mutation_sites",
     "candidate_id",
+    "candidate_identity_fields",
     # (B088) The judge half of a resume record's identity -- public for the
     # same reason `candidate_id` is: a consumer inspecting a state directory
     # must be able to re-derive what it is looking at.
@@ -193,6 +196,9 @@ __all__ = [
     "resolve_mutation_targets",
     "run_mutation",
     "select_mutation_shard",
+    # CD18: public for assay_analysis.
+    "execution_from_state_record",
+    "valid_hung_resource_evidence",
 ]
 
 #: (P21/A-183) the adapter-wide capability sentinel, retained from the old
@@ -316,7 +322,7 @@ def _reject_unknown_rejudge_ids(
         )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationSite:
     """One candidate mutation, as a BOUNDED descriptor (P21/A-180).
 
@@ -348,7 +354,7 @@ class MutationSite:
     def __post_init__(self) -> None:
         for name in ("start_byte", "end_byte", "lineno"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise ValueError(
                     f"MutationSite.{name} must be an integer, got {value!r}"
                 )
@@ -446,7 +452,7 @@ def line_for_offset(text_bytes: bytes, offset: int) -> int:
 # --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationTarget:
     """One changed file to mutate: its repo-relative *path* (the same
     forward-slash, repo-top-relative spelling ``adapters/base.py``'s own
@@ -488,7 +494,7 @@ class MutationTarget:
                 f"omitted from the target list"
             )
         for line in self.lines:
-            if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            if not is_int_at_least(line, 1):
                 raise ValueError(
                     f"MutationTarget.lines must contain only positive line "
                     f"numbers, got {line!r}"
@@ -555,7 +561,7 @@ def resolve_mutation_targets(
     return tuple(targets)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutantJob:
     """One ``(file, site)`` pair — the unit of work :func:`run_mutation` fans
     out over the executor.
@@ -706,7 +712,7 @@ def collect_mutation_sites(
     With no targets at all the result is the supported empty tuple: no
     language analysis was required, so nothing can be said about capability.
     """
-    if isinstance(limit, bool) or not isinstance(limit, int):
+    if not is_strict_int(limit):
         raise ValueError(f"collect_mutation_sites limit must be an integer, got {limit!r}")
     if not 1 <= limit <= MAX_CANDIDATE_CEILING:
         raise ValueError(
@@ -1020,18 +1026,23 @@ def _progress_event(
     }
 
 
-def candidate_id(job: MutantJob) -> str:
-    """Return the stable digest identity shared by plans, state and shards."""
+def candidate_identity_fields(job: MutantJob) -> dict[str, object]:
+    """The six inputs of :func:`candidate_id_from_fields` for *job* (C13)."""
     original_bytes = job.original_text.encode("utf-8")
     replacement_bytes = job.site.apply(original_bytes)
-    return candidate_id_from_fields(
-        path=job.path,
-        source_sha256=hashlib.sha256(original_bytes).hexdigest(),
-        start_byte=job.site.start_byte,
-        end_byte=job.site.end_byte,
-        mutated_file_sha256=hashlib.sha256(replacement_bytes).hexdigest(),
-        operator=job.site.operator,
-    )
+    return {
+        "path": job.path,
+        "source_sha256": hashlib.sha256(original_bytes).hexdigest(),
+        "start_byte": job.site.start_byte,
+        "end_byte": job.site.end_byte,
+        "mutated_file_sha256": hashlib.sha256(replacement_bytes).hexdigest(),
+        "operator": job.site.operator,
+    }
+
+
+def candidate_id(job: MutantJob) -> str:
+    """Return the stable digest identity shared by plans, state and shards."""
+    return candidate_id_from_fields(**candidate_identity_fields(job))
 
 
 def _tool_version() -> str:
@@ -1512,6 +1523,10 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
     return True
 
 
+# CD18: public for assay_analysis.
+valid_hung_resource_evidence = _valid_hung_resource_evidence
+
+
 def _load_validated_state_record(
     state_root: Path, job: MutantJob, *, judge: str
 ) -> Mapping[str, Any] | str | None:
@@ -1653,8 +1668,8 @@ def merge_mutations(current: Mutation, records: Iterable[Mapping[str, Any]]) -> 
     buckets: dict[str, list[MutantOutcome]] = {
         name: list(getattr(current, name)) for name in MUTATION_BUCKETS
     }
-    for record in records:
-        buckets[record["outcome_bucket"]].append(_outcome_from_record(record))
+    for record_entry in records:
+        buckets[record_entry["outcome_bucket"]].append(_outcome_from_record(record_entry))
     identities = [
         outcome.identity for name in MUTATION_BUCKETS for outcome in buckets[name]
     ]
@@ -1743,6 +1758,10 @@ def _execution_from_state_record(record: Mapping[str, Any]) -> MutationExecution
     )
 
 
+# CD18: public for assay_analysis.
+execution_from_state_record = _execution_from_state_record
+
+
 def select_mutation_shard(candidates: Sequence[str], *, index: int, count: int) -> list[int]:
     """Return deterministic positions whose opaque IDs assign to *index*."""
     if isinstance(index, bool) or isinstance(count, bool):
@@ -1803,7 +1822,7 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
                 f"unsupported shard schema_version {version!r}; expected "
                 f"{MUTATION_STATE_SCHEMA_VERSION}"
             )
-        if not isinstance(lane, str) or not lane or not isinstance(commit, str) or not commit:
+        if not is_nonempty_str(lane) or not is_nonempty_str(commit):
             raise MutationStateError("shard lane and commit must be non-empty strings")
         if (
             isinstance(shard_index, bool)
@@ -1886,7 +1905,7 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
     return tuple(merged_candidates)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _MutantRun:
     """(P34) one mutant's own full attempt record: the command's
     :class:`~assay.runner.CommandResult` plus whatever the lane's own
@@ -2378,11 +2397,11 @@ def run_mutation(
     can never be equal, so no mutant could ever be recorded ``equivalent``,
     hiding exactly the fault the carve's own A-279 finding was about).
     """
-    if isinstance(jobs, bool) or not isinstance(jobs, int):
+    if not is_strict_int(jobs):
         raise ValueError(f"run_mutation jobs must be an integer, got {jobs!r}")
     if jobs < 1:
         raise ValueError(f"run_mutation jobs must be >= 1, got {jobs}")
-    if isinstance(max_mutants, bool) or not isinstance(max_mutants, int):
+    if not is_strict_int(max_mutants):
         raise ValueError(
             f"run_mutation max_mutants must be an integer, got {max_mutants!r}"
         )
@@ -2399,11 +2418,8 @@ def run_mutation(
             "baseline's own artifact bytes (or its own EXEC_FAILED refusal, "
             "when the baseline never wrote it) before calling this function"
         )
-    if budget_per_candidate_seconds is not None and (
-        isinstance(budget_per_candidate_seconds, bool)
-        or not isinstance(budget_per_candidate_seconds, (int, float))
-        or not math.isfinite(budget_per_candidate_seconds)
-        or budget_per_candidate_seconds <= 0
+    if budget_per_candidate_seconds is not None and not is_finite_positive(
+        budget_per_candidate_seconds
     ):
         raise ValueError(
             "run_mutation budget_per_candidate_seconds must be a positive "
@@ -2739,6 +2755,7 @@ def run_mutation(
                     "selected_total": len(selected_jobs),
                     "pending_total": len(pending_jobs),
                     "commit": prepared.spec.commit,
+                    **({"judge_sha256": judge} if judge is not None else {}),
                 }
             )
             write_progress(
@@ -3432,7 +3449,7 @@ _DISCARD_REASON_BY_STATUS: Mapping[str, str] = {
 }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class IngestedMutationResult:
     """(B046) What :func:`ingest_mutation_report` produces: the R2 payload
     plus the four ingested-only facts ``judgment.r2`` records beside it.

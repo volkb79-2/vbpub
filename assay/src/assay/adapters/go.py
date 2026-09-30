@@ -196,7 +196,8 @@ has is precisely the hazard §5 exists to forbid.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
+from ..records import record
 from pathlib import Path
 from typing import Literal, Sequence
 
@@ -517,7 +518,7 @@ def _inject_uncovered_line(text: str) -> tuple[str, str]:
     )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class GoAdapter:
     """The Go :class:`~assay.adapters.base.LanguageAdapter` (P08), the
     second real adapter implemented against the frozen protocol (A-097,
@@ -566,7 +567,7 @@ class GoAdapter:
     #: **On a lane this is DERIVED, never declared** (A-404): :meth:`for_project`
     #: reads it from the project's own ``go.mod`` and returns a copy carrying
     #: it. Setting it directly is the library affordance a caller building
-    #: their own registry has (``tests/test_standalone.py``), and it leaves
+    #: their own registry has (``gate/tests/test_standalone.py``), and it leaves
     #: :attr:`module_file` empty, which is the difference the refusal below
     #: keys on.
     module_path: str = ""

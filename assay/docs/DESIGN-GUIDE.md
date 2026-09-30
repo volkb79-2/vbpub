@@ -1465,6 +1465,8 @@ equality (`canary.target` against `judgment.r3.target`), or temporal ordering
 (`ended >= started`): Draft 2020-12 has no `$data`, so saying "all three
 layers reject" would be another hollow contract. Those live in the Python
 model AND, independently worded, in `assay.verify`'s raw-document checks.
+`assay.verify` therefore imports neither `assay.guards` nor `assay.records`
+(`tests/core/test_trust_boundary.py`, B129).
 
 **The cap owns its discovery seam (A-180).** P21 cannot truthfully record
 `max_mutants` while an adapter first materializes an unbounded tuple containing
@@ -2310,6 +2312,52 @@ signature or function-level closing brace under the babel instrumenter, a
 comment under any of them — stays unclassified and takes rule 4. Measured:
 23 such non-comment lines in the original committed istanbul fixture,
 against 29 statement start lines and 54 lines classified after expansion.
+
+### Shared records and guard predicates (B129)
+
+The full-source mutation campaign pays for every repeated judge rule once per
+copy, so B129 collapses the repeats that are safe to share. `assay.records`
+holds the two record decorators (`record`, frozen and keyword-only;
+`positional_record`), so the frozen/`kw_only` flags exist once instead of at
+every dataclass. `assay.guards` holds the pure predicates that had been
+spelled out inline (strict int, finite/positive/at-least numbers, the
+lowercase sha256 hex test, the aware-datetime test). Both are core leaf
+modules with stdlib imports only, so adapters and parsers may use them; each
+has its own boundary-value test file (`tests/core/test_guards.py` kills every
+helper mutant alone). Producer-side helpers in `verdict.py`
+(`claim_for`, `claim_carries`, `_require_policy_iff_attempted`) and same-side
+clusters in git, isolation, liveness_resources, verdict, runner, mutation,
+cli, evaluate and coverage were factored the same way. A helper never raises
+where the inline code did not and never reorders evaluation; the
+characterization tests in `tests/core/test_w10_characterization_*.py` pin the
+accept/refuse verdict and the exact message of every rewritten site.
+
+**The verify boundary stays raw (A-182).** `assay.verify` re-derives every rule
+independently of the producer, so it imports nothing from `guards` or
+`records`, and it does not use the producer-only verdict helpers;
+`candidate_identity.py`, which `verify` imports, stays dependency-free.
+`tests/core/test_trust_boundary.py` pins the exact set of names `verify.py`
+imports, the defining module of every name bound in `vars(assay.verify)`
+(which catches a re-export through `verdict`), that the leaves import no
+`assay` module, and that no other module imports a `_`-prefixed name from
+`verify`. Cross-boundary twins (canary/verify, mutation_witness/verify, the
+two `_check_judgment_matches_claims`) stay written out on both sides.
+
+**Records are checked by object, not spelling.** `tests/core/test_dataclass_contract.py`
+resolves each class decorator to `dataclasses.dataclass`, `record` or
+`positional_record` and compares it with `tests/fixtures/dataclass-contract.json`;
+every `src/assay` dataclass is at module level with exactly one of the two
+decorators, and the `__dataclass_transform__` values are pinned. The fixture
+is regenerated with `cd assay && PYTHONPATH=src:tests python
+tests/core/test_dataclass_contract.py > tests/fixtures/dataclass-contract.json`,
+committed with the source change; a diff in it is a reviewed contract change,
+not a routine update.
+
+**Measured effect (`nyxloom-trove/reports/wave-a/W10-dry-LOG.md`, R11 scripts).**
+Mutation candidates in `src/assay` went from 3733 to 3367 (bool-const-flip
+493 to 339, boolop-swap 973 to 835, compare-swap 2128 to 2053, falsy-swap 139
+to 140), and the T1 removable union from 385 to 82. The two new modules add 28
+candidates (guards 22, records 6), which the two lanes' `targets` now list.
 
 ### Default-argument signature lines (B080, A-456)
 

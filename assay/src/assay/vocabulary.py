@@ -22,7 +22,7 @@ cycle A-114 originally cited as the reason the model could NOT close it).
 The value is an ORDERED tuple, not a set. Order is part of the contract:
 ``judgment.r2.operators`` records the lane's own declared, order-preserving
 selection, and the shipped schema's enum is required to list these exact
-members in this exact order (``tests/test_verdict_schema_is_packaged.py``
+members in this exact order (``tests/core/test_verdict_schema_is_packaged.py``
 asserts set equality AND order, so a hand-edited schema cannot drift from the
 tuple below without a red test).
 
@@ -291,7 +291,7 @@ COVERAGE_PRODUCER_REQUIRED_FORMATS: frozenset[str] = frozenset(
 #: :attr:`assay.adapters.base.LanguageAdapter.requires_statement_attribution`
 #: are two statements of one fact, so they are checked against each other by
 #: a test that derives the languages from the built-in registry rather than
-#: naming them: ``tests/test_config_statement_attribution_format.py``.
+#: naming them: ``tests/core/test_config_statement_attribution_format.py``.
 #:
 #: **Why it exists at all.** ``judge.language`` and ``judge.coverage.format``
 #: are independent by design, so a Go lane could declare ``format = "lcov"``.
@@ -330,7 +330,7 @@ STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE: Mapping[str, frozenset[str]] = (
 #: The cost, exactly as `STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE`'s own
 #: comment states it: this set and `assay.adjudication.ADJUDICATORS` are two
 #: statements of one fact and can drift, so a test derives one from the other
-#: and asserts equality (``tests/test_adjudication_registry.py``).
+#: and asserts equality (``tests/core/test_adjudication_registry.py``).
 ADJUDICATED_EVIDENCE_KEYS: frozenset[str] = frozenset({"image-provenance"})
 
 #: (B045/B038(a)) The producers whose `branchMap` really is a set of ARCS --

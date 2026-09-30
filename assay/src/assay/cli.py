@@ -65,9 +65,10 @@ import sys
 import tempfile
 import time
 from dataclasses import replace
+from .records import record
 from pathlib import Path
 from collections import Counter
-from typing import Any, Sequence, TextIO
+from typing import Any, Literal, Sequence, TextIO, TypedDict
 
 from . import __version__
 from . import (
@@ -132,7 +133,7 @@ from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
-__all__ = ["build_parser", "main"]
+__all__ = ["build_parser", "main", "plan_jobs", "resolve_declared_adapters"]
 
 
 #: (B028/DA-R13, A-425) The bound on the ONE Git call assay makes *after* a
@@ -569,7 +570,7 @@ def _built_in_registry() -> registry.Registry:
     real statement positions or cleanly refused, and there is no third state
     in which it is silently wrong. This devcontainer and the registered
     gate's own image (``tester-unified``) both have no Go and both take the
-    refusal -- see ``tests/qualification/`` for where the real-toolchain
+    refusal -- see ``gate/tests/qualification/`` for where the real-toolchain
     proof lives instead (DESIGN-GUIDE §10's pattern).
 
     **R2 and R3 stay unregistered for Go**, which the Wave C prompt's own
@@ -578,7 +579,7 @@ def _built_in_registry() -> registry.Registry:
     unconditionally ``"UNSUPPORTED"``, so an R2 entry would advertise a
     producer path that does not exist -- the failure this docstring's first
     paragraph is about. Both refusals are asserted as controls in
-    ``tests/test_cli_run.py``
+    ``tests/core/test_cli_run.py``
     (``test_run_refuses_go_at_r2_the_language_is_registered_r1_only`` and its
     R3 sibling), alongside the R1 test that now inverts.
 
@@ -726,6 +727,10 @@ def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
         if level in lane.rigor:
             return registry.get_adapter(built_in, lane.judge.language, level)
     return None
+
+
+# CD18: public for assay_analysis.
+resolve_declared_adapters = _resolve_declared_adapters
 
 
 def _cmd_run(
@@ -1240,6 +1245,21 @@ def _run_reserved(
             }
         )
 
+    def _deliver_verdict(verdict: Verdict) -> int:
+        """(B129) Write the artifact (when one was asked for), close the
+        stream, print the summary, and return the exit code. Nested, because
+        it closes over `destination`, `args`, `out` and `_emit_verdict_written`.
+        """
+        if destination is not None:
+            # Exactly once, and the summary is printed only after it succeeded:
+            # a run that could not deliver the artifact it was asked for must not
+            # also print a line that reads like a completed run (A-181).
+            runner.write_verdict(verdict, destination)
+        _emit_verdict_written(verdict)
+        if args.verdict_json != "-":
+            _print_run_summary(verdict, out)
+        return verdict.exit_code
+
     try:
         commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
     except AssayError as exc:
@@ -1323,12 +1343,7 @@ def _run_reserved(
             declared_evidence=declared_evidence,
         )
         _emit_run_header(commit)
-        if destination is not None:
-            runner.write_verdict(verdict, destination)
-        _emit_verdict_written(verdict)
-        if args.verdict_json != "-":
-            _print_run_summary(verdict, out)
-        return verdict.exit_code
+        return _deliver_verdict(verdict)
 
     # (B064) The commit label exists from here on, so the stream gets its
     # header before any further work -- attestation, adapter resolution and
@@ -1411,12 +1426,7 @@ def _run_reserved(
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
-            if destination is not None:
-                runner.write_verdict(verdict, destination)
-            _emit_verdict_written(verdict)
-            if args.verdict_json != "-":
-                _print_run_summary(verdict, out)
-            return verdict.exit_code
+            return _deliver_verdict(verdict)
         else:
             # Merge back into the lane's own declared order -- see the
             # comment above this block for why concatenation alone is not
@@ -1548,15 +1558,7 @@ def _run_reserved(
                 evidence=evidence,
                 declared_evidence=declared_evidence,
             )
-    if destination is not None:
-        # Exactly once, and the summary is printed only after it succeeded:
-        # a run that could not deliver the artifact it was asked for must not
-        # also print a line that reads like a completed run (A-181).
-        runner.write_verdict(verdict, destination)
-    _emit_verdict_written(verdict)
-    if args.verdict_json != "-":
-        _print_run_summary(verdict, out)
-    return verdict.exit_code
+    return _deliver_verdict(verdict)
 
 
 def _print_run_summary(verdict: Verdict, out: TextIO) -> None:
@@ -1582,83 +1584,27 @@ PLAN_ESTIMATE_HINT = (
 )
 
 
-def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) -> int:
-    """Report a mutation lane's plan without executing it.
+@record
+class _PlanDiscovery:
+    commit: str
+    tree: str
+    jobs: Any  # the FULL pre-shard tuple, or mutation.UNSUPPORTED unchanged
+    worktree_integrity: Any
+    reuse_command_plan: Any
+    reuse_command_cwd: Path | None
 
-    ``--operators`` and ``--shard`` are planning-only selections. They do not
-    change the lane declaration, so the same file can be planned and run with
-    the matching run flag without inventing a second config surface.
-    """
-    lane_file = _resolve_lane_file(args.file)
-    lane = lane_file.lane(args.lane)
-    if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
-        raise LaneConfigError(f"lane {lane.name!r} does not declare an R2 mutation judge")
-    reuse_source = None
-    if args.reuse_from is not None:
-        if args.shard is not None:
-            raise LaneConfigError(
-                "--reuse-from cannot be combined with --shard; selective reuse "
-                "produces only a complete unsharded campaign"
-            )
-        if lane.judge.mutation.format is not None:
-            raise LaneConfigError("--reuse-from requires a native R2 mutation lane")
-        from .reuse import load_reuse_source
 
-        reuse_source = load_reuse_source(args.reuse_from)
-    adapter = _resolve_declared_adapters(lane)
-    if adapter is None:
-        raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
-
-    # B019/A-328: decided once, before any snapshot -- exactly where
-    # `run_lane` decides it, and by the same function, so `plan` refuses a
-    # delegating lane with no --request-base (and a non-delegating lane with
-    # one) on identical terms rather than discovering the mismatch mid-walk.
-    base_declaration = runner.resolve_base_declaration(
-        lane, getattr(args, "request_base", None)
-    )
-
-    operators = lane.judge.mutation.operators
-    shard_index: int | None = None
-    shard_count: int | None = None
-    if args.operators:
-        requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
-        # B034/A-326: the same refusal `config._load_mutation` gives a
-        # DECLARED withdrawn operator. `--operators` is an override of that
-        # declaration, so it has to close the same door -- otherwise the
-        # withdrawal is enforced only for lanes that spell it in TOML.
-        # (A-331) And it runs BEFORE the unknown check for the same reason
-        # the loader's does: at the v8 cut these names left the catalogue,
-        # so "unknown" would now swallow them and answer a stale-but-once-
-        # legal spelling with the least useful of the two messages.
-        withdrawn = tuple(
-            name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
-        )
-        if withdrawn:
-            raise LaneConfigError(
-                f"withdrawn mutation operators: {', '.join(withdrawn)}; every "
-                f"site they produced was already produced by "
-                f"python:compare-swap at the same span with the same "
-                f"replacement"
-            )
-        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
-        if unknown or not requested:
-            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
-        operators = requested
-    if args.shard:
-        try:
-            raw_index, raw_count = args.shard.split("/", 1)
-            shard_index = int(raw_index)
-            shard_count = int(raw_count)
-        except ValueError as exc:
-            raise LaneConfigError("--shard must have the form INDEX/COUNT") from exc
-        try:
-            # Zero-based, matching config.py/the verdict schema/CONSUMERS.md
-            # -- never `- 1`. This is a dry bounds check only (an empty
-            # candidate tuple); its return value is discarded.
-            mutation.select_mutation_shard((), index=shard_index, count=shard_count)
-        except ValueError as exc:
-            raise LaneConfigError(f"--shard {args.shard!r}: {exc}") from exc
-
+def _discover_plan_jobs(
+    lane_file: LaneFile,
+    lane: Lane,
+    *,
+    adapter: LanguageAdapter,
+    base_declaration: str | None,
+    operators: tuple[str, ...],
+    allow_dirty: bool,
+    resolve_reuse_command: bool,
+) -> _PlanDiscovery:
+    """Single planner-jobs extraction (C29); P6 reuses it."""
     deadline = runner.LaneDeadline.start(
         budget_seconds=lane.budget_seconds, monotonic=time.monotonic
     )
@@ -1675,13 +1621,13 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         repo_top=repo_top,
         project_root=lane_file.project_root,
         dirty_ignore=lane_file.dirty_ignore,
-        allow_dirty=getattr(args, "allow_dirty", False),
+        allow_dirty=allow_dirty,
         remaining=deadline.remaining,
     )
     project_prefix = runner._resolved_project_prefix(repo_top, lane_file.project_root)
     reuse_command_plan = None
     reuse_command_cwd = None
-    if reuse_source is not None:
+    if resolve_reuse_command:
         try:
             reuse_command_plan = runner.resolve_command_plan(
                 lane,
@@ -1781,6 +1727,173 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
                 operators=operators,
                 limit=lane.judge.mutation.max_mutants + 1,
             )
+    return _PlanDiscovery(
+        commit=commit,
+        tree=tree,
+        jobs=jobs,
+        worktree_integrity=worktree_integrity,
+        reuse_command_plan=reuse_command_plan,
+        reuse_command_cwd=reuse_command_cwd,
+    )
+
+
+class PlanRow(TypedDict):
+    id: str
+    path: str
+    operator: str
+    start_byte: int
+    end_byte: int
+    lineno: int
+    description: str
+    source_sha256: str
+    mutated_file_sha256: str
+
+
+def _plan_rows_from_jobs(jobs: Any) -> list[dict[str, Any]]:
+    """One row per job: today's 7 keys plus the two candidate-identity digests."""
+    rows: list[dict[str, Any]] = []
+    for job in jobs:
+        identity = mutation.candidate_identity_fields(job)
+        rows.append(
+            {
+                "id": _plan_candidate_id(job),
+                "path": job.path,
+                "operator": job.site.operator,
+                "start_byte": job.site.start_byte,
+                "end_byte": job.site.end_byte,
+                "lineno": job.site.lineno,
+                "description": job.site.description,
+                "source_sha256": identity["source_sha256"],
+                "mutated_file_sha256": identity["mutated_file_sha256"],
+            }
+        )
+    return rows
+
+
+def plan_jobs(
+    lane_file: LaneFile,
+    lane: Lane,
+    *,
+    request_base: str | None = None,
+    allow_dirty: bool = False,
+) -> list[PlanRow] | Literal["UNSUPPORTED"]:
+    """The full, unsharded plan rows of an R2 mutation lane, or ``"UNSUPPORTED"``.
+
+    The one public planner entry the analysis package uses (C13); it refuses
+    exactly as ``assay plan`` does.
+    """
+    if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
+        raise LaneConfigError(f"lane {lane.name!r} does not declare an R2 mutation judge")
+    adapter = _resolve_declared_adapters(lane)
+    if adapter is None:
+        raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
+    base_declaration = runner.resolve_base_declaration(lane, request_base)
+    discovered = _discover_plan_jobs(
+        lane_file,
+        lane,
+        adapter=adapter,
+        base_declaration=base_declaration,
+        operators=lane.judge.mutation.operators,
+        allow_dirty=allow_dirty,
+        resolve_reuse_command=False,
+    )
+    if discovered.jobs == mutation.UNSUPPORTED:
+        return mutation.UNSUPPORTED
+    return _plan_rows_from_jobs(discovered.jobs)
+
+
+def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) -> int:
+    """Report a mutation lane's plan without executing it.
+
+    ``--operators`` and ``--shard`` are planning-only selections. They do not
+    change the lane declaration, so the same file can be planned and run with
+    the matching run flag without inventing a second config surface.
+    """
+    lane_file = _resolve_lane_file(args.file)
+    lane = lane_file.lane(args.lane)
+    if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
+        raise LaneConfigError(f"lane {lane.name!r} does not declare an R2 mutation judge")
+    reuse_source = None
+    if args.reuse_from is not None:
+        if args.shard is not None:
+            raise LaneConfigError(
+                "--reuse-from cannot be combined with --shard; selective reuse "
+                "produces only a complete unsharded campaign"
+            )
+        if lane.judge.mutation.format is not None:
+            raise LaneConfigError("--reuse-from requires a native R2 mutation lane")
+        from .reuse import load_reuse_source
+
+        reuse_source = load_reuse_source(args.reuse_from)
+    adapter = _resolve_declared_adapters(lane)
+    if adapter is None:
+        raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
+
+    # B019/A-328: decided once, before any snapshot -- exactly where
+    # `run_lane` decides it, and by the same function, so `plan` refuses a
+    # delegating lane with no --request-base (and a non-delegating lane with
+    # one) on identical terms rather than discovering the mismatch mid-walk.
+    base_declaration = runner.resolve_base_declaration(
+        lane, getattr(args, "request_base", None)
+    )
+
+    operators = lane.judge.mutation.operators
+    shard_index: int | None = None
+    shard_count: int | None = None
+    if args.operators:
+        requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
+        # B034/A-326: the same refusal `config._load_mutation` gives a
+        # DECLARED withdrawn operator. `--operators` is an override of that
+        # declaration, so it has to close the same door -- otherwise the
+        # withdrawal is enforced only for lanes that spell it in TOML.
+        # (A-331) And it runs BEFORE the unknown check for the same reason
+        # the loader's does: at the v8 cut these names left the catalogue,
+        # so "unknown" would now swallow them and answer a stale-but-once-
+        # legal spelling with the least useful of the two messages.
+        withdrawn = tuple(
+            name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
+        )
+        if withdrawn:
+            raise LaneConfigError(
+                f"withdrawn mutation operators: {', '.join(withdrawn)}; every "
+                f"site they produced was already produced by "
+                f"python:compare-swap at the same span with the same "
+                f"replacement"
+            )
+        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
+        if unknown or not requested:
+            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
+        operators = requested
+    if args.shard:
+        try:
+            raw_index, raw_count = args.shard.split("/", 1)
+            shard_index = int(raw_index)
+            shard_count = int(raw_count)
+        except ValueError as exc:
+            raise LaneConfigError("--shard must have the form INDEX/COUNT") from exc
+        try:
+            # Zero-based, matching config.py/the verdict schema/CONSUMERS.md
+            # -- never `- 1`. This is a dry bounds check only (an empty
+            # candidate tuple); its return value is discarded.
+            mutation.select_mutation_shard((), index=shard_index, count=shard_count)
+        except ValueError as exc:
+            raise LaneConfigError(f"--shard {args.shard!r}: {exc}") from exc
+
+    discovered = _discover_plan_jobs(
+        lane_file,
+        lane,
+        adapter=adapter,
+        base_declaration=base_declaration,
+        operators=operators,
+        allow_dirty=getattr(args, "allow_dirty", False),
+        resolve_reuse_command=reuse_source is not None,
+    )
+    commit = discovered.commit
+    tree = discovered.tree
+    jobs = discovered.jobs
+    worktree_integrity = discovered.worktree_integrity
+    reuse_command_plan = discovered.reuse_command_plan
+    reuse_command_cwd = discovered.reuse_command_cwd
 
     if jobs == mutation.UNSUPPORTED:
         payload: dict[str, Any] = {
@@ -1821,7 +1934,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             per_candidate_seconds = parse_duration(per_candidate)
         serial_estimate = len(jobs) * per_candidate_seconds
         wall_estimate = serial_estimate / max(1, lane.judge.mutation.jobs)
-        candidate_rows: list[dict[str, Any]] = []
+        candidate_rows = _plan_rows_from_jobs(jobs)
         sequential_pytest_supported = False
         if reuse_source is not None:
             from .mutation_witness import supports_sequential_pytest
@@ -1837,17 +1950,8 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
                     env=reuse_command_plan.env_effective,
                 )
             )
-        for job in jobs:
-            row: dict[str, Any] = {
-                "id": _plan_candidate_id(job),
-                "path": job.path,
-                "operator": job.site.operator,
-                "start_byte": job.site.start_byte,
-                "end_byte": job.site.end_byte,
-                "lineno": job.site.lineno,
-                "description": job.site.description,
-            }
-            if reuse_source is not None:
+        if reuse_source is not None:
+            for row in candidate_rows:
                 classification, detail = classify_candidate(
                     reuse_source,
                     row["id"],
@@ -1857,7 +1961,6 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
                     "classification": classification,
                     "detail": detail,
                 }
-            candidate_rows.append(row)
         payload = {
             "status": "ok",
             "commit": commit,

@@ -69,6 +69,7 @@ import json
 from types import MappingProxyType
 
 from ..errors import AssayError, Outcome, ReasonCode
+from ..guards import is_strict_int
 from .model import BranchCoverage, CoverageProfile, FileCoverage
 
 _SIGNATURE_KEY = '"files"'
@@ -266,7 +267,7 @@ def _branch_pairs(record: dict, path: str, key: str) -> list[tuple[int, int]]:
         if (
             not isinstance(item, list)
             or len(item) != 2
-            or any(isinstance(n, bool) or not isinstance(n, int) for n in item)
+            or any(not is_strict_int(n) for n in item)
         ):
             raise _malformed(
                 f"record for {path!r}: {key!r} contains a malformed arc "
@@ -317,7 +318,7 @@ def _int_list(record: dict, path: str, key: str) -> list[int]:
             f"record for {path!r}: {key!r} is {type(value).__name__}, expected list"
         )
     for item in value:
-        if not isinstance(item, int) or isinstance(item, bool):
+        if not is_strict_int(item):
             raise _malformed(
                 f"record for {path!r}: {key!r} contains "
                 f"{type(item).__name__} ({item!r}), expected int"

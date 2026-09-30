@@ -12,6 +12,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   All additive; no schema version changes (B111)
 
 ### Changed
+- refactor(assay): repeated judge rules now live once: `assay.records` (the
+  frozen/keyword-only record decorators), `assay.guards` (strict-int, finite,
+  positive, at-least, sha256-hex and aware-datetime predicates), producer-side
+  claim/policy helpers in `verdict`, and same-side helpers in git, isolation,
+  liveness_resources, runner, mutation, cli, evaluate and coverage; the raw
+  verifier `assay.verify` keeps its own independent copies (A-182). Messages,
+  exception types and reason codes are unchanged, and `assay.verdict.__all__`
+  gains only `claim_for` and `claim_carries` (the runner uses both); mutation
+  candidates in `src/assay` fall from 3733 to 3367. Assay-internal: no
+  consumer-facing change (B129)
 - chore(assay): assay's own two B105 self-qualification lanes now use the
   shallow snapshot (`snapshot_history = "shallow"`, the A-451 default) instead of
   full history, since no collected judge test reads history; a new test proves a
@@ -62,6 +72,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   no longer offers a mutant that blocks forever (B113/A-466)
 
 ### Testing
+- test(assay): characterization tests pin the accept/refuse verdict and exact
+  message of every judge rule that B129 consolidated, a dataclass-contract test
+  (resolved decorator objects plus a committed fixture), boundary-value tests
+  for the shared guard predicates, and `tests/core/test_trust_boundary.py`,
+  which keeps `assay.verify` free of `assay.guards`/`assay.records` and of the
+  producer-only verdict helpers (B129)
 - test(assay): G1–G5 snapshot invariant guards (B111)
 - test(assay): deterministic mutant-guard tests, one per component, under a
   line-event budget (B113)

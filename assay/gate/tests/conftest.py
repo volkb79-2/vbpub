@@ -22,6 +22,14 @@ schema = judge.schema
 validator = judge.validator
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_color(monkeypatch):
+    """Help and CLI output must not depend on the caller's terminal colour settings (Python 3.14 argparse colours --help under FORCE_COLOR)."""
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("PYTHON_COLORS", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+
 @pytest.fixture(scope="session")
 def standalone(tmp_path_factory) -> Standalone:
     """Build assay's wheel and install it into a venv that has nothing else.

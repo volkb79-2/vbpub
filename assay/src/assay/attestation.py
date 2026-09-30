@@ -65,7 +65,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from .guards import is_nonempty_str
+from .records import record
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
@@ -119,7 +120,7 @@ def _bad_lane_config(message: str) -> AssayError:
     return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.BAD_LANE_CONFIG)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class AttestationRecord:
     """One parsed attestation file: what an external review claims (A-092).
 
@@ -153,7 +154,7 @@ class AttestationRecord:
                 f"{self.reviewed_paths!r}"
             )
         for path in self.reviewed_paths:
-            if not isinstance(path, str) or not path:
+            if not is_nonempty_str(path):
                 raise ValueError(
                     f"attestation reviewed path must be a non-empty string, got {path!r}"
                 )
@@ -420,7 +421,7 @@ def evaluate_attestation(
 
 
 def _validate_attestation_dir(value: str) -> None:
-    if not isinstance(value, str) or not value:
+    if not is_nonempty_str(value):
         raise _bad_lane_config(
             f"attestation_dir must be a non-empty string, got {value!r}"
         )

@@ -80,7 +80,8 @@ import threading
 import time
 import tomllib
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
+from .records import record
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -120,6 +121,7 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .guards import is_finite_positive, is_nonempty_str, is_positive_or_inf, is_real
 from .adapters.base import HelperInvocation
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
@@ -151,6 +153,8 @@ from .verdict import (
     SnapshotPolicy,
     WorktreeIntegrity,
     Verdict,
+    claim_carries,
+    claim_for,
     iso_utc,
     refusal_detail,
     rollup,
@@ -176,6 +180,8 @@ __all__ = [
     "resolve_command_plan",
     "run_lane",
     "write_verdict",
+    # CD18: public for assay_analysis.
+    "resolve_declared_base",
 ]
 
 
@@ -206,7 +212,7 @@ Clock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class LaneDeadline:
     """One lane-wide monotonic deadline; no lower layer chooses a clock.
 
@@ -239,22 +245,13 @@ class LaneDeadline:
         and only ``None`` -- for ``budget = "unbounded"``; every other
         invalid value is refused exactly as before.
         """
-        if budget_seconds is not None and (
-            isinstance(budget_seconds, bool)
-            or not isinstance(budget_seconds, (int, float))
-            or not math.isfinite(budget_seconds)
-            or budget_seconds <= 0
-        ):
+        if budget_seconds is not None and not is_finite_positive(budget_seconds):
             raise ValueError(
                 f"budget_seconds must be a positive finite number or None, "
                 f"got {budget_seconds!r}"
             )
         started = monotonic()
-        if (
-            isinstance(started, bool)
-            or not isinstance(started, (int, float))
-            or not math.isfinite(started)
-        ):
+        if not is_real(started) or not math.isfinite(started):
             raise ValueError(f"monotonic clock returned invalid value {started!r}")
         if budget_seconds is None:
             return cls(expires_at=math.inf, monotonic=monotonic)
@@ -278,12 +275,7 @@ class LaneDeadline:
         """
         if seconds is None:
             return self
-        if (
-            isinstance(seconds, bool)
-            or not isinstance(seconds, (int, float))
-            or not math.isfinite(seconds)
-            or seconds <= 0
-        ):
+        if not is_finite_positive(seconds):
             raise ValueError(
                 f"tightened seconds must be a positive finite number or None, "
                 f"got {seconds!r}"
@@ -683,7 +675,7 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CommandPlan:
     """What WILL run, resolved before anything executes.
 
@@ -740,7 +732,7 @@ class CommandPlan:
     cwd_declared: str | None = None
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CommandResult:
     """The real outcome of the R0 step -- append rejected, executable
     missing, budget exceeded, command failed, or command passed. Exactly what
@@ -862,7 +854,7 @@ def resolve_command_plan(
                         node = None
                         break
                     node = node[part]
-                if not isinstance(node, str) or not node:
+                if not is_nonempty_str(node):
                     raise AssayError(
                         f"infrastructure fact {name!r} derived {expression!r} is absent, "
                         f"not a string, or empty",
@@ -1153,12 +1145,7 @@ def execute_plan(
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
     because only it owns an ephemeral, assay-managed checkout.
     """
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or (not math.isfinite(timeout) and timeout != math.inf)
-        or timeout <= 0
-    ):
+    if not is_positive_or_inf(timeout):
         raise ValueError(
             f"timeout must be a positive finite number or math.inf, got {timeout!r}"
         )
@@ -1334,7 +1321,7 @@ def _execute_plan_inner(
     # The reason code stays A-073's own, unchanged in MEANING (B078 changes
     # WHEN `COMMAND_FAILED` fires, never what it means) -- no new `ReasonCode`
     # member, so the closed vocabulary A-050 guards is untouched. The two
-    # fields below are also `tests/test_self_hosting.py`'s pinned mutation
+    # fields below are also `gate/tests/test_self_hosting.py`'s pinned mutation
     # target (A-131), which is why they sit adjacent with no comment between
     # them: that test collapses this conditional pair to its PASS arm to prove
     # `assay verify` alone cannot catch a universal-PASS producer bug.
@@ -2173,8 +2160,8 @@ def assemble_verdict(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
-    r1_claim = next((claim for claim in claims if claim.rigor == "R1"), None)
-    r1_judged = r1_claim is not None and r1_claim.coverage is not None
+    r1_claim = claim_for(claims, "R1")
+    r1_judged = claim_carries(r1_claim, "coverage")
     judgment_r1 = None if judgment is None else judgment.r1
     if r1_judged and judgment_r1 is None:
         raise AssayError(
@@ -2760,7 +2747,7 @@ def _relocate_source_roots(
     return replace(lane, judge=replace(judge, source_root_paths=relocated))
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotUnitResult:
     """One executed higher-rigor unit (P23): the real :class:`CommandResult`,
     the post-run Git-state verdict (``None`` when the snapshot is still
@@ -3458,7 +3445,7 @@ def _mutation_targets_whole(
     return tuple(resolved)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _PreparedOutcome:
     """The raw materials :func:`_run_higher_rigor_lane` needs to build the
     final :class:`~assay.verdict.Verdict` -- kept separate from an actually
@@ -3563,6 +3550,10 @@ def _resolve_declared_base(
     if base is None:
         return None
     return git.resolve_base(repo, base, remaining=remaining)
+
+
+# CD18: public for assay_analysis.
+resolve_declared_base = _resolve_declared_base
 
 
 def _run_prepared_lane(

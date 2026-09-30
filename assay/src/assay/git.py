@@ -91,7 +91,7 @@ import stat as stat_module
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
+from .records import record
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -212,6 +212,24 @@ _GITFILE_PREFIX = "gitdir:"
 
 def _git_failed(message: str) -> AssayError:
     return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.GIT_FAILED)
+
+
+def _zero_true_one_false(returncode: int, stderr: bytes, label: str) -> bool:
+    """Read a git exit code that means 0 is ``True``, 1 is ``False``.
+
+    Any other code is a typed Git failure naming *label* and the first 200
+    characters of *stderr* (B129: the one shared reading of the three
+    ``check-ignore -q`` / ``merge-base --is-ancestor`` / ``diff --quiet``
+    exit-code conventions).
+    """
+    if returncode == 0:
+        return True
+    if returncode == 1:
+        return False
+    raise _git_failed(
+        f"{label} failed ({returncode}): "
+        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+    )
 
 
 def _sample_remaining(remaining: Remaining | None) -> float | None:
@@ -421,7 +439,7 @@ def _resolve_git_executable() -> Path:
     return resolved
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _ResolvedRepo:
     """The exact repository identity every substantive command anchors to:
     a trusted work-tree root (found by OUR OWN filesystem walk, never by
@@ -886,9 +904,9 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
     paths: set[str] = set()
     index = 0
     while index < len(tokens):
-        record = tokens[index]
+        record_entry = tokens[index]
         index += 1
-        status, path = record[:2], record[3:]
+        status, path = record_entry[:2], record_entry[3:]
         paths.add(_decode_or_reject(path, "a path reported by git status -z"))
         if b"R" in status or b"C" in status:
             # A rename/copy record's OLD path is the next NUL-terminated
@@ -951,14 +969,7 @@ def path_is_ignored(
         remaining=remaining,
         literal_pathspecs=False,
     )
-    if returncode == 0:
-        return True
-    if returncode == 1:
-        return False
-    raise _git_failed(
-        f"git check-ignore {relative_path} failed ({returncode}): "
-        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
-    )
+    return _zero_true_one_false(returncode, stderr, f"git check-ignore {relative_path}")
 
 
 def ignore_rule_source(repo: Path, relative_path: str) -> str | None:
@@ -1025,14 +1036,7 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str, *, remaining: Remain
     returncode, _, stderr = _run_raw(
         repo, "merge-base", "--is-ancestor", ancestor, descendant, remaining=remaining
     )
-    if returncode == 0:
-        return True
-    if returncode == 1:
-        return False
-    raise _git_failed(
-        f"git merge-base --is-ancestor failed ({returncode}): "
-        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
-    )
+    return _zero_true_one_false(returncode, stderr, "git merge-base --is-ancestor")
 
 
 def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining) -> str | None:
@@ -1058,7 +1062,7 @@ def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining)
         )
     if not stdout:
         return None
-    records = [record for record in stdout.split(b"\x00") if record]
+    records = [record_entry for record_entry in stdout.split(b"\x00") if record_entry]
     if len(records) != 1:
         raise _git_failed(
             f"git ls-tree returned {len(records)} entries for a single exact "
@@ -1096,14 +1100,7 @@ def path_is_current(
         repo, "diff", "--quiet", "--exit-code", before, after, "--", path,
         remaining=remaining,
     )
-    if returncode == 0:
-        return True
-    if returncode == 1:
-        return False
-    raise _git_failed(
-        f"git diff --quiet failed ({returncode}): "
-        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
-    )
+    return _zero_true_one_false(returncode, stderr, "git diff --quiet")
 
 
 # --------------------------------------------------------------------------
@@ -1622,7 +1619,7 @@ def _p22_init_private(
         )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _P22Source:
     """A consumer repository proven safe to read objects from.
 
@@ -1694,10 +1691,10 @@ def _p22_reject_external_topology(source: _P22Source, deadline: _P22Deadline) ->
         deadline=deadline,
         cwd=source.repo_top,
     )
-    for record in config.split(b"\x00"):
-        if not record:
+    for record_entry in config.split(b"\x00"):
+        if not record_entry:
             continue
-        key, _, value = record.partition(b"\n")
+        key, _, value = record_entry.partition(b"\n")
         name = _decode_or_reject(key, "a source config key").lower()
         if name.startswith("extensions.partialclone"):
             raise _git_failed(

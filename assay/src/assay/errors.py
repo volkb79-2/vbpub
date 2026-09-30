@@ -333,7 +333,7 @@ def require_advance(old: int, new: int) -> int:
     candidate never looks idle to the liveness monitor, so it would burn its
     whole per-candidate budget. Raising here turns it into an ordinary test
     failure. One shared comparison means one mutation site, killed by
-    tests/test_errors.py, instead of one unkillable site per scanner.
+    tests/core/test_errors.py, instead of one unkillable site per scanner.
     """
     if new <= old:
         raise AssertionError(f"scanner cursor did not advance ({old} -> {new})")
