@@ -139,7 +139,7 @@ processing `--help`; its fix moved argument handling before daemon and registry
 imports. Keep the handler lazy and test the installed executable with a
 startup sentinel: help, version, and invalid syntax must not set it, while the
 valid no-argument service invocation must reach the handler. See the
-[Nyxloom adoption record](../../../nyxloom/nyxloom-trove/reports/nyxloom-P114-LOG.md).
+[command ownership guidance](../../../nyxloom/docs/CLI-REFERENCE.md#command-ownership).
 
 The consumer still decides the public vocabulary, behavior labels, examples,
 argument constraints, and mutation policy. A registry is a source of truth for

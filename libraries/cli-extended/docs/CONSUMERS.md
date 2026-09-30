@@ -218,6 +218,33 @@ python -m cli_extended.surface_cli \
   --spec docs/SPEC.md check
 ```
 
+The catalog has two closed vocabularies. `state` is `pending` while a generated
+case awaits review, `active` once its decision and test evidence match the
+current signature, or `retired` after an owner records why the case no longer
+applies. An active case's `decision` is `accept` or `refuse`; this records the
+product's semantic ruling and does not replace the behavior test. The following
+loader-valid example shows the required fields. Replace its generated ID,
+signature, invocation, effects, and test node ID with values from the consumer's
+surface and tests before running `check`.
+
+```toml
+schema_version = 1
+cli_id = "example-tool"
+
+[[cases]]
+id = "case:route:entrypoint:example-tool/publish/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:replace-after-export"
+rationale = "Publishing the selected staging artifact is a supported workflow."
+invocation = ["publish", "staging"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Publishes the selected staging artifact"]
+test_ids = ["tests/test_cli.py::test_publish_staging"]
+```
+
 `sync` updates only the JSON manifest and marked Markdown region. It never
 rewrites the TOML decisions or bytes outside the markers. It still writes the
 new grammar when it reports pending reviews, so the diff makes additions and
@@ -359,8 +386,8 @@ test. Use a startup sentinel or fake service factory and assert that help,
 version, and invalid arguments do not start the service, read credentials,
 connect to a provider, or create state. Assert that the valid no-argument
 invocation reaches the service handler. Nyxloom found that its `nyxloomd
---help` path started the daemon before arguments were handled; see its
-[P114 execution record](../../../nyxloom/nyxloom-trove/reports/nyxloom-P114-LOG.md).
+--help` path started the daemon before arguments were handled; see the
+[command ownership guidance](../../../nyxloom/docs/CLI-REFERENCE.md#command-ownership).
 
 ### Package the same library revision that was tested
 

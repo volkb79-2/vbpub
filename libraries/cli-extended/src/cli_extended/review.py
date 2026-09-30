@@ -24,6 +24,8 @@ from .surface import (
 from .parser import RegisteredCli
 
 REVIEW_SCHEMA_VERSION = 1
+_REVIEW_CASE_STATES = ("pending", "active", "retired")
+_REVIEW_DECISIONS = ("accept", "refuse")
 SURFACE_START_MARKER = "<!-- cli-extended-surface:start -->"
 SURFACE_END_MARKER = "<!-- cli-extended-surface:end -->"
 
@@ -227,15 +229,21 @@ def load_cli_review_catalog(path: str | Path) -> ReviewCatalog:
         state = item.get("state", "pending")
         if not isinstance(state, str):
             raise ReviewCatalogError(
-                f"{location}.state must be pending, active, or retired"
+                f"{location}.state must be " + ", ".join(_REVIEW_CASE_STATES)
             )
-        if state not in {"pending", "active", "retired"}:
-            raise ReviewCatalogError(f"{location}.state must be pending, active, or retired")
+        if state not in _REVIEW_CASE_STATES:
+            raise ReviewCatalogError(
+                f"{location}.state must be " + ", ".join(_REVIEW_CASE_STATES)
+            )
         decision = item.get("decision")
         if decision is not None and not isinstance(decision, str):
-            raise ReviewCatalogError(f"{location}.decision must be accept or refuse")
-        if decision is not None and decision not in {"accept", "refuse"}:
-            raise ReviewCatalogError(f"{location}.decision must be accept or refuse")
+            raise ReviewCatalogError(
+                f"{location}.decision must be " + " or ".join(_REVIEW_DECISIONS)
+            )
+        if decision is not None and decision not in _REVIEW_DECISIONS:
+            raise ReviewCatalogError(
+                f"{location}.decision must be " + " or ".join(_REVIEW_DECISIONS)
+            )
         signature = item.get("reviewed_signature")
         if signature is not None and not isinstance(signature, str):
             raise ReviewCatalogError(f"{location}.reviewed_signature must be a string")
