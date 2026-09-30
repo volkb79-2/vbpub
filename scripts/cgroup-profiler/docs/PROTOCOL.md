@@ -125,9 +125,9 @@ stream in `socket/watch-response.json`):
 
 | verb | `args` key | CLI option | type | required | notes |
 |---|---|---|---|---|---|
-| `start` | `place` | `--place` | boolean | no | `true` asks for a leaf `<gates slice>/rg-<token>`; requires `token` (`place-refused:no-token` without one). The other three are IGNORED when it is false |
-| | `memory_high` | `--memory-high` | integer \| null | no | bytes; `memory.high` on the leaf (the throttle point) |
-| | `memory_max` | `--memory-max` | integer \| null | no | bytes; `memory.max` on the leaf. Above the gates slice's own `memory.max` → `place-refused:over-slice` |
+| `start` | `place` | `--place` | boolean | no | `true` asks systemd for a transient delegated scope under the verified gates slice and a cgprofile-owned leaf `<scope>/rg-<token>`; requires `token` (`place-refused:no-token` without one). The other three are IGNORED when it is false |
+| | `memory_high` | `--memory-high` | integer \| null | no | bytes; `memory.high` on the leaf (the throttle point), applying to cgroup charges rather than total process RSS |
+| | `memory_max` | `--memory-max` | integer \| null | no | bytes; `memory.max` on the leaf, applying to cgroup charges rather than total process RSS. Above the gates slice's own `memory.max` → `place-refused:over-slice` |
 | | `cpu_weight` | `--cpu-weight` | integer \| null | no | 1..10000; `cpu.weight` on the leaf |
 
 A cap that is not a number, or a `cpu_weight` outside `[1, 10000]`, is a
@@ -135,9 +135,17 @@ A cap that is not a number, or a `cpu_weight` outside `[1, 10000]`, is a
 `place-refused:*` code is the opposite case — what the HOST turned out to
 be — and none of them fails `start`: the session runs unplaced with
 `placement.error` set and `leaf: null`. The block itself is `null` only for
-a session that never asked to be placed. An existing token leaf is refused
-as `place-refused:write-failed:<leaf path>`; the daemon never reuses a leaf
-whose ownership it cannot verify.
+a session that never asked to be placed. An existing token-derived scope name
+is refused as `place-refused:scope-unavailable`; an existing leaf below a
+newly created scope is refused as `place-refused:write-failed:<leaf path>`.
+The daemon never adopts or reuses a scope or leaf whose ownership it cannot
+verify.
+
+After successful placement, memory metrics are charges attributed to the leaf.
+Moving a process does not transfer charges for pages it faulted before the
+move, so leaf counters are not total RSS and leaf `memory.max` is not a hard
+cap on all memory already resident in the lane. See the resource-accounting
+note in `docs/CONSUMERS.md` and the rationale in `docs/DESIGN-GUIDE.md`.
 
 ## 4. Authorisation on the socket carrier (§8.1)
 

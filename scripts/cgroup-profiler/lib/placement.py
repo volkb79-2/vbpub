@@ -1,26 +1,30 @@
-"""Lane placement — RG55-INTERFACE-CONTRACT.md §8.3, design D-20/D-25, RW-35(a).
+"""Lane placement — RG55-INTERFACE-CONTRACT.md §8.3, design D-20/D-25/D-31.
 
 An *ephemeral* lane is a container, so docker already made it a cgroup of
 its own and capped it at create time. An **exec-mode** lane (``docker exec``
 into a long-lived devcontainer) and a **bare-host** lane have neither: their
 cgroup is shared with the IDE, the agents and the caller, so ``memory.peak``,
 ``memory.pressure`` and ``io.stat`` are somebody else's numbers and the
-lane's declared ``resources.memory`` is advisory. D-20's answer is that the
-private-namespace daemon creates a leaf ``<gates slice>/rg-<token>/``, moves
-the lane's pids into it, applies the caps and reads them back. A direct
-``cgroup.procs`` write is used when the PID is visible; when the host PID is
-not addressable from the daemon's private PID namespace, host systemd's
-``AttachProcessesToUnit`` D-Bus method performs the exact move into the
-already-created subcgroup. The daemon never joins a host namespace.
+lane's declared ``resources.memory`` is advisory. D-31's answer is that the
+private-namespace daemon asks host systemd to create a transient delegated
+scope beneath the verified gates slice, then creates its own
+``rg-<token>`` leaf beneath that scope. Host systemd's
+``AttachProcessesToUnit`` D-Bus method moves host PIDs into the leaf and back;
+the daemon never joins a host namespace or writes into the systemd-owned
+slice. Before any move, a write-ahead journal records each PID's start-time
+identity and exact original cgroup/unit so a later daemon can restore only
+processes it can still prove it owns.
 
-**Why a sibling leaf under the gates slice and never a child of the
-container's own scope** (D-20): enabling a controller inside the container's
-cgroup requires writing ``cgroup.subtree_control`` there, after which cgroup
-v2's "no internal processes" rule forbids that scope from holding processes
-itself — and every later ``docker exec`` into the devcontainer would fail
-with ``EBUSY``. Moving a pid OUT of a container's scope is safe: it keeps
-the container's pid and mount namespaces (pid-1's death still kills it),
-only its accounting moves.
+**Why a delegated scope between the gates slice and profiler leaf** (D-31):
+systemd owns slice cgroups and does not support delegating them as a writable
+subtree. The transient scope is the supported delegation boundary; systemd
+owns the scope root, while cgprofile owns only the leaf beneath it. The scope
+is a direct child of the bounded gates slice, so its workload remains inside
+that slice's capacity ceiling. Enabling controllers at the delegated scope
+root requires moving its processes into the leaf first, due to cgroup v2's
+no-internal-process rule. Moving a PID out of its original container scope
+preserves its PID and mount namespaces (pid-1's death still kills it); only
+its cgroup accounting moves.
 
 **The write boundary is a whitelist, never a relaxation** (D-15 extended by
 D-25, plus RW-35(a)'s single exception). :class:`CgroupWriteGuard` is the
@@ -29,20 +33,18 @@ third half of the ``WRITABLE_ROOTS`` boundary whose other halves are
 :meth:`lib.serve.SessionServer._guard_path` (the sessions directory). It
 admits exactly:
 
-* ``<gates slice>/cgroup.subtree_control`` — ``+memory``/``+cpu``/``+pids``
+* ``<delegated scope>/cgroup.subtree_control`` — ``+memory``/``+cpu``/``+pids``
   ONLY (RW-35(a): the one non-leaf write, because a hand-created leaf cannot
   take ``memory.high`` unless its parent delegates the controller; a ``-``
-  value would DISABLE a controller for every other child of the gates slice
-  and is refused);
-* ``<gates slice>/rg-*/{cgroup.procs, memory.high, memory.max, cpu.weight,
+  value is refused);
+* ``<delegated scope>/rg-*/{cgroup.procs, memory.high, memory.max, cpu.weight,
   cgroup.kill}`` — the leaf this daemon made;
 * ``cgroup.kill`` on one exact container-ID cgroup beneath the verified,
   bounded gates slice (never a parent, sibling, or path chosen by a label);
-* ``mkdir``/``rmdir`` of ``<gates slice>/rg-*``;
-* the ORIGINAL scope's ``cgroup.procs``, for the move-back at ``stop`` and
-  nothing else (a pid this daemon moved out is a pid it must be able to put
-  back — the alternative is a lane's survivors accounted to a leaf that no
-  longer exists).
+* ``mkdir``/``rmdir`` of ``<delegated scope>/rg-*``;
+* the original cgroup's ``cgroup.procs`` only for move-back at ``stop``;
+  production PID transfers use the host manager so host PIDs are never
+  misinterpreted through the daemon's private PID namespace.
 
 Every other cgroup path — a production tier, the gates slice's own
 ``memory.max``, another session's leaf — raises :class:`HostWriteError`
@@ -61,6 +63,7 @@ import math
 import os
 import posixpath
 import re
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -124,9 +127,221 @@ def _systemd_attach_process(
             text=True,
             timeout=5.0,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return False
     return completed.returncode == 0
+
+
+def _systemd_unit_path(unit_name: str) -> Optional[str]:
+    """Resolve a unit through systemd instead of guessing its cgroup path."""
+    busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
+    try:
+        completed = subprocess.run(
+            [
+                busctl, "--system", "call", "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+                "GetUnit", "s", unit_name,
+            ],
+            check=False, capture_output=True, text=True, timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        fields = shlex.split(completed.stdout)
+    except ValueError:
+        return None
+    if len(fields) != 2 or fields[0] != "o":
+        return None
+    return fields[1]
+
+
+def _systemd_property(unit_path: str, interface: str, name: str) -> Optional[str]:
+    """Read one string property from the host manager's authoritative unit."""
+    busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
+    try:
+        completed = subprocess.run(
+            [
+                busctl, "--system", "get-property", "org.freedesktop.systemd1",
+                unit_path, interface, name,
+            ],
+            check=False, capture_output=True, text=True, timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        fields = shlex.split(completed.stdout)
+    except ValueError:
+        return None
+    if len(fields) != 2 or fields[0] != "s":
+        return None
+    return fields[1]
+
+
+def _systemd_bool_property(unit_path: str, interface: str, name: str) -> Optional[bool]:
+    busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
+    try:
+        completed = subprocess.run(
+            [
+                busctl, "--system", "get-property", "org.freedesktop.systemd1",
+                unit_path, interface, name,
+            ],
+            check=False, capture_output=True, text=True, timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        fields = shlex.split(completed.stdout)
+    except ValueError:
+        return None
+    if len(fields) != 2 or fields[0] != "b" or fields[1] not in ("true", "false"):
+        return None
+    return fields[1] == "true"
+
+
+def _systemd_string_array_property(
+    unit_path: str, interface: str, name: str,
+) -> Optional[List[str]]:
+    busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
+    try:
+        completed = subprocess.run(
+            [
+                busctl, "--system", "get-property", "org.freedesktop.systemd1",
+                unit_path, interface, name,
+            ],
+            check=False, capture_output=True, text=True, timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        fields = shlex.split(completed.stdout)
+        if len(fields) < 2 or fields[0] != "as":
+            return None
+        count = int(fields[1])
+        values = fields[2:]
+    except (ValueError, TypeError):
+        return None
+    return values if count == len(values) else None
+
+
+def _systemd_create_scope(
+    unit_name: str,
+    slice_unit: str,
+    pids: Sequence[int],
+    controllers: Sequence[str],
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> Optional[str]:
+    """Create one delegated scope with the initial PIDs and return its path.
+
+    ``StartTransientUnit``'s scope ``PIDs`` property is the initial ownership
+    transfer. The returned path is read back from systemd; it is never
+    reconstructed from the requested name.
+    """
+    if not pids or any(isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0 for pid in pids):
+        return None
+    if not unit_name.endswith(".scope") or not slice_unit.endswith(".slice"):
+        return None
+    if not controllers or any(
+        not isinstance(item, str) or not re.fullmatch(r"[a-z0-9_]+", item)
+        for item in controllers
+    ):
+        return None
+    properties: List[str] = [
+        "Description", "s", "cgprofile lane placement",
+        "Slice", "s", slice_unit,
+        "PIDs", "au", str(len(pids)), *(str(pid) for pid in pids),
+        "Delegate", "b", "true",
+        "DelegateControllers", "as", str(len(controllers)), *controllers,
+    ]
+    argv = [
+        os.environ.get("CGPROFILE_BUSCTL", "busctl"), "--system", "call",
+        "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager", "StartTransientUnit",
+        "ssa(sv)a(sa(sv))", unit_name, "fail", "5", *properties, "0",
+    ]
+    try:
+        result = run(argv, check=False, capture_output=True, text=True, timeout=10.0)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+
+    # The job may be queued when StartTransientUnit returns. Poll its
+    # authoritative properties briefly; an absent/unverified result is a
+    # placement refusal, never permission to infer the path from the unit.
+    for _ in range(40):
+        path = _systemd_unit_path(unit_name)
+        if path is not None:
+            load_state = _systemd_property(
+                path, "org.freedesktop.systemd1.Unit", "LoadState"
+            )
+            actual_cgroup = _systemd_property(
+                path, "org.freedesktop.systemd1.Scope", "ControlGroup"
+            )
+            actual_slice = _systemd_property(
+                path, "org.freedesktop.systemd1.Scope", "Slice"
+            )
+            delegated = _systemd_bool_property(
+                path, "org.freedesktop.systemd1.Scope", "Delegate"
+            )
+            actual_controllers = _systemd_string_array_property(
+                path, "org.freedesktop.systemd1.Scope", "DelegateControllers"
+            )
+            if (
+                load_state == "loaded" and actual_cgroup and actual_slice == slice_unit
+                and delegated is True and actual_controllers is not None
+                and set(controllers).issubset(actual_controllers)
+            ):
+                return actual_cgroup
+        time.sleep(0.05)
+    return None
+
+
+def _systemd_stop_unit(
+    unit_name: str,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> bool:
+    """Retire only the exact empty transient scope created for this session."""
+    busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
+    try:
+        result = run(
+            [
+                busctl, "--system", "call", "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+                "StopUnit", "ss", unit_name, "fail",
+            ],
+            check=False, capture_output=True, text=True, timeout=10.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    # StopUnit returns when the job is accepted, not necessarily when the
+    # unit has reached its terminal state. Never report successful retirement
+    # based only on an accepted request.
+    for _ in range(40):
+        path = _systemd_unit_path(unit_name)
+        if path is None:
+            return True
+        active = _systemd_property(
+            path, "org.freedesktop.systemd1.Unit", "ActiveState"
+        )
+        substate = _systemd_property(
+            path, "org.freedesktop.systemd1.Unit", "SubState"
+        )
+        if active == "inactive" and substate == "dead":
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def _systemd_destination(cgroup: str) -> Optional[tuple[str, str]]:
@@ -147,6 +362,86 @@ def _systemd_destination(cgroup: str) -> Optional[tuple[str, str]]:
             return parts[index], "/".join(parts[index + 1:])
     return None
 
+
+def _systemd_unit_cgroup_matches(unit_name: str, expected_cgroup: str) -> bool:
+    """Verify a path-derived unit name against systemd's own ControlGroup."""
+    unit_path = _systemd_unit_path(unit_name)
+    if unit_path is None:
+        return False
+    load_state = _systemd_property(
+        unit_path, "org.freedesktop.systemd1.Unit", "LoadState"
+    )
+    suffix = unit_name.rsplit(".", 1)[-1]
+    if suffix not in {"scope", "service", "slice"}:
+        return False
+    actual = _systemd_property(
+        unit_path, f"org.freedesktop.systemd1.{suffix.title()}", "ControlGroup"
+    )
+    return (
+        load_state == "loaded"
+        and actual is not None
+        and posixpath.normpath(actual) == posixpath.normpath(expected_cgroup)
+    )
+
+
+def _process_start_time_ticks(proc_root: str, pid: int) -> Optional[str]:
+    """Return Linux /proc stat field 22, without being confused by comm's ')'s."""
+    text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
+    if not text:
+        return None
+    close = text.rfind(")")
+    if close < 0:
+        return None
+    fields = text[close + 1 :].split()
+    # The suffix starts at stat field 3 (state), so field 22 is index 19.
+    if len(fields) <= 19 or not fields[19].isdigit():
+        return None
+    return fields[19]
+
+
+def _process_parent_pid(proc_root: str, pid: int) -> Optional[int]:
+    """Return ``/proc/<pid>/stat`` field 4, robust to ``comm`` contents."""
+    text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
+    if not text:
+        return None
+    close = text.rfind(")")
+    if close < 0:
+        return None
+    fields = text[close + 1 :].split()
+    if len(fields) < 2 or not fields[1].isdigit():
+        return None
+    return int(fields[1])
+
+
+def _host_pid_of_self(proc_root: str) -> Optional[int]:
+    """Read this process's host PID from the first value in ``NSpid``."""
+    text = util.read_text(os.path.join(proc_root, "self", "status"))
+    if not text:
+        return None
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if key != "NSpid" or not sep:
+            continue
+        values = value.split()
+        if values and values[0].isdigit() and int(values[0]) > 0:
+            return int(values[0])
+    return None
+
+
+def _within_cgroup(path: str, parent: str) -> bool:
+    """Whether normalized absolute ``path`` is ``parent`` or below it."""
+    if not isinstance(path, str) or not isinstance(parent, str):
+        return False
+    if not path.startswith("/") or not parent.startswith("/"):
+        return False
+    normalized_path = posixpath.normpath(path)
+    normalized_parent = posixpath.normpath(parent)
+    return (
+        normalized_path == normalized_parent
+        or normalized_parent == "/"
+        or normalized_path.startswith(normalized_parent.rstrip("/") + "/")
+    )
+
 #: §8.3: the leaf's name is ``rg-`` plus the lane's token.
 LEAF_PREFIX = "rg-"
 #: The only files the daemon may write inside a leaf (§8.3/D-25).
@@ -164,6 +459,9 @@ REFUSED_NO_TOKEN = "place-refused:no-token"
 REFUSED_NO_GATES_SLICE = "place-refused:no-gates-slice"
 REFUSED_OVER_SLICE = "place-refused:over-slice"
 REFUSED_PARENT_NOT_GATES_SLICE = "place-refused:parent-not-gates-slice"
+REFUSED_NO_HOST_PROC = "place-refused:no-host-proc-view"
+REFUSED_IDENTITY_UNAVAILABLE = "place-refused:identity-unavailable"
+REFUSED_STATE_UNAVAILABLE = "place-refused:recovery-state-unavailable"
 
 #: `stop`'s `rmdir` retry budget: 3 attempts over 3 s (§8.3).
 RMDIR_ATTEMPTS = 3
@@ -330,13 +628,19 @@ class CgroupWriteGuard:
 
     def __init__(
         self, *, cgroup_root: str, gates_cgroup: str, origin_cgroup: Optional[str],
-        leaf_name: Optional[str], container_cgroup: Optional[str] = None,
+        leaf_name: Optional[str], scope_cgroup: Optional[str] = None,
+        container_cgroup: Optional[str] = None,
         container_id: Optional[str] = None,
     ) -> None:
         self.cgroup_root = cgroup_root
         self.gates_cgroup = gates_cgroup
         self.gates_abs = abs_path(cgroup_root, gates_cgroup)
         self.origin_abs = abs_path(cgroup_root, origin_cgroup) if origin_cgroup else None
+        self.origin_abss: Set[str] = (
+            {os.path.realpath(self.origin_abs)} if self.origin_abs is not None else set()
+        )
+        self.scope_cgroup = scope_cgroup
+        self.scope_abs = abs_path(cgroup_root, scope_cgroup) if scope_cgroup else None
         self.leaf_name = leaf_name
         self.container_kill_abs: Optional[str] = None
         if container_cgroup is not None and container_id is not None:
@@ -364,18 +668,26 @@ class CgroupWriteGuard:
     # -- predicates --------------------------------------------------------
 
     def is_leaf(self, path: str) -> bool:
-        """Whether ``path`` is a direct ``rg-*`` child of the gates slice."""
-        if self.leaf_name is None:
+        """Whether ``path`` is this session's leaf under its delegated scope."""
+        if self.leaf_name is None or self.scope_abs is None:
             return False
         real = os.path.realpath(path)
-        return real == os.path.join(os.path.realpath(self.gates_abs), self.leaf_name)
+        return real == os.path.join(os.path.realpath(self.scope_abs), self.leaf_name)
+
+    def allow_origin(self, cgroup: str) -> None:
+        """Admit one identity-verified original cgroup for exact restoration."""
+        self.origin_abss.add(os.path.realpath(abs_path(self.cgroup_root, cgroup)))
 
     # -- the three checks --------------------------------------------------
 
     def check_write(self, path: str, value: str) -> None:
         real = os.path.realpath(path)
         parent, name = os.path.split(real)
-        if parent == os.path.realpath(self.gates_abs) and name == SUBTREE_CONTROL:
+        if (
+            self.scope_abs is not None
+            and parent == os.path.realpath(self.scope_abs)
+            and name == SUBTREE_CONTROL
+        ):
             self._check_subtree_control_value(path, value)
             return
         if name == "cgroup.kill":
@@ -392,11 +704,7 @@ class CgroupWriteGuard:
                 return
         if name in LEAF_FILES and self.is_leaf(parent):
             return
-        if (
-            self.origin_abs is not None
-            and name == PROCS
-            and parent == os.path.realpath(self.origin_abs)
-        ):
+        if name == PROCS and parent in self.origin_abss:
             return
         raise HostWriteError(
             f"refusing to write outside the D-25 cgroup whitelist "
@@ -406,34 +714,27 @@ class CgroupWriteGuard:
     def check_mkdir(self, path: str) -> None:
         if not self.is_leaf(path):
             raise HostWriteError(
-                f"refusing to create a cgroup that is not an {LEAF_PREFIX}* leaf of "
-                f"{self.gates_cgroup!r}: {path!r}"
+                f"refusing to create a cgroup that is not this session's "
+                f"{LEAF_PREFIX}* child of a delegated scope: {path!r}"
             )
 
     def check_rmdir(self, path: str) -> None:
         if not self.is_leaf(path):
             raise HostWriteError(
-                f"refusing to remove a cgroup that is not an {LEAF_PREFIX}* leaf of "
-                f"{self.gates_cgroup!r}: {path!r}"
+                f"refusing to remove a cgroup that is not this session's "
+                f"{LEAF_PREFIX}* child of a delegated scope: {path!r}"
             )
 
     @staticmethod
     def _check_subtree_control_value(path: str, value: str) -> None:
-        """RW-35(a): ``+`` values only, and only the three named controllers.
-
-        A ``-memory`` here would revoke the controller from every OTHER child
-        of the gates slice — every other lane's leaf, live, mid-run — which
-        is precisely the "one non-leaf write" being narrow rather than a
-        general permission to write the parent.
-        """
+        """Allow only enabling required controllers on this exact scope root."""
         tokens = value.split()
         if not tokens:
             raise HostWriteError(f"refusing an empty {SUBTREE_CONTROL} write: {path!r}")
         for token in tokens:
             if not token.startswith("+"):
                 raise HostWriteError(
-                    f"refusing a non-'+' {SUBTREE_CONTROL} value {token!r} (RW-35a: the one "
-                    f"non-leaf write may only ENABLE a controller): {path!r}"
+                    f"refusing a non-'+' {SUBTREE_CONTROL} value {token!r}: {path!r}"
                 )
             if token[1:] not in REQUIRED_CONTROLLERS:
                 raise HostWriteError(
@@ -549,10 +850,20 @@ class LanePlacement:
         log: Optional[Callable[[str], None]] = None,
         sleep: Callable[[float], None] = time.sleep,
         rmdir: Callable[[str], None] = os.rmdir,
+        mkdir: Callable[[str], None] = os.mkdir,
         proc_root: Optional[str] = None,
         systemd_attach: Optional[Callable[[str, str, int], bool]] = None,
         pid_cgroup: Optional[Callable[[int], Optional[str]]] = None,
         pid_exists: Optional[Callable[[int], bool]] = None,
+        pid_start_time: Optional[Callable[[int], Optional[str]]] = None,
+        pid_parent: Optional[Callable[[int], Optional[int]]] = None,
+        host_pid: Optional[Callable[[], Optional[int]]] = None,
+        host_proc_view: Optional[Callable[[str], bool]] = None,
+        pids_in_cgroup: Optional[Callable[[str, str, str], List[int]]] = None,
+        unit_cgroup_verifier: Optional[Callable[[str, str], bool]] = None,
+        state_write: Optional[Callable[[Dict[str, Any]], None]] = None,
+        scope_create: Optional[Callable[[str, str, Sequence[int], Sequence[str]], Optional[str]]] = None,
+        scope_stop: Optional[Callable[[str], bool]] = None,
         slice_unit_verifier: Optional[Callable[[str, str], bool]] = None,
     ) -> None:
         self.cgroup_root = cgroup_root
@@ -567,6 +878,19 @@ class LanePlacement:
         self._systemd_attach = systemd_attach or _systemd_attach_process
         self._pid_cgroup = pid_cgroup or self._default_pid_cgroup
         self._pid_exists = pid_exists or self._default_pid_exists
+        self._pid_start_time = pid_start_time or (
+            lambda pid: _process_start_time_ticks(self.proc_root, pid)
+        )
+        self._pid_parent = pid_parent or (
+            lambda pid: _process_parent_pid(self.proc_root, pid)
+        )
+        self._host_pid = host_pid or (lambda: _host_pid_of_self(self.proc_root))
+        self._host_proc_view = host_proc_view or access.have_host_proc_view
+        self._pids_in_cgroup = pids_in_cgroup or self._default_pids_in_cgroup
+        self._unit_cgroup_verifier = unit_cgroup_verifier or _systemd_unit_cgroup_matches
+        self._state_write = state_write
+        self._scope_create = scope_create or _systemd_create_scope
+        self._scope_stop = scope_stop or _systemd_stop_unit
         self._slice_unit_verifier = slice_unit_verifier or access.verify_systemd_slice
         # A cgroup directory is kernfs: `rmdir` on it succeeds even though it
         # "contains" the controller's interface files, which the kernel
@@ -578,14 +902,21 @@ class LanePlacement:
         # guard still runs on the real path either way (`_rmdir` checks
         # before it calls this).
         self._rmdir_fn = rmdir
+        self._mkdir_fn = mkdir
         self.guard = CgroupWriteGuard(
             cgroup_root=cgroup_root, gates_cgroup=gates_cgroup,
             origin_cgroup=origin_cgroup, leaf_name=self.leaf_name,
         )
+        self.scope_unit: Optional[str] = None
+        self.scope_cgroup: Optional[str] = None
         self.leaf_cgroup: Optional[str] = None
+        self.leaf_created = False
+        self.successfully_placed = False
         self.applied: Dict[str, Optional[int]] = {}
         self.error: Optional[str] = None
         self.moved: Set[int] = set()
+        self.pid_records: Dict[int, Dict[str, Any]] = {}
+        self._journal: Optional[Dict[str, Any]] = None
         self.released = False
 
     def _default_pid_cgroup(self, pid: int) -> Optional[str]:
@@ -598,10 +929,140 @@ class LanePlacement:
     def _default_pid_exists(self, pid: int) -> bool:
         return os.path.exists(os.path.join(self.proc_root, str(pid)))
 
+    def _default_pids_in_cgroup(self, cgroup: str, root: str, proc_root: str) -> List[int]:
+        from . import targets
+
+        return targets.pids_in_cgroup(cgroup, root, proc_root)
+
+    def _persist(self, *, state: Optional[str] = None) -> bool:
+        if self._journal is None or self._state_write is None:
+            return True
+        if state is not None:
+            self._journal["state"] = state
+        self._journal["pids"] = {
+            str(pid): record for pid, record in sorted(self.pid_records.items())
+        }
+        self._journal["leaf_created"] = self.leaf_created
+        self._journal["was_placed"] = self.successfully_placed
+        try:
+            self._state_write(self._journal)
+        except Exception as exc:  # noqa: BLE001 - persistence is a safety boundary
+            if self._log is not None:
+                self._log(f"placement: could not persist recovery journal: {exc}")
+            return False
+        return True
+
+    def _ancestor_record(self, pid: int) -> Optional[Dict[str, Any]]:
+        """Find the nearest still-identical journaled ancestor of ``pid``."""
+        parent = self._pid_parent(pid)
+        visited: Set[int] = {pid}
+        for _ in range(4096):
+            if parent is None or parent <= 0 or parent in visited:
+                return None
+            visited.add(parent)
+            record = self.pid_records.get(parent)
+            if record is not None and self._same_process(parent, record):
+                return record
+            parent = self._pid_parent(parent)
+        return None
+
+    def _capture_pid(self, pid: int) -> Optional[Dict[str, Any]]:
+        """Capture stable process identity and a safe restoration destination.
+
+        A process still in the selected origin tree gets its own exact
+        original cgroup/unit recorded. A child already born inside our
+        systemd scope/leaf inherits that destination from its nearest
+        identity-verified journaled ancestor. Anything else is ambiguous and
+        is refused rather than moved on the strength of a numeric PID alone.
+        """
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            self.error = REFUSED_IDENTITY_UNAVAILABLE
+            return None
+        if not self._host_proc_view(self.proc_root):
+            self.error = REFUSED_NO_HOST_PROC
+            return None
+        daemon_pid = self._host_pid()
+        if daemon_pid is None:
+            self.error = REFUSED_IDENTITY_UNAVAILABLE
+            return None
+        if pid == daemon_pid:
+            self.error = REFUSED_IDENTITY_UNAVAILABLE
+            return None
+        if not self._pid_exists(pid):
+            return None
+        start_time = self._pid_start_time(pid)
+        cgroup = self._pid_cgroup(pid)
+        if start_time is None or cgroup is None:
+            self.error = REFUSED_IDENTITY_UNAVAILABLE
+            return None
+        normalized_cgroup = posixpath.normpath(cgroup)
+        if _within_cgroup(normalized_cgroup, self.origin_cgroup):
+            destination = _systemd_destination(normalized_cgroup)
+            if destination is None:
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return None
+            unit_name, subcgroup = destination
+            parts = normalized_cgroup.strip("/").split("/")
+            suffix_parts = subcgroup.split("/") if subcgroup else []
+            unit_parts = parts[: len(parts) - len(suffix_parts)] if suffix_parts else parts
+            unit_cgroup = "/" + "/".join(unit_parts)
+            if not self._unit_cgroup_verifier(unit_name, unit_cgroup):
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return None
+            origin = {
+                "origin_cgroup": normalized_cgroup,
+                "origin_unit": unit_name,
+                "origin_unit_cgroup": unit_cgroup,
+                "origin_subcgroup": subcgroup,
+            }
+        elif (
+            self.scope_cgroup is not None
+            and _within_cgroup(normalized_cgroup, self.scope_cgroup)
+        ):
+            parent = self._ancestor_record(pid)
+            if parent is None:
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return None
+            origin = {
+                key: parent[key]
+                for key in (
+                    "origin_cgroup", "origin_unit", "origin_unit_cgroup",
+                    "origin_subcgroup",
+                )
+            }
+        else:
+            self.error = REFUSED_IDENTITY_UNAVAILABLE
+            return None
+        # Re-read both identity and membership after resolving the owning unit;
+        # a recycled PID or a process that escaped during inspection is not
+        # admitted to the transaction.
+        if (
+            not self._pid_exists(pid)
+            or self._pid_start_time(pid) != start_time
+            or posixpath.normpath(self._pid_cgroup(pid) or "") != normalized_cgroup
+        ):
+            if not self._pid_exists(pid):
+                return None
+            self.error = REFUSED_IDENTITY_UNAVAILABLE
+            return None
+        self.guard.allow_origin(origin["origin_cgroup"])
+        return {
+            "pid": pid,
+            "start_time_ticks": start_time,
+            "current_cgroup": normalized_cgroup,
+            **origin,
+            "state": "prepared",
+        }
+
     @property
     def gates_unit(self) -> str:
         """The systemd unit owning ``gates_cgroup`` (e.g. dev-gates.slice)."""
         return os.path.basename(self.gates_cgroup.rstrip("/"))
+
+    @property
+    def scope_name(self) -> str:
+        """A collision-resistant per-session transient scope name."""
+        return f"rg-profile-{self.token}.scope"
 
     # -- geometry ---------------------------------------------------------
 
@@ -611,7 +1072,7 @@ class LanePlacement:
 
     @property
     def leaf_abs(self) -> Optional[str]:
-        if self.leaf_cgroup is None:
+        if self.leaf_cgroup is None or not self.leaf_created:
             return None
         return abs_path(self.cgroup_root, self.leaf_cgroup)
 
@@ -619,10 +1080,15 @@ class LanePlacement:
     def placed(self) -> bool:
         """Whether a leaf exists and holds this lane (§8.4's `throttled` and
         the `cgroup.kill` enforcement path both key on this)."""
-        return self.leaf_cgroup is not None and not self.released
+        return self.leaf_cgroup is not None and self.leaf_created and not self.released
 
     def _relative(self, abs_target: str) -> str:
         return os.path.relpath(abs_target, self.cgroup_root)
+
+    def _set_scope(self, cgroup: str) -> None:
+        self.scope_cgroup = cgroup
+        self.guard.scope_cgroup = cgroup
+        self.guard.scope_abs = abs_path(self.cgroup_root, cgroup)
 
     # -- guarded primitives ------------------------------------------------
 
@@ -641,7 +1107,7 @@ class LanePlacement:
 
     def _mkdir(self, abs_target: str) -> None:
         self.guard.check_mkdir(abs_target)
-        os.mkdir(abs_target)
+        self._mkdir_fn(abs_target)
         if self._on_write is not None:
             self._on_write(self._relative(abs_target), "mkdir")
 
@@ -654,15 +1120,16 @@ class LanePlacement:
     # -- §8.3: apply ------------------------------------------------------
 
     def apply(self, pids: Sequence[int]) -> None:
-        """Create the leaf, delegate the controllers if the slice has not,
-        write the caps, read them back, migrate ``pids``.
+        """Journal identities, create the delegated scope, then place/cap it.
 
-        Never raises for a host condition: every refusal lands in
-        :attr:`error` with :attr:`leaf_cgroup` back to ``None``, because
-        §8.3's "placement never fails `start`" is the whole point — a lane
-        that cannot be placed still has to be profiled.
+        A refusal is recorded on the session and never aborts profiling. Once
+        systemd may have moved a PID, the journal and exact unit identity stay
+        available for ordinary cleanup or restart recovery.
         """
         if not self.token:
+            self.error = REFUSED_NO_TOKEN
+            return
+        if not re.fullmatch(r"[A-Za-z0-9._-]{8,64}", self.token):
             self.error = REFUSED_NO_TOKEN
             return
         gates_abs = abs_path(self.cgroup_root, self.gates_cgroup)
@@ -681,29 +1148,158 @@ class LanePlacement:
         ):
             self.error = REFUSED_OVER_SLICE
             return
+        if not self._host_proc_view(self.proc_root):
+            self.error = REFUSED_NO_HOST_PROC
+            return
+        if self._state_write is None:
+            self.error = REFUSED_STATE_UNAVAILABLE
+            return
+        if not pids:
+            self.error = "place-refused:no-target-pids"
+            return
 
-        leaf_abs = os.path.join(gates_abs, self.leaf_name)
-        if os.path.lexists(leaf_abs) and not self.guard.is_leaf(leaf_abs):
-            # A pre-existing `rg-<token>` that does not RESOLVE to a child of
-            # the gates slice (a symlink planted under it) would make every
-            # cap below land on somebody else's cgroup. D-25's
-            # `parent-not-gates-slice`, and the reason every guard comparison
-            # is on `realpath`.
+        for pid in pids:
+            if pid in self.pid_records:
+                continue
+            identity = self._capture_pid(pid)
+            if identity is not None:
+                self.pid_records[pid] = identity
+            elif self.error is not None:
+                return
+        if not self.pid_records:
+            self.error = "place-refused:no-target-pids"
+            return
+
+        self._journal = {
+            "schema": 1,
+            "token": self.token,
+            "state": "prepared",
+            "scope_unit": self.scope_name,
+            "gates_unit": self.gates_unit,
+            "gates_cgroup": posixpath.normpath(self.gates_cgroup),
+            "scope_cgroup": None,
+            "leaf_cgroup": None,
+            "leaf_created": False,
+            "was_placed": False,
+            "pids": {},
+        }
+        if not self._persist(state="creating-scope"):
+            self.error = REFUSED_STATE_UNAVAILABLE
+            return
+        self.scope_unit = self.scope_name
+
+        try:
+            scope_cgroup = self._scope_create(
+                self.scope_name, self.gates_unit, tuple(sorted(self.pid_records)),
+                REQUIRED_CONTROLLERS,
+            )
+        except Exception as exc:  # a host-side systemd failure is a refusal
+            if self._log is not None:
+                self._log(f"placement: systemd scope creation failed: {exc}")
+            scope_cgroup = None
+        if scope_cgroup is None:
+            self.error = "place-refused:scope-unavailable"
+            # Keep the write-ahead record: a timed-out manager call can have
+            # created the exact transient unit even when its reply was lost.
+            self._persist(state="scope-create-uncertain")
+            return
+        normalized_gates = posixpath.normpath(self.gates_cgroup)
+        normalized_scope = posixpath.normpath(scope_cgroup)
+        self.scope_cgroup = normalized_scope
+        self._journal["scope_cgroup"] = normalized_scope
+        if not self._persist(state="scope-created"):
+            self.error = REFUSED_STATE_UNAVAILABLE
+            return
+        if (
+            not normalized_gates.startswith("/")
+            or not normalized_scope.startswith("/")
+            or posixpath.dirname(normalized_scope) != normalized_gates
+            or posixpath.basename(normalized_scope) != self.scope_name
+            or any(part in ("", ".", "..") for part in normalized_scope.split("/")[1:])
+        ):
             self.error = REFUSED_PARENT_NOT_GATES_SLICE
+            self._persist(state="recovery-required")
+            return
+        self._set_scope(normalized_scope)
+        scope_abs = abs_path(self.cgroup_root, normalized_scope)
+        if (
+            not os.path.isdir(scope_abs)
+            or os.path.realpath(scope_abs) != os.path.abspath(scope_abs)
+            or not self._unit_cgroup_verifier(self.scope_name, normalized_scope)
+        ):
+            self.error = REFUSED_PARENT_NOT_GATES_SLICE
+            self._persist(state="recovery-required")
+            return
+
+        # StartTransientUnit(PIDs=...) transfers each initial PID into this
+        # exact scope. Verify identity and membership before the second move.
+        for pid, record in list(self.pid_records.items()):
+            if not self._same_process(pid, record):
+                if not self._pid_exists(pid):
+                    record["state"] = "exited"
+                    continue
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                self._persist(state="recovery-required")
+                return
+            if posixpath.normpath(self._pid_cgroup(pid) or "") != normalized_scope:
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                self._persist(state="recovery-required")
+                return
+            record["state"] = "scope"
+        if not self._persist(state="scope-verified"):
+            self.error = REFUSED_STATE_UNAVAILABLE
+            return
+
+        leaf_abs = os.path.join(scope_abs, self.leaf_name)
+        self.leaf_cgroup = os.path.join("/", self._relative(leaf_abs))
+        self._journal["leaf_cgroup"] = self.leaf_cgroup
+        if not self._persist(state="creating-leaf"):
+            self.error = REFUSED_STATE_UNAVAILABLE
+            return
+        scope_procs = os.path.join(scope_abs, PROCS)
+        if os.path.lexists(leaf_abs) and not self.guard.is_leaf(leaf_abs):
+            self.error = REFUSED_PARENT_NOT_GATES_SLICE
+            self.leaf_cgroup = None
+            self._restore_and_retire()
             return
         if os.path.lexists(leaf_abs):
-            # An orphan or another session's leaf is not ours to cap, move
-            # processes into, or remove.  The mkdir below also refuses a
-            # leaf appearing between this check and creation.
             self.error = write_failed(self._relative(leaf_abs))
+            self.leaf_cgroup = None
+            self._restore_and_retire()
             return
         try:
-            self._delegate_controllers(gates_abs)
             self._mkdir(leaf_abs)
         except OSError as exc:
             self.error = write_failed(self._failed_relative(exc, leaf_abs))
+            self.leaf_cgroup = None
+            self._restore_and_retire()
             return
-        self.leaf_cgroup = os.path.join("/", self._relative(leaf_abs))
+        self.leaf_created = True
+        self._journal["leaf_created"] = True
+        if not self._persist(state="leaf-created"):
+            self.error = REFUSED_STATE_UNAVAILABLE
+            self.release()
+            return
+
+        self.migrate(tuple(self.pid_records))
+        if self.error is None and self._cgroup_has_processes(normalized_scope) is not False:
+            # Unknown is not empty: the no-internal-process precondition must
+            # be positively established before controller delegation.
+            self.error = write_failed(self._relative(scope_procs))
+        if self.error is not None:
+            self.release()
+            return
+        try:
+            self._delegate_controllers(scope_abs)
+        except OSError as exc:
+            self.error = write_failed(self._failed_relative(exc, os.path.join(scope_abs, SUBTREE_CONTROL)))
+            self.release()
+            return
+
+        if not self._persist(state="controllers-enabled"):
+            self.error = REFUSED_STATE_UNAVAILABLE
+            self.release()
+            return
 
         for name in self.request.cap_files():
             target = os.path.join(leaf_abs, name)
@@ -711,7 +1307,7 @@ class LanePlacement:
                 self._write(target, str(self.request.value_for(name)))
             except OSError as exc:
                 self.error = write_failed(self._failed_relative(exc, target))
-                self._abandon(leaf_abs)
+                self.release()
                 return
             # §8.3: `applied` holds what the kernel reports AFTER the write,
             # never the number that was asked for — `memory.high` rounds to a
@@ -719,17 +1315,38 @@ class LanePlacement:
             # ancestor, so echoing the request would be a claim, not a
             # reading (the S13.3.2 discipline).
             self.applied[name] = util.read_int(target)
+        self.successfully_placed = True
+        if not self._persist(state="placed"):
+            self.successfully_placed = False
+            self.error = REFUSED_STATE_UNAVAILABLE
+            self.release()
 
-        self.migrate(pids)
-        if self.error is not None and not self.moved:
-            # A leaf with no successfully migrated PID is not a placement;
-            # abandon it rather than expose caps and an empty kill target as
-            # if the lane had been contained.
-            self._abandon(leaf_abs)
+    def _same_process(self, pid: int, record: Dict[str, Any]) -> bool:
+        return (
+            self._pid_exists(pid)
+            and self._pid_start_time(pid) == record.get("start_time_ticks")
+        )
 
-    def _delegate_controllers(self, gates_abs: str) -> None:
-        """RW-35(a)'s single non-leaf write, and only when it is needed."""
-        control_path = os.path.join(gates_abs, SUBTREE_CONTROL)
+    def _cgroup_has_processes(self, cgroup: str) -> Optional[bool]:
+        abs_cgroup = abs_path(self.cgroup_root, cgroup)
+        raw = util.read_lines(os.path.join(abs_cgroup, PROCS))
+        if raw is None:
+            return None
+        try:
+            visible = self._pids_in_cgroup(cgroup, self.cgroup_root, self.proc_root)
+        except Exception:  # noqa: BLE001 - unreadable membership is unknown
+            return None
+        entries = [line.strip() for line in raw if line.strip()]
+        # A cgroupfs view can render host tasks as zero inside a private PID
+        # namespace. If the explicit host-proc resolver cannot account for
+        # every visible entry, that is unknown, never proof of emptiness.
+        if len(entries) != len(visible):
+            return None if entries or visible else False
+        return bool(visible)
+
+    def _delegate_controllers(self, scope_abs: str) -> None:
+        """Enable required controllers only after the delegated scope is empty."""
+        control_path = os.path.join(scope_abs, SUBTREE_CONTROL)
         enabled = (util.read_text(control_path) or "").split()
         if all(name in enabled for name in REQUIRED_CONTROLLERS):
             return
@@ -752,75 +1369,103 @@ class LanePlacement:
     # -- §8.3: migration ---------------------------------------------------
 
     def migrate(self, pids: Sequence[int]) -> int:
-        """Move every not-yet-moved pid into the leaf. Returns how many moved.
-
-        Called at `start` AND from every discovery tick (§8.3: "also pids
-        found later") — the token resolver keeps finding descendants for as
-        long as the lane forks, and a pid left in the devcontainer's scope is
-        a pid whose memory is not the lane's.
-
-        A pid that vanished between the resolver's walk and this write is not
-        an error (the resolver's own ESRCH discipline, :mod:`lib.subtree`) —
-        it contributes nothing and is not retried.
-        """
+        """Move newly discovered, identity-verified processes into the leaf."""
         leaf_abs = self.leaf_abs
-        if leaf_abs is None or self.released:
+        if leaf_abs is None or self.released or self.error is not None:
             return 0
         procs = os.path.join(leaf_abs, PROCS)
         moved = 0
-        enforcement_failed = False
         for pid in pids:
-            if pid in self.moved:
+            record = self.pid_records.get(pid)
+            if record is None:
+                record = self._capture_pid(pid)
+                if record is None:
+                    if self.error is not None:
+                        break
+                    continue
+                self.pid_records[pid] = record
+                if not self._persist(state="pid-prepared"):
+                    self.error = REFUSED_STATE_UNAVAILABLE
+                    break
+            if record.get("state") == "exited":
                 continue
-            try:
-                self._write(procs, str(pid))
-            except OSError as exc:
-                # A private PID namespace makes a host-visible PID
-                # unaddressable from this writer and the kernel reports
-                # ESRCH. Ask host systemd to perform the same move in its
-                # host PID namespace, then verify through the explicit host
-                # proc view. Any other write failure is not evidence that the
-                # PID vanished and cannot certify placement; fail closed.
-                if exc.errno != errno.ESRCH:
-                    enforcement_failed = True
-                    if self._log is not None:
-                        self._log(
-                            f"placement: direct migration of pid {pid} failed: {exc}"
-                        )
-                    continue
-                from . import access
-
-                if not access.have_host_proc_view(self.proc_root):
-                    enforcement_failed = True
-                    if self._log is not None:
-                        self._log(
-                            f"placement: cannot safely attach pid {pid} through systemd "
-                            "without a verified host-proc view"
-                        )
-                    continue
+            if not self._same_process(pid, record):
                 if not self._pid_exists(pid):
+                    record["state"] = "exited"
+                    if not self._persist(state="placing"):
+                        self.error = REFUSED_STATE_UNAVAILABLE
                     continue
-                if not self._systemd_attach(self.gates_unit, self.leaf_name, pid):
-                    enforcement_failed = True
-                    if self._log is not None:
-                        self._log(
-                            f"placement: systemd could not attach pid {pid} "
-                            f"to {self.gates_unit}/{self.leaf_name}"
-                        )
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                break
+            current = posixpath.normpath(self._pid_cgroup(pid) or "")
+            if current == posixpath.normpath(self.leaf_cgroup or ""):
+                record["state"] = "leaf"
+                self.moved.add(pid)
+                continue
+            if not (
+                _within_cgroup(current, record["origin_cgroup"])
+                or (
+                    self.scope_cgroup is not None
+                    and _within_cgroup(current, self.scope_cgroup)
+                )
+            ):
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                break
+            if self.scope_unit is None or self.scope_cgroup is None:
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                break
+            try:
+                self.guard.check_write(procs, str(pid))
+            except HostWriteError:
+                self.error = REFUSED_PARENT_NOT_GATES_SLICE
+                break
+            record["state"] = "moving-to-leaf"
+            if not self._persist(state="moving-to-leaf"):
+                self.error = REFUSED_STATE_UNAVAILABLE
+                break
+            try:
+                attached = self._systemd_attach(self.scope_unit, self.leaf_name, pid)
+            except Exception as exc:  # noqa: BLE001 - manager failure is a refusal
+                attached = False
+                if self._log is not None:
+                    self._log(f"placement: systemd attach of pid {pid} failed: {exc}")
+            if not attached:
+                if not self._pid_exists(pid):
+                    record["state"] = "exited"
+                    if not self._persist(state="placing"):
+                        self.error = REFUSED_STATE_UNAVAILABLE
                     continue
-                if self._pid_cgroup(pid) != self.leaf_cgroup:
-                    enforcement_failed = True
-                    if self._log is not None:
-                        self._log(
-                            f"placement: systemd attach of pid {pid} was not "
-                            f"visible in {self.leaf_cgroup}"
-                        )
+                self.error = write_failed(self._relative(procs))
+                self._persist(state="recovery-required")
+                if self._log is not None:
+                    self._log(f"placement: systemd could not attach pid {pid} to {self.leaf_cgroup}")
+                break
+            if not self._same_process(pid, record):
+                if not self._pid_exists(pid):
+                    record["state"] = "exited"
+                    if not self._persist(state="placing"):
+                        self.error = REFUSED_STATE_UNAVAILABLE
                     continue
-                self._record_write(procs, str(pid))
+                record["state"] = "identity-mismatch"
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                self._persist(state="recovery-required")
+                break
+            if posixpath.normpath(self._pid_cgroup(pid) or "") != posixpath.normpath(
+                self.leaf_cgroup
+            ):
+                record["state"] = "membership-mismatch"
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                self._persist(state="recovery-required")
+                break
+            self._record_write(procs, str(pid))
+            record["state"] = "leaf"
+            if not self._persist(state="placing"):
+                self.error = REFUSED_STATE_UNAVAILABLE
+                break
             self.moved.add(pid)
             moved += 1
-        if enforcement_failed and self.error is None:
-            self.error = write_failed(self._relative(procs))
+        if self.error is not None and self._journal is not None:
+            self._persist(state="recovery-required")
         return moved
 
     # -- §8.4: what the leaf says -----------------------------------------
@@ -868,136 +1513,213 @@ class LanePlacement:
 
     # -- §8.3: release -----------------------------------------------------
 
+    def _owned_cgroup_pids(self, cgroup: Optional[str]) -> Optional[List[int]]:
+        """Resolve every direct member of an owned cgroup, or return unknown."""
+        if cgroup is None:
+            return []
+        abs_cgroup = abs_path(self.cgroup_root, cgroup)
+        raw = util.read_lines(os.path.join(abs_cgroup, PROCS))
+        if raw is None:
+            return None
+        entries = [line.strip() for line in raw if line.strip()]
+        try:
+            resolved = sorted(set(self._pids_in_cgroup(
+                cgroup, self.cgroup_root, self.proc_root
+            )))
+        except Exception:  # noqa: BLE001 - membership is a safety proof
+            return None
+        if len(entries) != len(resolved):
+            return None
+        if any(pid <= 0 for pid in resolved):
+            return None
+        return resolved
+
+    def _cleanup_failure(self, cgroup: Optional[str]) -> None:
+        target = os.path.join(
+            abs_path(self.cgroup_root, cgroup or self.scope_cgroup or self.gates_cgroup),
+            PROCS,
+        )
+        # Preserve a specific safety refusal (for example a PID identity
+        # mismatch) as the public diagnosis while still recording cleanup
+        # failure and retaining the exact recovery subtree.
+        if self.error is None:
+            self.error = write_failed(self._relative(target))
+        self._persist(state="recovery-required")
+        self._log_unrestored_survivor(target)
+
+    def _restore_owned_processes(self) -> bool:
+        """Restore only journaled, same-start-time processes in our exact tree."""
+        if self.scope_cgroup is None or self.scope_unit is None:
+            return False
+        if not self._persist(state="restoring"):
+            self.error = REFUSED_STATE_UNAVAILABLE
+            return False
+        sources = [self.leaf_cgroup if self.leaf_created else None, self.scope_cgroup]
+        for attempt in range(RMDIR_ATTEMPTS):
+            seen_any = False
+            for source_cgroup in sources:
+                if source_cgroup is None:
+                    continue
+                pids = self._owned_cgroup_pids(source_cgroup)
+                if pids is None:
+                    self._cleanup_failure(source_cgroup)
+                    return False
+                for pid in pids:
+                    seen_any = True
+                    record = self.pid_records.get(pid)
+                    if record is None:
+                        record = self._capture_pid(pid)
+                        if record is None:
+                            self._cleanup_failure(source_cgroup)
+                            return False
+                        self.pid_records[pid] = record
+                    if not self._same_process(pid, record):
+                        if not self._pid_exists(pid):
+                            record["state"] = "exited"
+                            if not self._persist(state="restoring"):
+                                self.error = REFUSED_STATE_UNAVAILABLE
+                                return False
+                            continue
+                        self.error = REFUSED_IDENTITY_UNAVAILABLE
+                        self._cleanup_failure(source_cgroup)
+                        return False
+                    current = posixpath.normpath(self._pid_cgroup(pid) or "")
+                    origin = posixpath.normpath(record["origin_cgroup"])
+                    if current == origin:
+                        record["state"] = "restored"
+                        if not self._persist(state="restoring"):
+                            self.error = REFUSED_STATE_UNAVAILABLE
+                            return False
+                        continue
+                    if current != posixpath.normpath(source_cgroup):
+                        self.error = REFUSED_IDENTITY_UNAVAILABLE
+                        self._cleanup_failure(source_cgroup)
+                        return False
+                    destination = record.get("origin_unit"), record.get("origin_subcgroup")
+                    if (
+                        not isinstance(destination[0], str)
+                        or not isinstance(destination[1], str)
+                        or not self._unit_cgroup_verifier(
+                            destination[0], record.get("origin_unit_cgroup", "")
+                        )
+                    ):
+                        self.error = REFUSED_IDENTITY_UNAVAILABLE
+                        self._cleanup_failure(source_cgroup)
+                        return False
+                    record["state"] = "restoring"
+                    if not self._persist(state="restoring"):
+                        self.error = REFUSED_STATE_UNAVAILABLE
+                        return False
+                    try:
+                        attached = self._systemd_attach(
+                            destination[0], destination[1], pid
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        attached = False
+                        if self._log is not None:
+                            self._log(f"placement: systemd restore of pid {pid} failed: {exc}")
+                    if not attached:
+                        if not self._pid_exists(pid):
+                            record["state"] = "exited"
+                            if not self._persist(state="restoring"):
+                                self.error = REFUSED_STATE_UNAVAILABLE
+                                return False
+                            continue
+                        self._cleanup_failure(source_cgroup)
+                        return False
+                    if not self._same_process(pid, record):
+                        if not self._pid_exists(pid):
+                            record["state"] = "exited"
+                            if not self._persist(state="restoring"):
+                                self.error = REFUSED_STATE_UNAVAILABLE
+                                return False
+                            continue
+                        self.error = REFUSED_IDENTITY_UNAVAILABLE
+                        self._cleanup_failure(source_cgroup)
+                        return False
+                    if posixpath.normpath(self._pid_cgroup(pid) or "") != origin:
+                        self._cleanup_failure(source_cgroup)
+                        return False
+                    record["state"] = "restored"
+                    self._record_write(
+                        os.path.join(abs_path(self.cgroup_root, origin), PROCS),
+                        str(pid),
+                    )
+                    if not self._persist(state="restoring"):
+                        self.error = REFUSED_STATE_UNAVAILABLE
+                        return False
+            remaining = [self._owned_cgroup_pids(path) for path in sources if path is not None]
+            if any(pids is None for pids in remaining):
+                self._cleanup_failure(self.scope_cgroup)
+                return False
+            if not any(remaining):
+                return True
+            if attempt < RMDIR_ATTEMPTS - 1 and seen_any:
+                self._sleep(RMDIR_RETRY_SECONDS)
+        self._cleanup_failure(self.scope_cgroup)
+        return False
+
     def release(self) -> None:
-        """`stop`: move survivors back to the original scope, then `rmdir` the
-        leaf (3 attempts over 3 s). A leaf that will not go is REPORTED
-        (`place-refused:write-failed:<file>`) and `stop` still succeeds — a
-        cleanup failure must not cost the caller its Summary."""
-        leaf_abs = self.leaf_abs
-        if leaf_abs is None or self.released:
+        """Restore identity-proved members, remove the leaf, then retire scope."""
+        if self.released or self.scope_cgroup is None or self.scope_unit is None:
             return
-        if not self._move_survivors_back(leaf_abs):
-            if self.error is None:
-                origin_procs = os.path.join(
-                    abs_path(self.cgroup_root, self.origin_cgroup), PROCS
-                )
-                self.error = write_failed(self._relative(origin_procs))
+        if not self._restore_owned_processes():
+            return
+        if self.leaf_cgroup is not None and self.leaf_created:
+            leaf_abs = abs_path(self.cgroup_root, self.leaf_cgroup)
+            if os.path.lexists(leaf_abs) and not self.guard.is_leaf(leaf_abs):
+                self._cleanup_failure(self.scope_cgroup)
+                return
+            if os.path.lexists(leaf_abs):
+                last_error: Optional[OSError] = None
+                for attempt in range(RMDIR_ATTEMPTS):
+                    try:
+                        self._rmdir(leaf_abs)
+                        last_error = None
+                        break
+                    except OSError as exc:
+                        last_error = exc
+                        if attempt < RMDIR_ATTEMPTS - 1:
+                            self._sleep(RMDIR_RETRY_SECONDS)
+                if last_error is not None:
+                    self.error = write_failed(self._failed_relative(last_error, leaf_abs))
+                    self._persist(state="recovery-required")
+                    if self._log is not None:
+                        self._log(f"placement: could not remove leaf {self.leaf_cgroup}: {last_error}")
+                    return
+            self.leaf_created = False
+            if self._journal is not None:
+                self._journal["leaf_created"] = False
+            if not self._persist(state="leaf-removed"):
+                self.error = REFUSED_STATE_UNAVAILABLE
+                return
+        scope_abs = abs_path(self.cgroup_root, self.scope_cgroup)
+        if self._cgroup_has_processes(self.scope_cgroup) is not False:
+            self._cleanup_failure(self.scope_cgroup)
+            return
+        try:
+            children = [
+                name for name in os.listdir(scope_abs)
+                if os.path.isdir(os.path.join(scope_abs, name))
+            ]
+        except OSError:
+            children = ["<unreadable>"]
+        if children or not self._unit_cgroup_verifier(self.scope_unit, self.scope_cgroup):
+            self._cleanup_failure(self.scope_cgroup)
+            return
+        if not self._scope_stop(self.scope_unit):
+            self._cleanup_failure(self.scope_cgroup)
+            if self._log is not None:
+                self._log(f"placement: systemd would not retire empty scope {self.scope_unit}")
+            return
+        if not self._persist(state="complete"):
+            self.error = REFUSED_STATE_UNAVAILABLE
             return
         self.released = True
-        for attempt in range(RMDIR_ATTEMPTS):
-            try:
-                self._rmdir(leaf_abs)
-                return
-            except OSError as exc:
-                last = exc
-            if attempt < RMDIR_ATTEMPTS - 1:
-                self._sleep(RMDIR_RETRY_SECONDS)
-        self.error = write_failed(self._relative(leaf_abs))
-        if self._log is not None:
-            self._log(f"placement: could not remove leaf {self.leaf_cgroup}: {last}")
 
-    def _move_survivors_back(self, leaf_abs: str) -> bool:
-        """Whatever is still in the leaf goes back to the scope it came from.
-
-        Read the leaf membership at stop rather than relying on :attr:`moved`:
-        the lane may have forked since the last discovery tick. In a private
-        PID namespace, enumerate host-visible survivors through the configured
-        host-proc view because ``cgroup.procs`` renders them as PID 0. An
-        unresolvable survivor or failed move leaves the leaf intact and is
-        surfaced in ``placement.error``; it is never silently treated as an
-        exited process.
-        """
-        leaf_procs = os.path.join(leaf_abs, PROCS)
-        visible = _read_pids(leaf_procs)
-        if not visible:
-            return True
-        from . import access, targets
-
-        host_proc_view = access.have_host_proc_view(self.proc_root)
-        if host_proc_view:
-            survivors = targets.pids_in_cgroup(
-                self.leaf_cgroup or "", self.cgroup_root, self.proc_root
-            )
-            if not survivors:
-                # The file was nonempty, so an empty host scan is not proof
-                # that the PIDs exited: it can also mean the host-proc/cgroup
-                # namespace mapping was unavailable.
-                if not _read_pids(leaf_procs):
-                    return True
-                self._log_unrestored_survivor(leaf_procs)
-                return False
-        else:
-            # Positive local PIDs can still be written directly. A zero
-            # placeholder means there is at least one host task we cannot
-            # identify or restore without the explicit broader proc view.
-            survivors = [pid for pid in visible if pid > 0]
-            if any(pid <= 0 for pid in visible):
-                self._log_unrestored_survivor(leaf_procs)
-                return False
-
-        origin_procs = os.path.join(abs_path(self.cgroup_root, self.origin_cgroup), PROCS)
-        destination = _systemd_destination(self.origin_cgroup) if host_proc_view else None
-        failed = False
-        for pid in survivors:
-            if host_proc_view:
-                if not self._pid_exists(pid):
-                    continue
-                current = self._pid_cgroup(pid)
-                if current is None:
-                    if not self._pid_exists(pid):
-                        continue
-                    failed = True
-                    continue
-                if posixpath.normpath(current) != posixpath.normpath(self.leaf_cgroup or ""):
-                    # A concurrent actor already moved it out of this leaf;
-                    # never move it again based only on a stale proc scan.
-                    continue
-            try:
-                self._write(origin_procs, str(pid))
-            except OSError as exc:
-                if exc.errno == errno.ESRCH and not self._pid_exists(pid):
-                    continue  # exited between the membership read and write
-                if not host_proc_view or exc.errno != errno.ESRCH or destination is None:
-                    failed = True
-                    continue
-                unit_name, subcgroup = destination
-                # Check the exact D-25 path before crossing the system-bus
-                # boundary; only this session's original scope is admitted.
-                self.guard.check_write(origin_procs, str(pid))
-                if not self._systemd_attach(unit_name, subcgroup, pid):
-                    failed = True
-                    if self._log is not None:
-                        self._log(
-                            f"placement: systemd could not restore pid {pid} "
-                            f"to {unit_name}/{subcgroup}"
-                        )
-                    continue
-                actual = self._pid_cgroup(pid)
-                if posixpath.normpath(actual or "") != posixpath.normpath(self.origin_cgroup):
-                    if actual is None and not self._pid_exists(pid):
-                        continue
-                    failed = True
-                    if self._log is not None:
-                        self._log(
-                            f"placement: systemd restore of pid {pid} was not "
-                            f"visible in {self.origin_cgroup}"
-                        )
-                    continue
-                self._record_write(origin_procs, str(pid))
-            else:
-                if host_proc_view:
-                    actual = self._pid_cgroup(pid)
-                    if actual is not None and posixpath.normpath(actual) != posixpath.normpath(
-                        self.origin_cgroup
-                    ):
-                        failed = True
-                    elif actual is None and self._pid_exists(pid):
-                        failed = True
-
-        if failed:
-            self.error = write_failed(self._relative(origin_procs))
-            self._log_unrestored_survivor(leaf_procs)
-        return not failed
+    def _restore_and_retire(self) -> None:
+        """Best-effort cleanup after a failed placement, preserving its journal."""
+        self.release()
 
     def _log_unrestored_survivor(self, leaf_procs: str) -> None:
         if self._log is not None:
@@ -1013,11 +1735,193 @@ class LanePlacement:
         reading/the Summary carry it."""
         return {
             "requested": True,
-            "leaf": self.leaf_cgroup,
+            "leaf": (
+                self.leaf_cgroup
+                if self.leaf_created or self.successfully_placed else None
+            ),
             "applied": dict(self.applied),
             "pids_moved": len(self.moved),
             "error": self.error,
         }
+
+
+def recover_journal(
+    journal: Any,
+    *,
+    cgroup_root: str,
+    gates_cgroup: str,
+    proc_root: str,
+    state_write: Callable[[Dict[str, Any]], None],
+    log: Optional[Callable[[str], None]] = None,
+) -> Optional[str]:
+    """Restore a previous daemon's placement only from its durable journal.
+
+    Return ``None`` after verified cleanup, or a concise failure string while
+    leaving all inconclusive cgroups and journal evidence intact. Paths and
+    unit identities are checked against systemd before any process is moved.
+    """
+    if not isinstance(journal, dict) or journal.get("schema") != 1:
+        return REFUSED_STATE_UNAVAILABLE
+    token = journal.get("token")
+    gates_unit = os.path.basename(gates_cgroup.rstrip("/"))
+    expected_scope = f"rg-profile-{token}.scope" if isinstance(token, str) else None
+    persisted_scope = journal.get("scope_cgroup")
+    persisted_leaf = journal.get("leaf_cgroup")
+    if (
+        not isinstance(token, str)
+        or not re.fullmatch(r"[A-Za-z0-9._-]{8,64}", token)
+        or journal.get("scope_unit") != expected_scope
+        or journal.get("gates_unit") != gates_unit
+        or not isinstance(journal.get("gates_cgroup"), str)
+        or posixpath.normpath(journal.get("gates_cgroup", ""))
+        != posixpath.normpath(gates_cgroup)
+        or (persisted_scope is not None and not isinstance(persisted_scope, str))
+        or (persisted_leaf is not None and not isinstance(persisted_leaf, str))
+    ):
+        return REFUSED_STATE_UNAVAILABLE
+    normalized_gates = posixpath.normpath(gates_cgroup)
+    if persisted_scope is not None and (
+        not persisted_scope.startswith("/")
+        or posixpath.normpath(persisted_scope) != persisted_scope
+        or posixpath.dirname(persisted_scope) != normalized_gates
+        or posixpath.basename(persisted_scope) != expected_scope
+    ):
+        return REFUSED_STATE_UNAVAILABLE
+    if persisted_leaf is not None and (
+        persisted_scope is None
+        or persisted_leaf
+        != posixpath.join(persisted_scope, f"{LEAF_PREFIX}{token}")
+    ):
+        return REFUSED_STATE_UNAVAILABLE
+    raw_records = journal.get("pids")
+    if not isinstance(raw_records, dict) or not raw_records:
+        return REFUSED_STATE_UNAVAILABLE
+    records: Dict[int, Dict[str, Any]] = {}
+    for key, value in raw_records.items():
+        if not isinstance(key, str) or not key.isdigit() or not isinstance(value, dict):
+            return REFUSED_STATE_UNAVAILABLE
+        pid = int(key)
+        if value.get("pid") != pid:
+            return REFUSED_STATE_UNAVAILABLE
+        origin = value.get("origin_cgroup")
+        unit = value.get("origin_unit")
+        unit_cgroup = value.get("origin_unit_cgroup")
+        subcgroup = value.get("origin_subcgroup")
+        start_time = value.get("start_time_ticks")
+        if (
+            not isinstance(origin, str) or not origin.startswith("/")
+            or not isinstance(unit, str) or not isinstance(unit_cgroup, str)
+            or not isinstance(subcgroup, str)
+            or not isinstance(start_time, str) or not start_time.isdigit()
+            or _systemd_destination(origin) != (unit, subcgroup)
+        ):
+            return REFUSED_STATE_UNAVAILABLE
+        records[pid] = dict(value)
+
+    if not access.have_host_proc_view(proc_root):
+        return REFUSED_NO_HOST_PROC
+    scope_unit = expected_scope
+    assert scope_unit is not None
+    unit_path = _systemd_unit_path(scope_unit)
+    if unit_path is None:
+        # The crash may have happened after journaling but before systemd
+        # accepted StartTransientUnit. That is clean only if no owned scope
+        # directory remains and every surviving PID is still at its recorded
+        # origin; a missing unit alone is not proof of restoration.
+        if isinstance(persisted_scope, str) and os.path.lexists(
+            abs_path(cgroup_root, persisted_scope)
+        ):
+            return REFUSED_STATE_UNAVAILABLE
+        from . import targets as target_mod
+
+        for pid, record in records.items():
+            if not os.path.exists(os.path.join(proc_root, str(pid))):
+                continue
+            if _process_start_time_ticks(proc_root, pid) != record["start_time_ticks"]:
+                return REFUSED_IDENTITY_UNAVAILABLE
+            current = target_mod.cgroup_of_pid(pid, cgroup_root, proc_root)
+            if current is None or posixpath.normpath(current) != posixpath.normpath(
+                record["origin_cgroup"]
+            ):
+                return REFUSED_IDENTITY_UNAVAILABLE
+        journal["state"] = "complete"
+        try:
+            state_write(journal)
+        except Exception:  # noqa: BLE001 - durable recovery state is required
+            return REFUSED_STATE_UNAVAILABLE
+        return None
+
+    load_state = _systemd_property(unit_path, "org.freedesktop.systemd1.Unit", "LoadState")
+    actual_scope = _systemd_property(
+        unit_path, "org.freedesktop.systemd1.Scope", "ControlGroup"
+    )
+    actual_slice = _systemd_property(
+        unit_path, "org.freedesktop.systemd1.Scope", "Slice"
+    )
+    delegated = _systemd_bool_property(
+        unit_path, "org.freedesktop.systemd1.Scope", "Delegate"
+    )
+    controllers = _systemd_string_array_property(
+        unit_path, "org.freedesktop.systemd1.Scope", "DelegateControllers"
+    )
+    if (
+        load_state != "loaded" or not isinstance(actual_scope, str)
+        or not actual_scope.startswith("/") or actual_slice != gates_unit
+        or delegated is not True or controllers is None
+        or not set(REQUIRED_CONTROLLERS).issubset(controllers)
+        or posixpath.dirname(posixpath.normpath(actual_scope))
+        != posixpath.normpath(gates_cgroup)
+        or posixpath.basename(posixpath.normpath(actual_scope)) != scope_unit
+        or (
+            persisted_scope is not None
+            and posixpath.normpath(persisted_scope) != posixpath.normpath(actual_scope)
+        )
+    ):
+        return REFUSED_STATE_UNAVAILABLE
+    if not _systemd_unit_cgroup_matches(scope_unit, actual_scope):
+        return REFUSED_STATE_UNAVAILABLE
+
+    scope_abs = abs_path(cgroup_root, actual_scope)
+    if not os.path.isdir(scope_abs):
+        return REFUSED_STATE_UNAVAILABLE
+    first_origin = next(iter(records.values()))["origin_cgroup"]
+    recovery = LanePlacement(
+        cgroup_root=cgroup_root,
+        gates_cgroup=gates_cgroup,
+        token=token,
+        origin_cgroup=first_origin,
+        request=PlacementRequest(),
+        proc_root=proc_root,
+        state_write=state_write,
+        log=log,
+    )
+    recovery.scope_unit = scope_unit
+    recovery.scope_cgroup = posixpath.normpath(actual_scope)
+    recovery._set_scope(recovery.scope_cgroup)
+    recovery.pid_records = records
+    recovery._journal = journal
+    recovery.successfully_placed = journal.get("was_placed") is True
+    expected_leaf = posixpath.join(recovery.scope_cgroup, recovery.leaf_name)
+    if persisted_leaf is not None and posixpath.normpath(persisted_leaf) != expected_leaf:
+        return REFUSED_STATE_UNAVAILABLE
+    leaf_created = journal.get("leaf_created") is True
+    if leaf_created and os.path.isdir(abs_path(cgroup_root, expected_leaf)):
+        recovery.leaf_cgroup = expected_leaf
+        recovery.leaf_created = True
+    elif leaf_created and os.path.lexists(abs_path(cgroup_root, expected_leaf)):
+        return REFUSED_STATE_UNAVAILABLE
+    elif persisted_leaf is not None and os.path.lexists(abs_path(cgroup_root, expected_leaf)):
+        # A path that appeared before the write-ahead record said cgprofile
+        # created it is not adopted or removed by recovery.
+        recovery.leaf_cgroup = None
+    else:
+        recovery.leaf_cgroup = None
+    for record in records.values():
+        recovery.guard.allow_origin(record["origin_cgroup"])
+    recovery.release()
+    if not recovery.released:
+        return recovery.error or REFUSED_STATE_UNAVAILABLE
+    return None
 
 
 def _read_pids(path: str) -> List[int]:

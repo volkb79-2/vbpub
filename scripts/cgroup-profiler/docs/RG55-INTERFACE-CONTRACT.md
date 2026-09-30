@@ -69,7 +69,7 @@ CLI only), invoking `docker exec cgprofile-host-daemon cgprofile ctl <verb>
 ### 2.1 `cgprofile ctl version --json`
 
 ```json
-{"ok": true, "contract": 1, "cgprofile": "1.0.0",
+{"ok": true, "contract": 1, "cgprofile": "1.1.0",
  "daemon": {"name": "cgprofile-host-daemon", "started_at": "2026-09-12T10:00:00Z",
             "damon": "available", "damon_default": "on",
             "sessions_live": 2, "max_sessions": 16}}
@@ -178,7 +178,7 @@ measurement.
 ```json
 {
  "schema": 1,
- "session": "s-…", "daemon": {"name": "cgprofile-host-daemon", "version": "1.0.0"},
+ "session": "s-…", "daemon": {"name": "cgprofile-host-daemon", "version": "1.1.0"},
  "scope": "container" | "container-shared",
  "method": "daemon",
  "started_at": "…", "ended_at": "…", "duration_seconds": 316.204,
@@ -498,20 +498,31 @@ consumer reads line by line (no per-verb timeout; the consumer applies an
 idle timeout of `3 × watch-interval` and re-attaches on expiry). Unknown
 session → exit 2 `unknown-session` as a single line.
 
-### 8.3 Placement (D-20, D-25) — `start` options and the `placement` block
+### 8.3 Placement (D-20, D-25, D-31) — `start` options and the `placement` block
 
 New `start` options (all optional, all ignored without `--place`):
 
 | option | meaning |
 |---|---|
-| `--place` | create a leaf `<gates slice>/rg-<token>/` and migrate the token's pid subtree into it as the resolver discovers pids (§4.3); requires `--token`; refused (`place-refused:no-token`) without one |
-| `--memory-high <bytes>` | `memory.high` on the leaf (throttle point; the lane's request) |
-| `--memory-max <bytes>` | `memory.max` on the leaf (hard ceiling); refused when `> gates_slice.memory_max_bytes` (`place-refused:over-slice`) |
+| `--place` | ask systemd to create a delegated transient scope directly under the verified gates slice, then create a profiler-owned leaf `<scope>/rg-<token>/` and migrate the token's pid subtree into it as the resolver discovers pids (§4.3); requires `--token`; refused (`place-refused:no-token`) without one. A scope-name collision or failed/mismatched systemd scope is refused and never adopted. |
+| `--memory-high <bytes>` | `memory.high` on the leaf (throttle point for memory charges attributed to that leaf) |
+| `--memory-max <bytes>` | `memory.max` on the leaf (ceiling for charges attributed to that leaf); refused when `> gates_slice.memory_max_bytes` (`place-refused:over-slice`). It is not a total-RSS cap for pages charged before placement. |
 | `--cpu-weight <1..10000>` | `cpu.weight` on the leaf |
+
+At start, the daemon journals the initial token PID identities and their
+original units, asks systemd to create the transient scope with those PIDs,
+and reads the resulting scope path and delegation properties back from the
+manager. It creates the leaf only below that verified scope, moves each
+validated PID into it through systemd, and enables controllers only after the
+scope root is empty. Later descendants follow the same identity-checked path.
+The gates slice and scope remain systemd-owned; cgprofile creates/removes only
+its exact leaf. On stop, surviving processes are restored to their recorded
+origins before the leaf is removed and the empty scope is stopped. Failed or
+indeterminate restoration preserves the scope, leaf, and recovery record.
 
 `start` response gains
 ```json
-"placement": {"requested": true, "leaf": "/dev.slice/dev-gates.slice/rg-<token>",
+"placement": {"requested": true, "leaf": "/dev.slice/dev-gates.slice/rg-profile-<token>.scope/rg-<token>",
               "applied": {"memory.high": 805306368, "memory.max": 1073741824, "cpu.weight": 100},
               "pids_moved": 0, "error": null}
 ```
@@ -526,23 +537,35 @@ the verified, bounded gates slice; at enforcement, `cgroup.events` must
 confirm `populated 1` (including descendants). The gates slice is discovered from the
 daemon's `--gates-slice` (default `dev-gates.slice` under `dev.slice`);
 when it does not exist on the host the answer is `place-refused:no-gates-slice`.
-Daemon safety (D-15/D-25, amended by RW-35(a), RW-379 and RW-380): the exact
-cgroup write whitelist is `+memory +cpu +pids` to the configured gates
-slice's `cgroup.subtree_control`; `cgroup.procs`, `memory.high`,
-`memory.max`, `cpu.weight`, and `cgroup.kill` on the session's
-`<gates slice>/rg-*` leaf; `cgroup.kill` on the exact container runtime
-cgroup only when its leaf name proves the requested 64-hex container ID and
-the resolved path is beneath the verified, bounded gates slice; and that
-session's original scope `cgroup.procs` solely to restore moved survivors at
-`stop`. No sibling, ancestor, Docker membership, or resource-limit write is
-authorized. Leaf creation/removal is limited to that `rg-*` child. Any other
-cgroup write is refused before opening the path. Writes are recorded in
-`events.jsonl`; successful systemd-mediated moves are recorded by the same
-event sink. Placement refusal does not normally fail `start`; the explicit
-kill-policy exception above is `bad-policy`. At `stop`, the daemon restores
-survivors using host-visible PIDs; if the host-proc mapping or the move back
-cannot be verified, it reports the origin `cgroup.procs` path and retains the
-leaf rather than reporting successful cleanup.
+Daemon safety (D-15/D-25, amended by RW-35(a), RW-379, RW-380 and RW-386):
+systemd owns the gates slice and each transient scope boundary. The daemon
+uses systemd's manager API only to create the exact token-derived scope,
+query and verify its properties, move validated PIDs into its exact child,
+restore them to their recorded origins, and stop that exact scope after it
+is empty. The cgroup write whitelist is `+memory +cpu +pids` to the delegated
+scope's `cgroup.subtree_control`; `memory.high`, `memory.max`, `cpu.weight`,
+and `cgroup.kill` on that session's `rg-<token>` leaf; `cgroup.kill` on the
+exact container runtime cgroup only when its leaf name proves the requested
+64-hex container ID and the resolved path is beneath the verified, bounded
+gates slice; and each recorded origin's `cgroup.procs` solely to restore the
+matching PID. Leaf creation/removal is limited to that exact child. The
+daemon never writes the gates slice's `cgroup.subtree_control` or creates a
+lane child directly under that slice. No sibling, ancestor, Docker
+membership, or unrelated resource-limit write is authorized. Any other
+cgroup write is refused before opening the path. Writes and successful
+systemd-mediated moves are recorded in `events.jsonl`. Placement refusal
+does not normally fail `start`; the explicit kill-policy exception above is
+`bad-policy`. At `stop`, the daemon restores survivors to their per-process
+recorded origins, verifies restoration and scope/leaf emptiness, removes the
+leaf, then retires the exact scope. Failed verification preserves the scope,
+leaf, and recovery record rather than claiming cleanup.
+
+When placement succeeds, the leaf is the physical measurement source while
+the original target cgroup remains the logical sample key. CPU, I/O, PID,
+and pressure values come from the leaf. Cgroup memory counters and
+`memory.high`/`memory.max` are charge-based: cgroup v2 does not transfer
+pre-existing page charges when a process moves. These fields are not total
+process RSS or a hard cap on all memory already resident in the lane.
 
 ### 8.4 Liveness and policy (D-17, D-22, D-27)
 
@@ -581,7 +604,10 @@ killed, reported); `over_ceiling`.
                 "pressure": {"memory": {…}}, "leaves": ["rg-<token>", …],
                 "sessions_live": 1} | {"name": "dev-gates.slice", "present": false}
 ```
-`present: true` requires systemd to report the expected slice as loaded from
+`leaves` enumerates profiler-owned leaf names found below verified
+`rg-profile-*.scope` units; a direct `rg-*` directory below the slice is not
+a valid placement. `sessions_live` counts those leaves. `present: true`
+requires systemd to report the expected slice as loaded from
 a non-transient unit, with the expected `ControlGroup` and finite positive
 `memory.max` and `cpu.max`. A directory created for an unknown slice is
 reported as absent and cannot be used for placement.
@@ -607,7 +633,12 @@ ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
 
 `peer-refused` (socket carrier), `place-refused:no-token`,
 `place-refused:over-slice`, `place-refused:no-gates-slice`,
-`place-refused:write-failed:<file>`, `bad-policy` (an unparsable policy
+`place-refused:write-failed:<file>`, `place-refused:scope-unavailable`
+(systemd refused or could not verify the delegated scope),
+`place-refused:no-target-pids`, `place-refused:no-host-proc-view`,
+`place-refused:identity-unavailable`, `place-refused:recovery-state-unavailable`,
+`place-refused:parent-not-gates-slice` (scope path or ownership failed
+verification), `bad-policy` (an unparsable policy
 option, or a requested kill that cannot be safely enforced — exit 2, the
 session is NOT started), `not-streaming` (`watch`
 requested over a carrier state that cannot stream — never expected, kept

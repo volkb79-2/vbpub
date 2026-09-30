@@ -10,13 +10,13 @@
   "target": {
     "container_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "cgroup": "/dev.slice/dev-background.slice/docker-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.scope",
-    "baseline_memory_bytes": 524288000,
+    "baseline_memory_bytes": 1073741824,
     "pids_at_start": 1,
     "token": "rg55-place-token-01"
   },
   "placement": {
     "requested": true,
-    "leaf": "/dev.slice/dev-gates.slice/rg-rg55-place-token-01",
+    "leaf": "/dev.slice/dev-gates.slice/rg-profile-rg55-place-token-01.scope/rg-rg55-place-token-01",
     "applied": {
       "memory.high": 805306368,
       "memory.max": 1073741824,

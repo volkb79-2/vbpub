@@ -259,7 +259,7 @@ class _Session:
     # Mutated only on the session's own sampler thread, read under
     # `sess.lock` by `status`/`stop`/the `watch` stream.
     watch: Optional["liveness_mod.LivenessTracker"] = None
-    # CP-9 (C8, §8.3): the session's leaf under the gates slice, or `None`
+    # CP-9 / D-31 (§8.3): the session's leaf under its delegated scope, or `None`
     # when `--place` was never asked for. A REFUSED placement is still an
     # object (it carries the `place-refused:*` code the caller must see);
     # only "never asked" is `None`, which is what makes `placement: null`
@@ -327,6 +327,7 @@ class SessionServer:
         report_python: Optional[str] = None,
         report_script: Optional[str] = None,
         report_timeout: float = DEFAULT_REPORT_TIMEOUT,
+        placement_factory: Optional[Callable[..., "placement_mod.LanePlacement"]] = None,
     ) -> None:
         if damon_default not in ("on", "off"):
             raise ValueError(f"damon_default must be 'on' or 'off', got {damon_default!r}")
@@ -396,6 +397,7 @@ class SessionServer:
         # interface files is ENOTEMPTY where a cgroup is not (see
         # `lib.placement.LanePlacement`'s own note).
         self.cgroup_rmdir: Callable[[str], None] = os.rmdir
+        self.placement_factory = placement_factory
 
         self._sessions: Dict[str, _Session] = {}
         self._by_target: Dict[Tuple[str, Optional[str]], str] = {}
@@ -463,16 +465,110 @@ class SessionServer:
             if not os.path.isdir(session_dir):
                 continue
             manifest_path = os.path.join(session_dir, "manifest.json")
-            if not os.path.isfile(manifest_path):
-                continue
-            try:
-                with open(manifest_path, "r", encoding="utf-8") as fh:
-                    manifest = json.load(fh)
-            except (OSError, json.JSONDecodeError):
+            manifest: Optional[Dict[str, Any]] = None
+            if os.path.isfile(manifest_path):
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as fh:
+                        candidate = json.load(fh)
+                    if isinstance(candidate, dict):
+                        manifest = candidate
+                except (OSError, json.JSONDecodeError) as exc:
+                    self._log(f"recovery: cannot read manifest for {name}: {exc}")
+            placement_path = os.path.join(session_dir, "placement-state.json")
+            if manifest is None:
+                # Placement journals are written before StartTransientUnit and
+                # before the live manifest. A daemon crash in that interval
+                # must still restore or preserve the exact scope; absence of
+                # a manifest is not evidence that no PID was moved.
+                if os.path.isfile(placement_path):
+                    error = self._recover_placement_file(name, placement_path)
+                    self._write_json_path(
+                        os.path.join(session_dir, "placement-recovery.json"),
+                        {
+                            "session": name,
+                            "status": "restored" if error is None else "failed",
+                            "error": error,
+                            "checked_at": self._iso(self.clock()),
+                        },
+                    )
+                    if error is not None:
+                        self._log(
+                            f"recovery: journal-only placement for {name} "
+                            f"requires operator attention: {error}"
+                        )
                 continue
             if manifest.get("status") != "live":
+                # A session may have been marked finished after lane cleanup
+                # failed. Its durable placement journal is still the only
+                # authority for restoring the PIDs or preserving the owned
+                # scope, so retry recovery on startup until the journal says
+                # complete. Do not finalize the already-finished session a
+                # second time, and do not revisit completed journals (the
+                # token may have since been reused by a later session).
+                if os.path.isfile(placement_path):
+                    try:
+                        with open(placement_path, "r", encoding="utf-8") as fh:
+                            journal = json.load(fh)
+                        needs_recovery = (
+                            not isinstance(journal, dict)
+                            or journal.get("state") != "complete"
+                        )
+                    except (OSError, json.JSONDecodeError):
+                        needs_recovery = True
+                    if needs_recovery:
+                        error = self._recover_placement_file(name, placement_path)
+                        manifest["placement_recovery"] = (
+                            {"status": "failed", "error": error}
+                            if error is not None else
+                            {"status": "restored", "error": None}
+                        )
+                        self._write_json_path(manifest_path, manifest)
+                        if error is not None:
+                            self._log(
+                                f"recovery: completed session {name} has an "
+                                f"incomplete placement requiring operator attention: {error}"
+                            )
                 continue
+            placement_recovery: Optional[str] = None
+            if os.path.exists(placement_path):
+                placement_recovery = self._recover_placement_file(name, placement_path)
+            elif (
+                isinstance(manifest.get("placement"), dict)
+                and manifest["placement"].get("requested") is True
+            ):
+                placement_recovery = placement_mod.REFUSED_STATE_UNAVAILABLE
+            if placement_recovery is not None:
+                manifest["placement_recovery"] = {
+                    "status": "failed", "error": placement_recovery,
+                }
+            elif os.path.exists(placement_path):
+                manifest["placement_recovery"] = {"status": "restored", "error": None}
             self._finalize_orphan(name, manifest)
+
+    def _recover_placement_file(self, session_id: str, path: str) -> Optional[str]:
+        """Run identity-checked placement recovery from one durable journal."""
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                journal = json.load(fh)
+            return placement_mod.recover_journal(
+                journal,
+                cgroup_root=self.cgroup_root,
+                gates_cgroup=targets_mod.slice_to_path(self.gates_slice_name),
+                proc_root=self.proc_root,
+                state_write=lambda state: self._write_json_path(path, state),
+                log=self._log,
+            )
+        except Exception as exc:  # noqa: BLE001 - corrupt recovery state is fail-closed
+            self._log(f"recovery: cannot read placement journal for {session_id}: {exc}")
+            return placement_mod.REFUSED_STATE_UNAVAILABLE
+
+    @staticmethod
+    def _write_json_path(path: str, value: Dict[str, Any]) -> None:
+        directory, filename = os.path.split(path)
+        rundir = store.RunDir(
+            os.path.dirname(directory), run_id=os.path.basename(directory), create=False
+        )
+        rundir.write_json(filename, value)
 
     def _finalize_orphan(self, session_id: str, manifest: Dict[str, Any]) -> None:
         rundir = store.RunDir(self.sessions_dir, run_id=session_id, create=False)
@@ -524,10 +620,26 @@ class SessionServer:
                 mono=sample.get("mono"),
             )
         manifest["status"] = "aborted"
-        manifest["aborted_reason"] = "daemon-restarted"
+        recovery_failed = manifest.get("placement_recovery", {}).get("status") == "failed"
+        manifest["aborted_reason"] = (
+            "daemon-restarted-placement-recovery-failed"
+            if recovery_failed else "daemon-restarted"
+        )
         manifest["ended_at"] = ended_at
         if acc.sample_count:
             summary_doc = acc.finalize(ended_at=ended_at)
+            if "placement_recovery" in manifest:
+                summary_doc["placement"] = {
+                    "requested": True,
+                    "leaf": None,
+                    "applied": {},
+                    "pids_moved": 0,
+                    "error": (
+                        manifest["placement_recovery"].get("error")
+                        if recovery_failed else None
+                    ),
+                }
+                summary_doc["placement_recovery"] = manifest["placement_recovery"]
             rundir.write_json("summary.json", summary_doc)
         rundir.write_manifest(manifest)
 
@@ -561,6 +673,7 @@ class SessionServer:
             "damon_kdamond": sess.damon_session.kdamond_idx if sess.damon_session else None,
             "damon_thresholds": sess.damon_session.thresholds if sess.damon_session else None,
             "damon_unavailable_reason": sess.damon_unavailable_reason,
+            "placement": _placement_block(sess),
             "meta": sess.meta,
             "aborted_reason": None,
             # RW-14: everything from here down is never read by an RG-55
@@ -794,8 +907,6 @@ class SessionServer:
         session_id = self._session_id_fn()
         started_at = self._iso(self.clock())
         abs_target = os.path.join(self.cgroup_root, cgroup.lstrip("/"))
-        initial_target_metrics = summary.sample_target_cgroup(abs_target)
-        baseline = (initial_target_metrics.get("mem") or {}).get("current")
         # The token resolver below will resolve direct target-cgroup PIDs;
         # avoid doing the broader proc-to-cgroup map a second time here.
         pids_now = (
@@ -852,6 +963,10 @@ class SessionServer:
             placement_obj.apply(
                 list(subtree_resolver.current_pids) if subtree_resolver is not None else []
             )
+            if subtree_resolver is not None and placement_obj.placed and placement_obj.error is None:
+                subtree_resolver.owned_cgroup = lambda: (
+                    placement_obj.leaf_cgroup if placement_obj.placed else None
+                )
             if placement_obj.error is not None:
                 self._log(
                     f"start: placement refused for {session_id}: {placement_obj.error}"
@@ -893,6 +1008,17 @@ class SessionServer:
                         f"leaf {placement_obj.leaf_cgroup!r} remains"
                     )
                 raise RequestError("bad-policy", detail)
+
+        # After successful placement, sample the profiler-owned leaf: its
+        # cgroup counters are the kernel's charges for pages attributed to
+        # this leaf since placement, not a claim about every process's total
+        # RSS or pages charged before migration. Keep `cgroup` as the logical
+        # target key in every stored record; only the source path changes.
+        initial_sample_target_abs = self._sample_source_abs(
+            cgroup, placement_obj,
+        )
+        initial_target_metrics = summary.sample_target_cgroup(initial_sample_target_abs)
+        baseline = (initial_target_metrics.get("mem") or {}).get("current")
 
         limits_flags = limits_mod.mount_flags(proc_root=self.proc_root)
         initial_effective_limits = limits_mod.effective(cgroup, self.cgroup_root, limits_flags)
@@ -983,7 +1109,7 @@ class SessionServer:
                 "seq": 0, "t": self._parse_iso_epoch(started_at), "mono": 0.0,
                 "cg": {cgroup: initial_target_metrics}, "host": host_snapshot,
             },
-            abs_target=abs_target, target_metrics=initial_target_metrics,
+            abs_target=initial_sample_target_abs, target_metrics=initial_target_metrics,
             host_metrics=host_snapshot, pids=initial_pids,
         )
         # Sample zero is recorded as part of start, from the target/host/slice
@@ -1037,12 +1163,14 @@ class SessionServer:
                 data={"file": "/" + relative_path, "value": value},
             ).to_dict())
 
-        return placement_mod.LanePlacement(
+        factory = self.placement_factory or placement_mod.LanePlacement
+        return factory(
             cgroup_root=self.cgroup_root,
             gates_cgroup=targets_mod.slice_to_path(self.gates_slice_name),
             token=token, origin_cgroup=origin_cgroup, request=request,
             on_write=on_write, log=self._log, sleep=self.sampler_sleep,
             rmdir=self.cgroup_rmdir, proc_root=self.proc_root,
+            state_write=lambda state: rundir.write_json("placement-state.json", state),
             slice_unit_verifier=self._verify_gates_slice_unit,
         )
 
@@ -1130,8 +1258,23 @@ class SessionServer:
 
     # ── per-session sampling thread ──────────────────────────────────────
 
+    def _sample_source_abs(
+        self, cgroup: str, placed: Optional["placement_mod.LanePlacement"],
+    ) -> str:
+        """The exact metric source, preserving the target's logical key.
+
+        Only a complete placement is a valid leaf accounting source. A
+        refused or partially completed placement continues to read the
+        original target cgroup and exposes the placement error separately.
+        """
+        if placed is not None and placed.placed and placed.error is None:
+            leaf_abs = placed.leaf_abs
+            if leaf_abs is not None:
+                return leaf_abs
+        return os.path.join(self.cgroup_root, cgroup.lstrip("/"))
+
     def _session_loop(self, sess: _Session) -> None:
-        abs_target = os.path.join(self.cgroup_root, sess.cgroup.lstrip("/"))
+        abs_target = self._sample_source_abs(sess.cgroup, sess.placement)
         abs_slice = (
             os.path.join(self.cgroup_root, sess.slice_cgroup.lstrip("/"))
             if sess.slice_cgroup else None
@@ -1145,7 +1288,11 @@ class SessionServer:
 
         def sample_fn(_membership: targets_mod.Membership) -> Dict[str, Any]:
             return {
-                "cg": {sess.cgroup: summary.sample_target_cgroup(abs_target)},
+                "cg": {
+                    sess.cgroup: summary.sample_target_cgroup(
+                        self._sample_source_abs(sess.cgroup, sess.placement)
+                    )
+                },
                 "host": metrics.sample_host(proc_root=self.host_proc_root),
             }
 
@@ -1637,8 +1784,9 @@ class SessionServer:
 
     def _gates_slice_snapshot(self) -> Dict[str, Any]:
         """mdt's `dev-gates.slice` (default; `serve --gates-slice` renames
-        it) -- the capacity object C8's placed leaves (`rg-<token>`) live
-        under. `present: false` and nothing else when the slice does not
+        it) -- the capacity object whose direct children are delegated
+        `rg-profile-*.scope` units, each holding a profiler-owned `rg-*` leaf.
+        `present: false` and nothing else when the slice does not
         exist on this host at all (host-setup's P8 unit not installed and
         nothing has ever rendered a child under it either) -- contract §8.5's
         own two-shape union, so a consumer can branch on one key."""
@@ -1646,11 +1794,17 @@ class SessionServer:
         abs_path = os.path.join(self.cgroup_root, cgroup_path.lstrip("/"))
         if not self._gates_slice_is_verified(refresh=True):
             return {"name": self.gates_slice_name, "present": False}
-        leaves = sorted(
-            os.path.basename(child)
-            for child in targets_mod.list_children(cgroup_path, root=self.cgroup_root)
-            if os.path.basename(child).startswith("rg-")
-        )
+        leaves: List[str] = []
+        for scope_path in targets_mod.list_children(cgroup_path, root=self.cgroup_root):
+            scope_name = os.path.basename(scope_path)
+            if not scope_name.startswith("rg-profile-") or not scope_name.endswith(".scope"):
+                continue
+            leaves.extend(
+                os.path.basename(child)
+                for child in targets_mod.list_children(scope_path, root=self.cgroup_root)
+                if os.path.basename(child).startswith("rg-")
+            )
+        leaves.sort()
         psi_mem = util.read_pressure(os.path.join(abs_path, "memory.pressure"))
         return {
             "name": self.gates_slice_name,
@@ -1663,10 +1817,9 @@ class SessionServer:
                 os.path.join(abs_path, "memory.swap.current")
             ),
             "pressure": {"memory": self._pressure_snapshot(psi_mem)},
-            # `leaves` is read straight off disk, not from session bookkeeping
-            # -- C8 has not landed yet in this codebase, so it is always `[]`
-            # today; once placement exists this needs no further change, it
-            # already counts whatever `rg-*` leaves are actually on disk.
+            # `leaves` is read straight off disk, not from session bookkeeping.
+            # A direct rg-* child is invalid: the delegated scope owns the
+            # writable boundary between the systemd slice and profiler leaf.
             "leaves": leaves,
             "sessions_live": len(leaves),
         }
@@ -1768,7 +1921,7 @@ class SessionServer:
                 # Stopped before a single tick landed — contract §1.5 still
                 # promises a summary, so take one sample right now rather
                 # than let finalize() refuse an empty accumulator.
-                abs_target = os.path.join(self.cgroup_root, sess.cgroup.lstrip("/"))
+                abs_target = self._sample_source_abs(sess.cgroup, sess.placement)
                 abs_slice = (
                     os.path.join(self.cgroup_root, sess.slice_cgroup.lstrip("/"))
                     if sess.slice_cgroup else None

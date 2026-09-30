@@ -29,13 +29,13 @@
   },
   "write-failed": {
     "requested": true,
-    "leaf": "/dev.slice/dev-gates.slice/rg-rg55-place-token-01",
+    "leaf": "/dev.slice/dev-gates.slice/rg-profile-rg55-place-token-01.scope/rg-rg55-place-token-01",
     "applied": {
       "memory.high": 805306368,
       "memory.max": 1073741824,
       "cpu.weight": 100
     },
     "pids_moved": 1,
-    "error": "place-refused:write-failed:dev.slice/dev-gates.slice/rg-rg55-place-token-01"
+    "error": "place-refused:write-failed:dev.slice/dev-gates.slice/rg-profile-rg55-place-token-01.scope/rg-rg55-place-token-01"
   }
 }

@@ -259,7 +259,7 @@ see the contract §4.3. This guide's `--target`/`--observe` collector mode
 (sections 1–7 above) is unaffected either way — it never talks to the
 daemon at all.
 
-## 9. Liveness watch and placement, from a consumer's view (D-20/D-27, §8.2-§8.4)
+## 9. Liveness watch and placement, from a consumer's view (D-20/D-27/D-31, §8.2-§8.4)
 
 Two OPTIONAL, independent `start` upgrades sit on top of section 8's basic
 attach — neither is required to get a Summary, and neither changes what
@@ -284,9 +284,12 @@ last). An unparsable or unenforceable requested policy is `bad-policy` —
 caught before the lane runs, not after.
 
 **Placement** (`--place [--memory-high] [--memory-max] [--cpu-weight]`)
-puts the lane's pid subtree under its OWN cgroup leaf
-(`<gates slice>/rg-<token>`) instead of sharing whatever cgroup the lane
-container/exec session already had. For `scope=container-shared`, this is
+asks systemd for an `rg-profile-<token>.scope` directly beneath the verified
+gates slice, then puts the lane's pid subtree in cgprofile's own child leaf
+(`<scope>/rg-<token>`) instead of sharing whatever cgroup the lane
+container/exec session already had. The daemon reads the scope path back from
+systemd; the slice and scope remain systemd-owned, while cgprofile owns only
+the leaf. For `scope=container-shared`, this is
 the prerequisite for `--on-stall kill` to use `cgroup.kill` atomically; the
 daemon never walks the resolved PID list to send signals. For `scope=container`,
 the exact target container cgroup is the kill boundary when its identity is
@@ -302,3 +305,8 @@ no safe enforcement boundary. `applied` in the
 response is what the KERNEL reports back after the write, never an echo
 of what was asked for — if a consumer needs to know whether a cap actually
 took, that is the field to read, not its own `--memory-high` argument.
+Leaf memory counters and limits describe cgroup charges, not total process
+RSS: pages faulted before placement keep their prior charge and are not
+transferred when a process moves. `memory.max` is therefore not a hard cap on
+all memory already resident in a shared lane; see `docs/CONSUMERS.md` for the
+adoption implication.

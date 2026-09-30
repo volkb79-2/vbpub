@@ -9,21 +9,95 @@ feature list is in [`README.md`](../README.md); worked adoption belongs in
 The daemon never joins host PID, cgroup, or network namespaces and has no
 Docker socket. D-15's no-hidden-mutation boundary remains: cap and migration
 writes exist only through the explicit, opt-in D-20/D-25 placement request.
-That feature creates a token-named `rg-*` leaf under the verified gates slice,
-applies and reads back its caps, moves the lane's processes into it, and moves
-survivors back on stop; explicit shared-scope `--on-stall kill` may write
-that leaf's `cgroup.kill`. For `scope=container`, kill instead writes only
+Under D-31, that feature asks systemd to create a transient delegated scope
+under the verified gates slice, then creates a token-named `rg-*` leaf below
+the scope. It applies and reads back leaf controls, moves the lane's processes
+into the leaf, and moves identity-verified survivors back on stop; explicit
+shared-scope `--on-stall kill` may write that leaf's `cgroup.kill`. For
+`scope=container`, kill instead writes only
 the exact runtime cgroup's `cgroup.kill`, after its leaf name proves the
 requested full container ID and its resolved path is beneath the verified,
 bounded gates slice. It never moves or changes the target's Docker limits.
 `CgroupWriteGuard` is the program-level allowlist for those operations. It is
-bound to the session's exact token leaf or exact target container cgroup and
-refuses an existing leaf: an orphan or symlink might belong to another lane.
-The guard also covers controller delegation and the original scope's
-`cgroup.procs` restoration path. The daemon's host cgroup-v2 bind is therefore
-writable: Linux cgroupfs placement cannot work through a read-only bind. This
-is a deliberate, bounded exception to observation-only operation, not a
-general host-control surface.
+bound to the session's exact delegated scope and token leaf or exact target
+container cgroup and refuses an existing scope/leaf: an orphan or symlink
+might belong to another lane. The guard covers enabling required controllers
+only at the delegated scope root and creation/removal of only the session's
+leaf. Process moves go through the systemd manager; no raw write to the
+systemd-owned gates slice or origin cgroup is used. The daemon's host cgroup-v2
+bind is therefore writable: Linux cgroupfs placement cannot work through a
+read-only bind. This is a deliberate, bounded application-level exception to
+observation-only operation, not a kernel sandbox or general host-control
+surface.
+
+### Why placement uses a delegated scope
+
+The gates slice is the systemd-owned capacity boundary. A slice is not the
+delegation boundary: systemd owns its unit tree and does not support handing a
+slice's child-management authority to cgprofile. Directly creating
+`dev-gates.slice/rg-<token>` would make systemd and the daemon competing
+managers, and the live manager refused migration into the non-delegated path.
+Setting `Delegate=yes` on the slice does not fix that ownership conflict.
+
+Instead, systemd creates a uniquely named `rg-profile-<token>.scope` beneath
+the verified gates slice and delegates the required controllers there. It
+remains the owner of the scope unit; cgprofile owns only `rg-<token>` below
+that scope. The systemd-reported `ControlGroup` is read back and checked—it is
+not reconstructed from the requested unit name.
+
+```text
+run-gate / ciu  ── ctl request ──► cgprofile daemon
+                                         │ host system D-Bus
+                                         │ create scope / move verified PIDs
+                                         ▼
+systemd Manager (owns unit boundary)
+  dev.slice/dev-gates.slice
+    └── rg-profile-<token>.scope   systemd owns; Delegate=cpu,memory,pids
+          └── rg-<token>           cgprofile owns leaf and limits
+                └── samples ──► daemon summary / ctl response
+```
+
+Scope creation registers initial PIDs with systemd. cgprofile then moves each
+validated PID from the scope root into the leaf through
+`AttachProcessesToUnit`, verifies membership, enables controllers only after
+the scope root is empty (cgroup v2's no-internal-process rule), and applies
+leaf controls. Later descendants use the same validated manager path. On stop,
+the daemon restores only same-identity survivors to their recorded original
+unit/subgroup, verifies the scope and leaf are empty, removes its leaf, then
+asks systemd to stop the exact empty scope. It never stops a nonempty scope as
+a cleanup shortcut. A durable journal lets restart recovery repeat these
+checks; unknown membership or process identity leaves the evidence intact for
+operator repair.
+
+### Memory accounting is charge-based
+
+Placement moves already-running processes; it does not move memory charges for
+pages faulted before the move. The leaf's `memory.current`, `memory.peak`,
+`memory.stat`, pressure, and related counters therefore report cgroup charges
+attributed to the leaf, not the total RSS of every process now in it. The
+leaf's `memory.high` and `memory.max` likewise constrain charges attributed
+there and are not a hard cap on all memory already resident in the workload.
+We keep these kernel-native counters because they are useful and directly
+verifiable, but label their semantics rather than silently adding an
+approximate process-RSS substitute. A future design that starts work inside
+the leaf before allocations, or reports a separately named RSS/PSS estimate,
+would have different adoption and accuracy costs and needs its own contract.
+The detailed metric-source and disclosure rules are in the
+[`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3--placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+
+The daemon's host system bus is separate from the consumer control socket. The
+cockpit receives only the cgprofile ctl surface; it does not need the system
+bus. The deployed design deliberately has no broker: cgprofile calls systemd
+directly, and the daemon's path checks, PID validation, and RPC allowlist
+constrain normal behavior but do not contain arbitrary code execution in the
+daemon. A read-only bind of a D-Bus socket is not read-only RPC authority.
+Moving these calls into a broker would improve isolation only if the broker
+has a genuinely narrower OS authority, a small authenticated request surface,
+and its own tested identity/path validation. A broker that can perform the
+same host-root operations and trusts the daemon's claims may merely move the
+compromise point. The detailed no-broker decision and future broker tradeoffs
+are recorded in the
+[`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3--placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
 Stall enforcement never signals a numeric PID: the daemon keeps a private PID
 namespace, so host PIDs from its read-only proc view are observations, not
@@ -40,17 +114,15 @@ remains the verdict authority (RW-379/RW-380).
 
 PID movement has one namespace-specific seam. A PID read from `/hostproc` is
 not necessarily addressable by a writer in the daemon's private PID namespace;
-the kernel returns `ESRCH` when that PID is written to `cgroup.procs`. In that
-case the daemon calls host systemd's `AttachProcessesToUnit` method over the
-explicit read-only `/run/dbus/system_bus_socket` bind. On `start`, it names
-only the verified gates slice and its token leaf; on `stop`, it derives the
-nearest systemd unit and subgroup from the exact original cgroup path. Both
-moves require a verified host-proc view and post-move cgroup membership. A
-successful systemd-mediated move is recorded as a `cgroup_write` event. If a
-survivor cannot be enumerated or restored, the daemon reports the precise
-scope path and retains the lane leaf rather than concealing a stranded task.
-This preserves private PID/cgroup/network namespaces while making placement
-and cleanup real.
+the kernel returns `ESRCH` when that PID is written to `cgroup.procs`. The
+daemon uses the host systemd manager to create the delegated scope, place PIDs
+into its leaf, and restore survivors to each recorded original unit/subgroup.
+Both move directions require a verified host-proc view and post-move identity
+and cgroup membership. A successful systemd-mediated move is recorded as a
+`cgroup_write` event. If a survivor cannot be enumerated or restored, the
+daemon reports the precise scope path and retains the lane leaf rather than
+concealing a stranded task. This preserves private PID/cgroup/network
+namespaces while making placement and cleanup real.
 
 The progress stream is a lane-controlled path reached through its process
 root. The watcher opens it nonblocking and reads only a regular file; a FIFO

@@ -5527,3 +5527,75 @@ force: this is still the no-broker design, with its existing privileged
 daemon authority documented honestly. P1's current-main candidate is
 `b88d4f07` (five Sol follow-up commits replayed); exact-tree gates, a fresh
 Sol review, complete R2, and the registered full gate are outstanding.
+
+### RW-385 — 2026-09-30 17:41:09Z — sample the verified lane leaf and recover placements by identity
+
+Source inspection found that the P6 daemon moved lane PIDs into a placement
+leaf but continued sampling the original container cgroup. Once migrated,
+that cgroup no longer contains the lane processes; reporting its counters as
+lane usage would be false attribution. On successful placement, metric reads
+must use the leaf's actual path returned by systemd and validated beneath the
+delegated scope. Keep the original target cgroup as the session's logical
+identity and sample-map key so existing report consumers remain compatible;
+the `placement.leaf` value identifies the physical measured cgroup. If
+placement is refused, keep sampling the original target and disclose the
+refusal; profiling failure cannot affect the test verdict (R-36h).
+
+Restart recovery is also part of the placement safety contract, not optional
+cleanup: persist write-ahead ownership state before moving processes, including
+the exact scope unit/path, each PID's start-time identity and original
+cgroup/unit, plus transition state. On recovery, restore only a still-matching
+PID proven to remain under that exact scope; never infer ownership from a
+token-named path or stop a nonempty/unverified scope. Failed verification or
+restoration preserves the leaf and evidence. The mirrored v1.1 contract and
+P6 implementation/tests must encode these rules before its R2/review.
+
+### RW-386 — 2026-09-30 18:01:52Z — implement D-31; state memory-charge limits honestly
+
+P6 placement follows the settled D-31 design: create a transient delegated
+scope beneath the verified `dev-gates.slice`, take its actual `ControlGroup`
+from systemd, and create the profiler-owned `rg-<token>` leaf only beneath
+that scope. Never write controllers or create lane directories directly in
+the systemd-owned slice. Start, stop, rollback, and restart recovery must use
+the exact scope identity and prove restoration before removing it.
+
+The host kernel's cgroup-v2 memory accounting does not transfer pre-existing
+page charges when a process migrates. Keep the leaf's kernel-native counters
+and pressure as the memory evidence, but label them as charges attributed to
+the leaf (not process RSS or total lane memory); a leaf `memory.max` constrains
+charges in that leaf and must not be described as a hard cap on all memory
+already resident in the migrated processes. CPU, I/O, PID, and pressure
+sampling must use the verified leaf after successful placement. This is an
+explicit limitation in the design, contract, README, and consumer guide; a
+later design can add pre-placement admission or a separately named
+process-memory estimate without disguising the distinction.
+
+### RW-387 — 2026-09-30 19:45:18Z — keep leaf accounting; disclose its charge semantics
+
+The operator selects kernel-native cgroup-leaf memory accounting with an
+explicit limitation, not a new approximate per-process RSS metric and not a
+deferral of shared-lane placement. Describe `memory.current`, `memory.peak`,
+and leaf `memory.high`/`memory.max` as applying to charges attributed to the
+leaf; pre-existing page charges do not migrate with a process. Do not call
+these values total RSS or claim that the leaf limit caps all resident memory.
+The README, consumer guide, protocol contract, and design must agree.
+
+The CP-11 startup-recovery repair also covers a crash before `manifest.json`
+is written and a finished/aborted manifest whose placement journal is still
+incomplete. Never replay a completed journal for an already-finished session;
+never guess, kill, or delete on uncertain identity. Preserve the exact scope,
+leaf, and journal and publish an operator-visible failure until verified
+restoration succeeds. Focused server-placement tests pass (20); the complete
+placement file passes (188). These are local test results, not registered
+exact-tree gate or live-host acceptance evidence.
+
+### RW-388 — 2026-09-30 20:03:48Z — preserve truthful coverage assertion; file schema gap upstream
+
+Nyxloom 0.8.1.dev519 rejects cgroup-profiler's `coverage-floor` assertion even
+though the registered coverage lane enforces a whole-project 100% line AND
+branch floor. Do not rename this to `changed-line-coverage`, which would make
+a false statement about the measured scope. NL-25 is filed and merged to main
+as 5e040b43 (lint on that isolated Nyxloom worktree passed). Until the
+vocabulary is extended, `nyxloom lint` in this package has this one known CFG1
+failure; it does not replace or weaken the registered coverage gate. Keep the
+limitation visible in review and final reporting.

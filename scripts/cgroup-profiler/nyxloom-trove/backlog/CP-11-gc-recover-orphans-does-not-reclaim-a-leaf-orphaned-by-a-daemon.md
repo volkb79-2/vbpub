@@ -2,15 +2,17 @@
 kind: backlog-entry
 schema_version: 1
 id: CP-11
-title: "gc/_recover_orphans does not reclaim a leaf orphaned by a daemon restart -- a CP-9 placement leaf outlives the process that placed it"
-status: open
+title: "startup recovery restores journaled placement after daemon restart"
+status: fixed
 type: "bugfix"
 severity: "low"
 provenance: "RG-55 wave, cgprofile-P6-FOLLOWUPS session 6 C8 REPORT + RW-44, filed session 7, 2026-09-12"
 filed_date: "2026-09-12"
+closed_date: "2026-09-30"
+closed_reason: "D-31 persists and validates placement ownership for startup recovery; focused restart and fail-closed tests pass, with registered gates/live probes still required for package release"
 ---
 
-## Observed mechanism
+## Original defect
 
 CP-9 (C8, `a654bd5d`) placed a lane's pids under a leaf cgroup
 (`<gates slice>/rg-<token>`) and, on `stop`, moves survivors back and
@@ -27,10 +29,10 @@ never migrates survivors back or `rmdir`s the leaf. The leaf — and whatever
 pids are still in it — is left behind under the gates slice with no code
 path that will ever clean it up.
 
-The P6 round-3 safety repair refuses a later placement request when that
-token's leaf already exists. It does not reclaim the old leaf or its pids;
-this row remains open. Refusal prevents a new session from silently taking
-ownership of the orphan and changing its caps or killing its processes.
+The earlier P6 round-3 safety repair refused a later placement request when
+that token's leaf already existed, but did not recover the old leaf or its
+processes. Refusal prevented a new session from silently taking ownership of
+the orphan; it did not complete restart recovery.
 
 ## Why this matters
 
@@ -40,18 +42,33 @@ hit repeatedly — worktree rebuilds, `ciu down`/`up` cycles) slowly starves
 the slice's own capacity accounting and leaves stray pids attributed to a
 session an operator can no longer query through `ctl`.
 
-## Proposed direction (not implemented, not spec'd — CP-1's retention
-sweep is the natural owner)
+## Resolution — RG-55 P6 D-31
 
-`_recover_orphans` (or the retention sweep CP-1 already owns) could, for
-each `<gates slice>/rg-*` leaf that has no live session claiming it: read
-`cgroup.procs`, move survivors back to the gates slice root (or kill them —
-policy TBD), then `rmdir`. This needs its own decision on WHERE survivors
-go when the session's original scope is also gone (the container that
-lane belonged to may itself no longer exist), which §8.3 does not specify
-and this row deliberately does not invent.
+P6 now persists the exact delegated scope, leaf, PID start identities, and
+per-PID original systemd unit/cgroup before moving work. At daemon startup,
+`_recover_orphans` reads this journal even when the crash happened before the
+live manifest was written, or when the session manifest had already reached
+`finished`/`aborted` while cleanup remained incomplete. Recovery validates the
+recorded unit/path with systemd and checks each surviving PID's start identity
+and current cgroup before restoring it to its recorded origin. It never
+guesses from a token-shaped directory, adopts an unrelated scope, or kills a
+survivor. Once restoration and emptiness are verified, it removes only the
+owned leaf and retires the exact owned scope; if identity, path, or movement
+cannot be proved, it preserves the scope, leaf, and journal and publishes a
+failure requiring operator attention. A completed journal on a finished
+session is not replayed, so a later session reusing a token cannot cause old
+state to act on new placement.
+
+Regression coverage includes restart recovery with and without a manifest,
+finished manifests with incomplete versus completed journals, successful
+restoration, malformed/identity-mismatched records, and fail-closed retention.
+The registered exact-tree gates and live start/stop recovery probes are part
+of P6 acceptance; this row's status records the implemented repair, not a
+claim that the unreleased P6 package has passed those remaining acceptance
+steps.
 
 ## Provenance
 
 RG-55 wave, cgprofile-P6-FOLLOWUPS session 6 (C8/CP-9 REPORT, "Deferred out
-of C8"), flagged for filing by RW-44; filed by session 7, 2026-09-12.
+of C8"), flagged for filing by RW-44; filed by session 7, 2026-09-12;
+implemented by P6 D-31 recovery journal, 2026-09-30.

@@ -5,12 +5,13 @@ implementer or the controller. The caller configures and verifies the route;
 the reviewer is not required to self-identify or attest model/effort metadata.
 Proceed with the technical review if that metadata is not exposed. **Your job
 is to BREAK this before provisional integration.** The previous review series
-is preserved in rounds 1–5; round 5 rejected blockers B1–B6 and its report is
-the repair baseline. The next verification is round 6; round 7 is the final
-round under the three-round cap (rounds 5–7). Resume the round-5 reviewer for
-fix verification if that session is still available; otherwise start a fresh
-Sol xhigh session seeded with this handoff and rounds 1–5. The caller configures
-the model route and effort; never ask the reviewer to attest its own metadata.
+is preserved in rounds 1–6; round 5 rejected blockers B1–B6. Round 6 was
+BLOCKED because direct placement below non-delegated `dev-gates.slice` is not
+supported by systemd. D-31/A3 changes the physical design to a systemd-owned
+delegated scope below the slice, with cgprofile-owned lane leaves beneath the
+scope. Round 7 is the final review round (rounds 5–7); start a fresh Sol xhigh
+reviewer seeded with this handoff and rounds 1–6. The caller configures and
+verifies the route; never ask the reviewer to attest its own metadata.
 Record each verdict at
 `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-round<n>.md`.
 You may make and commit scoped fixes in the isolated P6 worktree, but may not
@@ -58,11 +59,11 @@ lanes must be rerun on that tip before merge.
 Read, in this order: contract `run-gate-project/nyxloom-trove/
 RG55-INTERFACE-CONTRACT.md` §1–§7 (v1) and **§8 (v1.1 — the spec)** on
 `main`; design of record `DESIGN-2026-09-12-liveness-placement-admission.md`
-§2 (D-17..D-26), A1 (D-27..D-29), A2 (D-30); controller rulings RW-30,
-RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44, RW-45, RW-319..RW-381
-(especially RW-379..RW-381);
+§2 (D-17..D-26), A1 (D-27..D-29), A2 (D-30), A3 (D-31), A4 (D-32);
+controller rulings RW-30, RW-31, RW-34, RW-35, RW-37, RW-39, RW-42, RW-44,
+RW-45, RW-319..RW-384 (especially RW-379..RW-384);
 the implementer handoff `cgprofile-P6-FOLLOWUPS-HANDOFF.md` (C1–C9);
-backlog rows CP-2, CP-4..CP-11; then the diff itself — `lib/serve.py`,
+backlog rows CP-2, CP-4..CP-13 (CP-11 is now fixed by D-31); then the diff itself — `lib/serve.py`,
 `lib/placement.py`, `lib/events.py` use, `lib/analyze.py`, `lib/store.py`,
 `cgprofile.py`, `docs/PROTOCOL.md`, the ciu templates, `infra/`. Form your
 own view of correctness, safety and contract conformance BEFORE the
@@ -72,22 +73,33 @@ narratives. Run your OWN sweeps.
 
 Read `cgprofile-P6-FOLLOWUPS-LOG.md` (incl. every "Decision asks" block),
 `-REPORT.md`, every existing P6 brief through `-BRIEF-13.md`, and prior review
-rounds 1–5; check each claim; list what you could not verify. Multiple
+rounds 1–6; check each claim; list what you could not verify. Multiple
 sessions built this — hunt the seams between sessions.
 
 ## Attack surface (minimum; add your own)
 
-1. **D-15 stays a whitelist.** Enumerate EVERY write the daemon can issue
-   (grep `open(.*"w"`, `write_text`, `os.replace`, `os.rmdir`, `os.mkdir`,
-   `shutil`, `subprocess`, `os.kill`, `killpg`, `chmod`, `chown` across
-   `lib/` and `cgprofile.py`). The only cgroup writes allowed:
-   `<gates slice>/cgroup.subtree_control` (`+` values only),
-   `<gates slice>/rg-*/{cgroup.procs,memory.high,memory.max,cpu.weight,
-   cgroup.kill}`, the original scope's `cgroup.procs` (move-back), `rmdir`
-   of `<gates slice>/rg-*`; plus the sessions dir, `/sys/kernel/mm/damon/
-   admin`, and the socket dir/socket perms. Plant a write outside the
-   whitelist through the guard and prove refusal; plant a `-` value; plant a
-   leaf path outside the gates slice (symlink). Does `_enforce_stall_kill`
+1. **D-15, D-31, and D-32 authority.** Enumerate EVERY write and host
+   operation the daemon can issue (grep `open(.*"w"`, `write_text`,
+   `os.replace`, `os.rmdir`, `os.mkdir`, `shutil`, `subprocess`, `os.kill`,
+   `killpg`, `chmod`, `chown` across `lib/` and `cgprofile.py`). systemd owns
+   `dev-gates.slice` and each exact transient
+   `rg-profile-<token>.scope`; cgprofile may enable controllers only at that
+   delegated scope root and manage only its `rg-<token>` child
+   (`cgroup.procs`, `memory.high`, `memory.max`, `cpu.weight`, `cgroup.kill`,
+   and removal). Move-back authority is limited to journaled, identity-checked
+   PIDs at their exact recorded origin through guarded `cgroup.procs` or the
+   narrow systemd manager call. No direct child creation/removal/control write
+   under `dev-gates.slice`. Audit each `StartTransientUnit`,
+   `AttachProcessesToUnit`, `StopUnit`, and property read: fixed parent slice,
+   token-derived unit and leaf, validated initial PIDs, returned
+   `ControlGroup`, loaded state, actual `Slice`, `Delegate`, controllers,
+   PID start identities, and origin paths. Prove invalid unit/path/PID input
+   cannot widen operations. Also record the actual Compose cgroupfs mount and
+   its implications: under D-32 there is no broker, and the privileged daemon
+   is not OS-contained against arbitrary code execution. Plant writes outside
+   the application guard through that guard and prove refusal; plant a `-`
+   controller value and a symlink/path outside the delegated scope. Does
+   `_enforce_stall_kill`
    ever signal a pid outside the token subtree (a shared-scope session with
    no token must REFUSE the kill)? Can `cgroup.kill` land on a leaf that is
    not `rg-<this token>`?
@@ -121,17 +133,25 @@ sessions built this — hunt the seams between sessions.
    on change, `--watch-interval` clamp, unknown session one line exit 2,
    the accept loop still serves other verbs while streaming; over exec
    `ctl watch` flushes per line and exits 0.
-4. **Placement (D-20/D-25, §8.3).** Leaf created only under the gates slice;
-   `+memory +cpu +pids` written only when absent; caps read back (a
-   rounding-write fake must be reported as read, never echoed); late pids
-   migrated on every discovery tick; stop enumerates host-visible survivors
-   from the exact leaf when private-namespace `cgroup.procs` exposes PID 0;
-   verify each survivor is still in that leaf before moving. Try the original
-   scope's guarded `cgroup.procs` first; on `ESRCH`, use
-   `AttachProcessesToUnit` only for the nearest verified systemd unit and
-   subgroup derived from the absolute original cgroup path, then verify
-   membership through the explicit host-proc view and record the successful
-   move in the D-25 event sink. If a survivor cannot be identified/restored,
+4. **Placement (D-20/D-25/D-31, §8.3).** Before moving anything, persist the
+   stable PID/start identities, exact origins, and intended token scope.
+   `StartTransientUnit` must create a uniquely token-derived delegated scope
+   beneath the verified gates slice with only the needed controllers and
+   initial PIDs. Read back its loaded state, actual parent slice, `Delegate`,
+   controller set, and returned `ControlGroup`; never infer the path from the
+   name. Create the token leaf only beneath that verified scope, attach
+   validated PIDs there, confirm the scope root is empty, then enable required
+   controllers only when absent; read every cap back (a rounding-write fake
+   must be reported as read, never echoed). Late descendants must be identity-
+   checked and attached on discovery. On stop enumerate host-visible
+   survivors from the exact leaf when private-namespace `cgroup.procs` exposes
+   PID 0, and verify each survivor is still in that leaf before moving. Restore
+   to each recorded origin; use `AttachProcessesToUnit` only for the exact
+   validated original unit/subgroup derived from the absolute origin path,
+   then verify membership through the explicit host-proc view and record the
+   successful move in the D-25 event sink. Retire the exact transient scope
+   only after restoration and emptiness are verified. If a survivor cannot be
+   identified/restored,
    the placement must remain unreleased, the leaf must remain intact, and the
    response must expose `write-failed:<origin-cgroup.procs>`; it must never
    claim cleanup succeeded. Cover vanished PIDs, stale membership, missing
@@ -141,9 +161,11 @@ sessions built this — hunt the seams between sessions.
    `write-failed:<file>`) on a session that STILL starts/samples/stops;
    `placement` null only when never requested; `throttled` reachable only
    with a leaf; a malformed cap value is `bad-argument` (no session). CP-11
-   (orphaned leaf after daemon restart) is filed open — confirm nothing
-   worse happens (a restart with a live placed session must not kill or
-   strand pids).
+   is now marked fixed by D-31; attack crash before the live manifest, final
+   manifest with incomplete cleanup, partial restore, PID reuse, missing
+   host-proc view, missing/mismatched unit, and token reuse. Unknown or
+   unverified state must retain the exact scope, leaf, and journal and report
+   failure; it must not guess, kill, or claim restoration.
 5. **Goldens and byte identity.** v1 goldens byte-identical except the
    version-string bump the implementer made in the FROZEN cross-package copy
    `run-gate-project/nyxloom-trove/fixtures/rg55/` (RW-45 accepts a version
@@ -183,21 +205,26 @@ sessions built this — hunt the seams between sessions.
 
 ## Live probes (you run them yourself; host rule below)
 
-The singleton `cgprofile-host-daemon` is the controller's (it may be up from
-`main` at 1.0.0 or down) — never start, stop or `ciu down` it. Build
+The singleton `cgprofile-host-daemon` is the controller's — never start,
+stop or `ciu down` it. Build
 `cgprofile:local` from the tip (`python3 build-push.py --build`, once, under
 PSI) and run YOUR OWN instance `cgprofile-p6-review-probe` with the compose
 template's flags (privileged, private PID/cgroup namespaces, `--network none`,
-  `--cgroup-parent cgprofile.slice`, read-only host `/proc` at `/hostproc`,
-  host cgroup v2 at `/sys/fs/cgroup` with the D-25 placement whitelist,
-  `CGPROFILE_PROC_ROOT=/hostproc`,
-`-v /tmp/cgprofile-p6-review:/run/cgprofile`), removed in a `finally`:
+`--cgroup-parent cgprofile.slice`, read-only host `/proc` at `/hostproc`, host
+cgroup v2 mounted at `/sys/fs/cgroup`, daemon-only host system bus at
+`/run/dbus/system_bus_socket`, `CGPROFILE_PROC_ROOT=/hostproc`, and a private
+socket scratch bind at `/run/cgprofile`), removed in a `finally`. Inspect and
+report the actual broad cgroupfs mount and application-level guard; do not
+present the Python guard as containment against a compromised daemon:
 - every verb over BOTH carriers from a throwaway `cmru-enroll-fixture:local`
   container that mounts the same scratch dir (`--group-add <dir gid>`) —
   diff the JSON; `peer-refused` with an allowlist that excludes your uid;
 - a placed exec-mode probe (80 MiB lane, token set, `--place --memory-high
-  64M --memory-max 96M`) → leaf exists during, `applied` read back, pids in
-  the leaf, `throttled` readings when the lane exceeds `memory.high`; on stop,
+  64M --memory-max 96M`) → delegated scope and `rg-<token>` leaf exist during,
+  systemd readback matches the returned path, pids enter the leaf, and limits
+  read back. Any memory result is charge-based: only allocations charged to
+  the leaf are accounted, pre-existing page charges do not migrate, and this
+  is not a total-RSS cap. On stop,
   verify the surviving host PID is back in the original systemd scope via
   `/hostproc/<pid>/cgroup`, a successful `cgroup_write` event names the origin
   path, and only then is the leaf removed. Include a fail-closed probe where
@@ -227,10 +254,19 @@ cleanup. Never let Docker auto-create a missing host bind source.
 each with file:line evidence and a concrete prescription; non-blocking
 findings (S1..) separately; product calls named as decision asks for the
 controller, never improvised. Claims you could not verify listed as such.
-Write `cgprofile-P6-FOLLOWUPS-REVIEW-round6.md`, then return the verdict line
-first in your message. If round 6 rejects and its reviewer session ends,
-round 7 must be fresh and seeded with all prior round files; round 7 is the
-series cap.
+Write `cgprofile-P6-FOLLOWUPS-REVIEW-round7.md`, then return the verdict line
+first in your message. Round 7 is the series cap; if it rejects, stop review
+rounds and return the concrete blockers for controller disposition.
+
+**BLOCKED rule:** If a required live probe is refused because a named host
+prerequisite is absent, record the exact command/output and continue every
+independent code, test, and documentation check. Do not alter host setup, the
+main daemon, another agent's containers, or namespace modes to force the
+probe. Mark that acceptance claim unverified and do not return ACCEPT if the
+contract requires it. Product choices D-31, D-32, and charge-based memory
+accounting are settled; do not reopen them. Any new externally visible choice
+must be returned to the controller as a concrete decision request, not
+improvised.
 
 ## HOST LOAD (binding)
 

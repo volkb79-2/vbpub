@@ -272,42 +272,56 @@ The daemon's version response is contract major 1:
   `end` exits 3. `ctl status`/`ctl stop` also carry the
   current `liveness`/`watch` blocks for a session that was never watched
   with `ctl watch` directly.
-- **Placement (D-20/D-25, contract §8.3) — `start --place`.** Creates a
-  leaf `<gates slice>/rg-<token>` (default gates slice `dev-gates.slice`
-  under `dev.slice`; mdt host-setup's `dev-gates.slice` unit is the
-  intended source — `serve --gates-slice <name>` points at a different
-  one). The daemon reports the slice as `present:true` and permits placement
-  only when systemd verifies the expected loaded, non-transient unit and the
-  cgroup has finite positive memory and CPU ceilings; a directory alone is
-  not proof. It migrates every pid the token resolver finds into the
-  verified leaf, moving
-  survivors back and removing the leaf on `stop`. `--memory-high
-  <bytes>`, `--memory-max <bytes>` (refused as `place-refused:over-slice`
-  above the gates slice's own ceiling), `--cpu-weight <1-10000>` cap it;
-  applied values are always READ BACK from the kernel, never echoed. Any
-  host condition (no gates slice, a write refusal, …) is a
-  `place-refused:*` code — the session still starts, unplaced;
-  an existing token leaf is refused rather than reused or modified. This
-  refusal normally leaves profiling available; if the same request requires
-  shared-scope `--on-stall kill`, the daemon rejects it before creating a
-  session because there is no verified kill boundary. Run-gate requests that
-  policy only when its existing resource plan already requested placement;
-  otherwise its local watchdog remains verdict authority. A malformed cap
-  value is `bad-argument` (exit 2, no session)
-  — the client typed it wrong, not the host.
+- **Placement (D-20/D-25/D-31, contract §8.3) — `start --place`.** Creates a
+  systemd-owned transient `rg-profile-<token>.scope` directly beneath the
+  verified gates slice, then a cgprofile-owned `rg-<token>` leaf below that
+  scope. The default gates slice is `dev-gates.slice` under `dev.slice`;
+  mdt host-setup supplies its authored unit, and `serve --gates-slice <name>`
+  selects another one. systemd retains ownership of the slice and scope
+  boundary; cgprofile owns only the per-lane leaf. The daemon permits placement
+  only when systemd verifies the expected loaded, non-transient slice and the
+  slice has finite positive memory and CPU ceilings; a directory alone is not
+  proof. It moves the token's processes into the leaf, restores identity-checked
+  survivors to their recorded original units on `stop`, removes the leaf, and
+  retires the empty transient scope. A failed or ambiguous restore preserves
+  the leaf and recovery record. `--memory-high <bytes>`, `--memory-max
+  <bytes>` (refused as `place-refused:over-slice` above the gates slice's own
+  ceiling), and `--cpu-weight <1-10000>` set leaf controls; applied values are
+  always READ BACK from the kernel, never echoed. Host refusals leave profiling
+  available but the lane unplaced. A scope-name collision is refused, never
+  adopted or cleaned up. This normally leaves profiling available; if the same
+  request requires shared-scope `--on-stall kill`, the daemon rejects it before
+  creating a session because there is no verified kill boundary. Run-gate
+  requests that policy only when its existing resource plan already requested
+  placement; otherwise its local watchdog remains verdict authority. A
+  malformed cap value is `bad-argument` (exit 2, no session) — the client
+  typed it wrong, not the host.
+- **Placement memory is charge-based, not total RSS.** After successful
+  placement, cgroup memory counters and the leaf's `memory.high`/`memory.max`
+  describe charges attributed to that cgroup. Moving an already-running
+  process does not transfer charges for pages it faulted earlier, so these
+  numbers are not total process RSS and the leaf limit is not a hard cap on all
+  memory already resident in the lane. See the detailed accounting notes in
+  [`docs/CONSUMERS.md`](docs/CONSUMERS.md#resource-accounting-with-placement).
 - **Private namespaces, explicit host views.** The daemon and its helper
   keep PID and cgroup namespaces private. Host `/proc` is explicitly bound
-  read-only; the daemon's host cgroup-v2 bind is writable only because
-  opt-in placement creates `rg-*` leaves and moves lane pids. A private-PID
-  fallback asks host systemd over the explicitly mounted read-only system bus
-  to attach the verified PID to that leaf, and `stop` uses the same bridge to
-  return enumerated survivors to their original systemd scope; the daemon
-  never joins a host namespace. Both directions require the host-proc view,
-  verify membership afterward, and record successful moves. Unresolvable or
-  unrestored survivors keep the leaf and produce a placement error. The daemon's
-  D-25 write guard limits those cgroup writes to the documented whitelist;
-  DAMON retains its separately mounted sysfs write surface. `ciu up` is the
-  managed lifecycle; there is no host-namespace fallback launcher.
+  read-only; the daemon receives a writable host cgroup-v2 bind because
+  opt-in placement creates `rg-*` leaves and moves lane pids. D-25's whitelist
+  is an application-level guard on normal code paths, not an OS-enforced
+  boundary against arbitrary code execution in the privileged daemon. A private-PID
+  fallback asks host systemd over the daemon-only mounted system bus to create
+  the delegated scope with its initial PIDs, then attach verified PIDs to the
+  leaf and return survivors to their recorded original units; the daemon never
+  joins a host namespace. Both directions require the host-proc view, verify
+  identity and membership afterward, and record successful moves. Unresolvable
+  or unrestored survivors keep the leaf and recovery record. The daemon's D-25
+  write guard limits intended cgroup writes to the documented whitelist; DAMON retains
+  its separately mounted sysfs write surface. The consumer-facing socket does
+  not expose systemd D-Bus to the cockpit. `ciu up` is the managed lifecycle;
+  there is no host-namespace fallback launcher. This raw manager bridge is an
+  operational authority path, not a sandbox against daemon compromise; the
+  rationale and deferred broker option are in the
+  [RG-55 placement design](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3--placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
 ## Relationship to the neighbours
 

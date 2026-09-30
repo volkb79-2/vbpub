@@ -83,9 +83,17 @@ than a huge negative spike. Nothing downstream may reintroduce that spike.
 
 **A third mode, RG-55: the always-on daemon.** `cgprofile serve` is a
 privileged, long-lived process with private PID/cgroup namespaces, read-only
-host `/proc`, and a host cgroup mount whose writes are constrained by D-25,
-that run-gate talks to over a Unix socket
-per lane instead of spawning a collector each time —
+host `/proc`, a writable host cgroupfs bind for opt-in placement, and the host
+system bus mounted only into the daemon. D-25's cgroup path whitelist is an
+application-level guard on ordinary operations, not an OS boundary against
+arbitrary code execution in the privileged daemon. D-31 asks systemd to create
+one delegated scope beneath the verified gates slice per placed lane; the
+daemon owns only its `rg-<token>` leaf beneath that scope, never a child of the
+systemd-owned slice. D-32 deliberately keeps this single-operator,
+rootful-Docker deployment broker-free; see `docs/DESIGN-GUIDE.md` and the
+RG-55 design record for the honest threat boundary and deferred broker option.
+run-gate talks to this daemon over a Unix socket per lane instead of spawning
+a collector each time —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract, and it is STILL
 collector-tier: `lib/serve.py` never imports pandas, even for `ctl report`
 (§4.13 below explains how that verb still renders the real interactive
@@ -685,12 +693,12 @@ shape `cmd_collect`'s own collector writes. `limits` was `{}` and `damon.jsonl` 
 (CP-7/CP-6, both filed as backlog then) — the RG-55 P6 follow-ups below
 closed both.
 
-### 4.15a RG-55 P6 follow-ups (D-27..D-30) — watch, placement, the socket
-carrier, `cgprofile.slice`
+### 4.15a RG-55 P6 follow-ups (D-27..D-32) — watch, delegated placement,
+the socket carrier, `cgprofile.slice`
 
 Full rationale is the design doc of record on `main`,
 `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-
-admission.md` §A1 (D-27..D-29) and §A2 (D-30); the wire shapes are
+admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire shapes are
 `RG55-INTERFACE-CONTRACT.md` §8 and this project's own
 `docs/PROTOCOL.md`. Summary, for a reader of this file alone:
 
@@ -722,11 +730,28 @@ admission.md` §A1 (D-27..D-29) and §A2 (D-30); the wire shapes are
   `docker exec` can still speak the protocol directly — exactly the same
   request/response shapes as the exec carrier (`docs/PROTOCOL.md` §1,
   parity proven by one test that runs every verb through both). CP-2.
-- **Placement (D-20/D-25, §8.3, CP-9) rides alongside D-27/D-30 rather
-  than owning its own D-number:** `--place` gives a lane its OWN leaf
-  under the gates slice so `--on-stall kill` can use `cgroup.kill`
-  (atomic) instead of a per-pid SIGKILL walk; refused placements never
-  fail `start` (§8.8).
+- **D-31 — systemd owns the gates slice and delegated per-lane scope.**
+  `--place` asks the host manager to create a token-derived transient scope
+  directly beneath the verified gates slice. After reading its actual
+  `ControlGroup` and delegation properties back, cgprofile creates and owns
+  only `rg-<token>` below that scope. It moves verified PIDs through the
+  systemd manager bridge, reads back leaf controls, and restores only
+  same-identity survivors to their recorded origins before removing the leaf
+  and stopping the empty scope. The durable journal supports fail-closed
+  restart recovery. Direct placement under the non-delegated slice is
+  rejected. The ownership rationale and lifecycle are in
+  [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#why-placement-uses-a-delegated-scope).
+- **Memory accounting is charge-based.** Leaf memory counters and
+  `memory.high`/`memory.max` constrain charges attributed to the leaf, not
+  total RSS; pre-existing page charges do not migrate with a process. See
+  [`docs/CONSUMERS.md`](docs/CONSUMERS.md#resource-accounting-with-placement).
+- **D-32 — no broker for the current trust boundary.** The privileged daemon
+  retains direct system-bus and writable-cgroupfs authority. Its application
+  guard does not contain arbitrary code execution; the current rootful Docker
+  operator already has host-administrator authority. A future confined broker
+  may reduce blast radius only if every daemon bypass, including system-bus,
+  cgroupfs, and DAMON access, is removed. Full tradeoffs are in the RG-55
+  design record and `docs/DESIGN-GUIDE.md`.
 
 ---
 
@@ -765,7 +790,9 @@ number.
 ## 6. Environment facts (verified on this host — do not re-derive)
 
 - Host: 16 GiB RAM, ~70 GiB swap, zswap `zstd` at 25 % pool, KSM on.
-- cgroup v2 at `/sys/fs/cgroup`, mounted **without `memory_recursiveprot`**.
+- cgroup v2 at `/sys/fs/cgroup`, mounted with `nsdelegate`,
+  `memory_recursiveprot`, and `memory_hugetlb_accounting` (host `findmnt`,
+  rechecked 2026-09-30).
 - Devcontainer runs in `dev-interactive.slice`; gate/lane containers and
   placed `rg-*` leaves run in `dev-gates.slice`
   (`$CGROUP_PARENT_DEV_GATES`). `dev-background.slice` remains for

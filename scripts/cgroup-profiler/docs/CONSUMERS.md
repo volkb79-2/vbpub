@@ -52,19 +52,25 @@ docker exec cgprofile-host-daemon cgprofile ctl version --json
 
 The shipped stack supplies host observation with private PID/cgroup
 namespaces: host `/proc` is bind-mounted read-only at `/hostproc`, host
-cgroup v2 is mounted at `/sys/fs/cgroup` for observation and guarded P6
-placement writes, and `CGPROFILE_PROC_ROOT=/hostproc` selects the host proc
-view. The daemon also receives the host system bus read-only at
-`/run/dbus/system_bus_socket`; it uses only systemd's
-`AttachProcessesToUnit` method when a host PID cannot be written directly
-from the private PID namespace. At start it attaches into the verified gates
-leaf; at stop it uses the original cgroup path's nearest systemd unit to
-restore enumerated survivors. Both operations require the verified host-proc
-view and confirm resulting membership there. Successful moves are written to
-the session's `events.jsonl`; an unresolvable or unrestored survivor leaves
-the leaf intact and appears as `placement.error` in the stop summary.
-Placement's D-25 whitelist is the cgroup write boundary. Do not set host
-namespace modes. On startup `serve` verifies that PID 1 in that proc view
+cgroup v2 is mounted read-write at `/sys/fs/cgroup` for observation and
+opt-in placement, and `CGPROFILE_PROC_ROOT=/hostproc` selects the host proc
+view. The privileged daemon also mounts the host system bus at
+`/run/dbus/system_bus_socket`; a read-only bind of that socket would not make
+its RPCs read-only. The cgroup mount is writable at the mount boundary so the
+daemon can perform placement, while D-25's whitelist is an application-level
+guard for ordinary code paths, not containment against arbitrary code
+execution in the daemon. It asks systemd to create a transient delegated
+scope under the verified gates slice, registering the initial PIDs with that
+scope, then uses `AttachProcessesToUnit` to move them into the cgprofile-owned
+leaf. The scope path is read back from systemd rather than inferred from the
+unit name. At stop the daemon restores only identity-verified survivors to
+their recorded original units, removes the leaf, and stops the empty scope.
+Both directions require the verified host-proc view and confirm resulting
+membership. Successful moves are written to the session's `events.jsonl`; an
+unresolvable or unrestored survivor leaves the scope, leaf, and recovery
+record intact and appears as `placement.error` in the stop summary.
+Do not set host namespace modes. On startup `serve` verifies that PID 1 in
+that proc view
 belongs to a PID namespace distinct from the daemon's and refuses if either
 view is missing. Container targets arrive as full Docker IDs; token-scoped
 sessions resolve direct PIDs in that target cgroup, match the exact token in
@@ -186,6 +192,30 @@ Use `--scope container-shared` when the target cgroup is shared with unrelated
 work and the summary must report sampled-max memory plus deltas. Use
 `--scope container` for a lane-owned cgroup; its `memory.peak` and absolute
 counters have the schema-1 semantics documented in the contract.
+
+### Resource accounting with placement
+
+For a successfully placed shared lane, `target.cgroup` remains the logical
+target identity, but sampled CPU, I/O, PID, pressure, and memory counters come
+from the profiler-owned leaf under its delegated scope. Memory values are
+cgroup charges, not total RSS: cgroup v2 does not transfer charges for pages
+that were faulted before a process moved into the leaf. Therefore
+`memory.current`, `memory.peak`, `memory.high`, and `memory.max` do not describe
+all resident pages of every process in the lane, and the requested leaf
+`memory.max` is not a hard cap on that pre-existing resident memory. Treat the
+values as useful, directly measured charge accounting. If the requirement is
+a whole-container limit and accounting boundary, run the lane in its own
+container cgroup (`--scope container`) with its resource limits set before the
+workload starts; do not reinterpret a shared-lane leaf counter as RSS.
+
+Placement creates `rg-profile-<token>.scope` beneath the verified gates slice
+and `rg-<token>` beneath that scope. The scope is systemd-owned; cgprofile owns
+only the child leaf. The daemon preserves its recovery journal and leaves the
+scope intact rather than killing or deleting processes it cannot safely
+restore. The host system bus is mounted only into the daemon, not into the
+cockpit. The complete ownership and security rationale, including the
+deferred broker option, is in the
+  [`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3--placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 For `--progress-stream`, provide a regular NDJSON file path inside the lane;
 the daemon ignores a FIFO, device, or unfinished line. A placement request with an existing
 `rg-<token>` leaf ordinarily starts unplaced with `placement.error` set. Use a fresh

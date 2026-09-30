@@ -1518,8 +1518,8 @@ def build_parser() -> argparse.ArgumentParser:
     # contract's own units) and are ignored without `--place`; the daemon
     # owns every refusal, so nothing here validates a host condition.
     ctl_start.add_argument("--place", action="store_true",
-                           help="create <gates slice>/rg-<token> and migrate the token's pid "
-                                "subtree into it (requires --token)")
+                           help="create a delegated scope under the gates slice and a "
+                                "per-token leaf for placement (requires --token)")
     ctl_start.add_argument("--memory-high", type=int, default=None,
                            help="memory.high on the leaf, in bytes (the throttle point)")
     ctl_start.add_argument("--memory-max", type=int, default=None,

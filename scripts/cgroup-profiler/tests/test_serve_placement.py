@@ -23,9 +23,9 @@ are all about what is written WHERE:
 from __future__ import annotations
 
 import json
-import errno
 import math
 import os
+import posixpath
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -41,6 +41,9 @@ CONTAINER_ID = "d" * 64
 SESSION_ID = "s-20260912T101500Z-9f01"
 TOKEN = "rg55-place-token-01"
 LEAF_NAME = f"rg-{TOKEN}"
+SCOPE_UNIT = f"rg-profile-{TOKEN}.scope"
+SCOPE_UNIT_CGROUP = f"dev.slice/dev-gates.slice/{SCOPE_UNIT}"
+PLACEMENT_CGROUP = f"/{SCOPE_UNIT_CGROUP}/{LEAF_NAME}"
 EPOCH_START = datetime(2026, 9, 12, 10, 15, 0, tzinfo=timezone.utc).timestamp()
 META = {
     "lane": "rg55-place-lane", "project": "run-gate-project", "worktree": "/workspaces/vbpub",
@@ -69,6 +72,7 @@ def _fake_loaded_gates_unit(monkeypatch):
         access, "verify_systemd_slice",
         lambda unit, path: unit == "dev-gates.slice" and path == GATES_CGROUP,
     )
+    monkeypatch.setattr(placement, "_systemd_unit_cgroup_matches", lambda _unit, _path: True)
 
 
 # ── fakes ───────────────────────────────────────────────────────────────
@@ -109,6 +113,23 @@ def _fake_proc(tmp_path: Path) -> Path:
     return proc
 
 
+def _seed_token_process(proc_root: Path, pid: int, token: str = TOKEN) -> None:
+    """Create the proc facts the real token resolver requires."""
+    proc_pid = proc_root / str(pid)
+    proc_pid.mkdir(parents=True, exist_ok=True)
+    environ = proc_pid / "environ"
+    if not environ.exists():
+        environ.write_bytes(f"RUN_GATE_PROFILE_SESSION={token}".encode() + b"\0")
+    fields = ["S", "1"] + ["0"] * 18
+    fields[19] = str(pid * 97)
+    (proc_pid / "stat").write_text(
+        f"{pid} (fake lane process) " + " ".join(fields) + "\n"
+    )
+    children = proc_pid / "task" / str(pid) / "children"
+    children.parent.mkdir(parents=True, exist_ok=True)
+    children.write_text("")
+
+
 def _fake_rmdir(path: str) -> None:
     """A cgroup `rmdir` on a REAL directory: the kernel's kernfs removes a
     cgroup whose interface files are still "in" it, so the fake tree has to
@@ -120,20 +141,127 @@ def _placement(
     root: Path, *, token: Optional[str] = TOKEN, request: Optional[placement.PlacementRequest] = None,
     writes: Optional[List[Any]] = None, rmdir=_fake_rmdir, **kw: Any,
 ) -> placement.LanePlacement:
+    placement_cls = kw.pop("_placement_cls", placement.LanePlacement)
+    origin_cgroup = kw.pop("origin_cgroup", "/" + SCOPE_CGROUP)
+    on_write = kw.pop("on_write", None)
+    scope_created = kw.pop("scope_created", None)
+    attach_filter = kw.pop("attach_filter", None)
+    attach_calls = kw.pop("attach_calls", None)
     kw.setdefault("slice_unit_verifier", lambda _unit, _cgroup: True)
-    return placement.LanePlacement(
+    locations: Dict[int, str] = {}
+    unit_cgroups: Dict[str, str] = {f"docker-{CONTAINER_ID}.scope": "/" + SCOPE_CGROUP}
+    scope_paths: Dict[str, str] = {}
+
+    def process_cgroup(pid: int) -> Optional[str]:
+        return locations.setdefault(pid, "/" + SCOPE_CGROUP)
+
+    def sync_membership() -> None:
+        for procs_path in root.rglob("cgroup.procs"):
+            relative = "/" + procs_path.parent.relative_to(root).as_posix()
+            members = sorted(pid for pid, path in locations.items() if path == relative)
+            procs_path.write_text("".join(f"{pid}\n" for pid in members))
+
+    def move_fake(pid: int, destination: str) -> None:
+        locations[pid] = destination
+        sync_membership()
+
+    def fake_scope_create(unit: str, _slice: str, _pids, _controllers):
+        relative = f"dev.slice/dev-gates.slice/{unit}"
+        scope_path = root / relative
+        if scope_path.exists():
+            return None
+        files = dict(cgroup_files())
+        gates_control = root / "dev.slice/dev-gates.slice/cgroup.subtree_control"
+        if gates_control.exists():
+            files["cgroup.subtree_control"] = gates_control.read_text()
+        write_cgroup(root, relative, files)
+        scope_paths[unit] = "/" + relative
+        unit_cgroups[unit] = "/" + relative
+        for pid in _pids:
+            move_fake(pid, "/" + relative)
+        if scope_created is not None:
+            scope_created(unit)
+        return "/" + relative
+
+    def fake_scope_stop(unit: str) -> bool:
+        scope_path = root / scope_paths.get(
+            unit, f"dev.slice/dev-gates.slice/{unit}"
+        ).lstrip("/")
+        if scope_path.exists():
+            shutil.rmtree(scope_path)
+        return True
+
+    def fake_mkdir(path: str) -> None:
+        os.mkdir(path)
+        relative = Path(path).relative_to(root).as_posix()
+        write_cgroup(root, relative, cgroup_files())
+
+    def fake_attach(unit: str, subcgroup: str, pid: int) -> bool:
+        if attach_filter is not None and not attach_filter(unit, subcgroup, pid):
+            return False
+        if attach_calls is not None:
+            attach_calls.append((unit, subcgroup, pid))
+        unit_root = unit_cgroups.get(unit)
+        if unit_root is None:
+            return False
+        destination = posixpath.normpath(
+            unit_root if not subcgroup else f"{unit_root}/{subcgroup}"
+        )
+        move_fake(pid, destination)
+        return True
+
+    def fake_unit_verifier(unit: str, cgroup: str) -> bool:
+        unit_cgroups[unit] = posixpath.normpath(cgroup)
+        return True
+
+    kw.setdefault("scope_create", fake_scope_create)
+    kw.setdefault("scope_stop", fake_scope_stop)
+    kw.setdefault("systemd_attach", fake_attach)
+    kw.setdefault("pid_cgroup", process_cgroup)
+    kw.setdefault("pid_exists", lambda pid: pid > 0)
+    kw.setdefault("pid_start_time", lambda pid: str(pid * 97))
+    kw.setdefault("host_pid", lambda: 999999)
+    kw.setdefault("host_proc_view", lambda _proc: True)
+    kw.setdefault("unit_cgroup_verifier", fake_unit_verifier)
+    def fake_pids_in_cgroup(cgroup: str, _cgroup_root: str, _proc_root: str) -> List[int]:
+        expected = posixpath.normpath(cgroup)
+        path = root / expected.lstrip("/") / "cgroup.procs"
+        try:
+            entries = [int(line) for line in path.read_text().splitlines() if line.strip().isdigit()]
+        except OSError:
+            return []
+        for pid in entries:
+            if pid > 0:
+                locations[pid] = expected
+        return sorted(set(entries) | {
+            pid for pid, current in locations.items() if current == expected
+        })
+
+    kw.setdefault("mkdir", fake_mkdir)
+    kw.setdefault("pid_parent", lambda pid: {102: 101, 103: 101, 999: 101}.get(pid))
+    kw.setdefault("pids_in_cgroup", fake_pids_in_cgroup)
+    kw.setdefault("state_write", lambda _state: None)
+    return placement_cls(
         cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=token,
-        origin_cgroup="/" + SCOPE_CGROUP,
+        origin_cgroup=origin_cgroup,
         request=request if request is not None else placement.PlacementRequest(
             memory_high=MEMORY_HIGH, memory_max=MEMORY_MAX, cpu_weight=100,
         ),
-        on_write=(lambda rel, value: writes.append((rel, value))) if writes is not None else None,
+        on_write=(
+            lambda rel, value: (
+                writes.append((rel, value)) if writes is not None else None,
+                on_write(rel, value) if on_write is not None else None,
+            )
+        ),
         rmdir=rmdir, **kw,
     )
 
 
-def _leaf(root: Path) -> Path:
-    return root / "dev.slice" / "dev-gates.slice" / LEAF_NAME
+def _leaf(root: Path, token: str = TOKEN) -> Path:
+    return (
+        root / "dev.slice" / "dev-gates.slice" / f"rg-profile-{token}.scope"
+        / f"rg-{token}"
+    )
 
 
 def _container_cgroup(root: Path, container_id: str = CONTAINER_ID) -> Path:
@@ -190,11 +318,31 @@ def _server(tmp_path: Path, root: Path, **kw: Any) -> serve.SessionServer:
     proc_root = kw.pop("proc_root", None)
     if proc_root is None:
         proc_root = _fake_proc(tmp_path)
+    origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+    if origin_procs.is_file():
+        for item in origin_procs.read_text().splitlines():
+            if item.strip().isdigit() and int(item) > 0:
+                _seed_token_process(Path(proc_root), int(item))
+
+    def test_placement_factory(**options: Any) -> placement.LanePlacement:
+        return _placement(
+            root,
+            token=options["token"],
+            request=options["request"],
+            origin_cgroup=options["origin_cgroup"],
+            on_write=options.get("on_write"),
+            log=options.get("log"),
+            proc_root=options.get("proc_root"),
+            state_write=options.get("state_write"),
+        )
+
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"), socket_path=str(tmp_path / "ctl.sock"),
         cgroup_root=str(root), proc_root=str(proc_root), clock=lambda: EPOCH_START,
         session_id_fn=lambda: SESSION_ID, accept_timeout=0.05,
-        slice_unit_verifier=lambda _unit, _cgroup: True, **kw,
+        slice_unit_verifier=lambda _unit, _cgroup: True,
+        placement_factory=kw.pop("placement_factory", test_placement_factory),
+        **kw,
     )
     server.cgroup_rmdir = _fake_rmdir
     _SERVERS.append(server)
@@ -273,9 +421,11 @@ class TestParseRequest:
 
 class TestWriteGuard:
     def _guard(self, root: Path) -> placement.CgroupWriteGuard:
+        write_cgroup(root, SCOPE_UNIT_CGROUP, cgroup_files())
         return placement.CgroupWriteGuard(
             cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
             origin_cgroup="/" + SCOPE_CGROUP, leaf_name=LEAF_NAME,
+            scope_cgroup="/" + SCOPE_UNIT_CGROUP,
         )
 
     @pytest.mark.parametrize("name", list(placement.LEAF_FILES))
@@ -283,10 +433,10 @@ class TestWriteGuard:
         root = _fake_cgroup_root(tmp_path)
         self._guard(root).check_write(str(_leaf(root) / name), "1")
 
-    def test_the_one_non_leaf_write_is_subtree_control_with_plus_values(self, tmp_path):
+    def test_scope_root_control_is_writable_with_plus_values(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         guard = self._guard(root)
-        control = str(root / "dev.slice/dev-gates.slice/cgroup.subtree_control")
+        control = str(root / SCOPE_UNIT_CGROUP / "cgroup.subtree_control")
         guard.check_write(control, placement.SUBTREE_CONTROL_VALUE)
 
     @pytest.mark.parametrize("value, fragment", [
@@ -296,11 +446,9 @@ class TestWriteGuard:
         ("", "empty"),
     ])
     def test_subtree_control_refuses_anything_but_plus_the_three(self, tmp_path, value, fragment):
-        """RW-35(a) is "`+memory +cpu +pids`, never `-`" — a `-memory` here
-        would revoke the controller from every OTHER child of the gates
-        slice, every other lane's leaf, live and mid-run."""
+        """The delegated scope accepts only the exact required controllers."""
         root = _fake_cgroup_root(tmp_path)
-        control = str(root / "dev.slice/dev-gates.slice/cgroup.subtree_control")
+        control = str(root / SCOPE_UNIT_CGROUP / "cgroup.subtree_control")
         with pytest.raises(placement.HostWriteError) as exc:
             self._guard(root).check_write(control, value)
         assert fragment in str(exc.value)
@@ -318,9 +466,9 @@ class TestWriteGuard:
         "dev.slice/dev-background.slice/memory.max",     # a sibling tier
         "dev.slice/cgroup.procs",                        # an ancestor
         "memory.max",                                    # the cgroup root
-        f"dev.slice/dev-gates.slice/{LEAF_NAME}/memory.min",   # a leaf file not on the list
-        f"dev.slice/dev-gates.slice/{LEAF_NAME}/sub/memory.high",  # below the leaf
-        "dev.slice/dev-gates.slice/not-a-lane/memory.high",    # not an rg-* leaf
+        f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/memory.min",   # a leaf file not on the list
+        f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/sub/memory.high",  # below the leaf
+        f"{SCOPE_UNIT_CGROUP}/not-a-lane/memory.high",    # not an rg-* leaf
     ])
     def test_a_write_planted_anywhere_else_is_refused(self, tmp_path, relative):
         """The planted-write test D-25 asks for: the guard is consulted
@@ -331,19 +479,23 @@ class TestWriteGuard:
             self._guard(root).check_write(str(root / relative), "1")
         assert "D-25 cgroup whitelist" in str(exc.value)
 
-    def test_a_symlinked_leaf_cannot_smuggle_a_write_out_of_the_gates_slice(self, tmp_path):
+    def test_a_symlinked_leaf_cannot_smuggle_a_write_out_of_the_delegated_scope(self, tmp_path):
         """Every comparison is on `realpath`, so a symlink planted under the
         gates slice resolves to where it really points and is refused."""
         root = _fake_cgroup_root(tmp_path)
+        write_cgroup(root, SCOPE_UNIT_CGROUP, cgroup_files())
         elsewhere = root / "dev.slice" / "dev-background.slice" / "victim"
         elsewhere.mkdir()
-        (root / "dev.slice" / "dev-gates.slice" / LEAF_NAME).symlink_to(elsewhere)
+        (_leaf(root)).symlink_to(elsewhere)
         with pytest.raises(placement.HostWriteError):
             self._guard(root).check_write(str(_leaf(root) / "memory.high"), "1")
 
     def test_a_symlinked_leaf_cannot_smuggle_a_kill_to_another_rg_leaf(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
-        victim = root / "dev.slice" / "dev-gates.slice" / "rg-victim-token"
+        write_cgroup(root, SCOPE_UNIT_CGROUP, cgroup_files())
+        victim_scope = root / "dev.slice" / "dev-gates.slice" / "rg-profile-victim.scope"
+        victim_scope.mkdir()
+        victim = victim_scope / "rg-victim-token"
         victim.mkdir()
         _leaf(root).symlink_to(victim)
         guard = self._guard(root)
@@ -353,7 +505,9 @@ class TestWriteGuard:
 
     def test_another_session_leaf_is_outside_this_sessions_whitelist(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
-        other = root / "dev.slice" / "dev-gates.slice" / "rg-other-token"
+        other_scope = root / "dev.slice" / "dev-gates.slice" / "rg-profile-other.scope"
+        other_scope.mkdir()
+        other = other_scope / "rg-other-token"
         other.mkdir()
         guard = self._guard(root)
         with pytest.raises(placement.HostWriteError):
@@ -376,6 +530,7 @@ class TestWriteGuard:
         guard = placement.CgroupWriteGuard(
             cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
             origin_cgroup=None, leaf_name=LEAF_NAME,
+            scope_cgroup="/" + SCOPE_UNIT_CGROUP,
         )
         with pytest.raises(placement.HostWriteError):
             guard.check_write(str(root / SCOPE_CGROUP / "cgroup.procs"), "4242")
@@ -446,10 +601,12 @@ class TestWriteGuard:
     def test_a_leaf_cgroup_kill_only_accepts_the_literal_enforcement_value(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         leaf = _leaf(root)
+        leaf.parent.mkdir(parents=True)
         leaf.mkdir()
         guard = placement.CgroupWriteGuard(
             cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
             origin_cgroup=None, leaf_name=LEAF_NAME,
+            scope_cgroup="/" + SCOPE_UNIT_CGROUP,
         )
         guard.check_write(str(leaf / "cgroup.kill"), "1")
         with pytest.raises(placement.HostWriteError):
@@ -721,56 +878,54 @@ class TestApply:
         plc.apply([101, 102])
 
         assert plc.error is None
-        assert plc.leaf_cgroup == f"{GATES_CGROUP}/{LEAF_NAME}"
+        assert plc.leaf_cgroup == PLACEMENT_CGROUP
         assert _leaf(root).is_dir()
         assert (_leaf(root) / "memory.high").read_text() == str(MEMORY_HIGH)
-        assert (_leaf(root) / "cgroup.procs").read_text() == "102"  # one pid per write
+        assert (_leaf(root) / "cgroup.procs").read_text() == "101\n102\n"
         assert plc.block() == {
-            "requested": True, "leaf": f"{GATES_CGROUP}/{LEAF_NAME}",
+            "requested": True, "leaf": PLACEMENT_CGROUP,
             "applied": {"memory.high": MEMORY_HIGH, "memory.max": MEMORY_MAX, "cpu.weight": 100},
             "pids_moved": 2, "error": None,
         }
         # D-25: every cgroup write is an events row — the sink sees the
-        # subtree_control delegation, the mkdir, three caps and two pids.
+        # leaf creation, process moves, controller delegation, and three caps.
         assert [rel for rel, _ in writes] == [
-            "dev.slice/dev-gates.slice/cgroup.subtree_control",
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}",
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}/memory.high",
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}/memory.max",
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}/cpu.weight",
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs",
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs",
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}",
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cgroup.procs",
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cgroup.procs",
+            f"{SCOPE_UNIT_CGROUP}/cgroup.subtree_control",
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/memory.high",
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/memory.max",
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cpu.weight",
         ]
 
-    def test_the_controllers_are_delegated_only_when_the_slice_lacks_them(self, tmp_path):
-        """RW-35(a) is the ONE non-leaf write, so it happens only when it has
-        to: a gates slice that already delegates all three is not written."""
+    def test_controllers_are_enabled_only_when_the_scope_lacks_them(self, tmp_path):
+        """The gates-slice state is not written; enable within our scope only."""
         root = _fake_cgroup_root(tmp_path, subtree_control="memory cpu pids io")
         writes: List[Any] = []
-        _placement(root, writes=writes).apply([])
+        _placement(root, writes=writes).apply([101])
         assert not any(rel.endswith("cgroup.subtree_control") for rel, _ in writes)
 
         partial = _fake_cgroup_root(tmp_path / "second", subtree_control="memory pids")
         writes = []
-        _placement(partial, writes=writes).apply([])
-        assert (partial / "dev.slice/dev-gates.slice/cgroup.subtree_control").read_text() == (
+        _placement(partial, writes=writes).apply([101])
+        assert (partial / SCOPE_UNIT_CGROUP / "cgroup.subtree_control").read_text() == (
             placement.SUBTREE_CONTROL_VALUE
         )
-        assert writes[0] == (
-            "dev.slice/dev-gates.slice/cgroup.subtree_control", "+memory +cpu +pids",
-        )
+        assert (
+            f"{SCOPE_UNIT_CGROUP}/cgroup.subtree_control", "+memory +cpu +pids",
+        ) in writes
 
     def test_applied_is_read_back_from_the_leaf_not_echoed(self, tmp_path):
         """The S13.3.2 discipline, made falsifiable: these writes land
         rounded down, so an implementation that echoed the request would
         report a number the file does not hold."""
         root = _fake_cgroup_root(tmp_path)
-        plc = _RoundingPlacement(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP,
+        plc = _placement(
+            root, _placement_cls=_RoundingPlacement,
             request=placement.PlacementRequest(memory_high=MEMORY_HIGH + 1, cpu_weight=100),
         )
-        plc.apply([])
+        plc.apply([101])
         assert plc.applied["memory.high"] == MEMORY_HIGH
         assert plc.applied["memory.high"] != MEMORY_HIGH + 1
         assert int((_leaf(root) / "memory.high").read_text()) == plc.applied["memory.high"]
@@ -793,7 +948,7 @@ class TestApply:
         plc = _placement(
             root, request=placement.PlacementRequest(memory_max=SLICE_MAX + 1)
         )
-        plc.apply([])
+        plc.apply([101])
         assert plc.error == placement.REFUSED_OVER_SLICE
         assert not _leaf(root).exists()
 
@@ -802,7 +957,7 @@ class TestApply:
         authored gates capacity object."""
         root = _fake_cgroup_root(tmp_path, slice_memory_max=None)
         plc = _placement(root, request=placement.PlacementRequest(memory_max=SLICE_MAX * 4))
-        plc.apply([])
+        plc.apply([101])
         assert plc.error == placement.REFUSED_NO_GATES_SLICE
         assert plc.leaf_cgroup is None
 
@@ -811,7 +966,7 @@ class TestApply:
         gates = root / "dev.slice" / "dev-gates.slice"
         (gates / "cpu.max").write_text("max 100000")
         plc = _placement(root)
-        plc.apply([])
+        plc.apply([101])
         assert plc.error == placement.REFUSED_NO_GATES_SLICE
         assert plc.leaf_cgroup is None
 
@@ -836,7 +991,7 @@ class TestApply:
             cpu_file.write_text(cpu_max)
         plc = _placement(root)
 
-        plc.apply([])
+        plc.apply([101])
 
         assert plc.error == placement.REFUSED_NO_GATES_SLICE
         assert plc.leaf_cgroup is None
@@ -844,33 +999,34 @@ class TestApply:
     def test_directory_without_a_verified_loaded_unit_is_refused(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         plc = _placement(root, slice_unit_verifier=lambda _unit, _cgroup: False)
-        plc.apply([])
+        plc.apply([101])
         assert plc.error == placement.REFUSED_NO_GATES_SLICE
         assert plc.leaf_cgroup is None
 
-    def test_a_symlinked_leaf_is_parent_not_gates_slice(self, tmp_path):
-        """D-25's own refusal: something already occupies `rg-<token>` and it
-        does not RESOLVE into the gates slice, so every cap below would land
-        on another cgroup."""
+    def test_a_symlinked_leaf_is_not_adopted_or_written(self, tmp_path):
+        """The path is checked after systemd creates the exact scope."""
         root = _fake_cgroup_root(tmp_path)
         elsewhere = root / "dev.slice" / "dev-background.slice" / "victim"
         elsewhere.mkdir()
-        (root / "dev.slice" / "dev-gates.slice" / LEAF_NAME).symlink_to(elsewhere)
-        plc = _placement(root)
+
+        def plant_symlink(_unit: str) -> None:
+            _leaf(root).symlink_to(elsewhere)
+
+        plc = _placement(root, scope_created=plant_symlink)
         plc.apply([101])
         assert plc.error == placement.REFUSED_PARENT_NOT_GATES_SLICE
         assert plc.leaf_cgroup is None
         assert not (elsewhere / "memory.high").exists()
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
 
     def test_an_existing_leaf_is_refused_without_changing_its_caps(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
-        _leaf(root).mkdir()
+        write_cgroup(root, SCOPE_UNIT_CGROUP, cgroup_files())
+        write_cgroup(root, f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}", cgroup_files())
         (_leaf(root) / "memory.high").write_text("123")
         plc = _placement(root)
         plc.apply([101])
-        assert plc.error == placement.write_failed(
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}"
-        )
+        assert plc.error == "place-refused:scope-unavailable"
         assert plc.leaf_cgroup is None
         assert (_leaf(root) / "memory.high").read_text() == "123"
 
@@ -879,19 +1035,17 @@ class TestApply:
         original_mkdir = placement.os.mkdir
         leaf = str(_leaf(root))
 
-        def competing_mkdir(path):
+        def competing_mkdir(path, *args, **kwargs):
             if path == leaf:
                 original_mkdir(path)
                 (_leaf(root) / "memory.high").write_text("456")
                 raise FileExistsError(17, "leaf appeared", path)
-            return original_mkdir(path)
+            return original_mkdir(path, *args, **kwargs)
 
         monkeypatch.setattr(placement.os, "mkdir", competing_mkdir)
         plc = _placement(root)
-        plc.apply([])
-        assert plc.error == placement.write_failed(
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}"
-        )
+        plc.apply([101])
+        assert plc.error == placement.write_failed(f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}")
         assert plc.leaf_cgroup is None
         assert (_leaf(root) / "memory.high").read_text() == "456"
 
@@ -907,16 +1061,16 @@ class TestApply:
                     raise OSError(1, "Operation not permitted", abs_target)
                 super()._write(abs_target, value)
 
-        plc = _Unwritable(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
+        plc = _placement(
+            root, _placement_cls=_Unwritable,
             request=placement.PlacementRequest(memory_high=MEMORY_HIGH, memory_max=MEMORY_MAX),
         )
         plc.apply([101])
         assert plc.error == (
-            f"place-refused:write-failed:dev.slice/dev-gates.slice/{LEAF_NAME}/memory.max"
+            f"place-refused:write-failed:{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/memory.max"
         )
-        assert plc.block()["leaf"] is None and plc.applied == {}
+        assert plc.block()["leaf"] is None
+        assert plc.applied == {"memory.high": MEMORY_HIGH}
         assert not _leaf(root).exists()  # abandoned, not left empty and capless
 
     def test_a_leaf_that_cannot_even_be_abandoned_still_reports_the_cap_failure(self, tmp_path):
@@ -931,293 +1085,24 @@ class TestApply:
                     raise OSError(1, "Operation not permitted", abs_target)
                 super()._write(abs_target, value)
 
-        plc = _Unwritable(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_raise_busy,
+        plc = _placement(
+            root, _placement_cls=_Unwritable, rmdir=_raise_busy,
             request=placement.PlacementRequest(cpu_weight=100),
         )
-        plc.apply([])
-        assert plc.error.endswith(f"{LEAF_NAME}/cpu.weight")
-        assert plc.leaf_cgroup is None
+        plc.apply([101])
+        assert plc.error == placement.write_failed(f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}")
+        assert plc.leaf_cgroup == PLACEMENT_CGROUP
         assert _leaf(root).is_dir()  # the host really does still carry it
 
-    def test_a_failed_mkdir_is_reported_before_any_leaf_exists(self, tmp_path):
+    def test_direct_slice_leaf_name_is_not_a_placement_collision(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
-        # A FILE where the leaf must go: `makedirs` raises, and there is no
-        # cap write to abandon because none has happened yet.
+        # The supported geometry is scope/leaf. A stale direct rg-* entry is
+        # unrelated to the uniquely named transient scope.
         (root / "dev.slice" / "dev-gates.slice" / LEAF_NAME).write_text("")
         plc = _placement(root)
         plc.apply([101])
-        assert plc.error.startswith("place-refused:write-failed:")
-        assert plc.leaf_cgroup is None
-
-
-class TestMigration:
-    def test_later_pids_are_moved_and_earlier_ones_are_not_rewritten(self, tmp_path):
-        """§8.3's "also pids found later": the resolver keeps finding
-        descendants while the lane forks, and `migrate` is a set difference,
-        not a re-write of the whole subtree every discovery tick."""
-        root = _fake_cgroup_root(tmp_path)
-        writes: List[Any] = []
-        plc = _placement(root, writes=writes)
-        plc.apply([101])
-        before = len(writes)
-
-        assert plc.migrate([101, 102, 103]) == 2
-        assert plc.block()["pids_moved"] == 3
-        assert [value for _, value in writes[before:]] == ["102", "103"]
-        assert plc.migrate([101, 102, 103]) == 0  # nothing new to do
-
-    def test_a_pid_that_vanished_is_skipped_not_an_error(self, tmp_path):
-        root = _fake_cgroup_root(tmp_path)
-        plc = _placement(root)
-        plc.apply([101])
-        _fake_rmdir(str(_leaf(root)))  # the leaf is gone from under us
-        assert plc.migrate([777]) == 0
-        assert plc.block()["pids_moved"] == 1
-
-    def test_an_unplaced_placement_migrates_nothing(self, tmp_path):
-        plc = _placement(_fake_cgroup_root(tmp_path, gates=False))
-        plc.apply([101])
-        assert plc.migrate([101]) == 0
-
-    def test_private_pid_namespace_uses_systemd_attach_and_verifies_membership(
-        self, tmp_path, monkeypatch,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        attached: List[Any] = []
-        writes: List[Any] = []
-        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target.endswith("cgroup.procs"):
-                    raise OSError(errno.ESRCH, "pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
-
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
-            request=placement.PlacementRequest(),
-            on_write=lambda rel, value: writes.append((rel, value)),
-            systemd_attach=lambda unit, subcgroup, pid: attached.append(
-                (unit, subcgroup, pid)
-            ) is None,
-            pid_exists=lambda _pid: True,
-            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
-        )
-        plc.apply([101])
-
-        assert attached == [("dev-gates.slice", LEAF_NAME, 101)]
-        assert (f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs", "101") in writes
         assert plc.error is None
-        assert plc.block()["pids_moved"] == 1
-
-    def test_non_esrch_write_failure_is_not_sent_to_systemd(self, tmp_path):
-        root = _fake_cgroup_root(tmp_path)
-        attached: List[Any] = []
-        logged: List[str] = []
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target.endswith("cgroup.procs"):
-                    raise OSError(errno.EPERM, "write refused", abs_target)
-                super()._write(abs_target, value)
-
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
-            request=placement.PlacementRequest(),
-            systemd_attach=lambda unit, subcgroup, pid: attached.append(
-                (unit, subcgroup, pid)
-            ) or True,
-            pid_exists=lambda _pid: True,
-            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
-            log=logged.append,
-        )
-        plc.apply([101])
-
-        assert attached == []
-        assert plc.block()["pids_moved"] == 0
-        assert plc.error == placement.write_failed(
-            f"{GATES_CGROUP.lstrip('/')}/{LEAF_NAME}/cgroup.procs"
-        )
-        assert plc.block()["leaf"] is None
-        assert not _leaf(root).exists()
-        assert any(
-            "direct migration of pid 101 failed" in message
-            and "write refused" in message
-            for message in logged
-        )
-
-    def test_failed_systemd_attach_abandons_empty_leaf(self, tmp_path, monkeypatch):
-        root = _fake_cgroup_root(tmp_path)
-        logged: List[str] = []
-        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target.endswith("cgroup.procs"):
-                    raise OSError(errno.ESRCH, "pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
-
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
-            request=placement.PlacementRequest(),
-            systemd_attach=lambda _unit, _subcgroup, _pid: False,
-            pid_exists=lambda _pid: True,
-            log=logged.append,
-        )
-        plc.apply([101])
-
-        assert plc.leaf_cgroup is None
-        assert plc.error == placement.write_failed(
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs"
-        )
-        assert "systemd could not attach pid 101" in logged[-1]
-        assert not _leaf(root).exists()
-
-    def test_systemd_attach_membership_mismatch_is_failure_and_logged(
-        self, tmp_path, monkeypatch,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        logged: List[str] = []
-        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target.endswith("cgroup.procs"):
-                    raise OSError(errno.ESRCH, "pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
-
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
-            request=placement.PlacementRequest(),
-            systemd_attach=lambda _unit, _subcgroup, _pid: True,
-            pid_exists=lambda _pid: True,
-            pid_cgroup=lambda _pid: "/dev.slice/dev-gates.slice/other-leaf",
-            log=logged.append,
-        )
-        plc.apply([101])
-
-        assert plc.leaf_cgroup is None
-        assert plc.error == placement.write_failed(
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs"
-        )
-        assert "systemd attach of pid 101 was not visible" in logged[-1]
-        assert not _leaf(root).exists()
-
-    def test_systemd_attach_failures_without_log_sinks_still_refuse(
-        self, tmp_path, monkeypatch,
-    ):
-        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
-        root = _fake_cgroup_root(tmp_path / "attach")
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target.endswith("cgroup.procs"):
-                    raise OSError(errno.ESRCH, "pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
-
-        attach_failed = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
-            request=placement.PlacementRequest(),
-            systemd_attach=lambda _unit, _subcgroup, _pid: False,
-            pid_exists=lambda _pid: True,
-        )
-        attach_failed.apply([101])
-        assert attach_failed.error is not None
-
-        mismatch_root = _fake_cgroup_root(tmp_path / "mismatch")
-        mismatch = _PrivateNamespace(
-            cgroup_root=str(mismatch_root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
-            request=placement.PlacementRequest(),
-            systemd_attach=lambda _unit, _subcgroup, _pid: True,
-            pid_exists=lambda _pid: True,
-            pid_cgroup=lambda _pid: "/dev.slice/dev-gates.slice/other-leaf",
-        )
-        mismatch.apply([101])
-        assert mismatch.error is not None
-
-    @pytest.mark.parametrize("with_log", [True, False])
-    def test_esrch_migration_without_host_proc_fails_closed(
-        self, tmp_path, monkeypatch, with_log,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        logged: List[str] = []
-        attached: List[Any] = []
-        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: False)
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target.endswith("cgroup.procs"):
-                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
-
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
-            request=placement.PlacementRequest(), systemd_attach=lambda *args: (
-                attached.append(args) or True
-            ), pid_exists=lambda _pid: True,
-            log=logged.append if with_log else None,
-        )
-        plc.apply([101])
-
-        assert attached == []
-        assert plc.error == placement.write_failed(
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}/cgroup.procs"
-        )
-        assert plc.leaf_cgroup is None
-        if with_log:
-            assert "without a verified host-proc view" in logged[-1]
-
-    def test_esrch_migration_for_a_vanished_pid_does_not_use_systemd(
-        self, tmp_path, monkeypatch,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        attached: List[Any] = []
-        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target.endswith("cgroup.procs"):
-                    raise OSError(errno.ESRCH, "pid exited", abs_target)
-                super()._write(abs_target, value)
-
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
-            request=placement.PlacementRequest(),
-            systemd_attach=lambda *args: attached.append(args) or True,
-            pid_exists=lambda _pid: False,
-        )
-        plc.apply([101])
-
-        assert attached == []
-        assert plc.error is None
-        assert plc.block()["pids_moved"] == 0
-
-    def test_default_proc_helpers_use_the_placement_proc_root(self, tmp_path, monkeypatch):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        (proc / "4242").mkdir()
-        plc = _placement(root, proc_root=str(proc))
-        calls: List[Any] = []
-
-        def fake_cgroup_of_pid(pid, cgroup_root, proc_root):
-            calls.append((pid, cgroup_root, proc_root))
-            return "/dev.slice/dev-background.slice/work.scope"
-
-        monkeypatch.setattr("lib.targets.cgroup_of_pid", fake_cgroup_of_pid)
-        assert plc._default_pid_cgroup(4242) == "/dev.slice/dev-background.slice/work.scope"
-        assert calls == [(4242, str(root), str(proc))]
-        assert plc._default_pid_exists(4242) is True
-        assert plc._default_pid_exists(9999) is False
+        assert plc.placed
 
 
 @pytest.mark.parametrize(("subcgroup", "expected"), [
@@ -1267,6 +1152,97 @@ def test_systemd_attach_returns_false_when_busctl_cannot_start():
     ) is False
 
 
+def test_systemd_scope_creation_supplies_initial_pids_and_delegation(monkeypatch):
+    calls: List[Any] = []
+    monkeypatch.setenv("CGPROFILE_BUSCTL", "busctl-test")
+    monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: "/unit/path")
+    monkeypatch.setattr(
+        placement, "_systemd_property",
+        lambda _path, interface, name: {
+            ("org.freedesktop.systemd1.Unit", "LoadState"): "loaded",
+            ("org.freedesktop.systemd1.Scope", "ControlGroup"): (
+                "/dev.slice/dev-gates.slice/" + SCOPE_UNIT
+            ),
+            ("org.freedesktop.systemd1.Scope", "Slice"): "dev-gates.slice",
+        }.get((interface, name)),
+    )
+    monkeypatch.setattr(placement, "_systemd_bool_property", lambda *_args: True)
+    monkeypatch.setattr(
+        placement, "_systemd_string_array_property",
+        lambda *_args: list(placement.REQUIRED_CONTROLLERS),
+    )
+    monkeypatch.setattr(placement.time, "sleep", lambda _seconds: None)
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "o /unit/path\n", "")
+
+    actual = placement._systemd_create_scope(
+        SCOPE_UNIT, "dev-gates.slice", [101, 202],
+        placement.REQUIRED_CONTROLLERS, run=fake_run,
+    )
+
+    assert actual == "/dev.slice/dev-gates.slice/" + SCOPE_UNIT
+    assert calls == [(
+        [
+            "busctl-test", "--system", "call", "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+            "StartTransientUnit", "ssa(sv)a(sa(sv))", SCOPE_UNIT, "fail", "5",
+            "Description", "s", "cgprofile lane placement",
+            "Slice", "s", "dev-gates.slice",
+            "PIDs", "au", "2", "101", "202",
+            "Delegate", "b", "true",
+            "DelegateControllers", "as", "3", "memory", "cpu", "pids", "0",
+        ],
+        {"check": False, "capture_output": True, "text": True, "timeout": 10.0},
+    )]
+
+
+@pytest.mark.parametrize("failure", ["load", "path", "slice", "delegate", "controllers"])
+def test_systemd_scope_creation_refuses_unverified_properties(monkeypatch, failure):
+    monkeypatch.setenv("CGPROFILE_BUSCTL", "busctl-test")
+    monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: "/unit/path")
+    values = {
+        ("org.freedesktop.systemd1.Unit", "LoadState"): "loaded",
+        ("org.freedesktop.systemd1.Scope", "ControlGroup"): (
+            "/dev.slice/dev-gates.slice/" + SCOPE_UNIT
+        ),
+        ("org.freedesktop.systemd1.Scope", "Slice"): "dev-gates.slice",
+    }
+    if failure == "load":
+        values[("org.freedesktop.systemd1.Unit", "LoadState")] = "not-found"
+    elif failure == "path":
+        values[("org.freedesktop.systemd1.Scope", "ControlGroup")] = None
+    elif failure == "slice":
+        values[("org.freedesktop.systemd1.Scope", "Slice")] = "dev-background.slice"
+    monkeypatch.setattr(
+        placement, "_systemd_property",
+        lambda _path, interface, name: values.get((interface, name)),
+    )
+    monkeypatch.setattr(
+        placement, "_systemd_bool_property",
+        lambda *_args: failure != "delegate",
+    )
+    monkeypatch.setattr(
+        placement, "_systemd_string_array_property",
+        lambda *_args: [] if failure == "controllers" else list(placement.REQUIRED_CONTROLLERS),
+    )
+    monkeypatch.setattr(placement.time, "sleep", lambda _seconds: None)
+    result = placement._systemd_create_scope(
+        SCOPE_UNIT, "dev-gates.slice", [101], placement.REQUIRED_CONTROLLERS,
+        run=lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+    assert result is None
+
+
+@pytest.mark.parametrize("pids", [[], [0], [-1], [True]])
+def test_systemd_scope_creation_refuses_invalid_initial_pid_sets(pids):
+    assert placement._systemd_create_scope(
+        SCOPE_UNIT, "dev-gates.slice", pids, placement.REQUIRED_CONTROLLERS,
+        run=lambda *_args, **_kwargs: pytest.fail("invalid pid set reached systemd"),
+    ) is None
+
+
 @pytest.mark.parametrize(
     ("cgroup", "expected"),
     [
@@ -1284,471 +1260,284 @@ def test_systemd_destination_is_narrow_and_derived_from_unit_path(cgroup, expect
     assert placement._systemd_destination(cgroup) == expected
 
 
-class TestRelease:
-    def test_survivors_go_back_to_the_origin_scope_and_the_leaf_goes(self, tmp_path):
+class TestDelegatedScopeMigration:
+    def test_initial_pids_are_journaled_then_placed_below_the_verified_scope(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
-        plc = _placement(root)
+        writes: List[Any] = []
+        journal_updates: List[Dict[str, Any]] = []
+        plc = _placement(
+            root, writes=writes,
+            state_write=lambda value: journal_updates.append(json.loads(json.dumps(value))),
+        )
+
         plc.apply([101, 102])
-        # A pid the lane forked after the last discovery tick: `release`
-        # reads the LEAF's own procs, not what it remembers moving.
-        (_leaf(root) / "cgroup.procs").write_text("101\n102\n999\n")
+
+        scope = root / SCOPE_UNIT_CGROUP
+        assert plc.error is None and plc.placed
+        assert scope.is_dir() and _leaf(root).is_dir()
+        assert (scope / "cgroup.procs").read_text() == ""
+        assert (_leaf(root) / "cgroup.procs").read_text() == "101\n102\n"
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == ""
+        prepared = next(item for item in journal_updates if item["state"] == "creating-scope")
+        assert set(prepared["pids"]) == {"101", "102"}
+        assert all(
+            item["origin_cgroup"] == "/" + SCOPE_CGROUP
+            and item["origin_unit"] == f"docker-{CONTAINER_ID}.scope"
+            and item["state"] == "prepared"
+            for item in prepared["pids"].values()
+        )
+        assert any(item["state"] == "moving-to-leaf" for item in journal_updates)
+        assert journal_updates[-1]["state"] == "placed"
+        assert [path for path, _ in writes].count(
+            f"{SCOPE_UNIT_CGROUP}/cgroup.subtree_control"
+        ) == 1
+
+    def test_later_descendants_are_moved_once_and_inherit_verified_ancestry(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        writes: List[Any] = []
+        plc = _placement(root, writes=writes)
+        plc.apply([101])
+        before = len(writes)
+
+        assert plc.migrate([101, 102, 103]) == 2
+        assert plc.migrate([101, 102, 103]) == 0
+        assert (_leaf(root) / "cgroup.procs").read_text() == "101\n102\n103\n"
+        assert set(plc.pid_records) == {101, 102, 103}
+        assert all(
+            plc.pid_records[pid]["origin_cgroup"] == "/" + SCOPE_CGROUP
+            for pid in (102, 103)
+        )
+        assert [value for _, value in writes[before:]] == ["102", "103"]
+
+    def test_vanished_descendant_is_skipped_without_a_systemd_move(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        calls: List[Any] = []
+        plc = _placement(root, attach_calls=calls)
+        plc.apply([101])
+        plc._pid_exists = lambda pid: pid != 777
+
+        assert plc.migrate([777]) == 0
+        assert plc.error is None
+        assert calls == [(SCOPE_UNIT, LEAF_NAME, 101)]
+
+    def test_unplaced_session_does_not_migrate_discovered_pids(self, tmp_path):
+        plc = _placement(_fake_cgroup_root(tmp_path, gates=False))
+        plc.apply([101])
+
+        assert plc.migrate([101, 102]) == 0
+        assert plc.error == placement.REFUSED_NO_GATES_SLICE
+        assert plc.block()["pids_moved"] == 0
+
+    def test_release_restores_each_survivor_through_its_recorded_systemd_unit(
+        self, tmp_path,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        calls: List[Any] = []
+        plc = _placement(root, attach_calls=calls)
+        plc.apply([101])
 
         plc.release()
-        assert plc.error is None
+
+        assert plc.error is None and plc.released
+        assert calls == [
+            (SCOPE_UNIT, LEAF_NAME, 101),
+            (f"docker-{CONTAINER_ID}.scope", "", 101),
+        ]
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+
+    def test_empty_target_and_missing_recovery_writer_refuse_before_scope_creation(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        empty = _placement(root)
+        empty.apply([])
+        assert empty.error == "place-refused:no-target-pids"
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+        second_root = _fake_cgroup_root(tmp_path / "second")
+        no_writer = _placement(second_root, state_write=None)
+        no_writer.apply([101])
+        assert no_writer.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert not (second_root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_missing_host_proc_view_refuses_before_scope_creation(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root, host_proc_view=lambda _proc: False)
+        plc.apply([101])
+        assert plc.error == placement.REFUSED_NO_HOST_PROC
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+
+    def test_failed_manager_attach_restores_scope_members_and_removes_the_leaf(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(
+            root,
+            attach_filter=lambda unit, _subcgroup, _pid: unit != SCOPE_UNIT,
+        )
+
+        plc.apply([101])
+
+        assert plc.error == placement.write_failed(
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cgroup.procs"
+        )
         assert not _leaf(root).exists()
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "999"
-        assert plc.placed is False
-        plc.release()  # idempotent: a second stop does nothing at all
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+        assert plc.block()["leaf"] is None
+
+    def test_failed_restore_keeps_owned_leaf_and_journal_for_recovery(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        journal_updates: List[Dict[str, Any]] = []
+        plc = _placement(
+            root,
+            attach_filter=lambda unit, _subcgroup, _pid: unit == SCOPE_UNIT,
+            state_write=lambda value: journal_updates.append(json.loads(json.dumps(value))),
+        )
+        plc.apply([101])
         assert plc.error is None
 
-    def test_an_empty_leaf_moves_nobody_back(self, tmp_path):
+        plc.release()
+
+        assert plc.error == placement.write_failed(
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cgroup.procs"
+        )
+        assert plc.placed and _leaf(root).exists()
+        assert journal_updates[-1]["state"] == "recovery-required"
+        assert journal_updates[-1]["leaf_created"] is True
+
+    def test_pid_reuse_blocks_restore_and_preserves_the_leaf(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         plc = _placement(root)
-        plc.apply([])
+        plc.apply([101])
+        plc.pid_records[101]["start_time_ticks"] = "reused"
+
         plc.release()
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text().strip() == ""
 
-    def test_a_survivor_that_exits_mid_move_is_skipped(self, tmp_path):
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert _leaf(root).exists() and plc.placed
+        assert plc._journal["state"] == "recovery-required"
+
+    def test_unjournaled_process_in_leaf_is_not_guessed_at_or_moved(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
-        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
+        plc = _placement(root)
+        plc.apply([101])
+        (_leaf(root) / "cgroup.procs").write_text("101\n777\n")
 
-        class _ExitedSurvivor(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target == str(origin_procs):
-                    raise OSError(errno.ESRCH, "pid exited", abs_target)
-                super()._write(abs_target, value)
+        plc.release()
 
-        plc = _ExitedSurvivor(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir,
-            request=placement.PlacementRequest(), pid_exists=lambda _pid: False,
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert _leaf(root).exists() and plc.placed
+        assert plc._journal["pids"].keys() == {"101"}
+
+    def test_child_created_after_last_discovery_is_restored_via_journaled_parent(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root)
+        plc.apply([101])
+        (_leaf(root) / "cgroup.procs").write_text("101\n999\n")
+
+        plc.release()
+
+        assert plc.error is None and plc.released
+        assert not _leaf(root).exists()
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n999\n"
+
+
+class TestPlacementJournalRecovery:
+    def test_restart_recovery_restores_exact_scope_members_then_retires_scope(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        snapshots: List[Dict[str, Any]] = []
+        initial = _placement(
+            root,
+            state_write=lambda value: snapshots.append(json.loads(json.dumps(value))),
         )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("101\nnot-a-pid\n102\n")
-        plc.release()
-        assert not _leaf(root).exists()  # the leaf still goes
+        initial.apply([101])
+        journal = json.loads(json.dumps(snapshots[-1]))
+        assert journal["state"] == "placed"
 
-    def test_private_pid_namespace_restores_survivor_via_systemd(self, tmp_path, monkeypatch):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        attached: List[Any] = []
-        writes: List[Any] = []
-        origin = "/" + SCOPE_CGROUP
-        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
-        current_cgroups = {4242: f"{GATES_CGROUP}/{LEAF_NAME}"}
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _proc: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: "/unit/scope")
 
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target == str(origin_procs):
-                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
+        def string_property(_path, interface, name):
+            return {
+                ("org.freedesktop.systemd1.Unit", "LoadState"): "loaded",
+                ("org.freedesktop.systemd1.Scope", "ControlGroup"): "/" + SCOPE_UNIT_CGROUP,
+                ("org.freedesktop.systemd1.Scope", "Slice"): "dev-gates.slice",
+            }.get((interface, name))
 
-        def attach(unit: str, subcgroup: str, pid: int) -> bool:
-            attached.append((unit, subcgroup, pid))
-            current_cgroups[pid] = origin
-            return True
-
-        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(placement, "_systemd_property", string_property)
+        monkeypatch.setattr(placement, "_systemd_bool_property", lambda *_args: True)
         monkeypatch.setattr(
-            "lib.targets.pids_in_cgroup",
-            lambda cgroup, _root, _proc: [4242]
-            if cgroup == f"{GATES_CGROUP}/{LEAF_NAME}" else [],
+            placement, "_systemd_string_array_property",
+            lambda *_args: list(placement.REQUIRED_CONTROLLERS),
         )
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup=origin, rmdir=_fake_rmdir, proc_root=str(proc),
-            request=placement.PlacementRequest(),
-            systemd_attach=attach, pid_exists=lambda pid: pid in current_cgroups,
-            pid_cgroup=lambda pid: current_cgroups.get(pid),
-            on_write=lambda rel, value: writes.append((rel, value)),
+        monkeypatch.setattr(placement, "_systemd_unit_cgroup_matches", lambda *_args: True)
+        real_class = placement.LanePlacement
+
+        def recovery_factory(**kwargs):
+            return _placement(
+                root,
+                _placement_cls=real_class,
+                token=kwargs["token"],
+                origin_cgroup=kwargs["origin_cgroup"],
+                state_write=kwargs["state_write"],
+                proc_root=kwargs["proc_root"],
+            )
+
+        monkeypatch.setattr(placement, "LanePlacement", recovery_factory)
+        updates: List[Dict[str, Any]] = []
+        result = placement.recover_journal(
+            journal,
+            cgroup_root=str(root),
+            gates_cgroup=GATES_CGROUP,
+            proc_root="/proc",
+            state_write=lambda value: updates.append(json.loads(json.dumps(value))),
         )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
 
-        plc.release()
+        assert result is None
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+        assert updates[-1]["state"] == "complete"
+        assert updates[-1]["leaf_created"] is False
 
-        assert attached == [(f"docker-{CONTAINER_ID}.scope", "", 4242)]
-        assert (f"{SCOPE_CGROUP}/cgroup.procs", "4242") in writes
-        assert plc.error is None
-        assert plc.released is True
-        assert not _leaf(root).exists()
-
-    def test_empty_leaf_after_unavailable_host_scan_can_be_released(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("journal", [
+        None,
+        {},
+        {"schema": 2},
+        {"schema": 1, "token": "../bad"},
+        {
+            "schema": 1, "token": TOKEN, "scope_unit": SCOPE_UNIT,
+            "gates_unit": "dev-gates.slice", "gates_cgroup": [],
+        },
+        {
+            "schema": 1, "token": TOKEN, "scope_unit": SCOPE_UNIT,
+            "gates_unit": "dev-gates.slice", "gates_cgroup": GATES_CGROUP,
+            "scope_cgroup": ["outside"],
+        },
+        {
+            "schema": 1, "token": TOKEN, "scope_unit": SCOPE_UNIT,
+            "gates_unit": "dev-gates.slice", "gates_cgroup": GATES_CGROUP,
+            "scope_cgroup": "/dev.slice/dev-gates.slice/" + SCOPE_UNIT,
+            "leaf_cgroup": ["outside"],
+        },
+    ])
+    def test_malformed_journal_is_refused_without_any_host_mutation(self, journal, tmp_path):
         root = _fake_cgroup_root(tmp_path)
-        plc = _placement(root, request=placement.PlacementRequest())
-        plc.apply([])
-        _host_proc_with_pids(monkeypatch, [])
-        readings = iter(([0], []))
-        monkeypatch.setattr(placement, "_read_pids", lambda _path: next(readings))
-
-        plc.release()
-
-        assert plc.error is None
-        assert plc.released is True
-        assert not _leaf(root).exists()
-
-    def test_unavailable_host_scan_with_remaining_placeholder_keeps_leaf(
-        self, tmp_path, monkeypatch,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        logged: List[str] = []
-        plc = _placement(root, request=placement.PlacementRequest(), log=logged.append)
-        plc.apply([])
-        _host_proc_with_pids(monkeypatch, [])
-        monkeypatch.setattr(placement, "_read_pids", lambda _path: [0])
-
-        plc.release()
-
-        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
-        assert plc.released is False
-        assert _leaf(root).exists()
-        assert "could not safely restore all survivors" in logged[-1]
-
-    @pytest.mark.parametrize(
-        ("exists", "membership", "expected_error", "expected_leaf"),
-        [
-            (False, None, None, False),
-            (True, None, f"place-refused:write-failed:{SCOPE_CGROUP}/cgroup.procs", True),
-            (True, "/elsewhere", None, False),
-        ],
-    )
-    def test_host_proc_source_membership_is_checked_before_restore(
-        self, tmp_path, monkeypatch, exists, membership, expected_error, expected_leaf,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        _host_proc_with_pids(monkeypatch, [4242])
-        plc = _placement(
-            root, request=placement.PlacementRequest(), proc_root=str(proc),
-            pid_exists=lambda _pid: exists, pid_cgroup=lambda _pid: membership,
-            systemd_attach=lambda *_args: pytest.fail("systemd must not see stale membership"),
+        result = placement.recover_journal(
+            journal,
+            cgroup_root=str(root),
+            gates_cgroup=GATES_CGROUP,
+            proc_root="/proc",
+            state_write=lambda _value: pytest.fail("invalid journal must not be rewritten"),
         )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-
-        plc.release()
-
-        assert plc.error == expected_error
-        assert _leaf(root).exists() is expected_leaf
-
-    def test_host_proc_pid_disappearing_during_cgroup_read_is_skipped(self, tmp_path, monkeypatch):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        _host_proc_with_pids(monkeypatch, [4242])
-        existence = iter((True, False))
-        plc = _placement(
-            root, request=placement.PlacementRequest(), proc_root=str(proc),
-            pid_exists=lambda _pid: next(existence), pid_cgroup=lambda _pid: None,
-        )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-
-        plc.release()
-
-        assert plc.error is None
-        assert plc.released is True
-        assert not _leaf(root).exists()
-
-    def test_direct_restore_is_verified_and_records_event(self, tmp_path, monkeypatch):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        origin = "/" + SCOPE_CGROUP
-        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
-        current = {4242: f"{GATES_CGROUP}/{LEAF_NAME}"}
-        writes: List[Any] = []
-        _host_proc_with_pids(monkeypatch, [4242])
-
-        class _DirectRestore(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                super()._write(abs_target, value)
-                if abs_target == str(origin_procs):
-                    current[4242] = origin
-
-        plc = _DirectRestore(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup=origin, rmdir=_fake_rmdir, proc_root=str(proc),
-            request=placement.PlacementRequest(), pid_exists=lambda _pid: True,
-            pid_cgroup=lambda pid: current.get(pid),
-            on_write=lambda rel, value: writes.append((rel, value)),
-        )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-
-        plc.release()
-
-        assert plc.error is None
-        assert (f"{SCOPE_CGROUP}/cgroup.procs", "4242") in writes
-        assert not _leaf(root).exists()
-
-    @pytest.mark.parametrize(
-        ("after_write", "exists_after", "expected_error", "expected_leaf"),
-        [
-            ("/elsewhere", True, True, True),
-            (None, True, True, True),
-            (None, False, False, False),
-        ],
-    )
-    def test_direct_restore_requires_verified_destination_or_exit(
-        self, tmp_path, monkeypatch, after_write, exists_after, expected_error, expected_leaf,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        _host_proc_with_pids(monkeypatch, [4242])
-        memberships = iter((f"{GATES_CGROUP}/{LEAF_NAME}", after_write))
-        existence = iter((True, exists_after))
-        plc = _placement(
-            root, request=placement.PlacementRequest(), proc_root=str(proc),
-            pid_exists=lambda _pid: next(existence),
-            pid_cgroup=lambda _pid: next(memberships),
-        )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-
-        plc.release()
-
-        assert (plc.error is not None) is expected_error
-        assert _leaf(root).exists() is expected_leaf
-
-    def test_host_proc_restore_rejects_direct_write_failure(self, tmp_path, monkeypatch):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        logged: List[str] = []
-        attached: List[Any] = []
-        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
-        _host_proc_with_pids(monkeypatch, [4242])
-
-        class _DirectFailure(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target == str(origin_procs):
-                    raise OSError(errno.EPERM, "write denied", abs_target)
-                super()._write(abs_target, value)
-
-        plc = _DirectFailure(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir, proc_root=str(proc),
-            request=placement.PlacementRequest(), pid_exists=lambda _pid: True,
-            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
-            systemd_attach=lambda *args: attached.append(args) or True,
-            log=logged.append,
-        )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-
-        plc.release()
-
-        assert attached == []
-        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
-        assert _leaf(root).exists()
-        assert "could not safely restore all survivors" in logged[-1]
-
-    def test_host_proc_restore_refuses_origin_without_systemd_unit(self, tmp_path, monkeypatch):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        target_cgroup = "unmanaged/child"
-        write_cgroup(root, target_cgroup, cgroup_files())
-        origin_procs = root / target_cgroup / "cgroup.procs"
-        attached: List[Any] = []
-        _host_proc_with_pids(monkeypatch, [4242])
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target == str(origin_procs):
-                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
-
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + target_cgroup, rmdir=_fake_rmdir, proc_root=str(proc),
-            request=placement.PlacementRequest(), pid_exists=lambda _pid: True,
-            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
-            systemd_attach=lambda *args: attached.append(args) or True,
-        )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-
-        plc.release()
-
-        assert attached == []
-        assert plc.error == placement.write_failed(f"{target_cgroup}/cgroup.procs")
-        assert _leaf(root).exists()
-
-    @pytest.mark.parametrize("with_log", [True, False])
-    def test_systemd_restore_membership_mismatch_keeps_leaf_and_logs(
-        self, tmp_path, monkeypatch, with_log,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        logged: List[str] = []
-        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
-        attached: List[Any] = []
-        _host_proc_with_pids(monkeypatch, [4242])
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target == str(origin_procs):
-                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
-
-        def attach(unit: str, subcgroup: str, pid: int) -> bool:
-            attached.append((unit, subcgroup, pid))
-            return True
-
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir, proc_root=str(proc),
-            request=placement.PlacementRequest(), systemd_attach=attach,
-            pid_exists=lambda _pid: True,
-            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
-            log=logged.append if with_log else None,
-        )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-
-        plc.release()
-
-        assert attached == [(f"docker-{CONTAINER_ID}.scope", "", 4242)]
-        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
-        assert _leaf(root).exists()
-        if with_log:
-            assert any("not visible" in row for row in logged)
-
-    def test_systemd_restore_of_pid_that_exits_after_attach_is_complete(
-        self, tmp_path, monkeypatch,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
-        current = {4242: f"{GATES_CGROUP}/{LEAF_NAME}"}
-        _host_proc_with_pids(monkeypatch, [4242])
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target == str(origin_procs):
-                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
-
-        def attach(_unit: str, _subcgroup: str, pid: int) -> bool:
-            current.pop(pid)
-            return True
-
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir, proc_root=str(proc),
-            request=placement.PlacementRequest(), systemd_attach=attach,
-            pid_exists=lambda pid: pid in current,
-            pid_cgroup=lambda pid: current.get(pid),
-        )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-
-        plc.release()
-
-        assert plc.error is None
-        assert plc.released is True
-        assert not _leaf(root).exists()
-
-    def test_unknown_private_namespace_survivor_keeps_leaf_and_never_calls_systemd(
-        self, tmp_path, monkeypatch,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        attached: List[Any] = []
-        plc = _placement(
-            root, request=placement.PlacementRequest(),
-            systemd_attach=lambda *args: attached.append(args) or True,
-        )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: False)
-
-        plc.release()
-
-        assert attached == []
-        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
-        assert plc.released is False
-        assert plc.placed is True
-        assert _leaf(root).exists()
-
-    @pytest.mark.parametrize("with_log", [True, False])
-    def test_failed_systemd_restore_keeps_leaf_and_reports_origin_path(
-        self, tmp_path, monkeypatch, with_log,
-    ):
-        root = _fake_cgroup_root(tmp_path)
-        proc = _fake_proc(tmp_path)
-        attached: List[Any] = []
-        logged: List[str] = []
-        origin_procs = root / SCOPE_CGROUP / "cgroup.procs"
-
-        class _PrivateNamespace(placement.LanePlacement):
-            def _write(self, abs_target: str, value: str) -> None:
-                if abs_target == str(origin_procs):
-                    raise OSError(errno.ESRCH, "host pid is outside this namespace", abs_target)
-                super()._write(abs_target, value)
-
-        def fail_attach(unit: str, subcgroup: str, pid: int) -> bool:
-            attached.append((unit, subcgroup, pid))
-            return False
-
-        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
-        monkeypatch.setattr(
-            "lib.targets.pids_in_cgroup",
-            lambda cgroup, _root, _proc: [4242]
-            if cgroup == f"{GATES_CGROUP}/{LEAF_NAME}" else [],
-        )
-        plc = _PrivateNamespace(
-            cgroup_root=str(root), gates_cgroup=GATES_CGROUP, token=TOKEN,
-            origin_cgroup="/" + SCOPE_CGROUP, rmdir=_fake_rmdir, proc_root=str(proc),
-            request=placement.PlacementRequest(), systemd_attach=fail_attach,
-            pid_exists=lambda pid: pid == 4242,
-            pid_cgroup=lambda _pid: f"{GATES_CGROUP}/{LEAF_NAME}",
-            log=logged.append if with_log else None,
-        )
-        plc.apply([])
-        (_leaf(root) / "cgroup.procs").write_text("0\n")
-
-        plc.release()
-
-        assert attached == [(f"docker-{CONTAINER_ID}.scope", "", 4242)]
-        assert plc.error == placement.write_failed(f"{SCOPE_CGROUP}/cgroup.procs")
-        assert plc.released is False
-        assert _leaf(root).exists()
-        if with_log:
-            assert any("systemd could not restore pid 4242" in row for row in logged)
-
-    def test_a_leaf_that_will_not_go_is_retried_three_times_then_reported(self, tmp_path):
-        root = _fake_cgroup_root(tmp_path)
-        slept: List[float] = []
-        attempts: List[str] = []
-        logged: List[str] = []
-
-        def _refuse(path: str) -> None:
-            attempts.append(path)
-            raise OSError(16, "Device or resource busy", path)
-
-        plc = _placement(root, rmdir=_refuse, sleep=slept.append, log=logged.append)
-        plc.apply([])
-        plc.release()
-        assert len(attempts) == placement.RMDIR_ATTEMPTS
-        assert slept == [placement.RMDIR_RETRY_SECONDS] * (placement.RMDIR_ATTEMPTS - 1)
-        assert plc.error == (
-            f"place-refused:write-failed:dev.slice/dev-gates.slice/{LEAF_NAME}"
-        )
-        # The leaf is still NAMED: it really is on the host, and an operator
-        # reading the Summary has to be able to find it.
-        assert plc.block()["leaf"] == f"{GATES_CGROUP}/{LEAF_NAME}"
-        assert logged and "could not remove leaf" in logged[-1]
-
-    def test_releasing_an_unplaced_placement_is_a_no_op(self, tmp_path):
-        plc = _placement(_fake_cgroup_root(tmp_path, gates=False))
-        plc.apply([])
-        plc.release()
-        assert plc.error == placement.REFUSED_NO_GATES_SLICE
+        assert result == placement.REFUSED_STATE_UNAVAILABLE
+        assert not list((root / "dev.slice" / "dev-gates.slice").glob("rg-profile-*.scope"))
 
 
 class TestLeafReadingsAndKill:
     def test_leaf_readings_come_from_the_leaf(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         plc = _placement(root)
-        plc.apply([])
+        plc.apply([101])
         (_leaf(root) / "memory.pressure").write_text(
             "some avg10=40.00 avg60=0.00 avg300=0.00 total=0\n"
             "full avg10=33.00 avg60=0.00 avg300=0.00 total=0\n"
@@ -1758,7 +1547,7 @@ class TestLeafReadingsAndKill:
     def test_without_memory_high_nothing_is_throttling(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         plc = _placement(root, request=placement.PlacementRequest(cpu_weight=100))
-        plc.apply([])
+        plc.apply([101])
         assert plc.leaf_readings()["memory_high_applied"] is False
 
     def test_an_unplaced_placement_has_no_leaf_readings(self, tmp_path):
@@ -1800,18 +1589,22 @@ class TestLeafReadingsAndKill:
 
     def test_a_preexisting_leaf_is_refused_even_without_caps(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
-        _leaf(root).mkdir()
-        plc = _placement(root, request=placement.PlacementRequest())
-        plc.apply([])
-        assert plc.placed is False
-        assert plc.error == placement.write_failed(
-            f"dev.slice/dev-gates.slice/{LEAF_NAME}"
+        def plant_preexisting_leaf(_unit):
+            write_cgroup(root, f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}", cgroup_files())
+
+        plc = _placement(
+            root, request=placement.PlacementRequest(),
+            scope_created=plant_preexisting_leaf,
         )
+        plc.apply([101])
+        assert plc.placed is False
+        assert plc.error is not None
+        assert _leaf(root).exists()
 
     def test_a_memory_max_equal_to_the_slice_ceiling_is_allowed(self, tmp_path):
         root = _fake_cgroup_root(tmp_path, slice_memory_max=SLICE_MAX)
         plc = _placement(root, request=placement.PlacementRequest(memory_max=SLICE_MAX))
-        plc.apply([])
+        plc.apply([101])
         assert plc.placed is True
         assert plc.error is None
 
@@ -1861,6 +1654,106 @@ class TestLeafReadingsAndKill:
 # ── §8.3 through the daemon: start / status / watch / stop ──────────────
 
 class TestServerPlacement:
+    @pytest.mark.parametrize(
+        "recovery_result",
+        [None, placement.REFUSED_IDENTITY_UNAVAILABLE],
+    )
+    def test_startup_recovers_a_placement_journal_without_a_manifest(
+        self, tmp_path, monkeypatch, recovery_result,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        session_dir = tmp_path / "sessions" / SESSION_ID
+        session_dir.mkdir(parents=True)
+        journal = {"schema": 1, "state": "creating-scope", "token": TOKEN}
+        journal_path = session_dir / "placement-state.json"
+        journal_path.write_text(json.dumps(journal))
+        calls: List[Any] = []
+
+        def recover(record, **kwargs):
+            calls.append((record, kwargs["cgroup_root"], kwargs["gates_cgroup"]))
+            if recovery_result is None:
+                kwargs["state_write"]({**record, "state": "complete"})
+            return recovery_result
+
+        monkeypatch.setattr(serve.placement_mod, "recover_journal", recover)
+        _server(tmp_path, root)
+
+        assert calls == [(journal, str(root), GATES_CGROUP)]
+        result = json.loads((session_dir / "placement-recovery.json").read_text())
+        assert result["session"] == SESSION_ID
+        assert result["status"] == ("restored" if recovery_result is None else "failed")
+        assert result["error"] == recovery_result
+        assert not (session_dir / "manifest.json").exists()
+        if recovery_result is None:
+            assert json.loads(journal_path.read_text())["state"] == "complete"
+
+    @pytest.mark.parametrize(
+        "recovery_result",
+        [None, placement.REFUSED_IDENTITY_UNAVAILABLE],
+    )
+    def test_startup_retries_incomplete_placement_for_finished_manifest(
+        self, tmp_path, monkeypatch, recovery_result,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        session_dir = tmp_path / "sessions" / SESSION_ID
+        session_dir.mkdir(parents=True)
+        manifest_path = session_dir / "manifest.json"
+        manifest = {"session": SESSION_ID, "status": "finished"}
+        manifest_path.write_text(json.dumps(manifest))
+        journal = {"schema": 1, "state": "restoring-pids", "token": TOKEN}
+        journal_path = session_dir / "placement-state.json"
+        journal_path.write_text(json.dumps(journal))
+        calls: List[Any] = []
+        finalized: List[Any] = []
+
+        def recover(record, **kwargs):
+            calls.append(record)
+            if recovery_result is None:
+                kwargs["state_write"]({**record, "state": "complete"})
+            return recovery_result
+
+        monkeypatch.setattr(serve.placement_mod, "recover_journal", recover)
+        monkeypatch.setattr(
+            serve.SessionServer, "_finalize_orphan",
+            lambda _self, session_id, recovered_manifest:
+                finalized.append((session_id, recovered_manifest)),
+        )
+        _server(tmp_path, root)
+
+        assert calls == [journal]
+        assert finalized == []
+        recovered_manifest = json.loads(manifest_path.read_text())
+        assert recovered_manifest["status"] == "finished"
+        assert recovered_manifest["placement_recovery"] == (
+            {"status": "restored", "error": None}
+            if recovery_result is None else
+            {"status": "failed", "error": recovery_result}
+        )
+        if recovery_result is None:
+            assert json.loads(journal_path.read_text())["state"] == "complete"
+
+    def test_startup_does_not_revisit_completed_journal_for_finished_manifest(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        session_dir = tmp_path / "sessions" / SESSION_ID
+        session_dir.mkdir(parents=True)
+        (session_dir / "manifest.json").write_text(json.dumps({
+            "session": SESSION_ID, "status": "finished",
+        }))
+        (session_dir / "placement-state.json").write_text(json.dumps({
+            "schema": 1, "state": "complete", "token": TOKEN,
+        }))
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            serve.placement_mod, "recover_journal",
+            lambda *args, **kwargs: calls.append(args),
+        )
+
+        _server(tmp_path, root)
+
+        assert calls == []
+
     def test_live_token_session_reuse_rejects_a_policy_change(self, tmp_path):
         root = _fake_cgroup_root(tmp_path, procs="101\n")
         server = _server(tmp_path, root)
@@ -1919,7 +1812,7 @@ class TestServerPlacement:
         assert logs and "placement refused" in logs[-1]
 
         logs.clear()
-        success_root = _fake_cgroup_root(tmp_path / "success")
+        success_root = _fake_cgroup_root(tmp_path / "success", procs="101\n")
         success_server = _server(tmp_path / "success", success_root)
         success = success_server._create_session_locked(
             container_id=CONTAINER_ID, cgroup="/" + SCOPE_CGROUP,
@@ -1942,8 +1835,8 @@ class TestServerPlacement:
 
         monkeypatch.setattr(placement.LanePlacement, "apply", partial_apply)
         monkeypatch.setattr(
-            placement.LanePlacement, "_move_survivors_back",
-            lambda _lane, _leaf: False,
+            placement.LanePlacement, "_restore_owned_processes",
+            lambda _lane: False,
         )
         monkeypatch.setattr(
             serve.store.RunDir, "write_manifest",
@@ -1971,12 +1864,12 @@ class TestServerPlacement:
 
         assert resp["ok"] is True
         block = resp["placement"]
-        assert block["leaf"] == f"{GATES_CGROUP}/{LEAF_NAME}"
+        assert block["leaf"] == PLACEMENT_CGROUP
         assert block["applied"] == {
             "memory.high": MEMORY_HIGH, "memory.max": MEMORY_MAX, "cpu.weight": 100,
         }
         assert block["error"] is None
-        assert (root / "dev.slice/dev-gates.slice" / LEAF_NAME).is_dir()
+        assert _leaf(root).is_dir()
 
         sess = server._sessions[SESSION_ID]
         assert sess.placement.proc_root == str(tmp_path / "proc")
@@ -1993,14 +1886,14 @@ class TestServerPlacement:
         assert all(r["severity"] == "info" for r in rows)
 
         stop = server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
-        assert stop["summary"]["placement"]["leaf"] == f"{GATES_CGROUP}/{LEAF_NAME}"
-        assert not (root / "dev.slice/dev-gates.slice" / LEAF_NAME).exists()
+        assert stop["summary"]["placement"]["leaf"] == PLACEMENT_CGROUP
+        assert not _leaf(root).exists()
 
     def test_the_gates_slice_snapshot_counts_the_live_leaf(self, tmp_path):
         """C5 wrote `leaves`/`sessions_live` off disk against a tree that
         could not yet have a leaf in it — this is the first test where one
         really exists."""
-        root = _fake_cgroup_root(tmp_path)
+        root = _fake_cgroup_root(tmp_path, procs="101\n")
         server = _server(tmp_path, root)
         server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})
         host = server._host_snapshot()
@@ -2386,10 +2279,11 @@ def test_every_refusal_shape_is_frozen(tmp_path):
     # object itself — the same block every document carries.
     root = _fake_cgroup_root(tmp_path / "symlink")
     (root / "dev.slice" / "dev-background.slice" / "victim").mkdir()
-    (root / "dev.slice" / "dev-gates.slice" / LEAF_NAME).symlink_to(
-        root / "dev.slice" / "dev-background.slice" / "victim"
-    )
-    plc = _placement(root)
+    def plant_symlink(_unit):
+        (_leaf(root)).symlink_to(
+            root / "dev.slice" / "dev-background.slice" / "victim"
+        )
+    plc = _placement(root, scope_created=plant_symlink)
     plc.apply([101])
     shapes["parent-not-gates-slice"] = plc.block()
 

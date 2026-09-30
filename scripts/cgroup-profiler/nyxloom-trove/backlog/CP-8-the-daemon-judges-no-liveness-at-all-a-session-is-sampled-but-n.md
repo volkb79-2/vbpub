@@ -8,8 +8,8 @@ type: "feature"
 severity: "medium"
 provenance: "RG-55 wave, RW-30 (design A1/D-27) + RW-34 (contract v1.1 §8.2/§8.4), 2026-09-12"
 filed_date: "2026-09-12"
-closed_date: "2026-09-12"
-closed_reason: "watch role landed (liveness state machine, streaming ctl watch), 4fa725dc"
+closed_date: "2026-09-29"
+closed_reason: "watch role and exact-cgroup enforcement landed; RW-379/RW-380 prohibit numeric-PID signaling and require an already-requested verified placement leaf for shared-scope kill"
 ---
 
 ## Observed mechanism and reproduction
@@ -44,17 +44,18 @@ consumer, and it cannot reach the lane's cgroup to enforce anything.
 ## Why cgroup-profiler owns it
 
 Design A1/D-27 (RW-30): *the watcher is a singleton and it is the daemon*.
-The daemon is the only process in the estate that (a) is already reading
-the lane's cgroup on a fixed cadence, (b) runs `--pid=host`/`--cgroupns=host`
-so it can resolve and signal the lane's pid subtree, and (c) outlives any
-individual consumer process (D-28: "the run-gate client is disposable").
-run-gate authors the POLICY at `ctl start`; the daemon judges and enforces.
+The daemon already reads the lane's cgroup on a fixed cadence and outlives
+individual consumer processes (D-28: "the run-gate client is disposable").
+It keeps private PID/cgroup namespaces and uses the explicit host-proc view
+for observation; it never treats a host PID number as a signal handle.
+run-gate authors the POLICY at `ctl start`; the daemon judges and uses only
+the exact cgroup enforcement boundaries authorized by RW-379/RW-380.
 Contract v1.1 (RW-34) specifies the result as §8.2 (`ctl watch`, streaming)
 and §8.4 (the `liveness` block, the policy options, and the state
 vocabulary); §8.7 adds the resulting blocks to the Summary and §8.8 the
 `bad-policy` error code.
 
-## Proposed contract
+## Resolved contract
 
 1. `start` gains four policy options (§8.4), all optional, all refused as
    `bad-policy` (exit 2, session NOT started) when unparsable:
@@ -74,9 +75,14 @@ vocabulary); §8.7 adds the resulting blocks to the Summary and §8.8 the
    (`killed`/`reported`/`none`) plus its readings are recorded on the
    session, returned by `status` and `stop`, and copied into the Summary
    (§8.7 `liveness`/`watch`).
-4. `--on-stall kill` enforces: SIGKILL to every pid of the token's subtree
-   (and, once CP-9's placement exists, `cgroup.kill` on the lane's leaf,
-   which is atomic and cannot miss a pid that forked during the walk).
+4. `--on-stall kill` never signals numeric PIDs. For `scope=container`, it
+   writes only `cgroup.kill` on the exact runtime cgroup whose full container
+   ID is proven beneath the verified, bounded gates slice. For
+   `scope=container-shared`, it requires the caller's token and an explicitly
+   requested, verified placement leaf. It never invents placement solely to
+   enable kill. Missing/unverified boundaries are refused before the session
+   starts; enforcement failure after acceptance is `reported`, never
+   `killed` (RW-379/RW-380).
 5. `ctl watch <session> --json` streams §8.2's `reading` / `verdict` /
    `end` lines on BOTH carriers until the session ends. This is the first
    verb that writes more than one object per connection, so it is also the
