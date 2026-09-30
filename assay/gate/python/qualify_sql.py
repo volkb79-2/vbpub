@@ -30,7 +30,8 @@ frozen normalized verdict. (7) No database is left behind.
 **Exit codes.** 0 with stdout exactly ``ASSAY_SQL_QUALIFIED=1``; 1 a
 :class:`QualificationError`; 3 an :class:`InconclusiveError` with stderr
 ``ASSAY_SQL_INCONCLUSIVE=<reason>`` (docker unavailable, image absent, host
-busy, readiness failsafe, a command timeout, a container name in use, an
+busy, a failing ``docker ps``, readiness failsafe, a command timeout, a
+container name in use, the docker environment lost mid-run, an
 incomplete witness): visible and rerunnable, never skipped and never green.
 
 **Environment.** The container runs ``--network none`` in the cgroup slice the
@@ -150,6 +151,11 @@ def _run(
         check=False,
     )
     if check and proc.returncode:
+        if argv and argv[0] == "docker" and re.search(
+            r"Error response from daemon: (container \S+ is not running|No such container)|Cannot connect to the Docker daemon",
+            proc.stderr,
+        ):
+            raise InconclusiveError(f"docker environment lost: {list(argv)[:3]!r}: {proc.stderr.strip()[-200:]}")
         raise QualificationError(
             f"command failed ({proc.returncode}): {list(argv)!r}\n"
             f"stdout:\n{proc.stdout[-4000:]}\nstderr:\n{proc.stderr[-4000:]}"
@@ -321,8 +327,10 @@ class ThrowawayPostgres:
             raise InconclusiveError("docker unavailable")
         if _run(["docker", "image", "inspect", IMAGE], check=False, timeout=60).returncode != 0:
             raise InconclusiveError(f"image absent: docker pull {IMAGE}")
-        listing = _run(["docker", "ps", "--no-trunc", "--format", "{{.Names}}"], timeout=60).stdout
-        busy = [name for name in listing.splitlines() if name.startswith("run-gate-")]
+        ps = _run(["docker", "ps", "--no-trunc", "--format", "{{.Names}}"], check=False, timeout=60)
+        if ps.returncode != 0:
+            raise InconclusiveError("host check failed (docker ps)")
+        busy = [name for name in ps.stdout.splitlines() if name.startswith("run-gate-")]
         if not self.allow_shared_host:
             if busy:
                 raise InconclusiveError(f"host busy — rerun: {','.join(busy)}")
@@ -388,7 +396,9 @@ class ThrowawayPostgres:
             except (subprocess.TimeoutExpired, OSError) as exc:
                 print(f"ASSAY_SQL_DF_FAILED={exc!r}", file=sys.stderr)
             try:
-                _run(["docker", "rm", "-f", "-v", self.name], check=False, timeout=120)
+                removal = _run(["docker", "rm", "-f", "-v", self.name], check=False, timeout=120)
+                if removal.returncode != 0:
+                    print(f"ASSAY_SQL_RM_FAILED=exit {removal.returncode}: {removal.stderr.strip()!r}", file=sys.stderr)
             except (subprocess.TimeoutExpired, OSError) as exc:
                 print(f"ASSAY_SQL_RM_FAILED={exc!r}", file=sys.stderr)
         finally:
@@ -719,6 +729,8 @@ def _assay_version(python: str = sys.executable) -> str:
 def run_qualification(
     *, container: ThrowawayPostgres, scratch: Path, fixture_root: Path, witness_out: Path | None
 ) -> None:
+    if fixture_root.resolve() == FIXTURE_ROOT.resolve():
+        verify_fixture_hashes(SCHEMA_PATH, fixture_root)
     schema_bytes = SCHEMA_PATH.read_bytes()
     matrix = load_matrix(fixture_root)
     sites = check_sites(schema_bytes.decode("utf-8"), matrix)

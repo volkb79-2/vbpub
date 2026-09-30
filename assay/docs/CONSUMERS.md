@@ -79,7 +79,9 @@ run. `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=host busy — rerun:
 when another `run-gate-*` container is running; exit 3 always means rerun, and the
 receipt is left as it was. On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1`
 runs alongside other projects' `run-gate-*` containers (printing
-`ASSAY_GATE_SHARED_HOST=<names>`) and still refuses another `run-gate-assay-*` one. No collected judge test
+`ASSAY_GATE_SHARED_HOST=<names>`) and still refuses any other `run-gate-assay-*` one; the
+SQL harness's own `--allow-shared-host` still refuses only another `run-gate-assay-sql-*`
+container. No collected judge test
 reads history or tags (A-475); the lane keeps full commit history until B128,
 and snapshot refs/tags are not copied.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following

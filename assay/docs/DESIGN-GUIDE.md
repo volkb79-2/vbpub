@@ -2021,7 +2021,7 @@ report without a matching receipt. The preflight lane needs none. Run
 worktree and with no commit in between: any later commit, a docs-only or merge
 commit included, needs a fresh `tester-unified` run first. A
 gate started while another `run-gate-*` container runs exits 3 with
-`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1` (CD50) lets the gate run alongside other projects' `run-gate-*` containers, printing `ASSAY_GATE_SHARED_HOST=<names>` on stdout; another `run-gate-assay-*` container is still refused, any other value of the variable is an error, and the receipt is unchanged.
+`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1` (CD50) lets the gate run alongside other projects' `run-gate-*` containers, printing `ASSAY_GATE_SHARED_HOST=<names>` on stdout; the gate still refuses any other `run-gate-assay-*` container (the standalone harness's `--allow-shared-host` refuses only another `run-gate-assay-sql-*` one), any other value of the variable is an error, and the receipt is unchanged.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. This interim budget
@@ -3072,8 +3072,9 @@ consumer corpus fall; the class map is
 `__assay_widened__`), and `K09` is equivalent (an inert guard).
 
 **Exit codes.** 0 with `ASSAY_SQL_QUALIFIED=1` on stdout; 1 a failed premise;
-3 inconclusive (docker unavailable, image absent, host busy, readiness
-failsafe, a timeout, a name in use, an incomplete witness), which the gate
+3 inconclusive (docker unavailable, image absent, host busy, a failing
+`docker ps`, readiness failsafe, a timeout, a name in use, docker
+environment lost mid-run, an incomplete witness), which the gate
 passes through as its own exit 3 with `ASSAY_GATE_INCONCLUSIVE=sql-qualification
 — rerun` and no receipt.
 

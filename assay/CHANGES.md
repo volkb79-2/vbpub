@@ -8,9 +8,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - feat(assay): the registered gate has an explicit shared-host opt-in,
   `ASSAY_GATE_ALLOW_SHARED_HOST=1` (and `qualify_sql.py --allow-shared-host`),
   that runs alongside other projects' `run-gate-*` containers and prints
-  `ASSAY_GATE_SHARED_HOST=<names>`; another `run-gate-assay-*` container is
-  still refused, and the default stays the exit-3 `host busy` refusal (CD50).
-  Assay-internal: no consumer-facing change
+  `ASSAY_GATE_SHARED_HOST=<names>`. Two scopes: the gate
+  (`ASSAY_GATE_ALLOW_SHARED_HOST=1`) still refuses any other `run-gate-assay-*`
+  container, and the harness (`--allow-shared-host`) still refuses only another
+  `run-gate-assay-sql-*` container; the default stays the exit-3 `host busy`
+  refusal (CD50). Assay-internal: no consumer-facing change
 - refactor(assay): judge tests (`tests/`) and tooling tests (`gate/tests/`, for
   the gate script, checker, wheel and zipapp, packaging and lane-config drift)
   are separate trees; `tester-unified` runs both, the B105 lanes collect

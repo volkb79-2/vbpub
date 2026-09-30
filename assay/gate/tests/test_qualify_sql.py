@@ -792,9 +792,12 @@ class FakeDocker:
         run_rc: int = 0,
         run_stderr: str = "",
         ready_rc: int = 0,
+        ps_rc: int = 0,
+        rm_rc: int = 0,
         on_call=None,
     ) -> None:
         self.calls: list[list[str]] = []
+        self.ps_rc, self.rm_rc = ps_rc, rm_rc
         self.ps, self.version_rc, self.inspect_rc = ps, version_rc, inspect_rc
         self.run_rc, self.run_stderr, self.ready_rc = run_rc, run_stderr, ready_rc
         self.on_call = on_call
@@ -810,7 +813,9 @@ class FakeDocker:
         elif argv[:3] == ["docker", "image", "inspect"]:
             rc = self.inspect_rc
         elif argv[:2] == ["docker", "ps"]:
-            out = self.ps
+            rc, out = self.ps_rc, self.ps
+        elif argv[:2] == ["docker", "rm"]:
+            rc, err = self.rm_rc, "removal refused" if self.rm_rc else ""
         elif argv[:2] == ["docker", "run"]:
             rc, err = self.run_rc, self.run_stderr
         elif argv[:3] == ["docker", "exec", _NAME] and argv[3:4] == ["psql"] and "-h" in argv:
@@ -1045,6 +1050,65 @@ def test_shared_host_still_refuses_another_sql_qualification_container(tmp_path:
     assert not fake.ran() and not any(call[:2] == ["docker", "rm"] for call in fake.calls)
 
 
+def test_a_failing_docker_ps_is_inconclusive_and_nothing_starts(tmp_path: Path, stubbed, capsys) -> None:
+    """W5C-1: a ``docker ps`` that fails cannot show the host is free (CD32), so it is exit 3, not a product FAIL."""
+    fake = stubbed(FakeDocker(ps_rc=1))
+    assert _run_main_under_sentinel(_main_argv(tmp_path)) == 3
+    assert "ASSAY_SQL_INCONCLUSIVE=host check failed (docker ps)" in capsys.readouterr().err
+    assert not fake.ran() and not any(call[:2] == ["docker", "rm"] for call in fake.calls)
+
+
+def test_a_failed_container_removal_is_reported_on_stderr(tmp_path: Path, stubbed, capsys) -> None:
+    """W5C-5: a non-zero exact-name ``docker rm -f -v`` is loud, never silent."""
+    fake = stubbed(FakeDocker(rm_rc=1))
+    _run_main_under_sentinel(_main_argv(tmp_path))  # fails at the baseline; the removal is what matters
+    assert "ASSAY_SQL_RM_FAILED=exit 1: 'removal refused'" in capsys.readouterr().err
+    assert [call for call in fake.calls if call[:2] == ["docker", "rm"]] == [["docker", "rm", "-f", "-v", _NAME]]
+
+
+def test_a_pin_mismatch_fails_before_any_container_at_run_time(tmp_path: Path, stubbed, monkeypatch, capsys) -> None:
+    """W5C-3: the standalone CLI enforces the pinned schema/probe bytes, not only the pytest."""
+    monkeypatch.setattr(q, "SCHEMA_SHA256", "0" * 64)
+    fake = stubbed(FakeDocker())
+    assert _run_main_under_sentinel(_main_argv(tmp_path)) == 1
+    assert "schema sha256" in capsys.readouterr().err
+    assert not fake.ran()
+
+
+def _daemon_stub(monkeypatch, stderr: str) -> None:
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, "", stderr)
+
+    monkeypatch.setattr(q.subprocess, "run", fake_run)
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Error response from daemon: container 0123abcd is not running",
+        "Error response from daemon: No such container: run-gate-assay-sql-1-2",
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+    ],
+)
+def test_a_lost_docker_environment_mid_run_is_inconclusive(monkeypatch, stderr: str) -> None:
+    """W5C-6: container OOM-killed/removed or the daemon gone is a contention case, exit 3, not a FAIL."""
+    _daemon_stub(monkeypatch, stderr)
+    with pytest.raises(q.InconclusiveError, match="docker environment lost"):
+        q._run(["docker", "exec", _NAME, "true"], check=True)
+
+
+def test_a_lost_docker_environment_does_not_raise_when_check_is_not_requested(monkeypatch) -> None:
+    """W5C-6: ``check=False`` (the removal path) must still return so ``docker rm`` is reached."""
+    _daemon_stub(monkeypatch, "Error response from daemon: No such container: x")
+    assert q._run(["docker", "rm", "-f", "-v", _NAME], check=False).returncode == 1
+
+
+def test_an_ordinary_docker_failure_stays_a_qualification_error(monkeypatch) -> None:
+    _daemon_stub(monkeypatch, "psql: error: syntax error")
+    with pytest.raises(q.QualificationError, match="command failed"):
+        q._run(["docker", "exec", _NAME, "psql"], check=True)
+
+
 def test_other_containers_do_not_make_the_host_busy(tmp_path: Path, stubbed) -> None:
     fake = stubbed(FakeDocker(ps="edge-traefik\nnot-run-gate-x\n"))
     _run_main_under_sentinel(_main_argv(tmp_path))
@@ -1250,11 +1314,14 @@ def test_a_failing_harness_stops_the_gate_with_no_phase_marker_receipt_or_comple
     tmp_path: Path, gate_functions: Path
 ) -> None:
     worktree, _commit, _tree = _sql_worktree(tmp_path)
+    stale = worktree / RECEIPT_RELATIVE
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b'{"an earlier": "green receipt"}\n')
     proc, docker_log, harness_log = _gate(tmp_path, gate_functions, worktree, out="", rc=1)
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "SQL qualification failed (exit 1)" in proc.stderr
     assert "ASSAY_GATE_PHASE" not in proc.stdout and "ASSAY_REGISTERED_GATE_COMPLETE" not in proc.stdout
-    assert not (worktree / RECEIPT_RELATIVE).exists()
+    assert not stale.exists()
     args = _harness_args(harness_log)
     assert f"rm -f -v {args['--container-name']}" in docker_log.read_text(encoding="utf-8").splitlines()
     assert not Path(args["--scratch"]).parent.exists()
@@ -1287,6 +1354,8 @@ def test_an_inconclusive_harness_makes_the_gate_exit_3_with_no_receipt_and_no_co
 ) -> None:
     worktree, _commit, _tree = _sql_worktree(tmp_path)
     stale = worktree / RECEIPT_RELATIVE
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b'{"an earlier": "green receipt"}\n')
     proc, docker_log, harness_log = _gate(tmp_path, gate_functions, worktree, out="", rc=3)
     assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "ASSAY_GATE_DIAGNOSTIC=sql-qualification-inconclusive" in proc.stdout.splitlines()
