@@ -104,7 +104,7 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 
 ### FEAT-03 — `cmru versions`: multi-source dependency resolution with an age window — *implemented*
-**Status:** the core implementation is on `feat/cmru-feat03-age-window-20260923`; this change extends it with configurable shipped-dependency discovery, rolling OCI digest checks, and nine-project adoption. The tester-unified coverage lane is rerun for this change before release.
+**Status:** the core resolver and estate-wide age-window tracking shipped in `cmru-v5.5.0`. Follow-on coverage—configurable shipped/all dependency discovery, selected Python extras, project-local requirements manifests, rolling OCI digest checks, and the nine-project adoption—is in `main` and listed under `[Unreleased]` in `CHANGES.md`. Rerun the CMRU tester-unified coverage lane on the release candidate before release.
 **SPEC:** `S-CLI.6`, `S2.7`, `V29`.
 
 `cmru versions init` derives supported targets from Python, npm, and Go manifests;
