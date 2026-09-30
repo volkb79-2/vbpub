@@ -1350,6 +1350,41 @@ class TestLaunchHelper:
         assert result is child
         assert child.terminated is False
 
+    def test_completed_create_capped_helper_is_not_refused_after_update_race(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
+            out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        child = FakePopen(exit_code=None)
+        launched = {}
+
+        def popen(command, **kwargs):
+            launched["command"] = command
+            return child
+
+        monkeypatch.setattr(cg.subprocess, "Popen", popen)
+        monkeypatch.setattr(
+            access, "_docker",
+            lambda *a, **k: access.subprocess.CompletedProcess(
+                args=["docker", *a], returncode=1, stdout="", stderr="already removed",
+            ),
+        )
+        monkeypatch.setattr(cg.time, "sleep", lambda _: None)
+
+        result = cg._launch_helper(
+            str(tmp_path / "fast-helper"), ["--run-dir", "fast-helper"], None,
+        )
+
+        assert result is child
+        assert result.wait() == 0
+        assert child.terminated is False
+        assert "--cpus=3" in launched["command"]
+
     def test_helper_cap_refusal_kills_child_if_termination_times_out(self, monkeypatch, tmp_path: Path):
         spec = access.HelperSpec(
             image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,

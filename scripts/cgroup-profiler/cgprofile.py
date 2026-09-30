@@ -519,6 +519,17 @@ def _start_named_helper(
             return child
         time.sleep(0.05)
     if child.poll() is None:
+        # A tiny `targets` helper can finish and be auto-removed before the
+        # update call reaches Docker, while the outer docker client is still
+        # flushing its output. The create request already applied --cpus=3.
+        # Give that completed client a bounded chance to return its real exit
+        # status; only an actually persistent unconfirmed helper is unsafe.
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            return child
         # The exact name was printed before launch and is unique to this run.
         # Remove only that helper if the create-time cap could not be
         # confirmed; never leave a partially launched observer behind.
