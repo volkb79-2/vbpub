@@ -203,9 +203,39 @@ K09 equivalent); O5 differs; O4 residue first 0 / second exit 3, no dump; M11 cr
 * `analysis/tests`: 224 passed.
 * The witness tests (three) are not re-added yet (they need the witness file).
 
+## Review fixes (W5C)
+
+Fixer session 2026-09-30 from `REVIEW-W5-code.md` (MERGE-WITH-FIXES) and CD59. Code/doc commit `e1cd59cf`. Every review fix text applied
+verbatim; no site had moved.
+
+| Finding | Fix | Test |
+|---|---|---|
+| W5C-1 MAJOR | `_check_host`: `docker ps` runs with `check=False`; non-zero -> `InconclusiveError("host check failed (docker ps)")` (exit 3) | `test_a_failing_docker_ps_is_inconclusive_and_nothing_starts` (`FakeDocker` gained `ps_rc`) |
+| W5C-2 MAJOR | **Docs only (CD59); harness behaviour unchanged.** `CHANGES.md` `[Unreleased]` CD50 entry, `docs/CONSUMERS.md` and `docs/DESIGN-GUIDE.md` now state the two scopes: gate refuses any `run-gate-assay-*`, harness `--allow-shared-host` refuses only `run-gate-assay-sql-*`. Docstring and DESIGN-GUIDE section 11 already said the harness scope | none (S2 unchanged; no S3, as the behaviour stays) |
+| W5C-3 MINOR | `run_qualification`: `verify_fixture_hashes` runs first when `fixture_root` is the default root (the R1 `--fixture-root` copy still names K05) | `test_a_pin_mismatch_fails_before_any_container_at_run_time` |
+| W5C-4 MINOR | both gate tests plant an earlier receipt before `_gate(...)` and assert it is gone | `test_a_failing_harness_stops_the_gate_...`, `test_an_inconclusive_harness_makes_the_gate_exit_3_...` |
+| W5C-5 MINOR | non-zero exact-name `docker rm -f -v` prints `ASSAY_SQL_RM_FAILED=exit N: '<stderr>'` (no other selector, still exact name) | `test_a_failed_container_removal_is_reported_on_stderr` (`FakeDocker` gained `rm_rc`) |
+| W5C-6 MINOR | `_run` (only when `check=True`, docker argv): daemon-lost/container-not-running/no-such-container stderr -> `InconclusiveError("docker environment lost: ...")`; exit-3 lists in the module docstring and DESIGN-GUIDE section 11 extended (also with the failing `docker ps`) | `test_a_lost_docker_environment_mid_run_is_inconclusive` (3 stderr shapes), `..._does_not_raise_when_check_is_not_requested`, `test_an_ordinary_docker_failure_stays_a_qualification_error` |
+
+Controlled breaks (Edit, fix reverted, new test watched red, fix restored with Edit; nothing committed broken):
+
+| Break | Result |
+|---|---|
+| W5C-1: `docker ps` back to default `check=True` | RED: `test_a_failing_docker_ps_is_inconclusive_and_nothing_starts` (1 failed, 128 passed; message `ASSAY_SQL_FAILED: command failed (1): ['docker', 'ps', ...]`) |
+| W5C-3: delete the two inserted `verify_fixture_hashes` lines | RED: `test_a_pin_mismatch_fails_before_any_container_at_run_time` (1 failed, 128 passed) |
+| W5C-4 (extra): replace the trap's `rm -f` with `:` AND delete `clear_registered_gate_receipt "$worktree"` in `tools/tester-unified-gate.sh` (both, per the double clear) | RED: both planted-receipt tests (2 failed, 127 passed); script restored, `git diff -- tools` empty |
+| W5C-2 | no break (docs only, CD59) |
+
+Runs at `e1cd59cf` (serial, `env -u FORCE_COLOR nice -n 19 ionice -c3`): `gate/tests/test_qualify_sql.py` + `test_distribution_gate.py` 185 passed;
+`gate/tests` once: 376 passed, 11 skipped, 0 failed; `tests/adapters/sql` once: 129 passed. `git status --short --ignored assay`: only pre-existing
+`__pycache__` `!!` entries. No `.pytest_cache` (ran with `-p no:cacheprovider`).
+
+Note for the gate run: the harness (unlike the gate entry check) tolerates another assay gate's tester container under `--allow-shared-host`; by
+design (CD59), documented.
+
 ## Status
 
-READY-FOR-GATE ae5e97f8
+READY-FOR-GATE e1cd59cf
 
 CD50, CD53 and CD54 are implemented; Work 0 re-run and Work 5 (witness capture, 24-row review, R1 rerun, R1 break) are done; the witness
 tests are re-added; the three suites are as recorded above (only B134 red). No open QUESTIONS. See `W5-CONTINUATION.md`.
