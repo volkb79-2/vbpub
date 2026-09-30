@@ -48,6 +48,7 @@ import re
 from typing import Any, Mapping
 
 from ..errors import AssayError, Outcome, ReasonCode
+from ..guards import is_nonempty_str, is_strict_int
 from ..vocabulary import INGESTED_OPERATOR_NAMESPACES, MAX_INGESTED_MUTANTS
 from .model import (
     INGESTED_MUTANT_STATUSES,
@@ -166,7 +167,7 @@ def parse(text: str) -> IngestedMutationReport:
     sources: dict[str, str] = {}
     mutants: list[IngestedMutant] = []
     for key, record in sorted(files.items()):
-        if not isinstance(key, str) or not key:
+        if not is_nonempty_str(key):
             raise _unreadable("mutation report 'files' has a non-string key")
         if not isinstance(record, dict):
             raise _unreadable(
@@ -273,7 +274,7 @@ def _producer_identity(
     name = framework.get("name")
     version = framework.get("version")
     for label, value in (("name", name), ("version", version)):
-        if not isinstance(value, str) or not value:
+        if not is_nonempty_str(value):
             raise _unreadable(
                 f"mutation report 'framework.{label}' must be a non-empty "
                 f"string, got {value!r}"
@@ -286,7 +287,7 @@ def _producer_identity(
 
 def _project_root(document: Mapping[str, Any]) -> str:
     project_root = document.get("projectRoot")
-    if not isinstance(project_root, str) or not project_root:
+    if not is_nonempty_str(project_root):
         raise _unreadable(
             "mutation report carries no 'projectRoot'. The upstream schema "
             "makes it optional; assay REQUIRES it (A-375), because it is the "
@@ -411,7 +412,7 @@ def _parse_mutant(
             raise _unreadable(f"{where} location has no {label!r} position")
         for field in ("line", "column"):
             value = position.get(field)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise _unreadable(
                     f"{where} location.{label}.{field} must be an integer, "
                     f"got {value!r}"

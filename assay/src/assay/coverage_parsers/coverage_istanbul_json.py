@@ -197,6 +197,7 @@ import json
 from types import MappingProxyType
 
 from ..errors import AssayError, Outcome, ReasonCode
+from ..guards import is_int_at_least, is_strict_int
 from ..vocabulary import ARC_BEARING_COVERAGE_PRODUCERS
 from .model import BranchCoverage, ClassifiedLineBudget, CoverageProfile, FileCoverage
 from .model import MAX_CLASSIFIED_LINES as MAX_CLASSIFIED_LINES
@@ -447,7 +448,7 @@ def _default_arg_hits(
                 f"for its enclosing function"
             )
         count = counts[function_id]
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        if not is_int_at_least(count, 0):
             raise _malformed(
                 f"record for {path!r}: f[{function_id!r}] is {count!r}, "
                 f"expected a nonnegative integer function call count"
@@ -460,7 +461,7 @@ def _start_position(path: str, subject: str, location: dict) -> tuple[int, int]:
     """A declaration, body, or default node start; end columns remain unread."""
     line = _position_line(path, subject, location, "start")
     column = location["start"].get("column")
-    if isinstance(column, bool) or not isinstance(column, int) or column < 0:
+    if not is_int_at_least(column, 0):
         raise _malformed(
             f"record for {path!r}: {subject} has start.column = {column!r}, "
             f"expected a nonnegative integer"
@@ -638,7 +639,7 @@ def _entry_line(path: str, branch_id: str, entry: dict) -> int:
     ``istanbul-lib-coverage``'s own ``map.line || map.loc.start.line``."""
     line = entry.get("line")
     if line is not None:
-        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+        if not is_int_at_least(line, 1):
             raise _malformed(
                 f"record for {path!r}: branch {branch_id!r} has line = "
                 f"{line!r}, expected a positive integer"
@@ -679,7 +680,7 @@ def _arm_line(
 
 
 def _arm_count(path: str, branch_id: str, index: int, count: object) -> int:
-    if isinstance(count, bool) or not isinstance(count, int):
+    if not is_strict_int(count):
         raise _malformed(
             f"record for {path!r}: b[{branch_id!r}][{index}] is "
             f"{type(count).__name__} ({count!r}), expected int"
@@ -745,7 +746,7 @@ def _position_line(path: str, subject: str, location: dict, side: str) -> int:
             f"record for {path!r}: {subject} has no {side!r} position object"
         )
     line = position.get("line")
-    if isinstance(line, bool) or not isinstance(line, int):
+    if not is_strict_int(line):
         raise _malformed(
             f"record for {path!r}: {subject} has {side}.line = {line!r}, "
             f"expected an integer"
@@ -759,7 +760,7 @@ def _position_line(path: str, subject: str, location: dict, side: str) -> int:
 
 
 def _statement_count(path: str, statement_id: str, count: object) -> int:
-    if isinstance(count, bool) or not isinstance(count, int):
+    if not is_strict_int(count):
         raise _malformed(
             f"record for {path!r}: s[{statement_id!r}] is "
             f"{type(count).__name__} ({count!r}), expected int"

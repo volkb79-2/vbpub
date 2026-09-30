@@ -64,6 +64,8 @@ from importlib.metadata import Distribution, PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Any
 
+from .guards import is_nonempty_str, is_sha256_hex
+
 from .verdict import JUDGE_DIGEST_ALGORITHMS, JudgeProvenance
 
 __all__ = ["DIGEST_ALGORITHM", "DISTRIBUTION_NAME", "identify_judge"]
@@ -177,15 +179,13 @@ def _installed_wheel_digest(dist: Distribution) -> str | None:
         legacy = archive_info.get("hash")
         if isinstance(legacy, str) and legacy.startswith("sha256="):
             digest = legacy.split("=", 1)[1]
-    if not isinstance(digest, str) or not digest:
+    if not is_nonempty_str(digest):
         return None
     digest = digest.lower()
     # The installer's record is metadata on disk, not a computed value, so it
     # is checked rather than trusted: a malformed one is an unidentifiable
     # installation, never a `JudgeProvenance` whose `digest` is garbage.
-    if len(digest) != 64 or any(
-        character not in "0123456789abcdef" for character in digest
-    ):
+    if not is_sha256_hex(digest):
         return None
     return digest
 

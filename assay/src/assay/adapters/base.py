@@ -58,6 +58,7 @@ learning what a ``go.mod`` is. Every adapter but Go returns ``self``.
 
 from __future__ import annotations
 
+from ..guards import is_strict_int
 from ..records import record
 from pathlib import Path
 from types import MappingProxyType
@@ -103,7 +104,7 @@ class StatementSpan:
     def __post_init__(self) -> None:
         for name in ("start_line", "end_line"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise ValueError(
                     f"StatementSpan.{name} must be an integer, got {value!r}"
                 )

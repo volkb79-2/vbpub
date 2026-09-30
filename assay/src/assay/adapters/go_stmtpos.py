@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
 from ..errors import AssayError, Outcome, ReasonCode
+from ..guards import is_strict_int
 from ..statement_attribution import StatementBlock
 from .base import HelperInvocation, Remaining, StatementBlockReport
 
@@ -405,7 +406,7 @@ def _read_block(raw: object, rel_path: str) -> StatementBlock:
 
 
 def _stmt_line(value: object, rel_path: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_strict_int(value):
         raise _refuse(
             f"{rel_path!r}: a `stmt_lines` entry is {value!r}, not an integer"
         )
@@ -414,7 +415,7 @@ def _stmt_line(value: object, rel_path: str) -> int:
 
 def _int(raw: Mapping[str, object], field: str, rel_path: str) -> int:
     value = raw.get(field)
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_strict_int(value):
         raise _refuse(
             f"{rel_path!r}: block field {field!r} is {value!r}, not an integer"
         )
