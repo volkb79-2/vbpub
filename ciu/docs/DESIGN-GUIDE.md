@@ -35,6 +35,25 @@ and strict; malformed or wrong-version facts are not replaced by a sibling
 file, ambient variables, or legacy `ciu.env`. `ciu.env` remains an export-only
 compatibility file for shell consumers.
 
+## Governance resource limits
+
+Enabling CIU governance for cgroup placement must not silently impose
+per-container resource limits. Memory and CPU controls are empty by default;
+read IOPS is unset by default, and write IOPS defaults to zero (uncapped).
+Bandwidth caps also default to zero. CIU emits each resource cap only when
+the stack or global config sets it.
+`read_iops = 0` is an explicit choice that asks CIU to derive a cap from the
+host baseline. This keeps parent-slice policy separate from a workload
+author's choice to cap one service. A Compose service's own key still wins.
+Memory defaults are recorded in
+[D-013](../nyxloom-trove/decisions.md#d-013--governance-memory-settings-are-explicit-only-2026-09-27);
+the explicit-only IOPS rule is recorded in
+[D-014](../nyxloom-trove/decisions.md#d-014--ciu-resource-caps-are-configured-explicitly-2026-09-27).
+The full contract is in [S15.1–S15.4](SPEC.md#s151--declaration). `ciu init`
+puts the complete governance table in the generated global config with
+governance disabled and all caps unset, making the supported settings visible
+and editable without imposing a policy on new projects.
+
 ## Why a versioned, closed JSON surface at all
 
 CIU's worktree lifecycle is an *environment provider* for human tools, IDEs,

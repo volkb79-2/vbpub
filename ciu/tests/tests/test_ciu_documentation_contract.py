@@ -113,6 +113,42 @@ def test_every_toml_example_parses_with_the_shipped_loader():
             config_model.parse_toml_string(block, str(doc))
 
 
+def test_governance_resource_examples_parse_and_document_explicit_policy():
+    consumers = REPO_ROOT / "docs" / "CONSUMERS.md"
+    config = REPO_ROOT / "docs" / "CONFIG.md"
+    governance_examples = [
+        block
+        for doc in (consumers, config)
+        for block in _toml_blocks(doc)
+        if "[app.governance]" in block
+    ]
+    assert len(governance_examples) >= 2
+    for block in governance_examples:
+        parsed = config_model.parse_toml_string(block, "governance documentation")
+        governance = parsed["app"]["governance"]
+        assert "mem_limit" in governance
+        assert "read_iops" in governance
+        assert "write_iops" in governance
+
+    for doc in (REPO_ROOT / "README.md", consumers, config):
+        content = doc.read_text(encoding="utf-8")
+        assert "mem_limit" in content
+        assert "mem_reservation" in content
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "does not add per-container RAM, swap, reservation, CPU, IOPS," in readme
+    assert "or bandwidth caps by default" in readme
+    design = (REPO_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    assert "must not silently impose" in design
+    assert "read IOPS is unset by default" in design
+    consumer_text = consumers.read_text(encoding="utf-8")
+    assert "Memory and CPU controls are unset by default" in consumer_text
+    assert "read_iops = 0" in consumer_text
+    assert 'mem_limit = "1g"' in consumer_text
+    assert 'mem_swap_limit = "17g"' in consumer_text
+    assert 'write_iops = 400' in consumer_text
+    assert "If the measured read IOPS formula produces zero" in consumer_text
+
+
 WAVE_KEY_DOCS = [
     d
     for d in sorted((Path(__file__).resolve().parents[2] / "docs").glob("*.md"))

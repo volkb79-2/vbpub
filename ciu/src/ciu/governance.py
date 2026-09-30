@@ -72,29 +72,31 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # dev-tier cgroup governance rollout, nyxloom/docs/plan-resource-governance.md):
     # an unresolvable cgroup_parent is a configuration error, not a silent default.
     "cgroup_parent": "",
-    "mem_limit": "1g",
-    # Docker's own `mem_swap_limit`/`--memory-swap` semantics: the COMBINED
-    # mem+swap total, not swap alone (17g here = 1g RAM + 16g swap). Without
-    # this key, Docker's stock default applies instead — 2x mem_limit, i.e.
-    # ~2g combined, not the host dev-tier's much larger swap allowance.
-    "mem_swap_limit": "17g",
-    # memory.low (best-effort protection). CAVEAT (S15.16 WARNING): cgroup v2
-    # bounds effective protection by ALL ancestor cgroups' own memory.low, not
-    # just this slice's — a value here is a no-op under any ancestor
-    # (including this project's own shipped dev-tier slices, as shipped
-    # today) that has no memory.low of its own.
-    "mem_reservation": "256m",
+    # Memory controls have no code-level policy default. Empty means CIU
+    # leaves Docker's memory settings alone unless the stack/global config or
+    # the authored Compose service explicitly sets them. This avoids silently
+    # capping services when governance is enabled for placement or IO policy.
+    "mem_limit": "",
+    # Docker's `mem_swap_limit` is a combined RAM+swap total, not swap alone.
+    # Keep it unset by default as well; setting it without an explicit
+    # `mem_limit` can create a policy the config author did not request.
+    "mem_swap_limit": "",
+    # memory.low (best-effort protection) is also explicit-only. CAVEAT
+    # (S15.16 WARNING): effective protection is bounded by every ancestor's
+    # own memory.low, so configuring this may have no effect without an
+    # adequate ancestor chain.
+    "mem_reservation": "",
     # S15.21 — CPU quota, Compose Specification's `cpus` key (a fractional CPU
     # count, e.g. "1.5" — hence a string sentinel, not io_weight's int `0`).
     # "" = not set (no `cpus` key injected — the container stays uncapped,
-    # exactly as before this key existed). Unlike mem_limit/mem_reservation
-    # (always-on since governance's introduction), a nonzero default here
-    # would silently throttle every currently-uncapped governed container on
-    # upgrade with no config change on the consumer's part — explicit
-    # opt-in-only, deliberately, per D-264 PC-1.
+    # exactly as before this key existed). Like the memory controls, a CPU
+    # quota is explicit-only so an upgrade does not silently throttle a
+    # currently-uncapped governed container; see D-264 PC-1 and D-013.
     "cpus": "",
-    "read_iops": 0,          # 0 = derive from the host io-baseline (S15.4)
-    "write_iops": 400,
+    # Empty means no IOPS cap. An explicitly configured read_iops=0 retains
+    # S15.4's measured-baseline derivation; a missing key must not invoke it.
+    "read_iops": "",
+    "write_iops": 0,         # 0 = no write IOPS cap
     # S15.14 — proportional IO share, Docker/compose `blkio_config.weight`
     # scale (10..1000). 0 = not set (no `weight` key injected — the container
     # gets whichever default the block device's IO controller applies).
@@ -422,6 +424,52 @@ def resolve_config(
             f"[S15.2] [<root>.governance].enabled must be a boolean, got "
             f"{cfg.get('enabled')!r}"
         )
+
+    # S15.4 — an absent read_iops setting is uncapped; an explicit zero opts
+    # into the measured-baseline formula. Normalize integer strings so TOML
+    # consumers can use either representation.
+    read_iops = cfg.get("read_iops", "")
+    if read_iops in (None, ""):
+        cfg["read_iops"] = ""
+    else:
+        valid_read_iops = (
+            isinstance(read_iops, int) and not isinstance(read_iops, bool)
+        ) or (
+            isinstance(read_iops, str) and read_iops.strip().isdigit()
+        )
+        if not valid_read_iops:
+            raise ValueError(
+                '[S15.4] [<root>.governance].read_iops must be "" (unset) '
+                "or a non-negative integer (0 opts into derivation), got "
+                f"{cfg.get('read_iops')!r}"
+            )
+        read_iops = int(read_iops)
+        if read_iops < 0:
+            raise ValueError(
+                '[S15.4] [<root>.governance].read_iops must be "" (unset) '
+                "or a non-negative integer (0 opts into derivation), got "
+                f"{read_iops!r}"
+            )
+        cfg["read_iops"] = read_iops
+
+    write_iops = cfg.get("write_iops", 0)
+    valid_write_iops = (
+        isinstance(write_iops, int) and not isinstance(write_iops, bool)
+    ) or (
+        isinstance(write_iops, str) and write_iops.strip().isdigit()
+    )
+    if not valid_write_iops:
+        raise ValueError(
+            "[S15.4] [<root>.governance].write_iops must be a non-negative "
+            f"integer, got {cfg.get('write_iops')!r}"
+        )
+    write_iops = int(write_iops)
+    if write_iops < 0:
+        raise ValueError(
+            "[S15.4] [<root>.governance].write_iops must be a non-negative "
+            f"integer, got {write_iops!r}"
+        )
+    cfg["write_iops"] = write_iops
 
     exempt = cfg.get("exempt_services") or []
     if not isinstance(exempt, list) or not all(isinstance(x, str) for x in exempt):
@@ -1395,12 +1443,15 @@ def build_injections(
     -------
     (injections, notes)
         ``injections`` maps service name -> the subset of
-        ``cgroup_parent``/``mem_limit``/``memswap_limit``/``mem_reservation``/
+        ``cgroup_parent`` plus any explicitly configured
+        ``mem_limit``/``memswap_limit``/``mem_reservation``/
         ``cpus``/``blkio_config`` not already set by the author. ``cpus``
         (S15.21) is omitted unless ``governance.cpus`` is explicitly
-        configured (default ``""`` = uncapped, unlike the always-on memory
-        keys). ``blkio_config`` itself carries
-        whichever of ``device_read_iops``/``device_write_iops`` (device
+        configured (default ``""`` = uncapped). Memory controls are likewise
+        omitted when their resolved configuration value is empty. IOPS caps
+        are omitted when unset; ``read_iops = 0`` opts into baseline-derived
+        capping. ``blkio_config`` itself carries whichever of
+        ``device_read_iops``/``device_write_iops`` (configured and device
         resolved), ``device_read_bps``/``device_write_bps`` (device resolved
         AND a nonzero cap configured, S15.15) and ``weight`` (nonzero
         ``io_weight`` configured, S15.14 — independent of device resolution)
@@ -1414,10 +1465,21 @@ def build_injections(
     exempt = set(config.get("exempt_services") or [])
     cgroup_parent = resolve_cgroup_parent(str(config.get("cgroup_parent") or ""))
     device, device_note = resolve_device(config.get("device", ""))
-    read_iops, read_note = derive_read_iops(
-        int(config.get("read_iops", 0) or 0),
-        configured_path=str(config.get("baseline_path") or ""),
-    )
+    configured_read_iops = config.get("read_iops", "")
+    if configured_read_iops in (None, ""):
+        read_iops: int | None = None
+        read_note = "not set"
+    else:
+        read_iops, read_note = derive_read_iops(
+            int(configured_read_iops),
+            configured_path=str(config.get("baseline_path") or ""),
+        )
+        if int(configured_read_iops) == 0 and read_iops <= 0:
+            raise ValueError(
+                "[S15.4] baseline-derived read_iops is not positive, so CIU "
+                "cannot apply the requested read cap; configure a positive "
+                "read_iops value or update the measured baseline"
+            )
     write_iops = int(config.get("write_iops", 0) or 0)
     io_weight = int(config.get("io_weight", 0) or 0)
     read_bps = int(config.get("read_bps", 0) or 0)
@@ -1438,7 +1500,7 @@ def build_injections(
         frag: dict[str, Any] = {}
         if "cgroup_parent" not in author_keys:
             frag["cgroup_parent"] = cgroup_parent
-        if "mem_limit" not in author_keys:
+        if config["mem_limit"] and "mem_limit" not in author_keys:
             frag["mem_limit"] = config["mem_limit"]
         # Compose's real key is `memswap_limit` (no underscore) — `docker
         # compose` schema-validates service keys and rejects `mem_swap_limit`
@@ -1447,20 +1509,20 @@ def build_injections(
         # right-hand side is still the GOVERNANCE_DEFAULTS/config-table key
         # (S15.1's documented TOML name) — only the emitted compose key
         # changes.
-        if "memswap_limit" not in author_keys:
+        if config["mem_swap_limit"] and "memswap_limit" not in author_keys:
             frag["memswap_limit"] = config["mem_swap_limit"]
-        if "mem_reservation" not in author_keys:
+        if config["mem_reservation"] and "mem_reservation" not in author_keys:
             frag["mem_reservation"] = config["mem_reservation"]
         # S15.21 — additive, explicit-opt-in-only (default "" = uncapped, no
-        # key injected): unlike the always-on keys above, an author who never
-        # configured governance.cpus must see no `cpus` key at all, not a
-        # nonzero estate-wide default.
+        # key injected), like the optional memory controls above.
         if "cpus" not in author_keys and cpus:
             frag["cpus"] = cpus
         blk: dict[str, Any] = {}
         if device:
-            blk["device_read_iops"] = [{"path": device, "rate": read_iops}]
-            blk["device_write_iops"] = [{"path": device, "rate": write_iops}]
+            if read_iops:
+                blk["device_read_iops"] = [{"path": device, "rate": read_iops}]
+            if write_iops:
+                blk["device_write_iops"] = [{"path": device, "rate": write_iops}]
             if read_bps:
                 blk["device_read_bps"] = [{"path": device, "rate": read_bps}]
             if write_bps:
@@ -1497,13 +1559,13 @@ def build_injections(
 
     notes = [
         f"cgroup_parent={cgroup_parent}",
-        f"mem_limit={config['mem_limit']}",
-        f"mem_swap_limit={config['mem_swap_limit']}",
-        f"mem_reservation={config['mem_reservation']}",
+        f"mem_limit={config['mem_limit'] or '(not set)'}",
+        f"mem_swap_limit={config['mem_swap_limit'] or '(not set)'}",
+        f"mem_reservation={config['mem_reservation'] or '(not set)'}",
         *([f"cpus={cpus}"] if cpus else []),  # S15.21 — only present when set
         f"mem_min={mem_min or '(not declared)'}",
-        f"read_iops={read_iops} ({read_note})",
-        f"write_iops={write_iops}",
+        f"read_iops={read_iops} ({read_note})" if read_iops else "read_iops=(not set)",
+        f"write_iops={write_iops}" if write_iops else "write_iops=(not set)",
         f"io_weight={io_weight or '(not set)'}",
         f"read_bps={read_bps or '(uncapped)'}",
         f"write_bps={write_bps or '(uncapped)'}",

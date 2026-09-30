@@ -834,6 +834,12 @@ opt-in:
 enabled = true
 cgroup_parent = "dev-background.slice"
 cpus = "2"              # CPU quota -- OPT-IN, default "" (uncapped); see below
+# Memory controls have no CIU defaults; set only the policies this stack needs:
+mem_limit = ""          # e.g. "2g" to opt into a RAM cap
+mem_swap_limit = ""     # Docker's combined RAM+swap total; optional
+mem_reservation = ""    # memory.low protection; optional
+read_iops = ""          # unset/uncapped; set 0 to opt into baseline derivation
+write_iops = 0           # 0 = unset/uncapped; a positive value is an explicit cap
 ksm_optin = "builtin"  # CIU builds/caches its shipped universal shim
 exempt_services = ["vault"]
 
@@ -855,16 +861,39 @@ re-states the verified image entrypoint. See [SPEC S15.11](SPEC.md#s1511--ksm-op
 [S15.19](SPEC.md#s1519--per-service-memory-policy-governancememory_profile),
 and [S15.20](SPEC.md#s1520--the-exec-wrapper-ksm--wrapper) for the constraints.
 
+`ciu init` writes the complete `[governance]` table into its generated global
+config. It sets `enabled = false`, leaves memory/CPU/read IOPS controls empty,
+and sets numeric IO caps to zero. The options are active TOML fields, so an
+operator can edit the generated config directly; none imposes a per-container
+cap until changed to an explicit value.
+
+CIU does not add per-container memory, CPU, or IO limits just because
+governance is enabled. Memory controls and `read_iops` default to `""`;
+`write_iops` defaults to `0`. Each cap is omitted from the generated Compose
+overlay unless you set it in this stack's table or the global `[governance]`
+table. An explicit `read_iops = 0` opts into baseline-derived capping; a
+positive value sets a fixed cap. A service's own Compose key still wins. See
+[SPEC S15.1–S15.4](SPEC.md#s151--declaration) for the injection contract.
+
 `cpus` (default `""` = unset/uncapped, CIU-90) declares a CPU quota — a
 fractional CPU count, e.g. `"1.5"` — injected as compose's own `cpus` key for
 every non-exempt service that hasn't set one itself (S15.3 author
-precedence). **Unlike `mem_limit`/`mem_reservation`, there is no nonzero
-default**: leaving it unset means the service stays exactly as uncapped as
-it was before this key existed — an already-governed stack that wants a
-quota (memory/IO capped, CPU previously unbounded) must opt in explicitly.
+precedence). Like the memory controls, there is no nonzero default: leaving it
+unset means the service stays exactly as uncapped as it was before this key
+existed — an already-governed stack that wants a quota must opt in explicitly.
 `""` or a positive number are the only valid values — `0`, a negative value,
 or a non-numeric string all refuse at render time. See
 [SPEC S15.21](SPEC.md#s1521--cpu-quota-cpus-ciu-90-ciu-p49).
+
+`read_iops` and `write_iops` are also explicit-only. `read_iops = ""` leaves
+reads uncapped; setting `read_iops = 0` in the config file opts into the
+baseline formula from S15.4, and a positive integer sets a fixed read cap.
+`write_iops = 0` leaves writes uncapped; a positive integer sets a write cap.
+CIU emits only the configured IOPS fields into `blkio_config`, so configuring
+one direction does not set a cap for the other. If baseline derivation yields
+a zero read rate, CIU refuses rather than omitting the requested cap; set a
+positive `read_iops` value or update the baseline. See
+[SPEC S15.4](SPEC.md#s154--read_iops-derivation).
 
 `mem_min` (default `""` = not declared) declares a cgroup-v2 `memory.min`
 FLOOR — a Docker-style size string, e.g. `"128m"`. It is the one governance

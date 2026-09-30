@@ -2803,9 +2803,12 @@ A stack MAY declare `[<root>.governance]` (stack-scoped per S3.6, like
 `[<root>.secrets]`/`[<root>.hooks]` — **not** a top-level `[governance]` in
 the stack's own `ciu.toml`, which S3.5 would reject as a second non-reserved
 top-level key there) to opt every service of the stack into host-level
-cgroup placement and resource ceilings, without the stack author
-hand-writing `cgroup_parent`/`mem_limit`/`memswap_limit`/`blkio_config` on
-each service.
+cgroup placement and resource policy, without the stack author hand-writing
+every configured control on each service. CIU does not invent per-container
+resource caps: memory/CPU/read IOPS controls are unset by default, and numeric
+IO caps default to zero. CIU injects those controls only when explicitly set
+in the resolved stack/global governance config (or authored directly on the
+service).
 This is **opt-in and purely additive**: a stack that declares no
 `governance` table of its own, and for which no global default resolves
 (S15.10), behaves exactly as before — CIU does not even parse/log anything
@@ -2825,13 +2828,12 @@ cgroup_parent = ""              # "" = resolve $CGROUP_PARENT_DEV_BACKGROUND (am
                                  # devcontainer.json's containerEnv — see AGENTS.md);
                                  # explicit value always wins. No hardcoded fallback:
                                  # enabled=true with neither set is a [S15.2] error.
-mem_limit = "1g"                # default per service
-mem_swap_limit = "17g"          # Docker's own combined mem+swap total, NOT swap alone
-                                 # (17g here = 1g mem_limit + 16g swap headroom)
-mem_reservation = "256m"        # memory.low — ancestor-chain caveat, see S15.16 WARNING
+mem_limit = ""                  # no per-container RAM cap unless explicitly set
+mem_swap_limit = ""             # combined RAM+swap total; also explicit-only
+mem_reservation = ""            # memory.low protection; explicit-only, see S15.16 WARNING
 cpus = ""                       # "" = unset/uncapped (S15.21); else a positive number, e.g. "1.5"
-read_iops = 0                   # 0 = derive (S15.4); explicit nonzero value wins
-write_iops = 400
+read_iops = ""                  # "" = uncapped; explicit 0 opts into derivation (S15.4)
+write_iops = 0                  # 0 = uncapped; positive value is an explicit cap
 io_weight = 0                   # 0 = not set (S15.14); else 10..1000
 read_bps = 0                    # 0 = uncapped (S15.15)
 write_bps = 0                   # 0 = uncapped (S15.15)
@@ -2849,15 +2851,20 @@ Unlike the rest of CIU's config (free-form TOML, no key-level schema), the
 because it drives generated compose keys, not pass-through template values.
 The stack's declared table is shallow-merged over the defaults above — a
 stack sets only the keys it wants to change from the defaults table; any key
-it omits falls through. There is no further nesting: every key is a scalar
-or a flat list. Two shape checks abort (exit 2) regardless of the no-schema
-rule, because they gate a boolean branch and an iteration respectively:
+it omits falls through. Per-container memory and CPU controls and read IOPS
+default to unset; write IOPS and the other numeric cap fields default to zero.
+They are not injected unless the resolved stack/global config explicitly
+selects a value (read IOPS zero explicitly opts into baseline derivation).
+There is no further nesting: every key is a scalar or a flat list. Two shape
+checks abort (exit 2) regardless of the no-schema rule, because they gate a
+boolean branch and an iteration respectively:
 `enabled` MUST be a boolean (a truthy/falsy string like `"false"` would
-silently misbehave) and `exempt_services` MUST be a list of strings. A third
-check is scoped to one key: `io_weight` (S15.14) MUST be `0` or in `10..1000`
-(Docker's own `blkio_config.weight` range) — a value outside that range
-would otherwise surface as a `docker compose up` failure far from the typo
-that caused it.
+silently misbehave) and `exempt_services` MUST be a list of strings. Numeric
+checks cover `read_iops` and `write_iops`, which MUST be
+non-negative integers (empty `read_iops` means unset), and `io_weight`
+(S15.14) MUST be `0` or in `10..1000` (Docker's own `blkio_config.weight`
+range) — invalid values would otherwise surface as a `docker compose up`
+failure far from the typo that caused it.
 
 ### S15.3 — Injection and author-key precedence
 
@@ -2870,11 +2877,11 @@ keys injected):
 | Injected key | Source |
 |---|---|
 | `cgroup_parent` | `governance.cgroup_parent` |
-| `mem_limit` | `governance.mem_limit` |
-| `memswap_limit` | `governance.mem_swap_limit` — the Compose Specification's actual key has no underscore between "mem" and "swap" (Docker's own combined mem+swap total, not swap alone, so "1g RAM + 16g swap" is `mem_swap_limit = "17g"` in the config table); without this key Docker's stock default applies instead (2x `mem_limit`) |
-| `mem_reservation` | `governance.mem_reservation` |
+| `mem_limit` | `governance.mem_limit` — injected only when non-empty; default `""` leaves the service's Docker memory limit unset |
+| `memswap_limit` | `governance.mem_swap_limit` — injected only when non-empty; the Compose Specification's actual key has no underscore between "mem" and "swap" (Docker's combined RAM+swap total, not swap alone) |
+| `mem_reservation` | `governance.mem_reservation` — injected only when non-empty; default `""` leaves the service's memory.low reservation unset |
 | `cpus` | `governance.cpus` — OMITTED entirely (not injected as `""`) unless explicitly configured; see S15.21 |
-| `blkio_config` | `device_read_iops`/`device_write_iops` (device resolves, S15.5), plus `device_read_bps`/`device_write_bps` when `read_bps`/`write_bps` are nonzero (S15.15), plus `weight` when `io_weight` is nonzero (S15.14, independent of device resolution) — the whole key is omitted only when NONE of those apply |
+| `blkio_config` | `device_read_iops`/`device_write_iops` only for configured IOPS caps (S15.4; `read_iops = 0` explicitly opts into derivation), plus `device_read_bps`/`device_write_bps` when `read_bps`/`write_bps` are nonzero (S15.15), plus `weight` when `io_weight` is nonzero (S15.14, independent of device resolution) — the whole key is omitted only when NONE of those apply |
 
 **Precedence: the stack author's rendered compose always wins.** For each
 service, the overlay generator parses that service's block in the
@@ -2886,8 +2893,11 @@ service**. Precedence is per **top-level compose key**, not a deep merge of
 `blkio_config`'s sub-fields — an author who sets `blkio_config` at all (even
 partially) fully owns that key for that service; governance will not merge
 into it. A service with every one of the six keys either already author-set
-or (for `cpus`) not configured receives no governance fragment at all (and
-does not count toward `services_injected` in the S15.7 log line).
+or not configured receives no governance fragment at all (and does not count
+toward `services_injected` in the S15.7 log line). Resource caps are
+optional: enabling governance for placement does not itself set a
+per-container memory cap, swap ceiling, memory reservation, CPU quota, or
+IOPS cap.
 
 This mirrors S4.17/S8.1's separate-overlay rationale: the rendered
 `ciu.compose.yml` remains byte-exact stack-author output; all governance
@@ -2895,7 +2905,9 @@ wiring — like secret/configfile wiring — lives only in the generated overlay
 
 ### S15.4 — `read_iops` derivation
 
-`read_iops = 0` (the default) means "derive": CIU reads a shell-style
+`read_iops = ""` (the default) means "unset": CIU injects no read IOPS cap.
+Setting `read_iops = 0` in the resolved stack or global config explicitly opts
+into derivation: CIU reads a shell-style
 io-baseline file (`RIOPS_MAX=<int>`, written by `ciu iops-baseline` — S15.9 —
 or by an external host measurement) and computes `RIOPS_MAX * 2 / 3`
 (integer division ≈ 66%). Host cgroup tooling caps the same device in the same
@@ -2922,8 +2934,16 @@ A configured but non-existent path (steps 1–2) falls through to the next
 candidate — resolution is by existence, not by declaration. If no candidate
 exists, or the resolved file has no `RIOPS_MAX` line, CIU falls back to
 `200` and logs a notice as part of the S15.7 summary line (never a silent
-fallback; the no-file note lists the searched paths). Any nonzero
-`read_iops` in the stack config is explicit and always wins over derivation.
+fallback; the no-file note lists the searched paths). A positive
+`read_iops` in config sets that exact cap and always wins over derivation.
+
+`write_iops = 0` (the default) means "unset": CIU injects no write IOPS cap.
+A positive configured value is injected as the write cap. CIU emits each
+direction independently, so setting one does not impose a value on the other.
+Negative values and non-integer values are configuration errors. If explicit
+baseline derivation computes a zero read rate, CIU refuses to render rather
+than silently omitting the requested cap; configure a positive read rate or
+update the measured baseline.
 
 **Measurement provenance (`MEASURE_METHOD`).** The file format is a handful of
 `KEY=VALUE` lines and says nothing about how the numbers were produced — but
@@ -2953,22 +2973,22 @@ unchanged) — `blkio_config` device paths cgroup-v2 `io.max` accounting on
 this host applies at the whole-disk level, not per-partition. An explicit
 `device` value in the stack config always wins over autodetection. If
 autodetection fails for any reason (`findmnt` missing, non-Linux, non-zero
-exit, unparseable/non-`/dev` output), `blkio_config` is skipped entirely for
-every service **this run** (cgroup_parent/mem_limit/memswap_limit/
-mem_reservation are still injected) and the S15.7 summary line names the
-failure.
+exit, unparseable/non-`/dev` output), per-device rate fields are skipped for
+every service **this run**. `cgroup_parent`, explicit memory/CPU controls,
+and `io_weight` remain eligible for injection (`io_weight` does not require a
+device); the S15.7 summary line names the detection failure.
 
 ### S15.6 — `ciu env generate` integration
 
 `ciu env generate` (`workspace_env.generate_ciu_env`) additionally derives
 `CIU_GOV_READ_IOPS` (via the same S15.4 formula, always in "derive" mode —
-the generated machine-facts table is the machine-identity layer, S2.7, with no per-stack `read_iops`
-override reachable there) and writes it into `ciu.env` for shell/template
-consumption. This is a convenience export only: the overlay generator
-(S15.3/S15.4) reads the baseline file and `findmnt` directly and does **not**
-depend on `ciu.env` carrying this value — governance still works correctly
-on a stack run without a preceding `ciu env generate`/regen. A pre-set
-`CIU_GOV_READ_IOPS` in the environment always wins (S2.7).
+the generated machine-facts table is the machine-identity layer, S2.7, with no
+per-stack `read_iops` override reachable there) and writes it into `ciu.env` for shell/template
+consumption. This is a convenience export only: CIU does not apply this
+generated value as a stack cap. The overlay generator injects a read cap only
+when the resolved config sets `read_iops`; a consumer may explicitly reference
+`CIU_GOV_READ_IOPS` from its config if it wants the generated suggestion. A
+pre-set `CIU_GOV_READ_IOPS` in the environment always wins (S2.7).
 
 ### S15.7 — Logging
 
@@ -2977,9 +2997,10 @@ stack declares a `governance` table at all** (present-but-`enabled = false`
 still logs one "disabled" line; a stack with no `governance` table logs
 nothing and pays no computation cost — S15 is fully zero-footprint for the
 overwhelming majority of stacks that never opt in). When enabled, the line
-names every resolved value (`cgroup_parent`, `mem_limit`, `mem_swap_limit`,
-`mem_reservation`, declared `mem_min` (S15.16, or "not declared"), resolved `read_iops` + its
-source, `write_iops`, `io_weight` (S15.14, or "not set"), `read_bps`/
+names every resolved value (`cgroup_parent`, `mem_limit`/`mem_swap_limit`/
+`mem_reservation` or "not set", declared `mem_min` (S15.16, or "not declared"),
+configured `read_iops` + its source or "not set", configured `write_iops` or
+"not set", `io_weight` (S15.14, or "not set"), `read_bps`/
 `write_bps` (S15.15, or "uncapped"), resolved `device` + its source or
 failure reason, `ksm_optin` (S15.11, or "off"), and the count of services
 injected vs. exempted).
@@ -3004,8 +3025,9 @@ degradation, not a failure — `composefile.generate_overlay` still has no way
 to detect a missing systemd unit from inside a container-facing overlay
 generator (no host access there); **S15.12 closes this gap at deploy time
 instead**, where profile-based `ciu up` *does* have host access, before any container
-starts. `mem_limit`/`memswap_limit`/`mem_reservation`/`blkio_config` are
-per-container (not slice-dependent) and always apply regardless.
+starts. Explicitly configured `mem_limit`/`memswap_limit`/`mem_reservation`
+and `blkio_config` are per-container (not slice-dependent); absent memory
+keys remain unset rather than inheriting an invented CIU cap.
 
 ### S15.9 — `ciu iops-baseline` (self-contained measurement)
 
@@ -3363,17 +3385,17 @@ post-start if so.
 `read_bps` / `write_bps` (bytes/sec; default `0` = uncapped) declare
 per-device bandwidth ceilings, injected as `blkio_config.device_read_bps` /
 `device_write_bps` — the same `device` (S15.5) and per-device list shape as
-the pre-existing `read_iops`/`write_iops` keys, and gated the same way: no
+the `read_iops`/`write_iops` keys, and gated the same way: no
 resolved device means no `device_read_bps`/`device_write_bps` fields (device
 resolution failure is reported once, in the S15.7 summary line, same as
 today for the iops caps).
 
-Unlike `read_iops`, there is no baseline-derived default for either key: the
-`ciu iops-baseline` measurement (S15.9) and its `RIOPS_MAX`-derived formula
-(S15.4) are IOPS-specific — a bandwidth ceiling pulled from that number
-would not be measuring the thing it caps. `0` (uncapped) is therefore the
-only honest default until a bandwidth-specific baseline exists; both keys
-are explicit-opt-in-only.
+There is no baseline-derived mode for either key: the `ciu iops-baseline`
+measurement (S15.9) and its `RIOPS_MAX`-derived formula (S15.4) are
+IOPS-specific — a bandwidth ceiling pulled from that number would not be
+measuring the thing it caps. `0` (uncapped) is therefore the only honest
+default until a bandwidth-specific baseline exists; both keys are
+explicit-opt-in-only.
 
 ### S15.16 — Declared memory floor (`mem_min`) and its preflight (D-G9 check 3)
 
@@ -3516,13 +3538,11 @@ half CPUs), injected as-is, no translation (unlike `mem_swap_limit` →
 non-exempt service that hasn't set its own `cpus` (S15.3 author precedence,
 same as every other governance key).
 
-**Default is unset/uncapped, deliberately — not a nonzero cap.** Unlike
-`mem_limit`/`mem_reservation` (real defaults since governance's
-introduction), a CPU cap has never had a default here, and this package does
-not give it one: an invented nonzero estate-wide default would silently
-throttle every currently-uncapped governed container the moment this shipped,
-with no config change on the consumer's part — exactly the "defaults are
-hazards" failure shape AGENTS.md warns against. A stack that wants a quota
+**Default is unset/uncapped, deliberately — not a nonzero cap.** A CPU cap,
+like the memory controls, has no code-level default: an invented nonzero
+estate-wide default would silently throttle currently-uncapped governed
+containers when shipped, with no config change on the consumer's part — the
+"defaults are hazards" failure shape AGENTS.md warns against. A stack that wants a quota
 (the D-264 PC-1 case this key was filed for — a `worker-io` stack governance
 capped on memory/IO but left CPU-unbounded) sets `governance.cpus = "2"`
 explicitly; every other stack's behavior is byte-identical before and after
@@ -4064,10 +4084,11 @@ graph` verbs; and SSH remote transport (S14) — `ciu ssh`, `ciu up/down/health/
 --host`, render-on-target push-deploy, the docker-optional `--thin` push→activate
 contract (S14.6), fail-closed host-key pinning, optional
 `paramiko` extra (`pip install ciu[ssh]`); and stack-wide resource governance
-(S15) — opt-in `[<root>.governance]` injects `cgroup_parent`/`mem_limit`/
-`mem_reservation`/`blkio_config` into every enumerated service via the
-overlay (author-set keys always win), with baseline-derived `read_iops` and
-autodetected blkio `device`, zero-footprint for stacks that don't opt in.
+(S15) — opt-in `[<root>.governance]` injects `cgroup_parent` and only
+configured memory, CPU, and IO controls into every enumerated service via the
+overlay (author-set keys always win); `read_iops = 0` explicitly opts into
+baseline derivation, while omitted controls stay unset. Zero-footprint for
+stacks that don't opt in.
 Migration recipes: docs/MIGRATION-V2.md.
 
 ---
@@ -5190,7 +5211,8 @@ evidence-judgment command.
 `ciu init [--project-name NAME] [--environment-tag TAG] [--stacks A,B]`
 generates a minimal CIU-enabled repository layout: a validated
 `ciu.global.defaults.toml.j2` (project identity, network from
-`$DOCKER_NETWORK_INTERNAL`, health timings), gitignore entries (`ciu.env`,
+`$DOCKER_NETWORK_INTERNAL`, health timings, and the complete disabled
+`[governance]` table with every resource control unset), gitignore entries (`ciu.env`,
 `ciu.global.toml`, `**/.ciu/`, `**/ciu.compose.yml`, `ciu.worktree-instance.json`,
 `ciu.global.instance.toml.j2`, `ciu.instance.generated.toml`, `**/ciu.toml` —
 CIU-61 reconciled this list
@@ -5205,7 +5227,9 @@ the global template AND every stack's own `ciu.defaults.toml.j2` are rendered
 through the real Jinja step and TOML-parsed BEFORE anything is written; an
 existing target file is never overwritten — the run refuses naming every
 existing target. It does NOT run `ciu env generate` (side effects stay with
-the operator); the printed next steps say to.
+the operator); the printed next steps say to. A test compares the generated
+governance table's keys with `GOVERNANCE_DEFAULTS` and verifies its defaults
+do not impose per-container caps.
 
   **Deliberately NOT gitignored** (S3.1a/CIU-8): `ciu.global.toml.j2` and a
   scaffolded stack's own `ciu.toml.j2`, once an operator adds either, are

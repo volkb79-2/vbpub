@@ -44,6 +44,34 @@ DOCKER_GID = "$DOCKER_GID"
 REPO_ROOT = "$REPO_ROOT"
 PHYSICAL_REPO_ROOT = "$PHYSICAL_REPO_ROOT"
 
+# --- [governance] : resource caps are opt-in -------------------------------
+# `ciu init` writes every current governance option here so an operator can
+# enable or tune it in config. The defaults below impose no per-container
+# resource caps. `cgroup_parent = ""` has no guessed slice; when governance is
+# enabled CIU requires the configured or ambient dev-background slice.
+[governance]
+enabled = false
+cgroup_parent = ""
+mem_limit = ""
+mem_swap_limit = ""
+mem_reservation = ""
+cpus = ""
+read_iops = ""
+write_iops = 0
+io_weight = 0
+read_bps = 0
+write_bps = 0
+device = ""
+baseline_path = ""
+exempt_services = []
+ksm_optin = ""
+mem_min = ""
+
+[governance.memory_profile.default]
+ksm = "preload"
+
+[governance.memory_profile.services]
+
 # --- [deploy.phases.phase_1] : orchestration registration -------------------
 # Registers the scaffolded stacks with phase-based orchestration so
 # `ciu render` / `ciu up` see them without --dir. Extend per stack added.
