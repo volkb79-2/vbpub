@@ -448,7 +448,7 @@ overrides a value only where it has a genuinely different requirement). The requ
 | `CMRU_TESTER_UNIFIED_IMAGE` | the tester-unified gate container image |
 | `CMRU_TESTER_MEMORY` | gate container memory ceiling (no default — refuses unbounded) |
 | `CMRU_TESTER_MEMORY_SWAP` | combined mem+swap total (Docker semantics) |
-| `CMRU_TESTER_CPUS` | gate container CPU ceiling |
+| `CMRU_TESTER_CPUS` | finite decimal CPU ceiling of at least `0.00001`; smaller values would remove Docker's per-container bound |
 | `CMRU_TESTER_CGROUP_PROBE_IMAGE` | host-systemd slice probe image |
 | `CMRU_TESTER_CGROUP_PARENT` | required host gates slice (`${CGROUP_PARENT_DEV_GATES}`) |
 | `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon) |
@@ -461,6 +461,13 @@ together**, before any container spins up — and the message names
 `cmru.orchestration.toml`, not your project's `cmru.toml`. (In terse messages the estate writes
 this env block as "`[env]`" for short; the literal table in the orchestration file is
 `[orchestration.defaults.env]`.)
+The CPU setting must be a finite decimal of at least `0.00001`; CMRU pins Docker's CPU period
+at 100000 microseconds and checks the value before privileged host slice/IO probes. Smaller
+positive values, zero, non-finite values, and values Docker cannot represent are refused
+instead of being rounded to an absent CPU limit.
+`--memory`, `--memory-swap`, and `--cpus` bound the tester workload. With `--enable-docker`,
+the DinD sidecar is also placed under `CMRU_TESTER_CGROUP_PARENT`, but currently has no separate
+per-container CPU or memory cap; the policy decision is open in the canonical CLI audit.
 
 ### Reproducing a gate step by hand
 
@@ -471,9 +478,17 @@ forget, but it is faster to set it before the first try:
 ```sh
 export CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
        CMRU_TESTER_MEMORY=3g CMRU_TESTER_MEMORY_SWAP=16g CMRU_TESTER_CPUS=1.5 \
-       CMRU_TESTER_CGROUP_PROBE_IMAGE=debian:trixie-slim
+       CMRU_TESTER_CGROUP_PROBE_IMAGE=debian:trixie-slim \
+       CMRU_TESTER_CGROUP_PARENT="${CGROUP_PARENT_DEV_GATES:?CGROUP_PARENT_DEV_GATES is required}"
 # then run the step's argv
 ```
+
+To inspect the constructed command without launching containers, add `--dry-run` to the
+copied `tester-gate` argv. The preview also shows the DinD startup command when that option
+is enabled. It skips the privileged host slice and IO checks, so a dry-run is not evidence
+that the host will accept the configured cgroup parent or device limits; the actual run
+performs those checks before starting the gate. Every probe, sidecar, and gate container is
+placed under `CMRU_TESTER_CGROUP_PARENT`.
 
 ### The CMRU R0-R3 gate
 

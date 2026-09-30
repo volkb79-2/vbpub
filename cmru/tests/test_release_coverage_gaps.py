@@ -407,11 +407,11 @@ def test_resolve_context_and_multi_formats(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: loaded)
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **_kwargs: object())
-    resolve_module.resolve_main(["all", "--format", "env"])
+    assert resolve_module.resolve_main(["all", "--format", "env"]) == 0
     assert "# Project: demo" in capsys.readouterr().out
-    resolve_module.resolve_main(["all", "--format", "url"])
+    assert resolve_module.resolve_main(["all", "--format", "url"]) == 0
     assert "Resolve Project" in capsys.readouterr().out
-    resolve_module.resolve_main(["all", "--format", "json"])
+    assert resolve_module.resolve_main(["all", "--format", "json"]) == 0
     assert '"demo"' in capsys.readouterr().out
 
 
@@ -422,7 +422,7 @@ def test_resolve_standalone_implicit_target(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: _loaded({"demo": project}))
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "url": "https://x"})
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **_kwargs: object())
-    resolve_module.resolve_main([])
+    assert resolve_module.resolve_main([]) == 0
     assert '"version": "1"' in capsys.readouterr().out
 
 
@@ -434,7 +434,7 @@ def test_resolve_orchestration_context_without_explicit_target(monkeypatch, tmp_
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "url": "https://x"})
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **_kwargs: object())
-    resolve_module.resolve_main([])
+    assert resolve_module.resolve_main([]) == 0
     assert '"version": "1"' in capsys.readouterr().out
 
 
@@ -595,6 +595,7 @@ def test_tester_gate_forwards_gate_slice(monkeypatch):
         repo_root=Path("/repo"), relative_cwd=".", memory="1g", memory_swap="2g",
         cpus="1", image="tester", command=["true"],
         cgroup_parent_dev_gates="dev-gates.slice",
+        cgroup_parent="dev-gates.slice",
     )
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in argv
 

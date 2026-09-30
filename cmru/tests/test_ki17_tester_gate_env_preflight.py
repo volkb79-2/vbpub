@@ -172,9 +172,17 @@ def test_io_probe_subprocess_failure_is_indeterminate_fail_closed(monkeypatch):
     def boom(*a, **kw):
         raise OSError("docker daemon vanished mid-probe")
     monkeypatch.setattr(tester_gate.subprocess, "run", boom)
-    ok, note = tester_gate._probe_io_support("debian:test")
+    ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
     assert ok is False
     assert "could not probe the Docker host's IO support" in note
+
+
+def test_docker_run_argv_requires_non_empty_cgroup_parent():
+    assert tester_gate._docker_run_argv(
+        " dev-gates.slice ", "--rm", "image"
+    ) == ["docker", "run", "--cgroup-parent=dev-gates.slice", "--rm", "image"]
+    with pytest.raises(ValueError, match="require a cgroup parent"):
+        tester_gate._docker_run_argv(" \t ", "--rm", "image")
 
 
 def test_io_probe_nonzero_rc_is_fail_closed_with_real_cause(monkeypatch):
@@ -183,7 +191,7 @@ def test_io_probe_nonzero_rc_is_fail_closed_with_real_cause(monkeypatch):
     monkeypatch.setattr(
         tester_gate.subprocess, "run",
         lambda *a, **kw: SimpleNamespace(returncode=42, stdout="", stderr="nsenter: boom"))
-    ok, note = tester_gate._probe_io_support("debian:test")
+    ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
     assert ok is False
     assert "rc=42" in note and "nsenter: boom" in note
 

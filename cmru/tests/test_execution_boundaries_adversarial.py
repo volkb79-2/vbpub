@@ -171,7 +171,7 @@ class TestTesterGateContracts:
         argv = gate.build_docker_command(tmp_path, "cmru", ["pytest", "-q"], image="tester", cgroup_parent="dev.slice", memory="1g", memory_swap="2g", cpus="1")
         assert "--cgroup-parent=dev.slice" in argv and "/host/repo" in " ".join(argv)
         with pytest.raises(ValueError, match="command"):
-            gate.build_docker_command(tmp_path, ".", [], image="tester", memory="1g", memory_swap="2g", cpus="1")
+            gate.build_docker_command(tmp_path, ".", [], image="tester", memory="1g", memory_swap="2g", cpus="1", cgroup_parent="dev-gates.slice")
 
     @pytest.mark.parametrize("fn,env,label", [
         ("resolve_cgroup_parent", "CMRU_TESTER_CGROUP_PARENT", "cgroup_parent"),
@@ -195,16 +195,21 @@ class TestTesterGateContracts:
             return
         with pytest.raises(SystemExit, match=label):
             getattr(gate, fn)(None)
-        monkeypatch.setenv(env, "from-env")
-        assert getattr(gate, fn)("explicit") == "explicit"
+        if fn == "resolve_cpus":
+            monkeypatch.setenv(env, "1.5")
+            assert gate.resolve_cpus(None) == "1.5"
+            assert gate.resolve_cpus("0.75") == "0.75"
+        else:
+            monkeypatch.setenv(env, "from-env")
+            assert getattr(gate, fn)("explicit") == "explicit"
 
     def test_slice_probe_distinguishes_loaded_transient_and_no_docker(self, monkeypatch):
         import cmru.tester_gate as gate
         monkeypatch.setattr(gate.shutil, "which", lambda name: None)
-        assert gate.check_slice_unit("dev.slice", "probe")[0] is None
+        assert gate.check_slice_unit("dev.slice", "probe", "dev-gates.slice")[0] is None
         monkeypatch.setattr(gate.shutil, "which", lambda name: "/usr/bin/docker")
         monkeypatch.setattr(gate.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="LoadState=loaded\nFragmentPath=\n", stderr=""))
-        assert gate.check_slice_unit("typo.slice", "probe")[0] is False
+        assert gate.check_slice_unit("typo.slice", "probe", "dev-gates.slice")[0] is False
 
 
 class TestCliExecutionContracts:

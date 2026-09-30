@@ -509,7 +509,7 @@ registered implementation named beside them.
 | cmru handler tarball-validate; python -m cmru.handlers tarball-validate | Required `--prefix` selects the release; `--artifact-suffix` defaults to `.tar.xz` and selects the expected extension. This is read-only and has no `--dry-run`. | ACCEPTED; a future suffix change must preserve non-empty/path-safe validation. |
 | cmru handler oci-image-build; python -m cmru.handlers oci-image-build | Required `--cwd`, `--bake-file`, and `--target` select the project build. `--repack` is accepted only to fail immediately with a clear disabled-feature error; no Docker login or command runs. `--dry-run` previews only the supported non-repack path. | ACCEPTED; KI-02 repack tuning flags were removed, and the disabled path is covered by a pre-side-effect test. |
 | cmru handler oci-image-push; python -m cmru.handlers oci-image-push | Required `--cwd`, `--bake-file`, and `--target` select the image. `--repack` fails before login or Docker; ordinary operation uses buildx bake push. `--dry-run` shows inputs without pushing. | ACCEPTED; no dormant repack grammar remains beyond the explicit refusal switch. |
-| cmru tester-gate | Required `--cwd DIR` selects the in-container checkout path and positional `command...` is the command after `--`. `--image` selects the pinned tester image; `--cgroup-parent` overrides the required gates slice; `--forward-cgroup-parent-var` and `--forward-cgroup-parent-gates-var` control nested slice fact forwarding; `--memory`, `--memory-swap`, and `--cpus` set container resource bounds; `--cgroup-probe-image` and `--dind-image` select helper images; `--device-read-iops`, `--device-write-iops`, `--device-read-bps`, and `--device-write-bps` set device I/O limits; `--enable-docker` requests DinD and requires its configured image. `--dry-run` prints the resolved Docker argv and does not start a container. | ACCEPTED WITH FOLLOW-UP: required gates-slice verification and no fallback remain; test invalid memory/swap and resource combinations against live Docker before claiming launch acceptance. |
+| cmru tester-gate | Required `--cwd DIR` selects the in-container checkout path and positional `command...` is the command after `--`. `--image` selects the pinned tester image; `--cgroup-parent` overrides the required gates slice; `--forward-cgroup-parent-var` and `--forward-cgroup-parent-gates-var` control nested slice fact forwarding; `--memory`, `--memory-swap`, and `--cpus` set container resource bounds. CPU must be a finite decimal of at least `0.00001` that Docker can represent; CMRU pins the period at 100000 microseconds and refuses zero/smaller, non-finite, or unrepresentable values before host probes because Docker otherwise maps them to no per-container CPU limit. `--cgroup-probe-image` and `--dind-image` select helper images; `--device-read-iops`, `--device-write-iops`, `--device-read-bps`, and `--device-write-bps` set device I/O limits; `--enable-docker` requests DinD and requires its configured image; the sidecar receives the gates-slice parent but has no separate per-container CPU or memory cap. `--dry-run` prints the workload argv and, when enabled, the DinD startup argv; it starts no container and skips privileged host slice/IO probes. Every helper and workload container receives the required `--cgroup-parent`. | ACCEPTED WITH OPEN DECISION: live Docker refused `--memory 1g --memory-swap 512m` with status 125 before workload creation. A live `docker create` plus inspect showed `--cpus 0` left `NanoCpus`, `CpuQuota`, and `CpuPeriod` all zero; live runs showed values below `0.00001` produce `cpu.max = max 100000`, whereas `0.00001` produces a bounded quota; CMRU fixes the period at 100000 microseconds. CMRU rejects zero, smaller, non-finite, and unrepresentable limits before privileged probes. `--dry-run` still intentionally skips host slice/IO capability checks. Decide whether DinD should inherit workload limits or have separate required CPU/memory inputs; recommendation: separate explicit limits to avoid doubling the workload envelope. |
 | cmru resolve | Optional target and `--config` select a project; `--format` is `json` by default or `env`/`url`. It reads the latest published artifact facts, including the selected digest, and performs no write; no `--dry-run` is offered. | ACCEPTED; supported output formats are closed and distinguishable. |
 | cmru get-py | Optional target and `--config` select installer templates; `--output` writes exactly one selected installer, `--output-dir` writes one per project, and those destination options are mutually exclusive. Omission of both writes rendered scripts to stdout. `--dry-run` renders/validates selected templates and destinations but writes no file. Generated installers intentionally keep standalone `argparse`. | ACCEPTED; the installed-wheel fix for KI-26 is in scope, and the `get` alias was removed. |
 | cmru standards | Optional target and `--config` choose projects; default mode checks conformance. `--update` writes only CMRU-owned template revision markers; `--dry-run` requires `--update` and prints diffs without writing. | ACCEPTED; mixed read/write verb exposes dry-run only for its explicit mutation path. |
@@ -930,13 +930,15 @@ host-systemd probe-image values (CLI options or the effective `[env]`). `--enabl
 requires a nested-Docker image. `wheel-build` requires `CMRU_WHEEL_BUILDER_IMAGE`; CMRU
 does not fall back to the cockpit's Python environment.
 
-**S2.6a — tester-gate environment preflight (KI-17).** These values are normally supplied by
+### S2.6a — tester-gate environment preflight (KI-17)
+
+These values are normally supplied by
 `cmru.orchestration.toml [env]` and reach a step through `cmru release`; they are NOT usually
 set in the project's own `cmru.toml [env]`. So a step copied out of `cmru.toml` and run by hand
 (what an operator does when a release goes red) would otherwise fail one missing variable at a
 time, each costing a container spin-up, and each message would send the reader to the wrong
-file. `tester-gate` MUST therefore, before any resolver with a side effect (the slice-existence
-probe, the container launch): (1) validate the full required set at once — image, memory,
+file. `tester-gate` MUST therefore, before any actual-launch resolver with a side effect
+(the slice-existence probe, the container launch): (1) validate the full required set at once — image, memory,
 memory/swap, CPU, probe image, gates slice, and the nested-Docker image when `--enable-docker` — resolving
 each at `explicit flag > environment` precedence, and abort naming EVERY still-missing variable
 together; and (2) in that report and in each individual resolver's message, name
@@ -944,7 +946,17 @@ together; and (2) in that report and in each individual resolver's message, name
 the same required set `cmru standards` validates statically against a project's declared config
 (one shared constant, `REQUIRED_TESTER_ENV`), including the required
 `CMRU_TESTER_CGROUP_PARENT` gates binding. Direct CLI use must pass that binding
-or an explicit `--cgroup-parent`; an unscoped launch is refused.
+or an explicit `--cgroup-parent`; an unscoped launch is refused. CMRU MUST set Docker's CPU
+period to 100000 microseconds. Before the privileged slice or IO probe, the resolved CPU limit
+MUST be a finite value of at least `0.00001` that Docker can represent as a nonzero per-container
+quota; this check applies equally to `--cpus` and the environment value.
+
+`--dry-run` is the deliberate exception to host probes: it prints the resolved workload
+argv and, with `--enable-docker`, the DinD startup argv, but starts no container. The
+slice and IO-support checks themselves require temporary privileged containers, so dry-run
+prints a note that those host checks were skipped. An actual launch runs them first. The
+slice probe, IO probe, DinD sidecar, and workload all receive the resolved gates
+`--cgroup-parent`; no helper container may fall through to Docker's default tier.
 
 If none is found and a write verb is invoked, cmru MUST exit 3 (V10).
 

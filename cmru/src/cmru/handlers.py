@@ -117,12 +117,12 @@ def _publish_versioned_artifacts(
     with tempfile.TemporaryDirectory(prefix="cmru-build-publish-") as temporary:
         staging = Path(temporary)
         staged_asset = staging / "asset" / asset_path.name
-        staged_asset.parent.mkdir(parents=True)
+        staged_asset.parent.mkdir()
         shutil.copy2(asset_path, staged_asset)
         staged_extras: list[Path] = []
         for index, extra in enumerate(extra_assets or []):
             staged_extra = staging / f"extra-{index}" / extra.name
-            staged_extra.parent.mkdir(parents=True)
+            staged_extra.parent.mkdir()
             shutil.copy2(extra, staged_extra)
             staged_extras.append(staged_extra)
 
@@ -607,7 +607,7 @@ def handlers_cli():
             ),)
 
         def dispatch(args, _runtime, fn=handler, command=name):
-            if getattr(args, "dry_run", False):
+            if args.dry_run:
                 if getattr(args, "repack", False):
                     _reject_experimental_repack(True)
                 details = {
@@ -615,7 +615,7 @@ def handlers_cli():
                     if key != "dry_run" and "token" not in key.lower()
                 }
                 print(f"[DRY RUN] Would run cmru handler {command} with {details}")
-                return 0
+                return None
             return fn(args)
 
         registry.register(VerbSpec(

@@ -633,12 +633,18 @@ def _scope_dir(repo_root: Path) -> Path:
     return _common_git_dir(repo_root) / "cmru-release-scopes"
 
 
+def _ensure_scope_dir(repo_root: Path) -> Path:
+    """Create the transaction metadata directory beneath Git's existing common dir."""
+    scope_dir = _scope_dir(repo_root)
+    scope_dir.mkdir(exist_ok=True)
+    return scope_dir
+
+
 def write_release_scope(repo_root: Path, workspace: ReleaseWorkspace, project_names: Sequence[str]) -> None:
     """Record which projects a release attempt targets, in the shared common git
     dir (never inside the worktree — S-REL.4a's undeclared-write guard must never
     see it). The first-class ``cmru abandon`` command reports this exact scope."""
-    scope_dir = _scope_dir(repo_root)
-    scope_dir.mkdir(parents=True, exist_ok=True)
+    scope_dir = _ensure_scope_dir(repo_root)
     (scope_dir / f"{_release_token(workspace)}.json").write_text(
         json.dumps(sorted(project_names)), encoding="utf-8",
     )
@@ -685,8 +691,7 @@ def mark_backup_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     worse failure: a push that genuinely happened must still be reliably
     recognised as pushed, or its backup branch is orphaned on origin forever.
     """
-    scope_dir = _scope_dir(repo_root)
-    scope_dir.mkdir(parents=True, exist_ok=True)
+    scope_dir = _ensure_scope_dir(repo_root)
     (scope_dir / f"{_release_token(workspace)}.backup-pushed").write_text("1", encoding="utf-8")
 
 
@@ -697,8 +702,7 @@ def backup_was_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
 
 def mark_backup_removed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     """Record that explicit abandonment verified deletion of the origin candidate ref."""
-    scope_dir = _scope_dir(repo_root)
-    scope_dir.mkdir(parents=True, exist_ok=True)
+    scope_dir = _ensure_scope_dir(repo_root)
     (scope_dir / f"{_release_token(workspace)}.backup-removed").write_text("1", encoding="utf-8")
 
 
@@ -720,8 +724,7 @@ def mark_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     :func:`plan_was_refused` (its child exited non-zero, same as any other
     failure) to tell that apart from a genuine mid-release failure, which
     MUST be retained for inspection instead."""
-    scope_dir = _scope_dir(repo_root)
-    scope_dir.mkdir(parents=True, exist_ok=True)
+    scope_dir = _ensure_scope_dir(repo_root)
     (scope_dir / f"{_release_token(workspace)}.plan-refused").write_text("1", encoding="utf-8")
 
 
@@ -882,25 +885,34 @@ def validate_build_output_tree(
     expected: dict[str, tuple[str, int]] = {}
     artifact_dirs: list[Path] = []
     seen_dirs: set[str] = set()
+    malformed_directory = f"{project_name}: malformed artifact directory in build manifest"
+    unsafe_coordinate = f"{project_name}: unsafe file coordinate in build manifest"
     for artifact in artifacts:
         if not isinstance(artifact, dict) or set(artifact) != {"directory", "files"}:
             raise RuntimeError(f"{project_name}: malformed artifact inventory in build manifest")
         directory = artifact["directory"]
         files = artifact["files"]
-        directory_path = PurePosixPath(directory) if isinstance(directory, str) else PurePosixPath("/")
-        if (
-            not isinstance(directory, str)
-            or not directory
-            or "\\" in directory
-            or directory_path.is_absolute()
-            or len(directory_path.parts) != 1
-            or directory_path.as_posix() != directory
-            or directory in {".", "..", "build.json"}
-            or directory in seen_dirs
-            or not isinstance(files, list)
-            or not files
-        ):
-            raise RuntimeError(f"{project_name}: malformed artifact directory in build manifest")
+        if not isinstance(directory, str):
+            raise RuntimeError(malformed_directory)
+        if not directory:
+            raise RuntimeError(malformed_directory)
+        directory_path = PurePosixPath(directory)
+        if "\\" in directory:
+            raise RuntimeError(malformed_directory)
+        if directory_path.is_absolute():
+            raise RuntimeError(malformed_directory)
+        if len(directory_path.parts) != 1:
+            raise RuntimeError(malformed_directory)
+        if directory_path.as_posix() != directory:
+            raise RuntimeError(malformed_directory)
+        if directory in {".", "..", "build.json"}:
+            raise RuntimeError(malformed_directory)
+        if directory in seen_dirs:
+            raise RuntimeError(malformed_directory)
+        if not isinstance(files, list):
+            raise RuntimeError(malformed_directory)
+        if not files:
+            raise RuntimeError(malformed_directory)
         seen_dirs.add(directory)
         artifact_dir = artifact_root / directory
         if artifact_dir.is_symlink() or not artifact_dir.is_dir():
@@ -912,23 +924,31 @@ def validate_build_output_tree(
             relative = entry["path"]
             digest = entry["sha256"]
             byte_count = entry["bytes"]
-            relative_path = PurePosixPath(relative) if isinstance(relative, str) else PurePosixPath("/")
-            if (
-                not isinstance(relative, str)
-                or not relative
-                or "\\" in relative
-                or relative_path.is_absolute()
-                or relative_path.as_posix() != relative
-                or not relative_path.parts
-                or ".." in relative_path.parts
-                or "." in relative_path.parts
-                or not isinstance(digest, str)
-                or not re.fullmatch(r"[0-9a-f]{64}", digest)
-                or not isinstance(byte_count, str)
-                or not byte_count.isdecimal()
-                or str(int(byte_count)) != byte_count
-            ):
-                raise RuntimeError(f"{project_name}: unsafe file coordinate in build manifest")
+            if not isinstance(relative, str):
+                raise RuntimeError(unsafe_coordinate)
+            if not relative:
+                raise RuntimeError(unsafe_coordinate)
+            relative_path = PurePosixPath(relative)
+            if "\\" in relative:
+                raise RuntimeError(unsafe_coordinate)
+            if relative_path.is_absolute():
+                raise RuntimeError(unsafe_coordinate)
+            if not relative_path.parts:
+                raise RuntimeError(unsafe_coordinate)
+            if relative_path.as_posix() != relative:
+                raise RuntimeError(unsafe_coordinate)
+            if ".." in relative_path.parts:
+                raise RuntimeError(unsafe_coordinate)
+            if not isinstance(digest, str):
+                raise RuntimeError(unsafe_coordinate)
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise RuntimeError(unsafe_coordinate)
+            if not isinstance(byte_count, str):
+                raise RuntimeError(unsafe_coordinate)
+            if not byte_count.isdecimal():
+                raise RuntimeError(unsafe_coordinate)
+            if str(int(byte_count)) != byte_count:
+                raise RuntimeError(unsafe_coordinate)
             coordinate = f"{directory}/{relative_path.as_posix()}"
             if coordinate in expected:
                 raise RuntimeError(f"{project_name}: duplicate file coordinate in build manifest: {coordinate}")
@@ -1551,8 +1571,7 @@ def write_release_progress(repo_root: Path, workspace: ReleaseWorkspace, sha: st
     next project's starts). It identifies the last complete source candidate
     for inspection and resume reporting; current releases never use it to
     manufacture a source-tree revert."""
-    scope_dir = _scope_dir(repo_root)
-    scope_dir.mkdir(parents=True, exist_ok=True)
+    scope_dir = _ensure_scope_dir(repo_root)
     (scope_dir / f"{_release_token(workspace)}.progress").write_text(sha, encoding="utf-8")
 
 

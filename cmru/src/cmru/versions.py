@@ -2090,7 +2090,7 @@ def versions_cli():
     return registry.build()
 
 
-def _run_versions(args, _runtime) -> int:
+def _run_versions(args, _runtime) -> int | None:
     action = args.verb
     try:
         context_path = Path(args.config).expanduser() if args.config else None
@@ -2098,9 +2098,9 @@ def _run_versions(args, _runtime) -> int:
         forge = load_forge_config(context.config_path)
         projects = _selected_projects(forge, context, args.target)
         if action == "init":
-            for line in _versions_init(forge, projects, dry_run=getattr(args, "dry_run", False)):
+            for line in _versions_init(forge, projects, dry_run=args.dry_run):
                 print(line)
-            return 0
+            return
         if action == "check":
             now = datetime.now(timezone.utc).replace(microsecond=0)
             root_results, project_results, declarations = _resolve_all_for_command(
@@ -2108,14 +2108,14 @@ def _run_versions(args, _runtime) -> int:
             )
             _emit_age_evidence_warnings(root_results, project_results)
             records = _recorded_versions(forge, root_results, project_results, declarations)
-            if getattr(args, "json", False):
+            if args.json:
                 print(json.dumps({"schema_version": 1, "targets": records}, indent=2, sort_keys=True))
             else:
                 print(_render_report(records))
-            return 0
-        for line in _run_resolve(forge, context, projects, dry_run=getattr(args, "dry_run", False)):
+            return
+        for line in _run_resolve(forge, context, projects, dry_run=args.dry_run):
             print(line)
-        return 0
+        return
     except VersionsPrerequisiteError as exc:
         print(f"CMRU versions: {exc}", file=sys.stderr)
         return exit_codes.PREREQ_MISSING
