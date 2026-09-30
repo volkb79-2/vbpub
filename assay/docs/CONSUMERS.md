@@ -63,8 +63,21 @@ invoke the separate, more expensive full-source R0-R3 campaign when that
 qualification is required. It runs in the dedicated `tester-unified`
 environment, uses the exact selected worktree source, resumes native R2 from
 gitignored state, and verifies its verdict before it can report success.
-The pytest command resolves `src/` inside each isolated snapshot so R1 coverage
-and R2 mutations apply to the snapshot being judged. No collected judge test
+The pytest command resolves `src/` inside each isolated snapshot (through
+pyproject's `pythonpath = ["src", "analysis/src"]`, with no `--override-ini`) so R1
+coverage and R2 mutations apply to the snapshot being judged. It collects the judge
+tests in `tests/` only; the tooling tests in `gate/tests/` run in `tester-unified`
+(B123). **The full lane needs a same-commit `tester-unified` pass:** run
+`./run-gate.py tester-unified` first. After a green run at a commit and tree it
+writes `.assay/registered-gate/tester-unified.json` and prints
+`ASSAY_REGISTERED_GATE_RECEIPT=`; the full lane's driver and the B105 checker refuse
+to proceed without a receipt for the commit and tree being judged (the preflight
+does not need one). The receipt lives in that worktree's ignored `.assay/` and names
+its HEAD, so run both lanes in the same worktree with no commit in between: any
+later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
+run. `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>`
+when another `run-gate-*` container is running; exit 3 always means rerun, and the
+receipt is left as it was. No collected judge test
 reads history or tags (A-475); the lane keeps full commit history until B128,
 and snapshot refs/tags are not copied.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following
@@ -1422,7 +1435,7 @@ further runs (import-break, uncovered-line), each against its OWN fresh
 snapshot — so each one repeats the offline install from a cold `node_modules`
 inside that snapshot. Budget a `javascript` R3 lane accordingly once it is
 wired — not yet: R3 is registered only after a real-Vitest canary pair has
-run (`tests/qualification/test_javascript_real_vitest.py` proves R1 today;
+run (`gate/tests/qualification/test_javascript_real_vitest.py` proves R1 today;
 canary coverage is a later step).
 
 Gitignore what the run writes — the coverage directory, and anything your

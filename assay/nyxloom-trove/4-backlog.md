@@ -10737,13 +10737,25 @@ qualification evidence.
       snapshot `src/assay`, so it cannot kill a mutant or add coverage. It
       stays at its P33-locked path and the release lane keeps running it. The
       lanes drop `--override-ini=pythonpath=src` and rely on the drift-pinned
-      `pyproject.toml` `pythonpath = ["src"]`. Heavy tests are collected last
+      `pyproject.toml` `pythonpath = ["src", "analysis/src"]` (CD15, W2). Heavy tests are collected last
       from `tests/zz_slow/`. The drift test pins the exact `--ignore` and
       `--deselect` sets.
       **Amended 2026-09-29 (A-475, Wave A W1):** the deselections are gone
       because the two release-tag audit tests were removed, and
       `tests/test_python_qualification.py` is deleted, so the A-468 `--ignore`
       above never lands and no lane runs that file.
+      **Amended 2026-09-29 (A-476, Wave A W4, S1):** both lanes collect
+      `tests/` only, with no `--ignore`, `--deselect` or `--override-ini`; the
+      tooling tests live in `gate/tests/` and run in `tester-unified`. The full
+      `self-qualification` lane additionally requires the same-commit
+      registered `tester-unified` receipt
+      (`.assay/registered-gate/tester-unified.json`, written by
+      `tools/tester-unified-gate.sh` only after a green run at an unchanged
+      HEAD and tree, cleared at each launch): the driver pre-checks it with
+      `b105_report_check.py --receipt-only`, and the checker refuses a full
+      report without it. Run `./run-gate.py tester-unified` first. The
+      preflight needs no receipt. `gate/tests/test_self_lane.py` pins the
+      exact argv and the `pyproject.toml` values.
 - [ ] R2 runs native mutation over the full declared source target and
       produces a complete, verifier-accepted candidate inventory and outcomes.
       Deterministic shards may execute the fixed inventory, but missing or
@@ -11618,7 +11630,7 @@ It changes the declared execution semantics (cross-file order dependence stops c
 
 ## B123 — judge tests vs tooling tests, and the same-commit release-gate binding
 
-**Status: OPEN (A-476).**
+**Status: DONE on branch `wave-a-w4-test-split` (2026-09-29, W4; report `reports/wave-a/W4-REPORT.md`, A-476), after the controller's registered tester-unified PASS, the fresh review and the merge (merge hash pending).** Follow-up: the R9 RC8 caching of the static sweeps (B123/A-468(b)).
 - Move tests of the gate script, release builder, installed wheel/zipapp and packaging into `gate/tests/`. The registered gate runs both trees.
 - The B105 lanes collect `tests/` only and lose their `--ignore`/`--deselect` lists, except deselections that still apply to judge tests.
 - B105's definition of done and `tools/b105_report_check.py` require a registered `tester-unified` pass at the same commit.
@@ -11661,7 +11673,7 @@ Update the P25/P33 carve-asset locks, the docs, and the decisions they reference
 
 **Status: OPEN (reuse report S4; after B124 removes the only history reader).**
 - Set `snapshot_history = "shallow"` in both B105 lanes.
-- Update the `test_self_lane.py` pin and the lane comment.
+- Update the `gate/tests/test_self_lane.py` pin and the lane comment.
 - Drift proof: one preflight showing the same collected, passed and skipped counts, with the `build_release` cases run, not skipped. If B123 moves those cases to `gate/tests/`, the proof covers the remaining repository-dependent judge tests instead.
 
 ## B129 — DRY consolidation of repeated judge rules
@@ -11709,3 +11721,11 @@ Fix the labels or the behaviour, whichever the SQL design intends, and update th
 `tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused` creates `tmp_path/a/b/c` and expects `_nearest_git_marker` to find no `.git` in any ancestor. On a host with a stray `/tmp/.git`, the walk finds that marker and the test fails. On this devcontainer the stray marker is an empty directory created 2026-09-28 22:17 by an unknown process. The failure is local only: gate containers have their own `/tmp`. But `git.py`'s refusal line (`:457`, `:459` after W6) is covered only by this test, so a local B105 coverage run misses it for an environmental reason.
 
 Fix: make the test hermetic. Give it an ancestor chain it controls: either stop the walk at a boundary the test passes in, or seam the root the walk ends at. Keep the refusal assertion exact. Also find out whether any assay test can create `.git` outside its own `tmp_path`.
+
+## B135 — the mutation witness ignores pytest 9's `pytest.toml`
+
+**Status: OPEN (found by the W4 review, 2026-09-29, `REVIEW-W4.md`).**
+
+`src/assay/mutation_witness.py:107` looks for these config files when deciding whether a lane's pytest `addopts` allow the sequential witness: `pytest.ini`, `.pytest.ini`, `pyproject.toml`, `tox.ini` and `setup.cfg`. pytest 9 also reads `pytest.toml` and `.pytest.toml`, and an empty `pytest.toml` takes precedence over `pyproject.toml`. So a consumer whose xdist `addopts` live in `pytest.toml` gets a witness decision based on the wrong file.
+
+Fix: add both names in pytest's own precedence order, and check the order against the installed pytest version. Test with a `pytest.toml` carrying `-n auto`, and prove it refuses. Record the precedence in DESIGN-GUIDE. Consumer-visible: the witness may then refuse a lane it used to accept.

@@ -8,7 +8,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from conftest import PROJECT_ROOT
+from gate.tests.support import PROJECT_ROOT
 
 SCRIPT = PROJECT_ROOT / "tools" / "cgroup-parent.sh"
 GATE_DRIVER = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"

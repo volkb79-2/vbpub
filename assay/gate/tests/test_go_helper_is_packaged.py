@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import zipfile
 
-from conftest import PROJECT_ROOT, Standalone
+from gate.tests.support import PROJECT_ROOT, Standalone
 
 HELPER_DIR = "helpers/go/stmtpos"
 HELPER_SOURCE_MEMBER = f"assay/{HELPER_DIR}/stmtpos.go"

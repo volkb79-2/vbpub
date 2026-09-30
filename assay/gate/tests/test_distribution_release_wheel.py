@@ -28,7 +28,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT_ROOT
+from gate.tests.support import PROJECT_ROOT
 
 HELPER = PROJECT_ROOT / "gate" / "distribution" / "release_wheel.py"
 ASSET_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P24"

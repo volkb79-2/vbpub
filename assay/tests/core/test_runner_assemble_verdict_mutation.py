@@ -5,8 +5,8 @@ established, restated for the one R2 claim this package's own
 :func:`~assay.mutation.build_mutation_claim` produces.
 
 Backward compatibility (every caller through P10 never named this
-parameter) is proven by ``tests/test_runner_verdict_fixtures.py`` and
-``tests/test_runner_assemble_verdict_evidence.py`` staying green,
+parameter) is proven by ``tests/core/test_runner_verdict_fixtures.py`` and
+``tests/core/test_runner_assemble_verdict_evidence.py`` staying green,
 completely unmodified by this package -- this module only ADDS cases.
 """
 

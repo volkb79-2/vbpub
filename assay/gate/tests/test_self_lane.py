@@ -17,10 +17,11 @@ import importlib.util
 import io
 import json
 import tomllib
+from pathlib import Path
 
 import pytest
 
-from conftest import PROJECT_ROOT, pytest_sessionfinish as archive_b105_coverage
+from gate.tests.support import PROJECT_ROOT, b105_coverage_sessionfinish as archive_b105_coverage
 
 from assay.cli import main
 from assay.config import load_lane_file
@@ -43,6 +44,26 @@ QUALIFICATION_ID = "self-qualification"
 PREFLIGHT_ID = "self-qualification-preflight"
 RUN_GATE_TOML = PROJECT_ROOT / "run-gate.toml"
 
+#: (B123) The exact argv of the wheel lane: both test trees, the tooling
+#: self-hosting proof excluded, and the source-path override that tests the
+#: installed wheel (A-130).
+TESTER_UNIFIED_ARGV = (
+    "python", "-m", "pytest", "tests", "gate/tests", "-q",
+    "--ignore=gate/tests/test_self_hosting.py",
+    "--override-ini=pythonpath=",
+)
+#: The B105 lanes collect the judge tests only and take pyproject's pinned
+#: `pythonpath`; they carry no override, ignore, deselect or plugin switch
+#: (a `-o` token makes a lane ineligible for the mutation witness).
+B105_LANE_ARGV = {
+    lane_id: (
+        "python", "-m", "pytest", "tests", "-q",
+        "--cov=src/assay", "--cov-branch",
+        f"--cov-report=json:.assay/coverage-{lane_id}.json",
+    )
+    for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID)
+}
+
 
 def test_assays_own_lane_file_loads():
     lane_file = load_lane_file(SELF_LANE_FILE)
@@ -61,7 +82,7 @@ def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
     assert lane.rigor == ("R0",)
     assert lane.enforcement == "gate"
     assert lane.judge is None
-    assert lane.argv[0] == "python"
+    assert lane.argv == TESTER_UNIFIED_ARGV
     assert "PATH" in lane.env_passthrough
 
 
@@ -124,15 +145,7 @@ def test_self_qualification_is_full_source_r0_through_r3():
     assert lane.judge.mutation.liveness == "true"
     assert lane.judge.canary is not None
     assert lane.judge.canary.mechanism == "import-break"
-    assert "--override-ini=pythonpath=src" in lane.argv
-    assert "--override-ini=pythonpath=" not in lane.argv
-    deselected = {
-        argument.removeprefix("--deselect=")
-        for argument in lane.argv
-        if argument.startswith("--deselect=")
-    }
-    assert deselected == set()
-    assert not any(a == "--deselect" or a.startswith("--deselect") for a in lane.argv)
+    assert lane.argv == B105_LANE_ARGV["self-qualification"]
 
     checker = _load_b105_checker()
     packages = {
@@ -152,6 +165,88 @@ def test_self_qualification_is_full_source_r0_through_r3():
     for out_of_scope in checker.OUT_OF_SCOPE_BY_DECISION:
         assert not any(target.startswith(out_of_scope) for target in declared)
         assert (PROJECT_ROOT / out_of_scope).is_dir()
+
+
+def test_each_lane_declares_exactly_its_pinned_argv():
+    lanes = load_lane_file(SELF_LANE_FILE)
+
+    assert lanes.lane(GATE_ID).argv == TESTER_UNIFIED_ARGV
+    for lane_id, argv in B105_LANE_ARGV.items():
+        assert lanes.lane(lane_id).argv == argv, lane_id
+
+
+def test_the_b105_lanes_carry_no_pytest_switch_that_changes_what_is_collected_or_where_it_imports_from():
+    """`-o`/`--override-ini` would also make a lane ineligible for the mutation witness."""
+    for lane_id in B105_LANE_ARGV:
+        argv = load_lane_file(SELF_LANE_FILE).lane(lane_id).argv
+        for token in argv[3:]:
+            assert token != "-o" and not token.startswith(("-o", "--override-ini")), (lane_id, token)
+            assert not token.startswith(("--ignore", "--deselect", "-p")), (lane_id, token)
+        assert not any(token.startswith("gate") for token in argv), lane_id
+
+
+def test_pytest_ini_options_pin_the_source_paths_and_test_trees():
+    """(A-468(c), CD15) The B105 lanes take their import paths from pyproject, so the
+    two values are load-bearing. `gate/tests` is deliberately absent from `testpaths`:
+    the tester-unified lane names it, and the B105 lanes must not collect it."""
+    pytest_table = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]
+    assert set(pytest_table) == {"ini_options"}  # no pytest 9 native `[tool.pytest]` keys beside it
+    ini = pytest_table["ini_options"]
+
+    assert ini == {"pythonpath": ["src", "analysis/src"], "testpaths": ["tests", "analysis/tests"]}
+
+
+@pytest.mark.parametrize("name", ["pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg"])
+def test_no_second_pytest_configuration_file_can_shadow_pyproject(name):
+    for directory in (PROJECT_ROOT, PROJECT_ROOT / "tests"):
+        assert not (directory / name).exists(), directory / name
+
+
+def test_the_tooling_tree_shares_the_one_judge_conftest_loader():
+    """(CD31) One loader, one module object; the judge's `conftest` name is never rebound."""
+    import sys
+
+    from analysis.tests.conftest import load_judge_conftest
+    from gate.tests import support
+
+    assert load_judge_conftest() is support.judge is sys.modules["assay_judge_conftest"]
+    assert Path(support.judge.__file__).resolve() == PROJECT_ROOT / "tests" / "conftest.py"
+    bound = sys.modules.get("conftest")
+    assert bound is None or Path(bound.__file__).resolve() == PROJECT_ROOT / "tests" / "conftest.py"
+
+
+def test_the_full_qualification_driver_requires_the_same_commit_tester_unified_receipt():
+    script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+
+    assert 'receipt="$project/.assay/registered-gate/tester-unified.json"' in script
+    assert 'if [[ "$requested_lane" == "self-qualification" ]]; then' in script
+    assert 'echo "B105_PHASE=require-same-commit-tester-unified-pass"' in script
+    assert (
+        '"$tester_python" "$scratch/source/assay/tools/b105_report_check.py" \\\n'
+        "    --receipt-only \\\n"
+        '    --tester-unified-receipt "$receipt" \\\n'
+        '    --expected-commit "$source_commit" \\\n'
+        '    --expected-tree "$source_tree" \\\n'
+    ) in script
+    assert (
+        'die "no registered tester-unified pass at $source_commit; run ./run-gate.py tester-unified first"'
+        in script
+    )
+    # It sits after the private clone is verified and before anything is built.
+    assert script.index("private clone tree differs") < script.index("require-same-commit-tester-unified-pass")
+    assert script.index("require-same-commit-tester-unified-pass") < script.index("B105_PHASE=install-locked-build-closure")
+    # The full lane's report check carries the receipt; the preflight's does not.
+    assert '[[ "$lane" == "self-qualification" ]] && receipt_args=(--tester-unified-receipt "$receipt")' in script
+    assert '${receipt_args[@]+"${receipt_args[@]}"}' in script
+
+
+def test_the_option_files_the_opt_in_qualification_tests_read_exist():
+    """(O9) These two files are skipped in every gate, so nothing else notices when a
+    layout change leaves their paths pointing at nothing."""
+    from gate.tests.qualification import test_go_r1_real, test_javascript_real_vitest
+
+    assert (test_javascript_real_vitest._PROBE_JS / "package.json").is_file()
+    assert (test_go_r1_real._PROJECT_ROOT / "pyproject.toml").is_file()
 
 
 def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():

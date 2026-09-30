@@ -51,7 +51,9 @@ from pathlib import Path
 
 import pytest
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from gate.tests.support import PROJECT_ROOT
+
+_PROJECT_ROOT = PROJECT_ROOT
 _REPO_ROOT = _PROJECT_ROOT.parent
 _IMAGE = "tester-unified-go:local"
 
@@ -635,7 +637,7 @@ def test_a_go_lane_whose_project_root_is_in_no_module_refuses(
 # They are here, in-image and through the shipped zipapp, because the masking
 # was only ever visible end to end: every unit test in the suite stops at
 # `evaluate_r1`, which renders the correct claim. The toolchain-free half of
-# the same proof is `tests/test_runner_helpers_envelope.py`'s two A-407 tests,
+# the same proof is `tests/core/test_runner_helpers_envelope.py`'s two A-407 tests,
 # which the REGISTERED gate runs.
 
 #: `lineDupContents` -- Go's own canonical duplicate-position corpus, from

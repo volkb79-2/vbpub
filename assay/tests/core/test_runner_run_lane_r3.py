@@ -4,7 +4,7 @@ own repository is never staged, committed, read from, or written to.
 
 Real git state materialised under ``tmp_path`` (the established P02/P17/P18
 pattern) and the REAL :class:`~assay.adapters.python.PythonAdapter` plus a
-genuine ``pytest`` subprocess. ``tests/test_canary_python_pipeline.py``
+genuine ``pytest`` subprocess. ``tests/adapters/python/test_canary_python_pipeline.py``
 already proves per-mechanism cause sensitivity against
 :func:`~assay.canary.run_python_canary` directly and in full; this module
 proves the orchestration layered on top of it.

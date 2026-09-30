@@ -197,38 +197,11 @@ def test_no_adapter_or_parser_module_falls_into_core_by_default():
 # Part 2: test-directory layout
 # --------------------------------------------------------------------------
 
-ROOT_PINNED = frozenset(
-    {  # TEMPORARY (CD23): W4 moves every remaining name into a component folder and deletes this list.
-        # Each package removes its own names in its own commit (W1 3, W2 2, W5 1, W4 the rest).
-        "test_self_hosting.py",
-        "test_runner_snapshot_selection.py",
-        "test_lane_schema_v2_locked_successors.py",
-        "test_verdict_v13_successors.py",  # path-referenced by gate script/assay.toml until W1 edits them
-        "test_b106_reuse_and_witness.py",  # generated-code literals contain Path(__file__) (:668,745,860,872)
-        "test_distribution_build_release.py",  # path-referenced from build_release.py
-        "test_verdict_conformance.py",
-        "test_errors.py",  # conformance imports errors (:296); carve-assets/P23 pin
-        # rewritten by W5, moved by W2 or W4
-        "test_gate_qualify_dstdns_sql.py",
-        "test_distribution_gate.py",
-        "test_distribution_release_wheel.py",
-        "test_standalone.py",
-        "test_cgroup_parent.py",
-        "test_self_lane.py",
-        "test_go_helper_is_packaged.py",
-        "test_verdict_schema_is_packaged.py",
-        "test_dependency_purity.py",
-        "test_b105_report_check.py",
-        "test_gate_failure_diagnostics.py",
-    }
-)
 EXCEPTIONS = {"test_evaluate_javascript_end_to_end.py": "parsers/coverage"}  # imports test_coverage_istanbul_default_arg_signature
 LANGS = ("python", "javascript", "go", "sql")
 
 
 def expected_dir(name: str) -> str:
-    if name in ROOT_PINNED:
-        return ""
     if name in EXCEPTIONS:
         return EXCEPTIONS[name]
     words = name[len("test_") : -len(".py")].split("_")
@@ -247,12 +220,11 @@ def expected_dir(name: str) -> str:
 
 
 def _tests_files() -> list[Path]:
-    """Every file under tests/ relative to it, minus fixtures/ and qualification/."""
-    skipped = ("fixtures", "qualification")
+    """Every file under tests/ relative to it, minus fixtures/ (data, not tests)."""
     return sorted(
         p.relative_to(TESTS_ROOT)
         for p in TESTS_ROOT.rglob("*")
-        if p.is_file() and p.relative_to(TESTS_ROOT).parts[0] not in skipped and "__pycache__" not in p.parts
+        if p.is_file() and p.relative_to(TESTS_ROOT).parts[0] != "fixtures" and "__pycache__" not in p.parts
     )
 
 
@@ -280,7 +252,7 @@ def test_test_basenames_are_unique_and_no_extra_packages_or_conftests():
 
 def test_misplaced_test_file_is_reported():
     assert misplaced([Path("test_cli_run.py")]) == ["test_cli_run.py should be in tests/core"]
-    assert misplaced([Path("core/test_cli_run.py"), Path("test_self_lane.py")]) == []
+    assert misplaced([Path("core/test_cli_run.py"), Path("conftest.py")]) == []
 
 
 def test_expected_dir_table():
@@ -291,7 +263,7 @@ def test_expected_dir_table():
         "test_result_reports_x.py": "parsers/result_reports",
         "test_runner_sql_x.py": "adapters/sql",
         "test_evaluate_javascript_end_to_end.py": "parsers/coverage",
-        "test_self_lane.py": "",
+        "test_self_lane.py": "core",
         "test_cli_run.py": "core",
     }
     assert {name: expected_dir(name) for name in table} == table
@@ -377,3 +349,66 @@ def test_analysis_import_checker_refuses_a_module_level_import():
     assert analysis_import_sites("from assay_analysis import cli\n") == [None]
     assert analysis_import_sites("def f():\n    from assay_analysis.cli import main\n") == ["f"]
     assert analysis_import_sites("import assay_analysis_other\nimport json\n") == []
+
+
+# --------------------------------------------------------------------------
+# Part 4: judge/tooling separation (B123, A-476)
+# --------------------------------------------------------------------------
+# The B105 lanes collect `tests/` only, so a judge test must not need anything
+# that lives in `gate/tests`: not its modules, not the wheel-building
+# `standalone` fixture, not the helpers that moved to `gate/tests/support.py`.
+# `--collect-only` cannot see a missing fixture, so this walks the source.
+
+TOOLING_ONLY_NAMES = frozenset({"Standalone", "_clean_env", "_build_backend_home", "requires_parent_repository"})
+
+
+def separation_violations(source: str) -> list[str]:
+    """What in one judge test module reaches into the tooling tree."""
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found.extend(f"import {a.name}" for a in node.names if a.name == "gate" or a.name.startswith("gate."))
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level == 0 and (module == "gate" or module.startswith("gate.")):
+                found.append(f"from {module} import ...")
+            if node.level == 0 and module == "conftest":
+                found.extend(f"from conftest import {a.name}" for a in node.names if a.name in TOOLING_ONLY_NAMES)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            every = [*args.posonlyargs, *args.args, *args.kwonlyargs]
+            found.extend(f"parameter standalone of {node.name}" for a in every if a.arg == "standalone")
+    return found
+
+
+def test_no_judge_test_reaches_into_the_tooling_tree():
+    bad = {}
+    for path in sorted(TESTS_ROOT.rglob("test_*.py")):
+        rel = path.relative_to(TESTS_ROOT)
+        if rel.parts[0] == "fixtures":
+            continue
+        found = separation_violations(path.read_text(encoding="utf-8"))
+        if found:
+            bad[rel.as_posix()] = found
+    assert bad == {}
+
+
+def test_the_separation_check_names_each_kind_of_violation():
+    assert separation_violations("def test_x(standalone):\n    assert standalone\n") == [
+        "parameter standalone of test_x"
+    ]
+    assert separation_violations("import gate.tests.support\nfrom gate.tests import support\n") == [
+        "import gate.tests.support",
+        "from gate.tests import ...",
+    ]
+    assert separation_violations("from conftest import Standalone, GitRepo, _clean_env\n") == [
+        "from conftest import Standalone",
+        "from conftest import _clean_env",
+    ]
+    assert separation_violations("def test_y(*, standalone=None): pass\n") == ["parameter standalone of test_y"]
+    assert separation_violations("from conftest import GitRepo\nimport gated\n") == []
+
+
+def test_the_tests_root_holds_only_conftest_and_fixtures():
+    entries = sorted(p.name for p in TESTS_ROOT.iterdir() if p.name != "__pycache__" and not p.name.startswith("."))
+    assert entries == ["adapters", "conftest.py", "core", "fixtures", "parsers"]

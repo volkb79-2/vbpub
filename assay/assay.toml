@@ -33,7 +33,11 @@ enforcement = "gate"
 # empirically that ini option inserts "src" at sys.path[0] regardless of
 # PATH/PYTHONPATH, which would silently re-shadow the installed wheel with
 # the source tree and defeat self-hosting's whole point even after `env`
-# below drops PYTHONPATH. `--ignore=tests/test_self_hosting.py` excludes
+# below drops PYTHONPATH. B123: this lane collects BOTH test trees, `tests`
+# (the judge tests) and `gate/tests` (the tooling tests: the checker, the gate
+# script, the wheel and zipapp, config drift), so it is the only lane that runs
+# the tooling tests; the B105 lanes collect `tests` alone.
+# `--ignore=gate/tests/test_self_hosting.py` excludes
 # assay's OWN self-hosting conformance proof from this collection: that
 # module both reads the artifact THIS run is about to emit (a file that does
 # not exist yet while this run is still in progress) and independently
@@ -41,7 +45,7 @@ enforcement = "gate"
 # proof -- without this exclusion, either would make a self-hosted run
 # collect and (in the mutation case) recursively re-run part of itself one
 # further level deep.
-argv = ["python", "-m", "pytest", "tests", "-q", "--ignore=tests/test_self_hosting.py", "--override-ini=pythonpath="]
+argv = ["python", "-m", "pytest", "tests", "gate/tests", "-q", "--ignore=gate/tests/test_self_hosting.py", "--override-ini=pythonpath="]
 
 # A-019: declared-only, never "augment the ambient environment". `PYTHONPATH`
 # is GONE (A-130): keeping it would put the source tree back on sys.path
@@ -60,25 +64,26 @@ budget = "60m"
 
 allow_argv_append = false
 
-# B105: explicitly invoked full-source self-qualification. The test module
-# test_self_hosting.py is excluded because it recursively runs assay lanes and
-# reads this run's not-yet-written verdict; the ordinary tester-unified release
-# lane independently runs that self-hosting proof. Every production source file
-# is named literally below: whole_target does not expand directories.
+# B105: explicitly invoked full-source self-qualification. It collects the judge
+# tests in `tests` only (B123): the tooling tests, including the self-hosting
+# proof, live in `gate/tests` and run in the ordinary tester-unified release
+# lane, which is also the same-commit receipt this lane requires (S1). Every
+# production source file is named literally below: whole_target does not expand
+# directories.
 #
-# Unlike the R0 wheel lane above, these snapshot commands must import
-# `src/assay` from the exact baseline/mutant snapshot so coverage and R2 judge
-# the tree being measured. No collected judge test reads history or tags
-# (A-475); test_distribution_build_release.py leaves B105 collection with W4,
-# and snapshot_history stays "full" until W7.
+# Unlike the R0 wheel lane above, these snapshot commands import `src/assay`
+# from the exact baseline/mutant snapshot so coverage and R2 judge the tree
+# being measured, through pyproject's own `pythonpath = ["src", "analysis/src"]`:
+# no `--override-ini` (a `-o` token makes a lane ineligible for the mutation
+# witness, `mutation_witness.py`). No collected judge test reads history or tags
+# (A-475), and snapshot_history stays "full" until W7. The two B105 lanes below
+# are identical apart from their report path and env passthrough.
 [lanes.self-qualification]
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
 argv = [
   "python", "-m", "pytest", "tests", "-q",
-  "--ignore=tests/test_self_hosting.py",
-  "--override-ini=pythonpath=src",
   "--cov=src/assay", "--cov-branch",
   "--cov-report=json:.assay/coverage-self-qualification.json",
 ]
@@ -182,8 +187,6 @@ rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = [
   "python", "-m", "pytest", "tests", "-q",
-  "--ignore=tests/test_self_hosting.py",
-  "--override-ini=pythonpath=src",
   "--cov=src/assay", "--cov-branch",
   "--cov-report=json:.assay/coverage-self-qualification-preflight.json",
 ]

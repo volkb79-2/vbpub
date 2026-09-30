@@ -40,15 +40,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT, requires_parent_repository
+from gate.tests.support import PROJECT_ROOT, REPO_ROOT, requires_parent_repository
 
 # (B063) `build_release.build(REPO_ROOT, ...)` runs real git against the
 # monorepo checkout. Outside it there is no such repository, and a skip
-# naming that is the true answer — see `conftest.requires_parent_repository`
+# naming that is the true answer — see `support.requires_parent_repository`
 # for the rejected alternative.
 pytestmark = requires_parent_repository
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DISTRIBUTION = PROJECT_ROOT / "gate" / "distribution"
 BUILDER = DISTRIBUTION / "build_release.py"
 GATE_SCRIPT = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"

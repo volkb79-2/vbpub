@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
+
+from conftest import PROJECT_ROOT
 
 from assay.verify import verify_document
 
 
 W8_EXPECTED = (
-    Path(__file__).resolve().parents[1]
+    PROJECT_ROOT
     / "nyxloom-trove"
     / "carve-assets"
     / "W8"

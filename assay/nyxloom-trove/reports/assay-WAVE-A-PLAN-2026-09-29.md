@@ -24,7 +24,7 @@ It is **not** done by a B105 qualification. B105 still needs the v14 wave and th
 | 2 | W4 | B123 | Judge tests vs tooling tests (`gate/tests/`); B105 lanes collect `tests/` only; S1 binding; drop `--override-ini` | tests tree, gate script, `assay.toml`, `run-gate.toml`, B105 checker, docs | `wave-a/W4-test-split.md` |
 | 2 | W5 | B126 | Self-contained SQL qualification | `gate/python/qualify_dstdns_sql.py` (replaced), SQL fixtures, SQL tests | `wave-a/W5-sql-self-contained.md` |
 | 2 | W6 | B113 | P2 loop guards (existing brief, rebased) | `errors.py`, `git.py`, adapters, tests | `b110/P2-loop-guards.md` + `wave-a/REBASE-P0-P2.md` |
-| 3 | W7 | B128 | Shallow snapshot for both B105 lanes | `assay.toml`, `test_self_lane.py` | in §3 below |
+| 3 | W7 | B128 | Shallow snapshot for both B105 lanes | `assay.toml`, `gate/tests/test_self_lane.py` | in §3 below |
 | 3 | W8 | B111 | P0 measurement hygiene (existing brief, rebased) | `cli.py`, `mutation.py`, `liveness.py`, B105 checker, tests | `b110/P0-measurement-hygiene.md` + `wave-a/REBASE-P0-P2.md` |
 | 3 | W9 | B108 ph. 1 | P8 campaign analysis, built in the W2 package | analysis package | `b110/P8-campaign-analysis-core.md` + `wave-a/REBASE-P8.md` |
 | 4 | W10 | B129 | DRY consolidation, including the dataclass contract test | `verdict.py`, `verify.py`, other judge modules | `wave-a/W10-dry.md` |

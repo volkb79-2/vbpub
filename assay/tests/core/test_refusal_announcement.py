@@ -883,7 +883,7 @@ def test_a_command_that_dirties_the_snapshot_blames_the_command_on_an_r1_lane(
 # -- i.e. an assay bug, not a lane, a tool or a repository state. So it is
 # covered at the seam instead, in two real halves:
 #
-#   1. `tests/test_isolation.py::test_a_leaked_materialization_raises_at_
+#   1. `tests/core/test_isolation.py::test_a_leaked_materialization_raises_at_
 #      context_exit` proves the exception and its sentence are real, from a
 #      real repository and a real leak, with no double at all;
 #   2. the test below proves the HANDLER announces, driving the same

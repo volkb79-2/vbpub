@@ -34,17 +34,15 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo
 
 from assay.cli import main
+from gate.tests.support import PROJECT_ROOT, GitRepo
 
 #: `tests/fixtures/coverage/probe-js/package.json` + `package-lock.json` pin
 #: `vitest`/`@vitest/coverage-istanbul` 3.2.4 -- the SAME committed lockfile
 #: B036's own fixtures were produced from, reused here so this harness needs
 #: no lockfile of its own to keep in sync.
-_PROBE_JS = (
-    Path(__file__).resolve().parents[1] / "fixtures" / "coverage" / "probe-js"
-)
+_PROBE_JS = PROJECT_ROOT / "tests" / "fixtures" / "coverage" / "probe-js"
 
 _ENV_REASON = (
     "real-vitest qualification: needs ASSAY_NODE_QUALIFICATION=1 and node/npm "

@@ -1,6 +1,6 @@
 """B007/A-432 — the ORDERED multi-target canary loop, end to end.
 
-`tests/test_canary_result.py` already proves the MODEL (the attempts array,
+`tests/core/test_canary_result.py` already proves the MODEL (the attempts array,
 the closed dispositions) and the JUDGEMENT (`judge_attempt`/`judge_canary`)
 over hand-built payloads. This module proves the thing neither of those can:
 that a real run of the shipped substrate PRODUCES those payloads — the

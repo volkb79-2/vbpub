@@ -2,7 +2,7 @@
 registry's own keys AT CONFIG-LOAD TIME (A-068), distinct from the two
 parse-time failures :mod:`assay.coverage` itself owns (``UNREADABLE_ARTIFACT``
 for a malformed record, ``FORMAT_MISMATCH`` for a declared/sniffed
-signature mismatch — see ``tests/test_coverage_registry.py`` and the
+signature mismatch — see ``tests/parsers/coverage/test_coverage_registry.py`` and the
 per-format parser test modules).
 
 Negative: accepting any non-empty string (P01's original debt, A-068) lets a

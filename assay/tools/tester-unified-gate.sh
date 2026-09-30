@@ -127,10 +127,11 @@ PYEOF
 # file list from `find`. `-print0`/`mapfile -d ''` because a path this gate
 # does not control could contain anything but a NUL.
 #
-# `gate/` stays out of scope: it was measured clean at B024 and is still, but
-# B062's acceptance widened this phase to `tests/`, and adding a third tree
-# on the way past would be exactly the unevidenced scope drift the original
-# deferral existed to prevent.
+# `gate/tests/` (the tooling tests, B123) is linted too, as its own array, so a
+# clone without it is refused rather than linted as nothing. The rest of `gate/`
+# (the distribution and qualification helpers) stays out of scope: it was
+# measured clean at B024 and is still, but widening past the test trees would be
+# unevidenced scope drift.
 run_lint_phase() {
   local scratch="$1"
   local -a test_sources
@@ -150,11 +151,18 @@ run_lint_phase() {
   )
   [[ ${#analysis_sources[@]} -gt 0 ]] \
     || die 'lint phase found no analysis sources to lint -- the analysis/ tree is missing from the clone'
+  local -a gate_test_sources
+  mapfile -d '' -t gate_test_sources < <(
+    find -H "$scratch/clone/assay/gate/tests" -type f -name '*.py' -print0
+  )
+  [[ ${#gate_test_sources[@]} -gt 0 ]] \
+    || die 'lint phase found no gate/tests sources to lint -- the gate/tests/ tree is missing from the clone'
   "$scratch/lint-venv/bin/python" -m pyflakes \
     "$scratch/clone/assay/src/assay" \
     "${test_sources[@]}" \
     "${analysis_sources[@]}" \
-    || die 'pyflakes reported findings in src/assay, tests/ or analysis/ (see the lines above)'
+    "${gate_test_sources[@]}" \
+    || die 'pyflakes reported findings in src/assay, tests/, analysis/ or gate/tests/ (see the lines above)'
   echo 'ASSAY_GATE_PHASE=pyflakes-clean'
 }
 
@@ -391,14 +399,25 @@ run_analysis_lane() {
 run_independent_witness() {
   local scratch="$1" run_venv_site="$2"
   PYTHONPATH="$run_venv_site" ASSAY_SELF_HOSTING_VERDICT="$scratch/verdict.json" \
-    /opt/tester-venv/bin/python -m pytest tests/test_self_hosting.py -q \
+    /opt/tester-venv/bin/python -m pytest gate/tests/test_self_hosting.py -q \
       --override-ini=pythonpath=
   echo 'ASSAY_GATE_PHASE=independent-self-hosting-passed'
+}
+
+# (B123, S1) The host binds the receipt to the HEAD it captured before launch;
+# the container proves it judged that same commit, at its start and at its end.
+require_expected_head() {
+  local worktree="$1"
+  if [[ -n "${ASSAY_GATE_EXPECTED_COMMIT:-}" ]]; then
+    [[ "$(git -C "$worktree" rev-parse HEAD)" == "$ASSAY_GATE_EXPECTED_COMMIT" ]] \
+      || die "worktree HEAD is not the commit the host captured ($ASSAY_GATE_EXPECTED_COMMIT)"
+  fi
 }
 
 run_inner() {
   local worktree="$1"
   validate_worktree "$worktree"
+  require_expected_head "$worktree"
 
   # The self-hosted lane below judges the ORIGINAL worktree, so its clean-tree
   # precondition requires the reviewed source to be committed. Refuse before
@@ -489,12 +508,14 @@ run_inner() {
   # reviewer actually needs. Its closure is built here, next to its only use.
   build_lint_venv "$scratch" "$distribution"
   run_lint_phase "$scratch"
+  require_expected_head "$worktree"
 }
 
 _assay_gate_container_name=""
 _assay_gate_container_launch_attempted=0
 _assay_gate_container_started=0
 _assay_gate_logs_pid=""
+_assay_gate_receipt_to_clear=""
 
 cleanup_assay_gate_container() {
   local result=$?
@@ -516,6 +537,12 @@ cleanup_assay_gate_container() {
     # the named container. Best-effort removal closes that ambiguous window.
     docker rm -f "$_assay_gate_container_name" >/dev/null 2>&1 || true
     _assay_gate_container_launch_attempted=0
+  fi
+  # (B123, S1) After launch, a non-zero exit never leaves a receipt behind: not
+  # one the container itself wrote into the bind-mounted worktree, and not one a
+  # concurrent run wrote after this run's own clear.
+  if [[ $result -ne 0 && -n "$_assay_gate_receipt_to_clear" ]]; then
+    rm -f "$_assay_gate_receipt_to_clear"
   fi
   exit "$result"
 }
@@ -539,6 +566,7 @@ run_registered_tester_container() {
     --init \
     --cgroup-parent="$cgroup_parent" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    -e "ASSAY_GATE_EXPECTED_COMMIT=${ASSAY_GATE_EXPECTED_COMMIT:-}" \
     "${forwarded_env[@]}" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
@@ -569,6 +597,73 @@ run_registered_tester_container() {
   return "$wait_status"
 }
 
+# --- the S1 receipt (B123) ---------------------------------------------------
+#
+# The full `self-qualification` lane requires proof that the registered
+# tester-unified gate passed at the very commit and tree it judges. That proof is
+# `assay/.assay/registered-gate/tester-unified.json`, written by the HOST script
+# only after the container exits zero and HEAD and its tree are unchanged, and
+# removed at every launch and again on any non-zero exit after it, so a red run
+# at the same commit leaves no receipt, whoever wrote one during it.
+# The document is exactly {"schema_version": 1, "lane": "tester-unified",
+# "commit": C, "tree": T}: the host script cannot see anything more, and commit
+# plus tree plus the clear-on-launch rule already bind "the latest run passed".
+
+clear_registered_gate_receipt() {
+  local worktree="$1"
+  rm -f "$worktree/assay/.assay/registered-gate/tester-unified.json"
+}
+
+write_registered_gate_receipt() {
+  local worktree="$1" commit="$2" tree="$3" dir tmp
+  [[ "$commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+    || die "refusing a receipt for a malformed commit id: $commit"
+  [[ "$tree" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+    || die "refusing a receipt for a malformed tree id: $tree"
+  dir="$worktree/assay/.assay/registered-gate"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.receipt.XXXXXX")" || die "cannot create a receipt file in $dir"
+  printf '{"schema_version": 1, "lane": "tester-unified", "commit": "%s", "tree": "%s"}\n' \
+    "$commit" "$tree" > "$tmp"
+  chmod 0644 "$tmp"   # the self-qualification container reads it
+  mv -f "$tmp" "$dir/tester-unified.json"
+}
+
+finish_registered_gate() {
+  local worktree="$1" commit="$2" tree="$3"
+  [[ "$(git -C "$worktree" rev-parse HEAD)" == "$commit" \
+    && "$(git -C "$worktree" rev-parse 'HEAD^{tree}')" == "$tree" ]] \
+    || die 'HEAD changed during the registered gate; no receipt'
+  write_registered_gate_receipt "$worktree" "$commit" "$tree"
+  echo "ASSAY_REGISTERED_GATE_RECEIPT=$worktree/assay/.assay/registered-gate/tester-unified.json"
+  echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'
+}
+
+run_registered_gate() {
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names commit tree
+  # (CD32) One `docker ps`, no waiting: another session's gate on this shared host
+  # makes this run inconclusive before it captures, clears or builds anything.
+  # A `docker ps` that fails cannot show the host is free, so it is inconclusive too.
+  if ! listing="$(docker ps --no-trunc --format '{{.Names}}')"; then
+    echo 'ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun' >&2
+    exit 3
+  fi
+  names="$(printf '%s\n' "$listing" | grep '^run-gate-' | paste -sd, -)" || true
+  if [[ -n "$names" ]]; then
+    echo "ASSAY_GATE_INCONCLUSIVE=host busy — rerun: $names" >&2
+    exit 3
+  fi
+  commit="$(git -C "$worktree" rev-parse HEAD)" || die "cannot resolve HEAD of $worktree"
+  tree="$(git -C "$worktree" rev-parse 'HEAD^{tree}')" || die "cannot resolve the tree of $worktree"
+  clear_registered_gate_receipt "$worktree"
+  _assay_gate_receipt_to_clear="$worktree/assay/.assay/registered-gate/tester-unified.json"
+  trap cleanup_assay_gate_container EXIT
+  # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
+  # the container's own status, so a red container never reaches the receipt.
+  ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
+  finish_registered_gate "$worktree" "$commit" "$tree"
+}
+
 # --- entry points ------------------------------------------------------------
 
 if [[ ${1:-} == "--inner" ]]; then
@@ -597,6 +692,4 @@ fi
 [[ -n "$host_repo_root" ]] || die 'the host repository bind source is empty'
 [[ "$host_repo_root" != *$'\n'* ]] || die 'multiple host repository bind sources were returned'
 
-run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
-
-echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'
+run_registered_gate "$worktree" "$host_repo_root" "$cgroup_parent"

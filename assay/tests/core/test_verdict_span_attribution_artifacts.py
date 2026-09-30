@@ -9,7 +9,7 @@ the way ``runner.evaluate_r1`` assembles an R1 :class:`~assay.verdict.Claim`
 from a :class:`~assay.evaluate.CoverageEvaluation`. A controller repair (see
 the merge commit) wired the two new fields through ``runner.evaluate_r1``'s
 own ``Coverage(...)`` call site after review found it silently dropped them;
-``tests/test_runner_evaluate_r1.py`` proves that end to end.
+``tests/core/test_runner_evaluate_r1.py`` proves that end to end.
 
 The negative this defends (O3's own text): *a producer that omits
 unclassified locations or rolls them up as PASS differs from its expected

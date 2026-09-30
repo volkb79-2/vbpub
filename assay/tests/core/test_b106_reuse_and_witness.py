@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo, make_lane, make_r2_judge, native_mutation, native_outcome
+from conftest import GitRepo, TESTS_ROOT, make_lane, make_r2_judge, native_mutation, native_outcome
 
 from assay import candidate_identity, mutation, runner, verdict
 from assay.adapters.python import PythonAdapter
@@ -28,7 +28,7 @@ from assay.reuse import classify_candidate, load_reuse_source, prior_only_candid
 from assay import verify as raw_verify
 from assay.verify import verify_document
 
-FIXTURES = Path(__file__).parent / "fixtures" / "verdicts"
+FIXTURES = TESTS_ROOT / "fixtures" / "verdicts"
 
 
 def _v13_killed_source() -> dict:

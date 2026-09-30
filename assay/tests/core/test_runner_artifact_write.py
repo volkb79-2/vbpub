@@ -12,7 +12,7 @@ produces (P05's job, A-090) — its own artifact-writer test constructs the
 WRITER is outcome-agnostic rather than re-testing the runner.
 
 "Without --verdict-json no artifact is created" is a CLI-level claim and is
-proved in ``tests/test_cli_run.py``, since :func:`~assay.runner.write_verdict`
+proved in ``tests/core/test_cli_run.py``, since :func:`~assay.runner.write_verdict`
 itself has no opinion on when it is called — that decision belongs to the CLI.
 """
 

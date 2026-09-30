@@ -223,7 +223,7 @@ def test_a_subcommand_is_required():
 
 
 def test_cli_still_rejects_subcommands_not_yet_shipped():
-    # P04 adds `run` (see tests/test_cli_run.py); `verify` and `mutate` remain
+    # P04 adds `run` (see tests/core/test_cli_run.py); `verify` and `mutate` remain
     # later packages' work. A parser that already accepted them would be the
     # lane-table-implies-capability failure in the CLI's own help, one level
     # up from the artifact assay itself is built to remove.
