@@ -232,11 +232,14 @@ CLI and assert output, exit status, validation timing, and filesystem/state/
 network/credential effects; the normal gate proves that test passes.
 The catalog checker only sanity-checks argv structure, including recognized
 option arity and scope, parser-depth `--` terminators, and parent positionals
-before nested commands. It deliberately does not call `parse_args`, custom
-converters/actions, or handlers, because a documentation check must not execute
-consumer behavior. The linked test is the oracle for parser acceptance and
-product semantics. Each generated file is replaced atomically. A stop between
-the two output replacements is visible as drift on the next check.
+before nested commands. For positional candidates, it assigns supplied values
+to the named action at the matching parser depth; another positional using the
+same text does not satisfy it. It also rejects an inline value on a flag-only
+option. It deliberately does not call `parse_args`, custom converters/actions,
+or handlers, because a documentation check must not execute consumer behavior.
+The linked test is the oracle for parser acceptance and product semantics.
+Each generated file is replaced atomically. A stop between the two output
+replacements is visible as drift on the next check.
 This boundary makes semantic review auditable without asking a generic library
 to invent product truth.
 

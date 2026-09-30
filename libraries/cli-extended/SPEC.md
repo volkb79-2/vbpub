@@ -748,10 +748,14 @@ Check mode structurally checks invocation argv against the declared route. It
 MUST account for recognized option arity, option scope, parser depth, and
 parser-depth `--` terminators when locating command words. It MUST account for
 required parent positionals before nested commands, including a remainder
-positional yielding to a registered nested command. In a generated minimum
-case, a required option counts only when it is an active option token, its
-declared minimum values are supplied, and exactly one alternative is present
-for each required exclusive group. It MUST NOT call `RegisteredCli.run()`,
+positional yielding to a registered nested command. For `argument-shape` and
+`argument-choice` candidates, it MUST assign tokens to the named positional
+action at its parser depth; finding the same text in a sibling positional does
+not satisfy the candidate. A flag-only option with an inline value is not a
+valid occurrence. In a generated minimum case, a required option counts only
+when it is an active option token, its declared minimum values are supplied,
+and exactly one alternative is present for each required exclusive group. It
+MUST NOT call `RegisteredCli.run()`,
 `ArgumentParser.parse_args()`, custom converters, custom argparse actions, or
 command handlers. This check is not a full parser acceptance oracle: the
 referenced product test MUST run the real invocation and assert its outcome

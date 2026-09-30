@@ -256,8 +256,11 @@ skips their declared values, and respects `--` at each parser level. It counts
 required options and their values in minimum cases only when the option token
 is active, and requires exactly one alternative from each required exclusive
 group. Parent positional lexing accounts for required values and remainder
-positionals before nested commands. The referenced product test remains the
-oracle for full parser acceptance and behavior.
+positionals before nested commands. Positional choice and shape candidates
+must receive their values in the registered action at that parser depth; a
+sibling positional with the same value does not satisfy the row. A flag-only
+option with an inline value is not a valid spelling. The referenced product
+test remains the oracle for full parser acceptance and behavior.
 
 The generated manifest stores current grammar. The consumer's spec uses a
 pair of documented markers around the generated Markdown block. Sync writes
@@ -383,8 +386,10 @@ items, and consumer docs show the annotations to add.
   incomplete.
 - Route sanity checks agree with argparse for scoped option values, `--`
   terminators, required parent positionals, and a nested route after a
-  `REMAINDER` positional. They also recognize options on a single-command
-  entrypoint with an empty route path. They do not execute parser callbacks.
+  `REMAINDER` positional. Positional candidate values are assigned to the
+  registered action at the matching parser depth, and flag-only options reject
+  inline values. They also recognize options on a single-command entrypoint
+  with an empty route path. They do not execute parser callbacks.
 - Marker parsing fails if either boundary is absent, duplicated, reversed, or
   nested; repeated sync is idempotent. TOML comments and all catalog fields
   remain unchanged during sync.

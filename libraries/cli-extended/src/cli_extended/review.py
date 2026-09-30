@@ -604,6 +604,13 @@ def _prepare(
 def _review_findings(
     surface: Mapping[str, Any], catalog: ReviewCatalog
 ) -> list[str]:
+    def is_negative_number(token: str) -> bool:
+        return (
+            len(token) > 1
+            and token[0] == "-"
+            and token[1:].replace(".", "", 1).isdigit()
+        )
+
     def action_for_option(
         route: Mapping[str, Any], option: str, depth: int
     ) -> Mapping[str, Any] | None:
@@ -668,8 +675,7 @@ def _review_findings(
                 return False
             if action_for_option(route, option, depth) is not None:
                 return True
-            negative_number = token[1:].replace(".", "", 1).isdigit()
-            return not negative_number
+            return not is_negative_number(token)
 
         nargs = action.get("nargs")
         if nargs == 0:
@@ -711,14 +717,17 @@ def _review_findings(
         argv: Sequence[str],
         route: Mapping[str, Any],
         command_positions: Sequence[int],
-    ) -> tuple[list[str], dict[str, list[tuple[str, tuple[str, ...]]]]]:
-        """Return positional values and recognized option occurrences by action ID."""
+    ) -> tuple[
+        list[tuple[int, str]],
+        dict[str, list[tuple[str, tuple[str, ...], bool]]],
+    ]:
+        """Return parser-depth positionals and recognized options by action ID."""
 
         command_positions_set = set(command_positions)
         path_depth = 0
         options_enabled = {0: True}
-        positionals: list[str] = []
-        options: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+        positionals: list[tuple[int, str]] = []
+        options: dict[str, list[tuple[str, tuple[str, ...], bool]]] = {}
         index = 0
         while index < len(argv):
             if index in command_positions_set:
@@ -752,16 +761,77 @@ def _review_findings(
                         values.append(inline_value)
                     values.extend(argv[index + 1 : end])
                 options.setdefault(str(action.get("id", "")), []).append(
-                    (option, tuple(values))
+                    (option, tuple(values), bool(separator))
                 )
                 index = end
                 continue
-            if token.startswith("-") and options_enabled.get(path_depth, True):
+            if (
+                token.startswith("-")
+                and options_enabled.get(path_depth, True)
+                and not is_negative_number(token)
+            ):
                 index += 1
                 continue
-            positionals.append(token)
+            positionals.append((path_depth, token))
             index += 1
         return positionals, options
+
+    def positional_values_by_action(
+        route: Mapping[str, Any], positionals: Sequence[tuple[int, str]]
+    ) -> dict[str, tuple[str, ...]]:
+        """Assign positional tokens to their declared parser-level actions."""
+
+        path = tuple(route.get("path", ()))
+        positions_by_depth: dict[int, list[str]] = {}
+        for depth, token in positionals:
+            positions_by_depth.setdefault(depth, []).append(token)
+
+        values_by_action: dict[str, tuple[str, ...]] = {}
+        for depth in range(len(path) + 1):
+            parser_path = path[:depth]
+            actions = [
+                action
+                for action in route.get("actions", ())
+                if action.get("kind") == "argument"
+                and tuple(action.get("parser_path", ())) == parser_path
+                and (depth == len(path) or action.get("before_nested_subcommand"))
+            ]
+            tokens = positions_by_depth.get(depth, [])
+            cursor = 0
+            for action_index, action in enumerate(actions):
+                nargs = action.get("nargs")
+                minimum = int(
+                    action.get("minimum_values", _minimum_values(nargs))
+                )
+                if nargs is None:
+                    maximum: int | None = 1
+                elif isinstance(nargs, int):
+                    maximum = max(0, nargs)
+                elif nargs == "?":
+                    maximum = 1
+                elif nargs in {"*", "+", "...", "A..."}:
+                    maximum = None
+                else:
+                    maximum = minimum
+
+                following_minimum = sum(
+                    int(later.get("minimum_values", _minimum_values(later.get("nargs"))))
+                    for later in actions[action_index + 1 :]
+                )
+                available = max(0, len(tokens) - cursor)
+                if maximum is None:
+                    consumed = max(minimum, available - following_minimum)
+                else:
+                    consumed = min(
+                        maximum,
+                        max(minimum, available - following_minimum),
+                    )
+                end = min(cursor + consumed, len(tokens))
+                values_by_action[str(action.get("id", ""))] = tuple(
+                    tokens[cursor:end]
+                )
+                cursor += consumed
+        return values_by_action
 
     def route_positions(
         argv: Sequence[str], route: Mapping[str, Any], all_routes: Sequence[Mapping[str, Any]]
@@ -859,7 +929,11 @@ def _review_findings(
                     depth=segment,
                 )
                 continue
-            if token.startswith("-") and options_enabled.get(segment, True):
+            if (
+                token.startswith("-")
+                and options_enabled.get(segment, True)
+                and not is_negative_number(token)
+            ):
                 return None
             if consumes_parent_positional(segment, False):
                 index += 1
@@ -907,6 +981,27 @@ def _review_findings(
         non_command_positions, option_occurrences = invocation_parts(
             case.invocation, route, command_positions or ()
         )
+        positional_occurrences = positional_values_by_action(
+            route, non_command_positions
+        )
+
+        def active_option_occurrences(
+            action: Mapping[str, Any],
+        ) -> list[tuple[str, tuple[str, ...], bool]]:
+            return [
+                occurrence
+                for occurrence in option_occurrences.get(str(action.get("id", "")), ())
+                if not (action.get("nargs") == 0 and occurrence[2])
+            ]
+
+        def has_invalid_flag_value(action: Mapping[str, Any]) -> bool:
+            return action.get("nargs") == 0 and any(
+                inline
+                for _spelling, _values, inline in option_occurrences.get(
+                    str(action.get("id", "")), ()
+                )
+            )
+
         candidate_kind = str(candidate.get("kind", ""))
         if candidate_kind == "route-alias":
             alias = str(candidate.get("shape", {}).get("alias", ""))
@@ -923,15 +1018,15 @@ def _review_findings(
             minimum_required_values = candidate.get("shape", {}).get(
                 "required_argument_values", {}
             )
-            required_value_count = (
-                sum(minimum_required_values.values())
-                if minimum_required_values
-                else len(required_arguments)
-            )
-            if len(non_command_positions) < required_value_count:
-                findings.append(
-                    f"minimum invocation for {case_id} omits required positional argument(s)"
+            for argument_id in required_arguments:
+                supplied_values = positional_occurrences.get(str(argument_id))
+                required_values = int(
+                    minimum_required_values.get(str(argument_id), 1)
                 )
+                if supplied_values is None or len(supplied_values) < required_values:
+                    findings.append(
+                        f"minimum invocation for {case_id} omits required positional argument(s)"
+                    )
             for option_id in candidate.get("shape", {}).get("required_options", ()):
                 action = next(
                     (
@@ -940,15 +1035,20 @@ def _review_findings(
                     ),
                     None,
                 )
-                if action is not None and str(action.get("id", "")) not in option_occurrences:
+                if action is not None and has_invalid_flag_value(action):
+                    findings.append(
+                        f"minimum invocation for {case_id} supplies an inline value to flag-only option {option_id}"
+                    )
+                active_occurrences = (
+                    active_option_occurrences(action) if action is not None else []
+                )
+                if action is not None and not active_occurrences:
                     findings.append(
                         f"minimum invocation for {case_id} omits required option {option_id}"
                     )
                 elif action is not None and any(
                     len(values) < _minimum_values(action.get("nargs"))
-                    for _spelling, values in option_occurrences[
-                        str(action.get("id", ""))
-                    ]
+                    for _spelling, values, _inline in active_occurrences
                 ):
                     findings.append(
                         f"minimum invocation for {case_id} omits a value for required "
@@ -962,10 +1062,14 @@ def _review_findings(
                     for action in route.get("actions", ())
                     if action.get("id") in option_ids and action.get("kind") == "option"
                 ]
+                if any(has_invalid_flag_value(action) for action in group_actions):
+                    findings.append(
+                        f"minimum invocation for {case_id} supplies an inline value to a flag-only option in required exclusive group {group_id}"
+                    )
                 present_group_actions = [
                     action
                     for action in group_actions
-                    if str(action.get("id", "")) in option_occurrences
+                    if active_option_occurrences(action)
                 ]
                 if not present_group_actions:
                     findings.append(
@@ -980,9 +1084,9 @@ def _review_findings(
                 elif any(
                     len(values)
                     < _minimum_values(present_group_actions[0].get("nargs"))
-                    for _spelling, values in option_occurrences[
-                        str(present_group_actions[0].get("id", ""))
-                    ]
+                    for _spelling, values, _inline in active_option_occurrences(
+                        present_group_actions[0]
+                    )
                 ):
                     findings.append(
                         f"minimum invocation for {case_id} omits a value for its "
@@ -990,12 +1094,18 @@ def _review_findings(
                     )
         if candidate_kind == "argument-choice":
             choice = candidate.get("shape", {}).get("choice")
-            if str(choice) not in non_command_positions:
+            argument_id = candidate.get("shape", {}).get("argument_id")
+            if argument_id is None and candidate.get("members"):
+                argument_id = candidate["members"][0]
+            supplied_values = positional_occurrences.get(str(argument_id), ())
+            if str(choice) not in supplied_values:
                 findings.append(f"invocation for {case_id} omits its positional choice")
-        if candidate_kind == "argument-shape" and not any(
-            token and not token.startswith("-") for token in non_command_positions
-        ):
-            findings.append(f"invocation for {case_id} omits its positional value")
+        if candidate_kind == "argument-shape":
+            argument_id = candidate.get("shape", {}).get("argument_id")
+            if argument_id is None and candidate.get("members"):
+                argument_id = candidate["members"][0]
+            if not positional_occurrences.get(str(argument_id), ()):
+                findings.append(f"invocation for {case_id} omits its positional value")
         for member in candidate["members"]:
             matched_action = next(
                 (action for action in route.get("actions", []) if action["id"] == member),
@@ -1012,13 +1122,15 @@ def _review_findings(
                     if expected_spelling is not None
                     else matched_action["flags"]
                 )
-                occurrences = option_occurrences.get(
-                    str(matched_action.get("id", "")), ()
-                )
+                if has_invalid_flag_value(matched_action):
+                    findings.append(
+                        f"invocation for {case_id} supplies an inline value to flag-only option {matched_action['id']}"
+                    )
+                active_occurrences = active_option_occurrences(matched_action)
                 occurrence = next(
                     (
                         (spelling, values)
-                        for spelling, values in occurrences
+                        for spelling, values, _inline in active_occurrences
                         if spelling in expected_spellings
                     ),
                     None,
@@ -1036,7 +1148,11 @@ def _review_findings(
                         findings.append(
                             f"invocation for {case_id} does not supply its reviewed option choice"
                         )
-                elif len(supplied_values) < _minimum_values(matched_action.get("nargs")):
+                elif active_occurrences and not any(
+                    len(values) >= _minimum_values(matched_action.get("nargs"))
+                    for _spelling, values, _inline in active_occurrences
+                    if _spelling in expected_spellings
+                ):
                     findings.append(
                         f"invocation for {case_id} omits a value for {expected_spellings[0]}"
                     )

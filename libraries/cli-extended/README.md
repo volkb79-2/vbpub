@@ -309,12 +309,14 @@ collection assertion for exact node IDs and `cli_case` markers. Consumers keep
 one runtime grammar in `CliRegistry` and their semantic decisions in the
 catalog; the library owns the repeatable export, diff, and marker plumbing.
 The checker sanity-checks supplied argv against route placement and argument
-shape. It tracks recognized option arity, parser depth, `--` terminators, and
-required parent positionals; minimum cases must supply required option values
-and exactly one alternative from each required exclusive group. It does not
-invoke parser converters or command handlers. The linked test must still run
-the real invocation and assert its behavior and effects; the marker proves
-test collection and linkage only.
+shape. It tracks recognized option arity, scope, parser depth, `--` terminators,
+and required parent positionals. Positional values must reach the registered
+argument being reviewed; a matching token in a sibling position is not enough.
+Minimum cases must supply required option values and exactly one alternative
+from each required exclusive group. A flag-only option cannot use `--flag=value`.
+The checker does not invoke parser converters or command handlers. The linked
+test must still run the real invocation and assert its behavior and effects;
+the marker proves test collection and linkage only.
 
 Expose an import-safe function such as `example.cli:build_cli` that returns the
 consumer's `RegisteredCli`, then run:

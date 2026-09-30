@@ -600,11 +600,11 @@ def test_review_findings_reports_missing_decisions_stale_records_and_incomplete_
 def test_review_findings_checks_minimum_alias_positional_and_option_semantics():
     route_id = "route:entrypoint:audit-tool/inspect"
     actions = [
-        {"id": "arg:resource", "kind": "argument", "name": "resource", "nargs": None, "minimum_values": 1, "required": True, "choices": ["alpha"]},
-        {"id": "opt:needed", "kind": "option", "flags": ["--needed"], "nargs": None, "minimum_values": 1, "required": True},
-        {"id": "opt:file", "kind": "option", "flags": ["--file"], "nargs": None, "minimum_values": 1, "required": False, "exclusive_group": "source", "exclusive_required": True},
-        {"id": "opt:inline", "kind": "option", "flags": ["--inline"], "nargs": None, "minimum_values": 1, "required": False, "exclusive_group": "source", "exclusive_required": True},
-        {"id": "opt:mode", "kind": "option", "flags": ["--mode"], "nargs": None, "minimum_values": 1, "required": False, "choices": ["safe", "fast"]},
+        {"id": "arg:resource", "kind": "argument", "name": "resource", "nargs": None, "minimum_values": 1, "required": True, "choices": ["alpha"], "parser_path": ["inspect"]},
+        {"id": "opt:needed", "kind": "option", "flags": ["--needed"], "nargs": None, "minimum_values": 1, "required": True, "parser_path": ["inspect"]},
+        {"id": "opt:file", "kind": "option", "flags": ["--file"], "nargs": None, "minimum_values": 1, "required": False, "exclusive_group": "source", "exclusive_required": True, "parser_path": ["inspect"]},
+        {"id": "opt:inline", "kind": "option", "flags": ["--inline"], "nargs": None, "minimum_values": 1, "required": False, "exclusive_group": "source", "exclusive_required": True, "parser_path": ["inspect"]},
+        {"id": "opt:mode", "kind": "option", "flags": ["--mode"], "nargs": None, "minimum_values": 1, "required": False, "choices": ["safe", "fast"], "parser_path": ["inspect"]},
     ]
     route = {"id": route_id, "path": ["inspect"], "aliases": [], "kind": "invocation", "actions": actions}
     good_minimum = {"id": "case:minimum", "route_id": route_id, "signature": "s", "kind": "minimum", "members": ["arg:resource", "opt:needed", "opt:file"], "shape": {"required_arguments": ["arg:resource"], "required_argument_values": {"arg:resource": 1}, "required_options": ["opt:needed"], "required_exclusive_groups": {"source": ["opt:file", "opt:inline"]}}}
@@ -612,14 +612,16 @@ def test_review_findings_checks_minimum_alias_positional_and_option_semantics():
     argument_choice = {"id": "case:argument-choice", "route_id": route_id, "signature": "s", "kind": "argument-choice", "members": ["arg:resource"], "shape": {"choice": "alpha"}}
     argument_shape = {"id": "case:argument-shape", "route_id": route_id, "signature": "s", "kind": "argument-shape", "members": ["arg:resource"], "shape": {}}
     missing_spelling = {"id": "case:missing-spelling", "route_id": route_id, "signature": "s", "kind": "option-spelling", "members": ["opt:needed"], "shape": {"spelling": "--needed"}}
+    missing_value = {"id": "case:missing-value", "route_id": route_id, "signature": "s", "kind": "option-spelling", "members": ["opt:needed"], "shape": {"spelling": "--needed"}}
     wrong_choice = {"id": "case:wrong-choice", "route_id": route_id, "signature": "s", "kind": "option-choice", "members": ["opt:mode"], "shape": {"choice": "fast"}}
-    candidates = [good_minimum, alias, argument_choice, argument_shape, missing_spelling, wrong_choice]
+    candidates = [good_minimum, alias, argument_choice, argument_shape, missing_spelling, missing_value, wrong_choice]
     invocations = {
         "case:minimum": ["inspect", "alpha", "--needed", "token", "--file", "profile.toml"],
         "case:alias": ["inspect"],
         "case:argument-choice": ["inspect", "wrong"],
         "case:argument-shape": ["inspect"],
         "case:missing-spelling": ["inspect"],
+        "case:missing-value": ["inspect", "--needed"],
         "case:wrong-choice": ["inspect", "--mode", "safe"],
     }
     cases = tuple(_case_for_candidate(candidate, invocations[candidate["id"]]) for candidate in candidates)
@@ -650,7 +652,7 @@ def test_review_invocation_lexer_handles_option_arities_and_delimiters():
         ("odd", "--odd", "odd", 0, ["--odd"]),
     )
     actions = [
-        {"id": action_id, "kind": "option", "flags": [flag], "nargs": nargs, "minimum_values": minimum, "required": False}
+        {"id": action_id, "kind": "option", "flags": [flag], "nargs": nargs, "minimum_values": minimum, "required": False, "parser_path": ["inspect"]}
         for action_id, flag, nargs, minimum, _tokens in arities
     ]
     route = {"id": route_id, "path": ["inspect"], "aliases": [], "kind": "invocation", "actions": actions}
@@ -679,7 +681,219 @@ def test_review_invocation_lexer_handles_option_arities_and_delimiters():
         {"routes": [route], "candidates": candidates, "syntax_complete": True},
         ReviewCatalog("audit-tool", 32, (), tuple(cases)),
     )
-    assert any("omits its reviewed option spelling" in item for item in findings)
+    assert any("case:eq-zero" in item and "omits its reviewed option spelling" in item for item in findings)
+    assert not any("case:zero" in item for item in findings)
+
+
+def test_review_argument_shape_and_choice_are_checked_at_their_registered_position():
+    route_id = "route:entrypoint:audit-tool/build"
+    route = {
+        "id": route_id,
+        "path": ["build"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "argument:source",
+                "kind": "argument",
+                "name": "source",
+                "nargs": None,
+                "minimum_values": 1,
+                "required": True,
+                "parser_path": ["build"],
+            },
+            {
+                "id": "argument:format",
+                "kind": "argument",
+                "name": "format",
+                "nargs": "?",
+                "minimum_values": 0,
+                "required": False,
+                "choices": ["wheel", "sdist"],
+                "parser_path": ["build"],
+            },
+            {
+                "id": "argument:pair",
+                "kind": "argument",
+                "name": "pair",
+                "nargs": 2,
+                "minimum_values": 2,
+                "required": True,
+                "parser_path": ["build"],
+            },
+            {
+                "id": "argument:custom",
+                "kind": "argument",
+                "name": "custom",
+                "nargs": "custom",
+                "minimum_values": 0,
+                "required": False,
+                "parser_path": ["build"],
+            },
+        ],
+    }
+    wrong_choice = {
+        "id": "case:format-wheel",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "argument-choice",
+        "members": ["argument:format"],
+        "shape": {"argument_id": "argument:format", "choice": "wheel"},
+    }
+    missing_format = {
+        "id": "case:format-shape",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "argument-shape",
+        "members": ["argument:format"],
+        "shape": {"argument_id": "argument:format"},
+    }
+    correct_choice = {
+        "id": "case:format-sdist",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "argument-choice",
+        "members": ["argument:format"],
+        "shape": {"argument_id": "argument:format", "choice": "sdist"},
+    }
+    correct_shape = {
+        "id": "case:format-shape-present",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "argument-shape",
+        "members": ["argument:format"],
+        "shape": {"argument_id": "argument:format"},
+    }
+    pair_shape = {
+        "id": "case:pair-shape",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "argument-shape",
+        "members": ["argument:pair"],
+        "shape": {"argument_id": "argument:pair"},
+    }
+    custom_shape = {
+        "id": "case:custom-shape",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "argument-shape",
+        "members": ["argument:custom"],
+        "shape": {"argument_id": "argument:custom"},
+    }
+    candidates = [
+        wrong_choice,
+        missing_format,
+        correct_choice,
+        correct_shape,
+        pair_shape,
+        custom_shape,
+    ]
+    cases = (
+        _case_for_candidate(
+            wrong_choice,
+            ["build", "wheel", "left", "right"],
+        ),
+        _case_for_candidate(missing_format, ["build", "source.tar.gz"]),
+        _case_for_candidate(
+            correct_choice,
+            ["build", "source.tar.gz", "sdist", "left", "right"],
+        ),
+        _case_for_candidate(
+            correct_shape,
+            ["build", "source.tar.gz", "sdist", "left", "right"],
+        ),
+        _case_for_candidate(
+            pair_shape,
+            ["build", "source.tar.gz", "left", "right"],
+        ),
+        _case_for_candidate(
+            custom_shape,
+            ["build", "source.tar.gz", "left", "right", "opaque"],
+        ),
+    )
+
+    findings = _review_findings(
+        {"routes": [route], "candidates": candidates, "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), cases),
+    )
+
+    assert any("case:format-wheel" in item and "omits its positional choice" in item for item in findings)
+    assert any("case:format-shape" in item and "omits its positional value" in item for item in findings)
+    assert any("case:custom-shape" in item and "omits its positional value" in item for item in findings)
+    assert not any("case:format-sdist" in item for item in findings)
+    assert not any("case:format-shape-present" in item for item in findings)
+    assert not any("case:pair-shape" in item for item in findings)
+
+
+def test_review_minimum_rejects_inline_values_for_flag_only_requirements():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:required-flag",
+                "kind": "option",
+                "flags": ["--required"],
+                "nargs": 0,
+                "minimum_values": 0,
+                "required": True,
+                "parser_path": ["inspect"],
+            },
+            {
+                "id": "option:group-flag",
+                "kind": "option",
+                "flags": ["--source"],
+                "nargs": 0,
+                "minimum_values": 0,
+                "required": False,
+                "parser_path": ["inspect"],
+            },
+        ],
+    }
+    required = {
+        "id": "case:inline-required-flag",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "minimum",
+        "members": [],
+        "shape": {"required_options": ["option:required-flag"]},
+    }
+    group = {
+        "id": "case:inline-exclusive-flag",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "minimum",
+        "members": [],
+        "shape": {
+            "required_exclusive_groups": {
+                "source": ["option:group-flag"]
+            }
+        },
+    }
+    candidates = [required, group]
+    cases = (
+        _case_for_candidate(required, ["inspect", "--required=value"]),
+        _case_for_candidate(group, ["inspect", "--source=value"]),
+    )
+
+    findings = _review_findings(
+        {"routes": [route], "candidates": candidates, "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), cases),
+    )
+
+    assert any(
+        "case:inline-required-flag" in item
+        and "inline value to flag-only option option:required-flag" in item
+        for item in findings
+    )
+    assert any(
+        "case:inline-exclusive-flag" in item
+        and "inline value to a flag-only option in required exclusive group source" in item
+        for item in findings
+    )
 
 
 def test_review_findings_handles_route_prefixes_single_command_and_missing_minimums():
@@ -699,6 +913,7 @@ def test_review_findings_handles_route_prefixes_single_command_and_missing_minim
             {"id": "required-flag", "kind": "option", "flags": ["--required"], "nargs": None, "minimum_values": 1, "required": True, "parser_path": ["inspect", "detail"]},
             {"id": "exclusive-a", "kind": "option", "flags": ["--a"], "nargs": None, "required": False, "parser_path": ["inspect", "detail"]},
             {"id": "exclusive-b", "kind": "option", "flags": ["--b"], "nargs": None, "required": False, "parser_path": ["inspect", "detail"]},
+            {"id": "argument:resource", "kind": "argument", "name": "resource", "nargs": "?", "minimum_values": 0, "required": False, "choices": ["alpha"], "parser_path": ["inspect", "detail"]},
         ],
     }
     single = {"id": "route:entrypoint:audit-tool/single", "path": [], "aliases": [], "kind": "invocation", "actions": []}
@@ -708,7 +923,7 @@ def test_review_findings_handles_route_prefixes_single_command_and_missing_minim
         {"id": "case:bad-minimum-group-conflict", "route_id": leaf["id"], "signature": "s", "kind": "minimum", "members": [], "shape": {"required_arguments": [], "required_options": ["required-flag"], "required_exclusive_groups": {"source": ["exclusive-a", "exclusive-b"]}}},
         {"id": "case:missing-path", "route_id": leaf["id"], "signature": "s", "kind": "other", "members": [], "shape": {}},
         {"id": "case:alias-good", "route_id": leaf["id"], "signature": "s", "kind": "route-alias", "members": [], "shape": {"alias": "d"}},
-        {"id": "case:choice-good", "route_id": leaf["id"], "signature": "s", "kind": "argument-choice", "members": [], "shape": {"choice": "alpha"}},
+        {"id": "case:choice-good", "route_id": leaf["id"], "signature": "s", "kind": "argument-choice", "members": ["argument:resource"], "shape": {"argument_id": "argument:resource", "choice": "alpha"}},
         {"id": "case:unknown-member", "route_id": leaf["id"], "signature": "s", "kind": "other", "members": ["does-not-exist"], "shape": {}},
         {"id": "case:single", "route_id": single["id"], "signature": "s", "kind": "minimum", "members": [], "shape": {}},
     ]

@@ -294,7 +294,10 @@ handler and tests.
 
 The checker sanity-checks that argv reaches the declared route, accounting for
 recognized option values, parser scope, parser-depth `--` terminators, and
-required parent positionals before nested commands. A generated minimum case
+required parent positionals before nested commands. Positional values are
+assigned to the registered argument ID at that parser depth, so a choice value
+in a sibling position does not satisfy the case. A flag-only option with an
+inline value is rejected by the structural check. A generated minimum case
 must provide values for required options and choose one option from each
 required exclusive group. The checker does not execute `parse_args`, custom
 converters/actions, or the handler. Route recognition is not proof that the
