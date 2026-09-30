@@ -109,8 +109,12 @@ It includes delegated registries and callback-added argparse actions. Nested
 routes carry parent-parser actions forward and identify parser-depth placement;
 required-subcommand prefixes do not produce false executable candidates.
 Parser-scoped `allow_abbrev` is exported, included in candidate signatures, and
-used when checking the invocation at each parser depth. Unsupported custom
-`prefix_chars` and `fromfile_prefix_chars` make the inventory incomplete.
+used when checking the invocation at each parser depth. Single-command mode
+and empty-argv dispatch behavior are also visible and signature-sensitive.
+Argparse's negative-number matcher and negative-number-like options are
+exported per parser and used to distinguish signed values from options;
+custom or uninspectable matchers make the inventory incomplete. Unsupported
+custom `prefix_chars` and `fromfile_prefix_chars` do too.
 
 The generated checklist includes minimum valid syntax, positional shapes and
 enumerable values, option spellings and choices, exclusive alternatives and
