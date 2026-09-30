@@ -197,6 +197,9 @@ The daemon's version response is contract major 1:
   Every verb, response, error code and the `contract` field are identical
   on both — `docs/PROTOCOL.md` documents each verb's `args` names, and
   `tests/fixtures/rg55/socket/` freezes a request/response pair per verb.
+  On `start`, omitting `--damon` uses the daemon's configured default; a
+  socket request must omit `damon` too, because explicit `damon: null` is
+  invalid.
   A complete request line including its newline is limited to 1 MiB and
   must arrive within 25 seconds; trickle bytes do not extend the deadline.
   Oversized lines receive `bad-argument`, and an incomplete line is closed
@@ -220,6 +223,13 @@ The daemon's version response is contract major 1:
     {"code": "peer-refused", …}}`. Unset = no uid restriction beyond the
     socket's group mode. A malformed value refuses to start the daemon
     rather than silently widening access.
+
+- **Target lookup reports what was established.** A complete cgroup-tree
+  search with no matching container returns `target-not-found` (ctl exit 2).
+  If the host cgroup bind cannot be searched, `ctl` exits 3 as a daemon
+  fault; that result does not establish that the container is absent. See
+  [the contract boundary](docs/DESIGN-GUIDE.md#contract-boundary) for why
+  the daemon uses the host tree as its identity source.
 - **Sessions live in the named volume** `cgprofile-sessions`, mounted at
   `/var/lib/cgprofile/sessions` — `ctl stop <session>`'s response names the
   exact `session_dir` and the series files inside it (`samples.jsonl.gz`,

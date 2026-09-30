@@ -278,8 +278,14 @@ def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]
     text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
     if not text:
         return None
+    # The proc directory and stat field 1 must identify the same process.
+    # The command name can contain parentheses, so locate only its final
+    # closing delimiter after checking the fixed PID/opening prefix.
+    prefix = f"{pid} ("
+    if not text.startswith(prefix):
+        return None
     close = text.rfind(")")
-    if close < 0:
+    if close < len(prefix):
         return None
     fields = text[close + 1 :].split()
     # fields[0] is stat field 3 (state); starttime is field 22.
@@ -423,7 +429,8 @@ def find_container_cgroup(container_id: str, root: str = CGROUP_ROOT) -> Optiona
     been placed under a slice the caller does not know about — the tree is the
     ground truth, the inspect output is a claim about it.
     """
-    for dirpath, dirnames, _ in os.walk(root):
+    walk_errors: List[OSError] = []
+    for dirpath, dirnames, _ in os.walk(root, onerror=walk_errors.append):
         for name in dirnames:
             for pattern in _SCOPE_RES:
                 match = pattern.match(name)
@@ -436,6 +443,14 @@ def find_container_cgroup(container_id: str, root: str = CGROUP_ROOT) -> Optiona
         # An empty result here is the correct prune-everything outcome (every
         # sibling was a scope) — it must not fall back to the unfiltered list.
         dirnames[:] = [d for d in dirnames if not d.endswith(".scope")]
+    if walk_errors:
+        # os.walk otherwise turns an unreadable root or branch into the same
+        # empty traversal as a healthy tree with no matching container.
+        # A daemon start must surface this as indeterminate (ctl exit 3), not
+        # certify `target-not-found` (exit 2) from an incomplete search.
+        raise OSError(
+            f"cannot search container cgroups under {root}: {walk_errors[0]}"
+        ) from walk_errors[0]
     return None
 
 

@@ -59,3 +59,9 @@ def test_every_closed_consumer_vocabulary_is_documented():
     text = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
     for value in ("container", "container-shared", "on", "off", "unavailable", "command", "assay"):
         assert re.search(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9_-])", text)
+
+
+def test_package_contract_mirrors_canonical_contract_byte_for_byte():
+    canonical = ROOT.parents[1] / "run-gate-project" / "nyxloom-trove" / "RG55-INTERFACE-CONTRACT.md"
+    local = ROOT / "docs" / "RG55-INTERFACE-CONTRACT.md"
+    assert local.read_bytes() == canonical.read_bytes()

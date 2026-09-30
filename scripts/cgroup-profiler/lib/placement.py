@@ -157,6 +157,41 @@ def _systemd_unit_path(unit_name: str) -> Optional[str]:
     return fields[1]
 
 
+def _systemd_unit_is_absent(
+    unit_name: str,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> Optional[bool]:
+    """Return true only for systemd's explicit NoSuchUnit response.
+
+    A failed GetUnit can also mean that the manager or bus is unavailable, so
+    a nonzero status is not evidence that the unit retired. Keep that case
+    distinct from the exact, manager-authored absence response.
+    """
+    busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
+    try:
+        completed = run(
+            [
+                busctl, "--system", "call", "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+                "GetUnit", "s", unit_name,
+            ],
+            check=False, capture_output=True, text=True, timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode == 0:
+        return False
+    expected = f"Unit {unit_name} not loaded."
+    error = completed.stderr or ""
+    if (
+        "org.freedesktop.systemd1.NoSuchUnit:" in error
+        and expected in error
+    ):
+        return True
+    return None
+
+
 def _systemd_property(unit_path: str, interface: str, name: str) -> Optional[str]:
     """Read one string property from the host manager's authoritative unit."""
     busctl = os.environ.get("CGPROFILE_BUSCTL", "busctl")
@@ -331,7 +366,7 @@ def _systemd_stop_unit(
     for _ in range(40):
         path = _systemd_unit_path(unit_name)
         if path is None:
-            return True
+            return _systemd_unit_is_absent(unit_name, run=run) is True
         active = _systemd_property(
             path, "org.freedesktop.systemd1.Unit", "ActiveState"
         )
@@ -865,6 +900,7 @@ class LanePlacement:
         scope_create: Optional[Callable[[str, str, Sequence[int], Sequence[str]], Optional[str]]] = None,
         scope_stop: Optional[Callable[[str], bool]] = None,
         slice_unit_verifier: Optional[Callable[[str, str], bool]] = None,
+        unit_absence_verifier: Optional[Callable[[str], Optional[bool]]] = None,
     ) -> None:
         self.cgroup_root = cgroup_root
         self.gates_cgroup = gates_cgroup
@@ -892,6 +928,7 @@ class LanePlacement:
         self._scope_create = scope_create or _systemd_create_scope
         self._scope_stop = scope_stop or _systemd_stop_unit
         self._slice_unit_verifier = slice_unit_verifier or access.verify_systemd_slice
+        self._unit_absence_verifier = unit_absence_verifier or _systemd_unit_is_absent
         # A cgroup directory is kernfs: `rmdir` on it succeeds even though it
         # "contains" the controller's interface files, which the kernel
         # created and no process may unlink. A fake cgroupfs in a tmp
@@ -1314,12 +1351,79 @@ class LanePlacement:
             # page multiple and `memory.max` can be refused silently by an
             # ancestor, so echoing the request would be a claim, not a
             # reading (the S13.3.2 discipline).
-            self.applied[name] = util.read_int(target)
+            applied = util.read_int(target)
+            if applied is None:
+                self.error = write_failed(self._relative(target))
+                self.release()
+                return
+            self.applied[name] = applied
+        if not self._verify_leaf_membership():
+            self.release()
+            return
         self.successfully_placed = True
         if not self._persist(state="placed"):
             self.successfully_placed = False
             self.error = REFUSED_STATE_UNAVAILABLE
             self.release()
+
+    def _verify_leaf_membership(self) -> bool:
+        """Require an exact, identity-verified snapshot before placement success."""
+        if self.leaf_cgroup is None:
+            self.error = REFUSED_IDENTITY_UNAVAILABLE
+            return False
+        members = self._owned_cgroup_pids(self.leaf_cgroup)
+        if members is None:
+            self.error = write_failed(
+                self._relative(os.path.join(abs_path(self.cgroup_root, self.leaf_cgroup), PROCS))
+            )
+            return False
+        actual = set(members)
+        for pid in members:
+            record = self.pid_records.get(pid)
+            if record is None:
+                record = self._capture_pid(pid)
+                if record is None:
+                    if self.error is None:
+                        self.error = REFUSED_IDENTITY_UNAVAILABLE
+                    return False
+                self.pid_records[pid] = record
+            if not self._same_process(pid, record):
+                if not self._pid_exists(pid):
+                    record["state"] = "exited"
+                    continue
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return False
+            if posixpath.normpath(self._pid_cgroup(pid) or "") != posixpath.normpath(
+                self.leaf_cgroup
+            ):
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return False
+            record["state"] = "leaf"
+        expected: Set[int] = set()
+        for pid, record in self.pid_records.items():
+            if not self._same_process(pid, record):
+                if not self._pid_exists(pid):
+                    record["state"] = "exited"
+                    continue
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return False
+            current = self._pid_cgroup(pid)
+            if current is None:
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return False
+            if posixpath.normpath(current) == posixpath.normpath(self.leaf_cgroup):
+                expected.add(pid)
+                record["state"] = "leaf"
+            else:
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return False
+        if expected != actual:
+            self.error = REFUSED_IDENTITY_UNAVAILABLE
+            return False
+        if not self._persist(state="placement-verified"):
+            self.error = REFUSED_STATE_UNAVAILABLE
+            return False
+        return True
 
     def _same_process(self, pid: int, record: Dict[str, Any]) -> bool:
         return (
@@ -1694,7 +1798,14 @@ class LanePlacement:
                 self.error = REFUSED_STATE_UNAVAILABLE
                 return
         scope_abs = abs_path(self.cgroup_root, self.scope_cgroup)
-        if self._cgroup_has_processes(self.scope_cgroup) is not False:
+        scope_members = self._cgroup_has_processes(self.scope_cgroup)
+        if scope_members is None and self._scope_retired_after_restore(scope_abs):
+            if not self._persist(state="complete"):
+                self.error = REFUSED_STATE_UNAVAILABLE
+                return
+            self.released = True
+            return
+        if scope_members is not False:
             self._cleanup_failure(self.scope_cgroup)
             return
         try:
@@ -1716,6 +1827,39 @@ class LanePlacement:
             self.error = REFUSED_STATE_UNAVAILABLE
             return
         self.released = True
+
+    def _scope_retired_after_restore(self, scope_abs: str) -> bool:
+        """Accept systemd auto-retirement only with independent proof of cleanup."""
+        leaf_abs = (
+            abs_path(self.cgroup_root, self.leaf_cgroup)
+            if self.leaf_cgroup is not None else None
+        )
+        if (
+            os.path.lexists(scope_abs)
+            or (leaf_abs is not None and os.path.lexists(leaf_abs))
+            or self._unit_absence_verifier(self.scope_unit or "") is not True
+        ):
+            return False
+        for pid, record in self.pid_records.items():
+            if not self._pid_exists(pid):
+                record["state"] = "exited"
+                continue
+            start_time = self._pid_start_time(pid)
+            if start_time is None:
+                return False
+            if start_time != record.get("start_time_ticks"):
+                record["state"] = "exited"
+                continue
+            current = self._pid_cgroup(pid)
+            origin = record.get("origin_cgroup")
+            if (
+                not isinstance(origin, str)
+                or current is None
+                or posixpath.normpath(current) != posixpath.normpath(origin)
+            ):
+                return False
+            record["state"] = "restored"
+        return True
 
     def _restore_and_retire(self) -> None:
         """Best-effort cleanup after a failed placement, preserving its journal."""
@@ -1827,24 +1971,40 @@ def recover_journal(
         # The crash may have happened after journaling but before systemd
         # accepted StartTransientUnit. That is clean only if no owned scope
         # directory remains and every surviving PID is still at its recorded
-        # origin; a missing unit alone is not proof of restoration.
+        # origin. A failed GetUnit is not proof of absence: require the exact
+        # manager-authored NoSuchUnit response and check both owned paths.
+        if _systemd_unit_is_absent(scope_unit) is not True:
+            return REFUSED_STATE_UNAVAILABLE
         if isinstance(persisted_scope, str) and os.path.lexists(
             abs_path(cgroup_root, persisted_scope)
+        ):
+            return REFUSED_STATE_UNAVAILABLE
+        if isinstance(persisted_leaf, str) and os.path.lexists(
+            abs_path(cgroup_root, persisted_leaf)
         ):
             return REFUSED_STATE_UNAVAILABLE
         from . import targets as target_mod
 
         for pid, record in records.items():
             if not os.path.exists(os.path.join(proc_root, str(pid))):
+                record["state"] = "exited"
                 continue
-            if _process_start_time_ticks(proc_root, pid) != record["start_time_ticks"]:
+            start_time = _process_start_time_ticks(proc_root, pid)
+            if start_time is None:
                 return REFUSED_IDENTITY_UNAVAILABLE
+            if start_time != record["start_time_ticks"]:
+                # The original identity is gone; never inspect or move the
+                # unrelated process that reused its numeric PID.
+                record["state"] = "exited"
+                continue
             current = target_mod.cgroup_of_pid(pid, cgroup_root, proc_root)
             if current is None or posixpath.normpath(current) != posixpath.normpath(
                 record["origin_cgroup"]
             ):
                 return REFUSED_IDENTITY_UNAVAILABLE
+            record["state"] = "restored"
         journal["state"] = "complete"
+        journal["pids"] = {str(pid): record for pid, record in sorted(records.items())}
         try:
             state_write(journal)
         except Exception:  # noqa: BLE001 - durable recovery state is required

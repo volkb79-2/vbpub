@@ -296,6 +296,12 @@ class TestStartRegistry:
         resp = simple_server._dispatch(_start_req(damon="maybe"))
         assert resp["error"]["code"] == "bad-argument"
 
+    def test_explicit_null_damon_is_rejected_not_defaulted(self, simple_server):
+        response = simple_server._dispatch(_start_req(damon=None))
+        assert response["ok"] is False
+        assert response["error"]["code"] == "bad-argument"
+        assert simple_server._sessions == {}
+
     def test_bad_token(self, simple_server):
         resp = simple_server._dispatch(_start_req(token="short"))
         assert resp["error"]["code"] == "bad-argument"
@@ -2439,14 +2445,12 @@ class _FakeConn:
         self.closed = True
 
 
-def test_handle_connection_breaks_on_a_short_read_with_no_trailing_newline(tmp_path):
+def test_handle_connection_closes_partial_request_at_eof_without_response(tmp_path):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     conn = _FakeConn([b"not json, no newline"])
     server._handle_connection(conn)
     assert conn.closed is True
-    assert len(conn.sent) == 1
-    resp = json.loads(conn.sent[0].decode("utf-8"))
-    assert resp["error"]["code"] == "bad-argument"
+    assert conn.sent == []
 
 
 def test_handle_connection_survives_an_unhandled_dispatch_exception(tmp_path, monkeypatch, capsys):
@@ -2619,6 +2623,199 @@ def test_real_socket_round_trip_version_and_bad_request(tmp_path):
         server.request_shutdown()
         thread.join(timeout=5.0)
         assert not os.path.exists(socket_path)
+
+
+def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
+    socket_path = str(tmp_path / "ctl.sock")
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+        accept_timeout=0.05,
+    )
+    thread = threading.Thread(target=server._accept_loop, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while not os.path.exists(socket_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert os.path.exists(socket_path)
+
+        malformed = [
+            [],
+            None,
+            {"verb": []},
+            {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "token": 7, "damon": "off", "meta": {},
+            },
+            {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "damon": "", "meta": {},
+            },
+            {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "damon": None, "meta": {},
+            },
+        ]
+        for request in malformed:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2.0)
+                client.connect(socket_path)
+                client.sendall((json.dumps(request) + "\n").encode("utf-8"))
+                response = json.loads(client.recv(65536).decode("utf-8"))
+            assert response["ok"] is False
+            assert response["contract"] == 1
+            assert response["error"]["code"] == "bad-argument"
+
+            # A malformed peer must not consume the accept loop.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2.0)
+                client.connect(socket_path)
+                client.sendall(b'{"verb":"version"}\n')
+                version = json.loads(client.recv(65536).decode("utf-8"))
+            assert version["ok"] is True
+            assert version["contract"] == 1
+    finally:
+        server.request_shutdown()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
+def test_real_socket_does_not_dispatch_unterminated_start_request(
+    simple_server, tmp_path, monkeypatch,
+):
+    socket_path = str(tmp_path / "ctl.sock")
+    simple_server.socket_path = socket_path
+    simple_server.accept_timeout = 0.05
+    dispatches = []
+    monkeypatch.setattr(
+        simple_server, "handle_start",
+        lambda args: (dispatches.append(args) or {"ok": True, "contract": 1}),
+    )
+    thread = threading.Thread(target=simple_server._accept_loop, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while not os.path.exists(socket_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert os.path.exists(socket_path)
+
+        request = {
+            "verb": "start",
+            "args": {
+                "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container",
+                "meta": {},
+            },
+            "contract": 1,
+        }
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2.0)
+            client.connect(socket_path)
+            client.sendall(json.dumps(request).encode("utf-8"))
+            client.shutdown(socket.SHUT_WR)
+            assert client.recv(65536) == b""
+
+        assert dispatches == []
+        assert simple_server._sessions == {}
+
+        # EOF on a malformed request must not consume the accept loop.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2.0)
+            client.connect(socket_path)
+            client.sendall(b'{"verb":"version","args":{},"contract":1}\n')
+            response = json.loads(client.recv(65536).decode("utf-8"))
+        assert response["ok"] is True
+        assert response["contract"] == 1
+    finally:
+        simple_server.request_shutdown()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    ("daemon_default", "damon_option"),
+    [("off", []), ("on", ["--damon", "off"])],
+    ids=["omitted-uses-daemon-default", "explicit-choice-overrides-default"],
+)
+def test_ctl_start_optional_damon_round_trips_over_real_socket(
+    simple_server, tmp_path, capsys, daemon_default, damon_option,
+):
+    socket_path = str(tmp_path / "ctl.sock")
+    simple_server.socket_path = socket_path
+    simple_server.accept_timeout = 0.05
+    simple_server.damon_default = daemon_default
+    argv = [
+        "ctl", "start", "--socket", socket_path,
+        "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
+        "--scope", "container", *damon_option, "--meta", "{}",
+    ]
+    thread = threading.Thread(target=simple_server._accept_loop, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0  # suite failsafe, not a product deadline
+        while not os.path.exists(socket_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert os.path.exists(socket_path)
+
+        assert cg.main(argv) == 0
+        output = capsys.readouterr().out.splitlines()
+        assert len(output) == 1
+        response = json.loads(output[0])
+        assert response["ok"] is True
+        assert response["contract"] == 1
+        assert response["damon"] == "off"
+        assert response["reused"] is False
+        assert cg.main(["ctl", "stop", response["session"], "--socket", socket_path]) == 0
+    finally:
+        simple_server.request_shutdown()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
+def test_real_socket_distinguishes_absent_target_from_unreadable_cgroup_tree(
+    tmp_path, capsys,
+):
+    complete_root = tmp_path / "complete-empty-cgroups"
+    complete_root.mkdir()
+    missing_root = tmp_path / "missing-cgroup-mount"
+    socket_path = str(tmp_path / "ctl.sock")
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+        cgroup_root=str(complete_root), damon_default="off", accept_timeout=0.05,
+    )
+    argv = [
+        "ctl", "start", "--socket", socket_path,
+        "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
+        "--scope", "container", "--meta", "{}",
+    ]
+    thread = threading.Thread(target=server._accept_loop, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0  # suite failsafe
+        while not os.path.exists(socket_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert os.path.exists(socket_path)
+
+        assert cg.main(argv) == 2
+        absent = capsys.readouterr()
+        absent_response = json.loads(absent.out)
+        assert absent_response["contract"] == 1
+        assert absent_response["error"]["code"] == "target-not-found"
+
+        server.cgroup_root = str(missing_root)
+        assert cg.main(argv) == 3
+        indeterminate = capsys.readouterr()
+        assert indeterminate.out == ""
+        assert "could not reach the daemon" in indeterminate.err
+        assert "cannot search container cgroups" in indeterminate.err
+
+        assert cg.main(["ctl", "version", "--socket", socket_path]) == 0
+        healthy = capsys.readouterr()
+        assert json.loads(healthy.out)["contract"] == 1
+    finally:
+        server.request_shutdown()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
 
 
 @pytest.mark.parametrize("reply", [

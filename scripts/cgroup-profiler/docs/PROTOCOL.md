@@ -43,14 +43,15 @@ socket-carrier consumer should send. The frozen bytes are in
 * `args` keys are **the long-option names with the dashes stripped**:
   `--memory-high` → `memory_high`. `--meta` is the one option whose CLI form
   is a JSON *string* and whose wire form is a JSON *object*.
-* An optional argument the caller did not give travels as an explicit
-  `null`; the daemon reads absent and `null` identically.
+* Optional-argument omission and `null` semantics are defined per field in
+  the table below. In particular, omit `damon` to use the daemon's configured
+  default; a present `damon: null` is malformed and receives `bad-argument`.
 * One request per connection, terminated by `\n`. The complete request line,
   including its newline, is limited to 1,048,576 bytes and must arrive within
   25 seconds of connection acceptance; trickle bytes do not extend that
   deadline. An oversized line receives `bad-argument`; an incomplete line at
-  the deadline is closed without dispatch. The response is one JSON object
-  plus `\n`, then the daemon closes.
+  the deadline or EOF is closed without dispatch. The response is one JSON
+  object plus `\n`, then the daemon closes.
 * **The streaming exception (§8.2, C7).** `watch` — and only `watch` — is
   answered with one JSON object PER LINE until the session ends, on one
   connection that stays open the whole time. Concretely, for a consumer:
@@ -81,7 +82,7 @@ socket-carrier consumer should send. The frozen bytes are in
 | `start` | `target` | `--target` | string | yes | `containerid:<64 lowercase hex>`; the consumer resolves the id |
 | | `scope` | `--scope` | string | yes | `container` \| `container-shared` |
 | | `token` | `--token` | string \| null | no | `[A-Za-z0-9._-]{8,64}`; the value exported as `RUN_GATE_PROFILE_SESSION` into the lane |
-| | `damon` | `--damon` | string \| null | no | `on` \| `off`; `null` = the daemon's `damon_default` |
+| | `damon` | `--damon` | string | no | `on` \| `off`; omission = the daemon's `damon_default`; explicit `null` is invalid |
 | | `interval` | `--interval` | number \| null | no | seconds, clamped to [0.25, 30]; `null` = the daemon default |
 | | `meta` | `--meta` | object | yes | §2.2's keys; unknown keys are stored verbatim, never rejected |
 | | `progress_stream` | `--progress-stream` | string \| null | no | the lane's own progress NDJSON path AS THE LANE SEES IT; must be absolute (§8.4) |

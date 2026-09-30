@@ -870,6 +870,15 @@ class _RoundingPlacement(placement.LanePlacement):
         super()._write(abs_target, value)
 
 
+class _UnreadableReadbackPlacement(placement.LanePlacement):
+    """Simulate a cap that accepts a write but cannot be read back."""
+
+    def _write(self, abs_target: str, value: str) -> None:
+        super()._write(abs_target, value)
+        if os.path.basename(abs_target) == "memory.high":
+            os.unlink(abs_target)
+
+
 class TestApply:
     def test_the_leaf_is_created_capped_and_populated(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -930,6 +939,17 @@ class TestApply:
         assert plc.applied["memory.high"] != MEMORY_HIGH + 1
         assert int((_leaf(root) / "memory.high").read_text()) == plc.applied["memory.high"]
         assert "memory.max" not in plc.applied  # never requested, never claimed
+
+    def test_missing_cap_readback_refuses_placement_and_cleans_up(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root, _placement_cls=_UnreadableReadbackPlacement)
+        plc.apply([101])
+        assert plc.error == placement.write_failed(
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/memory.high"
+        )
+        assert not plc.successfully_placed
+        assert plc.released
+        assert not _leaf(root).exists()
 
     @pytest.mark.parametrize("kwargs, root_kwargs, expected", [
         ({"token": None}, {}, placement.REFUSED_NO_TOKEN),
@@ -2185,6 +2205,51 @@ class TestPlacementCleanupEdges:
         assert lane.released
         assert not (root / SCOPE_UNIT_CGROUP).exists()
 
+    def test_release_accepts_scope_auto_retirement_after_verified_restoration(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+
+        def auto_retire_scope_after_leaf(path):
+            _fake_rmdir(path)
+            if path == str(_leaf(root)):
+                _fake_rmdir(str(root / SCOPE_UNIT_CGROUP))
+
+        lane = _placement(
+            root,
+            rmdir=auto_retire_scope_after_leaf,
+            unit_absence_verifier=lambda unit: (
+                unit == SCOPE_UNIT and not (root / SCOPE_UNIT_CGROUP).exists()
+            ),
+        )
+        lane.apply([101])
+        assert lane.placed
+
+        lane.release()
+
+        assert lane.released
+        assert lane._journal["state"] == "complete"
+        assert lane.pid_records[101]["state"] == "restored"
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+
+    def test_release_refuses_auto_retired_scope_when_unit_absence_is_unknown(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+
+        def auto_retire_scope_after_leaf(path):
+            _fake_rmdir(path)
+            if path == str(_leaf(root)):
+                _fake_rmdir(str(root / SCOPE_UNIT_CGROUP))
+
+        lane = _placement(
+            root, rmdir=auto_retire_scope_after_leaf,
+            unit_absence_verifier=lambda _unit: None,
+        )
+        lane.apply([101])
+        lane.release()
+
+        assert not lane.released
+        assert lane._journal["state"] == "recovery-required"
+        assert lane.pid_records[101]["state"] == "restored"
+
     def test_release_is_safe_without_an_optional_journal_object(self, tmp_path):
         root, lane = self._ready_lane(tmp_path)
         lane._journal = None
@@ -2451,6 +2516,7 @@ class TestPlacementJournalRecovery:
         (proc / "101").mkdir(parents=True)
         monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
         monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
         monkeypatch.setattr(placement, "_process_start_time_ticks", lambda _proc, _pid: "9797")
         monkeypatch.setattr(
             "lib.targets.cgroup_of_pid",
@@ -2474,6 +2540,7 @@ class TestPlacementJournalRecovery:
         proc = tmp_path / "empty-proc"
         monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
         monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
         monkeypatch.setattr(
             placement, "_process_start_time_ticks",
             lambda *_args: pytest.fail("exited process must not be reidentified"),
@@ -2485,8 +2552,9 @@ class TestPlacementJournalRecovery:
         )
         assert result is None
         assert updates[-1]["state"] == "complete"
+        assert updates[-1]["pids"]["101"]["state"] == "exited"
 
-    @pytest.mark.parametrize("problem", ["scope-remains", "pid-reused", "pid-moved", "write-failed"])
+    @pytest.mark.parametrize("problem", ["scope-remains", "pid-moved", "write-failed"])
     def test_missing_systemd_unit_refuses_unproved_cleanup(self, tmp_path, monkeypatch, problem):
         root = _fake_cgroup_root(tmp_path)
         journal = self._make_journal(root)
@@ -2497,10 +2565,8 @@ class TestPlacementJournalRecovery:
         (proc / "101").mkdir(parents=True)
         monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
         monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
-        monkeypatch.setattr(
-            placement, "_process_start_time_ticks",
-            lambda _proc, _pid: "reused" if problem == "pid-reused" else "9797",
-        )
+        monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
+        monkeypatch.setattr(placement, "_process_start_time_ticks", lambda _proc, _pid: "9797")
         current = "/dev.slice/outside.scope" if problem == "pid-moved" else "/" + SCOPE_CGROUP
         monkeypatch.setattr("lib.targets.cgroup_of_pid", lambda *_args: current)
         def writer(_journal):
@@ -2512,9 +2578,51 @@ class TestPlacementJournalRecovery:
         )
         assert result == (
             placement.REFUSED_IDENTITY_UNAVAILABLE
-            if problem in {"pid-reused", "pid-moved"}
+            if problem == "pid-moved"
             else placement.REFUSED_STATE_UNAVAILABLE
         )
+
+    def test_recovery_marks_a_reused_pid_exited_without_inspecting_or_moving_it(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        journal["scope_cgroup"] = None
+        journal["leaf_cgroup"] = None
+        proc = tmp_path / "proc"
+        (proc / "101").mkdir(parents=True)
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
+        monkeypatch.setattr(placement, "_process_start_time_ticks", lambda _proc, _pid: "reused")
+        monkeypatch.setattr(
+            "lib.targets.cgroup_of_pid",
+            lambda *_args: pytest.fail("reused PID must not be inspected or moved"),
+        )
+        updates = []
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root=str(proc), state_write=updates.append,
+        )
+        assert result is None
+        assert updates[-1]["state"] == "complete"
+        assert updates[-1]["pids"]["101"]["state"] == "exited"
+
+    def test_recovery_does_not_treat_manager_query_failure_as_unit_absence(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        journal["scope_cgroup"] = None
+        journal["leaf_cgroup"] = None
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: None)
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/proc", state_write=lambda _value: pytest.fail("unknown unit was accepted"),
+        )
+        assert result == placement.REFUSED_STATE_UNAVAILABLE
 
     @pytest.mark.parametrize(
         "problem",

@@ -39,6 +39,41 @@ def test_unit_path_accepts_only_a_successful_object_path_reply(
 
 
 @pytest.mark.parametrize(
+    ("stdout", "stderr", "code", "raises", "expected"),
+    [
+        ('o "/unit/path"', "", 0, None, False),
+        (
+            "",
+            "Call failed: org.freedesktop.systemd1.NoSuchUnit: "
+            "Unit rg-profile-test.scope not loaded.\n",
+            1, None, True,
+        ),
+        (
+            "",
+            "Call failed: org.freedesktop.systemd1.NoSuchUnit: "
+            "Unit another.scope not loaded.\n",
+            1, None, None,
+        ),
+        ("", "Call failed: org.freedesktop.systemd1.NoReply: timed out", 1, None, None),
+        ("", "", 1, None, None),
+        ("", "", 0, OSError("busctl unavailable"), None),
+        ("", "", 0, subprocess.TimeoutExpired("busctl", 5), None),
+    ],
+)
+def test_unit_absence_requires_exact_systemd_nosuchunit(
+    stdout, stderr, code, raises, expected,
+):
+    def run(*_args, **_kwargs):
+        if raises is not None:
+            raise raises
+        return subprocess.CompletedProcess(["busctl"], code, stdout, stderr)
+
+    assert placement._systemd_unit_is_absent(
+        "rg-profile-test.scope", run=run,
+    ) is expected
+
+
+@pytest.mark.parametrize(
     ("stdout", "code", "raises", "expected"),
     [
         ('s "loaded"', 0, None, "loaded"),
@@ -166,7 +201,9 @@ def test_scope_creation_refuses_failed_or_unresolved_manager_transactions(
     ) is None
 
 
-@pytest.mark.parametrize("failure", ["exception", "timeout", "nonzero", "missing", "active", "dead"])
+@pytest.mark.parametrize(
+    "failure", ["exception", "timeout", "nonzero", "missing", "unknown", "active", "dead"]
+)
 def test_scope_stop_reports_only_a_confirmed_retirement(monkeypatch, failure):
     monkeypatch.setattr(placement.time, "sleep", lambda _seconds: None)
     if failure in {"active", "dead"}:
@@ -181,6 +218,10 @@ def test_scope_stop_reports_only_a_confirmed_retirement(monkeypatch, failure):
         )
     else:
         monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(
+            placement, "_systemd_unit_is_absent",
+            lambda _unit, **_kwargs: True if failure == "missing" else None,
+        )
 
     def run(*_args, **_kwargs):
         if failure == "exception":

@@ -525,6 +525,17 @@ def _start_named_helper(
             return child
         time.sleep(0.05)
     if child.poll() is None:
+        # A tiny `targets` helper can finish and be auto-removed before the
+        # update call reaches Docker, while the outer docker client is still
+        # flushing its output. The create request already applied --cpus=3.
+        # Give that completed client a bounded chance to return its real exit
+        # status; only an actually persistent unconfirmed helper is unsafe.
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            return child
         # The exact name was printed before launch and is unique to this run.
         # Remove only that helper if the create-time cap could not be
         # confirmed; never leave a partially launched observer behind.
@@ -1022,10 +1033,11 @@ def _ctl_request(args: argparse.Namespace) -> Dict[str, Any]:
     a socket-carrier consumer that cannot run `ctl` reproduces exactly what
     this builds. A malformed `--meta` is a client-side argument error (never
     reaches the socket), handled the same way every other bad argument in
-    this file is: `_err()`, stderr + exit 2. Optional options the caller did
-    not give travel as explicit `null`s rather than absent keys, so one
-    verb always has ONE request shape (the daemon reads absent and null
-    identically — see `handle_start`).
+    this file is: `_err()`, stderr + exit 2. Optional options normally travel
+    as explicit `null`s when the wire contract assigns null a default meaning.
+    `damon` is deliberately omitted when the caller did not supply it: absence
+    selects the daemon's configured default, while a present `null` is an
+    invalid value and must be refused.
     """
     if args.verb == "start":
         try:
@@ -1034,24 +1046,34 @@ def _ctl_request(args: argparse.Namespace) -> Dict[str, Any]:
             _err(f"--meta must be valid JSON: {exc}")
         if not isinstance(meta, dict):
             _err("--meta must be a JSON object")
-        return _ctl_wire(
-            "start", target=args.target, scope=args.scope, token=args.token,
-            damon=args.damon, interval=args.interval, meta=meta,
+        wire_args = {
+            "target": args.target,
+            "scope": args.scope,
+            "token": args.token,
+        }
+        if args.damon is not None:
+            wire_args["damon"] = args.damon
+        wire_args.update({
+            "interval": args.interval,
+            "meta": meta,
             # §8.4's policy options travel VERBATIM: `--idle-bound`/
             # `--ceiling` take `auto` or a number, so the client cannot type
             # them without deciding what is parsable — and that decision is
             # the daemon's, so both carriers get the identical `bad-policy`
             # refusal (see `lib.liveness._parse_bound`).
-            progress_stream=args.progress_stream, idle_bound=args.idle_bound,
-            ceiling=args.ceiling, on_stall=args.on_stall,
+            "progress_stream": args.progress_stream,
+            "idle_bound": args.idle_bound,
+            "ceiling": args.ceiling,
+            "on_stall": args.on_stall,
             # §8.3: `place` is a BOOLEAN on the wire (the CLI's own
-            # `store_true`), not the presence of a key — one request shape
-            # per verb is the rule this whole translator exists to keep, and
-            # a socket consumer that cannot run `ctl` sends `false` the same
-            # way it sends `null` for an option it did not author.
-            place=args.place, memory_high=args.memory_high,
-            memory_max=args.memory_max, cpu_weight=args.cpu_weight,
-        )
+            # `store_true`), not the presence of a key. A socket consumer
+            # sends `false` when placement was not requested.
+            "place": args.place,
+            "memory_high": args.memory_high,
+            "memory_max": args.memory_max,
+            "cpu_weight": args.cpu_weight,
+        })
+        return _ctl_wire("start", **wire_args)
     if args.verb == "watch":
         return _ctl_wire("watch", session=args.session, watch_interval=args.watch_interval)
     if args.verb in ("status", "stop", "report"):

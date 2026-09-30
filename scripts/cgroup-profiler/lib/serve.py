@@ -764,7 +764,7 @@ class SessionServer:
         target_spec = args.get("target")
         scope = args.get("scope")
         token = args.get("token")
-        damon_req = args.get("damon") or self.damon_default
+        damon_req = args["damon"] if "damon" in args else self.damon_default
         interval_req = args.get("interval")
         meta = args.get("meta")
 
@@ -2344,7 +2344,10 @@ class SessionServer:
                     # the serial accept-loop occupancy and request memory.
                     return
                 if not chunk:
-                    break
+                    # EOF does not terminate a newline-delimited request.
+                    # Never turn an unterminated partial message into a
+                    # dispatched operation.
+                    return
                 data.extend(chunk)
             if not data.strip():
                 return
@@ -2391,6 +2394,9 @@ class SessionServer:
                     # reply — the same client-visible shape an ordinary
                     # connection drop already has (contract §1.3: exit 3,
                     # "daemon fault"), just without the blast radius.
+                    # `_dispatch` rejects non-object requests and non-string
+                    # verbs before a handler can throw, so the log can retain
+                    # the useful verb without trusting malformed JSON shapes.
                     print(
                         f"cgprofile: unhandled error handling verb "
                         f"{req.get('verb')!r}: {type(exc).__name__}: {exc}",

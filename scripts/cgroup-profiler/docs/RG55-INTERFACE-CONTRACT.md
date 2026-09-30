@@ -466,13 +466,17 @@ IDENTICAL on both carriers — a consumer may diff them; (2) `args` on the
 socket carrier are the long-option names without dashes (`scope`, `token`,
 `damon`, `interval`, `meta` as a JSON object not a string, `place`,
 `memory_high`, …); the in-image `ctl` client is the reference translator;
+(2a) on `start`, omitting `damon` selects the daemon's configured
+`damon_default`; if the key is present its value must be `on` or `off`, and
+`null` is refused with `bad-argument`;
 (3) timeouts are per verb (§1.5), not per carrier; on the socket the
 consumer applies the same numbers as socket timeouts; (4) each initial
 request line, including `watch`'s request, is at most 1,048,576 bytes
 including the newline and must arrive within an absolute 25 s deadline from
 accept (trickle bytes do not extend it); an oversized line receives
-`bad-argument`, an incomplete line is closed without dispatch, and the
-accepted `watch` stream itself has no server-side timeout; (5) the
+`bad-argument`, an incomplete line at deadline or EOF is closed without
+dispatch, and the accepted `watch` stream itself has no server-side timeout;
+(5) the
 exec carrier is permanent — a producer MUST keep it; a consumer's
 `transport = "auto"` means "socket if the path exists AND `version`
 answers on it within 5 s, else exec", `"socket"` means socket only (its

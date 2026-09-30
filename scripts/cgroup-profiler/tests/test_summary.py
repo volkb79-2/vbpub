@@ -181,6 +181,41 @@ class TestLastReadSkipsUnreadableTrailingSample:
         assert result["memory"]["peak_bytes"] is None
         assert result["pids"]["peak"] is None
 
+    def test_container_cumulative_counters_keep_last_successful_read(self):
+        acc = _new_accumulator("container", damon_enabled=False)
+        first = {
+            "cpu": {"usage_usec": 1_000_000, "throttled_usec": 200_000,
+                    "nr_throttled": 2},
+            "psi_mem": {"some_total": 300_000},
+            "memstat": {"pgmajfault": 3},
+            "memev": {"oom_kill": 1, "high": 4},
+        }
+        second = {
+            "cpu": {"usage_usec": 2_500_000, "throttled_usec": 500_000,
+                    "nr_throttled": 5},
+            "psi_mem": {"some_total": 750_000},
+            "memstat": {"pgmajfault": 7},
+            "memev": {"oom_kill": 2, "high": 9},
+        }
+        unreadable = {
+            "cpu": {"usage_usec": None, "throttled_usec": None,
+                    "nr_throttled": None},
+            "psi_mem": {"some_total": None},
+            "memstat": {"pgmajfault": None},
+            "memev": {"oom_kill": None, "high": None},
+        }
+        for tick, cgroup in enumerate((first, second, unreadable)):
+            acc.add_sample(cgroup=cgroup, host={}, mono=float(tick))
+
+        result = acc.finalize(ended_at="2026-09-12T10:15:02Z")
+        assert result["cpu"]["seconds"] == 2.5
+        assert result["cpu"]["throttled_seconds"] == 0.5
+        assert result["cpu"]["nr_throttled"] == 5
+        assert result["pressure"]["memory_some_stall_seconds"] == 0.75
+        assert result["faults"]["pgmajfault"] == 7
+        assert result["events"]["oom_kill"] == 2
+        assert result["events"]["memory_high_breach"] == 9
+
 
 # ── branch coverage: absent data, no slice, no damon, unavailable damon ────
 
@@ -488,12 +523,12 @@ class TestAbsentInputsStayNull:
         assert result["memory"]["peak_bytes"] == 500 * 1024 * 1024
         assert result["memory"]["peak_over_baseline_bytes"] is None
 
-    def test_peak_over_baseline_still_floors_at_zero_in_container_shared_scope(self):
-        # container-shared scope is UNAFFECTED by RW-21 -- still computes
-        # peak_over_baseline_bytes the original way (max(0, peak -
-        # baseline)). Two samples so peak (a max() over sampled
-        # memory.current) can independently differ from baseline (the
-        # FIRST sample's current) without the max() trivially including it.
+    def test_shared_peak_includes_baseline_when_later_current_falls(self):
+        # A shared-scope peak is the max of all readable memory.current
+        # samples, including sample zero. A later fall therefore leaves the
+        # peak at the baseline and the over-baseline value at zero. The
+        # defensive max(0, peak - baseline) floor cannot be distinguished
+        # from direct subtraction by this or any valid sample sequence.
         acc = _new_accumulator("container-shared", damon_enabled=False)
         target, slice_dir, proc = _frame_paths(FRAMES_DIR, 0)
         host = metrics.sample_host(proc_root=str(proc))

@@ -89,6 +89,15 @@ class FakePopen:
         self.returncode = -9
 
 
+class FakePersistentPopen(FakePopen):
+    """A Docker child that remains live until the launcher terminates it."""
+
+    def wait(self, timeout=None):
+        if not self.terminated:
+            raise subprocess.TimeoutExpired("docker", timeout)
+        return super().wait(timeout=timeout)
+
+
 def make_fake_sampler(script: List[tuple]):
     """A lib.sampler.Sampler replacement driven by a scripted action list.
 
@@ -1350,6 +1359,41 @@ class TestLaunchHelper:
         assert result is child
         assert child.terminated is False
 
+    def test_completed_create_capped_helper_is_not_refused_after_update_race(
+        self, monkeypatch, tmp_path: Path,
+    ):
+        spec = access.HelperSpec(
+            image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
+            out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
+        )
+        monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        child = FakePopen(exit_code=None)
+        launched = {}
+
+        def popen(command, **kwargs):
+            launched["command"] = command
+            return child
+
+        monkeypatch.setattr(cg.subprocess, "Popen", popen)
+        monkeypatch.setattr(
+            access, "_docker",
+            lambda *a, **k: access.subprocess.CompletedProcess(
+                args=["docker", *a], returncode=1, stdout="", stderr="already removed",
+            ),
+        )
+        monkeypatch.setattr(cg.time, "sleep", lambda _: None)
+
+        result = cg._launch_helper(
+            str(tmp_path / "fast-helper"), ["--run-dir", "fast-helper"], None,
+        )
+
+        assert result is child
+        assert result.wait() == 0
+        assert child.terminated is False
+        assert "--cpus=3" in launched["command"]
+
     def test_helper_cap_refusal_kills_child_if_termination_times_out(self, monkeypatch, tmp_path: Path):
         spec = access.HelperSpec(
             image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
@@ -1394,7 +1438,7 @@ class TestLaunchHelper:
         )
         monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
-        child = FakePopen(exit_code=None)
+        child = FakePersistentPopen(exit_code=None)
         monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
         calls = []
 
@@ -1422,7 +1466,7 @@ class TestLaunchHelper:
         )
         monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
-        child = FakePopen(exit_code=None)
+        child = FakePersistentPopen(exit_code=None)
         monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
 
         def fail_update(*args, **kwargs):
@@ -2634,6 +2678,14 @@ class TestCtlRequest:
             cg._ctl_request(args)
         assert exc_info.value.code == 2
         assert "--meta must be a JSON object" in capsys.readouterr().err
+
+    def test_start_omits_damon_to_use_the_daemon_configured_default(self):
+        args = self._args(
+            verb="start", target="containerid:" + "a" * 64,
+            scope="container", meta="{}",
+        )
+        request = cg._ctl_request(args)
+        assert "damon" not in request["args"]
 
 
 class TestCtlRoundtrip:
