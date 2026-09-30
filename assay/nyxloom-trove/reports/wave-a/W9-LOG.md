@@ -40,6 +40,10 @@ eb5585414886feba6b05668a708dae12c53907bd5e713d38238abc6e853239cb  tracked-change
 17. The hung-evidence fallback to a state record (row `liveness_*`) reads only current-judge, in-selection records (counted, unreconciled or unverified-hung); stale-judge records are never a source.
 18. In verdict mode the ETA can say `no_remaining_work` while the status is `incomplete` (progress stream cut, verdict already resolves every candidate).
 
+19. **Real bug found by O19 and fixed (not a design choice):** `_check_verdict_against_lane` read `lane.judge.coverage.fail_under`, but `CoverageConfig` has only `format`/`artifact`/`producer` (`fail_under` lives on `JudgeConfig`), so any R1 lane raised `AttributeError` before the coverage check. Fixed to `lane.judge.fail_under`; the `--coverage`-free path never reached it in mocked tests.
+20. **Real bug found by O19 and fixed:** `_coverage_artifact_summary` called `read_bounded_file(...)` without the keyword-only `limit`, so `--coverage` on any real R1 lane raised `TypeError`. Fixed with the judge's own `coverage.MAX_COVERAGE_ARTIFACT_BYTES` (16 MiB), the bound `assay.coverage` already applies to the same artifact.
+21. O19 residual: the lane command writes `cov.json` inside the run's isolated snapshot, so it does not exist in the worktree after `assay run`. The O19 test writes the same bytes into the worktree before the analysis (the analysis reads only from the worktree and never the snapshot). No design change made; the closeout workflow needs the artifact at the declared path. Recorded for CONSUMERS.
+
 ## Judge oracles (J step)
 Positive: `tests/core/test_cli_plan_jobs.py` 11 passed; `tests/core/test_mutation_candidates_event_judge.py` 2 passed; O21 set (`test_b105_cli_boundaries`, `test_cli_plan_estimate_hint`, `test_mutation_judge_identity*`, `test_mutation_progress_budget_plan`, `test_b106_reuse_and_witness`, `test_cli_provenance_and_request_base`, `test_import_contracts`, `test_cli_run`) 360 passed, 1 skipped, all unmodified.
 
@@ -87,4 +91,11 @@ Every break is an Edit on `campaign.py` (or the named file), observed red, rever
 | group 2 | W9 | O9 (fallbacks) | `..._state.py::test_o9_fallbacks_step_from_the_stratum_to_the_operator_to_everything` | pool threshold `>= 3` | red |
 | group 2 | W9 | O9 (under 20) | `..._state.py::test_o9_a_basis_under_twenty_samples_is_an_object_with_its_reason` | `len(samples) < 3` | red |
 | group 2 | W9 | O9 (`--project` pairing) | `..._state.py::test_o9_project_needs_a_jobs_count_in_range[extra0,extra1]` | pairing check `if False:` | red |
+| group 3 | W9 | O17 F1 (200 unstarted, `LANE_TIMEOUT`) | `..._verdicts.py::test_o17_f1_a_lane_timeout_with_two_hundred_unstarted_candidates_is_incomplete` | `("lane_timeout_or_unstarted", lane_timeout_row)` -> `False` | red (run singly under the batch) |
+| group 3 | W9 | O17 F4 (sharded PASS never complete) | `..._verdicts.py::test_o17_f4_a_sharded_pass_verdict_is_never_a_complete_campaign` | drop `and expected_ids == plan_id_set` from `complete_inventory` | red (singly) |
+| group 3 | W9 | O18 (six buckets, exact counts, adverse ids/paths/operators) | `..._verdicts.py::test_o18_all_six_buckets_are_counted_and_the_adverse_candidates_named` | `ADVERSE_BUCKETS` drops `"hung"` | red (singly) |
+| group 3 | W9 | O18 (stale commit) | `..._verdicts.py::test_o18_a_stale_commit_verdict_is_an_evidence_error` | `_read_verified_verdict` commit check -> `if False:` (the later lane check words it differently, so the exact message goes red) | red (singly) |
+| group 3 | W9 | O18 (wrong lane) | `..._verdicts.py::test_o18_a_verdict_for_another_lane_is_an_evidence_error` | `_check_verdict_against_lane` lane check -> `if False:` | red (singly) |
+| group 3 | W9 | O19 (real R1 run, exact missing line + arc) | `..._real.py::test_o19_coverage_reverifies_the_artifact_and_lists_the_gaps_exactly` | `arcs.extend(rows)` -> `arcs.extend(rows[:0])`; also reverting either Q19/Q20 fix | red for each |
+| group 3 | W9 | O19 (no `--coverage`: `not_supplied`, declared artifact absent and never read) | `..._real.py::test_o19_without_coverage_the_declared_artifact_is_never_read` | `not_supplied` branch returns `missing_branch_arcs: []` (gap shown as zero) | red (singly) |
 | group 2 | W9 | O9 (jobs range) | `..._state.py::test_o9_project_needs_a_jobs_count_in_range[extra2,extra3,extra4]` and `test_o9_the_library_entry_refuses_a_jobs_count_out_of_range` | `_project_jobs` `1 <=` -> `0 <=`; `<= 100`; `except` value 1; library `0 <=` | red for each |

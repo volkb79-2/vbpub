@@ -395,7 +395,9 @@ def _coverage_artifact_summary(
         raise ValueError(
             f"coverage artifact {supplied} differs from lane-declared artifact {declared}"
         )
-    raw = read_bounded_file(lane_file.project_root, policy.artifact)
+    raw = read_bounded_file(
+        lane_file.project_root, policy.artifact, limit=coverage_api.MAX_COVERAGE_ARTIFACT_BYTES
+    )
     if raw is None:
         return {
             **verdict_summary,
@@ -1426,7 +1428,7 @@ def _check_verdict_against_lane(verdict: dict, *, lane_name: str, head: str, lan
         if (
             r1_policy.get("coverage_artifact") != declared_coverage.artifact
             or r1_policy.get("coverage_format") != declared_coverage.format
-            or r1_policy.get("fail_under") != declared_coverage.fail_under
+            or r1_policy.get("fail_under") != lane.judge.fail_under
         ):
             raise ValueError("R1 verdict policy differs from the named lane declaration")
     if _native_r2(lane, r2_policy):
