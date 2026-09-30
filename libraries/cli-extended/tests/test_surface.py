@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from dataclasses import FrozenInstanceError, replace
 from enum import Enum
 
@@ -147,20 +148,20 @@ def test_surface_export_is_deterministic_and_describes_installed_parser_tree():
     assert first["entrypoint"]["prefix_chars"] == "-"
     assert first["entrypoint"]["fromfile_prefix_chars"] is None
     assert first["entrypoint"]["single_command"] is False
-    assert inspect["parser_settings"] == [
-        {
-            "parser_path": [],
-            "allow_abbrev": False,
-            "prefix_chars": "-",
-            "fromfile_prefix_chars": None,
-        },
-        {
-            "parser_path": ["inspect"],
-            "allow_abbrev": False,
-            "prefix_chars": "-",
-            "fromfile_prefix_chars": None,
-        },
+    assert first["entrypoint"]["builtins"] == [
+        "help", "help <verb>", "version", "--help", "--version"
     ]
+    assert [setting["parser_path"] for setting in inspect["parser_settings"]] == [
+        [], ["inspect"]
+    ]
+    for setting in inspect["parser_settings"]:
+        assert setting["allow_abbrev"] is False
+        assert setting["prefix_chars"] == "-"
+        assert setting["fromfile_prefix_chars"] is None
+        assert setting["negative_number_matcher"]["pattern"] == r"-\.?\d"
+        assert isinstance(setting["negative_number_matcher"]["flags"], int)
+        assert setting["has_negative_number_optionals"] is False
+        assert setting["negative_number_matcher_custom"] is False
     assert [
         setting["parser_path"] for setting in detail["parser_settings"]
     ] == [[], ["inspect"], ["inspect", "detail"]]
@@ -581,8 +582,13 @@ def test_surface_single_command_retains_metadata_and_standalone_defaults():
     surface = export_cli_surface(app)
 
     assert surface["entrypoint"]["single_command"] is True
+    assert surface["entrypoint"]["builtins"] == [
+        "help", "version", "--help", "--version"
+    ]
     route = surface["routes"][0]
     assert route["id"] == "route:entrypoint:surface-demo"
+    assert route["single_command"] is True
+    assert route["no_args_action"] is True
     assert route["behavior"] == []
     target = next(action for action in route["actions"] if action["id"].endswith("--target"))
     assert target["effective_default"] == "local"
@@ -591,6 +597,75 @@ def test_surface_single_command_retains_metadata_and_standalone_defaults():
         "after_verb": True,
         "single_command_invocation": True,
     }
+
+
+def test_surface_signature_tracks_empty_single_command_invocation_behavior():
+    def minimum_signature(no_args_action: bool) -> str:
+        registry = CliRegistry(
+            IDENTITY,
+            prog="surface-demo",
+            description="run one operation",
+            single_command=True,
+            no_args_action=no_args_action,
+        )
+        registry.register(VerbSpec("run", description="run", handler=lambda *_: 0))
+        surface = export_cli_surface(registry.build())
+        return next(
+            candidate["signature"]
+            for candidate in surface["candidates"]
+            if candidate["kind"] == "minimum"
+        )
+
+    assert minimum_signature(False) != minimum_signature(True)
+
+
+@pytest.mark.parametrize(
+    "matcher",
+    (re.compile(r"-\d+x"), object()),
+    ids=("custom", "uninspectable"),
+)
+def test_surface_marks_custom_or_uninspectable_negative_number_matchers_incomplete(
+    matcher,
+):
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+
+    def configure(parser):
+        parser._negative_number_matcher = matcher
+
+    registry.register(
+        VerbSpec("inspect", description="inspect", configure=configure, handler=lambda *_: 0)
+    )
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any("negative-number matcher" in finding for finding in surface["incomplete"])
+
+
+def test_surface_marks_inherited_uninspectable_negative_number_matcher_incomplete():
+    parser = argparse.ArgumentParser(prog="surface-demo")
+    incomplete = []
+    records = _describe_parser(
+        parser,
+        entrypoint_id="entrypoint:surface-demo",
+        path=("inspect",),
+        verb_specs=(),
+        global_options=(),
+        single_command=False,
+        incomplete=incomplete,
+        inherited_parser_settings=(
+            {
+                "parser_path": [],
+                "allow_abbrev": False,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+                "negative_number_matcher": None,
+                "negative_number_matcher_custom": False,
+            },
+        ),
+    )
+
+    assert records[0]["syntax_complete"] is False
+    assert any("uninspectable negative-number matcher" in item for item in incomplete)
 
 
 def test_surface_requires_a_registered_cli_and_surfaces_json_is_valid():
@@ -605,14 +680,14 @@ def test_surface_signatures_are_canonical_for_unicode_payloads():
     reversed_payload = {"a": "café", "z": "last"}
     expected = "sha256:" + hashlib.sha256(
         json.dumps(
-            {"schema_version": 2, "payload": payload},
+            {"schema_version": 3, "payload": payload},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
-    assert _signature(2, payload) == expected
-    assert _signature(2, payload) == _signature(2, reversed_payload)
+    assert _signature(3, payload) == expected
+    assert _signature(3, payload) == _signature(3, reversed_payload)
 
 
 def test_candidate_choice_ids_hash_unicode_values_without_ascii_escaping():
@@ -968,6 +1043,10 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
         "route:entrypoint:surface-demo/plugins/alpha",
         "route:entrypoint:surface-demo/plugins/beta",
     ]
+    assert not any(
+        candidate["route_id"] == group["id"]
+        for candidate in delegated_surface["candidates"]
+    )
 
     configured_parent = CliRegistry(
         IDENTITY, prog="surface-demo", description="Configured delegate."
@@ -988,8 +1067,10 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
     )
     assert configured_group["parser_configured_by_callback"] is True
     assert configured_group["syntax_complete"] is False
-    assert any("delegate-group parser callback syntax is not represented" in reason
-               for reason in configured_surface["incomplete"])
+    assert any(
+        "delegated wrapper parser syntax is not applied" in reason
+        for reason in configured_surface["incomplete"]
+    )
 
     single_child = CliRegistry(
         child_identity,
@@ -1001,6 +1082,8 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
         VerbSpec(
             "run",
             description="run one child operation",
+            mutating=True,
+            confirmation_required=False,
             options=(OptionSpec(("--child-option",), "child option"),),
             handler=lambda *_: 0,
         )
@@ -1018,6 +1101,110 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
     )
     assert delegated_route["id"] == "route:entrypoint:surface-demo/adapter"
     assert delegated_route["delegated_metadata"][0]["name"] == "run"
+    assert delegated_route["behavior"] == []
+    assert delegated_route["confirmation"] is False
+    assert delegated_route["delegated_metadata"][0]["behavior"] == ["mutating"]
+    assert delegated_route["delegated_metadata"][0]["confirmation"] is False
+    child_option = next(
+        action
+        for action in delegated_route["actions"]
+        if action.get("flags") == ["--child-option"]
+    )
+    assert child_option["description"] == "child option"
+    assert delegated_route["syntax_complete"] is True
+
+    changed_child = CliRegistry(
+        child_identity,
+        prog="child-tool",
+        description="One child command.",
+        single_command=True,
+    )
+    changed_child.register(
+        VerbSpec("run", description="run one child operation", handler=lambda *_: 0)
+    )
+    changed_parent = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Single delegate."
+    )
+    changed_parent.register(
+        VerbSpec(
+            "adapter",
+            description="run adapter",
+            delegate=changed_child.build(),
+        )
+    )
+    changed_surface = export_cli_surface(changed_parent.build())
+    changed_route = next(
+        route
+        for route in changed_surface["routes"]
+        if route["id"] == delegated_route["id"]
+    )
+    original_candidates = {
+        candidate["id"]: candidate["signature"]
+        for candidate in single_surface["candidates"]
+    }
+    changed_candidates = {
+        candidate["id"]: candidate["signature"]
+        for candidate in changed_surface["candidates"]
+    }
+    assert any(
+        original_candidates[case_id] != changed_candidates[case_id]
+        for case_id in original_candidates.keys() & changed_candidates.keys()
+    )
+
+    wrapper_with_syntax = CliRegistry(
+        IDENTITY, prog="surface-demo", description="Invalid wrapper grammar."
+    )
+    wrapper_with_syntax.register(
+        VerbSpec(
+            "adapter",
+            description="run adapter",
+            options=(OptionSpec(("--ignored",), "ignored wrapper option"),),
+            delegate=single_child.build(),
+        )
+    )
+    wrapper_surface = export_cli_surface(wrapper_with_syntax.build())
+    assert wrapper_surface["syntax_complete"] is False
+    assert any(
+        "wrapper declares parser syntax" in reason
+        for reason in wrapper_surface["incomplete"]
+    )
+
+    parent_global = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="Inherited global option.",
+        global_options=(OptionSpec(("--scope",), "scope"),),
+    )
+    parent_global.register(
+        VerbSpec("adapter", description="run adapter", delegate=single_child.build())
+    )
+    global_surface = export_cli_surface(parent_global.build())
+    assert global_surface["syntax_complete"] is False
+    assert any(
+        "does not register inherited global option(s): --scope" in reason
+        for reason in global_surface["incomplete"]
+    )
+
+    child_with_global = CliRegistry(
+        child_identity,
+        prog="child-tool",
+        description="Inherited global option is installed.",
+        single_command=True,
+        global_options=(OptionSpec(("--scope",), "scope"),),
+    )
+    child_with_global.register(
+        VerbSpec("run", description="run", handler=lambda *_: 0)
+    )
+    parent_with_global = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="Inherited global option.",
+        global_options=(OptionSpec(("--scope",), "scope"),),
+    )
+    parent_with_global.register(
+        VerbSpec("adapter", description="run adapter", delegate=child_with_global.build())
+    )
+    assert export_cli_surface(parent_with_global.build())["syntax_complete"] is True
 
     simple = CliRegistry(
         IDENTITY, prog="surface-demo", description="Simple commands."

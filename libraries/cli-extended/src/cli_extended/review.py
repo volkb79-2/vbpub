@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import stat
 import tempfile
@@ -351,14 +352,29 @@ def render_cli_surface_markdown(
     lines = [
         "## Generated CLI surface and semantic review",
         "",
+        (
+            f"Executable: `{surface['entrypoint']['command']}` via "
+            f"`{surface['entrypoint'].get('prog', surface['entrypoint']['command'])}`; built-ins: "
+            + ", ".join(
+                f"`{item}`" for item in surface["entrypoint"].get("builtins", ())
+            )
+            + ". Empty argv: "
+            + (
+                "dispatches the single command."
+                if surface["entrypoint"].get("single_command")
+                and surface["entrypoint"].get("no_args_action")
+                else "shows help."
+            )
+        ),
+        "",
         f"Surface schema: `{surface['schema_version']}`; review catalog schema: `{REVIEW_SCHEMA_VERSION}`.",
         "",
         "The manifest records registered syntax. The review catalog owns expected behavior, effects, rationale, and test references.",
         "",
         "### Command routes",
         "",
-        "| Surface ID | Route kind | Invocation path | Nested commands | Description | Group | Behavior | Parser settings | Parser completeness |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Surface ID | Route kind | Invocation path | Invocation mode | Nested commands | Description | Group | Behavior | Confirmation | Synopsis/usage overrides | Delegated metadata | Parser settings | Parser callback | Opaque fields | Parser completeness |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for route in surface["routes"]:
         path = " ".join(route["path"]) or surface["entrypoint"]["command"]
@@ -370,13 +386,35 @@ def render_cli_surface_markdown(
             if group.get("required"):
                 label += " (required)"
             nested_commands.append(f"{group.get('destination')}: {label}")
+        if not nested_commands and route.get("subcommands"):
+            nested_commands.append(
+                "delegated: " + ", ".join(route["subcommands"])
+            )
         parser_settings = "; ".join(
             f"{' '.join(setting.get('parser_path', ())) or '<entrypoint>'}: "
             f"allow_abbrev={'yes' if setting.get('allow_abbrev') else 'no'}, "
             f"prefix_chars={setting.get('prefix_chars')!r}, "
-            f"fromfile_prefix_chars={setting.get('fromfile_prefix_chars')!r}"
+            f"fromfile_prefix_chars={setting.get('fromfile_prefix_chars')!r}, "
+            f"negative_number_matcher={setting.get('negative_number_matcher')!r}, "
+            "has_negative_number_optionals="
+            f"{'yes' if setting.get('has_negative_number_optionals') else 'no'}"
             for setting in route.get("parser_settings", ())
         )
+        invocation_mode = (
+            "single-command; empty argv dispatches"
+            if route.get("single_command") and route.get("no_args_action")
+            else "single-command; empty argv shows help"
+            if route.get("single_command")
+            else "multi-command; empty argv shows help"
+        )
+        overrides = {
+            key: value
+            for key, value in (
+                ("verb_synopsis", route.get("synopsis_override")),
+                ("parser_usage", route.get("usage_override")),
+            )
+            if value is not None
+        }
         lines.append(
             "| " + " | ".join(
                 _markdown_cell(value)
@@ -384,11 +422,17 @@ def render_cli_surface_markdown(
                     route["id"],
                     route.get("kind", "invocation"),
                     path,
+                    invocation_mode,
                     "; ".join(nested_commands),
                     route.get("description") or "",
                     route.get("group") or "",
                     ", ".join(route.get("behavior", [])),
+                    route.get("confirmation", False),
+                    overrides,
+                    route.get("delegated_metadata", []),
                     parser_settings,
+                    route.get("parser_configured_by_callback", False),
+                    route.get("opaque_fields", []),
                     "complete" if route.get("syntax_complete") else "incomplete",
                 )
             ) + " |"
@@ -398,45 +442,60 @@ def render_cli_surface_markdown(
             "",
             "### Arguments and options",
             "",
-        "| Surface ID | Kind | Spelling/name | Shape | Required | Choices/default | Scope/placement | Help group |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Surface ID | Kind | Spelling/name | Description | Grammar shape | Action/type/const | Required | Choices/default/exclusive rule | Scope/placement | Visibility/help group |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         )
     )
     for route in surface["routes"]:
         for action in route.get("actions", []):
             label = "/".join(action.get("flags", ())) if action["kind"] == "option" else action["name"]
-            shape = action.get("metavar")
+            shape = {"metavar": action.get("metavar")}
+            if action.get("nargs") is not None:
+                shape["nargs"] = action["nargs"]
+            if action.get("minimum_values") is not None:
+                shape["minimum_values"] = action["minimum_values"]
             if action["kind"] == "argument":
-                shape = {"metavar": shape, "nargs": action["nargs"]}
+                action_details = {
+                    "action": action.get("action"),
+                    "type": action.get("type"),
+                    "const": action.get("const"),
+                }
             elif action["kind"] == "option":
-                if action.get("nargs") is not None:
-                    shape = {"metavar": shape, "nargs": action["nargs"]}
+                action_details = {
+                    "action": action.get("action"),
+                    "type": action.get("type"),
+                    "const": action.get("const"),
+                }
             else:
                 raise SurfaceSpecError(
                     f"unsupported surface action kind {action['kind']!r}"
                 )
             details = {
                 "choices": action.get("choices"),
+                "declared_default": action.get("default"),
                 "default": action.get("effective_default", action.get("default")),
                 "exclusive_group": action.get("exclusive_group"),
+                "exclusive_required": action.get("exclusive_required", False),
             }
-            scope = action.get("scope", "positional")
+            scope: dict[str, Any] = {"scope": action.get("scope", "positional")}
             if action.get("placement"):
-                scope += "; " + ", ".join(
-                    key for key, enabled in action["placement"].items() if enabled
-                )
+                scope["placement"] = action["placement"]
             parser_path = action.get("parser_path")
             if parser_path is not None:
-                scope += "; parser " + (" ".join(parser_path) or "<entrypoint>")
+                scope["parser_path"] = parser_path
             if action.get("before_nested_subcommand"):
-                scope += "; before nested subcommand"
+                scope["before_nested_subcommand"] = True
+            visibility = {
+                "hidden": action.get("hidden", False),
+                "help_group": action.get("help_group", ""),
+            }
             lines.append(
                 "| " + " | ".join(
                     _markdown_cell(value)
                     for value in (
-                        action["id"], action["kind"], label, shape,
-                        action.get("required"), details, scope,
-                        action.get("help_group", ""),
+                        action["id"], action["kind"], label,
+                        action.get("description", ""), shape, action_details,
+                        action.get("required"), details, scope, visibility,
                     )
                 ) + " |"
             )
@@ -599,6 +658,40 @@ def _atomic_write_text(path: str | Path, text: str, *, newline: str) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def _validate_distinct_surface_paths(
+    review_path: str | Path,
+    manifest_path: str | Path,
+    spec_path: str | Path,
+) -> None:
+    """Keep generated destinations from aliasing each other or the catalog."""
+
+    entries = (
+        ("review catalog", Path(review_path)),
+        ("manifest", Path(manifest_path)),
+        ("specification", Path(spec_path)),
+    )
+    resolved: list[tuple[str, Path, str]] = []
+    for label, path in entries:
+        try:
+            resolved_path = os.path.normcase(str(path.resolve()))
+        except (OSError, RuntimeError) as exc:
+            raise SurfaceSpecError(
+                f"cannot resolve {label} path {str(path)!r}: {exc}"
+            ) from exc
+        for previous_label, previous_path, previous_resolved in resolved:
+            aliases = resolved_path == previous_resolved
+            if not aliases:
+                try:
+                    aliases = path.samefile(previous_path)
+                except OSError:
+                    aliases = False
+            if aliases:
+                raise SurfaceSpecError(
+                    f"{label} and {previous_label} must resolve to distinct files"
+                )
+        resolved.append((label, path, resolved_path))
+
+
 def _prepare(
     app: Any,
     *,
@@ -609,6 +702,7 @@ def _prepare(
 ) -> tuple[ReviewCatalog, dict[str, Any], str, str, list[str]]:
     if not isinstance(app, RegisteredCli):
         raise TypeError("app must be a RegisteredCli built by CliRegistry")
+    _validate_distinct_surface_paths(review_path, manifest_path, spec_path)
     catalog = load_cli_review_catalog(review_path)
     if catalog.cli_id != app.identity.command_name:
         raise ReviewCatalogError(
@@ -632,11 +726,30 @@ def _prepare(
 def _review_findings(
     surface: Mapping[str, Any], catalog: ReviewCatalog
 ) -> list[str]:
-    def is_negative_number(token: str) -> bool:
-        return (
-            token.startswith("-")
-            and token[1:].replace(".", "", 1).isdigit()
+    def is_negative_number(
+        token: str, route: Mapping[str, Any], depth: int
+    ) -> bool:
+        parser_path = tuple(route.get("path", ()))[:depth]
+        settings = next(
+            (
+                item
+                for item in route.get("parser_settings", ())
+                if tuple(item.get("parser_path", ())) == parser_path
+            ),
+            None,
         )
+        matcher = settings.get("negative_number_matcher") if settings else None
+        if not isinstance(matcher, Mapping):
+            return False
+        pattern = matcher.get("pattern")
+        flags = matcher.get("flags")
+        if not isinstance(pattern, str) or not isinstance(flags, int):
+            return False
+        try:
+            matches = re.match(pattern, token, flags) is not None
+        except re.error:
+            return False
+        return matches and not settings.get("has_negative_number_optionals", False)
 
     def action_for_option(
         route: Mapping[str, Any], option: str, depth: int
@@ -716,7 +829,7 @@ def _review_findings(
                 return False
             if action_for_option(route, option, depth) is not None:
                 return True
-            return not is_negative_number(token)
+            return not is_negative_number(token, route, depth)
 
         nargs = action.get("nargs")
         if nargs == 0:
@@ -805,7 +918,7 @@ def _review_findings(
             if (
                 token.startswith("-")
                 and options_enabled[path_depth]
-                and not is_negative_number(token)
+                and not is_negative_number(token, route, path_depth)
             ):
                 index += 1
                 continue
@@ -967,7 +1080,7 @@ def _review_findings(
             if (
                 token.startswith("-")
                 and options_enabled[segment]
-                and not is_negative_number(token)
+                and not is_negative_number(token, route, segment)
             ):
                 return None
             if consumes_parent_positional(segment, False):

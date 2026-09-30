@@ -121,7 +121,9 @@ deletes stale decisions. Sync owns only a marked region in the canonical CLI
 spec and a JSON manifest; check detects changed signatures, stale files,
 pending decisions, stale records, and syntax that cannot be inventoried. The
 shared pytest helper checks exact collection and marker linkage; the consumer's
-gate still proves test behavior.
+gate still proves test behavior. Sync/check reject paths that alias the review
+catalog, manifest, or spec so a destination typo cannot overwrite the semantic
+source.
 
 No second grammar DSL or conditional-option runtime API was added. CLI-EXT-02
 remains open because that is a separate evidence-gated question.

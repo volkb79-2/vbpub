@@ -110,6 +110,24 @@ abbreviations using the owning parser. Since the checker does not model custom
 incomplete and fail check mode. The initial mutation run was stopped at
 138/807 candidates; only the final-source R2 run can provide gate evidence.
 
+Reviewing the generated human-readable table against the canonical-spec
+contract exposed fields that existed only in JSON: confirmation policy,
+parser action/converter details, hidden status, const values, callback and
+opaque-field status, and delegated metadata. The Markdown view now includes
+those facts so reviewers can judge them from the product spec. A delegated
+single-command route records both its public wrapper and the actual delegated
+command; wrapper-only parser declarations and inherited globals absent from
+the delegate are marked incomplete. The surface schema is now version `3`,
+and delegated behavior/confirmation changes participate in review signatures.
+The final route audit also exposed empty-argv dispatch behavior: a single-command
+registry can either show help or invoke its handler when passed no arguments.
+The route table now shows that mode, and candidate signatures include it so a
+behavior change cannot leave an old semantic decision appearing current.
+The inventory also records argparse's negative-number matcher and whether a
+parser registers negative-number-like options. The semantic checker consumes
+those values when deciding if a signed token is an option value or positional;
+custom or uninspectable matchers make the syntax incomplete.
+
 ## Consumer workflows this should support
 
 ### CMRU: constraint-heavy command with mutation boundaries
@@ -379,7 +397,14 @@ items, and consumer docs show the annotations to add.
 - Surface output includes nested delegated commands and callback-added
   argparse actions, aliases, option scope/placement, positionals,
   choices/defaults, existing required/exclusive metadata, and actual common
-  options. It includes parser-scoped abbreviation policy in signatures and
+  options. Its Markdown view exposes route behavior/confirmation and
+  delegated metadata; option/action rows include descriptions, parser
+  action/type/const, defaults, exclusive-group requiredness, hidden status,
+  opaque fields, and invocation/empty-argv behavior; the latter is signature-
+  sensitive. Parser-specific negative-number handling is shown and included in
+  signatures. Single-command built-ins match the forms accepted by
+  that parser. Delegated single-command signatures cover child behavior and
+  confirmation metadata. It includes parser-scoped abbreviation policy in signatures and
   marks custom option prefixes or argument-file expansion incomplete. Output
   is byte-stable across repeat runs. Nonserializable values
   and custom action behavior are marked opaque or incomplete, never omitted.
@@ -391,11 +416,13 @@ items, and consumer docs show the annotations to add.
   predict outcomes.
 - Surface IDs and signatures follow the documented derivation. Changing a
   description leaves signatures unchanged; changing an alias, default,
-  requiredness, choice, action/nargs, scope/placement, synopsis override, or
-  interaction signature forces review. A rename with no continuity ID yields
+  requiredness, choice, action/nargs, scope/placement, confirmation policy,
+  delegated behavior/confirmation, synopsis override, or interaction
+  signature forces review. A rename with no continuity ID yields
   a stale old ID plus a new ID.
 - Sync preserves all bytes outside the generated region and never alters the
-  review catalog. Check passes on an unchanged tree and fails independently
+  review catalog. Sync/check reject aliased paths among the catalog, manifest,
+  and spec, including symlink and hard-link aliases. Check passes on an unchanged tree and fails independently
   for changed grammar, missing decisions, changed signatures, unresolved stale
   cases, invalid marked tests, and uninspectable parser syntax. Opaque custom
   value validators require linked semantic cases but do not make syntax

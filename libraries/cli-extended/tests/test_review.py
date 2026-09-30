@@ -598,12 +598,18 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
     )
     surface = {
         "schema_version": 1,
-        "entrypoint": {"command": "audit-tool"},
+        "entrypoint": {
+            "command": "audit-tool",
+            "single_command": True,
+            "no_args_action": True,
+        },
         "routes": [
             {
                 "id": "route:inspect",
                 "path": ["inspect", "run"],
                 "kind": "route-prefix",
+                "single_command": True,
+                "no_args_action": True,
                 "aliases": ["r"],
                 "subcommand_groups": [
                     {"destination": "operation", "required": True, "subcommands": ["route:inspect/run"]},
@@ -612,6 +618,23 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                 "description": "Run an operation.",
                 "group": "CHANGE",
                 "behavior": ["mutating"],
+                "confirmation": True,
+                "synopsis_override": "inspect <RESOURCE>",
+                "usage_override": "audit-tool inspect [options] RESOURCE",
+                "parser_configured_by_callback": True,
+                "opaque_fields": ["option:parent.type"],
+                "delegated_metadata": [
+                    {
+                        "id": "inner-run",
+                        "name": "run",
+                        "description": "run an operation",
+                        "summary": "run an operation [mutating]",
+                        "group": "CHANGE",
+                        "behavior": ["mutating"],
+                        "confirmation": False,
+                        "synopsis": "run <RESOURCE>",
+                    }
+                ],
                 "syntax_complete": False,
                 "parser_settings": [
                     {
@@ -632,11 +655,18 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                         "choices": ["a", "b"],
                         "effective_default": None,
                         "exclusive_group": None,
+                        "exclusive_required": True,
                         "scope": "common",
                         "placement": {"before_verb": True, "after_verb": False},
                         "parser_path": ["inspect"],
                         "before_nested_subcommand": True,
                         "help_group": "OPTIONS",
+                        "description": "choose a source",
+                        "action": "argparse._StoreAction",
+                        "type": {"callable": "pathlib.Path"},
+                        "const": None,
+                        "default": None,
+                        "hidden": False,
                     },
                     {
                         "id": "option:run-flag",
@@ -653,6 +683,12 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                         "parser_path": ["inspect"],
                         "before_nested_subcommand": True,
                         "help_group": "OPTIONS",
+                        "description": "set the mode",
+                        "action": "argparse._StoreTrueAction",
+                        "type": None,
+                        "const": True,
+                        "default": False,
+                        "hidden": True,
                     },
                     {
                         "id": "argument:child",
@@ -665,6 +701,8 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                         "effective_default": None,
                         "exclusive_group": None,
                         "scope": "positional",
+                        "description": "resource to inspect",
+                        "type": {"callable": "builtins.int"},
                     },
                 ],
             },
@@ -672,6 +710,8 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                 "id": "route:entrypoint:audit-tool",
                 "path": [],
                 "kind": "invocation",
+                "single_command": True,
+                "no_args_action": True,
                 "aliases": [],
                 "subcommand_groups": [],
                 "description": None,
@@ -701,7 +741,7 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
     assert "route-prefix" in markdown
     assert "operation: route:inspect/run (required)" in markdown
     assert "optional-operation: route:inspect/check" in markdown
-    assert "before nested subcommand" in markdown
+    assert '"before_nested_subcommand": true' in markdown
     assert "REVIEW REQUIRED: retired ID is active again" in markdown
     assert "STALE: disposition required" in markdown
     assert "Surface inventory is incomplete" in markdown
@@ -709,12 +749,25 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
     assert "inspect run (aliases: r)" in markdown
     assert "Run an operation." in markdown
     assert "CHANGE" in markdown
+    assert "Confirmation" in markdown and "inspect <RESOURCE>" in markdown
+    assert "audit-tool inspect [options] RESOURCE" in markdown
+    assert "run an operation [mutating]" in markdown
+    assert "Parser callback" in markdown and "Opaque fields" in markdown
+    assert "Empty argv: dispatches the single command." in markdown
+    assert "single-command; empty argv dispatches" in markdown
     assert "parser settings" in markdown.lower()
     assert "<entrypoint>: allow_abbrev=no," in markdown
     assert "VALUE" in markdown and '"nargs": null' not in markdown
     assert "--flag" in markdown and '"nargs": 0' in markdown
     assert '"nargs": 2' in markdown
     assert "parser inspect" in markdown
+    assert "argparse._StoreAction" in markdown
+    assert "argparse._StoreTrueAction" in markdown
+    assert '"callable": "pathlib.Path"' in markdown
+    assert '"callable": "builtins.int"' in markdown
+    assert '"exclusive_required": true' in markdown
+    assert '"hidden": true' in markdown
+    assert "choose a source" in markdown and "resource to inspect" in markdown
     assert '"nargs": 2' in markdown
     assert "refuse" in markdown
     assert "route removed" in markdown
@@ -736,6 +789,47 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
     assert "Surface inventory is incomplete" in render_cli_surface_markdown(
         missing_completeness, catalog
     )
+
+
+def test_surface_markdown_lists_delegated_group_children():
+    group_id = "route:entrypoint:audit-tool/plugins"
+    child_id = f"{group_id}/inspect"
+    surface = {
+        "schema_version": 3,
+        "entrypoint": {
+            "command": "audit-tool",
+            "prog": "audit-tool",
+            "builtins": ["help", "help <verb>", "version", "--help", "--version"],
+        },
+        "routes": [
+            {
+                "id": group_id,
+                "path": ["plugins"],
+                "kind": "delegate-group",
+                "subcommands": [child_id],
+                "actions": [],
+                "syntax_complete": True,
+            },
+            {
+                "id": child_id,
+                "path": ["plugins", "inspect"],
+                "kind": "invocation",
+                "subcommands": [],
+                "actions": [],
+                "syntax_complete": True,
+            },
+        ],
+        "candidates": [],
+        "syntax_complete": True,
+    }
+
+    markdown = render_cli_surface_markdown(
+        surface, ReviewCatalog("audit-tool", 8, (), ())
+    )
+    group_row = next(
+        line for line in markdown.splitlines() if line.startswith(f"| {group_id} |")
+    )
+    assert f"delegated: {child_id}" in group_row
 
 
 def test_case_status_and_template_cover_signature_and_retirement_lifecycle(tmp_path):
@@ -920,6 +1014,9 @@ def test_review_lexer_handles_negative_values_and_missing_option_values_at_end()
                 "allow_abbrev": False,
                 "prefix_chars": "-",
                 "fromfile_prefix_chars": "",
+                "negative_number_matcher": {"pattern": r"-\.?\d", "flags": 32},
+                "has_negative_number_optionals": False,
+                "negative_number_matcher_custom": False,
             }
         ],
         "actions": [
@@ -955,6 +1052,19 @@ def test_review_lexer_handles_negative_values_and_missing_option_values_at_end()
         "syntax_complete": True,
     }
     assert _review_findings(surface, catalog) == []
+
+    negative_option = {
+        **route["parser_settings"][0],
+        "has_negative_number_optionals": True,
+    }
+    negative_option_surface = {
+        **surface,
+        "routes": [{**route, "parser_settings": [negative_option]}],
+    }
+    assert any(
+        "omits a value for --count" in finding
+        for finding in _review_findings(negative_option_surface, catalog)
+    )
 
     missing_value = ReviewCatalog(
         "audit-tool",
@@ -2528,9 +2638,68 @@ def test_sync_is_idempotent_preserves_outside_bytes_and_never_rewrites_catalog(t
     assert synced.endswith(suffix)
     assert b"\r\nAfter\r\n" in synced
     assert review.read_bytes() == original_review
-    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 2
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 3
     assert SURFACE_START_MARKER.encode() in synced
     assert SURFACE_END_MARKER.encode() in synced
+
+
+@pytest.mark.parametrize(
+    ("collision", "expected_roles"),
+    (
+        ("review-manifest", "manifest and review catalog"),
+        ("review-spec", "specification and review catalog"),
+        ("manifest-spec", "specification and manifest"),
+    ),
+)
+def test_sync_and_check_reject_colliding_paths_without_writing(
+    tmp_path, collision, expected_roles
+):
+    app, _surface, review, manifest, spec = _make_files(tmp_path, active=False)
+    original_files = {
+        path: path.read_bytes() for path in (review, manifest, spec)
+    }
+    if collision == "review-manifest":
+        manifest = review
+    elif collision == "review-spec":
+        spec = review
+    else:
+        spec = manifest
+
+    for operation in (sync_cli_surface, check_cli_surface):
+        with pytest.raises(SurfaceSpecError, match="must resolve to distinct files") as exc:
+            operation(
+                app,
+                review_path=review,
+                manifest_path=manifest,
+                spec_path=spec,
+            )
+        assert expected_roles in str(exc.value)
+
+    assert {path: path.read_bytes() for path in original_files} == original_files
+
+
+@pytest.mark.parametrize("alias_kind", ("symlink", "hardlink"))
+def test_sync_rejects_file_alias_of_review_catalog(tmp_path, alias_kind):
+    app, _surface, review, _manifest, spec = _make_files(tmp_path, active=False)
+    manifest_alias = tmp_path / "review-alias.toml"
+    if alias_kind == "symlink":
+        manifest_alias.symlink_to(review)
+    else:
+        manifest_alias.hardlink_to(review)
+    original_review = review.read_bytes()
+    original_spec = spec.read_bytes()
+
+    with pytest.raises(SurfaceSpecError, match="manifest and review catalog"):
+        sync_cli_surface(
+            app,
+            review_path=review,
+            manifest_path=manifest_alias,
+            spec_path=spec,
+        )
+
+    assert review.read_bytes() == original_review
+    assert spec.read_bytes() == original_spec
+    assert manifest_alias.is_symlink() is (alias_kind == "symlink")
 
 
 def test_sync_template_and_markdown_make_candidates_reviewable(tmp_path):

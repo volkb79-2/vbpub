@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -27,12 +28,13 @@ from .parser import (
     _common_option_specs,
 )
 
-SURFACE_SCHEMA_VERSION = 2
+SURFACE_SCHEMA_VERSION = 3
 DEFAULT_MAX_CANDIDATES = 512
 _LIBRARY_OWNED_COMMON_OPTIONS = {
     "--help", "--version", "--log-level", "--quiet", "--debug", "--verbose",
     "--color", "--no-color", "--progress",
 }
+_DEFAULT_NEGATIVE_NUMBER_MATCHER = argparse.ArgumentParser(add_help=False)._negative_number_matcher
 
 
 class SurfaceError(ValueError):
@@ -418,12 +420,18 @@ def _surface_action(
         if value_type is not None
         else None
     )
+    action_label = f"{type(action).__module__}.{type(action).__qualname__}"
+    library_builtin_action = type(action) in {_HelpAction, _VersionAction}
+    if type(action).__module__ != "argparse" and not library_builtin_action:
+        opaque.append(f"{surface_id}.action")
+    const = _normalize(action.const, path=f"{surface_id}.const", opaque=opaque)
     nargs = action.nargs
     minimum_values = _minimum_values(nargs)
     required = minimum_values > 0
     return {
         "kind": "argument",
         "id": surface_id,
+        "action": action_label,
         "name": action.dest,
         "metavar": metavar,
         "nargs": _normalize(nargs, path=f"{surface_id}.nargs", opaque=opaque),
@@ -431,9 +439,20 @@ def _surface_action(
         "required": required,
         "choices": choices,
         "default": default,
+        "const": const,
         "type": type_data,
         "description": spec.description if spec else action.help,
         "scope": "positional",
+        "hidden": action.help == argparse.SUPPRESS,
+        "help_group": group_titles.get(id(action), "ARGUMENTS"),
+        "parser_kwargs": (
+            {
+                key: _normalize(value, path=f"{surface_id}.{key}", opaque=opaque)
+                for key, value in sorted(spec.parser_kwargs.items())
+            }
+            if spec is not None
+            else {}
+        ),
         "parser_path": list(parser_path),
         "before_nested_subcommand": len(parser_path) < len(route_path),
     }
@@ -467,6 +486,35 @@ class _ParserActionContext:
     argument_specs: tuple[ArgumentSpec, ...]
     group_titles: Mapping[int, str]
     mutex_groups: Mapping[int, tuple[str, bool]]
+    negative_number_matcher: Mapping[str, Any] | None = None
+    has_negative_number_optionals: bool = False
+    negative_number_matcher_custom: bool = False
+
+
+def _negative_number_settings(
+    parser: argparse.ArgumentParser,
+) -> tuple[dict[str, Any] | None, bool, bool]:
+    """Capture argparse's runtime negative-number boundary for one parser."""
+
+    matcher = getattr(parser, "_negative_number_matcher", None)
+    pattern = getattr(matcher, "pattern", None)
+    flags = getattr(matcher, "flags", None)
+    if (
+        not isinstance(matcher, re.Pattern)
+        or not isinstance(pattern, str)
+        or not isinstance(flags, int)
+    ):
+        return None, bool(getattr(parser, "_has_negative_number_optionals", False)), True
+    rule = {"pattern": pattern, "flags": flags}
+    default_rule = {
+        "pattern": _DEFAULT_NEGATIVE_NUMBER_MATCHER.pattern,
+        "flags": _DEFAULT_NEGATIVE_NUMBER_MATCHER.flags,
+    }
+    return (
+        rule,
+        bool(getattr(parser, "_has_negative_number_optionals", False)),
+        rule != default_rule,
+    )
 
 
 def _route_id(entrypoint_id: str, spec: VerbSpec | None, path: Sequence[str]) -> str:
@@ -475,14 +523,32 @@ def _route_id(entrypoint_id: str, spec: VerbSpec | None, path: Sequence[str]) ->
     return f"route:{entrypoint_id}/" + "/".join(path) if path else f"route:{entrypoint_id}"
 
 
+def _verb_metadata(spec: VerbSpec) -> dict[str, Any]:
+    """Return the public, serializable contract carried by a registered verb."""
+
+    return {
+        "id": spec.surface_id,
+        "name": spec.name,
+        "description": spec.description,
+        "summary": spec.summary,
+        "group": spec.group,
+        "behavior": list(spec.behavior_labels),
+        "confirmation": spec.confirmation_enabled,
+        "synopsis": spec.synopsis,
+    }
+
+
 def _describe_parser(
     parser: argparse.ArgumentParser,
     *,
     entrypoint_id: str,
     path: tuple[str, ...],
     verb_specs: tuple[VerbSpec, ...],
+    route_spec: VerbSpec | None = None,
+    delegated_specs: tuple[VerbSpec, ...] = (),
     global_options: Sequence[OptionSpec],
     single_command: bool,
+    no_args_action: bool = False,
     incomplete: list[str],
     inherited_contexts: tuple[_ParserActionContext, ...] = (),
     inherited_parser_settings: tuple[Mapping[str, Any], ...] = (),
@@ -490,7 +556,7 @@ def _describe_parser(
     child_aliases: tuple[str, ...] = (),
     child_help: str | None = None,
 ) -> list[dict[str, Any]]:
-    selected_spec = verb_specs[0] if verb_specs else None
+    selected_spec = route_spec or (verb_specs[0] if verb_specs else None)
     route_id = _route_id(
         entrypoint_id,
         selected_spec if not nested_route else None,
@@ -524,6 +590,11 @@ def _describe_parser(
             continue
         local_actions.append(action)
 
+    (
+        negative_number_matcher,
+        has_negative_number_optionals,
+        negative_number_matcher_custom,
+    ) = _negative_number_settings(parser)
     context = _ParserActionContext(
         parser_path=path,
         allow_abbrev=bool(parser.allow_abbrev),
@@ -534,6 +605,9 @@ def _describe_parser(
         argument_specs=argument_specs,
         group_titles=group_titles,
         mutex_groups=mutex_groups,
+        negative_number_matcher=negative_number_matcher,
+        has_negative_number_optionals=has_negative_number_optionals,
+        negative_number_matcher_custom=negative_number_matcher_custom,
     )
     contexts = (*inherited_contexts, context)
     parser_settings = (
@@ -544,6 +618,13 @@ def _describe_parser(
                 "allow_abbrev": action_context.allow_abbrev,
                 "prefix_chars": action_context.prefix_chars,
                 "fromfile_prefix_chars": action_context.fromfile_prefix_chars,
+                "negative_number_matcher": action_context.negative_number_matcher,
+                "has_negative_number_optionals": (
+                    action_context.has_negative_number_optionals
+                ),
+                "negative_number_matcher_custom": (
+                    action_context.negative_number_matcher_custom
+                ),
             }
             for action_context in contexts
         ),
@@ -562,6 +643,16 @@ def _describe_parser(
                 f"{route_id}: parser {setting_path} uses unsupported "
                 f"argument-file expansion via "
                 f"fromfile_prefix_chars={fromfile_prefix_chars!r}"
+            )
+        if setting.get("negative_number_matcher_custom"):
+            local_incomplete.append(
+                f"{route_id}: parser {setting_path} customizes argparse's "
+                "negative-number matcher"
+            )
+        elif not isinstance(setting.get("negative_number_matcher"), Mapping):
+            local_incomplete.append(
+                f"{route_id}: parser {setting_path} has an uninspectable "
+                "negative-number matcher"
             )
     for action_context in contexts:
         for action in action_context.actions:
@@ -635,12 +726,22 @@ def _describe_parser(
         "id": route_id,
         "path": list(path),
         "kind": "route-prefix" if subcommands_required else "invocation",
+        "single_command": single_command,
+        "no_args_action": no_args_action,
         "description": (
-            selected_spec.description
-            if selected_spec and not nested_route
-            else child_help or parser.description
+            parser.description
+            if nested_route
+            else selected_spec.description
+            if selected_spec
+            else parser.description
         ),
-        "summary": selected_spec.summary if selected_spec else parser.description,
+        "summary": (
+            child_help or parser.description
+            if nested_route
+            else selected_spec.summary
+            if selected_spec
+            else parser.description
+        ),
         "group": selected_spec.group if selected_spec else None,
         "behavior": list(selected_spec.behavior_labels) if selected_spec else [],
         "confirmation": selected_spec.confirmation_enabled if selected_spec else False,
@@ -655,13 +756,8 @@ def _describe_parser(
         "opaque_fields": opaque,
         "syntax_complete": not local_incomplete,
         "delegated_metadata": [
-            {
-                "id": spec.surface_id,
-                "name": spec.name,
-                "description": spec.description,
-                "group": spec.group,
-            }
-            for spec in verb_specs[1:]
+            _verb_metadata(spec)
+            for spec in (*delegated_specs, *verb_specs[1:])
         ],
         "subcommands": [],
         "subcommands_required": subcommands_required,
@@ -676,8 +772,11 @@ def _describe_parser(
             entrypoint_id=entrypoint_id,
             path=child_path,
             verb_specs=verb_specs,
+            route_spec=selected_spec,
+            delegated_specs=delegated_specs,
             global_options=global_options,
             single_command=single_command,
+            no_args_action=no_args_action,
             incomplete=incomplete,
             inherited_contexts=contexts,
             inherited_parser_settings=inherited_parser_settings,
@@ -702,50 +801,106 @@ def _walk_registered_cli(
     single_command_route: str | None = None,
     incomplete: list[str],
 ) -> list[dict[str, Any]]:
-    globals_here = (*inherited_globals, *app.global_options)
+    globals_here = (*app.global_options, *inherited_globals)
+    local_incomplete: list[str] = []
+    if inherited_globals:
+        registered_global_flags = set(app.parser._option_string_actions)
+        missing_inherited = sorted(
+            flag
+            for option in inherited_globals
+            for flag in option.flags
+            if flag not in registered_global_flags
+        )
+        if missing_inherited:
+            reason = (
+                f"{app.parser.prog}: delegated parser does not register inherited "
+                "global option(s): " + ", ".join(missing_inherited)
+            )
+            local_incomplete.append(reason)
+            incomplete.append(reason)
     if app.single_command:
         if not app.registered_verbs:
-            incomplete.append(f"{app.parser.prog}: registry declarations were not retained")
-            specs = inherited_specs
+            reason = f"{app.parser.prog}: registry declarations were not retained"
+            local_incomplete.append(reason)
+            incomplete.append(reason)
+            action_specs: tuple[VerbSpec, ...] = ()
+            route_spec = inherited_specs[0] if inherited_specs else None
+            delegated_specs: tuple[VerbSpec, ...] = ()
         else:
-            specs = (*inherited_specs, app.registered_verbs[0])
+            action_specs = (app.registered_verbs[0],)
+            route_spec = inherited_specs[0] if inherited_specs else app.registered_verbs[0]
+            delegated_specs = (
+                (*inherited_specs[1:], app.registered_verbs[0])
+                if inherited_specs
+                else ()
+            )
+        if inherited_specs and any(
+            spec.options or spec.arguments or spec.configure
+            for spec in inherited_specs
+        ):
+            reason = (
+                f"{app.parser.prog}: delegated single-command wrapper declares parser "
+                "syntax that is not applied to the delegated parser"
+            )
+            local_incomplete.append(reason)
+            incomplete.append(reason)
         path = path_prefix
         if single_command_route is None:
-            route_id = _route_id(entrypoint_id, specs[0] if specs else None, path)
+            route_id = _route_id(entrypoint_id, route_spec, path)
         else:
             route_id = single_command_route
         records = _describe_parser(
             app.parser,
             entrypoint_id=entrypoint_id,
             path=path,
-            verb_specs=specs,
+            verb_specs=action_specs,
+            route_spec=route_spec,
+            delegated_specs=delegated_specs,
             global_options=globals_here,
             single_command=True,
+            no_args_action=app.no_args_action,
             incomplete=incomplete,
             inherited_parser_settings=inherited_parser_settings,
         )
+        if local_incomplete:
+            for record in records:
+                record["syntax_complete"] = False
         records[0]["id"] = route_id
         return records
 
     if not app.registered_verbs:
-        incomplete.append(f"{app.parser.prog}: registry declarations were not retained")
-        return _describe_parser(
+        reason = f"{app.parser.prog}: registry declarations were not retained"
+        local_incomplete.append(reason)
+        incomplete.append(reason)
+        records = _describe_parser(
             app.parser,
             entrypoint_id=entrypoint_id,
             path=path_prefix,
             verb_specs=inherited_specs,
             global_options=globals_here,
             single_command=False,
+            no_args_action=app.no_args_action,
             incomplete=incomplete,
             inherited_parser_settings=inherited_parser_settings,
         )
+        for record in records:
+            record["syntax_complete"] = False
+        return records
 
     records: list[dict[str, Any]] = []
+    (
+        root_negative_number_matcher,
+        root_has_negative_number_optionals,
+        root_negative_number_matcher_custom,
+    ) = _negative_number_settings(app.parser)
     root_parser_settings = {
         "parser_path": list(path_prefix),
         "allow_abbrev": bool(app.parser.allow_abbrev),
         "prefix_chars": str(app.parser.prefix_chars),
         "fromfile_prefix_chars": app.parser.fromfile_prefix_chars,
+        "negative_number_matcher": root_negative_number_matcher,
+        "has_negative_number_optionals": root_has_negative_number_optionals,
+        "negative_number_matcher_custom": root_negative_number_matcher_custom,
     }
     parser_settings_for_children = (*inherited_parser_settings, root_parser_settings)
     for spec in app.registered_verbs:
@@ -771,6 +926,8 @@ def _walk_registered_cli(
                     "id": route_id,
                     "path": list(path),
                     "kind": "delegate-group",
+                    "single_command": delegate.single_command,
+                    "no_args_action": delegate.no_args_action,
                     "description": spec.description,
                     "summary": spec.summary,
                     "group": spec.group,
@@ -786,10 +943,13 @@ def _walk_registered_cli(
                     "delegated_metadata": [],
                     "subcommands": [],
                 }
-                if spec.configure is not None:
-                    incomplete.append(
-                        f"{route_id}: delegate-group parser callback syntax is not represented"
+                if spec.options or spec.arguments or spec.configure is not None:
+                    reason = (
+                        f"{route_id}: delegated wrapper parser syntax is not applied to "
+                        "the delegated CLI"
                     )
+                    local_incomplete.append(reason)
+                    incomplete.append(reason)
                 delegated_records = _walk_registered_cli(
                     delegate,
                     entrypoint_id=entrypoint_id,
@@ -805,7 +965,12 @@ def _walk_registered_cli(
                     if len(child.get("path", ())) == len(path) + 1
                 ]
                 group_record["syntax_complete"] = (
-                    spec.configure is None
+                    not (
+                        local_incomplete
+                        or spec.options
+                        or spec.arguments
+                        or spec.configure is not None
+                    )
                     and all(
                         child["syntax_complete"]
                         for child in delegated_records
@@ -826,10 +991,14 @@ def _walk_registered_cli(
                 verb_specs=(spec,),
                 global_options=globals_here,
                 single_command=False,
+                no_args_action=app.no_args_action,
                 incomplete=incomplete,
                 inherited_parser_settings=parser_settings_for_children,
             )
         )
+    if local_incomplete:
+        for record in records:
+            record["syntax_complete"] = False
     return records
 
 
@@ -909,12 +1078,28 @@ def _generate_candidates(
             "path": route.get("path", []),
             "aliases": route.get("aliases", []),
             "kind": route.get("kind"),
+            "single_command": route.get("single_command", False),
+            "no_args_action": route.get("no_args_action", False),
             "synopsis_override": route.get("synopsis_override"),
             "usage_override": route.get("usage_override"),
             "behavior": route.get("behavior", []),
             "confirmation": route["confirmation"],
             "group": route.get("group"),
             "parser_settings": route.get("parser_settings", []),
+            "delegated_contract": [
+                {
+                    key: metadata.get(key)
+                    for key in (
+                        "id",
+                        "name",
+                        "group",
+                        "behavior",
+                        "confirmation",
+                        "synopsis",
+                    )
+                }
+                for metadata in route.get("delegated_metadata", [])
+            ],
         }
         member_shapes = []
         for member_id in sorted(set(members)):
@@ -947,6 +1132,7 @@ def _generate_candidates(
 
     for route in routes:
         route_id = str(route["id"])
+        is_route_prefix = route.get("kind") in {"route-prefix", "delegate-group"}
         actions = route.get("actions", [])
         option_actions = [
             action
@@ -963,7 +1149,7 @@ def _generate_candidates(
             group_id = action.get("exclusive_group")
             if group_id is not None:
                 groups.setdefault(str(group_id), []).append(action)
-        if route.get("kind") != "route-prefix":
+        if not is_route_prefix:
             for alias in route.get("aliases", []):
                 add_for_route(
                     route,
@@ -988,7 +1174,7 @@ def _generate_candidates(
             if members[0].get("exclusive_required")
             for action in members
         ]
-        if route.get("kind") != "route-prefix":
+        if not is_route_prefix:
             add_for_route(
                 route,
                 case_id=_candidate_id(route_id, "minimum"),
@@ -1014,7 +1200,7 @@ def _generate_candidates(
                     },
                     },
             )
-        if route.get("kind") == "route-prefix":
+        if is_route_prefix:
             # Options and arguments declared at this parser depth also appear
             # in each executable descendant route, where they can be tested
             # with the required nested path present.
@@ -1180,6 +1366,10 @@ def export_cli_surface(
         interaction_groups,
         max_candidates=max_candidates,
     )
+    builtins = ["help"]
+    if not app.single_command:
+        builtins.append("help <verb>")
+    builtins.extend(("version", "--help", "--version"))
     return {
         "schema_version": SURFACE_SCHEMA_VERSION,
         "entrypoint": {
@@ -1193,7 +1383,7 @@ def export_cli_surface(
             "allow_abbrev": bool(app.parser.allow_abbrev),
             "prefix_chars": app.parser.prefix_chars,
             "fromfile_prefix_chars": app.parser.fromfile_prefix_chars,
-            "builtins": ["help", "help <verb>", "version", "--help", "--version"],
+            "builtins": builtins,
         },
         "routes": routes,
         "candidates": candidates,

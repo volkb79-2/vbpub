@@ -114,8 +114,10 @@ handler map, exposes `--yes` only for the mutating command, scopes standard
 logging to the selected logger, and validates that command/help registration
 cannot drift. `OptionSpec` carries argparse's own `action`, `choices`, `type`,
 `nargs`, and related options in `parser_kwargs`; `ArgumentSpec` does the same
-for positionals. Set `OptionSpec.hidden=True` for accepted internal plumbing
-that must stay out of operator help and generated reference tables. A verb may
+for positionals. Set `OptionSpec.hidden=True` to omit internal plumbing from
+operator help. The generated semantic surface still inventories accepted
+hidden options and labels them as hidden, so their behavior remains reviewable.
+A verb may
 set `confirmation_required=False` when it mutates state without taking a
 generic `--yes` acknowledgement; it still appears as mutating in the catalog.
 The default `None` keeps the existing rule that mutating verbs require
@@ -302,7 +304,14 @@ follow-ups.
 ## Keep the canonical CLI spec in sync
 
 `RegisteredCli` can export its built parser tree as stable JSON and generate a
-bounded semantic-review checklist. `cli-extended` also loads a product-owned
+bounded semantic-review checklist. Its generated Markdown shows each route's
+invocation mode and empty-argument behavior, behavior and confirmation policy,
+parser settings (including how negative-number tokens are parsed) and callbacks, delegated
+metadata, and opaque fields. Its argument and option rows include descriptions,
+grammar shape, argparse action and converter, choices, defaults, const values,
+exclusive-group requirements, scope, placement, visibility, and help group.
+Single-command entrypoints list only the built-in help forms they actually
+accept. `cli-extended` also loads a product-owned
 TOML decision catalog, updates a marked Markdown section in the product's
 canonical CLI spec, reports signature/stale-case changes, and supplies a pytest
 collection assertion for exact node IDs and `cli_case` markers. Consumers keep
@@ -344,6 +353,8 @@ spec region. Candidates are review prompts, not guessed executable commands or
 predicted outcomes. The shared [consumer workflow](docs/CONSUMERS.md#adopt-the-generator)
 shows the catalog, pytest marker, and adoption lifecycle; the [design guide](docs/DESIGN-GUIDE.md#keep-a-generated-surface-and-a-human-semantic-record)
 explains why the Python registry remains the grammar source.
+Keep the review catalog, manifest, and spec at distinct file paths; sync and
+check reject equal paths and symlink or hard-link aliases.
 Each generated file is replaced atomically; a stop between the manifest and
 spec updates leaves a detectable mismatch for `check`, not a half-written file.
 

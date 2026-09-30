@@ -263,12 +263,12 @@ def test_markdown_rows_preserve_empty_fallbacks_shapes_and_review_dispositions()
     assert "root help text" in text
     assert "TOOLS" in text
     assert "<entrypoint>: allow_abbrev=no" in text
-    assert "option:root/--plain | option | --plain | VALUE" in text
-    assert "; parser <entrypoint>" in text
+    assert '| option:root/--plain | option | --plain |  | {"metavar": "VALUE"}' in text
+    assert '"parser_path": []' in text
     assert '{"metavar": "ITEM", "nargs": 2}' in text
     assert '{"metavar": "RESOURCE", "nargs": 2}' in text
-    assert "; before_verb" in text
-    assert "; parser run" in text
+    assert '"before_verb": true' in text
+    assert '"parser_path": ["run"]' in text
     assert "雪" in text
     assert "refuse" in text
     assert "workflow removed" in text
@@ -358,6 +358,7 @@ def test_surface_export_records_option_and_argument_edges_and_candidate_boundari
         nested = parser.add_subparsers(dest="operation", required=True)
         child = nested.add_parser("child", description="child parser description")
         child.add_argument("leaf")
+        child.add_argument("custom", action=LocallyNamedAction)
 
     registry = CliRegistry(
         identity,
@@ -403,6 +404,14 @@ def test_surface_export_records_option_and_argument_edges_and_candidate_boundari
     assert parent_actions["--defaulted"]["exclusive_required"] is False
     assert child["description"] == "child parser description"
     assert child["actions"][-1]["before_nested_subcommand"] is False
+    custom_positional = next(
+        action
+        for action in child["actions"]
+        if action.get("name") == "custom"
+    )
+    assert custom_positional["action"].endswith(".LocallyNamedAction")
+    assert custom_positional["hidden"] is False
+    assert any(field.endswith("/custom.action") for field in child["opaque_fields"])
     root_option = next(
         action for action in child["actions"] if action.get("flags") == ["--root"]
     )

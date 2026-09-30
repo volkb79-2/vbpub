@@ -262,11 +262,29 @@ it carries parent actions onto the child route and records which parser level
 accepts each argument or option. A required-subcommand parent is listed as a
 route prefix; semantic cases belong to runnable descendants. Multiple nested
 subparser groups at one parser level make the inventory incomplete so `check`
-cannot certify an ambiguous route. The manifest reports spellings,
+cannot certify an ambiguous route. Required-subcommand parents and delegated
+command groups are route prefixes; checklist cases belong to their runnable
+child routes, which remain listed under the parent in the generated table. The
+manifest reports spellings,
 aliases, choices, defaults, requiredness, argument shape, exclusive groups,
-scope, placement, synopsis, parser-scoped `allow_abbrev`, and callback-added
-actions. A change to abbreviation policy changes case signatures. The checker
-uses the policy for the parser that owns each option, including when a callback
+scope, placement, synopsis, parser-scoped `allow_abbrev`, callback-added
+actions, and whether empty argv shows help or dispatches a single command.
+It also records argparse's negative-number matcher and whether each parser has
+negative-number-like options, so the checker classifies signed numeric values
+using the built parser's rules; custom or uninspectable matchers make the
+surface incomplete. Invocation mode and parser token rules participate in
+candidate signatures. Its generated
+Markdown renders each route's behavior and confirmation
+policy, synopsis/usage overrides, delegated metadata, parser-callback status,
+and opaque fields. Argument and option rows show descriptions, grammar shape,
+argparse action and converter, const values, requiredness, choices and defaults,
+exclusive-group requirements, scope and parser placement, and whether an
+option is hidden from operator help. A change to abbreviation policy changes
+case signatures. For a delegated single-command CLI, the public wrapper and
+delegated command's behavior/confirmation metadata are both shown and signed;
+wrapper-local parser declarations and inherited global options missing from
+the delegated parser make the surface incomplete. The checker uses the policy
+for the parser that owns each option, including when a callback
 configures a nested parser. Custom `prefix_chars` and argparse argument-file
 expansion (`fromfile_prefix_chars`) make the surface incomplete because the
 structural checker does not model their token syntax. A custom value converter
@@ -311,6 +329,8 @@ invocation and prove the expected status, output, validation boundary, and
 effects.
 Each generated file is replaced atomically; if sync stops between the manifest
 and spec replacements, `check` reports their mismatch.
+Keep the review catalog, manifest, and spec as distinct files; sync and check
+reject equal paths and symlink or hard-link aliases before writing.
 
 Mark the behavior tests and register the shared assertion once at pytest
 collection:

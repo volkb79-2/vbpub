@@ -213,6 +213,29 @@ library replaces only a clearly marked generated region containing the live
 surface and decision/test table. The adjacent JSON manifest makes parser
 changes easy to diff mechanically. The catalog remains human-edited, so reruns
 cannot erase rationale, expected effects, or test links.
+Sync and check also require the catalog, manifest, and spec to resolve to
+distinct files, preventing a destination typo from overwriting the decision
+source.
+
+The Markdown view must expose the parser facts a reviewer needs without
+opening implementation code: route invocation mode and empty-argument result,
+mutation and confirmation policy, parser settings, delegated command metadata,
+callback inventory and opaque fields;
+for each argument and option, its description, token shape, argparse action,
+converter, const, choices, defaults, exclusive-group rule, placement, and
+hidden status. This keeps the canonical spec useful to an operator reviewing
+the whole call surface while the JSON manifest remains the stable input for
+diffs and tools.
+
+Whether an empty argument vector shows help or dispatches a single command is
+part of the call contract. It can change while the parser actions stay the
+same, so the surface shows it and includes it in review signatures.
+
+Argparse's negative-number rule also affects whether a token such as `-1` is
+an option value or a positional argument. The exporter records that rule and
+the parser's negative-number-like options, and the checker uses those live
+values. A customized or uninspectable rule makes the inventory incomplete
+instead of guessing from the token's spelling.
 
 The candidate generator is deliberately bounded and symbolic. It covers
 minimum syntax, positional shapes and choices, option aliases and choices,

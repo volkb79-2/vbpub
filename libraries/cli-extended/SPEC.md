@@ -692,18 +692,46 @@ uninspectable syntax.
 Each output file MUST be replaced atomically so interruption cannot leave a
 partially-written manifest or spec. The two replacements are independently
 atomic; check mode detects a stop that leaves the pair at different revisions.
+The review catalog, manifest, and canonical spec paths MUST resolve to three
+distinct files. Sync and check MUST refuse equal paths and symlink or hard-link
+aliases before writing, so a destination typo cannot overwrite the human-owned
+catalog.
 
-The machine surface includes route paths and parser subcommand aliases,
+The machine surface includes entrypoint and route invocation mode, including
+whether an empty argument vector shows help or dispatches a single command;
+route paths and parser subcommand aliases,
 delegated paths, positional and option IDs/shapes, option aliases, defaults,
 choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
-labels, parser-scoped `allow_abbrev`, and actions added by parser callbacks.
-The JSON surface schema version is `2`; each route records `parser_settings`
-along its path. Each setting contains `parser_path`, `allow_abbrev`,
-`prefix_chars`, and `fromfile_prefix_chars`. Changing abbreviation policy
-changes relevant candidate signatures. Registered `surface_id` values
+and confirmation policy, parser-scoped `allow_abbrev`, argparse's
+negative-number matcher and whether that parser registers negative-number-like
+options, and actions added by parser callbacks. The JSON surface schema version is `3`; each route records
+`single_command` and `no_args_action`, and those values participate in
+candidate signatures so a change to empty-invocation behavior requires review.
+Each route also records
+`parser_settings` along its path. Each setting contains `parser_path`,
+`allow_abbrev`, `prefix_chars`, `fromfile_prefix_chars`, the
+`negative_number_matcher` pattern and flags, and
+`has_negative_number_optionals`. These parser token rules participate in
+candidate signatures; a custom or uninspectable negative-number matcher makes
+the surface incomplete. Registered `surface_id` values
 preserve identity through a rename; otherwise default IDs are derived from the
 route and the declared verb/argument/option spelling. Route IDs are unique;
-action IDs are unique within their route. Help wording is not identity.
+action IDs are unique within their route. Single-command entrypoints MUST NOT
+claim the `help <verb>` builtin. Help wording is not identity.
+
+The generated Markdown route table MUST show the route's invocation mode and
+empty-argv result, mutation/behavior labels, confirmation availability,
+synopsis and usage overrides, delegated
+metadata, parser settings including negative-number token handling, whether a
+parser callback ran, opaque fields, and
+whether syntax is complete. Its argument and option table MUST show each
+description, token shape, argparse action and converter, const, requiredness,
+choices, declared and effective defaults, exclusive-group requiredness,
+scope and parser placement, and hidden/help-group status. `hidden` options
+remain present in the semantic surface, labelled hidden; hiding an option
+removes it from operator help, not from the audit. Callable converters and
+custom actions MUST be visible by stable import label in the generated table
+and manifest.
 
 Nested parser routes carry forward every action from their parent parser that
 is accepted before the nested command word. Each action records its parser
@@ -711,8 +739,16 @@ path and whether it must appear before a nested subcommand; options belonging
 to the nested parser are recorded at that deeper path. A parser that requires
 a nested command is a route prefix, not a runnable invocation candidate. Its
 executable child routes contain the inherited parent arguments and options.
+Delegated command groups are also route prefixes: the generated checklist
+belongs to their child routes, not to the grouping word by itself. Their child
+paths MUST appear in the human-readable route table.
 Multiple nested subparser groups at one parser depth are marked incomplete
 until the exporter can represent their invocation order without ambiguity.
+Delegated single-command routes retain the public wrapper metadata and the
+delegated command's behavior/confirmation metadata separately; both affect
+candidate signatures. Wrapper-local arguments/options/callback syntax that
+the delegate runtime does not apply, and inherited global options absent from
+the delegated parser, MUST mark the surface incomplete.
 
 The generated checklist is a bounded set of review dimensions, not a set of
 invented executable examples or inferred outcomes. It covers minimum valid
@@ -774,8 +810,9 @@ the check MUST still recognize that parser's declared options.
 
 Candidate signatures cover the relevant route and parser shape, including
 aliases, defaults, choices, requiredness, action/nargs, scope/placement,
-exclusive relationships, behavior labels, and synopsis overrides. Descriptions
-and help wording are excluded so copy edits do not force semantic reapproval.
+exclusive relationships, behavior and confirmation policy, delegated command
+identity/group/behavior/confirmation metadata, and synopsis overrides.
+Descriptions and help wording are excluded so copy edits do not force semantic reapproval.
 Changed relevant shape requires a new decision. Removed decisions remain in
 the generated specification until a person retires them; the generator never
 deletes rationale, effects, or test references.
