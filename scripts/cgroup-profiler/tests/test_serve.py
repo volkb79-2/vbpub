@@ -1948,6 +1948,101 @@ def test_real_socket_round_trip_version_and_bad_request(tmp_path):
         assert not os.path.exists(socket_path)
 
 
+def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
+    socket_path = str(tmp_path / "ctl.sock")
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+        accept_timeout=0.05,
+    )
+    thread = threading.Thread(target=server._accept_loop, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while not os.path.exists(socket_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert os.path.exists(socket_path)
+
+        malformed = [
+            [],
+            None,
+            {"verb": []},
+            {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "token": 7, "damon": "off", "meta": {},
+            },
+            {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "damon": "", "meta": {},
+            },
+            {
+                "verb": "start", "target": f"containerid:{SIMPLE_CONTAINER_ID}",
+                "scope": "container", "damon": None, "meta": {},
+            },
+        ]
+        for request in malformed:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2.0)
+                client.connect(socket_path)
+                client.sendall((json.dumps(request) + "\n").encode("utf-8"))
+                response = json.loads(client.recv(65536).decode("utf-8"))
+            assert response["ok"] is False
+            assert response["contract"] == 1
+            assert response["error"]["code"] == "bad-argument"
+
+            # A malformed peer must not consume the accept loop.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2.0)
+                client.connect(socket_path)
+                client.sendall(b'{"verb":"version"}\n')
+                version = json.loads(client.recv(65536).decode("utf-8"))
+            assert version["ok"] is True
+            assert version["contract"] == 1
+    finally:
+        server.request_shutdown()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    ("daemon_default", "damon_option"),
+    [("off", []), ("on", ["--damon", "off"])],
+    ids=["omitted-uses-daemon-default", "explicit-choice-overrides-default"],
+)
+def test_ctl_start_optional_damon_round_trips_over_real_socket(
+    simple_server, tmp_path, capsys, daemon_default, damon_option,
+):
+    socket_path = str(tmp_path / "ctl.sock")
+    simple_server.socket_path = socket_path
+    simple_server.accept_timeout = 0.05
+    simple_server.damon_default = daemon_default
+    argv = [
+        "ctl", "start", "--socket", socket_path,
+        "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
+        "--scope", "container", *damon_option, "--meta", "{}",
+    ]
+    thread = threading.Thread(target=simple_server._accept_loop, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0  # suite failsafe, not a product deadline
+        while not os.path.exists(socket_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert os.path.exists(socket_path)
+
+        assert cg.main(argv) == 0
+        output = capsys.readouterr().out.splitlines()
+        assert len(output) == 1
+        response = json.loads(output[0])
+        assert response["ok"] is True
+        assert response["contract"] == 1
+        assert response["damon"] == "off"
+        assert response["reused"] is False
+        assert cg.main(["ctl", "stop", response["session"], "--socket", socket_path]) == 0
+    finally:
+        simple_server.request_shutdown()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
 @pytest.mark.parametrize("reply", [
     b'{"ok": true, "contract": 2, "cgprofile": "1.0.0", "daemon": {}}\n',
     b'[]\n',
