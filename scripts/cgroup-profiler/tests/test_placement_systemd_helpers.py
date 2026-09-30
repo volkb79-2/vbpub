@@ -284,7 +284,7 @@ def test_proc_identity_readers_parse_fields_after_parenthesized_comm(tmp_path):
     assert placement._process_parent_pid(str(proc), 42) == 7
 
 
-@pytest.mark.parametrize("contents", ["", "not a stat line", "42 (short) S"])
+@pytest.mark.parametrize("contents", ["", "not a stat line", "42 (short) S", "42 ("])
 def test_proc_stat_identity_readers_reject_missing_or_short_records(tmp_path, contents):
     proc = tmp_path / "proc"
     process = proc / "42"

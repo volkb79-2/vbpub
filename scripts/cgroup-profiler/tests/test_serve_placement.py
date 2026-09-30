@@ -951,6 +951,24 @@ class TestApply:
         assert plc.released
         assert not _leaf(root).exists()
 
+    def test_apply_releases_when_final_leaf_membership_proof_fails(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root)
+
+        def refuse_membership():
+            plc.error = placement.REFUSED_IDENTITY_UNAVAILABLE
+            return False
+
+        monkeypatch.setattr(plc, "_verify_leaf_membership", refuse_membership)
+        plc.apply([101])
+
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert not plc.successfully_placed
+        assert plc.released
+        assert not _leaf(root).exists()
+
     @pytest.mark.parametrize("kwargs, root_kwargs, expected", [
         ({"token": None}, {}, placement.REFUSED_NO_TOKEN),
         ({}, {"gates": False}, placement.REFUSED_NO_GATES_SLICE),
@@ -1123,6 +1141,115 @@ class TestApply:
         plc.apply([101])
         assert plc.error is None
         assert plc.placed
+
+
+class TestLeafMembershipVerification:
+    def _ready_lane(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        lane = _placement(root)
+        lane.apply([101])
+        assert lane.placed and lane.error is None
+        return root, lane
+
+    def test_missing_leaf_identity_is_refused(self, tmp_path):
+        lane = _placement(_fake_cgroup_root(tmp_path))
+        assert lane._verify_leaf_membership() is False
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_unknown_leaf_membership_is_refused(self, tmp_path, monkeypatch):
+        _root, lane = self._ready_lane(tmp_path)
+        monkeypatch.setattr(lane, "_owned_cgroup_pids", lambda _cgroup: None)
+        assert lane._verify_leaf_membership() is False
+        assert lane.error == placement.write_failed(
+            f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}/cgroup.procs"
+        )
+
+    def test_unrecorded_leaf_member_requires_a_capturable_identity(
+        self, tmp_path, monkeypatch,
+    ):
+        _root, lane = self._ready_lane(tmp_path)
+        monkeypatch.setattr(lane, "_owned_cgroup_pids", lambda _cgroup: [101, 102])
+        monkeypatch.setattr(lane, "_capture_pid", lambda _pid: None)
+        assert lane._verify_leaf_membership() is False
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    @pytest.mark.parametrize(
+        ("failure", "same_process", "pid_exists", "pid_cgroup", "expected_state"),
+        [
+            ("member-exited", False, False, None, "exited"),
+            ("member-reused", False, True, None, "leaf"),
+            ("member-moved", True, True, "/dev.slice/unrelated.scope", "leaf"),
+        ],
+    )
+    def test_actual_leaf_members_are_identity_and_location_checked(
+        self, tmp_path, monkeypatch, failure, same_process, pid_exists,
+        pid_cgroup, expected_state,
+    ):
+        _root, lane = self._ready_lane(tmp_path)
+        monkeypatch.setattr(lane, "_owned_cgroup_pids", lambda _cgroup: [101])
+        monkeypatch.setattr(lane, "_same_process", lambda *_args: same_process)
+        monkeypatch.setattr(lane, "_pid_exists", lambda _pid: pid_exists)
+        if pid_cgroup is not None:
+            monkeypatch.setattr(lane, "_pid_cgroup", lambda _pid: pid_cgroup)
+
+        assert lane._verify_leaf_membership() is False, failure
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert lane.pid_records[101]["state"] == expected_state
+
+    @pytest.mark.parametrize(
+        ("failure", "same_process", "pid_exists", "pid_cgroup", "expected"),
+        [
+            ("record-exited", False, False, None, True),
+            ("record-reused", False, True, None, False),
+            ("record-location-unknown", True, True, None, False),
+            ("record-outside-leaf", True, True, "/dev.slice/origin.scope", False),
+        ],
+    )
+    def test_recorded_members_are_rechecked_after_leaf_enumeration(
+        self, tmp_path, monkeypatch, failure, same_process, pid_exists,
+        pid_cgroup, expected,
+    ):
+        _root, lane = self._ready_lane(tmp_path)
+        monkeypatch.setattr(lane, "_owned_cgroup_pids", lambda _cgroup: [])
+        monkeypatch.setattr(lane, "_same_process", lambda *_args: same_process)
+        monkeypatch.setattr(lane, "_pid_exists", lambda _pid: pid_exists)
+        if pid_cgroup is not None or failure == "record-location-unknown":
+            monkeypatch.setattr(lane, "_pid_cgroup", lambda _pid: pid_cgroup)
+
+        assert lane._verify_leaf_membership() is expected, failure
+        if expected:
+            assert lane.error is None
+            assert lane.pid_records[101]["state"] == "exited"
+        else:
+            assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_membership_snapshot_detects_an_exit_between_the_two_reads(
+        self, tmp_path, monkeypatch,
+    ):
+        _root, lane = self._ready_lane(tmp_path)
+        monkeypatch.setattr(lane, "_owned_cgroup_pids", lambda _cgroup: [101])
+        checks = iter([True, False])
+        monkeypatch.setattr(lane, "_same_process", lambda *_args: next(checks))
+        monkeypatch.setattr(lane, "_pid_exists", lambda _pid: False)
+        monkeypatch.setattr(lane, "_pid_cgroup", lambda _pid: lane.leaf_cgroup)
+
+        assert lane._verify_leaf_membership() is False
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+        assert lane.pid_records[101]["state"] == "exited"
+
+    def test_membership_journal_failure_is_not_reported_as_verified(
+        self, tmp_path, monkeypatch,
+    ):
+        _root, lane = self._ready_lane(tmp_path)
+        lane.pid_records.clear()
+        monkeypatch.setattr(lane, "_owned_cgroup_pids", lambda _cgroup: [])
+        monkeypatch.setattr(
+            lane, "_state_write",
+            lambda _journal: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        assert lane._verify_leaf_membership() is False
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
 
 
 @pytest.mark.parametrize(("subcgroup", "expected"), [
@@ -2231,6 +2358,40 @@ class TestPlacementCleanupEdges:
         assert not (root / SCOPE_UNIT_CGROUP).exists()
         assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
 
+    @pytest.mark.parametrize(
+        ("condition", "expected", "expected_state"),
+        [
+            ("process-exited", True, "exited"),
+            ("start-time-unknown", False, "leaf"),
+            ("pid-reused", True, "exited"),
+            ("not-restored", False, "leaf"),
+        ],
+    )
+    def test_auto_retirement_requires_each_original_pid_to_be_proved_restored(
+        self, tmp_path, condition, expected, expected_state,
+    ):
+        root, lane = self._ready_lane(tmp_path)
+        shutil.rmtree(_leaf(root))
+        shutil.rmtree(root / SCOPE_UNIT_CGROUP)
+        lane._unit_absence_verifier = lambda unit: unit == SCOPE_UNIT
+        if condition == "process-exited":
+            lane._pid_exists = lambda _pid: False
+        else:
+            lane._pid_exists = lambda _pid: True
+        if condition == "start-time-unknown":
+            lane._pid_start_time = lambda _pid: None
+        elif condition == "pid-reused":
+            lane._pid_start_time = lambda _pid: "reused"
+        else:
+            lane._pid_start_time = lambda pid: str(pid * 97)
+        if condition == "not-restored":
+            lane._pid_cgroup = lambda _pid: "/dev.slice/unrelated.scope"
+
+        assert lane._scope_retired_after_restore(
+            str(root / SCOPE_UNIT_CGROUP)
+        ) is expected
+        assert lane.pid_records[101]["state"] == expected_state
+
     def test_release_refuses_auto_retired_scope_when_unit_absence_is_unknown(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
 
@@ -2249,6 +2410,35 @@ class TestPlacementCleanupEdges:
         assert not lane.released
         assert lane._journal["state"] == "recovery-required"
         assert lane.pid_records[101]["state"] == "restored"
+
+    def test_release_reports_journal_failure_after_verified_auto_retirement(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+
+        def auto_retire_scope_after_leaf(path):
+            _fake_rmdir(path)
+            if path == str(_leaf(root)):
+                _fake_rmdir(str(root / SCOPE_UNIT_CGROUP))
+
+        lane = _placement(
+            root,
+            rmdir=auto_retire_scope_after_leaf,
+            unit_absence_verifier=lambda unit: (
+                unit == SCOPE_UNIT and not (root / SCOPE_UNIT_CGROUP).exists()
+            ),
+        )
+        lane.apply([101])
+        assert lane.placed
+
+        def fail_only_completion(journal):
+            if journal["state"] == "complete":
+                raise OSError("disk full")
+
+        lane._state_write = fail_only_completion
+        lane.release()
+
+        assert lane.error == placement.REFUSED_STATE_UNAVAILABLE
+        assert not lane.released
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
 
     def test_release_is_safe_without_an_optional_journal_object(self, tmp_path):
         root, lane = self._ready_lane(tmp_path)
@@ -2529,6 +2719,67 @@ class TestPlacementJournalRecovery:
         )
         assert result is None
         assert updates[-1]["state"] == "complete"
+
+    def test_recovery_rechecks_the_leaf_if_a_scope_appears_between_path_checks(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        scope_path = root / SCOPE_UNIT_CGROUP
+        leaf_path = _leaf(root)
+        shutil.rmtree(scope_path)
+        real_lexists = os.path.lexists
+        scope_reappeared = False
+
+        def race_scope_creation(path):
+            nonlocal scope_reappeared
+            if path == str(scope_path) and not scope_reappeared:
+                assert not real_lexists(path)
+                write_cgroup(root, SCOPE_UNIT_CGROUP, cgroup_files())
+                write_cgroup(root, f"{SCOPE_UNIT_CGROUP}/{LEAF_NAME}", cgroup_files())
+                scope_reappeared = True
+                # This lookup saw the absent scope; the subsequent independent
+                # leaf check must catch the unit/path reappearing concurrently.
+                return False
+            return real_lexists(path)
+
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _proc: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
+        monkeypatch.setattr(placement.os.path, "lexists", race_scope_creation)
+
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root="/proc",
+            state_write=lambda _value: pytest.fail("raced recovery was accepted"),
+        )
+
+        assert scope_reappeared and real_lexists(str(leaf_path))
+        assert result == placement.REFUSED_STATE_UNAVAILABLE
+
+    def test_missing_systemd_unit_refuses_when_process_identity_cannot_be_read(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        journal = self._make_journal(root)
+        journal["scope_cgroup"] = None
+        journal["leaf_cgroup"] = None
+        proc = tmp_path / "proc"
+        (proc / "101").mkdir(parents=True)
+        monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
+        monkeypatch.setattr(placement, "_systemd_unit_path", lambda _unit: None)
+        monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
+        monkeypatch.setattr(
+            placement, "_process_start_time_ticks", lambda _proc, _pid: None,
+        )
+
+        result = placement.recover_journal(
+            journal, cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            proc_root=str(proc),
+            state_write=lambda _value: pytest.fail("unidentified process was accepted"),
+        )
+
+        assert result == placement.REFUSED_IDENTITY_UNAVAILABLE
 
     def test_missing_process_after_crash_needs_no_identity_read_and_completes_journal(
         self, tmp_path, monkeypatch,
