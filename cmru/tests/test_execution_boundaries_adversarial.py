@@ -195,8 +195,13 @@ class TestTesterGateContracts:
             return
         with pytest.raises(SystemExit, match=label):
             getattr(gate, fn)(None)
-        monkeypatch.setenv(env, "from-env")
-        assert getattr(gate, fn)("explicit") == "explicit"
+        if fn == "resolve_cpus":
+            monkeypatch.setenv(env, "1.5")
+            assert gate.resolve_cpus(None) == "1.5"
+            assert gate.resolve_cpus("0.75") == "0.75"
+        else:
+            monkeypatch.setenv(env, "from-env")
+            assert getattr(gate, fn)("explicit") == "explicit"
 
     def test_slice_probe_distinguishes_loaded_transient_and_no_docker(self, monkeypatch):
         import cmru.tester_gate as gate
