@@ -48,6 +48,20 @@ def test_a_resume_claim_with_no_backing_record_in_the_store_is_unreconciled(tmp_
     assert "state_unreconciled" in doc["complete_blockers"]
 
 
+# ---- W9R-4 ----------------------------------------------------------------
+
+def test_q3_an_unknown_judge_leaves_unpaired_records_unreconciled(tmp_path, monkeypatch):
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 3)
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(progress, support.run_records(
+        head, rows, executed=[rows[0]["id"]], end=False, terminal=False))
+    state = support.write_state(tmp_path / "state", [support.state_record(rows[1], "killed", J_X)])
+    code, err, doc = _analyze(root, head, progress, extra=("--state-dir", str(state)))
+    assert doc["state"]["judge_sha256_source"] == "unknown"
+    assert doc["state"]["unreconciled"] == {"count": 1, "sample_ids": [rows[1]["id"]]}
+    assert doc["state"]["counted"] == 0
+
+
 # ---- O4 -------------------------------------------------------------------
 
 def _set_judge(progress, judge):

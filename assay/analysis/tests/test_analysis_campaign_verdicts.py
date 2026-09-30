@@ -6,6 +6,7 @@ by exactly the candidates an oracle names, so every bucket and every id is known
 
 from __future__ import annotations
 
+import copy
 import json
 
 from analysis.tests import campaign_support as support
@@ -13,9 +14,12 @@ from analysis.tests.test_analysis_campaign import (
     _fixture_document,
     _install_plan,
     _invoke,
+    _plan_rows,
     _repository,
     _validate,
+    _write_progress,
 )
+from assay.candidate_identity import candidate_id_from_fields
 
 BUCKETS = ("killed", "survived", "crashed", "budget_exceeded", "equivalent", "hung")
 
@@ -203,3 +207,32 @@ def test_o18_a_verdict_for_another_lane_is_an_evidence_error(tmp_path, monkeypat
     assert code == 2
     assert document["status"] == "evidence_error"
     assert document["errors"][0]["message"] == "verdict lane 'other' differs from requested 'package'"
+
+
+# ---- W9R-3 ----------------------------------------------------------------
+
+def test_a_never_started_leftover_under_a_non_timeout_reason_is_unresolved(tmp_path, monkeypatch):
+    document = _fixture_document("r2_error_exec_failed_mutant_crashed")
+    mutation = next(c for c in document["claims"] if c["rigor"] == "R2")["mutation"]
+    extra = copy.deepcopy(mutation["killed"][0])
+    extra["start_byte"] += 1000
+    extra["end_byte"] += 1000
+    extra["lineno"] += 50
+    extra["mutated_file_sha256"] = "ab" * 32
+    extra.pop("kill_signal", None)
+    extra["candidate_id"] = candidate_id_from_fields(**{k: extra[k] for k in (
+        "path", "source_sha256", "start_byte", "end_byte", "mutated_file_sha256", "operator")})
+    mutation["budget_exceeded"] = [extra]
+    mutation["candidate_count"] = mutation["total"] = 3
+    mutation["candidate_ids"] = mutation["candidate_ids"] + [extra["candidate_id"]]
+    root, head, verdict = _repository(tmp_path, document)
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    started = {o["candidate_id"] for b in ("killed", "crashed") for o in mutation[b]}
+    _write_progress(progress, head=head, document=document, plan_rows=rows, reported_ids=started)
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=document["exit_code"])
+    result = json.loads(out)
+    assert document["reason_code"] == "EXEC_FAILED"
+    assert (code, result["status"], result["complete_blockers"]) == (3, "incomplete", ["lane_timeout_or_unstarted"])
+    assert result["unresolved"] == {"matching_total": 1, "candidates": [extra["candidate_id"]]}

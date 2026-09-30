@@ -4242,7 +4242,9 @@ request needs `--request-base`.
   re-evaluates it against the verdict. It never reads the isolated snapshot a
   judge ran in. A lane whose coverage command writes the artifact only inside
   that snapshot leaves nothing at the declared path: the consumer must place
-  the artifact there (copy it out of the run, uncommitted) before running
-  `campaign`. A missing artifact is reported as `artifact_status: missing`,
-  not refused; a supplied `--coverage` path that is not the declared one is an
-  evidence error.
+  the artifact there (copy it out of the run to that path, and keep the path
+  git-ignored: `campaign` refuses a worktree with uncommitted paths) before
+  running `campaign`. A missing artifact file in an existing directory is
+  reported as `artifact_status: missing`; a missing parent directory is an
+  evidence error (create it); a supplied `--coverage` path that is not the
+  declared one is an evidence error.

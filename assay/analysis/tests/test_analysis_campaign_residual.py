@@ -353,3 +353,27 @@ def test_a_stream_with_no_candidate_events_is_not_exhausted(tmp_path, monkeypatc
     code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
     doc = json.loads(out)
     assert (code, doc["status"], doc["complete_blockers"]) == (3, "incomplete", ["inventory_not_exhausted"])
+
+
+# ---- W9R-5 ----------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("outcome", "FAIL"), ("exit_code", 1), ("reason_code", "LANE_TIMEOUT")],
+)
+def test_a_terminal_that_differs_in_any_one_field_from_the_verdict_is_refused(
+    tmp_path, monkeypatch, field, value
+):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+
+    def change(records):
+        next(r for r in records if r["event"] == "verdict_written")[field] = value
+
+    _rewrite_progress(progress, change)
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+    document = json.loads(out)
+    assert code == 2
+    assert document["errors"] == [{
+        "source": "input",
+        "message": "latest progress terminal disagrees with the verified verdict",
+    }]

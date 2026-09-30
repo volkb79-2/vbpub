@@ -101,6 +101,7 @@ def test_o2_appended_resume_runs_count_each_candidate_once(tmp_path, monkeypatch
     assert campaign["pending_total"] == 0
     assert campaign["per_run_resumed_total"] == [0, 5, 7]
     assert campaign["per_run_rejudged_total"] == [0, 0, 1]
+    assert campaign["resumed_total"] == 7 and campaign["rejudged_total"] == 1
     assert [run["fresh_candidate_events"] for run in document["runs"]] == [5, 3, 1]
     assert sum(run["fresh_candidate_events"] for run in document["runs"]) == 9
     assert campaign["outcomes"]["killed"] == 8
