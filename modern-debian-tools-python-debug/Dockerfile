@@ -759,6 +759,7 @@ USER root
 # — it runs on the host before the container exists, so it ships as a vendorable
 # template under templates/. See DEVCONTAINER-LIFECYCLE.md.
 COPY scripts/finalize_container_environment.py /usr/local/bin/finalize_container_environment.py
+COPY scripts/mdt_cli.py /usr/local/bin/mdt_cli.py
 COPY scripts/mdt_buildkit_builder.py /usr/local/lib/mdt_buildkit_builder.py
 RUN chmod 0755 /usr/local/bin/finalize_container_environment.py
 

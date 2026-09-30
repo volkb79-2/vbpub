@@ -497,9 +497,13 @@ echo "<major>:<minor> enable=1 ctrl=user \
 | `min`/`max` | Bounds (as % of the calibrated model) on how far vrate is allowed to move — floor prevents starving low-weight cgroups to zero, ceiling prevents over-crediting an idle device |
 
 **What's blocking turning this on today:** the `rbps`/`rseqiops`/`rrandiops`/
-`wbps`/`wseqiops`/`wrandiops` half is done — `iocost-calibrate.sh` (wrapping
-the vendored, LVM-patched `iocost_coef_gen.py`, see `scripts/debian-install-v2/tools/`)
-has produced two live runs on this host (`/root/iocost-results/`). The
+`wbps`/`wseqiops`/`wrandiops` half is done — `iocost-calibrate.sh` currently
+wraps the shared Linux-derived `iocost_coef_gen.py` copy in
+`scripts/debian-install-v2/tools/`. That copy has local LVM and file-target
+changes. The pristine copy and partition patch in
+`debian_install_v2/vendor/` are not the runtime source yet; see the
+generator follow-up in `modern-debian-tools-python-debug/TODO.md`. It has
+produced two live runs on this host (`/root/iocost-results/`). The
 `rlat`/`wlat` half has **not** — those are a latency baseline this host's own
 device has never had measured (virtio here, but potentially NVMe or spinning
 disk underneath depending on host; `mdt-io-baseline.py`'s existing 4-point

@@ -1,8 +1,8 @@
 # Consumer configuration
 
-This document is the pasteable adoption contract for MDT's managed BuildKit
-backend. Host setup is intentionally manual because it changes systemd,
-Docker, and cgroup policy.
+This document is the pasteable adoption contract for MDT's host governance and
+managed BuildKit backend. Host setup is intentionally manual because it
+changes systemd, Docker, and cgroup policy.
 
 ## Host prerequisite
 
@@ -32,6 +32,12 @@ does not create the automatic backup. The watcher configuration uses the
 current `WATCHER_*` names shown in `host-setup.env.example`; old names are not
 aliases for the new clean configuration.
 
+Fresh installs default to `report-only`. If a plain install finds an existing
+`terminate` policy, it stops and disables the guard, then refuses to continue
+until `--wizard` explicitly confirms that policy again; it leaves the host
+config available for review. During `--wizard`, accepting the default answer
+changes `terminate` to `report-only`.
+
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount
 facts. It walks `dev.slice`, the guaranteed sibling,
@@ -52,7 +58,8 @@ zswap controls. Its memory policy is:
 Enter accepts the shown default. For CPUQuota/MemorySwapMax, `auto` derives at
 install time and `-` omits the directive (unlimited/default); for optional
 memory fields, `-` also omits the directive. MemoryMax is RAM only;
-MemorySwapMax is swap only. A benchmark uses the official kernel `io.cost` matrix against the persistent
+MemorySwapMax is swap only. A benchmark uses the shared Linux-derived
+`io.cost` matrix against the persistent
 `IO_BASELINE_TESTFILE`, never a raw device, and is reusable by identity rather
 than by age. It saturates the disk for about 12 minutes at default settings,
 so run it in a quiet window. `--with-baseline` installs missing `fio`/`pv`
@@ -61,6 +68,32 @@ background measurement while the remaining questions continue. Without that
 flag, the wizard offers the measurement only when both tools are already
 installed; otherwise the candidate is installed first and you can run the
 benchmark later.
+
+### Host benchmark file targets
+
+MDT and `debian-install-v2` use the same generated Linux-derived coefficient
+tool. MDT always writes to a persistent file on the Docker-data filesystem;
+its identity check refuses a target on a different filesystem. To run the
+manual debian-install-v2 wrapper against an already mounted scratch target,
+use file mode:
+
+```bash
+sudo scripts/debian-install-v2/tools/iocost-calibrate.sh --duration 30 -- \
+  --testfile /mnt/iocost-benchmark/target.bin --testfile-size-gb 1
+```
+
+This writes and measures a regular file on that mounted filesystem. Raw
+`--testdev /dev/DEVICE` mode is destructive to the named block device; the
+shared tool can resolve a partition's scheduler sysfs path, but it does not
+make raw testing non-destructive. Do not use it on a disk or partition with
+data you need. Partition creation, formatting, mounting, and cleanup remain
+operator-managed until the debian-install-v2 installer integration is built.
+
+The file path must be dedicated disposable benchmark scratch space: the tool
+fills a new file with random data, and fio overwrites the target during its
+measurements. An existing target is reused only when it is a single-link
+regular file with exactly the requested size; any other existing target is
+refused and left untouched. Reuse does not preserve the file's contents.
 
 After that run, the wizard asks for four explicit static IO fallback values:
 `DEV_STATIC_RIOPS`, `DEV_STATIC_WIOPS`, `DEV_STATIC_RBW`, and
@@ -79,6 +112,44 @@ patterns are space-separated shell globs. The wizard also asks for
 `DEV_BUILDKITD_MAX_PARALLELISM`. This limits one
 managed BuildKit daemon's internal solver parallelism; it does not serialize
 client requests and is separate from release repack concurrency.
+
+It asks for each per-container `WATCHER_*_MEMORY_HIGH` and
+`WATCHER_*_MEMORY_MAX` setting. The shipped default for all six is `-`, which
+leaves per-container memory and swap uncapped by this watcher while the parent
+slice still bounds the aggregate tier. Enter explicit sizes only when this
+host wants the watcher to add a leaf cap. It only fills in scopes whose Docker
+configuration has no `mem_limit`; CIU-managed Compose services commonly set
+one. CIU can also apply `MemoryMin` to a scope, so any explicitly configured
+watcher limits must be compatible with that value. The wizard requires a
+separate confirmation before it writes any non-`-` per-container memory pair.
+
+## Per-container memory watcher
+
+The shipped policy disables MDT's inotify memory watcher. Correctly placed
+containers remain under their parent slice's aggregate limit. The separate
+`docker-.scope.d` backstop still applies its configured generous MemoryMax and
+MemorySwapMax to every Docker scope; the wizard reviews those in section f.
+The memory wizard asks for the service policy and all six values. Set
+`WATCHER_MEMORY_POLICY=enabled` only
+when at least one per-container value is configured; unused values must stay
+`-`. This is a complete example for an operator who explicitly wants an
+interactive-container leaf cap. Size it for the workload and host:
+
+```dotenv
+WATCHER_MEMORY_POLICY=enabled
+WATCHER_INTERACTIVE_MEMORY_HIGH=3G
+WATCHER_INTERACTIVE_MEMORY_MAX=4G
+WATCHER_BACKGROUND_MEMORY_HIGH=-
+WATCHER_BACKGROUND_MEMORY_MAX=-
+WATCHER_GATES_MEMORY_HIGH=-
+WATCHER_GATES_MEMORY_MAX=-
+```
+
+The installer refuses an enabled policy with no caps or a disabled policy with
+configured caps. The health check reports policy/service drift. During an
+upgrade from a config that predates `WATCHER_MEMORY_POLICY`, the wizard treats
+existing non-`-` caps as user settings and presents them for review. See the
+[design rationale](DESIGN-GUIDE.md#per-container-memory-policy).
 
 Host setup is host-only: run the installer and wizard from a shell on the
 Docker host, never from the consumer devcontainer. UID 0 in a devcontainer is
@@ -99,16 +170,46 @@ RAM ceiling. `DEV_MEMORY_MIN_GUARANTEED_CEILING` is the one authoritative
 root controls. Keep sizes/weights host-specific; do not copy values from this
 repository's example onto a different host.
 
-The accidental-worker policy vocabulary is:
+The default accidental-worker policy is report-only:
 
 ```text
-BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate    # default; remove unapproved workers
-BUILDX_ACCIDENTAL_CONTAINER_POLICY=report-only  # detect and log, do not remove
+BUILDX_ACCIDENTAL_CONTAINER_POLICY=report-only
 ```
 
-Missing or invalid policy fails closed. The guard approves only the service
-container whose inspected name, configured image, cgroup parent, and labels
-match the host setup. A reserved name alone is not approval.
+`terminate` can interrupt a live Docker-container Buildx build. The wizard asks
+for a second confirmation before writing the explicit opt-in:
+
+```text
+BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate
+```
+
+These are the complete closed vocabulary. Missing or invalid policy fails
+closed. The guard approves only the service container whose inspected name,
+configured image, cgroup parent, and labels match the host setup. A reserved
+name alone is not approval.
+
+## Host commands from an MDT devcontainer
+
+`host-escape` is a compatibility alias for the MDT host-exec helper. It starts
+a privileged helper, enters the host's namespaces, and runs with host-root
+authority; use it like a root shell and review each command before executing
+it. It runs `mdt doctor` afterward, which repairs missing required cgroup2
+mount flags. The standalone check-only form does not repair:
+
+```bash
+host-escape -- systemctl show dev-interactive.slice -p MemoryMax
+host-escape -- docker inspect dstdns-devcontainer-vb
+host-escape                         # interactive host shell
+mdt doctor --check-only             # inspect cgroup2 flags without repair
+host-escape --help
+```
+
+`mdt doctor` also starts a privileged host helper. Without `--check-only`, it
+may remount the host cgroup2 filesystem to restore required flags.
+
+For host changes, run the command from the Docker host shell where possible.
+The escape helper exists for host diagnostics and operations that genuinely
+need host namespaces; it does not preserve devcontainer isolation.
 
 ## Consumer devcontainer
 

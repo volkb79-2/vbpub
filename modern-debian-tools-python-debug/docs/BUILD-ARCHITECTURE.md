@@ -45,9 +45,11 @@ visible container-start failure rather than an embedded-Builder fallback.
 The installed Docker-events guard inspects every reserved
 `buildx_buildkit_*`/`buildkit_buildkit_*` candidate. It approves only matching
 name, configured image, `dev-buildkitd.slice` cgroup parent, and service labels.
-The policy vocabulary is `terminate` (default: remove an unapproved worker) or
-`report-only` (log without removal). Invalid/missing policy is an error; an
-inspect failure is indeterminate and stops the watcher for systemd to restart.
+The policy vocabulary is `report-only` (default: log without removal) or
+`terminate` (explicit opt-in: remove an unapproved worker). Termination can
+interrupt an active Docker-container Buildx build, so the host wizard requires
+a second confirmation. Invalid/missing policy is an error; an inspect failure
+is indeterminate and stops the watcher for systemd to restart.
 
 The host wizard follows the same fail-closed resource model. It is slice-first,
 asks all four memory controls for every governed slice, distinguishes optional
@@ -282,9 +284,9 @@ mismatched instance fails before work starts. The important distinction is:
 - The Buildx node is `remote`, so no Buildx worker container or Buildx
   `cgroup-parent` driver option participates in placement.
 - Docker has no Buildx driver option for the host's dynamic per-device I/O
-  ceilings. The installed guard terminates or reports accidental
-  `buildx_buildkit_*`/`buildkit_buildkit_*` containers according to the
-  explicit host policy.
+  ceilings. The installed guard reports accidental `buildx_buildkit_*`/
+  `buildkit_buildkit_*` containers by default and removes them only when the
+  host explicitly selects `terminate`.
 
 The default controls are deliberately layered. The BuildKit worker's hard
 cgroup limits contain a runaway build. Repack is a local process: worker count
@@ -538,8 +540,8 @@ The governed defaults are in the `[env]` table of
 
 - `BUILDX_BUILDER=mdt-managed` and `BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`
   select the host-managed remote; host-setup's slice config controls its
-  resources. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` is `terminate` or
-  `report-only`.
+  resources. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` defaults to `report-only`;
+  `terminate` removes unapproved Buildx workers and requires explicit opt-in.
 - `REPACK_WORK_DIR`, `REPACK_TARGET_SIZE`, `REPACK_JOBS`,
   `REPACK_CONCURRENCY`, `REPACK_COMPRESSION_LEVEL`, and `REPACK_VMEM_KB`
   control repack. `REPACK_VMEM_KB` accepts `unlimited` or a positive numeric

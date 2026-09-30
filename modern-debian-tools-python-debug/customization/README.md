@@ -18,6 +18,10 @@ These files are the shipped defaults that land under the visible user customizat
   see at a glance whether the container is host-governed — see
   "Host resource governance (cgroups/slices)" in `../DEVCONTAINER-LIFECYCLE.md` —
   plus a one-line KSM opt-in status (see "KSM opt-in" in `../README.md`).
+- `host-escape` is the compatibility alias for `mdt host-exec`/`mdt host-shell`.
+  It enters host namespaces through a privileged helper; `host-escape --help`
+  shows the operator warning and examples. See `../docs/CONSUMERS.md` before
+  using it.
 - `ksm-optin.c` is the `LD_PRELOAD` shim built in a throwaway Dockerfile stage;
   see "KSM opt-in (kernel same-page merging)" in `../README.md`.
 - `lnav/formats/nyxloom/nyxloom_events.json` is a bundled `lnav` log-format
