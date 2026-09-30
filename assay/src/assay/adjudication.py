@@ -47,7 +47,7 @@ does one tier over), so `config -> adjudication -> verdict -> config` would
 be a real import cycle; `assay.vocabulary` is a leaf both modules can import
 without opening it. `vocabulary.ADJUDICATED_EVIDENCE_KEYS` and this module's
 own :data:`ADJUDICATORS` are therefore two statements of one fact, checked
-against each other by ``tests/test_adjudication_registry.py`` rather than
+against each other by ``tests/core/test_adjudication_registry.py`` rather than
 left to drift silently -- the same shape DA-R1/A-406 already established for
 `STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE`, applied here for an import-cycle
 reason rather than DA-R1's `assay.adapters`-specific O2 guarantee. A dict of

@@ -70,7 +70,7 @@ def read(raw: bytes) -> ReportSummary:
         raise ReportUnusable(f"{FORMAT} report is not valid UTF-8: {exc}") from exc
     except (json.JSONDecodeError, RecursionError) as exc:
         # `RecursionError` belongs in the SAME clause (the estate-wide rule
-        # `tests/test_untrusted_json_parse_sweep.py` enforces): a deeply
+        # `tests/core/test_untrusted_json_parse_sweep.py` enforces): a deeply
         # nested document blows CPython's stack inside the decoder, and this
         # is an untrusted third-party artifact. Here it is not merely a
         # crash-vs-refusal question -- an uncaught `RecursionError` would

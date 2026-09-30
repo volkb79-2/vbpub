@@ -917,7 +917,7 @@ def _validate_omission_path(value: Any, *, where: str, field: str) -> str:
     above (a leading ``.`` component, an empty component from a doubled or
     trailing slash), so equality to that round-trip is a THEOREM of the
     accepted grammar, not a separate check -- proved for every accepted path
-    by the accept-side matrix in ``tests/test_config_snapshot_selection.py``,
+    by the accept-side matrix in ``tests/core/test_config_snapshot_selection.py``,
     never by an unreachable extra refusal branch here.
     """
     if not isinstance(value, str):

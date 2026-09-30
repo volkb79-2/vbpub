@@ -134,7 +134,7 @@ __all__ = ["build_verify_parser", "cmd_verify", "verify_document", "verify_text"
 
 #: The ten-field lane-resolved group, exactly `verdict.LANE_RESOLVED_FIELDS`
 #: minus the derived `argv_modified` — transcribed by hand rather than
-#: imported, the same independence `tests/test_errors.py` already applies to
+#: imported, the same independence `tests/core/test_errors.py` already applies to
 #: the outcome/reason_code tables (A-092's house style).
 _LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "declared_rigor",
@@ -2502,8 +2502,8 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
 #:
 #: The other three are deliberately NOT here, each with a producer path that
 #: renders it beside a baseline that did NOT pass -- proven by driving
-#: ``run_lane``, not by reading it (``tests/test_runner_p23_cleanup_and_
-#: budget.py``, ``tests/test_verify_layer_independence.py``):
+#: ``run_lane``, not by reading it (``tests/core/test_runner_p23_cleanup_and_
+#: budget.py``, ``tests/core/test_verify_layer_independence.py``):
 #:
 #: * ``GIT_FAILED`` -- ``_replace_highest_higher_rigor_claim_with_git_failed``
 #:   runs on outer-scratch/snapshot cleanup failure and leaves EVERY lower
@@ -2531,7 +2531,7 @@ def _outcome_owning(reason_code: ReasonCode) -> Outcome | None:
     to, or ``None`` if it is claimed by none.
 
     DERIVED from ``REASON_CODES`` rather than transcribed: every reason code
-    belongs to exactly one outcome (``tests/test_errors.py`` proves the
+    belongs to exactly one outcome (``tests/core/test_errors.py`` proves the
     partition), so re-deriving the status is a fact lookup, not a second
     hand-maintained table that could drift from the vocabulary it checks.
     """

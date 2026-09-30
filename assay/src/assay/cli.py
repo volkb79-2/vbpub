@@ -570,7 +570,7 @@ def _built_in_registry() -> registry.Registry:
     real statement positions or cleanly refused, and there is no third state
     in which it is silently wrong. This devcontainer and the registered
     gate's own image (``tester-unified``) both have no Go and both take the
-    refusal -- see ``tests/qualification/`` for where the real-toolchain
+    refusal -- see ``gate/tests/qualification/`` for where the real-toolchain
     proof lives instead (DESIGN-GUIDE §10's pattern).
 
     **R2 and R3 stay unregistered for Go**, which the Wave C prompt's own
@@ -579,7 +579,7 @@ def _built_in_registry() -> registry.Registry:
     unconditionally ``"UNSUPPORTED"``, so an R2 entry would advertise a
     producer path that does not exist -- the failure this docstring's first
     paragraph is about. Both refusals are asserted as controls in
-    ``tests/test_cli_run.py``
+    ``tests/core/test_cli_run.py``
     (``test_run_refuses_go_at_r2_the_language_is_registered_r1_only`` and its
     R3 sibling), alongside the R1 test that now inverts.
 

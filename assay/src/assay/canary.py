@@ -187,7 +187,7 @@ _GO_R1_MECHANISMS: frozenset[str] = frozenset({MECHANISM_UNCOVERED_LINE})
 #: in :func:`run_go_canary`'s calls to :func:`~assay.evaluate.evaluate_coverage`
 #: — Go's canary never touches a real filesystem (A-107: no toolchain, no
 #: git), so no real repository root exists to name. Matches the same
-#: convention ``tests/test_adapters_go_registration.py`` already established
+#: convention ``tests/adapters/go/test_adapters_go_registration.py`` already established
 #: for a filesystem-free ``evaluate_coverage`` call.
 _GO_REPO_TOP = Path("/repo")
 

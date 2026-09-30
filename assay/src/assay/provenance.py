@@ -203,9 +203,9 @@ def identify_judge(
     exercised against genuinely built artifacts, because a stand-in cannot show
     that ``pip`` really writes the hash this reads, nor that ``zipimport``
     really reports the archive a running ``.pyz`` came from: the wheel in
-    ``tests/test_standalone.py``
+    ``gate/tests/test_standalone.py``
     (``test_the_installed_wheels_own_sha256_is_what_the_verdict_records``) and
-    the zipapp in ``tests/test_distribution_build_release.py``
+    the zipapp in ``gate/tests/test_distribution_build_release.py``
     (``test_the_zipapps_own_sha256_is_what_identify_judge_records``).
 
     Never raises for an unidentifiable invocation. That state is legitimate and

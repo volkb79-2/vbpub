@@ -81,7 +81,7 @@ HELPER_DIR = Path(__file__).resolve().parent.parent / "helpers" / "go" / "stmtpo
 #: a data directory, not a package, so the anchor is the top-level `assay`
 #: package and the remainder is spelled relative to it — the same shape
 #: :func:`assay.verdict.schema_text` already uses for the shipped JSON Schema,
-#: and the same spelling `tests/test_go_helper_is_packaged.py` asserts against
+#: and the same spelling `gate/tests/test_go_helper_is_packaged.py` asserts against
 #: a real venv install.
 HELPER_RESOURCE_DIR = "helpers/go/stmtpos"
 
