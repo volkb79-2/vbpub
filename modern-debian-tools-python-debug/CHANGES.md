@@ -4,6 +4,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-1fc1a96183db] - 2026-09-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=1fc1a96183dbb92cb42a778f29e10f7080ba2ddf -->
+
+### Added
+- feat(mdt): persist codex profiles across disconnects (69ae760b)
+- feat(mdt): classify missing bind sources by spelling (5e2c95d9)
+
+### Fixed
+- fix(mdt): expose parser to user image layer (7d6757f8)
+- fix(mdt): make build inputs readable under release umask (6981838f)
+- fix(mdt): expose staged version inputs to image user (133dd1d6)
+
+### Changed
+- doc(mdt): plan do not use user home (c4dbc4f8)
+
 ## [source-f10a9ada3ccd] - 2026-09-22
 <!-- cmru: generated -->
 <!-- cmru: source-end=f10a9ada3ccd8234bff1376b879ef2329f973552 -->
