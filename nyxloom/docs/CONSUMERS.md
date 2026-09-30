@@ -53,6 +53,8 @@ catalog for the installed version.
 | `nyxloom-harness extract* --extract-metadata` | `pre`, `post`, `both` |
 | `nyxloom-harness extract-report --type` | `report-sheet`, `report-detailed`, `csv` |
 | `nyxloom-harness extract-sessions --recurse` | `true`, `false` |
+| `nyxloom-harness search --sort-by` | `best`, `date` |
+| `nyxloom-harness search --client` | `codex`, `claude`, `opencode` |
 | `nyxloomctl intake-bridge poll --transport` | `mmctl`, `rest` |
 | `nyxloomctl finding record/list --kind` | `generic`, `model_near_equivalent`, `cost_crossover` |
 | `nyxloomctl finding record --severity` | `info`, `note`, `important` |
@@ -134,6 +136,30 @@ verbs are separate from nyxloom's registered-project commands:
 `SESSION_LOG` means a session file/store or bare session ID, not a registered
 project ID. These commands do not require project registration or daemon
 availability.
+
+Run `nyxloom-harness extract --help` to see the controls grouped by source,
+window selection, included content, output, redaction/task context, and live
+following.
+
+## Search local session history
+
+Search across discovered Claude Code, Codex, and OpenCode stores. The command
+matches any query word, ranks sessions by the number and rarity of their
+matches, and prints session IDs with client, activity date, score, matched
+words, and source path. It never prints transcript text:
+
+```bash
+nyxloom-harness search 'cli-extended gate backlog'
+nyxloom-harness search 'cli-extended gate backlog' --sort-by date
+nyxloom-harness search 'cli-extended gate backlog' --client codex
+```
+
+`--sort-by best` is the default and puts sessions matching more distinct
+query words first; `date` puts the newest recorded activity first.
+`--client` limits the search to one local harness store. Search words are
+case-insensitive and punctuation-delimited, so a hyphenated term contributes
+each of its component words. Pass a result's session ID to `nyxloom-harness
+extract`; use the printed source path if same-ID results need disambiguation.
 
 Start with a normal compact brief:
 

@@ -64,7 +64,11 @@ def _arg(
 
 
 def _opt(
-    flags: str | Sequence[str], description: str, **parser_kwargs: Any
+    flags: str | Sequence[str],
+    description: str,
+    *,
+    group: str = "OPTIONS",
+    **parser_kwargs: Any,
 ) -> OptionSpec:
     if isinstance(flags, str):
         flags = (flags,)
@@ -76,7 +80,7 @@ def _opt(
             parser_kwargs["default"] = True
         elif not parser_kwargs.get("required", False):
             parser_kwargs["default"] = None
-    return OptionSpec(tuple(flags), description, parser_kwargs=parser_kwargs)
+    return OptionSpec(tuple(flags), description, group=group, parser_kwargs=parser_kwargs)
 
 
 def _invoke(
@@ -437,56 +441,137 @@ def harness_cli():
     registry = _registry(
         "nyxloom-harness",
         "Inspect and extract AI-harness session data. No Nyxloom host state is initialized.",
-        getting_started=("nyxloom-harness extract-sessions codex", "nyxloom-harness extract SESSION_ID"),
+        getting_started=(
+            "nyxloom-harness extract-sessions codex",
+            "nyxloom-harness search 'cli-extended gate backlog'",
+            "nyxloom-harness extract SESSION_ID",
+        ),
     )
     extraction_path = _arg("path", "Session file, store, directory, or supported session id", metavar="SESSION_LOG")
     common_follow = (
-        _opt(("--follow", "-f"), "Follow new session records", action="store_true"),
-        _opt("--interval", "Follow polling interval in seconds", type=float, default=None),
-        _opt("--bell", "Ring when attention is needed", action="store_true"),
-        _opt("--on-attention", "Attention notification behavior", default=None),
-        _opt("--notify-project", "Nyxloom project for attention notifications", default=None),
-        _opt("--attention-min-chars", "Minimum attention message size", type=int, default=None),
+        _opt(
+            ("--follow", "-f"), "Follow new session records",
+            group="FOLLOWING", action="store_true",
+        ),
+        _opt(
+            "--interval", "Follow polling interval in seconds",
+            group="FOLLOWING", type=float, default=None,
+        ),
+        _opt("--bell", "Ring when attention is needed", group="FOLLOWING", action="store_true"),
+        _opt("--on-attention", "Attention notification behavior", group="FOLLOWING", default=None),
+        _opt("--notify-project", "Nyxloom project for attention notifications", group="FOLLOWING", default=None),
+        _opt(
+            "--attention-min-chars", "Minimum attention message size",
+            group="FOLLOWING", type=int, default=None,
+        ),
     )
     registry.register(_leaf("nyxloom-harness", "extract", """Create a structured, resumable session extract. The default operator-review profile selects the newest epoch and applies its checkpoint and word limits; --profile all includes ordinary prose across the available epochs. Explicit selection controls override profile defaults.
 
 With --follow, Nyxloom prints a one-shot prefix and then reads only appended payload plus bounded prefix/tail fingerprints for rewrite detection. Unchanged polls read no content; there is no whole-file rescan. Follow-only controls require --follow, fixed-span and task-banner controls cannot be combined with it, and JSON output is unsupported while following.""", cli.cmd_extract,
         arguments=(extraction_path,),
         options=(
-            _opt("--opencode-session", "Select an OpenCode session id", default=None),
-            _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "reasonix"), default=None),
-            _opt("--json", "Emit structured JSON output", action="store_true"),
-            _opt("--profile", "Extraction profile", choices=("all", "operator-review"), default=None),
-            _opt(("--answer-length", "--long-threshold"), "Long answer threshold", type=int, default=None),
-            _opt("--include-thinking", "Include model thinking", action="store_true"),
-            _opt("--show-api-errors", "Show API error records", action="store_true"),
-            _opt("--show-compaction-content", "Show compaction content", action="store_true"),
-            _opt("--show-tool-calls", "Show tool call details", action="store_true"),
-            _opt("--show-tool-call-intent", "Show tool call intent", action="store_true"),
-            _opt(("--max-checkpoints", "--checkpoints"), "Maximum checkpoints", type=int, default=None),
-            _opt("--max-words", "Maximum output words", type=int, default=None),
-            _opt(("--max-compactions", "--max-lifecycle-markers"), "Maximum lifecycle markers", type=int, default=None),
-            _opt("--max-time-minutes", "Maximum source time span", type=int, default=None),
-            _opt("--epochs", "Select epochs: N, A:B, or all", default=None),
-            _opt("--since", "Start after this source marker", default=None),
-            _opt("--since-file", "Read the last marker from a prior extract", default=None),
-            _opt("--until", "Stop at this source marker", default=None),
-            _opt("--ledger", "Include source event ledger", action="store_true"),
-            _opt(("--blank-lines", "--insert-blank-lines"), "Blank lines between extract sections", type=int, default=None),
-            _opt("--gap-marker", "Gap marker style", choices=("full", "inline", "inline2", "inline-short", "none"), default=None),
-            _opt("--min-gap-records", "Minimum records represented by a gap marker", type=int, default=None),
-            _opt("--show-gap-source", "Show source range for gaps", action="store_true"),
-            _opt("--render-markdown", "Render Markdown", action="store_true"),
-            _opt("--highlight", "Highlight terminal output", action="store_true"),
-            _opt("--show-timestamps", "Timestamp placement", choices=("pre", "post", "both", "none"), default=None),
-            _opt("--timestamp-format", "Timestamp display format", default=None),
-            _opt("--extract-metadata", "Metadata placement", choices=("pre", "post", "both"), default=None),
-            _opt("--strip-stale-wakeups", "Remove stale wakeup events", action="store_true"),
-            _opt("--redact-pattern", "Additional redaction regular expression; repeatable", action="append", default=None),
-            _opt("--task", "Task context text", default=None),
-            _opt("--task-file", "Read task context from a file", default=None),
+            _opt(
+                "--opencode-session", "Select an OpenCode session id",
+                group="SESSION SOURCE", default=None,
+            ),
+            _opt(
+                "--format", "Session source format", group="SESSION SOURCE",
+                choices=("claude-code", "codex", "opencode", "reasonix"), default=None,
+            ),
+            _opt(
+                "--profile", "Extraction profile", group="WINDOW SELECTION",
+                choices=("all", "operator-review"), default=None,
+            ),
+            _opt(
+                ("--answer-length", "--long-threshold"), "Long answer threshold",
+                group="WINDOW SELECTION", type=int, default=None,
+            ),
+            _opt(
+                ("--max-checkpoints", "--checkpoints"), "Maximum checkpoints",
+                group="WINDOW SELECTION", type=int, default=None,
+            ),
+            _opt(
+                "--max-words", "Maximum output words",
+                group="WINDOW SELECTION", type=int, default=None,
+            ),
+            _opt(
+                ("--max-compactions", "--max-lifecycle-markers"), "Maximum lifecycle markers",
+                group="WINDOW SELECTION", type=int, default=None,
+            ),
+            _opt(
+                "--max-time-minutes", "Maximum source time span",
+                group="WINDOW SELECTION", type=int, default=None,
+            ),
+            _opt(
+                "--epochs", "Select epochs: N, A:B, or all",
+                group="WINDOW SELECTION", default=None,
+            ),
+            _opt("--since", "Start after this source marker", group="WINDOW SELECTION", default=None),
+            _opt(
+                "--since-file", "Read the last marker from a prior extract",
+                group="WINDOW SELECTION", default=None,
+            ),
+            _opt("--until", "Stop at this source marker", group="WINDOW SELECTION", default=None),
+            _opt("--include-thinking", "Include model thinking", group="CONTENT", action="store_true"),
+            _opt("--show-api-errors", "Show API error records", group="CONTENT", action="store_true"),
+            _opt(
+                "--show-compaction-content", "Show compaction content",
+                group="CONTENT", action="store_true",
+            ),
+            _opt("--show-tool-calls", "Show tool call details", group="CONTENT", action="store_true"),
+            _opt("--show-tool-call-intent", "Show tool call intent", group="CONTENT", action="store_true"),
+            _opt("--strip-stale-wakeups", "Remove stale wakeup events", group="CONTENT", action="store_true"),
+            _opt("--json", "Emit structured JSON output", group="OUTPUT", action="store_true"),
+            _opt("--ledger", "Include source event ledger", group="OUTPUT", action="store_true"),
+            _opt(
+                ("--blank-lines", "--insert-blank-lines"), "Blank lines between extract sections",
+                group="OUTPUT", type=int, default=None,
+            ),
+            _opt(
+                "--gap-marker", "Gap marker style", group="OUTPUT",
+                choices=("full", "inline", "inline2", "inline-short", "none"), default=None,
+            ),
+            _opt(
+                "--min-gap-records", "Minimum records represented by a gap marker",
+                group="OUTPUT", type=int, default=None,
+            ),
+            _opt("--show-gap-source", "Show source range for gaps", group="OUTPUT", action="store_true"),
+            _opt("--render-markdown", "Render Markdown", group="OUTPUT", action="store_true"),
+            _opt("--highlight", "Highlight terminal output", group="OUTPUT", action="store_true"),
+            _opt(
+                "--show-timestamps", "Timestamp placement", group="OUTPUT",
+                choices=("pre", "post", "both", "none"), default=None,
+            ),
+            _opt("--timestamp-format", "Timestamp display format", group="OUTPUT", default=None),
+            _opt(
+                "--extract-metadata", "Metadata placement", group="OUTPUT",
+                choices=("pre", "post", "both"), default=None,
+            ),
+            _opt(
+                "--redact-pattern", "Additional redaction regular expression; repeatable",
+                group="REDACTION AND TASK", action="append", default=None,
+            ),
+            _opt("--task", "Task context text", group="REDACTION AND TASK", default=None),
+            _opt("--task-file", "Read task context from a file", group="REDACTION AND TASK", default=None),
             *common_follow,
         ), fields={"cmd": "extract"}, validate=_extract_guard))
+
+    registry.register(_leaf(
+        "nyxloom-harness",
+        "search",
+        "Search locally available Claude Code, Codex, and OpenCode sessions by transcript words. Prints matching session ids, best matches first by default; no transcript text is emitted.",
+        cli.cmd_search,
+        arguments=(
+            _arg(
+                "words", "One or more words to find in session transcripts",
+                metavar="WORD", nargs="+",
+            ),
+        ),
+        options=(
+            _opt("--sort-by", "Result order", group="RESULT ORDER", choices=("best", "date"), default="best"),
+            _opt("--client", "Limit search to one harness client", group="SESSION SOURCE", choices=("codex", "claude", "opencode"), default=None),
+        ),
+    ))
     lossless_options = (
         _opt("--opencode-session", "Select an OpenCode session id", default=None),
         _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "reasonix"), default=None),

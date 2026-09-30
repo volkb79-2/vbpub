@@ -1266,6 +1266,34 @@ def cmd_extract_sessions(args) -> int:
     return 0
 
 
+def cmd_search(args) -> int:
+    """Search discovered harness transcripts and print ranked session ids."""
+    from .harness_search import search_sessions
+
+    query = " ".join(args.words)
+    results = search_sessions(query, client=args.client, sort_by=args.sort_by)
+    if not results:
+        print("No matching sessions.")
+        return 0
+
+    rows = [
+        {
+            "CLIENT": result.client,
+            "SESSION ID": result.session_id,
+            "SCORE": f"{result.score:.3f}",
+            "LAST ACTIVITY": result.last_activity or "—",
+            "MATCHED WORDS": ", ".join(result.matched_terms),
+            "SOURCE": result.source,
+        }
+        for result in results
+    ]
+    print(_format_table(
+        rows,
+        ["CLIENT", "SESSION ID", "SCORE", "LAST ACTIVITY", "MATCHED WORDS", "SOURCE"],
+    ))
+    return 0
+
+
 def cmd_migrate_store(args) -> int:
     """migrate-store <project>
 
