@@ -48,6 +48,26 @@ def test_a_resume_claim_with_no_backing_record_in_the_store_is_unreconciled(tmp_
     assert "state_unreconciled" in doc["complete_blockers"]
 
 
+def test_unknown_judge_empty_state_resume_claim(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+
+    def change(records):
+        records[:] = [r for r in records if r["event"] != "candidate"]
+        i = next(i for i, r in enumerate(records) if r["event"] == "candidates")
+        records[i]["pending_total"] = 0
+        records[i].pop("judge_sha256", None)
+        records.insert(i, {"event": "resume", "resumed_total": 2,
+                           "rejected_total": 0, "rejudged_total": 0})
+
+    _rewrite_progress(progress, change)
+    state = tmp_path / "state"
+    state.mkdir()
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0, extra=("--state-dir", str(state)))
+    doc = json.loads(out)
+    assert (code, doc["status"]) == (3, "incomplete")
+    assert "state_unreconciled" in doc["complete_blockers"]
+
+
 # ---- W9R-4 ----------------------------------------------------------------
 
 def test_q3_an_unknown_judge_leaves_unpaired_records_unreconciled(tmp_path, monkeypatch):

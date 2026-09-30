@@ -979,7 +979,7 @@ def _reconcile_state(
         "current": {entry["id"]: entry for entry in same_judge},
         "unverified_ids": unverified_ids,
         "reclassified": reclassified,
-        "resume_shortfall": current is not None and len(eventless) < latest["resumed_total"],
+        "resume_shortfall": latest["resumed_total"] > (len(eventless) if current is not None else 0),
     }
 
 
