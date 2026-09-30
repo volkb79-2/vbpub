@@ -123,6 +123,8 @@ DOMINATED = (
     ("outcome-is-a-number", _bucket([1])),
     ("outcome-is-a-string", _bucket(["x"])),
     ("outcome-id-malformed", _first_outcome(lambda outcome: outcome.update(candidate_id="zz"))),
+    ("outcome-id-absent", _first_outcome(lambda outcome: outcome.pop("candidate_id"))),
+    ("outcome-id-null", _first_outcome(lambda outcome: outcome.update(candidate_id=None))),
     ("outcome-in-two-buckets", _in_two_buckets),
     ("outcome-twice-in-one-bucket", _same_bucket_twice),
     ("inventory-absent", _inventory_dropped),

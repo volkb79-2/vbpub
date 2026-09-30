@@ -18,13 +18,18 @@ import pytest
 
 from analysis.tests.test_analysis_campaign import (
     _complete_fixture,
+    _fixture_document,
     _invoke,
+    _plan_rows,
     _rewrite_progress,
     _validate,
 )
+from assay.mutation import select_mutation_shard
 from assay_analysis import campaign as campaign_api
 
 _ZERO = "0" * 40
+# The real planner entry, captured before any fixture replaces it with a stub.
+_REAL_LANE_PLAN = campaign_api._lane_plan
 
 
 def _progress(change):
@@ -218,6 +223,119 @@ def _lane_edited(env):
     return {}
 
 
+def _commit_all(env):
+    for arguments in (("add", "-A"), ("commit", "-q", "-m", "lane edit")):
+        subprocess.run(["git", "-C", str(env.root), *arguments], check=True, capture_output=True)
+    env.head = subprocess.run(
+        ["git", "-C", str(env.root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _lane_directory(env):
+    """The lane path names a committed directory: ``ls-tree`` reports one ``tree`` entry."""
+    (env.root / "lanes").mkdir()
+    (env.root / "lanes" / "x.toml").write_text("x = 1\n")
+    _commit_all(env)
+    return {"head": env.head, "extra": ("--file", str(env.root / "lanes"))}
+
+
+def _lane_unreadable(env):
+    """Only the lane read fails; the progress and verdict reads keep the real reader."""
+    real = campaign_api._read_artifact
+
+    def read(path, *, limit, label):
+        if label == "lane file":
+            raise OSError("boom")
+        return real(path, limit=limit, label=label)
+
+    env.monkeypatch.setattr(campaign_api, "_read_artifact", read)
+    return {}
+
+
+def _request_base_lane(env):
+    """The committed lane delegates its base to the request; no verdict, no ``--request-base``."""
+    lane = env.root / "assay.toml"
+    lane.write_text(lane.read_text().replace('base = "main"\n', 'base_source = "request"\n'))
+    _commit_all(env)
+    return {"head": env.head, "verdict": None, "command_exit": None}
+
+
+def _no_mutation_plan(env):
+    """Assay's own planner answers ``UNSUPPORTED`` for the (native R2) lane."""
+    env.monkeypatch.setattr(campaign_api, "_lane_plan", _REAL_LANE_PLAN)
+    env.monkeypatch.setattr("assay.cli.plan_jobs", lambda *_args, **_kwargs: "UNSUPPORTED")
+    return {}
+
+
+def _plan_base_differs(env):
+    rows = _plan_rows(_fixture_document("r2_pass"))
+    env.monkeypatch.setattr(
+        campaign_api, "_lane_plan",
+        lambda *_args: {"status": "ok", "candidates": rows, "_resolved_base": _ZERO},
+    )
+    return {}
+
+
+def _verdict_edit(change):
+    """Edit the (unsigned) verdict document on disk before the command reads it."""
+
+    def mutate(env):
+        document = json.loads(env.verdict.read_text())
+        change(document)
+        env.verdict.write_text(json.dumps(document))
+        return {}
+
+    return mutate
+
+
+def _shard_progress(*, keep_selected: bool):
+    """Rewrite the progress to a two-way shard run holding ONE candidate event, either the
+    one the deterministic shard 0 assigns (``keep_selected``) or one outside it."""
+
+    def change(records):
+        events = [record for record in records if record["event"] == "candidate"]
+        ids = [event["candidate_id"] for event in events]
+        assigned = {ids[position] for position in select_mutation_shard(ids, index=0, count=2)}
+        chosen = next(event for event in events if (event["candidate_id"] in assigned) == keep_selected)
+        run, candidates, baseline = records[0], records[1], records[2]
+        end, terminal = next(r for r in records if r["event"] == "end"), records[-1]
+        candidates.update(selected_total=1, pending_total=1)
+        chosen.update(candidate_index=0, candidate_total=1)
+        end["buckets"] = {name: 0 for name in end["buckets"]}
+        end["buckets"][chosen["outcome_bucket"]] = 1
+        shard = {"event": "shard", "shard_index": 0, "shard_count": 2, "selected_total": 1}
+        records[:] = [run, shard, candidates, baseline, chosen, end, terminal]
+
+    return _progress(change)
+
+
+def _verdict_sharded_progress_is_not(env):
+    """A verdict for shard 0 of 2 (one outcome) beside an unsharded progress that records both."""
+    original = _fixture_document("r2_pass")
+    ids = [row["id"] for row in _plan_rows(original)]
+    assigned = {ids[position] for position in select_mutation_shard(ids, index=0, count=2)}
+
+    def change(document):
+        document["judgment"]["r2"].update(shard_index=0, shard_count=2)
+        mutation = next(claim for claim in document["claims"] if claim["rigor"] == "R2")["mutation"]
+        for bucket in ("killed", "survived", "equivalent", "crashed", "hung", "budget_exceeded"):
+            mutation[bucket] = [o for o in mutation.get(bucket, []) if o["candidate_id"] in assigned]
+        mutation["candidate_ids"] = [i for i in mutation["candidate_ids"] if i in assigned]
+        mutation["total"] = mutation["candidate_count"] = len(assigned)
+
+    return _verdict_edit(change)(env)
+
+
+def _both(*mutations):
+    def mutate(env):
+        merged = {}
+        for one in mutations:
+            merged.update(one(env))
+        return merged
+
+    return mutate
+
+
 def _options(**options):
     """Replace a harness option (``command_exit``, ``extra``, ...) without touching the fixture."""
 
@@ -352,6 +470,38 @@ CASES = (
     ("lane-file-outside-worktree", _lane_outside, "lane file must be inside the expected worktree"),
     ("lane-file-untracked", _lane_untracked, "lane file is not a single committed path"),
     ("lane-file-edited", _lane_edited, "lane file bytes differ from the expected committed tree"),
+    ("lane-file-directory", _lane_directory, "lane file is not a committed regular file: lanes"),
+    ("lane-file-unreadable", _lane_unreadable, "cannot read lane file"),
+    # -- verdict bound to the declared lane ---------------------------------------------
+    (
+        "verdict-r2-policy-differs",
+        _verdict_edit(lambda d: d["judgment"]["r2"].update(jobs=d["judgment"]["r2"]["jobs"] + 1)),
+        "R2 verdict policy jobs differs from the named lane declaration",
+    ),
+    # -- plan reconstruction -------------------------------------------------------------
+    (
+        "plan-base-needs-verdict-or-request-base",
+        _request_base_lane,
+        "plan base cannot be reconstructed without --verdict or --request-base",
+    ),
+    ("plan-unsupported", _no_mutation_plan, "lane has no mutation plan"),
+    ("plan-base-differs-from-verdict", _plan_base_differs, "reconstructed plan base differs from the verified verdict"),
+    # -- progress against the verdict's selected scope ------------------------------------
+    (
+        "progress-candidate-outside-the-verdict-shard",
+        _verdict_sharded_progress_is_not,
+        "has no corresponding outcome in the verified verdict",
+    ),
+    (
+        "progress-shard-differs-from-verdict",
+        _shard_progress(keep_selected=True),
+        "latest progress selected inventory differs from the verified verdict",
+    ),
+    (
+        "progress-candidate-outside-its-shard",
+        _both(_shard_progress(keep_selected=False), _options(verdict=None, command_exit=None)),
+        "latest progress run includes candidates outside its selected scope",
+    ),
     # -- argument checks -----------------------------------------------------------------
     ("command-exit-negative", _options(command_exit=-1), "command exit must be a non-negative integer"),
     ("offset-negative", _options(extra=("--offset", "-1")), "detail offset must be a non-negative integer"),

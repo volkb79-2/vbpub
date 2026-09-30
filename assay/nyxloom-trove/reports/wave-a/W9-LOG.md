@@ -104,6 +104,35 @@ Deleted (nothing pragma'd); dominating check in the same row:
 | `coverage artifact reports branch arcs that the verdict says were unavailable`, `verified verdict has an unknown branch_capability` | verifier (`coverage.branch_capability must be one of ['reported', 'unavailable']`, and `unavailable ... names branch data`, both seen) and the re-evaluation `coverage` comparison |
 | `_check_verdict_against_lane` `verdict commit differs from current expected HEAD` (the `head` parameter went with it) | `_read_verified_verdict(path, expected=head)` refuses any other commit against the same `head` immediately before |
 
+## Checkpoint 10: `campaign.py` at 100% line+branch, no pragma (495 `analysis/tests` passed)
+
+Every previously uncovered line/arc is now reached by a table row or pin. CD58 attempts, in order:
+
+| campaign.py site (old line) | reached by | result |
+|---|---|---|
+| lane path is a committed directory (:211) | `lane-file-directory` (refusals table) | reachable |
+| `cannot read lane file` (:216-217) | `lane-file-unreadable` (`_read_artifact` fails for `label == "lane file"` only) | reachable |
+| `lane has no mutation plan` + `_lane_plan` unsupported return (:311) | `plan-unsupported` (real `_lane_plan`, `assay.cli.plan_jobs` returns `UNSUPPORTED`) | reachable |
+| `plan base cannot be reconstructed without --verdict or --request-base` (:1398) | `plan-base-needs-verdict-or-request-base` (lane committed with `base_source = "request"`) | reachable; `--request-base` value reaches the planner: `test_request_base_reaches_the_planner_for_a_lane_that_delegates_its_base` |
+| `reconstructed plan base differs` (:1405) | `plan-base-differs-from-verdict` | reachable |
+| `R2 verdict policy jobs differs` (:1381) | `verdict-r2-policy-differs` | reachable |
+| non-native lane `not_supported` (:1408) | `test_a_non_native_mutation_lane_is_reported_not_supported` (lane declares `mutation.format`; an edited verdict with `producer = "ingested"` is refused by `verify_text`, so the lane route is the one) | reachable |
+| progress candidate without a verdict outcome (:608) | `progress-candidate-outside-the-verdict-shard` (verdict for shard 0/2, unsharded progress recording both) | reachable |
+| `latest progress selected inventory differs` (:1579) | `progress-shard-differs-from-verdict` | reachable |
+| `latest progress run includes candidates outside its selected scope` (:1582) | `progress-candidate-outside-its-shard` (no verdict) | reachable |
+| `_identity_reproduces` ValueError (:811-812) | `test_o16b...[digest-absent, byte-span-invalid]` | reachable |
+| non-`reported` branch capability (474->501) | `test_a_verdict_that_reports_no_branch_capability_yields_no_arc_detail` (real R1 run, `meta.branch_coverage` false) | reachable |
+| in-repo key that is not the judged file (491->484) | `key-for-another-file-in-the-repository` | reachable |
+| `_fixed_components` (:1318-1333) | three `test_projection_*` tests | reachable |
+| `reclassified` `state_vs_progress` (:950) | `test_a_state_bucket_that_disagrees_with_the_progress_event_is_reclassified_not_hidden` | reachable |
+| `if candidate_id in selection` false (1079->1078) | `test_an_earlier_runs_candidate_outside_the_latest_selection_is_not_counted` | reachable |
+| `--format text` with `--project` (:1934) | `test_the_text_format_prints_the_projection_line_only_with_project` | reachable |
+| positive `--log` read | `test_a_readable_gate_log_is_recorded_as_evidence_and_never_parsed` | reachable |
+| library `outcome filters must use` (:1511) | `test_the_library_entry_refuses_an_outcome_filter_outside_the_six_buckets` (argparse `choices` dominates the CLI route) | reachable through the library |
+| `_candidate_outcomes` `candidate_id is None` branch (523->521) | DELETED under CD58; `DOMINATED` gained `outcome-id-absent` and `outcome-id-null`, both refused by `verify_text` | dominated |
+
+OWED at this checkpoint (controlled breaks for the new pins; Edit break -> red -> Edit revert -> log a row here): `plan-unsupported` (`if plan["status"] == "unsupported"` off), `--request-base` pass-through (`request_base` replaced by `None` in `_reconstruct_plan`), the `terminal_disagrees` blocker (`test_a_verdict_campaign_whose_stream_has_no_terminal_event_...`; `("terminal_disagrees", False)`), `phase_seconds`/`startup_seconds` shapes (`_optional_object` returns the value unchanged), `started_count`/`evidence_command` (`_typed` returns the value unchanged), `state_vs_progress` (item not appended), the fixed-component pins (`coverage = span("direct")` first, `other` without `- (r2 or 0.0)`), the earlier-run pin (`sorted(selection)` -> `sorted(seen)` in `_resolutions`), `--log` (`artifacts["log"]` not set), `no branch capability` (arc detail computed when capability is not `reported`), `not_supported` (branch returns `not_applicable`), the shard-scope rows (`progress-*`: each check `if False`).
+
 ## Judge oracles (J step)
 Positive: `tests/core/test_cli_plan_jobs.py` 11 passed; `tests/core/test_mutation_candidates_event_judge.py` 2 passed; O21 set (`test_b105_cli_boundaries`, `test_cli_plan_estimate_hint`, `test_mutation_judge_identity*`, `test_mutation_progress_budget_plan`, `test_b106_reuse_and_witness`, `test_cli_provenance_and_request_base`, `test_import_contracts`, `test_cli_run`) 360 passed, 1 skipped, all unmodified.
 

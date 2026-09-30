@@ -519,9 +519,8 @@ def _candidate_outcomes(document: dict) -> tuple[dict[str, list[dict]], dict[str
         entries = mutation_claim.get(bucket, [])
         buckets[bucket] = entries
         for entry in entries:
-            candidate_id = entry.get("candidate_id")
-            if candidate_id is not None:
-                by_id[candidate_id] = {"bucket": bucket, **entry}
+            # CD58: ``verify_text`` refuses an outcome without a well-formed candidate_id.
+            by_id[entry["candidate_id"]] = {"bucket": bucket, **entry}
     return buckets, by_id
 
 

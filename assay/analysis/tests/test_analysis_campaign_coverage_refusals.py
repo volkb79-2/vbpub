@@ -135,12 +135,19 @@ def test_a_missing_declared_artifact_is_reported_not_refused(tmp_path):
     [
         lambda d: d["files"].update({"/nowhere/x.py": copy.deepcopy(d["files"]["src/mod.py"])}),
         lambda d: d["files"].update({"a\0b": copy.deepcopy(d["files"]["src/mod.py"])}),
+        lambda d: d["files"].update({"src/other.py": {
+            "executed_lines": [], "missing_lines": [], "excluded_lines": [],
+            "executed_branches": [], "missing_branches": [],
+        }}),
         lambda d: (
             d["files"]["src/mod.py"]["executed_lines"].append(100),
             d["files"]["src/mod.py"]["missing_branches"].append([100, 101]),
         ),
     ],
-    ids=["key-outside-the-repository", "key-that-cannot-be-resolved", "arc-on-a-line-the-verdict-does-not-judge"],
+    ids=[
+        "key-outside-the-repository", "key-that-cannot-be-resolved", "key-for-another-file-in-the-repository",
+        "arc-on-a-line-the-verdict-does-not-judge",
+    ],
 )
 def test_records_and_arcs_the_verdict_does_not_judge_never_change_the_reported_arcs(tmp_path, change):
     root, head, evidence = _r1_campaign(tmp_path)
@@ -150,6 +157,27 @@ def test_records_and_arcs_the_verdict_does_not_judge_never_change_the_reported_a
     assert document["coverage"]["missing_branch_arcs"] == [
         {"path": "src/mod.py", "source_line": 7, "destination": 9}
     ]
+
+
+_NO_BRANCH_DATA = {
+    "meta": {"branch_coverage": False},
+    "files": {
+        "src/mod.py": {
+            "executed_lines": [1, 2, 6, 7, 8, 9], "missing_lines": [3], "excluded_lines": [],
+        }
+    },
+}
+
+
+def test_a_verdict_that_reports_no_branch_capability_yields_no_arc_detail(tmp_path):
+    root, head, evidence = _r1_campaign(tmp_path, _NO_BRANCH_DATA)
+    code, document = _go(root, head, evidence)
+    coverage = document["coverage"]
+    assert code == 1, document.get("errors")
+    assert coverage["artifact_status"] == "parsed_and_reverified_r1"
+    assert coverage["r1"]["missing_lines"] == {"src/mod.py": [3]}
+    assert coverage["branch_arc_detail_status"] == "unavailable"
+    assert coverage["missing_branch_arcs"] is None
 
 
 def test_a_format_that_does_not_expose_arc_destinations_says_so(tmp_path):

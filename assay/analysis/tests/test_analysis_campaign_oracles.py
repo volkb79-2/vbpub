@@ -268,14 +268,19 @@ def test_o13_the_schema_rejects_documents_that_break_its_closed_shape(tmp_path, 
 
 # ---- O16b -----------------------------------------------------------------
 
+@pytest.mark.parametrize(
+    "tamper",
+    [{"source_sha256": "f" * 64}, {"source_sha256": None}, {"start_byte": -1}],
+    ids=["other-digest", "digest-absent", "byte-span-invalid"],
+)
 def test_o16b_a_plan_row_whose_identity_inputs_do_not_reproduce_its_id_is_refused(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, tamper
 ):
     document = _fixture_document("r2_pass")
     root, head, verdict = _repository(tmp_path, document)
     rows = _plan_rows(document)
     tampered = rows[0]["id"]
-    rows[0] = {**rows[0], "source_sha256": "f" * 64}
+    rows[0] = {**rows[0], **tamper}
     _install_plan(monkeypatch, document, rows)
     progress = tmp_path / "progress.jsonl"
     _write_progress(progress, head=head, document=document, plan_rows=rows)

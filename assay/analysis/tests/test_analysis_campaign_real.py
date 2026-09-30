@@ -74,7 +74,7 @@ _COVERAGE = {
 }
 
 
-def _r1_campaign(tmp_path: Path):
+def _r1_campaign(tmp_path: Path, coverage: dict = _COVERAGE):
     root = _repository(tmp_path)
     (root / "README").write_text("base\n")
     base = _commit(root, "base")
@@ -83,7 +83,7 @@ def _r1_campaign(tmp_path: Path):
         "def g(y):\n    if y:\n        y = 1\n    return y\n"
     )
     _commit(root, "add mod.py")
-    write_cov = "cat > cov.json <<'EOF'\n" + json.dumps(_COVERAGE) + "\nEOF"
+    write_cov = "cat > cov.json <<'EOF'\n" + json.dumps(coverage) + "\nEOF"
     (root / "assay.toml").write_text(
         "schema_version = 2\n\n"
         "[lanes.package]\n"
@@ -116,7 +116,7 @@ def _r1_campaign(tmp_path: Path):
     assert code == 1, err
     # The run judged its artifact inside an isolated snapshot; the analysis
     # reverifies the same bytes from the worktree, where the lane declares them.
-    (root / "cov.json").write_text(json.dumps(_COVERAGE))
+    (root / "cov.json").write_text(json.dumps(coverage))
     return root, head, evidence
 
 
