@@ -2583,6 +2583,9 @@ class TestCtlRequest:
             # C7 (§8.4/§8.2): the parser declares these on `start`/`watch`,
             # so the reference translator may read them unconditionally.
             progress_stream=None, idle_bound=None, ceiling=None, on_stall=None,
+            # C8 (§8.3): placement controls are part of the fixed start
+            # request shape, including the false/absent-option defaults.
+            place=False, memory_high=None, memory_max=None, cpu_weight=None,
             watch_interval=30,
         )
         for key, value in overrides.items():
