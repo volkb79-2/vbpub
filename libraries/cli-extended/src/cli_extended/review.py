@@ -397,7 +397,9 @@ def render_cli_surface_markdown(
             f"fromfile_prefix_chars={setting.get('fromfile_prefix_chars')!r}, "
             f"negative_number_matcher={setting.get('negative_number_matcher')!r}, "
             "has_negative_number_optionals="
-            f"{'yes' if setting.get('has_negative_number_optionals') else 'no'}"
+            f"{'yes' if setting.get('has_negative_number_optionals') else 'no'}, "
+            "negative_number_matcher_custom="
+            f"{'yes' if setting.get('negative_number_matcher_custom') else 'no'}"
             for setting in route.get("parser_settings", ())
         )
         invocation_mode = (
@@ -673,7 +675,11 @@ def _validate_distinct_surface_paths(
     resolved: list[tuple[str, Path, str]] = []
     for label, path in entries:
         try:
-            resolved_path = os.path.normcase(str(path.resolve()))
+            if path.is_symlink() or path.exists():
+                canonical_path = path.resolve(strict=True)
+            else:
+                canonical_path = path.parent.resolve(strict=True) / path.name
+            resolved_path = os.path.normcase(str(canonical_path))
         except (OSError, RuntimeError) as exc:
             raise SurfaceSpecError(
                 f"cannot resolve {label} path {str(path)!r}: {exc}"

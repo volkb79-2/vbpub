@@ -642,6 +642,9 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                         "allow_abbrev": False,
                         "prefix_chars": "-",
                         "fromfile_prefix_chars": None,
+                        "negative_number_matcher": {"pattern": r"-?\d+", "flags": 32},
+                        "has_negative_number_optionals": False,
+                        "negative_number_matcher_custom": True,
                     }
                 ],
                 "actions": [
@@ -757,10 +760,11 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
     assert "single-command; empty argv dispatches" in markdown
     assert "parser settings" in markdown.lower()
     assert "<entrypoint>: allow_abbrev=no," in markdown
+    assert "negative_number_matcher_custom=yes" in markdown
     assert "VALUE" in markdown and '"nargs": null' not in markdown
     assert "--flag" in markdown and '"nargs": 0' in markdown
     assert '"nargs": 2' in markdown
-    assert "parser inspect" in markdown
+    assert '"parser_path": ["inspect"]' in markdown
     assert "argparse._StoreAction" in markdown
     assert "argparse._StoreTrueAction" in markdown
     assert '"callable": "pathlib.Path"' in markdown
@@ -1076,6 +1080,63 @@ def test_review_lexer_handles_negative_values_and_missing_option_values_at_end()
     assert any("omits a value for --count" in item for item in findings)
 
 
+@pytest.mark.parametrize(
+    "matcher",
+    (
+        {"pattern": None, "flags": 0},
+        {"pattern": r"-\d+", "flags": "bad"},
+        {"pattern": "(", "flags": 0},
+    ),
+    ids=("uninspectable", "invalid-flags", "invalid-regex"),
+)
+def test_review_lexer_fails_closed_for_unusable_negative_number_matchers(matcher):
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "kind": "invocation",
+        "parser_settings": [
+            {
+                "parser_path": ["inspect"],
+                "allow_abbrev": False,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+                "negative_number_matcher": matcher,
+                "has_negative_number_optionals": False,
+            }
+        ],
+        "actions": [
+            {
+                "id": "option:count",
+                "kind": "option",
+                "flags": ["--count"],
+                "nargs": None,
+                "minimum_values": 1,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:count",
+        "route_id": route_id,
+        "signature": "sha256:count",
+        "kind": "option-spelling",
+        "members": ["option:count"],
+        "shape": {"spelling": "--count"},
+    }
+    case = _case_for_candidate(candidate, ["inspect", "--count", "-1"])
+    findings = _review_findings(
+        {
+            "routes": [route],
+            "candidates": [candidate],
+            "syntax_complete": True,
+        },
+        ReviewCatalog("audit-tool", 8, (), (case,)),
+    )
+
+    assert any("omits a value for --count" in finding for finding in findings)
+
+
 @pytest.mark.parametrize("nargs", (None, "?"))
 def test_review_route_lexer_does_not_consume_extra_parent_positionals(nargs):
     prefix = {
@@ -1083,6 +1144,16 @@ def test_review_route_lexer_does_not_consume_extra_parent_positionals(nargs):
         "path": ["inspect"],
         "aliases": [],
         "kind": "route-prefix",
+        "parser_settings": [
+            {
+                "parser_path": [],
+                "allow_abbrev": False,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+                "negative_number_matcher": {"pattern": r"-\.?\d", "flags": 32},
+                "has_negative_number_optionals": False,
+            }
+        ],
         "actions": [],
     }
     route_id = "route:entrypoint:audit-tool/inspect/apply"
@@ -1853,6 +1924,16 @@ def test_review_route_lexer_skips_option_values_and_stops_at_delimiter(
         "path": ["inspect"],
         "aliases": [],
         "kind": "route-prefix",
+        "parser_settings": [
+            {
+                "parser_path": [],
+                "allow_abbrev": False,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+                "negative_number_matcher": {"pattern": r"-\.?\d", "flags": 32},
+                "has_negative_number_optionals": False,
+            }
+        ],
         "actions": [],
     }
     leaf = {
@@ -1860,6 +1941,7 @@ def test_review_route_lexer_skips_option_values_and_stops_at_delimiter(
         "path": ["inspect", "detail"],
         "aliases": ["d"],
         "kind": "invocation",
+        "parser_settings": prefix["parser_settings"],
         "actions": [
             {
                 "id": "option:value",
@@ -2655,6 +2737,7 @@ def test_sync_and_check_reject_colliding_paths_without_writing(
     tmp_path, collision, expected_roles
 ):
     app, _surface, review, manifest, spec = _make_files(tmp_path, active=False)
+    manifest.write_text("{}\n", encoding="utf-8")
     original_files = {
         path: path.read_bytes() for path in (review, manifest, spec)
     }
@@ -2700,6 +2783,20 @@ def test_sync_rejects_file_alias_of_review_catalog(tmp_path, alias_kind):
     assert review.read_bytes() == original_review
     assert spec.read_bytes() == original_spec
     assert manifest_alias.is_symlink() is (alias_kind == "symlink")
+
+
+def test_sync_rejects_unresolvable_artifact_path(tmp_path):
+    app, _surface, review, _manifest, spec = _make_files(tmp_path, active=False)
+    manifest_loop = tmp_path / "manifest-loop"
+    manifest_loop.symlink_to(manifest_loop.name)
+
+    with pytest.raises(SurfaceSpecError, match="cannot resolve manifest path"):
+        sync_cli_surface(
+            app,
+            review_path=review,
+            manifest_path=manifest_loop,
+            spec_path=spec,
+        )
 
 
 def test_sync_template_and_markdown_make_candidates_reviewable(tmp_path):
