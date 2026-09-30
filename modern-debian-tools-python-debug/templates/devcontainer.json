@@ -184,7 +184,7 @@
     // Explicitly select the durable host-managed remote for all builds.
     "BUILDX_BUILDER": "mdt-managed",
     "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock",
-    // Persist Codex's shared SQLite database on the grouped `.codex` source.
+    // Share Codex's SQLite session database across the dual-profile setup.
     "CODEX_SQLITE_HOME": "/home/vscode/.codex/sqlite-shared"
   },
 
