@@ -108,3 +108,9 @@ Every finding is accepted, with its fix text as written, except where noted belo
 - Stage 2 merge order is W6, then W4, then W5 (CD21; REBASE-P0-P2). **W5 branches only after W4 has merged** (CD28).
 - W7 runs after W4 (CD12).
 - Stage 3 merge order is W8 before W9.
+
+## Stage-2 integration (2026-09-30)
+
+| # | Decision |
+|---|---|
+| CD49 | **Root `*_support.py` helpers are allowed (CD23 amended again).** Combining W4's root-layout test with W6's shared helper file clashed. The `tests/` root may now hold `conftest.py`, `fixtures/` and `*_support.py` helper modules, but never a `test_*.py` file. The fix is byte-identical in W5 and W7 (W7's step-0 commit `a4a0010a`), so the stage-2 merges W4 → W7 carry it without conflict. |
