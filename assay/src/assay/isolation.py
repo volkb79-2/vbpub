@@ -43,7 +43,7 @@ import stat
 import tempfile
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from .records import record
 from pathlib import Path, PurePosixPath
 from typing import Callable, ContextManager, Iterator, Mapping, Sequence
 
@@ -110,7 +110,7 @@ def _stale_site(message: str) -> AssayError:
     )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotLimits:
     """Ceilings for source inspection, transfer, and materialization.
 
@@ -159,7 +159,7 @@ DEFAULT_SNAPSHOT_LIMITS = SnapshotLimits(
 )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotSpec:
     """One source commit and caller-owned scratch namespace.
 
@@ -226,7 +226,7 @@ class SnapshotSpec:
             )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Snapshot:
     """One independently owned working repository, valid for its context."""
 
@@ -255,7 +255,7 @@ class Snapshot:
     tracked_directories: frozenset[PurePosixPath]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _Entry:
     """One validated leaf of the prepared commit's tree, repo-top-relative."""
 
@@ -268,7 +268,7 @@ class _Entry:
     target: str | None = None
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _Manifest:
     """The frozen content of one commit: what materialization may write.
 

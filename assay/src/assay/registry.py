@@ -87,7 +87,7 @@ onto the registry would now have to be unbolted, or duplicated.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from .records import record
 from types import MappingProxyType
 from typing import Mapping
 
@@ -103,7 +103,7 @@ __all__ = ["Registry", "RegistryEntry", "get_adapter", "new_registry"]
 _ADAPTER_RIGOR_LEVELS: frozenset[str] = frozenset({"R1", "R2", "R3"})
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class RegistryEntry:
     """One adapter, paired with the rigor levels THIS BUILD reaches through
     it — never the adapter's own theoretical capability, only what a real
@@ -130,7 +130,7 @@ class RegistryEntry:
             )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Registry:
     """An immutable set of entries, keyed by :attr:`LanguageAdapter.name`.
 

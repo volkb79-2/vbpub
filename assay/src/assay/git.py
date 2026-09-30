@@ -91,7 +91,7 @@ import stat as stat_module
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
+from .records import record
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -421,7 +421,7 @@ def _resolve_git_executable() -> Path:
     return resolved
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _ResolvedRepo:
     """The exact repository identity every substantive command anchors to:
     a trusted work-tree root (found by OUR OWN filesystem walk, never by
@@ -1622,7 +1622,7 @@ def _p22_init_private(
         )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _P22Source:
     """A consumer repository proven safe to read objects from.
 

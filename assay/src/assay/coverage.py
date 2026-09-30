@@ -50,7 +50,7 @@ from "there was nothing to read".
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from .records import record
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping
@@ -85,7 +85,7 @@ __all__ = [
 MAX_COVERAGE_ARTIFACT_BYTES = 16 * 1024 * 1024
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class FormatSpec:
     """One registered format: how to recognise it and how to parse it.
 

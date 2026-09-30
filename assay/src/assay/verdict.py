@@ -58,7 +58,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass
+from .records import record
 from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
@@ -825,7 +825,7 @@ def _check_file_tuple(value: Any, what: str) -> None:
         raise ValueError(f"{what} must be sorted, got {list(value)}")
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Coverage:
     """The R1 claim payload: changed-line coverage, and why its denominator is
     what it is.
@@ -1210,7 +1210,7 @@ class Coverage:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CanaryAttempt:
     """ONE canary target's own record (B007/A-432, schema v10): the evidence
     a cause-sensitive canary produces for a single declared target, carried
@@ -1404,7 +1404,7 @@ class CanaryAttempt:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CanaryResult:
     """The R3 claim payload at schema v10 (B007/A-432): one ``mechanism`` and
     an ORDERED, bounded array of :class:`CanaryAttempt` records, one per
@@ -1470,7 +1470,7 @@ class CanaryResult:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationWitnessReceipt:
     """Minimal current-run pytest evidence for one failed call phase."""
 
@@ -1508,7 +1508,7 @@ class MutationWitnessReceipt:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationExecution:
     """How a native candidate reached its recorded outcome."""
 
@@ -1581,7 +1581,7 @@ class MutationExecution:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutantOutcome:
     """One mutant's identity, projected for the R2 artifact (A-116): the
     lightweight subset of :class:`~assay.mutation.Mutant`'s own identity a
@@ -1802,7 +1802,7 @@ def _check_mutant_outcome_tuple(value: Any, what: str) -> None:
         )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Mutation:
     """The R2 claim payload (P12, A-116): baseline-gated mutation execution
     against changed-line mutants, isolated per mutant, bounded by a
@@ -2099,7 +2099,7 @@ class Mutation:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgeProvenance:
     """(B018/A-327) WHICH build of assay produced this verdict.
 
@@ -2168,7 +2168,7 @@ class JudgeProvenance:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentResolved:
     """(P33/V5-1) What was judged, shared by every computed tier above R0.
 
@@ -2248,7 +2248,7 @@ class JudgmentResolved:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentR1:
     """The effective R1 policy (P16, sol finding 2): the coverage
     format+artifact spelling the run used, and the ``fail_under`` floor and
@@ -2445,7 +2445,7 @@ class JudgmentR1:
 MUTATION_PRODUCERS: tuple[str, ...] = ("native", "ingested")
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SourcePosition:
     """(B046, schema v9) One position in the judged source: a project-root-
     relative wire path and a one-based line.
@@ -2479,7 +2479,7 @@ class SourcePosition:
         return {"path": self.path, "lineno": self.lineno}
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationProducerTool:
     """(B046, schema v9) The identity of the foreign mutation tool whose
     report assay ingested, copied VERBATIM from that report.
@@ -2520,7 +2520,7 @@ class MutationProducerTool:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentR2:
     """Populated by ``assay run``'s own R2 CLI wiring (P18) whenever the
     rendered R2 claim carries a ``mutation`` payload. The mutation policy
@@ -3110,7 +3110,7 @@ class JudgmentR2:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentR3:
     """Populated by ``assay run``'s own isolated R3 CLI wiring (P19)
     whenever the rendered R3 claim carries a ``canary`` payload. The canary
@@ -3198,7 +3198,7 @@ class JudgmentR3:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class JudgmentR4:
     """(F015/M7, A-433 as amended by A-434, schema v10) the effective R4
     policy: red-first, ``fail-before/pass-after``.
@@ -3260,7 +3260,7 @@ class JudgmentR4:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class RedFirstResult:
     """(F015/M7, A-433/A-434, schema v10) the R4 claim payload: BOTH recorded
     outcomes, so a consumer re-derives the status rather than trusting it.
@@ -3328,7 +3328,7 @@ class RedFirstResult:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Judgment:
     """The resolved judge policy for whichever declared rigor levels
     actually rendered a real computed judgment (P16). P18/P19 populate
@@ -3469,7 +3469,7 @@ class Judgment:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class RefusalDetail:
     """(B053/DA-D2(c), A-428, A-439) One refusal's sentence, already bounded.
 
@@ -3552,7 +3552,7 @@ def refusal_detail(message: str) -> RefusalDetail | None:
     )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Claim:
     """One COMPUTED declared rigor level's evidence (A-024)."""
 
@@ -3955,7 +3955,7 @@ def _check_nonempty(value: str, what: str) -> None:
         raise ValueError(f"{what} must be a non-empty string, got {value!r}")
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class EvidenceDeclaration:
     """One externally sourced requirement, identified independently of rigor."""
 
@@ -3978,7 +3978,7 @@ class EvidenceDeclaration:
         return {"source": self.source, "key": self.key}
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Evidence:
     """One adjudicated or attested result, keyed by ``(source, key)``.
 
@@ -4090,7 +4090,7 @@ class Evidence:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Helper:
     """(P33/V5-5) one external helper an adapter actually INVOKED.
 
@@ -4135,7 +4135,7 @@ class Helper:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotPolicy:
     """(B006(a)/A-269, ``W1-CARVE-B006a-project-scope.md`` §5) the
     lane-selected initial worktree materialisation policy -- a POLICY
@@ -4277,7 +4277,7 @@ class SnapshotPolicy:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class WorktreeIntegrity:
     """The explicit dirt policy applied before a snapshot lane ran.
 
@@ -4328,7 +4328,7 @@ class WorktreeIntegrity:
         }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class Verdict:
     """One verdict: one lane, one commit (§7).
 

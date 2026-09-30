@@ -58,7 +58,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import field as dataclass_field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
@@ -73,6 +73,7 @@ from .errors import LaneConfigError
 # the registry lived in `assay.mutation`.
 from .liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_TRUE, argv_invokes_pytest
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
+from .records import positional_record
 # (B078) The result-report reader registry, imported at module level for
 # `FORMAT_REGISTRY`'s own reason (A-068): `result_report.format` is closed
 # against the registry's own keys, never a second hardcoded list that could
@@ -403,7 +404,7 @@ def parse_duration(text: str) -> float:
     return seconds
 
 
-@dataclass(frozen=True)
+@positional_record
 class CoverageConfig:
     """``[lanes.X.judge.coverage]`` — the declared format, artifact path and
     (B045, schema v9) the declared PRODUCER.
@@ -492,7 +493,7 @@ MAX_MAX_MUTANTS = 10_000
 MAX_SHARD_COUNT = 10_000
 
 
-@dataclass(frozen=True)
+@positional_record
 class MutationConfig:
     """``[lanes.X.judge.mutation]`` (P18) -- the closed R2 execution policy:
     a required positive ``jobs`` worker count (A-082/A-122: never derived
@@ -656,7 +657,7 @@ _CANARY_FIELDS: tuple[str, ...] = (
 )
 
 
-@dataclass(frozen=True)
+@positional_record
 class CanaryConfig:
     """``[lanes.X.judge.canary]`` (P19, B007/A-432) -- the closed R3
     declaration: which :mod:`assay.canary` mechanism to attempt, and which
@@ -772,7 +773,7 @@ class CanaryConfig:
         return parse_duration(self.budget_per_attempt)
 
 
-@dataclass(frozen=True)
+@positional_record
 class EvidenceConfig:
     """``judge.evidence[]`` (P26/A-209, widened B004/A-430) -- one declared
     Tier-3 (``"attested"``) or Tier-2 (``"adjudicated"``) identity.
@@ -793,7 +794,7 @@ class EvidenceConfig:
         return {"source": self.source, "key": self.key}
 
 
-@dataclass(frozen=True)
+@positional_record
 class JudgeConfig:
     """``[lanes.X.judge]`` — HOW to judge (D7's second question, A-015).
 
@@ -957,7 +958,7 @@ def _validate_omission_path(value: Any, *, where: str, field: str) -> str:
 _RESULT_REPORT_FIELDS: tuple[str, ...] = ("format", "path")
 
 
-@dataclass(frozen=True)
+@positional_record
 class ResultReportConfig:
     """``[lanes.X.result_report]`` (B078) -- the lane's opt-in declaration of
     a structured test report R0 may consult INSTEAD of the wrapped command's
@@ -1039,7 +1040,7 @@ def _load_result_report(value: Any, where: str) -> ResultReportConfig | None:
     return ResultReportConfig(format=report_format, path=path)
 
 
-@dataclass(frozen=True)
+@positional_record
 class IsolationConfig:
     """``[lanes.X.isolation]`` (B006a/A-269, §3.2) -- the declared repository
     snapshot materialisation policy for an R1/R2/R3 lane. A POLICY object,
@@ -1188,7 +1189,7 @@ class IsolationConfig:
         return declared
 
 
-@dataclass(frozen=True)
+@positional_record
 class Lane:
     """One declared lane. Every attribute came out of the file."""
 
@@ -1289,7 +1290,7 @@ class Lane:
         return declared
 
 
-@dataclass(frozen=True)
+@positional_record
 class LaneFile:
     """A parsed ``assay.toml``."""
 

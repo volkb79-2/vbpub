@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from .records import record
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -14,7 +14,7 @@ MAX_REUSE_ARTIFACT_BYTES = 16 * 1024 * 1024
 V12_COLD_START = 12
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class ReuseSource:
     path: Path
     schema_version: int

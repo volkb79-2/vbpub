@@ -80,7 +80,8 @@ import threading
 import time
 import tomllib
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
+from .records import record
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -208,7 +209,7 @@ Clock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class LaneDeadline:
     """One lane-wide monotonic deadline; no lower layer chooses a clock.
 
@@ -685,7 +686,7 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CommandPlan:
     """What WILL run, resolved before anything executes.
 
@@ -742,7 +743,7 @@ class CommandPlan:
     cwd_declared: str | None = None
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CommandResult:
     """The real outcome of the R0 step -- append rejected, executable
     missing, budget exceeded, command failed, or command passed. Exactly what
@@ -2762,7 +2763,7 @@ def _relocate_source_roots(
     return replace(lane, judge=replace(judge, source_root_paths=relocated))
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotUnitResult:
     """One executed higher-rigor unit (P23): the real :class:`CommandResult`,
     the post-run Git-state verdict (``None`` when the snapshot is still
@@ -3460,7 +3461,7 @@ def _mutation_targets_whole(
     return tuple(resolved)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _PreparedOutcome:
     """The raw materials :func:`_run_higher_rigor_lane` needs to build the
     final :class:`~assay.verdict.Verdict` -- kept separate from an actually

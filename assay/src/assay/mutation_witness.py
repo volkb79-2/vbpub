@@ -7,9 +7,11 @@ import json
 import os
 import shlex
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+from .records import record
 
 if TYPE_CHECKING:  # pragma: no cover -- annotation-only import; importing at runtime creates a cycle
     from .runner import CommandPlan
@@ -23,7 +25,7 @@ WITNESS_PLUGIN_PATH_ENV = "ASSAY_MUTATION_WITNESS_PLUGIN_PATH"
 WITNESS_LIVENESS_PLUGIN_PATH_ENV = "ASSAY_MUTATION_WITNESS_LIVENESS_PLUGIN_PATH"
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class WitnessPluginInjection:
     plan: "CommandPlan"
     active: bool

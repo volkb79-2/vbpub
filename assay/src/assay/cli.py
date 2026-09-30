@@ -64,7 +64,8 @@ import shlex
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
+from .records import record
 from pathlib import Path
 from collections import Counter
 from typing import Any, Literal, Sequence, TextIO, TypedDict
@@ -1586,7 +1587,7 @@ PLAN_ESTIMATE_HINT = (
 )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _PlanDiscovery:
     commit: str
     tree: str

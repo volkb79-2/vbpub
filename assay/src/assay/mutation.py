@@ -111,7 +111,7 @@ import threading
 import time
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, replace as _dataclass_replace
+from dataclasses import replace as _dataclass_replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -129,6 +129,7 @@ from .mutation_witness import read_internal_receipt as _read_witness_receipt
 from .mutation_witness import replay_witness_from_receipt as _replay_witness_from_receipt
 from .mutation_witness import supports_sequential_pytest
 from .mutation_witness import witness_from_receipt as _witness_from_receipt
+from .records import record
 from .verdict import (
     DISCARD_REASONS,
     MUTATION_BUCKETS,
@@ -320,7 +321,7 @@ def _reject_unknown_rejudge_ids(
         )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationSite:
     """One candidate mutation, as a BOUNDED descriptor (P21/A-180).
 
@@ -450,7 +451,7 @@ def line_for_offset(text_bytes: bytes, offset: int) -> int:
 # --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationTarget:
     """One changed file to mutate: its repo-relative *path* (the same
     forward-slash, repo-top-relative spelling ``adapters/base.py``'s own
@@ -559,7 +560,7 @@ def resolve_mutation_targets(
     return tuple(targets)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutantJob:
     """One ``(file, site)`` pair — the unit of work :func:`run_mutation` fans
     out over the executor.
@@ -1903,7 +1904,7 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
     return tuple(merged_candidates)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _MutantRun:
     """(P34) one mutant's own full attempt record: the command's
     :class:`~assay.runner.CommandResult` plus whatever the lane's own
@@ -3450,7 +3451,7 @@ _DISCARD_REASON_BY_STATUS: Mapping[str, str] = {
 }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class IngestedMutationResult:
     """(B046) What :func:`ingest_mutation_report` produces: the R2 payload
     plus the four ingested-only facts ``judgment.r2`` records beside it.

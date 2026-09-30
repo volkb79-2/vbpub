@@ -69,7 +69,7 @@ failure this whole seam exists to remove.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from ..records import positional_record
 from pathlib import Path, PurePosixPath
 from typing import Iterator
 
@@ -95,7 +95,7 @@ _PUNCTUATION = frozenset("()[]{},")
 _MODULE_FILE_NAME = "go.mod"
 
 
-@dataclass(frozen=True)
+@positional_record
 class ModuleDeclaration:
     """A module path together with the ``go.mod`` it was read out of.
 

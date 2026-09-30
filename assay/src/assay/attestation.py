@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from .records import record
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
@@ -119,7 +119,7 @@ def _bad_lane_config(message: str) -> AssayError:
     return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.BAD_LANE_CONFIG)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class AttestationRecord:
     """One parsed attestation file: what an external review claims (A-092).
 

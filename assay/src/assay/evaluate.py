@@ -73,7 +73,7 @@ the same way ``FORMAT_MISMATCH``/``UNREADABLE_ARTIFACT`` already do.
 from __future__ import annotations
 
 import fnmatch
-from dataclasses import dataclass
+from .records import record
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -298,7 +298,7 @@ def _attribute_line(
     return ordered[0].start_line
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CoverageEvaluation:
     """The four-way union's result — everything :mod:`assay.runner` needs to
     build an R1 :class:`~assay.verdict.Claim`, already typed rather than a
