@@ -470,12 +470,12 @@ class TestAbsentInputsStayNull:
         assert result["memory"]["peak_bytes"] == 500 * 1024 * 1024
         assert result["memory"]["peak_over_baseline_bytes"] is None
 
-    def test_peak_over_baseline_still_floors_at_zero_in_container_shared_scope(self):
-        # container-shared scope is UNAFFECTED by RW-21 -- still computes
-        # peak_over_baseline_bytes the original way (max(0, peak -
-        # baseline)). Two samples so peak (a max() over sampled
-        # memory.current) can independently differ from baseline (the
-        # FIRST sample's current) without the max() trivially including it.
+    def test_shared_peak_includes_baseline_when_later_current_falls(self):
+        # A shared-scope peak is the max of all readable memory.current
+        # samples, including sample zero. A later fall therefore leaves the
+        # peak at the baseline and the over-baseline value at zero. The
+        # defensive max(0, peak - baseline) floor cannot be distinguished
+        # from direct subtraction by this or any valid sample sequence.
         acc = _new_accumulator("container-shared", damon_enabled=False)
         target, slice_dir, proc = _frame_paths(FRAMES_DIR, 0)
         host = metrics.sample_host(proc_root=str(proc))
