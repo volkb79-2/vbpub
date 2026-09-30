@@ -3632,3 +3632,44 @@ protecting any verdict.
 - **Schemas** stay in `src/assay/schemas/`; documented paths do not move.
 - The undocumented `import assay.analysis` is removed. A source checkout
   needs both `src` and `analysis/src` on `PYTHONPATH`.
+
+### Mutation campaign closeout (B108 phase 1)
+
+`assay analyze campaign <lane>` (`analysis/src/assay_analysis/campaign.py`,
+schema `analysis-campaign.schema.json`) is a read-only, deterministic reader
+over five inputs: the committed lane file, Assay's own plan reconstructed from
+it through the public `cli.plan_jobs`, one progress stream, an optional verified
+verdict, and an optional mutation state directory. It imports no private judge
+name (CD18), judges nothing, and every estimate it prints is diagnostic.
+
+- **Counting rule (CD20, CD40).** A candidate is counted once, as its latest
+  recorded bucket, however many appended runs (`--resume`, `--rejudge`,
+  B106 reuse) mention it. A bucket that changed between runs is listed under
+  `reclassified`, never counted twice and never hidden; a state record whose
+  bucket disagrees with the latest progress event is `reclassified` with
+  source `state_vs_progress`, and one that disagrees with the verdict is an
+  `evidence_error` naming the file. In every evidence mode the order is: shape
+  validation; the current-judge rule (a record written under another
+  `judge_sha256` is stale and counts nothing); removal of unverified `hung`
+  records from the store view; only then the verdict comparison and the
+  reconciliation. A removed record is never an `evidence_error` or
+  `reclassified`. A `hung` row shows B107's liveness decision and evidence
+  status read-only. With a verdict, the verdict's six buckets decide; without
+  one, the status is never `complete` (`no_verdict` is a blocker).
+- **Exit codes and why 3 diverges from A-460.** `0` complete PASS, `1`
+  complete and not PASS, `2` evidence error, `3` incomplete. A-460's `report`
+  uses `3` for `running`: a live, current, nonterminal progress run inside a
+  freshness window, a judgment about the clock. `campaign` has no clock rule and
+  no live state; its `3` is `incomplete`, a post-hoc property of the evidence
+  (no verdict, no `--command-exit`, an unexhausted inventory, an unreconciled
+  state store, a terminal event that disagrees, an unreverified coverage
+  artifact). The names of the reasons are `complete_blockers`. Both commands
+  keep `2` for evidence that cannot be trusted, and neither lets a log decide.
+- **`errors[].source` vocabulary.** `arguments`, `lane`, `verdict`, `plan`,
+  `progress`, `input`, `state`, `coverage`: the input that was refused, so a
+  controller can act without parsing the message. `--command-exit` without a
+  `--verdict` is an `arguments` evidence error (CD55).
+- **Shape.** JSON is closed and schema-validated; `--format text` prints a
+  summary whose `projection (diagnostic)` line appears only with `--project`.
+  Adverse candidates are paged (`--outcome`, `--path-prefix`, `--offset`,
+  `--limit`) and always carry `matching_total` and `next_offset`.

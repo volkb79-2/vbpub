@@ -2676,7 +2676,7 @@ never says `coverage_parsed`.
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
 | `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`) |
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |
-| `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
+| `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total`, `judge_sha256` (the digest of the judge that runs the sweep; additive, B108) |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
 | `baseline` | the sweep's baseline record | `candidate_total` |
 | `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (now including `hung`, B091/RW-33 — see below), `elapsed_seconds`, `tests_completed` (B091 A4/B097 — the count of owner-process `test` records; `None` when liveness never ran for this lane, `0` when it ran and genuinely observed no owner test event yet, distinct meanings), `cpu_seconds`, `peak_rss_bytes`, `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`), `startup_seconds` (`to_session_start`/`to_first_test`) — diagnostic resource evidence, additive, never a classification input; each is `None` when not measured (a lane without liveness measures none of `cpu_seconds`, `peak_rss_bytes`, `startup_seconds`). `cpu_seconds` is the maximum over the monitor's 1 Hz samples of utime+stime+cutime+cstime summed over the live process tree: a lower bound on the candidate's CPU, not an exact total (the samples can dip, and CPU after the last sample is missing). `peak_rss_bytes` is a 1 Hz lower bound on peak Σ RSS; Σ RSS overcounts shared and copy-on-write pages, so it is not a bound on true peak memory use. The four keys describe the attempt that produced `outcome_bucket`: a witness replay that did not kill counts only in `elapsed_seconds`. The same object is stored as `resources` in the candidate's state record. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`cpu_seconds`, `peak_rss_bytes`, `samples`, `spawned_at`, `format`), which is assay-internal input to these keys |
@@ -4196,3 +4196,53 @@ diagnostics at every lane and analysis verb depth start with `ASSAY <version> �
 declared-lane judge` as line 1; preserve it when storing operator diagnostics.
 `assay --version` is exactly one identity line, and normal command output is
 unchanged.
+
+### Close out a mutation campaign with `assay analyze campaign` (B108)
+
+After a long mutation lane, hand `campaign` the lane name, the committed lane
+file, the expected commit and the progress stream. It reconstructs the lane's
+plan with Assay's own planner, counts every candidate once as its latest bucket
+and prints one sorted JSON document (or `--format text`). It is read-only and
+its timing and `--project` numbers are diagnostic: they never change `status`
+or the exit code. First screen a running or interrupted campaign without a
+verdict, then close it out with the verdict and the observed gate exit:
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
+  --progress .assay/progress-r2.jsonl --state-dir .assay/mutation-state \
+  --project --project-jobs 3 --outcome survived --limit 20
+assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
+  --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json \
+  --command-exit 0 --outcome survived --outcome hung
+```
+
+Without `--verdict` the status is never `complete` (blocker `no_verdict`). The
+survivors, hangs, crashes and budget exhaustions are listed by candidate id,
+path and operator, at most `--limit` per page with `matching_total` and
+`next_offset`; take the next page with `--offset`. `--project` adds a
+stratified wall-clock projection for `--project-jobs` workers (1 to 64) from
+measured per-candidate seconds; it needs at least 20 samples per basis and
+says why it has none. Exit codes: 0 complete PASS, 1 complete and not PASS, 2
+evidence error, 3 incomplete. `complete_blockers` names why a campaign is
+incomplete. Without `--verdict`, a plan whose lane delegates its base to the
+request needs `--request-base`.
+
+- **Plan rows.** `assay plan --json` rows carry `source_sha256` (the
+  candidate's source file) and `mutated_file_sha256` (the file with the
+  mutation applied) beside `path`, `lineno`, `operator`, `description`,
+  `start_byte` and `end_byte`. `campaign` recomputes each `candidate_id` from
+  the row's identity inputs, and a row whose id does not reproduce is refused.
+- **`judge_sha256` in the progress table.** The `candidates` event now records
+  `judge_sha256` (the digest of the judge that will run), so a resumed run
+  under a new judge counts only its own events, and state records written
+  under another judge are reported as `stale_judge`, not counted.
+- **`--coverage` reads the artifact from the worktree.** `campaign` reads the
+  R1 coverage artifact at the path the lane declares, inside the worktree, and
+  re-evaluates it against the verdict. It never reads the isolated snapshot a
+  judge ran in. A lane whose coverage command writes the artifact only inside
+  that snapshot leaves nothing at the declared path: the consumer must place
+  the artifact there (copy it out of the run, uncommitted) before running
+  `campaign`. A missing artifact is reported as `artifact_status: missing`,
+  not refused; a supplied `--coverage` path that is not the declared one is an
+  evidence error.

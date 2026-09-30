@@ -10,6 +10,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `phase_seconds`/`startup_seconds` and state `resources` (with the
   `<events>.resources.json` sidecar); baseline `test` `setup_s`/`teardown_s`.
   All additive; no schema version changes (B111)
+- feat(assay): `assay analyze campaign <lane>` (B108 phase 1), a read-only,
+  deterministic campaign closeout: `--file`, `--expected-commit`, `--progress`,
+  `--verdict`, `--command-exit`, `--state-dir`, `--request-base`, `--project`,
+  `--project-jobs`, `--coverage`, `--log`, `--outcome`, `--path-prefix`,
+  `--offset`, `--limit`, `--format`. Its JSON (schema
+  `analysis-campaign.schema.json`) carries `errors[].source`,
+  `complete_blockers`, `reclassified`, `state`, `adverse`, `unresolved`,
+  `projection` and `campaign.selected_total`; exit 0/1/2/3 (3 is `incomplete`,
+  unlike `analyze report`, where 3 is `running`). Additive judge surfaces it
+  needs: the `candidates` progress key `judge_sha256`; the `assay plan` row keys
+  `source_sha256` and `mutated_file_sha256`; the public `cli.plan_jobs` and
+  `mutation.candidate_identity_fields`; and the public aliases replacing the
+  private judge names the analysis package used to reach. No existing verdict,
+  progress or plan key changes meaning; no schema version changes
 
 ### Changed
 - chore(assay): assay's own two B105 self-qualification lanes now use the
