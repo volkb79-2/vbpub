@@ -75,6 +75,35 @@ eb5585414886feba6b05668a708dae12c53907bd5e713d38238abc6e853239cb  tracked-change
 
 Pins added without a controlled break yet (OWED, do them first next session): `MAX_SAMPLE_IDS` (`test_a_state_sample_lists_at_most_ten_sorted_ids_and_the_full_count`), `errors_truncated`/`MAX_ERRORS` (`test_more_than_ten_state_failures_are_truncated_with_the_flag`), the `state` source of every state row, the CD58 `DOMINATED` pin (break: drop `evidence.verify_text` failure raise in `_read_verified_verdict`).
 
+## Checkpoint 9: owed controlled breaks and the coverage block (commit after `2181a9e8`)
+
+The four owed breaks were applied by Edit to `campaign.py`, observed red, reverted by Edit (`git diff -- analysis/src` showed only the intended CD58 deletions afterwards), and the suite was re-run green.
+
+| pin | break | red |
+|---|---|---|
+| `MAX_SAMPLE_IDS` 10 | `MAX_SAMPLE_IDS = 9` | `test_a_state_sample_lists_at_most_ten_sorted_ids_and_the_full_count` |
+| `state` error source (both raise sites of `_read_state`/disagreement list) | `"source": "input"` at both sites | 7 `STATE_CASES` rows, the size-limit test, `test_o4_a_state_record_bucket_that_disagrees_with_the_verdict_names_the_file`, `test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused` (10 tests) |
+| `DOMINATED` (14 verifier-refused inputs) | `failures = []` in place of `evidence.verify_text(text)` in `_read_verified_verdict` | all 14 `DOMINATED` rows, plus `verdict-fails-verification` in the refusals table |
+| `errors_truncated` | `"errors_truncated": False` | `test_more_than_ten_state_failures_are_truncated_with_the_flag` |
+| `MAX_ERRORS` | `MAX_ERRORS = 11` | the same test (length 11, flag false) |
+
+### Coverage block under CD58 (`test_analysis_campaign_coverage_refusals.py`, real R1 run)
+
+Each raise was attacked with an edited artifact or an edited (unsigned) verdict first. Reachable ones are rows in `REFUSALS` or their own tests: `re-evaluation disagrees ... 'status'` (`artifact-key-repeated`) and `... 'coverage'` (`artifact-arc-on-a-judged-line-added`), `R1 verdict policy 'allow_excluded' differs` (`verdict-policy-field-differs`), `R1 verdict policy differs` at the lane check (`verdict-policy-artifact-differs`), `coverage cannot be reverified without --verdict`, `coverage artifact ... differs from lane-declared artifact`, and the missing-artifact report (`artifact_status: missing`, not a raise). Positive tests pin what must not be refused (a key outside the repository, an unresolvable key, an arc on a line the verdict does not judge) and the lcov `format_does_not_expose_exact_destinations` status.
+
+Deleted (nothing pragma'd); dominating check in the same row:
+
+| deleted raise | dominating check |
+|---|---|
+| `lane declares R1 but the verified verdict has no R1 claim` | a verdict with an R1 policy and no R1 claim fails `verify_text` (`judgment.r1 is declared without a corresponding R1 coverage claim`, seen); a verdict with no R1 policy fails `_check_verdict_against_lane` `R1 verdict policy differs` (`coverage_artifact` None != declared) |
+| `R1 lane resolves no coverage adapter` | `LaneConfigError: declares rigor ['R0'], which reads none of judge.{...}`: a lane with `judge.coverage` always declares R1 or R2 (scratch-checked with `load_lane_file`) |
+| `coverage artifact branch capability differs from verified verdict` | the R1 re-evaluation compares the whole `coverage` object, which carries `branch_capability`, both derived by `derive_branch_capability(profile)` |
+| `coverage.py artifact has no files object` | `parse_coverage_artifact` (`meta.branch_coverage is true, but no file record carries ...`, seen for `files={}`, a non-dict record) |
+| `multiple keys for judged file` | a repeated key (`./src/mod.py`, even with an empty record) fails the re-evaluation `status` (seen) |
+| `lacks judged file` (2 raises), `lacks missing branch arcs`, `malformed branch arc`, `has no missing arcs for verdict-reported branch lines`, `lacks normalized branch counts`, `missing-arc destinations do not match its parsed branch counts` | `parse_coverage_artifact` (`'missing_branches' is str, expected list`, `contains a malformed arc [7]`, `[7, True]`, `repeats an arc identity`, `FileCoverage.branches has line(s) [100] ...`) and the re-evaluation `coverage` (`no arcs`, `arc on a judged line`, `wrong line` all disagree, seen) |
+| `coverage artifact reports branch arcs that the verdict says were unavailable`, `verified verdict has an unknown branch_capability` | verifier (`coverage.branch_capability must be one of ['reported', 'unavailable']`, and `unavailable ... names branch data`, both seen) and the re-evaluation `coverage` comparison |
+| `_check_verdict_against_lane` `verdict commit differs from current expected HEAD` (the `head` parameter went with it) | `_read_verified_verdict(path, expected=head)` refuses any other commit against the same `head` immediately before |
+
 ## Judge oracles (J step)
 Positive: `tests/core/test_cli_plan_jobs.py` 11 passed; `tests/core/test_mutation_candidates_event_judge.py` 2 passed; O21 set (`test_b105_cli_boundaries`, `test_cli_plan_estimate_hint`, `test_mutation_judge_identity*`, `test_mutation_progress_budget_plan`, `test_b106_reuse_and_witness`, `test_cli_provenance_and_request_base`, `test_import_contracts`, `test_cli_run`) 360 passed, 1 skipped, all unmodified.
 

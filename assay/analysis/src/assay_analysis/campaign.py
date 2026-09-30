@@ -412,12 +412,9 @@ def _coverage_artifact_summary(
         "sha256": hashlib.sha256(raw).hexdigest(),
         "bytes": len(raw),
     }
-    r1_claim = next(
-        (claim for claim in verdict.get("claims", []) if claim.get("rigor") == "R1"),
-        None,
-    )
-    if r1_claim is None:
-        raise ValueError("lane declares R1 but the verified verdict has no R1 claim")
+    # CD58: a verdict without an R1 claim is refused earlier, by the verifier when it
+    # records an R1 policy and by ``_check_verdict_against_lane`` when it records none.
+    r1_claim = next(claim for claim in verdict["claims"] if claim.get("rigor") == "R1")
     r1_policy = (verdict.get("judgment") or {}).get("r1") or {}
     judge = lane.judge
     assert judge is not None
@@ -444,9 +441,9 @@ def _coverage_artifact_summary(
     from assay import cli as assay_cli
     from assay import runner
 
+    # CD58: a lane that declares judge.coverage declares R1 or R2 (the lane loader refuses
+    # a judge table its rigor never reads), so the adapter always resolves.
     adapter = assay_cli.resolve_declared_adapters(lane)
-    if adapter is None:
-        raise ValueError("R1 lane resolves no coverage adapter")
     resolved = ((verdict.get("judgment") or {}).get("resolved") or {}).get("base")
     observed_r1 = runner.evaluate_r1(
         lane,
@@ -466,17 +463,18 @@ def _coverage_artifact_summary(
 
     coverage_claim = r1_claim.get("coverage")
     expected_capability = None if coverage_claim is None else coverage_claim.get("branch_capability")
-    observed_capability = coverage_api.derive_branch_capability(profile)
     missing_branch_arcs = None
     arc_status = "unavailable"
+    # CD58: everything below trusts the artifact's shape and the verdict's branch
+    # capability because ``parse_coverage_artifact`` (shape, arc identities, branch
+    # counts) and the R1 re-evaluation above (status, reason_code and the whole
+    # ``coverage`` object, which carries ``branch_capability``, the counts and
+    # ``missing_branch_lines``) refuse every artifact that disagrees with the verdict
+    # first; the verifier refuses an unknown ``branch_capability``.
     if expected_capability == "reported":
-        if observed_capability != "reported":
-            raise ValueError("coverage artifact branch capability differs from verified verdict")
         if policy.format == "coverage-py-json":
             document = evidence._json(raw.decode("utf-8"))
-            files = document.get("files")
-            if not isinstance(files, dict):
-                raise ValueError("coverage.py artifact has no files object")
+            files = document["files"]
             missing_by_file = (coverage_claim or {}).get("missing_branch_lines", {})
             repo_top = root.resolve()
             project_root = lane_file.project_root.resolve()
@@ -491,53 +489,15 @@ def _coverage_artifact_summary(
                     except (OSError, ValueError):
                         continue
                     if normalized == file_path:
-                        if raw_path is not None:
-                            raise ValueError(
-                                f"coverage artifact has multiple keys for judged file {file_path!r}"
-                            )
                         raw_path = key
-                if raw_path is None:
-                    raise ValueError(f"coverage artifact lacks judged file {file_path!r}")
-                record = files.get(raw_path)
-                if not isinstance(record, dict):
-                    raise ValueError(f"coverage artifact lacks judged file {file_path!r}")
-                raw_arcs = record.get("missing_branches")
-                if not isinstance(raw_arcs, list):
-                    raise ValueError(f"coverage artifact lacks missing branch arcs for {file_path!r}")
-                rows = []
-                arc_counts: Counter[int] = Counter()
-                for pair in raw_arcs:
-                    if (not isinstance(pair, list) or len(pair) != 2
-                            or any(isinstance(value, bool) or not isinstance(value, int) for value in pair)):
-                        raise ValueError(f"coverage artifact has a malformed branch arc for {file_path!r}")
-                    source, destination = pair
+                for source, destination in files[raw_path]["missing_branches"]:
                     if source in lines:
-                        arc_counts[source] += 1
-                        rows.append({"path": file_path, "source_line": source,
+                        arcs.append({"path": file_path, "source_line": source,
                                      "destination": destination})
-                if lines and not rows:
-                    raise ValueError(
-                        f"coverage artifact has no missing arcs for verdict-reported branch lines in {file_path!r}"
-                    )
-                normalized_record = profile.files.get(raw_path)
-                if normalized_record is None or normalized_record.branches is None:
-                    raise ValueError(f"coverage artifact lacks normalized branch counts for {file_path!r}")
-                for source in lines:
-                    branch_counts = normalized_record.branches.by_line.get(source)
-                    if branch_counts is None or arc_counts[source] != branch_counts[1] - branch_counts[0]:
-                        raise ValueError(
-                            f"coverage artifact missing-arc destinations do not match "
-                            f"its parsed branch counts for {file_path}:{source}"
-                        )
-                arcs.extend(rows)
             missing_branch_arcs = arcs
             arc_status = "exact_from_coverage_py_artifact_and_reverified_r1"
         else:
             arc_status = "format_does_not_expose_exact_destinations"
-    elif expected_capability == "unavailable" and observed_capability != "unavailable":
-        raise ValueError("coverage artifact reports branch arcs that the verdict says were unavailable")
-    elif expected_capability not in (None, "reported", "unavailable"):
-        raise ValueError("verified verdict has an unknown branch_capability")
     return {
         **verdict_summary,
         "artifact_status": "parsed_and_reverified_r1",
@@ -1389,12 +1349,14 @@ def _native_r2(lane, r2_policy: dict) -> bool:
     )
 
 
-def _check_verdict_against_lane(verdict: dict, *, lane_name: str, head: str, lane) -> dict:
-    """The verified verdict must be for this lane, commit and declared policy; returns its R2 policy."""
+def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
+    """The verified verdict must be for this lane and declared policy; returns its R2 policy.
+
+    CD58: its commit needs no check here, ``_read_verified_verdict`` refused any other
+    commit against the same expected head just before.
+    """
     if verdict.get("lane") != lane_name:
         raise ValueError(f"verdict lane {verdict.get('lane')!r} differs from requested {lane_name!r}")
-    if verdict.get("commit") != head:
-        raise ValueError("verdict commit differs from current expected HEAD")
     judgment = verdict.get("judgment") or {}
     r2_policy = judgment.get("r2") or {}
     r1_policy = judgment.get("r1") or {}
@@ -1563,9 +1525,7 @@ def campaign(
         stage.name = "verdict"
         verdict_result = _read_verified_verdict(verdict_path, expected=head)
         verdict = verdict_result["verdict"]
-        r2_policy = _check_verdict_against_lane(
-            verdict, lane_name=lane_name, head=head, lane=lane
-        )
+        r2_policy = _check_verdict_against_lane(verdict, lane_name=lane_name, lane=lane)
     native_r2 = _native_r2(lane, r2_policy)
     stage.name = "plan"
     plan = _reconstruct_plan(
