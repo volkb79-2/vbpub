@@ -5073,3 +5073,45 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 **Oracles:** a lane with one completed FAIL and no PASS reports a measured footprint under `--include-failed` and stays omitted without it; a killed run is never included; a controlled wrong implementation that includes timeouts must fail.
 
 **Spec owner:** SPEC R-44 (footprint manifest).
+
+## RG-69 — `footprint --write` has no per-lane mode: a package cannot record one new lane's footprint without regenerating the whole tracked manifest
+
+**Provenance:** found in dstdns 2026-09-30, P224 (adds a lane); `nyxloom-trove/decisions.md` D-572 section 3. run-gate rev 46.
+
+**Observed:** `run-gate footprint --help`: "A LANE filter queries one lane's numbers but is REFUSED together with --write (a partial write would silently drop every other lane's data)" (`cmd_footprint`, `run_gate.py` ~l.4104-4140: `fail("footprint --write does not accept a LANE filter ...")`). `--write` rewrites all of `run-gate.footprint.json`, a TRACKED file, from the local history store. A package that adds one lane and wants its first footprint committed must regenerate every lane's entry from whatever the current checkout's store holds (a worktree store may lack other lanes' history), producing a large unrelated diff and risking dropped entries.
+
+**Why it matters:** dstdns makes `footprint --write` controller-only after merge to avoid exactly that conflict-prone whole-file rewrite, so a new lane's manifest entry lands a step late and packages cannot carry their own calibration.
+
+**Proposed fix direction:** `footprint --write --lane X` (repeatable) that reads the existing manifest and replaces or adds only the named lanes' entries, leaving every other entry byte-identical (the refusal's stated reason, silent drop, does not apply to a merge). Refuse by name when the named lane has no completed, profiled run; refuse when the existing manifest is absent or unparseable rather than writing a one-lane file silently.
+
+**Oracles:** with a two-lane manifest, `--write --lane B` changes only B's entry (other entry bytes equal); unknown/unprofiled lane refuses with exit 2; a missing manifest refuses; a controlled wrong implementation that writes only the named lane (dropping others) must fail the first oracle.
+
+**Spec owner:** SPEC R-44 (footprint manifest).
+
+## RG-70 — no canonical way to exec a repo script or command inside a worktree's test-runner (the app-runtime dependency closure)
+
+**Provenance:** found in dstdns 2026-09-30, P224 (needs `scripts/regen-openapi.py` run in the app's dependency closure against the package worktree). run-gate rev 46.
+
+**Observed:** run-gate's request surface is `<lane> [--worktree] [--allow-dirty] [--base] [--fresh]` plus `--list/doctor/history/footprint/validate-pointers`; `main()` (`run_gate.py` ~l.8444) has no verb that runs an arbitrary command in a lane environment. A task that must run a repo script in the runner's dependency closure (the cockpit venv carries different pins, so it is not equivalent) has no sanctioned path: implementers improvise `docker exec <container> ...`, guessing the container name (RG-24 shows the name resolution is worktree-sensitive, Mode-A shared vs Mode-B per-worktree) and the in-container path of a worktree (Mode-B mounts only the worktree subtree). The one declared-lane route requires a committed lane per script.
+
+**Why it matters:** AGENTS.md 4.9 makes run-gate the canonical tool and forbids manual alternatives, yet nothing canonical exists here, so the mandated behaviour cannot be followed; improvised `docker exec` also bypasses the exec lock (RG-39) and profiler.
+
+**Proposed fix direction:** `run-gate exec [--environment ENV] --worktree <wt> -- <cmd...>`: resolves the environment's container exactly as a lane would (same worktree-aware resolution as RG-24), translates the worktree path into the container namespace, takes the RG-39 exec lock, runs with the lane env forwarding, and returns the command's exit status. Default environment: the project's primary runner. Alternatively, document a `kind = "command"` lane idiom with a caller-supplied argv (less general). Refuse by name when the environment is not a container environment.
+
+**Oracles:** `run-gate exec --worktree <wt> -- python -c 'import sys; print(sys.prefix)'` runs in the runner, not the host; a Mode-B worktree resolves to its own container; `--dry-run` prints the resolved container and translated cwd; a concurrent lane on the same container is serialized by the lock; a controlled wrong implementation that runs on the host must fail the first oracle.
+
+**Spec owner:** SPEC (exec-mode environments, R-41).
+
+## RG-71 — the `schema` lane cannot take a single-file target: iterating on one `tests/schema/` test costs the full lane every time
+
+**Provenance:** found in dstdns 2026-09-30 (schema-test authoring in the P2xx packages). run-gate rev 46.
+
+**Observed:** dstdns's `[lanes.schema]` is a fixed-argv command lane (`["{worktree}/scripts/schema-gate.sh", "{worktree}"]`). The script itself accepts an optional second argument `pytest-target` (header: "scripts/schema-gate.sh <worktree-path> [pytest-target], defaults to tests/schema"), but run-gate has no way to forward a per-invocation argument into a declared lane's argv, so the only way to run one new test is to invoke the script by hand, bypassing run-gate (AGENTS.md 4.9 forbids that as a first choice) and its lock, profiler and history. Every iteration therefore pays the full schema lane (throwaway PG provisioning plus the whole suite).
+
+**Why it matters:** an implementer adding one `tests/schema/` test iterates many times; the canonical path makes each iteration a full-lane run, which pushes agents to the manual path.
+
+**Proposed fix direction:** a generic, declared pass-through for command lanes: lane key `accepts_args = true` (or `passthrough = "pytest"`) plus CLI `run-gate <lane> [...] -- <args>` appended to the lane argv after `{worktree}` substitution, refused by name for lanes that do not opt in and for composite and assay lanes. Such ad-hoc runs are recorded in history as `selective` and never count toward the footprint manifest or a ship signal (a single-file run is not a gate). The throwaway-DB provisioning stays in the script, so the isolation is unchanged.
+
+**Oracles:** `run-gate schema --worktree <wt> -- tests/schema/test_x.py::test_y` runs only that node and still provisions and disposes the throwaway DB; the same flag on a non-opted lane refuses by name; history marks the run selective; a controlled wrong implementation that lets a selective run satisfy the gate lane's freshness check must fail.
+
+**Spec owner:** SPEC (lane argv construction).

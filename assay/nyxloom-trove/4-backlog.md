@@ -140,6 +140,7 @@ items:
   - {id: B138, title: "docs/CONSUMERS.md has no consolidated v12 -> v13 migration section (v11 -> v12 has one); the v13 facts are scattered", type: feature, component: docs, context_estimate: small}
   - {id: B139, title: "assay-cli SKILL.md 'What this build evaluates' omits JavaScript R2 by Stryker-report ingestion (B046)", type: bugfix, component: docs, context_estimate: small}
   - {id: B140, title: "no project-level default for a lane's env_passthrough: every new lane must repeat the project's common names, and a missing one fails the lane's first run COMMAND_FAILED", type: feature, component: config, context_estimate: small}
+  - {id: B141, title: "changed-lines lanes cannot scope to files: judge.source_roots must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests", type: feature, component: config, context_estimate: small}
 ---
 
 # assay — backlog
@@ -11806,3 +11807,19 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 **Proposed contract:** an optional project-level `[defaults] env_passthrough = [...]` (additive, unioned with the lane's own list, order-stable, deduplicated), refused by name if a default collides with a lane `env` fixed value (the existing P15 A-067 rule). The verdict should still record the effective list so evidence stays faithful. Weigh this against the 4.2a shadowing-default hazard: the default must be explicit in the consumer's own file, never built into assay.
 
 **Oracles:** a lane inheriting the default sees the variable; a lane-level `env` fixed value with the same name refuses; the verdict's effective `env_passthrough` lists the union; a controlled wrong implementation that applies the default only to lanes declaring an empty list must fail.
+
+## B141 — changed-lines lanes cannot scope to files: `judge.source_roots` must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests
+
+**Status: OPEN (filed 2026-09-30 from dstdns, P214/P2xx R2 campaign, `nyxloom-trove/decisions.md` D-577; source-grounded for the directory requirement, the false-survivor mechanism is dstdns's measured rationale for D-577, not re-run here).**
+
+**Observed:** `src/assay/config.py` (l.~3655) rejects any `judge.source_roots` entry that is not an existing directory (`if not resolved.is_dir(): raise LaneConfigError(... does not exist under the project root)`); `measurability.py` (l.~52-84) selects changed files by `is_relative_to(root)` for the roots. A changed-lines R2 lane (`base_source = "request"`) whose package owns one or two files in a shared directory therefore must declare the whole directory. Run at a later HEAD than its package's merge, the changed-line set (base..HEAD) also contains OTHER packages' edits to sibling files in that directory; those lines are mutated and judged against THIS lane's test suite, which does not cover them, yielding false survivors.
+
+**Expected:** a lane can name exactly the files it owns, or the changed-line set is limited to the lane's declared targets.
+
+**Why it matters (dstdns):** dstdns works around it by running such lanes only at their own package's merge commit (D-577), which serializes R2 behind merges and forbids coalescing changed-lines lanes at a later HEAD.
+
+**Proposed fix direction:** (a) allow `judge.source_roots` entries that name a regular file (same containment and existence checks; `is_relative_to` becomes equality for a file root), or (b) for `judge.mode = "changed_lines"` accept `judge.targets` as a filter on the changed-line set (intersection with source_roots), refusing a target outside the roots. Either must keep the typo guard (A-016/A-035: a root matching nothing must not yield 0/0 PASS).
+
+**Oracles:** a file-level root excludes a changed sibling file in the same directory from judgment; a directory root behaves unchanged; a root naming a missing file refuses by name; a controlled wrong implementation that treats a file root as its parent directory must fail the sibling-exclusion oracle.
+
+**Found in:** dstdns 2026-09-30, R2 campaign package P214 (changed-lines lanes), decision D-577.
