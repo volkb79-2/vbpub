@@ -58,6 +58,14 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
 TESTS_ROOT = PROJECT_ROOT / "tests"
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_color(monkeypatch):
+    """Help and CLI output must not depend on the caller's terminal colour settings (Python 3.14 argparse colours --help under FORCE_COLOR)."""
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("PYTHON_COLORS", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Retain preflight coverage JSON without replacing different evidence.
 

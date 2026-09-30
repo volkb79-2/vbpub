@@ -39,6 +39,14 @@ Observations recorded while pinning (behaviour is characterized as-is, nothing c
 - On a native or ingested `JudgmentR2`, `None` for `jobs`/`max_mutants`/`fail_under` is reported as an ABSENT field ("records producer ... but is missing [...]") before the type guard runs, so the type-guard tests skip `None` for those.
 - `istanbul._arm_count`/`_statement_count` have a second, negative-count refusal after the strict-int guard (its own message, pinned).
 
+## CD52 (amended): `_no_ambient_color` autouse fixture (done)
+
+Same fixture, same name and body, in `tests/conftest.py`, `gate/tests/conftest.py`, `analysis/tests/conftest.py` (the last gained `import pytest`). No conflicting autouse fixture; no existing test asserts coloured output. Shell had `FORCE_COLOR=3`.
+- Oracles pass with the fixture: `tests/core/test_b105_source_coverage_controls.py::test_cli_module_guard_runs_in_process_under_main_name` and `gate/tests/test_dependency_purity.py::test_the_installed_analyze_command_runs_from_the_one_wheel`.
+- Controlled break 1 (`autouse=False` in `tests/conftest.py`): the guard test FAILED under `FORCE_COLOR=3`. Reverted.
+- Controlled break 2 (`autouse=False` in `gate/tests/conftest.py`): the wheel test FAILED. Reverted. (`analysis/tests` has no colour-sensitive test; the fixture is there per CD52 amended.)
+- `CARVER-DECISIONS.md` gained the `CD52 (amended)` row.
+
 ## BLOCKED / QUESTIONS
 
 - **Q1 (controller answered, binding):** row-1-shaped sites (`not isinstance(x, str) or not x`) that `idioms.py` did NOT report stay UNCHANGED in W10. Follow-up list for a later wave: `attestation.py` 141 and 145 (`AttestationRecord` producer/attested_commit), `mutation.py` 387 and 479, `verdict.py` 1301, 1437, 1484 (`MutationWitnessReceipt.node_id`), 1694 (`MutantOutcome.description`), 3727 (`Claim._check_detail`). `liveness.py:1071` (`baseline_event_gaps`, row 5) IS in scope.
