@@ -55,3 +55,17 @@ Every break is an Edit on `campaign.py` (or the named file), observed red, rever
 | work | owner | oracle | test id | controlled break | failures |
 |---|---|---|---|---|---|
 | CD55 Q12 | W9 | CD55 | `test_cd55_q12_command_exit_without_a_verdict_is_an_evidence_error` | the `--command-exit requires --verdict` guard disabled (`if False and ...`) | 1 failed |
+| group 1 | W9 | O1 (no `--command-exit`) | `test_analysis_campaign_oracles.py::test_o1_a_pass_campaign_without_command_exit_is_incomplete` | `("command_exit_not_observed", False)` in the blocker set | red (also breaks the other command-exit blocker checks) |
+| group 1 | W9 | O3 | `..._oracles.py::test_o3_without_a_verdict_the_result_is_never_complete` | `("no_verdict", False)` | red |
+| group 1 | W9 | O2 | `..._oracles.py::test_o2_appended_resume_runs_count_each_candidate_once` | `completed_total = sum(run["fresh_candidate_events"] ...)` (summing candidate events across runs: 9, not 8) | red |
+| group 1 | W9 | O6 | `..._oracles.py::test_o6_a_candidate_reclassified_between_runs_is_counted_once_as_its_latest_bucket` | `reclassified` guard `> 1` -> `> 5` | red |
+| group 1 | W9 | O7 (19 samples) | `..._oracles.py::test_o7_nineteen_samples_give_no_eta` | `MIN_ETA_SAMPLE = 5` (the WIP threshold) | red (also fails the schema `const 20`) |
+| group 1 | W9 | O7 (20 samples) | `..._oracles.py::test_o7_twenty_samples_use_nearest_rank_percentiles` | `_nearest_rank` replaced by the median (p50 10.5) | red, sole break |
+| group 1 | W9 | O10 | `..._oracles.py::test_o10_the_adverse_page_reports_its_total_and_next_offset` | `_page` `next_offset` hard-coded `None` (silent truncation) | red |
+| group 1 | W9 | O12 (no verdict) | `..._oracles.py::test_o12_a_torn_final_record_is_incomplete_without_a_verdict` | `tolerate_torn=False` (the WIP always refuses) | red |
+| group 1 | W9 | O12 (verdict) | `..._oracles.py::test_o12_a_torn_final_record_is_an_evidence_error_with_a_verdict` | `tolerate_torn=True` (always accepts) | red, sole break |
+| group 1 | W9 | O13 | `..._oracles.py::test_o13_the_schema_rejects_documents_that_break_its_closed_shape` | `"additionalProperties": false` removed from the `timing` schema | red, sole break |
+| group 1 | W9 | O16b | `..._oracles.py::test_o16b_a_plan_row_whose_identity_inputs_do_not_reproduce_its_id_is_refused` | `_identity_reproduces` returns `True` | red |
+| group 1 | W9 | O24 (option) | `..._oracles.py::test_o24_the_pilot_candidates_file_option_does_not_exist` | `--candidates-file` added to the parser | red, sole break |
+| group 1 | W9 | O24 (event) | `..._oracles.py::test_o24_a_pilot_selection_in_the_progress_stream_is_an_evidence_error` | the `selection_sha256` refusal disabled | red |
+| group 1 | W9 | O26 | `..._oracles.py::test_o26_verdict_and_no_verdict_documents_validate_against_the_schema` | `{"type": "null"}` deleted from the schema's `verdict` | red, sole break |
