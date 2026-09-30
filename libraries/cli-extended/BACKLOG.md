@@ -83,3 +83,45 @@ the service and that the valid no-argument invocation does.
 **Provenance:** Nyxloom P114 found and fixed service startup before argument
 handling; see
 [`P114 execution log`](../../nyxloom/nyxloom-trove/reports/nyxloom-P114-LOG.md).
+
+## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
+
+**Status:** Open
+
+**Type:** Feature investigation
+
+**Area:** Registry introspection and consumer contract testing
+
+Consumers need to review semantic combinations systematically, but their
+canonical CLI specs often repeat syntax by hand. `CliRegistry` retains the
+declarations and can render help Markdown, yet it has no stable machine-readable
+surface export or merge-aware way to regenerate a consumer's spec. Replacing a
+whole document during regeneration would risk deleting product-owned semantic
+decisions and test evidence.
+
+Evaluate a public registry manifest and consumer-facing helpers that produce a
+diffable grammar inventory and bounded invocation checklist. The manifest
+should cover registered and delegated command paths, positional shapes,
+option spellings/aliases and value shapes, requiredness, choices, defaults,
+exclusive groups, and scope. It must identify syntax supplied through custom
+parser callbacks rather than silently certify an incomplete inventory.
+Interaction candidates should come from declared constraints and
+consumer-marked relationships; do not generate the full option power set.
+
+The consumer's canonical CLI spec remains the home for semantic truth. Any
+generator must update only its owned region, join semantic rows through stable
+surface/option IDs, retain stale decisions after removal until explicit human
+disposition, and show additions/changes as reviewable diffs. A check mode should
+detect syntax drift and require semantic coverage/re-review without inventing
+the expected outcome. Generic helpers can exercise parser outcomes; consumers
+must still assert domain rules, diagnostics, and effects at their own boundary.
+Coordinate constraint metadata with CLI-EXT-02, but keep export/regeneration
+useful for consumers whose existing parser constraints are already sufficient.
+
+**Provenance:** CMRU's S-CLI.9 contains a manually authored grammar inventory
+and semantic result table; tests compare the inventory with registered
+parsers, but the rows are not generated. Its adoption review showed that a
+repeatable inventory plus durable human review data would make later CLI
+changes easier to detect and re-judge.
+
+**Related:** CLI-EXT-02 — declarative conditional option constraints.

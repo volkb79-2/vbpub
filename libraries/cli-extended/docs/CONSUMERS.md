@@ -142,6 +142,47 @@ status; and the decision behind the public spelling. This semantic record
 complements the registry's generated grammar. It does not belong in a generic
 library because its truth comes from the owning product.
 
+Keep the generated surface and semantic review in the same canonical CLI
+specification, but give them separate ownership. The generator owns only a
+clearly marked grammar inventory; the product owns use cases, combination
+decisions, effects, rationale, and test evidence keyed to stable surface and
+option IDs. A generator must update only its marked region, never rewrite the
+whole specification or its semantic rows. On re-run, added or changed grammar
+must appear as a reviewable diff and mark affected semantic entries as needing
+review. Removed grammar must remain visible as stale until a reviewer records
+its retirement; generation must not silently delete the associated decision,
+rationale, or evidence. A check mode should fail on grammar drift, missing
+semantic coverage, unresolved stale entries, or pending review. This makes
+regeneration repeatable while keeping product decisions durable.
+
+The current library can render Markdown help from registrations, but it does
+not yet expose a stable machine-readable CLI manifest or a merge-aware
+specification generator. Generated help is not a substitute for the semantic
+audit. CMRU's
+[`S-CLI.9`](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
+grammar and semantic tables are hand-authored today, with gate checks that
+compare the documented grammar to the live registered parsers.
+
+Future inventory and test helpers should start from the built registry and
+publish a stable interface for verbs, delegated command paths, positional
+shapes, declared flags and aliases, option action/value shape, requiredness,
+choices, defaults, exclusive groups, and option scope. Custom parser callbacks
+must be represented explicitly or marked for consumer-specific inspection;
+the exporter must not quietly omit syntax it cannot understand. Use stable
+IDs rather than rendered help text as join keys so wording and table layout can
+change without losing semantic history.
+
+Do not enumerate every subset of every option: the invocation space grows
+exponentially and most combinations do not express a distinct interaction.
+Generate a bounded review/test checklist from declared constraints and
+consumer-marked interaction groups: the minimum invocation, each required or
+exclusive alternative, both sides of every dependency or forbidden
+combination, and pairwise cases for options declared to interact. The product
+then records whether each candidate is accepted or refused, why, and which
+test proves the parser, handler, or side-effect result. A generic parser test
+can prove declared grammar constraints; only the consumer can prove
+configuration-dependent meaning, output, and effects.
+
 Use `OptionSpec` metadata for constraints argparse can express, such as
 choices and required mutually exclusive alternatives. Conditional rules such
 as “`--dry-run` requires `--update`” need an explicit refusal when the
