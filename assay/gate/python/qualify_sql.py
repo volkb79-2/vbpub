@@ -88,7 +88,7 @@ SCHEMA_PATH = _PROJECT_ROOT / "tests" / "fixtures" / "mutation" / "sql" / "quali
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "sql"
 #: sha256 pins of the two fixture texts the matrix is written against (T0).
 SCHEMA_SHA256 = "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1"
-PROBES_SHA256 = "12f564d919d9575c71c2cee44b7f762f47cc00a7153a7c06e33f31afe14d0ce0"
+PROBES_SHA256 = "b5c4eb283dc01ec3d8b15f2441363d5bea9312a49e025bd9eaf318086fd41e10"
 
 ALL_OPERATORS: tuple[str, ...] = (
     "sql:drop-check",

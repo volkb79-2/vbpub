@@ -11714,6 +11714,8 @@ That PostgreSQL rejects the mutated DDL is reasoned, not measured. If it does, o
 
 All of it needs an ad-hoc-construct mode of `gate/python/qualify_sql.py`: a way to run one construct's mutant through the same apply/dump/test command and record the bucket, without adding a row to the matrix.
 
+**Measured SQLSTATE fact (W5 Work 0, CD53; PostgreSQL 18.6, the digest-pinned image).** A violated `ON DELETE RESTRICT` foreign key raises SQLSTATE **23001** (`restrict_violation`), not 23503; a violated `ON DELETE NO ACTION` (the default) still raises **23503** (`foreign_key_violation`). A probe or hazard-construct test that means "the foreign-key refusal happened" must catch both (`foreign_key_violation OR restrict_violation`); W5's K18 and K20 do, and K19 (NO ACTION) needs only 23503. Any `EXCEPTION WHEN foreign_key_violation` written against a RESTRICT key will not catch the refusal on 18.x.
+
 ## B133 — SQL operator labels misdescribe their effect
 
 **Status: OPEN (found by the W5 carve).** Two operators do something other than their label says:

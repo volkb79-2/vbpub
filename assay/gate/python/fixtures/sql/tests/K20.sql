@@ -5,7 +5,7 @@ BEGIN
   INSERT INTO shipment VALUES (1,1);
   BEGIN
     DELETE FROM child WHERE id=1;
-  EXCEPTION WHEN foreign_key_violation THEN RETURN;
+  EXCEPTION WHEN foreign_key_violation OR restrict_violation THEN RETURN;
   END;
   RAISE EXCEPTION 'K20';
 END $$;

@@ -56,7 +56,7 @@ def _schema_text() -> str:
 def test_the_schema_and_the_probes_are_the_pinned_bytes() -> None:
     q.verify_fixture_hashes(_SCHEMA_PATH, _FIXTURE_ROOT)  # must not raise
     assert q.SCHEMA_SHA256.startswith("b7b07e97") and q.SCHEMA_SHA256.endswith("3af1")
-    assert q.PROBES_SHA256.startswith("12f564d9") and q.PROBES_SHA256.endswith("0ce0")
+    assert q.PROBES_SHA256.startswith("b5c4eb28") and q.PROBES_SHA256.endswith("1e10")
 
 
 def test_one_extra_byte_in_the_schema_or_in_a_probe_fails_the_pin(tmp_path: Path) -> None:
