@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import venv
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -874,6 +875,67 @@ def test_bound_cmru_launcher_precedes_ambient_path_and_checks_identity(monkeypat
     mismatched.mkdir()
     with pytest.raises(RuntimeError, match="identity verification"):
         cli._create_bound_cmru_launcher(mismatched)
+
+
+def test_bound_cmru_launcher_imports_sibling_sources_with_isolated_python(
+    monkeypatch, tmp_path,
+):
+    repo_root = tmp_path / "repo"
+    cmru_package = repo_root / "cmru" / "src" / "cmru"
+    cli_extended_package = (
+        repo_root / "libraries" / "cli-extended" / "src" / "cli_extended"
+    )
+    worktree_package = repo_root / "libraries" / "worktree" / "src" / "worktree"
+    cmru_package.mkdir(parents=True)
+    cli_extended_package.mkdir(parents=True)
+    (cmru_package / "__init__.py").write_text("", encoding="utf-8")
+    (cli_extended_package / "__init__.py").write_text(
+        "SOURCE_MARKER = 'source'\n", encoding="utf-8",
+    )
+    isolated_python_dir = tmp_path / "isolated-python"
+    venv.EnvBuilder(with_pip=False).create(isolated_python_dir)
+    isolated_python = isolated_python_dir / "bin" / "python"
+
+    monkeypatch.setattr(cli, "__file__", str(cmru_package / "cli.py"))
+    monkeypatch.setattr(cli.sys, "executable", str(isolated_python))
+    monkeypatch.setattr("cmru.cli_support.cmru_version", lambda: "9.8.7")
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    def write_cli(import_worktree: bool) -> None:
+        imports = "from cli_extended import SOURCE_MARKER as CLI_EXTENDED_MARKER\n"
+        expected = "CLI_EXTENDED_MARKER == 'source'"
+        if import_worktree:
+            imports += "from worktree import SOURCE_MARKER as WORKTREE_MARKER\n"
+            expected = "CLI_EXTENDED_MARKER == WORKTREE_MARKER == 'source'"
+        (cmru_package / "cli.py").write_text(
+            imports
+            + "import sys\n"
+            + "def main():\n"
+            + f"    if sys.argv[1:] == ['version'] and {expected}:\n"
+            + "        print('cmru 9.8.7')\n"
+            + "        return 0\n"
+            + "    return 1\n",
+            encoding="utf-8",
+        )
+
+    # A checkout without the optional worktree library must still bind, and
+    # the second run proves the launcher adds it when that source tree exists.
+    write_cli(import_worktree=False)
+    first_launcher_dir = tmp_path / "bound-without-worktree"
+    first_launcher_dir.mkdir()
+    first_launcher = cli._create_bound_cmru_launcher(first_launcher_dir)
+    assert first_launcher == first_launcher_dir / "cmru"
+
+    worktree_package.mkdir(parents=True)
+    (worktree_package / "__init__.py").write_text(
+        "SOURCE_MARKER = 'source'\n", encoding="utf-8",
+    )
+    write_cli(import_worktree=True)
+    second_launcher_dir = tmp_path / "bound-with-worktree"
+    second_launcher_dir.mkdir()
+    second_launcher = cli._create_bound_cmru_launcher(second_launcher_dir)
+
+    assert second_launcher == second_launcher_dir / "cmru"
 
 
 def test_bound_cmru_launcher_refuses_path_that_resolves_elsewhere(monkeypatch, tmp_path):

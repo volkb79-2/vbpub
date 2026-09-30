@@ -5183,3 +5183,142 @@ still resolves to `e5e9b95c`, and create a fresh CIU worktree with no stale
 run-gate inflight state. Then repeat admission checks and run R2 on that quiet
 tree. The prior 1080ac2 R2 PASS predates these P1 repairs and is not final
 evidence. No candidates from this attempt are counted toward the campaign.
+
+### RW-376 — 2026-09-29 01:49:26Z — P6 migration permission errors must not certify placement
+
+While resuming P6, inspection of the private-PID migration path found a false
+success state: non-`ESRCH` errors writing a lane PID to the gates leaf were
+silently skipped. In the concrete `EPERM` path, systemd fallback was correctly
+not attempted, but `enforcement_failed` stayed false, so the empty leaf could
+remain and the response could say `placement.error=null`, `pids_moved=0`.
+
+On the isolated P6 branch, non-`ESRCH` write failures now fail closed, log the
+error, report the existing `place-refused:write-failed:<leaf>/cgroup.procs`
+shape, and abandon an empty leaf. The regression test verifies no systemd
+fallback, exact refusal, and leaf removal. The focused test passed and the
+complete `test_serve_placement.py` file passed 122 tests in 17.18 seconds;
+these are local iteration results, not registered gate evidence. P6 exact-tip
+short gates, changed-line and branch coverage, the live private-PID start and
+stop probes, a fresh Sol round-5 review, replacement R2, and the full gate
+remain outstanding. The code fix has not been merged to main.
+
+### RW-377 — 2026-09-29 01:55:48Z — launch P1 R2 on the correct pre-P1 mutation base
+
+After RW-375, the P1 candidate was rebuilt in the independent CIU root from
+the isolated lineage whose `origin/main` remains `e5e9b95c5ac8be3452c93f1066f9436347f862fd`.
+The exact committed candidate is `dcdcc5d323e16da68f46874eeb34dbfaab7891bd`:
+it contains the P1 reviewed code and Sol-round-4 `proc stat`/explicit-null
+repairs, plus the merged B107 pressure-aware Assay source through
+`76325aa5`; the source under `assay/src/assay` compares equal to current main.
+The candidate has no object alternates, a clean tree, no prior R2 history, and
+`git merge-base origin/main HEAD` resolves to `e5e9b95c`. The expected P1
+mutation scope is therefore present again; the earlier `NO_MUTANTS` receipt
+is not reused.
+
+The registered `run-gate r2` started at `2026-09-29T01:41:52.960Z` in fresh
+CIU worktree `.worktrees/rg55-p1-r2-isolated/.worktrees/rg55-p1-b107-rejudge`.
+Its exact container is
+`run-gate-rg55-p1-r2-isolated-r2-3806635-1790646112`, verified at
+`NanoCpus=3000000000`, `CgroupParent=dev-gates.slice`. At launch host memory
+PSI `full avg10=0.00`, the gates slice was loaded with a 5-CPU quota, and one
+other mutation container was active; this campaign uses the second mutation
+slot. At the required 90-second health check the container was still running
+with the cap in place. The R0 baseline completed 1,394 tests; Assay selected
+125 candidates, and candidate 0 (`access.py:48`, `Is->IsNot`) was recorded
+killed. This is initial progress, not a final result. A prior 125-candidate
+P1 R2 took about 1h44m; given the other active mutation campaign and shared
+5-CPU gates slice, estimate roughly 1h45m–2h45m, subject to observed runtime.
+No further progress inspection before 25 minutes after the 90-second check
+unless an error/completion is expected; next routine observation is no earlier
+than 2026-09-29 02:08Z. Keep this worktree HEAD quiet until the terminal
+verdict is read separately.
+
+### RW-378 — 2026-09-29 01:58:10Z — P6 coverage gate found the new refusal-log branch uncovered
+
+P6's registered `run-gate r0-r1` on exact tree
+`e4241e39445ce1c074568b727f0b927a5e6103c7` finished with exit 2 after
+140.991s. All 1,705 tests passed, but the RG-53 branch-aware coverage judge
+found one uncovered line and one partial branch in `lib/placement.py` line
+599: the newly added diagnostic logger path for non-`ESRCH` migration write
+errors. Project totals were 6,167/6,168 statements and 2,147/2,148 branches
+(99%, below the required 100%). This is a coverage failure, not a functional
+test failure. Run-gate history was read separately and confirms the exact
+tree/exit. The profiler daemon was down, so the gate used coarse rusage under
+R-36h; this does not affect the coverage result.
+
+The same behavioral regression now provides a log sink and asserts the
+specific PID/error diagnostic. Its full containing file passed 122 tests in
+17.00s. The test change is committed in P6 at `e7bca65e`; controller log
+through RW-377 was reconciled into P6 at `4af3d3c0`. R0/R1 must be rerun on
+the resulting quiet tip, followed by R3, fresh Sol round 5, live probes,
+replacement P6 R2, and the full gate. No P6 code has been merged to main.
+
+### RW-379 — 2026-09-29 03:42:02Z — stall-kill requires a kernel-contained lane
+
+Binding B1 ruling, preserving the private PID/cgroup/network namespace design
+and D-15's fail-closed write boundary. A host PID read through the explicit
+host-proc view is not signal authority: remove the cross-namespace `os.kill`
+fallback and never certify PID-number equality as process identity.
+
+`--on-stall kill` is accepted only where the daemon can address one exact
+kernel cgroup boundary. For scope `container`, the target must resolve to the
+container-ID-named cgroup beneath the verified, authored, bounded
+`dev-gates.slice`; enforcement is one `cgroup.kill` write to that exact target
+cgroup, leaving its Docker cgroup membership and limits intact. D-15's
+whitelist is extended only for this exact target's `cgroup.kill`, with no
+ancestor or sibling write authority. For scope `container-shared`, `kill`
+requires a token and an explicitly requested, successfully verified
+`<gates slice>/rg-<token>` placement leaf before the session is accepted; the
+daemon must not move a lane into a leaf only after it stalls. The consumer
+must request that leaf even when it has no memory/CPU cap to apply. A refused
+or unverified containment request rejects `start` as `bad-policy` (no
+session); an enforcement failure after an accepted session remains
+`reported`, never `killed`.
+
+`report` remains available for all valid scopes. The run-gate consumer keeps
+its own stall enforcement/fallback, so inability to start an enforceable
+daemon session is disclosed and cannot change a test verdict. Contract v1.1
+§8.3–§8.4, §8.8–§8.9 and both byte-identical mirrors, P5's shared-scope
+placement request, D-15 documentation/tests, and live acceptance probes must
+implement this ruling before P6 review can pass. The focused live probe must
+show the selected gate lane exits while a different lane and the daemon
+remain alive.
+
+### RW-380 — 2026-09-29 03:55:30Z — do not add placement solely to obtain stall kill
+
+Refinement to RW-379 after applying the estate's performance-invariance
+constraint: a liveness policy must not silently move a lane into a different
+CPU/memory hierarchy just to make daemon enforcement available. For a
+`container-shared` session, `--on-stall kill` still requires an explicit
+`--place` request and a successfully verified leaf; no PID-signal fallback
+is permitted. The run-gate consumer requests `kill` only when its already
+derived placement plan requests a leaf; otherwise it requests `report` and
+keeps its existing lane-local stall watchdog as verdict authority. Do not
+invent a placement request when no declared or measured resource fact
+supports one. A requested placement that is refused makes daemon `start`
+return `bad-policy`; the consumer's profiling fallback must remain
+non-blocking and preserve the lane-local verdict path. Scope `container`
+continues to use the exact target-container `cgroup.kill` under the guards
+from RW-379.
+
+### RW-381 — 2026-09-30 03:31:40Z — resume checkpoint: P1 rejudge and closeout
+
+RG-45 and RG-54 are now closed in the run-gate backlog by commit `6e1d6984`.
+The entries retain their cross-project provenance and state the remaining
+product boundary; this does not change the P1 judged tree.
+
+P1's current R2 campaign is the correct isolated pre-P1-base tree
+`4e5ff2d2a28d153195995df4c1e5a03a813af802`, running in
+`run-gate-rg55-p1-r2-isolated-r2-2191033-1790737267` since 03:01:07Z with
+3 CPUs in `dev-gates.slice`. At the 03:27:58Z observation it had accounted
+for 31/125 candidates, all killed, and was still running; no verdict exists
+yet. Preserve its HEAD and wait at least 25 minutes between routine progress
+reads.
+
+The fresh P1 Sol review is operating in the separate final-review worktree.
+It found that omitted `ctl start` options were serialized as JSON null and
+that the package contract mirror was stale; both corrections and focused
+oracles are committed there as `d5076b81`. This is not a final review verdict.
+If those fixes remain in the accepted product diff, the exact corrected tree
+needs fresh mutation evidence; the in-flight R2 on `4e5ff2d2` does not judge
+`d5076b81`.

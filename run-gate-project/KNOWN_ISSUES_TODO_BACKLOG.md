@@ -3252,7 +3252,17 @@ assay's R0 stops trusting the wrapped target's bare exit code. Design doc:
 assay B078. This entry stays OPEN here as the pointer/provenance record,
 not because run-gate.py itself needs a fix.
 
-### Status — OPEN 2026-09-08 (moved to assay, see disposition above)
+### Status — CLOSED 2026-09-30 (resolved in Assay B078; no run-gate fix)
+
+Assay B078 owns the defect: R0 now accepts a nonzero wrapped-command exit
+only when the declared structured report proves the complete test run had no
+failures. Its live Vitest `onTaskUpdate` reproduction and report-completeness
+oracles are recorded in `assay/nyxloom-trove/reports/assay-WAVE-B078-REPORT.md`.
+B078 is merged and included in released `assay-v7.1.1`. run-gate remains a
+pass-through for Assay's verdict; it must not retry or suppress the Vitest
+signature itself. This closes RG-45 as a run-gate responsibility while
+preserving this row as the cross-project provenance pointer. Any later defect
+in report parsing or completeness belongs in Assay.
 
 ## RG-47 — `run-gate.toml` resolves relative to the invoking process's CWD, not `--worktree`; a stale/diverged config from outside the target worktree silently wins
 
@@ -4210,10 +4220,22 @@ therefore documents its rule as "sound at run-gate's OWN boundary only"
 (`SPEC.md` R-35a) rather than claiming an end-to-end guarantee it cannot
 make.
 
-### Status — OPEN
+### Status — CLOSED 2026-09-30 (first-parent is deliberate; false PASS is blocked)
 
-Not obviously run-gate's to fix, which is why it is filed and not
-folded:
+The first-parent policy itself remains deliberate and unchanged. Assay B008
+resolved the silent-certification defect by recording
+`judgment.resolved.base_resolution = "first-parent"` on merge-commit HEADs and
+documenting that field for consumers; B008 is in released `assay-v7.1.1`.
+run-gate rev 41 (23.7.0) also made its own empty changed-line coverage result
+refuse by default, naming merge-commit first-parent resolution as a route to
+0/0; only an explicit `--allow-empty-diff` permits that result. Native Assay
+R2 with no selected mutants is `INCONCLUSIVE/NO_MUTANTS`, not PASS. Thus the
+behavior remains visible and cannot certify an unjudged diff as green. This
+closes the false-certification issue without changing Assay's intentional
+merge semantics. A future request to judge sibling-branch work at a merge tip
+with merge-base semantics is a new product decision, not an open RG-54 fix.
+
+Historical disposition before closure:
 
 - The first-parent rule is deliberate in assay (B008) — for a merge that
   only brings in an already-judged upstream, first-parent is the RIGHT

@@ -299,21 +299,37 @@ duplicating secrets. Supported keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 
 To survive rebuilds, keep these persistent (the shipped mount layout already does):
 the workspace root, `/home/vscode/.claude`, `/home/vscode/.claudelink`, `/home/vscode/.codex`,
+`/home/vscode/.codex2` (optional second Codex profile),
 `/home/vscode/.config`, `/home/vscode/.local`, `/home/vscode/.minisign`,
 `/home/vscode/.openclaw`, `/home/vscode/.pi`, `/home/vscode/.reasonix`, and
 `/home/vscode/.local/share/opencode`.
 
+The template sets `CODEX_SQLITE_HOME` to `/home/vscode/.codex/sqlite-shared`, under the
+persistent Codex mount, and keeps the container running when its Dev Containers session
+disconnects with `shutdownAction: "none"`. See the
+[Codex profile and container-lifetime notes](docs/CONSUMERS.md#codex-profile-state-and-container-lifetime).
+
 The template's Pi mount preserves the whole `~/.pi` root, including `~/.pi/agent/sessions/`.
 Its ClaudeLink mount preserves the whole `~/.claudelink` root, including `nexus.db`, scheduler
 state/logs, and related runtime files. Their grouped host sources are
-`${localEnv:HOME}/mdt--mounted-folders/.pi` and
-`${localEnv:HOME}/mdt--mounted-folders/.claudelink`. The host bootstrap creates empty sources;
+`${localEnv:HOME}/mdt--mounted-folders/.pi/` and
+`${localEnv:HOME}/mdt--mounted-folders/.claudelink/`. These are directory sources; the bootstrap
+does not migrate their data. Existing custom bind sources are identified as files or directories
+from the host filesystem. For a missing source, the default `create-by-spelling` policy creates a
+directory when its source ends in `/` and an empty regular file when it does not. The MDT host-setup
+wizard can set `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` to require every `$HOME` source
+managed by the bootstrap to exist.
 OpenCode's `/home/vscode/.local/share/opencode` target is backed by the grouped
 `opencode-data` source. For the one-time migration from an existing host install, follow
 the [running-container migration runbook](DEVCONTAINER-LIFECYCLE.md#migrating-a-running-devcontainer-before-adopting-the-mounts)
 first when state is still in a devcontainer; otherwise use
 [the template migration recipe](templates/README.md#migrate-existing-pi-claudelink-and-opencode-state-once)
 and then rebuild the container.
+
+Consuming repos can add file mounts with any filename. Existing sources use their actual host type;
+missing sources follow the configured policy and source spelling. See the
+[consumer example](docs/CONSUMERS.md#optional-git-config-mount) and the
+[design rationale](docs/DESIGN-GUIDE.md#bootstrap-uses-the-source-filesystem-type).
 
 ### Canonical manifest
 
@@ -383,7 +399,9 @@ Buildx remote backed by `mdt-buildkitd.service`; the template supplies
 `BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. Host installation, the
 accidental-worker guard, and the fail-closed memory policy are documented in
 [the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend)
-and [consumer instructions](docs/CONSUMERS.md).
+and [consumer instructions](docs/CONSUMERS.md). The service exposes its socket
+only to the host `docker` group; see the
+[socket-access design](docs/DESIGN-GUIDE.md#managed-buildkit-socket-access).
 The host wizard also writes `DEV_BUILDKITD_MAX_PARALLELISM` into the managed
 daemon configuration; it limits one BuildKit daemon's internal solver work and
 is independent of release repack concurrency.

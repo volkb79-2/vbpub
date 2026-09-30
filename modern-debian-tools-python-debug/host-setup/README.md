@@ -150,6 +150,17 @@ normal backend for MDT builds, including release builds. The service is a
 plain `docker run --cgroup-parent=dev-buildkitd.slice`; it does not rely on a
 Buildx container-driver cgroup option.
 
+The runtime directory is writable while rootless BuildKit creates its socket.
+Before systemd reports the service ready, the post-start check makes the
+root-owned directory non-writable (mode `0711`), rechecks that the endpoint is
+a real socket, verifies its owner from inside the service container's user
+namespace, then assigns the socket to host group `docker` with mode `0660`.
+The next service start restores the bind directory to mode `01777` and removes
+any stale socket before launching BuildKit. This closes a path-replacement
+race and keeps the owner check valid with Docker `userns-remap`. Devcontainer
+clients must receive the same host group; the directory itself is never made
+broadly writable as a substitute for socket permissions.
+
 The installer verifies Docker and Buildx before changing host state, waits for
 the service socket, verifies the service container's image/cgroup/labels, then
 creates or verifies the remote builder. It installs `/etc/profile.d/mdt-buildkit.sh`
@@ -166,6 +177,19 @@ labels), and logs every decision. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` is the
 closed vocabulary: `terminate` (default) removes an unapproved BuildKit worker;
 `report-only` detects and logs it without removal. Missing or invalid policy
 configuration stops the guard rather than weakening the boundary.
+
+The wizard also configures `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` for the
+host-side `initialize_container_environment.py` that runs before a devcontainer
+starts. Its default, `create-by-spelling`, creates a missing source ending in
+`/` as a directory and a missing source without `/` as an empty file with mode
+`0600`.
+The `fail` option refuses every missing `$HOME` source managed by the bootstrap.
+Existing sources are classified from the host filesystem; filenames and suffixes
+do not select their type. Keep
+the trailing `/` on directory sources in `devcontainer.json` so the bootstrap
+can create the intended kind. Docker itself does not interpret this MDT marker.
+Change the value by running `sudo ./install.sh --wizard` from this directory on
+the Docker host; the bootstrap reads the saved host config at its next run.
 
 The wizard is slice-first. For every governed slice it asks `MemoryMin`,
 `MemoryLow`, `MemoryHigh`, and `MemoryMax`; an operator may enter an explicit
