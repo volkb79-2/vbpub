@@ -265,6 +265,14 @@ after a product review. Do not accept the expected decision from generated
 names, help text, or an AI-drafted table without verifying it against the
 handler and tests.
 
+The checker sanity-checks that argv reaches the declared route, accounting for
+option values, parser depth, and required parent positionals before nested
+commands. It does not execute `parse_args`, custom converters/actions, or the
+handler. This avoids running adopter code during a documentation check and
+means route recognition is not proof that the whole invocation is accepted.
+The linked behavior test must run the real CLI invocation and prove the
+expected status, output, validation boundary, and effects.
+
 Mark the behavior tests and register the shared assertion once at pytest
 collection:
 

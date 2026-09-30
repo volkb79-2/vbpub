@@ -308,6 +308,10 @@ canonical CLI spec, reports signature/stale-case changes, and supplies a pytest
 collection assertion for exact node IDs and `cli_case` markers. Consumers keep
 one runtime grammar in `CliRegistry` and their semantic decisions in the
 catalog; the library owns the repeatable export, diff, and marker plumbing.
+The checker sanity-checks supplied argv against route placement and argument
+shape without invoking parser converters or command handlers. The linked test
+must still run the real invocation and assert its behavior and effects; the
+marker proves test collection and linkage only.
 
 Expose an import-safe function such as `example.cli:build_cli` that returns the
 consumer's `RegisteredCli`, then run:

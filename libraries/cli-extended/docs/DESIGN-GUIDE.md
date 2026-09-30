@@ -230,6 +230,11 @@ collected node IDs carrying their `cli_case` markers. That check proves
 collection/linkage only. The product test must still invoke its real registered
 CLI and assert output, exit status, validation timing, and filesystem/state/
 network/credential effects; the normal gate proves that test passes.
+The catalog checker only sanity-checks argv structure, including route depth
+and consumed option values. It deliberately does not call `parse_args`, custom
+converters/actions, or handlers, because a documentation check must not execute
+consumer behavior. The linked test is the oracle for parser acceptance and
+product semantics.
 This boundary makes semantic review auditable without asking a generic library
 to invent product truth.
 

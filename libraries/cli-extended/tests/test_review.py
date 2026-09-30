@@ -691,7 +691,7 @@ def test_review_findings_handles_route_prefixes_single_command_and_missing_minim
     assert not any("case:choice-good" in item for item in findings)
 
 
-def test_review_findings_matches_nested_path_after_skipping_unrelated_tokens():
+def test_review_findings_matches_nested_path_with_inherited_options():
     prefix = {
         "id": "route:entrypoint:audit-tool/inspect",
         "path": ["inspect"],
@@ -724,7 +724,10 @@ def test_review_findings_matches_nested_path_after_skipping_unrelated_tokens():
                 "id": "argument:parent-arg",
                 "kind": "argument",
                 "name": "resource",
+                "nargs": "?",
+                "minimum_values": 0,
                 "parser_path": ["inspect"],
+                "before_nested_subcommand": True,
             },
         ],
     }
@@ -745,6 +748,86 @@ def test_review_findings_matches_nested_path_after_skipping_unrelated_tokens():
         ReviewCatalog("audit-tool", 4, (), (case,)),
     )
     assert not any("omits its command path" in item for item in findings)
+
+
+@pytest.mark.parametrize(
+    ("nargs", "invocation", "command_path_missing"),
+    (
+        (None, ["inspect", "resource", "detail"], False),
+        (None, ["inspect", "detail"], True),
+        ("?", ["inspect", "detail"], False),
+        ("?", ["inspect", "resource", "detail"], False),
+        ("*", ["inspect", "resource", "detail"], False),
+        ("+", ["inspect", "resource", "detail"], False),
+        ("...", ["inspect", "detail"], True),
+    ),
+)
+def test_review_route_lexer_accounts_for_parent_positionals(
+    nargs, invocation, command_path_missing
+):
+    route_id = "route:entrypoint:audit-tool/inspect/detail"
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    route = {
+        "id": route_id,
+        "path": ["inspect", "detail"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "argument:resource",
+                "kind": "argument",
+                "name": "resource",
+                "nargs": nargs,
+                "minimum_values": 1 if nargs in (None, "+") else 0,
+                "parser_path": ["inspect"],
+                "before_nested_subcommand": True,
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:nested-positional",
+        "route_id": route_id,
+        "signature": "s",
+        "kind": "other",
+        "members": [],
+        "shape": {},
+    }
+    case = _case_for_candidate(candidate, invocation)
+    findings = _review_findings(
+        {"routes": [prefix, route], "candidates": [candidate], "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    assert any("omits its command path" in item for item in findings) is command_path_missing
+
+
+def test_review_route_lexer_rejects_unexpected_root_positional_before_verb():
+    route = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [],
+    }
+    candidate = {
+        "id": "case:root-route",
+        "route_id": route["id"],
+        "signature": "s",
+        "kind": "other",
+        "members": [],
+        "shape": {},
+    }
+    case = _case_for_candidate(candidate, ["unregistered", "inspect"])
+    findings = _review_findings(
+        {"routes": [route], "candidates": [candidate], "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    assert any("omits its command path" in item for item in findings)
 
 
 def test_review_findings_does_not_match_command_names_consumed_as_option_values():

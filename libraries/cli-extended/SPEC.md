@@ -741,6 +741,15 @@ single-command case. A retired case MUST stay in the catalog with a human
 retirement reason; if that ID appears again, it requires explicit
 reactivation and review.
 
+Check mode structurally checks invocation argv against the declared route. It
+MUST account for recognized option arity and parser depth when locating command
+words, and for required parent positionals before nested commands. It MUST NOT
+call `RegisteredCli.run()`, `ArgumentParser.parse_args()`, custom converters,
+custom argparse actions, or command handlers. This check is not a full parser
+acceptance oracle: the referenced product test MUST run the real invocation
+and assert its outcome and effects. A marker proves only that the named test is
+collected and linked to the semantic case.
+
 Candidate signatures cover the relevant route and parser shape, including
 aliases, defaults, choices, requiredness, action/nargs, scope/placement,
 exclusive relationships, behavior labels, and synopsis overrides. Descriptions
