@@ -886,9 +886,9 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
     paths: set[str] = set()
     index = 0
     while index < len(tokens):
-        record = tokens[index]
+        record_entry = tokens[index]
         index += 1
-        status, path = record[:2], record[3:]
+        status, path = record_entry[:2], record_entry[3:]
         paths.add(_decode_or_reject(path, "a path reported by git status -z"))
         if b"R" in status or b"C" in status:
             # A rename/copy record's OLD path is the next NUL-terminated
@@ -1058,7 +1058,7 @@ def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining)
         )
     if not stdout:
         return None
-    records = [record for record in stdout.split(b"\x00") if record]
+    records = [record_entry for record_entry in stdout.split(b"\x00") if record_entry]
     if len(records) != 1:
         raise _git_failed(
             f"git ls-tree returned {len(records)} entries for a single exact "
@@ -1694,10 +1694,10 @@ def _p22_reject_external_topology(source: _P22Source, deadline: _P22Deadline) ->
         deadline=deadline,
         cwd=source.repo_top,
     )
-    for record in config.split(b"\x00"):
-        if not record:
+    for record_entry in config.split(b"\x00"):
+        if not record_entry:
             continue
-        key, _, value = record.partition(b"\n")
+        key, _, value = record_entry.partition(b"\n")
         name = _decode_or_reject(key, "a source config key").lower()
         if name.startswith("extensions.partialclone"):
             raise _git_failed(

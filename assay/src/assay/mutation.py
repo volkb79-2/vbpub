@@ -1667,8 +1667,8 @@ def merge_mutations(current: Mutation, records: Iterable[Mapping[str, Any]]) -> 
     buckets: dict[str, list[MutantOutcome]] = {
         name: list(getattr(current, name)) for name in MUTATION_BUCKETS
     }
-    for record in records:
-        buckets[record["outcome_bucket"]].append(_outcome_from_record(record))
+    for record_entry in records:
+        buckets[record_entry["outcome_bucket"]].append(_outcome_from_record(record_entry))
     identities = [
         outcome.identity for name in MUTATION_BUCKETS for outcome in buckets[name]
     ]

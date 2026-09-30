@@ -1513,9 +1513,9 @@ def _parse_skip_worktree_paths(raw: bytes) -> frozenset[bytes]:
     place -- only a DECLARED omission is ever required to be.
     """
     skipped: set[bytes] = set()
-    for record in raw.split(b"\x00"):
-        if record[:2] == b"S ":
-            skipped.add(record[2:])
+    for record_entry in raw.split(b"\x00"):
+        if record_entry[:2] == b"S ":
+            skipped.add(record_entry[2:])
     return frozenset(skipped)
 
 
