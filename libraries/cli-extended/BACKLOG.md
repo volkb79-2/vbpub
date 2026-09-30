@@ -109,10 +109,16 @@ It includes delegated registries and callback-added argparse actions. Nested
 routes carry parent-parser actions forward and identify parser-depth placement;
 required-subcommand prefixes do not produce false executable candidates.
 Parser-scoped `allow_abbrev` is exported, included in candidate signatures, and
-used when checking the invocation at each parser depth. Single-command mode
-and empty-argv dispatch behavior are also visible and signature-sensitive.
-Argparse's negative-number matcher and negative-number-like options are
-exported per parser and used to distinguish signed values from options;
+used when checking the invocation at each parser depth. Entrypoint
+empty-argv behavior and single-command route behavior are visible and
+signature-sensitive. Route prefixes and delegated groups have distinct
+invocation descriptions; ordinary command routes are described as parsing the
+remaining tokens, without assuming they display help when that remainder is
+empty. Required syntax may still reject the parse.
+Argparse's runtime negative-number matcher and negative-number-like options are
+exported per parser and used to distinguish signed values from options; the
+review lexer tests compare this boundary with argparse on the running Python
+version.
 custom or uninspectable matchers make the inventory incomplete. Unsupported
 custom `prefix_chars` and `fromfile_prefix_chars` do too.
 

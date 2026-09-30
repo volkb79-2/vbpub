@@ -154,12 +154,15 @@ def test_surface_export_is_deterministic_and_describes_installed_parser_tree():
     assert [setting["parser_path"] for setting in inspect["parser_settings"]] == [
         [], ["inspect"]
     ]
+    runtime_matcher = argparse.ArgumentParser(add_help=False)._negative_number_matcher
     for setting in inspect["parser_settings"]:
         assert setting["allow_abbrev"] is False
         assert setting["prefix_chars"] == "-"
         assert setting["fromfile_prefix_chars"] is None
-        assert setting["negative_number_matcher"]["pattern"] == r"-\.?\d"
-        assert isinstance(setting["negative_number_matcher"]["flags"], int)
+        assert setting["negative_number_matcher"] == {
+            "pattern": runtime_matcher.pattern,
+            "flags": runtime_matcher.flags,
+        }
         assert setting["has_negative_number_optionals"] is False
         assert setting["negative_number_matcher_custom"] is False
     assert [
@@ -1059,17 +1062,56 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
             configure=lambda parser: parser.add_argument("--plugin-scope"),
         )
     )
-    configured_surface = export_cli_surface(configured_parent.build())
-    configured_group = next(
-        route
-        for route in configured_surface["routes"]
-        if route["kind"] == "delegate-group"
+    configured_parent.register(
+        VerbSpec("status", description="show status", handler=lambda *_: 0)
     )
+    configured_surface = export_cli_surface(configured_parent.build())
+    configured_routes = {tuple(route["path"]): route for route in configured_surface["routes"]}
+    configured_group = configured_routes[("plugins",)]
     assert configured_group["parser_configured_by_callback"] is True
     assert configured_group["syntax_complete"] is False
+    assert configured_routes[("status",)]["syntax_complete"] is True
+    assert all(
+        route["syntax_complete"]
+        for route in configured_surface["routes"]
+        if route["path"][:1] == ["plugins"] and route is not configured_group
+    )
     assert any(
         "delegated wrapper parser syntax is not applied" in reason
         for reason in configured_surface["incomplete"]
+    )
+
+    def delegated_group_surface(*, confirmation_required: bool):
+        group_parent = CliRegistry(
+            IDENTITY, prog="surface-demo", description="Group contract."
+        )
+        group_parent.register(
+            VerbSpec(
+                "plugins",
+                description="plugin commands",
+                mutating=True,
+                confirmation_required=confirmation_required,
+                delegate=child.build(),
+            )
+        )
+        return export_cli_surface(group_parent.build())
+
+    unconfirmed_group = delegated_group_surface(confirmation_required=False)
+    confirmed_group = delegated_group_surface(confirmation_required=True)
+    unconfirmed_contract = {
+        candidate["id"]: candidate["signature"]
+        for candidate in unconfirmed_group["candidates"]
+    }
+    confirmed_contract = {
+        candidate["id"]: candidate["signature"]
+        for candidate in confirmed_group["candidates"]
+    }
+    assert unconfirmed_group["routes"][0]["behavior"] == ["mutating"]
+    assert unconfirmed_group["routes"][0]["confirmation"] is False
+    assert confirmed_group["routes"][0]["confirmation"] is True
+    assert all(
+        unconfirmed_contract[case_id] != confirmed_contract[case_id]
+        for case_id in unconfirmed_contract.keys() & confirmed_contract.keys()
     )
 
     single_child = CliRegistry(
@@ -1185,6 +1227,23 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
         for reason in global_surface["incomplete"]
     )
 
+    multi_parent_global = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="Multi-command inherited global option.",
+        global_options=(OptionSpec(("--scope",), "scope"),),
+    )
+    multi_parent_global.register(
+        VerbSpec("plugins", description="plugin commands", delegate=child.build())
+    )
+    multi_surface = export_cli_surface(multi_parent_global.build())
+    assert multi_surface["syntax_complete"] is False
+    assert all(
+        not route["syntax_complete"]
+        for route in multi_surface["routes"]
+        if route["path"][:1] == ["plugins"] and route["kind"] != "delegate-group"
+    )
+
     child_with_global = CliRegistry(
         child_identity,
         prog="child-tool",
@@ -1205,6 +1264,68 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
         VerbSpec("adapter", description="run adapter", delegate=child_with_global.build())
     )
     assert export_cli_surface(parent_with_global.build())["syntax_complete"] is True
+
+    middle_identity = CliIdentity("MIDDLE", "1.0", "Middle", command="middle-tool")
+
+    def nested_surface(*, outer_mutating: bool):
+        leaf = CliRegistry(
+            child_identity,
+            prog="child-tool",
+            description="Leaf single command.",
+            single_command=True,
+            no_args_action=True,
+        )
+        leaf.register(
+            VerbSpec(
+                "run",
+                description="run leaf operation",
+                options=(OptionSpec(("--child-option",), "child option"),),
+                handler=lambda *_: 0,
+            )
+        )
+        middle = CliRegistry(
+            middle_identity,
+            prog="middle-tool",
+            description="Middle commands.",
+        )
+        middle.register(
+            VerbSpec("adapter", description="run adapter", delegate=leaf.build())
+        )
+        outer = CliRegistry(IDENTITY, prog="surface-demo", description="Outer CLI.")
+        outer.register(
+            VerbSpec(
+                "plugins",
+                description="plugin commands",
+                mutating=outer_mutating,
+                delegate=middle.build(),
+            )
+        )
+        return export_cli_surface(outer.build())
+
+    nested_unmutating = nested_surface(outer_mutating=False)
+    nested_mutating = nested_surface(outer_mutating=True)
+    nested_route = next(
+        route
+        for route in nested_unmutating["routes"]
+        if route["path"] == ["plugins", "adapter"]
+    )
+    assert nested_route["syntax_complete"] is True
+    assert [metadata["name"] for metadata in nested_route["delegated_metadata"]] == [
+        "plugins",
+        "run",
+    ]
+    nested_signatures = {
+        candidate["id"]: candidate["signature"]
+        for candidate in nested_unmutating["candidates"]
+    }
+    changed_nested_signatures = {
+        candidate["id"]: candidate["signature"]
+        for candidate in nested_mutating["candidates"]
+    }
+    assert any(
+        nested_signatures[case_id] != changed_nested_signatures[case_id]
+        for case_id in nested_signatures.keys() & changed_nested_signatures.keys()
+    )
 
     simple = CliRegistry(
         IDENTITY, prog="surface-demo", description="Simple commands."

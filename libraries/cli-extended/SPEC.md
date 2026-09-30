@@ -698,7 +698,8 @@ aliases before writing, so a destination typo cannot overwrite the human-owned
 catalog.
 
 The machine surface includes entrypoint and route invocation mode, including
-whether an empty argument vector shows help or dispatches a single command;
+whether an empty argument vector shows help before parsing or is passed to a
+single-command parser. Required syntax may still reject it. It also includes
 route paths and parser subcommand aliases,
 delegated paths, positional and option IDs/shapes, option aliases, defaults,
 choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
@@ -744,9 +745,10 @@ belongs to their child routes, not to the grouping word by itself. Their child
 paths MUST appear in the human-readable route table.
 Multiple nested subparser groups at one parser depth are marked incomplete
 until the exporter can represent their invocation order without ambiguity.
-Delegated single-command routes retain the public wrapper metadata and the
-delegated command's behavior/confirmation metadata separately; both affect
-candidate signatures. Wrapper-local arguments/options/callback syntax that
+Delegated single-command routes retain metadata for every wrapper in a nested
+delegation chain and for the final delegated command. The Markdown shows these
+contracts separately, and their behavior/confirmation fields affect candidate
+signatures. Wrapper-local arguments/options/callback syntax that
 the delegate runtime does not apply, and inherited global options absent from
 the delegated parser, MUST mark the surface incomplete.
 

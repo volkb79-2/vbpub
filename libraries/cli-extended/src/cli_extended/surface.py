@@ -824,13 +824,13 @@ def _walk_registered_cli(
             local_incomplete.append(reason)
             incomplete.append(reason)
             action_specs: tuple[VerbSpec, ...] = ()
-            route_spec = inherited_specs[0] if inherited_specs else None
-            delegated_specs: tuple[VerbSpec, ...] = ()
+            route_spec = inherited_specs[-1] if inherited_specs else None
+            delegated_specs = inherited_specs[:-1]
         else:
             action_specs = (app.registered_verbs[0],)
-            route_spec = inherited_specs[0] if inherited_specs else app.registered_verbs[0]
+            route_spec = inherited_specs[-1] if inherited_specs else app.registered_verbs[0]
             delegated_specs = (
-                (*inherited_specs[1:], app.registered_verbs[0])
+                (*inherited_specs[:-1], app.registered_verbs[0])
                 if inherited_specs
                 else ()
             )
@@ -876,7 +876,9 @@ def _walk_registered_cli(
             app.parser,
             entrypoint_id=entrypoint_id,
             path=path_prefix,
-            verb_specs=inherited_specs,
+            verb_specs=(),
+            route_spec=inherited_specs[-1] if inherited_specs else None,
+            delegated_specs=inherited_specs[:-1],
             global_options=globals_here,
             single_command=False,
             no_args_action=app.no_args_action,
@@ -914,7 +916,7 @@ def _walk_registered_cli(
                         delegate,
                         entrypoint_id=entrypoint_id,
                         path_prefix=path,
-                        inherited_specs=(spec,),
+                        inherited_specs=(*inherited_specs, spec),
                         inherited_globals=globals_here,
                         inherited_parser_settings=parser_settings_for_children,
                         single_command_route=route_id,
@@ -948,13 +950,12 @@ def _walk_registered_cli(
                         f"{route_id}: delegated wrapper parser syntax is not applied to "
                         "the delegated CLI"
                     )
-                    local_incomplete.append(reason)
                     incomplete.append(reason)
                 delegated_records = _walk_registered_cli(
                     delegate,
                     entrypoint_id=entrypoint_id,
                     path_prefix=path,
-                    inherited_specs=(spec,),
+                    inherited_specs=(*inherited_specs, spec),
                     inherited_globals=globals_here,
                     inherited_parser_settings=parser_settings_for_children,
                     incomplete=incomplete,
@@ -989,6 +990,7 @@ def _walk_registered_cli(
                 entrypoint_id=entrypoint_id,
                 path=path,
                 verb_specs=(spec,),
+                delegated_specs=inherited_specs,
                 global_options=globals_here,
                 single_command=False,
                 no_args_action=app.no_args_action,

@@ -355,12 +355,16 @@ def render_cli_surface_markdown(
         (
             f"Executable: `{surface['entrypoint']['command']}` via "
             f"`{surface['entrypoint'].get('prog', surface['entrypoint']['command'])}`; built-ins: "
-            + ", ".join(
-                f"`{item}`" for item in surface["entrypoint"].get("builtins", ())
+            + (
+                ", ".join(
+                    f"`{item}`" for item in surface["entrypoint"].get("builtins", ())
+                )
+                or "none"
             )
             + ". Empty argv: "
             + (
-                "dispatches the single command."
+                "is parsed by the single-command parser; "
+                "required syntax may still reject it."
                 if surface["entrypoint"].get("single_command")
                 and surface["entrypoint"].get("no_args_action")
                 else "shows help."
@@ -373,8 +377,8 @@ def render_cli_surface_markdown(
         "",
         "### Command routes",
         "",
-        "| Surface ID | Route kind | Invocation path | Invocation mode | Nested commands | Description | Group | Behavior | Confirmation | Synopsis/usage overrides | Delegated metadata | Parser settings | Parser callback | Opaque fields | Parser completeness |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Surface ID | Route kind | Invocation path | Invocation mode | Nested commands | Help summary | Description | Group | Behavior | Confirmation | Synopsis/usage overrides | Delegated metadata | Parser settings | Parser callback | Opaque fields | Parser completeness |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for route in surface["routes"]:
         path = " ".join(route["path"]) or surface["entrypoint"]["command"]
@@ -402,13 +406,21 @@ def render_cli_surface_markdown(
             f"{'yes' if setting.get('negative_number_matcher_custom') else 'no'}"
             for setting in route.get("parser_settings", ())
         )
-        invocation_mode = (
-            "single-command; empty argv dispatches"
-            if route.get("single_command") and route.get("no_args_action")
-            else "single-command; empty argv shows help"
-            if route.get("single_command")
-            else "multi-command; empty argv shows help"
-        )
+        route_path = tuple(route.get("path", ()))
+        if not route_path:
+            invocation_mode = "entrypoint; see empty-argv behavior above"
+        elif route.get("kind") == "delegate-group":
+            invocation_mode = "delegated group; child CLI parses remaining tokens"
+        elif route.get("kind") == "route-prefix":
+            invocation_mode = "route prefix; selects a nested command"
+        elif route.get("single_command") and route.get("no_args_action"):
+            invocation_mode = "single-command; empty remainder is parsed"
+        elif route.get("single_command"):
+            invocation_mode = (
+                "single-command; empty remainder shows help before parsing"
+            )
+        else:
+            invocation_mode = "command route; parser handles remaining tokens"
         overrides = {
             key: value
             for key, value in (
@@ -426,6 +438,7 @@ def render_cli_surface_markdown(
                     path,
                     invocation_mode,
                     "; ".join(nested_commands),
+                    route.get("summary") or "",
                     route.get("description") or "",
                     route.get("group") or "",
                     ", ".join(route.get("behavior", [])),
@@ -745,6 +758,8 @@ def _review_findings(
             None,
         )
         matcher = settings.get("negative_number_matcher") if settings else None
+        if settings and settings.get("negative_number_matcher_custom"):
+            return False
         if not isinstance(matcher, Mapping):
             return False
         pattern = matcher.get("pattern")
@@ -923,6 +938,7 @@ def _review_findings(
                 continue
             if (
                 token.startswith("-")
+                and token != "-"
                 and options_enabled[path_depth]
                 and not is_negative_number(token, route, path_depth)
             ):
@@ -1085,6 +1101,7 @@ def _review_findings(
                 continue
             if (
                 token.startswith("-")
+                and token != "-"
                 and options_enabled[segment]
                 and not is_negative_number(token, route, segment)
             ):

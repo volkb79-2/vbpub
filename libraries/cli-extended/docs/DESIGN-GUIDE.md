@@ -218,7 +218,15 @@ distinct files, preventing a destination typo from overwriting the decision
 source.
 
 The Markdown view must expose the parser facts a reviewer needs without
-opening implementation code: route invocation mode and empty-argument result,
+opening implementation code: the entrypoint's empty-argv result and each
+route's invocation mode. Only the entrypoint and single-command routes have an
+empty-argument action to report; a command route parses its remaining tokens,
+a route prefix selects a nested command, and a delegated group passes its
+remaining tokens to the child CLI. Do not describe every multi-command leaf as
+showing help when invoked without a remainder: the leaf parser may dispatch or
+reject based on its required syntax.
+
+The generated route inventory also records
 mutation and confirmation policy, parser settings, delegated command metadata,
 callback inventory and opaque fields;
 for each argument and option, its description, token shape, argparse action,
@@ -227,9 +235,11 @@ hidden status. This keeps the canonical spec useful to an operator reviewing
 the whole call surface while the JSON manifest remains the stable input for
 diffs and tools.
 
-Whether an empty argument vector shows help or dispatches a single command is
-part of the call contract. It can change while the parser actions stay the
-same, so the surface shows it and includes it in review signatures.
+Whether the top-level executable shows help before parsing or passes empty
+argv to the single-command parser is part of the call contract. Parsing may
+still reject required syntax; the surface records the mode without claiming
+the handler always runs. This can change while parser actions stay the same,
+so the surface shows it and includes it in review signatures.
 
 Argparse's negative-number rule also affects whether a token such as `-1` is
 an option value or a positional argument. The exporter records that rule and

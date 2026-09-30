@@ -305,7 +305,9 @@ follow-ups.
 
 `RegisteredCli` can export its built parser tree as stable JSON and generate a
 bounded semantic-review checklist. Its generated Markdown shows each route's
-invocation mode and empty-argument behavior, behavior and confirmation policy,
+invocation mode, the entrypoint's empty-argv behavior, and how each route handles
+its remaining tokens (including delegated groups and single-command routes),
+behavior and confirmation policy,
 parser settings (including how negative-number tokens are parsed) and callbacks,
 delegated metadata, and opaque fields. Its argument and option rows include descriptions,
 grammar shape, argparse action and converter, choices, defaults, const values,

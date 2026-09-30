@@ -115,18 +115,30 @@ contract exposed fields that existed only in JSON: confirmation policy,
 parser action/converter details, hidden status, const values, callback and
 opaque-field status, and delegated metadata. The Markdown view now includes
 those facts so reviewers can judge them from the product spec. A delegated
-single-command route records both its public wrapper and the actual delegated
-command; wrapper-only parser declarations and inherited globals absent from
-the delegate are marked incomplete. The surface schema is now version `3`,
+route records every wrapper in a nested delegation chain and the final
+delegated command; wrapper-only parser declarations and inherited globals
+absent from the delegate are marked incomplete. The surface schema is now version `3`,
 and delegated behavior/confirmation changes participate in review signatures.
-The final route audit also exposed empty-argv dispatch behavior: a single-command
-registry can either show help or invoke its handler when passed no arguments.
-The route table now shows that mode, and candidate signatures include it so a
-behavior change cannot leave an old semantic decision appearing current.
+The final route audit also exposed empty-argv behavior: a single-command
+registry can either show help before parsing or pass empty argv into its
+parser. Required syntax can still make that parse fail. The route table now
+shows this behavior for the executable entrypoint and single-command routes.
+It describes route prefixes as selecting nested commands, delegated groups as
+forwarding remaining tokens to the child CLI, and ordinary command routes as
+parsing their remaining tokens. This avoids claiming that a multi-command
+route shows help when its parser may dispatch or reject according to required
+syntax. Candidate signatures include the actual single-command empty-argv
+behavior so a change cannot leave an old semantic decision appearing current.
 The inventory also records argparse's negative-number matcher and whether a
 parser registers negative-number-like options. The semantic checker consumes
 those values when deciding if a signed token is an option value or positional;
 custom or uninspectable matchers make the syntax incomplete.
+Review tests derive the default matcher from the active Python's argparse
+parser and compare value-boundary decisions with `ArgumentParser._parse_optional`,
+so a supported Python version's matcher is not assumed to equal another
+version's pattern. The checker ignores a custom matcher rather than executing
+consumer-supplied regex syntax; that surface remains incomplete and cannot pass
+check mode.
 
 ## Consumer workflows this should support
 

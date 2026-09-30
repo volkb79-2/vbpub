@@ -268,7 +268,14 @@ child routes, which remain listed under the parent in the generated table. The
 manifest reports spellings,
 aliases, choices, defaults, requiredness, argument shape, exclusive groups,
 scope, placement, synopsis, parser-scoped `allow_abbrev`, callback-added
-actions, and whether empty argv shows help or dispatches a single command.
+actions, and whether empty argv shows help before parsing or is passed to the
+single-command parser. Required syntax can still reject an empty argument
+vector after that parser runs. For the route table, this applies to the
+executable entrypoint and single-command routes; ordinary command routes parse
+their remaining tokens, route prefixes select nested commands, and delegated
+groups pass remaining tokens to the child CLI. The table avoids claiming that
+every multi-command route shows help when called without a remainder, since its
+parser may dispatch or reject according to required syntax.
 It also records argparse's negative-number matcher and whether each parser has
 negative-number-like options, so the checker classifies signed numeric values
 using the built parser's rules; custom or uninspectable matchers make the
@@ -280,8 +287,8 @@ and opaque fields. Argument and option rows show descriptions, grammar shape,
 argparse action and converter, const values, requiredness, choices and defaults,
 exclusive-group requirements, scope and parser placement, and whether an
 option is hidden from operator help. A change to abbreviation policy changes
-case signatures. For a delegated single-command CLI, the public wrapper and
-delegated command's behavior/confirmation metadata are both shown and signed;
+case signatures. For nested delegated CLIs, every wrapper and the final
+single-command's behavior/confirmation metadata are shown and signed;
 wrapper-local parser declarations and inherited global options missing from
 the delegated parser make the surface incomplete. The checker uses the policy
 for the parser that owns each option, including when a callback

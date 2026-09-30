@@ -37,6 +37,24 @@ from cli_extended.review import (
 
 IDENTITY = CliIdentity("AUDIT", "1.0", "Audit Tool", command="audit-tool")
 ROUTE_ID = "route:entrypoint:audit-tool/inspect"
+
+
+def _argparse_negative_number_settings(*, parser_path=(), negative_option=False):
+    parser = argparse.ArgumentParser(add_help=False)
+    if negative_option:
+        parser.add_argument("-1", action="store_true")
+    matcher = parser._negative_number_matcher
+    return parser, {
+        "parser_path": list(parser_path),
+        "negative_number_matcher": {
+            "pattern": matcher.pattern,
+            "flags": matcher.flags,
+        },
+        "has_negative_number_optionals": parser._has_negative_number_optionals,
+        "negative_number_matcher_custom": False,
+    }
+
+
 INTERACTIONS = (
     {
         "id": "mode-and-dry-run/both",
@@ -616,6 +634,7 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                     {"destination": "optional-operation", "required": False, "subcommands": ["route:inspect/check"]},
                 ],
                 "description": "Run an operation.",
+                "summary": "run operation [mutating]",
                 "group": "CHANGE",
                 "behavior": ["mutating"],
                 "confirmation": True,
@@ -731,6 +750,21 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
                 ],
                 "actions": [],
             },
+            {
+                "id": "route:entrypoint:audit-tool/adapter",
+                "path": ["adapter"],
+                "kind": "invocation",
+                "single_command": True,
+                "no_args_action": False,
+                "aliases": [],
+                "subcommand_groups": [],
+                "description": "A delegated single-command adapter.",
+                "group": None,
+                "behavior": [],
+                "syntax_complete": True,
+                "parser_settings": [],
+                "actions": [],
+            },
         ],
         "candidates": [candidate, pending_candidate],
         "syntax_complete": False,
@@ -751,13 +785,22 @@ def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_invent
     assert "uninspectable callback field \\| reason" in markdown
     assert "inspect run (aliases: r)" in markdown
     assert "Run an operation." in markdown
+    assert "run operation [mutating]" in markdown
     assert "CHANGE" in markdown
     assert "Confirmation" in markdown and "inspect <RESOURCE>" in markdown
     assert "audit-tool inspect [options] RESOURCE" in markdown
     assert "run an operation [mutating]" in markdown
     assert "Parser callback" in markdown and "Opaque fields" in markdown
-    assert "Empty argv: dispatches the single command." in markdown
-    assert "single-command; empty argv dispatches" in markdown
+    assert (
+        "Empty argv: is parsed by the single-command parser; "
+        "required syntax may still reject it."
+        in markdown
+    )
+    assert "entrypoint; see empty-argv behavior above" in markdown
+    assert "route prefix; selects a nested command" in markdown
+    assert "single-command; empty remainder shows help before parsing" in markdown
+    assert "multi-command; empty argv shows help" not in markdown
+    assert "built-ins: none" in markdown
     assert "parser settings" in markdown.lower()
     assert "<entrypoint>: allow_abbrev=no," in markdown
     assert "negative_number_matcher_custom=yes" in markdown
@@ -1005,6 +1048,73 @@ def test_review_findings_checks_minimum_alias_positional_and_option_semantics():
     assert any("does not supply its reviewed option choice" in item for item in findings)
 
 
+def test_render_route_invocation_modes_describe_the_parser_receiving_argv():
+    routes = [
+        {
+            "id": "route:entrypoint:audit-tool",
+            "path": [],
+            "kind": "invocation",
+            "single_command": True,
+            "no_args_action": True,
+            "actions": [],
+        },
+        {
+            "id": "route:entrypoint:audit-tool/adapter",
+            "path": ["adapter"],
+            "kind": "invocation",
+            "single_command": True,
+            "no_args_action": True,
+            "actions": [],
+        },
+        {
+            "id": "route:entrypoint:audit-tool/plugins",
+            "path": ["plugins"],
+            "kind": "delegate-group",
+            "single_command": False,
+            "actions": [],
+        },
+        {
+            "id": "route:entrypoint:audit-tool/inspect",
+            "path": ["inspect"],
+            "kind": "route-prefix",
+            "actions": [],
+        },
+        {
+            "id": "route:entrypoint:audit-tool/status",
+            "path": ["status"],
+            "kind": "invocation",
+            "single_command": False,
+            "actions": [],
+        },
+    ]
+    surface = {
+        "schema_version": 3,
+        "entrypoint": {
+            "command": "audit-tool",
+            "prog": "audit-tool",
+            "single_command": True,
+            "no_args_action": True,
+        },
+        "routes": routes,
+        "candidates": [],
+    }
+    markdown = render_cli_surface_markdown(
+        surface, ReviewCatalog("audit-tool", 8, (), ())
+    )
+
+    assert (
+        "Empty argv: is parsed by the single-command parser; "
+        "required syntax may still reject it."
+        in markdown
+    )
+    assert "entrypoint; see empty-argv behavior above" in markdown
+    assert "single-command; empty remainder is parsed" in markdown
+    assert "delegated group; child CLI parses remaining tokens" in markdown
+    assert "route prefix; selects a nested command" in markdown
+    assert "command route; parser handles remaining tokens" in markdown
+    assert "multi-command; empty argv shows help" not in markdown
+
+
 def test_review_lexer_handles_negative_values_and_missing_option_values_at_end():
     route_id = "route:entrypoint:audit-tool/inspect"
     route = {
@@ -1018,9 +1128,9 @@ def test_review_lexer_handles_negative_values_and_missing_option_values_at_end()
                 "allow_abbrev": False,
                 "prefix_chars": "-",
                 "fromfile_prefix_chars": "",
-                "negative_number_matcher": {"pattern": r"-\.?\d", "flags": 32},
-                "has_negative_number_optionals": False,
-                "negative_number_matcher_custom": False,
+                **_argparse_negative_number_settings(
+                    parser_path=("inspect",)
+                )[1],
             }
         ],
         "actions": [
@@ -1078,6 +1188,144 @@ def test_review_lexer_handles_negative_values_and_missing_option_values_at_end()
     )
     findings = _review_findings(surface, missing_value)
     assert any("omits a value for --count" in item for item in findings)
+
+
+@pytest.mark.parametrize("negative_option", (False, True))
+@pytest.mark.parametrize("token", ("-1", "-3.5", "-", "-word", "value"))
+def test_review_value_boundaries_match_runtime_argparse(negative_option, token):
+    parser, parser_settings = _argparse_negative_number_settings(
+        parser_path=("inspect",), negative_option=negative_option
+    )
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "parser_settings": [
+            {
+                **parser_settings,
+                "allow_abbrev": False,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+            }
+        ],
+        "actions": [
+            {
+                "id": "option:count",
+                "kind": "option",
+                "flags": ["--count"],
+                "nargs": None,
+                "minimum_values": 1,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:count",
+        "route_id": route_id,
+        "signature": "sha256:count",
+        "kind": "option-spelling",
+        "members": ["option:count"],
+        "shape": {"spelling": "--count"},
+    }
+    case = _case_for_candidate(candidate, ["inspect", "--count", token])
+    findings = _review_findings(
+        {
+            "entrypoint": {"allow_abbrev": False},
+            "routes": [route],
+            "candidates": [candidate],
+            "syntax_complete": True,
+        },
+        ReviewCatalog("audit-tool", 8, (), (case,)),
+    )
+    argparse_treats_token_as_option = parser._parse_optional(token) is not None
+    review_rejects_token_as_value = any(
+        "omits a value for --count" in finding for finding in findings
+    )
+    assert review_rejects_token_as_value is argparse_treats_token_as_option
+
+
+def test_review_lexer_counts_lone_dash_as_a_positional_value():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "argument:resource",
+                "kind": "argument",
+                "name": "resource",
+                "nargs": None,
+                "minimum_values": 1,
+                "required": True,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:inspect/minimum",
+        "route_id": route_id,
+        "signature": "sha256:minimum",
+        "kind": "minimum",
+        "members": [],
+        "shape": {
+            "required_arguments": ["argument:resource"],
+            "required_argument_values": {"argument:resource": 1},
+        },
+    }
+    case = _case_for_candidate(candidate, ["inspect", "-"])
+    findings = _review_findings(
+        {"routes": [route], "candidates": [candidate], "syntax_complete": True},
+        ReviewCatalog("audit-tool", 8, (), (case,)),
+    )
+    assert not any("omits required positional argument" in item for item in findings)
+
+
+def test_review_does_not_trust_a_custom_negative_number_matcher():
+    route_id = "route:entrypoint:audit-tool/inspect"
+    route = {
+        "id": route_id,
+        "path": ["inspect"],
+        "kind": "invocation",
+        "parser_settings": [
+            {
+                "parser_path": ["inspect"],
+                "allow_abbrev": False,
+                "prefix_chars": "-",
+                "fromfile_prefix_chars": None,
+                "negative_number_matcher": {"pattern": r"^-1$", "flags": 0},
+                "has_negative_number_optionals": False,
+                "negative_number_matcher_custom": True,
+            }
+        ],
+        "actions": [
+            {
+                "id": "option:count",
+                "kind": "option",
+                "flags": ["--count"],
+                "nargs": None,
+                "minimum_values": 1,
+                "parser_path": ["inspect"],
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:count",
+        "route_id": route_id,
+        "signature": "sha256:count",
+        "kind": "option-spelling",
+        "members": ["option:count"],
+        "shape": {"spelling": "--count"},
+    }
+    case = _case_for_candidate(candidate, ["inspect", "--count", "-1"])
+    findings = _review_findings(
+        {"routes": [route], "candidates": [candidate], "syntax_complete": False},
+        ReviewCatalog("audit-tool", 8, (), (case,)),
+    )
+    assert any("omits a value for --count" in finding for finding in findings)
 
 
 @pytest.mark.parametrize(
@@ -1150,8 +1398,7 @@ def test_review_route_lexer_does_not_consume_extra_parent_positionals(nargs):
                 "allow_abbrev": False,
                 "prefix_chars": "-",
                 "fromfile_prefix_chars": None,
-                "negative_number_matcher": {"pattern": r"-\.?\d", "flags": 32},
-                "has_negative_number_optionals": False,
+                **_argparse_negative_number_settings()[1],
             }
         ],
         "actions": [],
@@ -1889,6 +2136,7 @@ def test_review_findings_does_not_match_command_names_consumed_as_option_values(
         (None, ["--value=inspect", "inspect", "detail", "d"], True),
         (None, ["--value", "--unknown", "inspect", "d"], False),
         (None, ["--value", "-3", "inspect", "d"], True),
+        (None, ["--value", "-", "inspect", "d"], True),
         (None, ["--value"], False),
         (0, ["--flag", "inspect", "d"], True),
         (2, ["--pair", "first", "second", "inspect", "d"], True),
@@ -1930,8 +2178,7 @@ def test_review_route_lexer_skips_option_values_and_stops_at_delimiter(
                 "allow_abbrev": False,
                 "prefix_chars": "-",
                 "fromfile_prefix_chars": None,
-                "negative_number_matcher": {"pattern": r"-\.?\d", "flags": 32},
-                "has_negative_number_optionals": False,
+                **_argparse_negative_number_settings()[1],
             }
         ],
         "actions": [],
