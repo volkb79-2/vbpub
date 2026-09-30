@@ -159,6 +159,7 @@ def test_analysis_reaches_no_private_judge_name():
         "assay_analysis/__init__.py",
         "assay_analysis/cli.py",
         "assay_analysis/evidence.py",
+        "assay_analysis/plan_estimate.py",
     }
     offenders = [
         use for use in private_judge_uses(sources) if use not in ALLOWED_PRIVATE_JUDGE_NAMES

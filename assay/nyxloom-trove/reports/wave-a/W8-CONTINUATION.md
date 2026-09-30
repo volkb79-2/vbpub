@@ -1,0 +1,27 @@
+# W8 continuation (checkpoint 2, after steps P+H, C, G)
+
+Worktree `/workspaces/vbpub/.worktrees/wave-a-w8-measurement` (project dir `assay/`), branch `wave-a-w8-measurement`, base `bdd9cde7`.
+Read first: `W8-measurement.md` (brief), `CARVER-DECISIONS.md`, `W8-LOG.md`. Editor tools only (Edit/Write); never `run-gate.py`; nice/ionice everything; serial pytest.
+
+## Done (green, committed)
+- L `eee1de96`, S `9675b112`, R `73003664` (earlier session).
+- P+H `0484018c`: `analysis/src/assay_analysis/plan_estimate.py`, `cli.py` (`_workers`, `plan-estimate`, exit 2), `__init__`, `assay.toml` targets, `src/assay/cli.py` (`PLAN_ESTIMATE_HINT`, `_cmd_plan(args, out, err=None)`, `commit`/`tree`), tests `analysis/tests/test_analysis_plan_estimate.py` (O-P1..O-P5), `tests/core/test_cli_plan_estimate_hint.py` (O-H1), boundary test guard-the-guard set, T8 wheel list entry, README `plan-estimate` bullet + example line (docs test needs it). Analysis lane: 284 passed, 100% line+branch (all four modules).
+- C `42405437`: `tools/b105_report_check.py` (`--plan-json`, `_plan_structure`, `check_campaign_scope(document, plan, *, expected_commit=None, expected_tree=None)`, `plan=` kw on `verify_report_document`, refusal 8 via `parser.error`, unreadable plan = a `ValueError` instance passed as `plan` and re-raised at step 9), `tools/self-qualification-gate.sh` (`plan_path`, `plan_args`, plan step under `[[ "$expected_rigor" == *R2* ]]`), tests: O11 in `gate/tests/test_b105_report_check.py` (`_plan_for`, `plan=` param on `_run_checker`, auto plan for R2 rigor), O12 in `gate/tests/test_self_lane.py`, O14 in `gate/tests/test_b105_report_check_real_plan.py`. 101 passed in the three gate files.
+- G `7f6b7cf7`: `tests/core/test_isolation_guards.py` (G1-G5, 6 tests). Controlled breaks done: `os.link` in `_copy_objects` -> G1 red; test-local tree reuse -> G3 red ('False' != 'True'); both reverted, `git diff src/assay/isolation.py` empty.
+
+## Remaining, in order
+1. **Controlled breaks still owed for the LOG table** (edit, run, revert via Edit; commit nothing): O-P1 (`worker_hours / plan.get("jobs")` or use estimated_serial_seconds), O-P2 (select first segment), O-P3 (filter by commit), O-P4 (skip 0 baseline: `<= 0` -> `< 0`), O-P5 (drop `commit` from the plan payload -> real-plan test red), O-H1 (`tree = commit`; hint to `out`), O11 (skip set-equality; ignore status), O12 (move plan after run in the .sh), O14 (accept shard: drop refusal 5 check), CD41 case (drop commit compare).
+2. **Docs** (brief "Docs" step): README :975 B105 text (plan file / `commit`/`tree`), CONSUMERS (:2307-2312 upper-bound fix, progress table :2648/:2652 add `cpu_seconds`/`peak_rss_bytes`/`phase_seconds`/`startup_seconds` + baseline `setup_s`/`teardown_s`, pasteable `assay plan ... > plan.json` + `assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-self-qualification-preflight.jsonl --workers 3`, `commit`/`tree`), DESIGN-GUIDE (:484 B107, :1972 B105, :3406 why analysis, CD1), CHANGES (exact lines in brief; Added/Fixed/Testing; name every CD38-amended additive surface incl. sidecar and state `resources`), B111 status line in `nyxloom-trove/4-backlog.md`. Docs tests: CONSUMERS/DESIGN-GUIDE analysis example blocks are parsed by `analysis/tests/test_analysis.py::test_documented_analysis_commands_parse_with_shipped_cli` (README already has the plan-estimate line). Never mention `--baseline-from`, `estimate_provenance`, `full_suite_central_*`. Run any docs-sync tests (`grep -rl README tests gate/tests analysis/tests`).
+3. **Finish**: collect counts (`pytest --collect-only -q` for `tests`, `analysis/tests`, `gate/tests`; before: 5438/224/350); ONE full `tests` run `--cov=src/assay --cov-branch --cov-report=term-missing` (every miss in a W8-touched file: liveness/mutation/cli/runner is yours, except the B134 line in `git.py`; known env failure `test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused`); one `analysis/tests` coverage run (100%, last seen 100%); pragma check (`liveness.py:94`, `mutation.py:148`, line 95 and 155-156 unchanged); `git status --short --ignored assay` and delete the ignored `assay/.coverage` (currently present); complete `W8-LOG.md` (commits, oracle table positive+negative for every oracle, collect counts, coverage, "For the controller's gate run", deviations, `READY-FOR-GATE <last code commit hash>`).
+
+## Deviations to add to the LOG (numbering continues after the LOG's 6)
+7. `check_campaign_scope` takes optional keyword `expected_commit`/`expected_tree` (CD41 lives in the refusal-9 slot); without them (O14 real-data call) the commit/tree check is skipped.
+8. An unreadable/non-JSON `--plan-json` file is refused at step 9 (structure) with `cannot read plan ...`, not earlier: `main` hands `verify_report_document` a `ValueError` instance as `plan`.
+9. Refusal 1 (plan missing while R2 expected) is raised in `verify_report_document` after step 5, before `check_campaign_scope`.
+10. `plan_estimate`: an integer `baseline_s` too large for float (`OverflowError`) is refused as not finite positive.
+11. Added `assay_analysis/plan_estimate.py` to the wheel-list assertion in `gate/tests/test_distribution_build_release.py` (an inclusion list, not exact).
+
+## Load-bearing seams
+- `src/assay/liveness.py`: pragma line 94 must not move; `src/assay/mutation.py` pragmas 148/155/156.
+- `src/assay/cli.py`: `PLAN_ESTIMATE_HINT` above `_cmd_plan`; `tree` after `commit = git.head_rev(...)`.
+- Exact next command: start the controlled breaks (item 1) or go straight to Docs (item 2).

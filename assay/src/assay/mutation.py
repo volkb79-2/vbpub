@@ -1911,7 +1911,40 @@ class _MutantRun:
     #: B107: exact CPU/PSI evidence retained when the liveness runner stops
     #: a candidate. A resource stall never becomes a functional bucket.
     liveness_resource_evidence: Mapping[str, Any] | None = None
+    #: B111 diagnostic evidence (never a classification input): the sampled
+    #: tree CPU / peak sum-RSS lower bounds and the startup gaps read from
+    #: the liveness sidecar and events file (`None` off a liveness lane), and
+    #: the worker's own monotonic phase split (always measured).
+    cpu_seconds: float | None = None
+    peak_rss_bytes: int | None = None
+    phase_seconds: Mapping[str, float] | None = None
+    startup_seconds: Mapping[str, float | None] | None = None
     execution: MutationExecution = MutationExecution(mode="full")
+
+
+def _measured_resources(
+    events_path: Path,
+) -> tuple[float | None, int | None, dict[str, float | None]]:
+    """``(cpu_seconds, peak_rss_bytes, startup_seconds)`` for one liveness
+    candidate, from its resource sidecar and events file. Anything absent or
+    ill-typed is ``None``: diagnostics never fail a candidate."""
+    sidecar = liveness.read_resource_sidecar(events_path) or {}
+    spawned_at = liveness._finite_number(sidecar.get("spawned_at"))
+    cpu_seconds = liveness._finite_number(sidecar.get("cpu_seconds"))
+    peak_rss = liveness._finite_number(sidecar.get("peak_rss_bytes"))
+    session_start, first_test = liveness.first_event_times(events_path)
+    return (
+        cpu_seconds,
+        peak_rss if isinstance(peak_rss, int) else None,
+        {
+            "to_session_start": (
+                None if session_start is None or spawned_at is None else session_start - spawned_at
+            ),
+            "to_first_test": (
+                None if first_test is None or spawned_at is None else first_test - spawned_at
+            ),
+        },
+    )
 
 
 def _classify_mutant_result(result: CommandResult) -> str:
@@ -2515,10 +2548,18 @@ def run_mutation(
                 # them apart). Right after `plan`, before any candidate
                 # line, so a reader already has the baseline's own per-test
                 # detail before judging any mutant against it.
-                for test_event in liveness.baseline_test_events(
-                    liveness_baseline_events_path
+                for test_event, phase_durations in zip(
+                    liveness.baseline_test_events(liveness_baseline_events_path),
+                    liveness.baseline_phase_durations(liveness_baseline_events_path),
                 ):
-                    write_progress({"event": "test", "phase": "baseline", **test_event})
+                    write_progress(
+                        {
+                            "event": "test",
+                            "phase": "baseline",
+                            **test_event,
+                            **phase_durations,
+                        }
+                    )
         # (B091 round-1 B3) `resolve_run_cwd` travels the SAME lazy-import-
         # then-parameter path `execute_plan` already does (a module-level
         # `from .runner import ...` is circular -- `runner` imports
@@ -2930,6 +2971,7 @@ def _execute_mutation_jobs(
             replacement=replacement_bytes,
             timeout=materialize_timeout,
         ) as snapshot:
+            entered_monotonic = time.monotonic()
             # P34/§3.6: reserved and ARMED before the command runs, exactly
             # like the coverage artifact one level up in
             # `runner._execute_snapshot_unit` -- `arm()` unlinks anything
@@ -2960,6 +3002,7 @@ def _execute_mutation_jobs(
                 and budget_per_candidate_seconds < command_deadline
             ):
                 command_deadline = budget_per_candidate_seconds
+            command_started_monotonic = time.monotonic()
             result = execute_plan(
                 attempt_plan,
                 cwd=snapshot.project_root,
@@ -2967,6 +3010,7 @@ def _execute_mutation_jobs(
                 process_runner=process_runner,
                 clock=clock,
             )
+            command_finished_monotonic = time.monotonic()
             elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
             # (B091/D-23, P7 A4) Read back HERE, while this candidate's own
             # snapshot root is still in scope -- the events file lives at
@@ -2989,13 +3033,19 @@ def _execute_mutation_jobs(
             # "agrees today" is not a property an edit to either side
             # preserves).
             tests_completed: int | None = None
+            cpu_seconds: float | None = None
+            peak_rss_bytes: int | None = None
+            startup_seconds: dict[str, float | None] | None = None
             if liveness_events_dir is not None:
-                tests_completed = liveness.count_test_events(
-                    liveness.candidate_events_path(
-                        liveness_events_dir,
-                        resolve_run_cwd(snapshot.project_root, plan),
-                    )
+                candidate_events = liveness.candidate_events_path(
+                    liveness_events_dir,
+                    resolve_run_cwd(snapshot.project_root, plan),
                 )
+                tests_completed = liveness.count_test_events(candidate_events)
+                cpu_seconds, peak_rss_bytes, startup_seconds = _measured_resources(
+                    candidate_events
+                )
+            integrity_started_monotonic = time.monotonic()
             try:
                 # P26/A-212: the ONE lane deadline IS forwarded here, so this
                 # check's own Git children are bounded by the same budget as
@@ -3025,6 +3075,7 @@ def _execute_mutation_jobs(
                 ):
                     raise
                 dirt = None
+            integrity_finished_monotonic = time.monotonic()
             equivalence_bytes: bytes | None = None
             kill_signal_text: str | None = None
             decode_error: AssayError | None = None
@@ -3055,6 +3106,7 @@ def _execute_mutation_jobs(
                 raise dirt
             if decode_error is not None:
                 raise decode_error
+        teardown_finished_monotonic = time.monotonic()
         run = _MutantRun(
             result=result,
             equivalence_bytes=equivalence_bytes,
@@ -3062,6 +3114,15 @@ def _execute_mutation_jobs(
             elapsed_seconds=elapsed_seconds,
             tests_completed=tests_completed,
             liveness_resource_evidence=result.liveness_resource_evidence,
+            cpu_seconds=cpu_seconds,
+            peak_rss_bytes=peak_rss_bytes,
+            phase_seconds={
+                "materialize": entered_monotonic - started_monotonic,
+                "command": command_finished_monotonic - command_started_monotonic,
+                "integrity": integrity_finished_monotonic - integrity_started_monotonic,
+                "teardown": teardown_finished_monotonic - integrity_finished_monotonic,
+            },
+            startup_seconds=startup_seconds,
         )
         receipt = (
             _read_witness_receipt(receipt_path)
@@ -3177,6 +3238,23 @@ def _execute_mutation_jobs(
                 # Keeping one path prevents replay and verdict policy from
                 # drifting on equivalence or kill-signal rules.
                 outcome_bucket = _classified_bucket(run)
+                # B111: diagnostic evidence only (never a classification
+                # input), built once so the progress event and the state
+                # record carry the identical object.
+                resources = {
+                    "cpu_seconds": (
+                        round(run.cpu_seconds, 3) if run.cpu_seconds is not None else None
+                    ),
+                    "peak_rss_bytes": run.peak_rss_bytes,
+                    "phase_seconds": (
+                        {name: round(value, 3) for name, value in run.phase_seconds.items()}
+                        if run.phase_seconds is not None
+                        else None
+                    ),
+                    "startup_seconds": (
+                        dict(run.startup_seconds) if run.startup_seconds is not None else None
+                    ),
+                }
                 if write_progress is not None:
                     write_progress(
                         {
@@ -3201,6 +3279,7 @@ def _execute_mutation_jobs(
                             # already carries that same `None` default
                             # through from `_run_one`.
                             "tests_completed": run.tests_completed,
+                            **resources,
                             **(
                                 {"liveness_resource_evidence": run.liveness_resource_evidence}
                                 if run.liveness_resource_evidence is not None
@@ -3239,6 +3318,7 @@ def _execute_mutation_jobs(
                                 "description": job_list[position].site.description,
                                 "outcome_bucket": outcome_bucket,
                                 "execution": run.execution.to_dict(),
+                                "resources": resources,
                                 **(
                                     {
                                         "liveness_resource_evidence": run.liveness_resource_evidence

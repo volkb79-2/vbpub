@@ -11374,7 +11374,7 @@ The acceptance items above are now owned as follows:
 
 ## B111 — B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test leak, report-checker partial-scope refusal, snapshot guard tests
 
-**Status: OPEN (filed 2026-09-28; brief `reports/b110/P0-measurement-hygiene.md`).**
+**Status: IMPLEMENTED on branch `wave-a-w8-measurement` 2026-09-29 (Wave A package W8, brief `reports/wave-a/W8-measurement.md`; log `reports/wave-a/W8-LOG.md`); awaiting the controller's registered gate, review and merge. Filed 2026-09-28; original brief `reports/b110/P0-measurement-hygiene.md`.**
 
 **Observed:**
 - `assay plan` multiplies by a hard-coded 60 s (`cli.py:1786-1801`); CONSUMERS calls that an upper bound, but under `auto` it is a lower bound. The B105 plan said 62h40m against a measured ≈585 worker-hours.

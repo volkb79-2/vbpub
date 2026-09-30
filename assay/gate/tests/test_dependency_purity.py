@@ -152,7 +152,12 @@ def test_the_analysis_package_imports_nothing_outside_the_stdlib_and_assay():
     files, offenders = scan_package(ANALYSIS_PACKAGE_DIR)
 
     assert offenders == {}, f"non-stdlib imports found: {offenders}"
-    assert {p.name for p in files} == {"__init__.py", "cli.py", "evidence.py"}
+    assert {p.name for p in files} == {
+        "__init__.py",
+        "cli.py",
+        "evidence.py",
+        "plan_estimate.py",
+    }
 
 
 def test_every_scanned_file_parses_and_declares_at_least_one_import():

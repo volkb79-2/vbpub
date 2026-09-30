@@ -103,6 +103,21 @@ def _verify_with_assay_cli(tmp_path: Path, document: dict) -> None:
 
 
 _AUTO_RECEIPT = object()
+_AUTO_PLAN = object()
+
+
+def _plan_for(document: dict, commit: str, tree: str) -> dict:
+    """The unsharded ``assay plan`` inventory that agrees with the report's R2 claim."""
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    identities = claim["mutation"]["candidate_ids"]
+    return {
+        "status": "ok",
+        "commit": commit,
+        "tree": tree,
+        "shard": None,
+        "candidate_count": len(identities),
+        "candidates": [{"id": identity} for identity in identities],
+    }
 
 
 def _receipt(commit: str, tree: str) -> dict:
@@ -121,12 +136,16 @@ def _run_checker(
     checker: Path = CHECKER,
     repo_root: Path = REPO_ROOT,
     receipt: object = _AUTO_RECEIPT,
+    plan: object = _AUTO_PLAN,
 ) -> subprocess.CompletedProcess[str]:
     """Run the checker in full mode.
 
     ``receipt``: by default the lane ``self-qualification`` gets the matching
     same-commit receipt and every other lane none; ``None`` passes no flag; a
     ``Path`` is passed as is; anything else is written as the receipt's JSON.
+    ``plan`` works the same way: by default a rigor holding R2 gets the plan
+    that agrees with the report and this commit and tree, any other rigor none;
+    a ``str`` is written as the file's raw text.
     """
     report_path = tmp_path / "verdict.json"
     report_path.write_text(json.dumps(document), encoding="utf-8")
@@ -141,6 +160,15 @@ def _run_checker(
         receipt_path = tmp_path / "tester-unified.json"
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
         receipt_flags = ["--tester-unified-receipt", str(receipt_path)]
+    if plan is _AUTO_PLAN:
+        plan = _plan_for(document, commit, tree) if "R2" in rigor else None
+    plan_flags: list[str] = []
+    if isinstance(plan, Path):
+        plan_flags = ["--plan-json", str(plan)]
+    elif plan is not None:
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(plan if isinstance(plan, str) else json.dumps(plan), encoding="utf-8")
+        plan_flags = ["--plan-json", str(plan_path)]
     return subprocess.run(
         [
             sys.executable,
@@ -154,6 +182,7 @@ def _run_checker(
             "--expected-tree",
             tree,
             *receipt_flags,
+            *plan_flags,
             "--expected-lane",
             lane,
             "--expected-rigor",
@@ -576,3 +605,172 @@ def test_the_preflight_lane_takes_no_receipt(tmp_path):
 
     assert result.returncode == 2
     assert "takes no --tester-unified-receipt" in result.stderr
+
+
+# --- campaign scope: the R2 claim is the complete, unsharded plan (W8 C, O11) ---------
+
+
+def _r2_case():
+    """A valid self-qualification report, and the plan that agrees with it."""
+    document = _verifier_valid_report(SELF_QUALIFICATION, SELF_QUALIFICATION_RIGOR)
+    commit, tree = _own_commit_and_tree()
+    return document, _plan_for(document, commit, tree)
+
+
+def _refused_by_scope(tmp_path, document, plan, message):
+    result = _run_checker(
+        tmp_path, document, lane=SELF_QUALIFICATION, rigor=SELF_QUALIFICATION_RIGOR, plan=plan
+    )
+    assert result.returncode == 2, result.stdout
+    assert result.stderr.startswith("B105_REPORT_REJECTED="), result.stderr
+    assert message in result.stderr, result.stderr
+    assert "B105_REPORT_ACCEPTED" not in result.stdout
+
+
+def test_o11_the_plan_that_agrees_with_the_report_is_accepted(tmp_path):
+    document, plan = _r2_case()
+    result = _run_checker(
+        tmp_path, document, lane=SELF_QUALIFICATION, rigor=SELF_QUALIFICATION_RIGOR, plan=plan
+    )
+    assert result.returncode == 0, result.stderr
+    assert "B105_REPORT_ACCEPTED=self-qualification" in result.stdout
+
+
+def test_o11_refusal_1_an_r2_report_without_a_plan(tmp_path):
+    document, _ = _r2_case()
+    _refused_by_scope(tmp_path, document, None, "no plan was given")
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"status": "unsupported"}, "plan status is 'unsupported'"),  # 2
+        ({"shard": "0/2"}, "plan is sharded ('0/2')"),  # 3
+        ({"candidate_count": 3}, "plan candidate_count does not match its candidates"),  # 4
+    ],
+)
+def test_o11_refusals_2_to_4_the_plan_must_be_ok_unsharded_and_consistent(tmp_path, change, message):
+    document, plan = _r2_case()
+    plan.update(change)
+    _refused_by_scope(tmp_path, document, plan, message)
+
+
+@pytest.mark.parametrize("key", ["shard_index", "shard_count"])
+def test_o11_refusal_5_a_sharded_report_is_refused(tmp_path, key):
+    document, plan = _r2_case()
+    document["judgment"]["r2"][key] = 0
+    _refused_by_scope(tmp_path, document, plan, f"judgment.r2.{key} is 0")
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [
+        "missing",
+        "not-a-list",
+        ["not-64-hex"],
+        ["A" * 64, "b" * 64],
+        "duplicates",
+    ],
+)
+def test_o11_refusal_6_the_candidate_ids_must_be_a_list_of_distinct_64_hex_ids(tmp_path, ids):
+    document, plan = _r2_case()
+    mutation = next(c for c in document["claims"] if c["rigor"] == "R2")["mutation"]
+    first = mutation["candidate_ids"][0]
+    if ids == "missing":
+        del mutation["candidate_ids"]
+    elif ids == "duplicates":
+        mutation["candidate_ids"] = [first, first]
+        plan["candidates"] = [{"id": first}, {"id": first}]
+    elif ids == "not-a-list":
+        mutation["candidate_ids"] = first
+    else:
+        mutation["candidate_ids"] = ids
+    message = "contains duplicates" if ids == "duplicates" else "missing or not a list of 64-hex ids"
+    _refused_by_scope(tmp_path, document, plan, message)
+
+
+@pytest.mark.parametrize("change", ["drop-from-report", "extra-in-report", "swap-one"])
+def test_o11_refusal_7_the_report_ids_must_be_exactly_the_plan_ids(tmp_path, change):
+    document, plan = _r2_case()
+    mutation = next(c for c in document["claims"] if c["rigor"] == "R2")["mutation"]
+    if change == "drop-from-report":
+        mutation["candidate_ids"] = mutation["candidate_ids"][:1]
+    elif change == "extra-in-report":
+        mutation["candidate_ids"] = mutation["candidate_ids"] + ["c" * 64]
+    else:
+        mutation["candidate_ids"] = mutation["candidate_ids"][:1] + ["d" * 64]
+    _refused_by_scope(tmp_path, document, plan, "R2 candidate_ids differ from the plan")
+
+
+def test_o11_refusal_8_a_plan_without_r2_is_an_argument_refusal_before_the_report_is_read(tmp_path):
+    document = _verifier_valid_report(PREFLIGHT, PREFLIGHT_RIGOR)
+    commit, tree = _own_commit_and_tree()
+    document["outcome"] = "FAIL"  # would be refused if the report were ever read
+
+    result = _run_checker(
+        tmp_path, document, lane=PREFLIGHT, rigor=PREFLIGHT_RIGOR,
+        plan=_plan_for(_verifier_valid_report(SELF_QUALIFICATION, SELF_QUALIFICATION_RIGOR), commit, tree),
+    )
+
+    assert result.returncode == 2
+    assert "--plan-json is only valid when R2 is in --expected-rigor" in result.stderr
+    assert "B105_REPORT_REJECTED" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate", "message"),
+    [
+        ("list", lambda plan: [], "plan is not an object"),
+        ("status-not-a-string", lambda plan: {**plan, "status": 1}, "plan status is not a string"),
+        ("bool-count", lambda plan: {**plan, "candidate_count": True}, "plan candidate_count is not an integer"),
+        ("candidates-not-a-list", lambda plan: {**plan, "candidates": {}}, "plan candidates is not a list"),
+        ("row-not-an-object", lambda plan: {**plan, "candidates": [1]}, "plan candidate 0 is not an object"),
+        ("row-without-id", lambda plan: {**plan, "candidates": [{}]}, "plan candidate 0 has no 64-hex id"),
+        ("row-id-not-hex", lambda plan: {**plan, "candidates": [{"id": "G" * 64}]}, "plan candidate 0 has no 64-hex id"),
+        ("shard-int", lambda plan: {**plan, "shard": 0}, "plan shard is neither null nor a string"),
+        ("no-commit", lambda plan: {k: v for k, v in plan.items() if k != "commit"},
+         "plan commit/tree differ from the expected source"),
+    ],
+)
+def test_o11_refusal_9_a_structurally_invalid_plan_is_a_named_refusal_not_a_crash(tmp_path, label, mutate, message):
+    document, plan = _r2_case()
+    result = _run_checker(
+        tmp_path, document, lane=SELF_QUALIFICATION, rigor=SELF_QUALIFICATION_RIGOR, plan=mutate(plan)
+    )
+    assert result.returncode == 2, (label, result.stdout, result.stderr)
+    assert result.stderr.startswith("B105_REPORT_REJECTED="), result.stderr
+    assert message in result.stderr and "Traceback" not in result.stderr
+
+
+def test_o11_refusal_9_an_unreadable_or_non_json_plan_is_refused(tmp_path):
+    document, _ = _r2_case()
+    for plan, message in (("{not json", "cannot read plan"), (tmp_path / "absent.json", "cannot read plan")):
+        _refused_by_scope(tmp_path, document, plan, message)
+
+
+@pytest.mark.parametrize("key", ["commit", "tree"])
+def test_o11_cd41_a_plan_made_at_another_source_is_refused(tmp_path, key):
+    document, plan = _r2_case()
+    plan[key] = "0" * 40
+    _refused_by_scope(tmp_path, document, plan, "plan commit/tree differ from the expected source")
+
+
+def test_o11_the_documented_refusal_order_is_structure_then_plan_then_report(tmp_path):
+    document, plan = _r2_case()
+    mutation = next(c for c in document["claims"] if c["rigor"] == "R2")["mutation"]
+    mutation["candidate_ids"] = ["c" * 64]  # refusal 7 material
+    plan["status"] = "unsupported"  # refusal 2 material
+    plan["candidates"] = [{}]  # refusal 9 material
+    _refused_by_scope(tmp_path, document, plan, "plan candidate 0 has no 64-hex id")
+    plan["candidates"] = []
+    plan["candidate_count"] = 0
+    _refused_by_scope(tmp_path, document, plan, "plan status is 'unsupported'")
+    plan["status"] = "ok"
+    _refused_by_scope(tmp_path, document, plan, "R2 candidate_ids differ from the plan")
+
+
+def test_o11_earlier_refusals_win_over_the_campaign_scope(tmp_path):
+    document, plan = _r2_case()
+    plan["shard"] = "0/2"  # a refusal 3 plan
+    document["assay_version"] = "0.0.0"  # a step 5 refusal
+    _refused_by_scope(tmp_path, document, plan, "verdict assay_version")

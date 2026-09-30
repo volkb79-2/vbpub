@@ -487,7 +487,7 @@ def main(
         elif args.command == "run":
             return _cmd_run(args, appended, out, err)
         elif args.command == "plan":
-            return _cmd_plan(args, out)
+            return _cmd_plan(args, out, err)
         elif args.command == "verify":
             return cmd_verify(args.path, stdin=inp, stderr=err)
         else:
@@ -1574,7 +1574,15 @@ def _plan_candidate_id(job: mutation.MutantJob) -> str:
     return mutation.candidate_id(job)
 
 
-def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
+PLAN_ESTIMATE_HINT = (
+    "assay plan: estimated_serial_seconds and estimated_wall_seconds come from the "
+    "declared budget_per_candidate (a 60 s placeholder when it is omitted, auto or "
+    "none), not a measurement; for a measured projection run: assay analyze "
+    "plan-estimate --plan-json PLAN --progress PROGRESS [--workers N]"
+)
+
+
+def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) -> int:
     """Report a mutation lane's plan without executing it.
 
     ``--operators`` and ``--shard`` are planning-only selections. They do not
@@ -1655,6 +1663,12 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
         budget_seconds=lane.budget_seconds, monotonic=time.monotonic
     )
     commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
+    tree = git.run(
+        lane_file.project_root,
+        "rev-parse",
+        f"{commit}^{{tree}}",
+        remaining=deadline.remaining,
+    ).strip()
     repo_top = git.repo_top(lane_file.project_root, remaining=deadline.remaining)
     worktree_integrity = runner._resolve_snapshot_worktree_integrity(
         repo=lane_file.project_root,
@@ -1846,6 +1860,8 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             candidate_rows.append(row)
         payload = {
             "status": "ok",
+            "commit": commit,
+            "tree": tree,
             "candidate_count": len(jobs),
             "max_mutants": lane.judge.mutation.max_mutants,
             "jobs": lane.judge.mutation.jobs,
@@ -1890,6 +1906,8 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                 ),
             }
     print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+    if payload["status"] == "ok" and err is not None:
+        print(PLAN_ESTIMATE_HINT, file=err)
     return 0
 
 

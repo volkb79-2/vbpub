@@ -54,11 +54,17 @@ needs nothing extra:
   verdicts and progress to the current clean worktree's exact HEAD and tree.
 - `launcher` inspects an existing `tester-unified/run` evidence directory,
   including historical runs, at its explicitly expected commit.
+- `plan-estimate` projects a campaign's hours from an `assay plan` JSON file
+  and a progress stream that holds a completed baseline (a preflight or an R0/R1
+  run at the same commit). It is a measured, advisory projection: it never
+  classifies a candidate, and `assay plan` itself keeps its declared-budget
+  estimate and prints a stderr line pointing here.
 
 <!-- assay-analysis-example -->
 ```bash
 assay analyze verdict .assay/verdict-r2.json --expected-commit "$REVIEW_HEAD" --format text
 assay analyze progress .assay/progress-r2.jsonl --expected-commit "$REVIEW_HEAD"
+assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-self-qualification-preflight.jsonl --workers 3
 assay analyze report --expected-commit "$REVIEW_HEAD" \
   --verdict r2 .assay/verdict-r2.json \
   --progress r2 .assay/progress-r2.jsonl --log r2 "$GATE_LOG" --format text
@@ -912,7 +918,13 @@ Two more CLI verbs round out the surface:
   useful for auditing what a project claims before trusting its gate.
 - `assay plan <mutation-lane>` discovers candidates through a private commit
   snapshot, reports total/per-file/per-operator counts and deterministic IDs,
-  and estimates runtime without running the lane command or any mutant.
+  and estimates runtime without running the lane command or any mutant. Its
+  JSON carries the `commit` and `tree` it was made at, and the estimate is the
+  declared budget (a placeholder when none is numeric), not a measurement; save
+  the JSON and pass it to `assay analyze plan-estimate` for a measured
+  projection. The B105 R2 driver plans first and its checker refuses a report
+  whose campaign is not exactly that complete, unsharded plan at the expected
+  commit and tree.
 - `assay verify <verdict.json>` independently re-checks that a verdict
   artifact is schema-conformant and internally self-consistent. It never
   re-runs a lane and is never the *sole* witness to a producer's

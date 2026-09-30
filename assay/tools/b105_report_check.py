@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -96,6 +97,88 @@ def verify_scope(document: dict, *, repo_root: Path, expected_commit: str) -> No
             )
 
 
+_CANDIDATE_ID = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _plan_structure(
+    plan: Any, *, expected_commit: str | None, expected_tree: str | None
+) -> dict:
+    """Refuse a plan whose shape cannot be trusted (refusal 9); never a bare TypeError."""
+    if isinstance(plan, ValueError):  # the file could not be read: refused at this step
+        raise plan
+    if not isinstance(plan, dict):
+        raise ValueError("plan is not an object")
+    if not isinstance(plan.get("status"), str):
+        raise ValueError("plan status is not a string")
+    count = plan.get("candidate_count")
+    if type(count) is not int:
+        raise ValueError("plan candidate_count is not an integer")
+    rows = plan.get("candidates")
+    if not isinstance(rows, list):
+        raise ValueError("plan candidates is not a list")
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"plan candidate {index} is not an object")
+        identity = row.get("id")
+        if not isinstance(identity, str) or not _CANDIDATE_ID.fullmatch(identity):
+            raise ValueError(f"plan candidate {index} has no 64-hex id")
+    shard = plan.get("shard")
+    if shard is not None and not isinstance(shard, str):
+        raise ValueError("plan shard is neither null nor a string")
+    if (expected_commit is not None or expected_tree is not None) and (
+        plan.get("commit") != expected_commit or plan.get("tree") != expected_tree
+    ):
+        raise ValueError("plan commit/tree differ from the expected source")
+    return plan
+
+
+def check_campaign_scope(
+    document: dict,
+    plan: dict,
+    *,
+    expected_commit: str | None = None,
+    expected_tree: str | None = None,
+) -> None:
+    """Refuse a report whose R2 campaign is not exactly the complete, unsharded plan.
+
+    Order (first failure wins): the plan's structure (9, and its commit/tree when the
+    expected source is given), the plan itself (2-4), then the report against it (5-7).
+    """
+    plan = _plan_structure(plan, expected_commit=expected_commit, expected_tree=expected_tree)
+    if plan["status"] != "ok":
+        raise ValueError(f"plan status is {plan['status']!r}, expected 'ok'")
+    if plan.get("shard") is not None:
+        raise ValueError(f"plan is sharded ({plan['shard']!r}); the campaign must be complete")
+    if plan["candidate_count"] != len(plan["candidates"]):
+        raise ValueError("plan candidate_count does not match its candidates")
+
+    judgment = document.get("judgment")
+    r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+    if isinstance(r2, dict):
+        for key in ("shard_index", "shard_count"):
+            if r2.get(key) is not None:
+                raise ValueError(f"judgment.r2.{key} is {r2[key]!r}; the campaign must be unsharded")
+    claims = document.get("claims")
+    claim = next(
+        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
+        None,
+    ) if isinstance(claims, list) else None
+    mutation = claim.get("mutation") if isinstance(claim, dict) else None
+    identities = mutation.get("candidate_ids") if isinstance(mutation, dict) else None
+    if not isinstance(identities, list) or any(
+        not isinstance(item, str) or not _CANDIDATE_ID.fullmatch(item) for item in identities
+    ):
+        raise ValueError("R2 claim mutation.candidate_ids is missing or not a list of 64-hex ids")
+    if len(set(identities)) != len(identities):
+        raise ValueError("R2 claim mutation.candidate_ids contains duplicates")
+    planned = {row["id"] for row in plan["candidates"]}
+    if set(identities) != planned or len(identities) != plan["candidate_count"]:
+        raise ValueError(
+            f"R2 candidate_ids differ from the plan: only in report "
+            f"{sorted(set(identities) - planned)}, only in plan {sorted(planned - set(identities))}"
+        )
+
+
 def verify_report_document(
     document: Any,
     *,
@@ -107,8 +190,12 @@ def verify_report_document(
     expected_version: str,
     expected_wheel_sha256: str,
     producer_exit: int,
+    plan: dict | None = None,
 ) -> None:
-    """Refuse a valid-but-adverse or internally unrelated verdict."""
+    """Refuse a valid-but-adverse or internally unrelated verdict.
+
+    ``plan`` is ``assay plan``'s JSON, required exactly when R2 is expected.
+    """
     if type(producer_exit) is not int or producer_exit != 0:
         raise ValueError(f"Assay producer exit was {producer_exit!r}, expected 0")
     if not isinstance(document, dict):
@@ -191,6 +278,12 @@ def verify_report_document(
                 f"judge_provenance.{field} {provenance.get(field)!r} "
                 f"!= {expected!r}"
             )
+    if "R2" in expected_rigor:
+        if plan is None:
+            raise ValueError("R2 is expected but no plan was given (--plan-json)")
+        check_campaign_scope(
+            document, plan, expected_commit=expected_commit, expected_tree=expected_tree
+        )
 
 
 #: The lane whose receipt the full B105 qualification requires (S1, B123).
@@ -255,10 +348,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--producer-exit", type=int)
     parser.add_argument("--receipt-only", action="store_true")
     parser.add_argument("--tester-unified-receipt", type=Path)
+    parser.add_argument("--plan-json", type=Path)
     args = parser.parse_args(argv)
 
     if args.receipt_only:
-        extra = [f"--{name.replace('_', '-')}" for name in _FULL_FLAGS if name not in ("expected_commit", "expected_tree") and getattr(args, name) is not None]
+        extra = [f"--{name.replace('_', '-')}" for name in (*_FULL_FLAGS, "plan_json") if name not in ("expected_commit", "expected_tree") and getattr(args, name) is not None]
         if extra:
             parser.error(f"--receipt-only takes no other flag than the receipt, commit and tree: {', '.join(extra)}")
         missing = [
@@ -283,6 +377,8 @@ def main(argv: list[str] | None = None) -> int:
     missing = [f"--{name.replace('_', '-')}" for name in _FULL_FLAGS if getattr(args, name) is None]
     if missing:
         parser.error(f"the following arguments are required: {', '.join(missing)}")
+    if args.plan_json is not None and "R2" not in args.expected_rigor.split(","):
+        parser.error("--plan-json is only valid when R2 is in --expected-rigor")
 
     try:
         if args.expected_lane == RECEIPT_REQUIRED_FOR:
@@ -299,6 +395,12 @@ def main(argv: list[str] | None = None) -> int:
         rigor = tuple(args.expected_rigor.split(","))
         if not rigor or any(not item for item in rigor):
             raise ValueError("expected rigor must be a non-empty comma-separated list")
+        plan: Any = None
+        if args.plan_json is not None:
+            try:
+                plan = json.loads(args.plan_json.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                plan = ValueError(f"cannot read plan {args.plan_json}: {exc}")
         verify_report_document(
             document,
             repo_root=args.repo_root,
@@ -309,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_version=args.expected_version,
             expected_wheel_sha256=args.expected_wheel_sha256,
             producer_exit=args.producer_exit,
+            plan=plan,
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         print(f"B105_REPORT_REJECTED={exc}", file=sys.stderr)

@@ -125,6 +125,8 @@ def _runner(
     resource_reader=None,
     expect_next_event_within_s: float = 15.0,
     pre_first_event_within_s: float | None = None,
+    sampler=None,
+    sleep=None,
 ) -> tuple[liveness.LivenessRunner, Path]:
     events_dir = tmp_path / "candidates"
     runner = liveness.LivenessRunner(
@@ -136,13 +138,14 @@ def _runner(
         # at ITS default (the two bounds equal, i.e. the pre-B2 behaviour).
         pre_first_event_within_s=pre_first_event_within_s,
         monotonic=clock.now,
-        sleep=clock.advance,
+        sleep=sleep if sleep is not None else clock.advance,
         cpu_reader=cpu_reader,
         resource_reader=(
             resource_reader
             if resource_reader is not None
             else lambda pid: _clear_resource_snapshot()
         ),
+        sampler=sampler,
         popen=_FakePopen(proc),
         process_group_killer=_ignore_process_group,
     )
@@ -1362,3 +1365,200 @@ def test_stdout_file_growth_alone_counts_as_progress(tmp_path: Path) -> None:
     # fired at ~30s (once the CPU window filled) if file growth were not
     # counted as progress.
     assert clock.t >= 75.0
+
+
+# --------------------------------------------------------------------------
+# B111 (O6/O7): the diagnostic resource sampler and its sidecar. The sampler
+# is a fourth per-tick input that must never classify anything (CD4).
+# --------------------------------------------------------------------------
+
+_ROWS = ("normal", "hung", "timeout")
+_EXPECTED_OUTCOME = {
+    "normal": ("returned", 0),
+    "hung": ("LivenessHungExpired",),
+    "timeout": ("TimeoutExpired",),
+}
+_SIDECAR_KEYS = {"format", "samples", "cpu_seconds", "peak_rss_bytes", "spawned_at"}
+
+
+def _constant_sampler(pid: int) -> liveness.TreeSample:
+    return liveness.TreeSample(1e9, 10**12)
+
+
+def _raising_sampler(pid: int) -> liveness.TreeSample:
+    raise OSError("no /proc")
+
+
+def _row(tmp_path: Path, row: str, *, sampler, log: list[str] | None = None):
+    """Run one scripted row and return ``(outcome, clock, runner, cwd)``.
+
+    ``normal`` finishes on the third tick; ``hung`` is idle with flat CPU;
+    ``timeout`` is busy (growing CPU) until the 45 s budget expires.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=5100)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    ticks = {"n": 0}
+    if row == "normal":
+        inner = _scripted_events(clock, events_path, [], proc=proc, finish_at=(2.0, 0))
+        timeout = 600.0
+    elif row == "hung":
+
+        def inner(pid: int) -> float:
+            return 3.0
+
+        timeout = 600.0
+    else:
+
+        def inner(pid: int) -> float:
+            ticks["n"] += 1
+            return ticks["n"] * 2.0
+
+        timeout = 45.0
+    trail = log if log is not None else []
+
+    def cpu(pid: int) -> float:
+        trail.append("cpu")
+        return inner(pid)
+
+    def resources(pid: int) -> dict:
+        trail.append("resource")
+        return _clear_resource_snapshot()
+
+    def sleep(dt: float) -> None:
+        trail.append("sleep")
+        clock.advance(dt)
+
+    def spy(pid: int):
+        trail.append("sampler")
+        return sampler(pid)
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu,
+        resource_reader=resources,
+        sampler=None if sampler is None else spy,
+        sleep=sleep,
+    )
+    try:
+        result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=timeout)
+        outcome: tuple = ("returned", result.returncode)
+    except subprocess.TimeoutExpired as exc:  # LivenessHungExpired is a subclass.
+        outcome = (type(exc).__name__,)
+    return outcome, clock, runner, cwd
+
+
+@pytest.mark.parametrize("row", _ROWS)
+def test_o6_the_sampler_never_changes_the_outcome_or_the_tick_count(
+    tmp_path: Path, row: str
+) -> None:
+    results = {}
+    for name, sampler in (
+        ("none", None),
+        ("constant", _constant_sampler),
+        ("raising", _raising_sampler),
+    ):
+        outcome, clock, _runner_, _cwd = _row(tmp_path / name, row, sampler=sampler)
+        results[name] = (outcome, clock.t)
+    assert results["none"][0] == _EXPECTED_OUTCOME[row]
+    assert results["constant"] == results["none"]
+    assert results["raising"] == results["none"]
+
+
+@pytest.mark.parametrize("row", _ROWS)
+def test_o6_a_sampled_tick_is_cpu_resource_sampler_sleep_and_a_killed_tick_has_no_sampler(
+    tmp_path: Path, row: str
+) -> None:
+    log: list[str] = []
+    outcome, _clock, _runner_, _cwd = _row(tmp_path, row, sampler=_constant_sampler, log=log)
+    assert outcome == _EXPECTED_OUTCOME[row]
+    ticks: list[list[str]] = []
+    for entry in log:
+        if entry == "cpu":
+            ticks.append([])
+        ticks[-1].append(entry)
+    full = ["cpu", "resource", "sampler", "sleep"]
+    if row == "normal":
+        assert len(ticks) >= 3
+        assert all(tick == full for tick in ticks)
+    else:
+        assert len(ticks) >= 2
+        assert all(tick == full for tick in ticks[:-1])
+        assert ticks[-1] == ["cpu", "resource"]
+
+
+@pytest.mark.parametrize("row", _ROWS)
+def test_o7_the_sidecar_is_written_on_every_exit_path(tmp_path: Path, row: str) -> None:
+    returned = {"n": 0}
+
+    def counting(pid: int) -> liveness.TreeSample:
+        sample = _constant_sampler(pid)
+        returned["n"] += 1
+        return sample
+
+    outcome, _clock, runner, cwd = _row(tmp_path, row, sampler=counting)
+    assert outcome == _EXPECTED_OUTCOME[row]
+    sidecar = liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd))
+    assert sidecar is not None
+    assert set(sidecar) == _SIDECAR_KEYS
+    assert sidecar["format"] == 1
+    assert sidecar["samples"] == returned["n"]
+    assert returned["n"] >= 2
+    assert sidecar["cpu_seconds"] == 1e9
+    assert sidecar["peak_rss_bytes"] == 10**12
+    assert isinstance(sidecar["spawned_at"], float)
+
+
+def test_o7_a_sampler_that_always_raises_leaves_null_measurements(tmp_path: Path) -> None:
+    _outcome, _clock, runner, cwd = _row(tmp_path, "hung", sampler=_raising_sampler)
+    sidecar = liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd))
+    assert sidecar is not None
+    assert (sidecar["samples"], sidecar["cpu_seconds"], sidecar["peak_rss_bytes"]) == (0, None, None)
+
+
+def test_o7_no_sampler_still_writes_a_sidecar_with_null_measurements(tmp_path: Path) -> None:
+    _outcome, _clock, runner, cwd = _row(tmp_path, "normal", sampler=None)
+    sidecar = liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd))
+    assert sidecar is not None
+    assert (sidecar["samples"], sidecar["cpu_seconds"], sidecar["peak_rss_bytes"]) == (0, None, None)
+
+
+def test_o7_a_later_call_whose_popen_raises_leaves_no_stale_sidecar(tmp_path: Path) -> None:
+    _outcome, _clock, runner, cwd = _row(tmp_path, "normal", sampler=_constant_sampler)
+    events_path = runner._events_path_for_cwd(cwd)
+    assert liveness.read_resource_sidecar(events_path) is not None
+
+    def refuse(*args, **kwargs):
+        raise OSError("popen failed")
+
+    second = liveness.LivenessRunner(
+        events_dir=tmp_path / "candidates", expect_next_event_within_s=15.0, popen=refuse
+    )
+    with pytest.raises(OSError, match="popen failed"):
+        second(("pytest", "-q"), env={}, cwd=cwd, timeout=1.0)
+    assert liveness.read_resource_sidecar(events_path) is None
+    assert not events_path.with_suffix(liveness.RESOURCE_SIDECAR_SUFFIX).exists()
+
+
+@pytest.mark.parametrize("row", _ROWS)
+def test_o7_a_failing_sidecar_write_never_changes_the_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: str
+) -> None:
+    def refuse(source, destination):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(liveness.os, "replace", refuse)
+    outcome, _clock, runner, cwd = _row(tmp_path, row, sampler=_constant_sampler)
+    assert outcome == _EXPECTED_OUTCOME[row]
+    assert liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd)) is None
+
+
+@pytest.mark.parametrize("row", _ROWS)
+def test_o7_a_non_serializable_sample_never_changes_the_outcome(tmp_path: Path, row: str) -> None:
+    outcome, _clock, runner, cwd = _row(
+        tmp_path, row, sampler=lambda pid: liveness.TreeSample(object(), 1)
+    )
+    assert outcome == _EXPECTED_OUTCOME[row]
+    assert liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd)) is None
