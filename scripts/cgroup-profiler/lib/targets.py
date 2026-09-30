@@ -278,8 +278,14 @@ def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]
     text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
     if not text:
         return None
+    # The proc directory and stat field 1 must identify the same process.
+    # The command name can contain parentheses, so locate only its final
+    # closing delimiter after checking the fixed PID/opening prefix.
+    prefix = f"{pid} ("
+    if not text.startswith(prefix):
+        return None
     close = text.rfind(")")
-    if close < 0:
+    if close < len(prefix):
         return None
     fields = text[close + 1 :].split()
     # fields[0] is stat field 3 (state); starttime is field 22.
