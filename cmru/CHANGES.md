@@ -18,6 +18,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
 
 ### Fixed
+- Add the monorepo's sibling `cli-extended` and `worktree` source roots to
+  bound CMRU subprocesses, so system-Python release scripts can import the
+  matching runtime dependencies.
 - Keep the release-time mutation campaign based on the previous CMRU tag instead of Assay's main-based candidate set, which is empty after merge.
 - Include the Topos and nyxloom manifests required by the estate adoption test in disposable mutation and canary controls.
 - Resolve project configs already loaded from an isolated release worktree without prefixing the child path twice.
