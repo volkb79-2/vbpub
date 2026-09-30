@@ -1,0 +1,10 @@
+BEGIN;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM CAST(NULL AS posint);
+  EXCEPTION WHEN not_null_violation THEN RETURN;
+  END;
+  RAISE EXCEPTION 'K04';
+END $$;
+ROLLBACK;

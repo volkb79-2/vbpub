@@ -80,7 +80,8 @@ import threading
 import time
 import tomllib
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
+from .records import record
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -120,6 +121,7 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .guards import is_finite_positive, is_nonempty_str, is_positive_or_inf, is_real
 from .adapters.base import HelperInvocation
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
@@ -151,6 +153,8 @@ from .verdict import (
     SnapshotPolicy,
     WorktreeIntegrity,
     Verdict,
+    claim_carries,
+    claim_for,
     iso_utc,
     refusal_detail,
     rollup,
@@ -176,6 +180,8 @@ __all__ = [
     "resolve_command_plan",
     "run_lane",
     "write_verdict",
+    # CD18: public for assay_analysis.
+    "resolve_declared_base",
 ]
 
 
@@ -206,7 +212,7 @@ Clock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class LaneDeadline:
     """One lane-wide monotonic deadline; no lower layer chooses a clock.
 
@@ -239,22 +245,13 @@ class LaneDeadline:
         and only ``None`` -- for ``budget = "unbounded"``; every other
         invalid value is refused exactly as before.
         """
-        if budget_seconds is not None and (
-            isinstance(budget_seconds, bool)
-            or not isinstance(budget_seconds, (int, float))
-            or not math.isfinite(budget_seconds)
-            or budget_seconds <= 0
-        ):
+        if budget_seconds is not None and not is_finite_positive(budget_seconds):
             raise ValueError(
                 f"budget_seconds must be a positive finite number or None, "
                 f"got {budget_seconds!r}"
             )
         started = monotonic()
-        if (
-            isinstance(started, bool)
-            or not isinstance(started, (int, float))
-            or not math.isfinite(started)
-        ):
+        if not is_real(started) or not math.isfinite(started):
             raise ValueError(f"monotonic clock returned invalid value {started!r}")
         if budget_seconds is None:
             return cls(expires_at=math.inf, monotonic=monotonic)
@@ -278,12 +275,7 @@ class LaneDeadline:
         """
         if seconds is None:
             return self
-        if (
-            isinstance(seconds, bool)
-            or not isinstance(seconds, (int, float))
-            or not math.isfinite(seconds)
-            or seconds <= 0
-        ):
+        if not is_finite_positive(seconds):
             raise ValueError(
                 f"tightened seconds must be a positive finite number or None, "
                 f"got {seconds!r}"
@@ -683,7 +675,7 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CommandPlan:
     """What WILL run, resolved before anything executes.
 
@@ -740,7 +732,7 @@ class CommandPlan:
     cwd_declared: str | None = None
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class CommandResult:
     """The real outcome of the R0 step -- append rejected, executable
     missing, budget exceeded, command failed, or command passed. Exactly what
@@ -862,7 +854,7 @@ def resolve_command_plan(
                         node = None
                         break
                     node = node[part]
-                if not isinstance(node, str) or not node:
+                if not is_nonempty_str(node):
                     raise AssayError(
                         f"infrastructure fact {name!r} derived {expression!r} is absent, "
                         f"not a string, or empty",
@@ -1153,12 +1145,7 @@ def execute_plan(
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
     because only it owns an ephemeral, assay-managed checkout.
     """
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or (not math.isfinite(timeout) and timeout != math.inf)
-        or timeout <= 0
-    ):
+    if not is_positive_or_inf(timeout):
         raise ValueError(
             f"timeout must be a positive finite number or math.inf, got {timeout!r}"
         )
@@ -1334,7 +1321,7 @@ def _execute_plan_inner(
     # The reason code stays A-073's own, unchanged in MEANING (B078 changes
     # WHEN `COMMAND_FAILED` fires, never what it means) -- no new `ReasonCode`
     # member, so the closed vocabulary A-050 guards is untouched. The two
-    # fields below are also `tests/test_self_hosting.py`'s pinned mutation
+    # fields below are also `gate/tests/test_self_hosting.py`'s pinned mutation
     # target (A-131), which is why they sit adjacent with no comment between
     # them: that test collapses this conditional pair to its PASS arm to prove
     # `assay verify` alone cannot catch a universal-PASS producer bug.
@@ -2173,8 +2160,8 @@ def assemble_verdict(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
-    r1_claim = next((claim for claim in claims if claim.rigor == "R1"), None)
-    r1_judged = r1_claim is not None and r1_claim.coverage is not None
+    r1_claim = claim_for(claims, "R1")
+    r1_judged = claim_carries(r1_claim, "coverage")
     judgment_r1 = None if judgment is None else judgment.r1
     if r1_judged and judgment_r1 is None:
         raise AssayError(
@@ -2760,7 +2747,7 @@ def _relocate_source_roots(
     return replace(lane, judge=replace(judge, source_root_paths=relocated))
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class SnapshotUnitResult:
     """One executed higher-rigor unit (P23): the real :class:`CommandResult`,
     the post-run Git-state verdict (``None`` when the snapshot is still
@@ -3458,7 +3445,7 @@ def _mutation_targets_whole(
     return tuple(resolved)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _PreparedOutcome:
     """The raw materials :func:`_run_higher_rigor_lane` needs to build the
     final :class:`~assay.verdict.Verdict` -- kept separate from an actually
@@ -3563,6 +3550,10 @@ def _resolve_declared_base(
     if base is None:
         return None
     return git.resolve_base(repo, base, remaining=remaining)
+
+
+# CD18: public for assay_analysis.
+resolve_declared_base = _resolve_declared_base
 
 
 def _run_prepared_lane(
@@ -3710,6 +3701,7 @@ def _run_prepared_lane(
     # value, never two independently-typed-out paths that could drift.
     liveness_candidates_dir: Path | None = None
     baseline_plan = plan
+    reuse_sequential_supported: bool | None = None
     if liveness_injected:
         liveness_baseline_events_path = (
             liveness_dir
@@ -3732,6 +3724,17 @@ def _run_prepared_lane(
             ),
         )
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
+        if reuse_source is not None:
+            from .mutation_witness import supports_sequential_pytest
+
+            # Inspect the same committed snapshot whose baseline is about
+            # to run. The invoking worktree can contain allowed dirty
+            # paths, so it cannot be the source of pytest configuration.
+            reuse_sequential_supported = supports_sequential_pytest(
+                plan.argv_effective,
+                cwd=resolve_run_cwd(baseline_snapshot.project_root, plan),
+                env=plan.env_effective,
+            )
         if progress_stream is not None:
             progress_stream.emit(
                 {
@@ -4349,8 +4352,12 @@ def _run_prepared_lane(
                     discarded=len(ingested_r2.discarded),
                 )
                 claims += (r2_claim,)
-                if r2_claim.mutation is not None:
-                    judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
+                # `ingested_r2.mutation` is always a concrete `Mutation`:
+                # ingest either returns the complete normalized payload or
+                # raises a typed refusal above. Unlike native R2's
+                # `UNSUPPORTED` capability marker, this branch has no
+                # payload-free success shape.
+                judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
             ended = iso_utc(clock())
         else:
             assert targets is not None
@@ -4416,19 +4423,16 @@ def _run_prepared_lane(
                     pre_first_event_within_s=(
                         liveness_calibration.pre_first_event_within_s
                     ),
+                    sampler=liveness.tree_sample,
                 )
             else:
                 candidate_process_runner = process_runner
             reuse_witnesses: dict[str, tuple[str, str]] = {}
             if reuse_source is not None:
-                from .mutation_witness import supports_sequential_pytest
                 from .reuse import eligible_witnesses
 
-                sequential_supported = supports_sequential_pytest(
-                    plan.argv_effective,
-                    env=plan.env_effective,
-                )
-                if sequential_supported:
+                assert reuse_sequential_supported is not None
+                if reuse_sequential_supported:
                     reuse_witnesses = eligible_witnesses(
                         reuse_source,
                         sequential_pytest_supported=True,
@@ -4556,37 +4560,24 @@ def _run_prepared_lane(
             else:
                 r2_claim = mutation.build_mutation_claim(result, mutation_result)
                 claims += (r2_claim,)
-                if r2_claim.mutation is not None:
-                    # The EXECUTED shard, from the `--shard` CLI argument
-                    # (this function's own parameter) -- not the lane's
-                    # declared config, which selects nothing and would let a
-                    # verdict claim a shard identity it never enforced.
-                    judgment_r2 = _build_judgment_r2(
-                        lane,
-                        shard_index=shard_index,
-                        shard_count=shard_count,
-                        # (B091/D-23) `run_mutation` is the one place the
-                        # derived number was actually computed, against the
-                        # measured baseline; read back here (via the CLAIM's
-                        # own `Mutation`, already narrowed non-`None` by the
-                        # `if` above -- unlike `mutation_result`, whose
-                        # static type also admits `"UNSUPPORTED"`) rather
-                        # than recomputed, exactly the reason the field's own
-                        # docstring gives.
-                        budget_per_candidate_derived_s=(
-                            r2_claim.mutation.budget_per_candidate_derived_s
-                        ),
-                        # (B091/RW-36) Straight from THIS function's own
-                        # local variables, not read back off `Mutation` --
-                        # unlike `budget_per_candidate_derived_s`, nothing
-                        # about liveness is computed inside `run_mutation`;
-                        # `inject_liveness_plugin` already decided all three
-                        # before `run_mutation` was even called, so there is
-                        # no second derivation here to drift from the first.
-                        liveness_active=liveness_injected,
-                        liveness_reason=liveness_reason,
-                        liveness_plugin=liveness_plugin_path,
-                    )
+                # R2 is attempted on this path even when the adapter reports
+                # UNSUPPORTED and the claim therefore has no mutation payload.
+                # Verdict verification still needs the policy that governed
+                # that attempt; only a payload can carry a baseline-derived
+                # per-candidate budget.
+                judgment_r2 = _build_judgment_r2(
+                    lane,
+                    shard_index=shard_index,
+                    shard_count=shard_count,
+                    budget_per_candidate_derived_s=(
+                        r2_claim.mutation.budget_per_candidate_derived_s
+                        if r2_claim.mutation is not None
+                        else None
+                    ),
+                    liveness_active=liveness_injected,
+                    liveness_reason=liveness_reason,
+                    liveness_plugin=liveness_plugin_path,
+                )
         ended = iso_utc(clock())
 
     judgment_r3: JudgmentR3 | None = None

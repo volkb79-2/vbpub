@@ -5,8 +5,9 @@
 # closure, two-venv install, detached run with verified cgroup placement.
 # run-gate owns uniform invocation only; putting that driver INSIDE an
 # ephemeral container would be wrong (it launches its own). Host lane.
-# Judgment policy stays in assay.toml [lanes.tester-unified] (R0-only,
-# permanently — A-046/A-133). See run-gate-project/SPEC.md.
+# Judgment policy stays in assay.toml. `tester-unified` remains the ordinary
+# R0 release lane; `self-qualification` is a separately invoked full-source
+# R0-R3 lane. Both run in the dedicated tester-unified environment.
 #
 # environment = "bare-host", not "host" (run-gate RG-43 estate-wide sweep,
 # 2026-09-03): as of rev 36, plain "host" is a CONTAINER default with no
@@ -28,3 +29,37 @@ argv = ["bash", "{worktree}/assay/tools/tester-unified-gate.sh", "{worktree}"]
 # any future in-container assay lane.)
 clean_tree = false
 budget = "60m"
+
+[lanes.self-qualification]
+kind = "command"
+environment = "tester-unified"
+argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "7h30m", "bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification"]
+clean_tree = true
+# The timeout starts when the in-container B105 driver starts; it does not
+# include run-gate/container startup or outer evidence collection. Nyxloom has
+# a separate 8-hour outer watchdog. The Assay lane has its own per-invocation
+# 5-hour budget after the separate 60-minute preflight; run-gate's `budget`
+# remains advisory for command lanes. B110 must persist one campaign deadline
+# across preflight, queueing, retries, execution, and evidence collection.
+budget = "8h"
+resources = { cpus = "3", memory = "2g", memory_swap = "8g" }
+artifacts = [
+  ".assay/verdict-self-qualification.json",
+  ".assay/progress-self-qualification.jsonl",
+  ".assay/verdict-self-qualification-preflight.json",
+  ".assay/progress-self-qualification-preflight.jsonl",
+  ".assay/coverage-self-qualification-preflight-snapshots",
+]
+
+[lanes.self-qualification-preflight]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification-preflight"]
+clean_tree = true
+budget = "60m"
+resources = { cpus = "3", memory = "2g", memory_swap = "8g" }
+artifacts = [
+  ".assay/verdict-self-qualification-preflight.json",
+  ".assay/progress-self-qualification-preflight.jsonl",
+  ".assay/coverage-self-qualification-preflight-snapshots",
+]

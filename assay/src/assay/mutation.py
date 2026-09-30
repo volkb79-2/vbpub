@@ -111,7 +111,7 @@ import threading
 import time
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, replace as _dataclass_replace
+from dataclasses import replace as _dataclass_replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -121,6 +121,7 @@ from . import git, liveness, safeio
 from .candidate_identity import candidate_id_from_fields
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
+from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
 from .mutation_witness import inject_witness_plugin as _inject_witness_plugin
@@ -129,6 +130,7 @@ from .mutation_witness import read_internal_receipt as _read_witness_receipt
 from .mutation_witness import replay_witness_from_receipt as _replay_witness_from_receipt
 from .mutation_witness import supports_sequential_pytest
 from .mutation_witness import witness_from_receipt as _witness_from_receipt
+from .records import record
 from .verdict import (
     DISCARD_REASONS,
     MUTATION_BUCKETS,
@@ -145,7 +147,7 @@ from .verdict import (
 )
 from .vocabulary import MUTATION_OPERATORS
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover -- annotation-only imports; importing at runtime creates cycles
     # Annotation-only: `.adapters.base` imports `MutationSite` from this
     # module and `.runner` imports this module for command execution, so
     # importing either back at runtime would be circular. `from __future__
@@ -176,6 +178,7 @@ __all__ = [
     "byte_offset",
     "collect_mutation_sites",
     "candidate_id",
+    "candidate_identity_fields",
     # (B088) The judge half of a resume record's identity -- public for the
     # same reason `candidate_id` is: a consumer inspecting a state directory
     # must be able to re-derive what it is looking at.
@@ -193,6 +196,9 @@ __all__ = [
     "resolve_mutation_targets",
     "run_mutation",
     "select_mutation_shard",
+    # CD18: public for assay_analysis.
+    "execution_from_state_record",
+    "valid_hung_resource_evidence",
 ]
 
 #: (P21/A-183) the adapter-wide capability sentinel, retained from the old
@@ -316,7 +322,7 @@ def _reject_unknown_rejudge_ids(
         )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationSite:
     """One candidate mutation, as a BOUNDED descriptor (P21/A-180).
 
@@ -348,7 +354,7 @@ class MutationSite:
     def __post_init__(self) -> None:
         for name in ("start_byte", "end_byte", "lineno"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
+            if not is_strict_int(value):
                 raise ValueError(
                     f"MutationSite.{name} must be an integer, got {value!r}"
                 )
@@ -446,7 +452,7 @@ def line_for_offset(text_bytes: bytes, offset: int) -> int:
 # --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutationTarget:
     """One changed file to mutate: its repo-relative *path* (the same
     forward-slash, repo-top-relative spelling ``adapters/base.py``'s own
@@ -488,7 +494,7 @@ class MutationTarget:
                 f"omitted from the target list"
             )
         for line in self.lines:
-            if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            if not is_int_at_least(line, 1):
                 raise ValueError(
                     f"MutationTarget.lines must contain only positive line "
                     f"numbers, got {line!r}"
@@ -555,7 +561,7 @@ def resolve_mutation_targets(
     return tuple(targets)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class MutantJob:
     """One ``(file, site)`` pair — the unit of work :func:`run_mutation` fans
     out over the executor.
@@ -706,7 +712,7 @@ def collect_mutation_sites(
     With no targets at all the result is the supported empty tuple: no
     language analysis was required, so nothing can be said about capability.
     """
-    if isinstance(limit, bool) or not isinstance(limit, int):
+    if not is_strict_int(limit):
         raise ValueError(f"collect_mutation_sites limit must be an integer, got {limit!r}")
     if not 1 <= limit <= MAX_CANDIDATE_CEILING:
         raise ValueError(
@@ -1020,18 +1026,23 @@ def _progress_event(
     }
 
 
-def candidate_id(job: MutantJob) -> str:
-    """Return the stable digest identity shared by plans, state and shards."""
+def candidate_identity_fields(job: MutantJob) -> dict[str, object]:
+    """The six inputs of :func:`candidate_id_from_fields` for *job* (C13)."""
     original_bytes = job.original_text.encode("utf-8")
     replacement_bytes = job.site.apply(original_bytes)
-    return candidate_id_from_fields(
-        path=job.path,
-        source_sha256=hashlib.sha256(original_bytes).hexdigest(),
-        start_byte=job.site.start_byte,
-        end_byte=job.site.end_byte,
-        mutated_file_sha256=hashlib.sha256(replacement_bytes).hexdigest(),
-        operator=job.site.operator,
-    )
+    return {
+        "path": job.path,
+        "source_sha256": hashlib.sha256(original_bytes).hexdigest(),
+        "start_byte": job.site.start_byte,
+        "end_byte": job.site.end_byte,
+        "mutated_file_sha256": hashlib.sha256(replacement_bytes).hexdigest(),
+        "operator": job.site.operator,
+    }
+
+
+def candidate_id(job: MutantJob) -> str:
+    """Return the stable digest identity shared by plans, state and shards."""
+    return candidate_id_from_fields(**candidate_identity_fields(job))
 
 
 def _tool_version() -> str:
@@ -1512,6 +1523,10 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
     return True
 
 
+# CD18: public for assay_analysis.
+valid_hung_resource_evidence = _valid_hung_resource_evidence
+
+
 def _load_validated_state_record(
     state_root: Path, job: MutantJob, *, judge: str
 ) -> Mapping[str, Any] | str | None:
@@ -1653,8 +1668,8 @@ def merge_mutations(current: Mutation, records: Iterable[Mapping[str, Any]]) -> 
     buckets: dict[str, list[MutantOutcome]] = {
         name: list(getattr(current, name)) for name in MUTATION_BUCKETS
     }
-    for record in records:
-        buckets[record["outcome_bucket"]].append(_outcome_from_record(record))
+    for record_entry in records:
+        buckets[record_entry["outcome_bucket"]].append(_outcome_from_record(record_entry))
     identities = [
         outcome.identity for name in MUTATION_BUCKETS for outcome in buckets[name]
     ]
@@ -1663,16 +1678,15 @@ def merge_mutations(current: Mutation, records: Iterable[Mapping[str, Any]]) -> 
         name: tuple(sorted(buckets[name], key=lambda item: item.identity))
         for name in MUTATION_BUCKETS
     }
-    payload = Mutation(
-        candidate_count=len(identities),
-        total=len(identities),
-        **{name: normalized[name] for name in MUTATION_BUCKETS},
-    )
     if duplicate_count:
         raise MutationStateError(
             f"resumed records repeat {duplicate_count} candidate identity"
         )
-    return payload
+    return Mutation(
+        candidate_count=len(identities),
+        total=len(identities),
+        **{name: normalized[name] for name in MUTATION_BUCKETS},
+    )
 
 
 def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
@@ -1744,6 +1758,10 @@ def _execution_from_state_record(record: Mapping[str, Any]) -> MutationExecution
     )
 
 
+# CD18: public for assay_analysis.
+execution_from_state_record = _execution_from_state_record
+
+
 def select_mutation_shard(candidates: Sequence[str], *, index: int, count: int) -> list[int]:
     """Return deterministic positions whose opaque IDs assign to *index*."""
     if isinstance(index, bool) or isinstance(count, bool):
@@ -1804,7 +1822,7 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
                 f"unsupported shard schema_version {version!r}; expected "
                 f"{MUTATION_STATE_SCHEMA_VERSION}"
             )
-        if not isinstance(lane, str) or not lane or not isinstance(commit, str) or not commit:
+        if not is_nonempty_str(lane) or not is_nonempty_str(commit):
             raise MutationStateError("shard lane and commit must be non-empty strings")
         if (
             isinstance(shard_index, bool)
@@ -1872,9 +1890,9 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
     if missing_pairs:
         rendered = ", ".join(f"{index}/{declared_count}" for index, _ in missing_pairs)
         raise MutationStateError(f"non-exhaustive shard input is missing {rendered}")
-    extra_pairs = sorted(covered_pairs - required_pairs)
-    if extra_pairs:
-        raise MutationStateError(f"inconsistent shard pairs present: {extra_pairs}")
+    # Every pair was already range-checked against its own count above, and
+    # all documents must share the one count used to build `required_pairs`.
+    # Therefore `covered_pairs - required_pairs` is empty by construction.
     if not merged_candidates:
         # A-278: a check with nothing to check is not a passing check. Every
         # required (index, count) pair being present says only that a
@@ -1887,7 +1905,7 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
     return tuple(merged_candidates)
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class _MutantRun:
     """(P34) one mutant's own full attempt record: the command's
     :class:`~assay.runner.CommandResult` plus whatever the lane's own
@@ -1912,7 +1930,40 @@ class _MutantRun:
     #: B107: exact CPU/PSI evidence retained when the liveness runner stops
     #: a candidate. A resource stall never becomes a functional bucket.
     liveness_resource_evidence: Mapping[str, Any] | None = None
+    #: B111 diagnostic evidence (never a classification input): the sampled
+    #: tree CPU / peak sum-RSS lower bounds and the startup gaps read from
+    #: the liveness sidecar and events file (`None` off a liveness lane), and
+    #: the worker's own monotonic phase split (always measured).
+    cpu_seconds: float | None = None
+    peak_rss_bytes: int | None = None
+    phase_seconds: Mapping[str, float] | None = None
+    startup_seconds: Mapping[str, float | None] | None = None
     execution: MutationExecution = MutationExecution(mode="full")
+
+
+def _measured_resources(
+    events_path: Path,
+) -> tuple[float | None, int | None, dict[str, float | None]]:
+    """``(cpu_seconds, peak_rss_bytes, startup_seconds)`` for one liveness
+    candidate, from its resource sidecar and events file. Anything absent or
+    ill-typed is ``None``: diagnostics never fail a candidate."""
+    sidecar = liveness.read_resource_sidecar(events_path) or {}
+    spawned_at = liveness._finite_number(sidecar.get("spawned_at"))
+    cpu_seconds = liveness._finite_number(sidecar.get("cpu_seconds"))
+    peak_rss = liveness._finite_number(sidecar.get("peak_rss_bytes"))
+    session_start, first_test = liveness.first_event_times(events_path)
+    return (
+        cpu_seconds,
+        peak_rss if isinstance(peak_rss, int) else None,
+        {
+            "to_session_start": (
+                None if session_start is None or spawned_at is None else session_start - spawned_at
+            ),
+            "to_first_test": (
+                None if first_test is None or spawned_at is None else first_test - spawned_at
+            ),
+        },
+    )
 
 
 def _classify_mutant_result(result: CommandResult) -> str:
@@ -2346,11 +2397,11 @@ def run_mutation(
     can never be equal, so no mutant could ever be recorded ``equivalent``,
     hiding exactly the fault the carve's own A-279 finding was about).
     """
-    if isinstance(jobs, bool) or not isinstance(jobs, int):
+    if not is_strict_int(jobs):
         raise ValueError(f"run_mutation jobs must be an integer, got {jobs!r}")
     if jobs < 1:
         raise ValueError(f"run_mutation jobs must be >= 1, got {jobs}")
-    if isinstance(max_mutants, bool) or not isinstance(max_mutants, int):
+    if not is_strict_int(max_mutants):
         raise ValueError(
             f"run_mutation max_mutants must be an integer, got {max_mutants!r}"
         )
@@ -2367,11 +2418,8 @@ def run_mutation(
             "baseline's own artifact bytes (or its own EXEC_FAILED refusal, "
             "when the baseline never wrote it) before calling this function"
         )
-    if budget_per_candidate_seconds is not None and (
-        isinstance(budget_per_candidate_seconds, bool)
-        or not isinstance(budget_per_candidate_seconds, (int, float))
-        or not math.isfinite(budget_per_candidate_seconds)
-        or budget_per_candidate_seconds <= 0
+    if budget_per_candidate_seconds is not None and not is_finite_positive(
+        budget_per_candidate_seconds
     ):
         raise ValueError(
             "run_mutation budget_per_candidate_seconds must be a positive "
@@ -2516,10 +2564,18 @@ def run_mutation(
                 # them apart). Right after `plan`, before any candidate
                 # line, so a reader already has the baseline's own per-test
                 # detail before judging any mutant against it.
-                for test_event in liveness.baseline_test_events(
-                    liveness_baseline_events_path
+                for test_event, phase_durations in zip(
+                    liveness.baseline_test_events(liveness_baseline_events_path),
+                    liveness.baseline_phase_durations(liveness_baseline_events_path),
                 ):
-                    write_progress({"event": "test", "phase": "baseline", **test_event})
+                    write_progress(
+                        {
+                            "event": "test",
+                            "phase": "baseline",
+                            **test_event,
+                            **phase_durations,
+                        }
+                    )
         # (B091 round-1 B3) `resolve_run_cwd` travels the SAME lazy-import-
         # then-parameter path `execute_plan` already does (a module-level
         # `from .runner import ...` is circular -- `runner` imports
@@ -2699,6 +2755,7 @@ def run_mutation(
                     "selected_total": len(selected_jobs),
                     "pending_total": len(pending_jobs),
                     "commit": prepared.spec.commit,
+                    **({"judge_sha256": judge} if judge is not None else {}),
                 }
             )
             write_progress(
@@ -2931,6 +2988,7 @@ def _execute_mutation_jobs(
             replacement=replacement_bytes,
             timeout=materialize_timeout,
         ) as snapshot:
+            entered_monotonic = time.monotonic()
             # P34/§3.6: reserved and ARMED before the command runs, exactly
             # like the coverage artifact one level up in
             # `runner._execute_snapshot_unit` -- `arm()` unlinks anything
@@ -2961,6 +3019,7 @@ def _execute_mutation_jobs(
                 and budget_per_candidate_seconds < command_deadline
             ):
                 command_deadline = budget_per_candidate_seconds
+            command_started_monotonic = time.monotonic()
             result = execute_plan(
                 attempt_plan,
                 cwd=snapshot.project_root,
@@ -2968,6 +3027,7 @@ def _execute_mutation_jobs(
                 process_runner=process_runner,
                 clock=clock,
             )
+            command_finished_monotonic = time.monotonic()
             elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
             # (B091/D-23, P7 A4) Read back HERE, while this candidate's own
             # snapshot root is still in scope -- the events file lives at
@@ -2990,13 +3050,19 @@ def _execute_mutation_jobs(
             # "agrees today" is not a property an edit to either side
             # preserves).
             tests_completed: int | None = None
+            cpu_seconds: float | None = None
+            peak_rss_bytes: int | None = None
+            startup_seconds: dict[str, float | None] | None = None
             if liveness_events_dir is not None:
-                tests_completed = liveness.count_test_events(
-                    liveness.candidate_events_path(
-                        liveness_events_dir,
-                        resolve_run_cwd(snapshot.project_root, plan),
-                    )
+                candidate_events = liveness.candidate_events_path(
+                    liveness_events_dir,
+                    resolve_run_cwd(snapshot.project_root, plan),
                 )
+                tests_completed = liveness.count_test_events(candidate_events)
+                cpu_seconds, peak_rss_bytes, startup_seconds = _measured_resources(
+                    candidate_events
+                )
+            integrity_started_monotonic = time.monotonic()
             try:
                 # P26/A-212: the ONE lane deadline IS forwarded here, so this
                 # check's own Git children are bounded by the same budget as
@@ -3026,6 +3092,7 @@ def _execute_mutation_jobs(
                 ):
                     raise
                 dirt = None
+            integrity_finished_monotonic = time.monotonic()
             equivalence_bytes: bytes | None = None
             kill_signal_text: str | None = None
             decode_error: AssayError | None = None
@@ -3056,6 +3123,7 @@ def _execute_mutation_jobs(
                 raise dirt
             if decode_error is not None:
                 raise decode_error
+        teardown_finished_monotonic = time.monotonic()
         run = _MutantRun(
             result=result,
             equivalence_bytes=equivalence_bytes,
@@ -3063,6 +3131,15 @@ def _execute_mutation_jobs(
             elapsed_seconds=elapsed_seconds,
             tests_completed=tests_completed,
             liveness_resource_evidence=result.liveness_resource_evidence,
+            cpu_seconds=cpu_seconds,
+            peak_rss_bytes=peak_rss_bytes,
+            phase_seconds={
+                "materialize": entered_monotonic - started_monotonic,
+                "command": command_finished_monotonic - command_started_monotonic,
+                "integrity": integrity_finished_monotonic - integrity_started_monotonic,
+                "teardown": teardown_finished_monotonic - integrity_finished_monotonic,
+            },
+            startup_seconds=startup_seconds,
         )
         receipt = (
             _read_witness_receipt(receipt_path)
@@ -3129,11 +3206,9 @@ def _execute_mutation_jobs(
             attempt_name="full",
         )
         assert full is not None
-        if _classified_bucket(full) != "killed" and full.execution.witness is not None:
-            full = _dataclass_replace(
-                full,
-                execution=MutationExecution(mode="full"),
-            )
+        # `_run_attempt` attaches a full witness only when the completed
+        # attempt classifies as killed, so a non-killed full attempt cannot
+        # carry one to strip here.
         return _dataclass_replace(
             full,
             elapsed_seconds=max(0.0, time.monotonic() - started_total),
@@ -3175,15 +3250,28 @@ def _execute_mutation_jobs(
                 run = results[position]
                 if run is None:
                     continue
-                if equivalence_artifact is None:
-                    outcome_bucket = _classify_mutant_result(run.result)
-                else:
-                    assert baseline_equivalence is not None
-                    outcome_bucket = _classify_mutant_result_with_equivalence(
-                        run.result,
-                        equivalence_bytes=run.equivalence_bytes,
-                        baseline_equivalence=baseline_equivalence,
-                    )
+                # The same classifier decides whether a witness is reusable
+                # and which terminal bucket this complete campaign records.
+                # Keeping one path prevents replay and verdict policy from
+                # drifting on equivalence or kill-signal rules.
+                outcome_bucket = _classified_bucket(run)
+                # B111: diagnostic evidence only (never a classification
+                # input), built once so the progress event and the state
+                # record carry the identical object.
+                resources = {
+                    "cpu_seconds": (
+                        round(run.cpu_seconds, 3) if run.cpu_seconds is not None else None
+                    ),
+                    "peak_rss_bytes": run.peak_rss_bytes,
+                    "phase_seconds": (
+                        {name: round(value, 3) for name, value in run.phase_seconds.items()}
+                        if run.phase_seconds is not None
+                        else None
+                    ),
+                    "startup_seconds": (
+                        dict(run.startup_seconds) if run.startup_seconds is not None else None
+                    ),
+                }
                 if write_progress is not None:
                     write_progress(
                         {
@@ -3208,6 +3296,7 @@ def _execute_mutation_jobs(
                             # already carries that same `None` default
                             # through from `_run_one`.
                             "tests_completed": run.tests_completed,
+                            **resources,
                             **(
                                 {"liveness_resource_evidence": run.liveness_resource_evidence}
                                 if run.liveness_resource_evidence is not None
@@ -3246,6 +3335,7 @@ def _execute_mutation_jobs(
                                 "description": job_list[position].site.description,
                                 "outcome_bucket": outcome_bucket,
                                 "execution": run.execution.to_dict(),
+                                "resources": resources,
                                 **(
                                     {
                                         "liveness_resource_evidence": run.liveness_resource_evidence
@@ -3288,27 +3378,11 @@ def _execute_mutation_jobs(
             continue
         run = results[position]
         assert run is not None
-        if equivalence_artifact is None:
-            # O8's own inertness: the UNDECLARED lane takes the EXISTING
-            # path, unchanged -- never a new path that happens to agree.
-            buckets[_classify_mutant_result(run.result)].append(
-                _outcome_of(job, execution=run.execution)
-            )
-            continue
-        assert baseline_equivalence is not None  # refused above otherwise
-        bucket = _classify_mutant_result_with_equivalence(
-            run.result,
-            equivalence_bytes=run.equivalence_bytes,
-            baseline_equivalence=baseline_equivalence,
-        )
+        # `_classified_bucket` preserves O8's exact legacy classifier when
+        # no equivalence artifact is declared, and applies the declared
+        # artifact/signal rules on the extended path.
+        bucket = _classified_bucket(run)
         kill_signal = run.kill_signal if bucket == "killed" else None
-        if bucket == "killed" and kill_signal_artifact is not None and kill_signal is None:
-            # §3.6's own kill-signal rule: `kill_attribution` derives to
-            # `declared` from `kill_signal_artifact`'s own presence, and the
-            # model then requires a signal on EVERY killed entry -- so a
-            # mutant that would land here with no signal file did not meet
-            # the lane's own declared contract, and is `crashed` instead.
-            bucket = "crashed"
         buckets[bucket].append(
             _outcome_of(job, kill_signal=kill_signal, execution=run.execution)
         )
@@ -3375,7 +3449,7 @@ _DISCARD_REASON_BY_STATUS: Mapping[str, str] = {
 }
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class IngestedMutationResult:
     """(B046) What :func:`ingest_mutation_report` produces: the R2 payload
     plus the four ingested-only facts ``judgment.r2`` records beside it.
@@ -3453,18 +3527,11 @@ def ingest_mutation_report(
     exactly one caller (:func:`assay.runner._ingest_r2_report`), which already
     holds the repository the lane's command ran against.
     """
-    if report.producer.name and report.producer.version:
-        producer_tool = MutationProducerTool(
-            name=report.producer.name,
-            version=report.producer.version,
-            report_schema_version=report.producer.report_schema_version,
-        )
-    else:  # pragma: no cover - the parser already refuses this shape
-        raise AssayError(
-            "mutation report carries no producer identity",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        )
+    producer_tool = MutationProducerTool(
+        name=report.producer.name,
+        version=report.producer.version,
+        report_schema_version=report.producer.report_schema_version,
+    )
 
     _check_report_project_root(report, run_cwd=run_cwd)
     wire_paths = _resolve_report_paths(
@@ -3547,13 +3614,7 @@ def ingest_mutation_report(
             # overlap at all.
             discarded.append(outcome)
             continue
-        bucket = INGESTED_STATUS_BUCKETS.get(mutant.status)
-        if bucket is None:  # pragma: no cover - the parser closes the set
-            raise AssayError(
-                f"mutation report carries unmapped status {mutant.status!r}",
-                outcome=Outcome.ERROR,
-                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-            )
+        bucket = INGESTED_STATUS_BUCKETS[mutant.status]
         buckets[bucket].append(outcome)
         if mutant.status == "NoCoverage":
             survived_uncovered.add((wire_path, mutant.lineno))

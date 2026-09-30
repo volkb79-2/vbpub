@@ -58,7 +58,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import field as dataclass_field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
@@ -73,6 +73,8 @@ from .errors import LaneConfigError
 # the registry lived in `assay.mutation`.
 from .liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_TRUE, argv_invokes_pytest
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
+from .guards import is_nonempty_str, is_percentage, is_real, is_strict_int
+from .records import positional_record
 # (B078) The result-report reader registry, imported at module level for
 # `FORMAT_REGISTRY`'s own reason (A-068): `result_report.format` is closed
 # against the registry's own keys, never a second hardcoded list that could
@@ -91,7 +93,7 @@ from .vocabulary import (
     operator_language,
 )
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover -- annotation-only import; importing at runtime creates a cycle
     from .isolation import SnapshotLimits
 
 __all__ = [
@@ -403,7 +405,7 @@ def parse_duration(text: str) -> float:
     return seconds
 
 
-@dataclass(frozen=True)
+@positional_record
 class CoverageConfig:
     """``[lanes.X.judge.coverage]`` — the declared format, artifact path and
     (B045, schema v9) the declared PRODUCER.
@@ -492,7 +494,7 @@ MAX_MAX_MUTANTS = 10_000
 MAX_SHARD_COUNT = 10_000
 
 
-@dataclass(frozen=True)
+@positional_record
 class MutationConfig:
     """``[lanes.X.judge.mutation]`` (P18) -- the closed R2 execution policy:
     a required positive ``jobs`` worker count (A-082/A-122: never derived
@@ -656,7 +658,7 @@ _CANARY_FIELDS: tuple[str, ...] = (
 )
 
 
-@dataclass(frozen=True)
+@positional_record
 class CanaryConfig:
     """``[lanes.X.judge.canary]`` (P19, B007/A-432) -- the closed R3
     declaration: which :mod:`assay.canary` mechanism to attempt, and which
@@ -772,7 +774,7 @@ class CanaryConfig:
         return parse_duration(self.budget_per_attempt)
 
 
-@dataclass(frozen=True)
+@positional_record
 class EvidenceConfig:
     """``judge.evidence[]`` (P26/A-209, widened B004/A-430) -- one declared
     Tier-3 (``"attested"``) or Tier-2 (``"adjudicated"``) identity.
@@ -793,7 +795,7 @@ class EvidenceConfig:
         return {"source": self.source, "key": self.key}
 
 
-@dataclass(frozen=True)
+@positional_record
 class JudgeConfig:
     """``[lanes.X.judge]`` — HOW to judge (D7's second question, A-015).
 
@@ -915,7 +917,7 @@ def _validate_omission_path(value: Any, *, where: str, field: str) -> str:
     above (a leading ``.`` component, an empty component from a doubled or
     trailing slash), so equality to that round-trip is a THEOREM of the
     accepted grammar, not a separate check -- proved for every accepted path
-    by the accept-side matrix in ``tests/test_config_snapshot_selection.py``,
+    by the accept-side matrix in ``tests/core/test_config_snapshot_selection.py``,
     never by an unreachable extra refusal branch here.
     """
     if not isinstance(value, str):
@@ -957,7 +959,7 @@ def _validate_omission_path(value: Any, *, where: str, field: str) -> str:
 _RESULT_REPORT_FIELDS: tuple[str, ...] = ("format", "path")
 
 
-@dataclass(frozen=True)
+@positional_record
 class ResultReportConfig:
     """``[lanes.X.result_report]`` (B078) -- the lane's opt-in declaration of
     a structured test report R0 may consult INSTEAD of the wrapped command's
@@ -1039,7 +1041,7 @@ def _load_result_report(value: Any, where: str) -> ResultReportConfig | None:
     return ResultReportConfig(format=report_format, path=path)
 
 
-@dataclass(frozen=True)
+@positional_record
 class IsolationConfig:
     """``[lanes.X.isolation]`` (B006a/A-269, §3.2) -- the declared repository
     snapshot materialisation policy for an R1/R2/R3 lane. A POLICY object,
@@ -1188,7 +1190,7 @@ class IsolationConfig:
         return declared
 
 
-@dataclass(frozen=True)
+@positional_record
 class Lane:
     """One declared lane. Every attribute came out of the file."""
 
@@ -1289,7 +1291,7 @@ class Lane:
         return declared
 
 
-@dataclass(frozen=True)
+@positional_record
 class LaneFile:
     """A parsed ``assay.toml``."""
 
@@ -1473,7 +1475,7 @@ def _load_schema_version(document: Mapping[str, Any], file_path: Path) -> int:
             f"(this assay understands schema_version = {LANE_SCHEMA_VERSION})"
         )
     value = document["schema_version"]
-    if not isinstance(value, int) or isinstance(value, bool):
+    if not is_strict_int(value):
         raise LaneConfigError(
             f"{file_path}: 'schema_version' must be an integer, got {_type_name(value)}"
         )
@@ -1593,11 +1595,11 @@ def _load_lane(
             )
         parsed_facts: dict[str, str] = {}
         for key, declaration in raw_infrastructure.items():
-            if not isinstance(key, str) or not key:
+            if not is_nonempty_str(key):
                 raise LaneConfigError(
                     f"{where}: infrastructure names must be non-empty strings"
                 )
-            if not isinstance(declaration, str) or not declaration:
+            if not is_nonempty_str(declaration):
                 raise LaneConfigError(
                     f"{where}: 'infrastructure.{key}' must be a non-empty string, "
                     f"got {_type_name(declaration)}"
@@ -2383,8 +2385,11 @@ def _load_judge(
         # `git diff`, and a whole-target R1 never resolves a base either (evaluate_r1's
         # own docstring). Whole-target scope and a comparison commit are
         # mutually exclusive by construction, in every language.
-        if "base" in required:
-            required.remove("base")
+        # This mode is legal only on R1/R2, and each of those rigor entries
+        # requires `base`; the whole-target policy removes that required key
+        # unconditionally. A membership guard here would add an impossible
+        # false branch.
+        required.remove("base")
         # `targets` is never a member of any `JUDGE_FIELDS_BY_RIGOR` tuple
         # (only this mode-specific branch ever requires it), so it can
         # never already be in `required` here -- appended unconditionally
@@ -2398,8 +2403,9 @@ def _load_judge(
         # for the mirror-image reason -- and the explicit both-declared
         # refusal above (not the generic surplus message) is what catches a
         # lane that delegates and hardcodes at once.
-        if "base" in required:
-            required.remove("base")
+        # `base_source = "request"` is legal only on R1/R2, and each requires
+        # `base`; delegation therefore always removes the required key.
+        required.remove("base")
     required = tuple(required)
 
     for field in required:
@@ -2517,7 +2523,7 @@ def _load_judge(
     fail_under = None
     if "fail_under" in table:
         fail_under = _as_float(table["fail_under"], where, "judge.fail_under")
-        if not 0.0 <= fail_under <= 100.0:
+        if not is_percentage(fail_under):
             raise LaneConfigError(
                 f"{where}: 'judge.fail_under' must be a percentage between 0 and "
                 f"100, got {fail_under}"
@@ -2610,7 +2616,7 @@ def _validate_evidence_dir(value: Any, where: str, field_name: str) -> str:
     this is NOT shared across that module boundary, only within this one.
     """
     label = f"judge.{field_name}"
-    if not isinstance(value, str) or not value:
+    if not is_nonempty_str(value):
         raise LaneConfigError(
             f"{where}: '{label}' must be a non-empty string, "
             f"got {_type_name(value)}"
@@ -2983,7 +2989,7 @@ def _load_mutation(
                 f"{where}: missing required field 'judge.mutation.{field}'"
             )
     jobs = value["jobs"]
-    if isinstance(jobs, bool) or not isinstance(jobs, int):
+    if not is_strict_int(jobs):
         raise LaneConfigError(
             f"{where}: 'judge.mutation.jobs' must be an integer, got "
             f"{_type_name(jobs)}"
@@ -2993,7 +2999,7 @@ def _load_mutation(
             f"{where}: 'judge.mutation.jobs' must be a positive integer, got {jobs}"
         )
     max_mutants = value["max_mutants"]
-    if isinstance(max_mutants, bool) or not isinstance(max_mutants, int):
+    if not is_strict_int(max_mutants):
         raise LaneConfigError(
             f"{where}: 'judge.mutation.max_mutants' must be an integer, got "
             f"{_type_name(max_mutants)}"
@@ -3110,7 +3116,7 @@ def _load_mutation(
             )
     budget_per_candidate = value.get("budget_per_candidate")
     if budget_per_candidate is not None:
-        if not isinstance(budget_per_candidate, str) or not budget_per_candidate:
+        if not is_nonempty_str(budget_per_candidate):
             raise LaneConfigError(
                 f"{where}: 'judge.mutation.budget_per_candidate' must be a "
                 f"non-empty string, got {_type_name(budget_per_candidate)}"
@@ -3198,7 +3204,7 @@ def _load_mutation(
             ("shard_index", shard_index),
             ("shard_count", shard_count),
         ):
-            if isinstance(number, bool) or not isinstance(number, int):
+            if not is_strict_int(number):
                 raise LaneConfigError(
                     f"{where}: 'judge.mutation.{field}' must be an integer, got {_type_name(number)}"
                 )
@@ -3295,7 +3301,7 @@ def _load_ingested_mutation(
         value["artifact"], where, project_root, "judge.mutation.artifact"
     )
     fail_under = _as_float(value["fail_under"], where, "judge.mutation.fail_under")
-    if not 0.0 <= fail_under <= 100.0:
+    if not is_percentage(fail_under):
         raise LaneConfigError(
             f"{where}: 'judge.mutation.fail_under' must be in 0.0..100.0, got "
             f"{fail_under}"
@@ -3517,7 +3523,7 @@ def _load_canary(
     # author writes the two per-unit bounds identically.
     budget_per_attempt = value.get("budget_per_attempt")
     if budget_per_attempt is not None:
-        if not isinstance(budget_per_attempt, str) or not budget_per_attempt:
+        if not is_nonempty_str(budget_per_attempt):
             raise LaneConfigError(
                 f"{where}: 'judge.canary.budget_per_attempt' must be a "
                 f"non-empty string, got {_type_name(budget_per_attempt)}"
@@ -3681,7 +3687,7 @@ def _as_bool(value: Any, where: str, field: str) -> bool:
 
 
 def _as_float(value: Any, where: str, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if not is_real(value):
         raise LaneConfigError(
             f"{where}: {field!r} must be a number, got {_type_name(value)}"
         )
@@ -3743,10 +3749,6 @@ def _load_posix_glob_list(
                 f"path component"
             )
         normalized_pattern = candidate.as_posix()
-        if not normalized_pattern or normalized_pattern == ".":
-            raise LaneConfigError(
-                f"{where}: '{item_field}' {pattern!r} is not a usable POSIX glob"
-            )
         normalized.append(normalized_pattern)
     return tuple(normalized)
 

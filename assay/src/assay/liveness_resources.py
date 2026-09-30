@@ -14,6 +14,8 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from .guards import is_int_at_least
+
 
 RESOURCE_SNAPSHOT_SCHEMA_VERSION = 1
 _PRESSURE_NAMES = ("cpu", "memory", "io")
@@ -130,7 +132,7 @@ def read_liveness_resources(
     snapshots; this function never interprets a missing source as zero.
     ``proc_root`` is injectable for deterministic namespace-resolution tests.
     """
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+    if not is_int_at_least(pid, 1):
         return {
             "schema_version": RESOURCE_SNAPSHOT_SCHEMA_VERSION,
             "status": "unavailable",
@@ -161,6 +163,26 @@ def read_liveness_resources(
         "cgroup_psi": cgroup_psi,
         "cgroup_cpu": cgroup_cpu,
     }
+
+
+def _counter_delta(old: Any, new: Any) -> int | None:
+    """``new - old`` for two monotonic counters, or ``None`` when unusable.
+
+    ``None`` when either value is a bool, a non-int or negative, or when the
+    counter went backwards (``new < old``): the caller reads that as
+    ``"unknown"``. A zero delta is a valid result (an idle counter).
+    """
+    if (
+        isinstance(old, bool)
+        or isinstance(new, bool)
+        or not isinstance(old, int)
+        or not isinstance(new, int)
+        or old < 0
+        or new < 0
+        or new < old
+    ):
+        return None
+    return new - old
 
 
 def compare_resource_snapshots(
@@ -196,19 +218,9 @@ def compare_resource_snapshots(
             if not isinstance(old_pressure, Mapping) or not isinstance(new_pressure, Mapping):
                 return "unknown", {}
             for row_name in _PRESSURE_ROWS[pressure_name]:
-                old_value = old_pressure.get(row_name)
-                new_value = new_pressure.get(row_name)
-                if (
-                    isinstance(old_value, bool)
-                    or isinstance(new_value, bool)
-                    or not isinstance(old_value, int)
-                    or not isinstance(new_value, int)
-                    or old_value < 0
-                    or new_value < 0
-                    or new_value < old_value
-                ):
+                delta = _counter_delta(old_pressure.get(row_name), new_pressure.get(row_name))
+                if delta is None:
                     return "unknown", {}
-                delta = new_value - old_value
                 if delta:
                     deltas[f"{scope}.{pressure_name}.{row_name}_us"] = delta
 
@@ -217,19 +229,9 @@ def compare_resource_snapshots(
     if not isinstance(old_cpu, Mapping) or not isinstance(new_cpu, Mapping):
         return "unknown", {}
     for key in _CPU_STAT_KEYS:
-        old_value = old_cpu.get(key)
-        new_value = new_cpu.get(key)
-        if (
-            isinstance(old_value, bool)
-            or isinstance(new_value, bool)
-            or not isinstance(old_value, int)
-            or not isinstance(new_value, int)
-            or old_value < 0
-            or new_value < 0
-            or new_value < old_value
-        ):
+        delta = _counter_delta(old_cpu.get(key), new_cpu.get(key))
+        if delta is None:
             return "unknown", {}
-        delta = new_value - old_value
         if delta:
             deltas[f"cgroup_cpu.{key}"] = delta
     return ("stalled" if deltas else "clear"), deltas

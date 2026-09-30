@@ -1,0 +1,139 @@
+diff --git a/assay/nyxloom-trove/4-backlog.md b/assay/nyxloom-trove/4-backlog.md
+index 06f4a8dc..140755af 100644
+--- a/assay/nyxloom-trove/4-backlog.md
++++ b/assay/nyxloom-trove/4-backlog.md
+@@ -110,6 +110,7 @@ items:
+   - {id: B106, title: "Incremental mutation campaigns need provenance-safe reuse across source and test changes, with complete gate-accepted evidence", type: feature, component: mutation, context_estimate: large}
+   - {id: B107, title: "Deterministic mutation-campaign analysis and automatic post-lane closeout", type: feature, component: evidence, context_estimate: large}
+   - {id: B108, title: "B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes", type: feature, component: mutation, context_estimate: large}
++  - {id: B109, title: "Reduce cold mutation-campaign cost with explicit, witnessed early-stop execution", type: feature, component: mutation, context_estimate: large}
+ ---
+ 
+ # assay — backlog
+@@ -162,6 +163,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
+ - B106 — provenance-safe selective mutation reruns across source/test changes — OPEN (filed 2026-09-25 from CMRU's 494-candidate mutation campaign)
+ - B107 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
+ - B108 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
++- B109 — cold mutation campaign early-stop execution with witnessed kills — OPEN (filed 2026-09-27 after B105 runtime analysis; requires an explicit outcome-policy decision)
+ 
+ **Deferred (operator triage 2026-09-23 — not scheduled until the named trigger)**
+ - B020 — CIU V8 prep: SQL mutation template/reset hooks — DEFERRED (until ciu v8 resumes)
+@@ -10940,3 +10942,79 @@ of every previously killed, behaviorally independent candidate.
+       dependency-proof model and conservative fallback, and CONSUMERS.md gives
+       a pasteable survivor-fix workflow and explains which outcomes were
+       carried forward versus rerun.
++
++## B109 — Reduce cold mutation-campaign cost with explicit, witnessed early-stop execution
++
++**Status: OPEN (filed 2026-09-27 after review of B105's measured runtime; outcome policy decided in A-464).**
++
++**Observed limit:** B105 has 3,760 candidates and runs the full 5,831-test
++suite for every candidate. Its first 11 completed candidates averaged 547
++seconds each, projecting to roughly 23.7 days at one worker. Candidate-ID
++sharding can add concurrency but each candidate still runs the full suite;
++partitioning candidate source files has the same total test work and uneven
++shards. Those are scheduling changes, not a reduction in work. Per-test
++coverage selection could reduce work for survivors, but line reachability by
++itself does not prove that omitted tests cannot observe shared state changes,
++fixtures, imports, or subprocess effects.
++
++### Desired behavior
++
++- Add an explicit opt-in cold-campaign execution mode that can stop a mutant's
++  test run after a trustworthy, attributed test-call failure proves an
++  existential kill. Keep today's full-suite execution as the default and the
++  fallback for every uncertain case.
++- Preserve the full passing baseline, complete candidate discovery, candidate
++  identity, pristine per-candidate snapshots, and the original collected test
++  order. Do not use elapsed time, host load, or scheduling to decide which
++  candidates/tests run or what bucket an outcome receives.
++- Accept an early kill only from a bounded witness that names a collected test
++  node, proves the failure occurred in the test call phase, and records
++  matching pytest-session and child-process exit status 1. Collection/import
++  failures, setup/teardown failures, hooks with ambiguous attribution,
++  subprocess outcomes that cannot be tied to the call, and malformed or
++  missing receipts require a fresh full-suite run.
++- Run the full suite for survivors and whenever no trustworthy early witness
++  is found. Account for every candidate exactly once in the completed native
++  verdict; preserve the selected execution mode and bounded evidence in the
++  resume state and verifier-accepted verdict.
++- Implement A-464's explicit opt-in policy: a certified test-call failure is
++  sufficient to report `killed`, even though omitted later tests might
++  otherwise hang or crash. Keep full-suite execution as the default and run
++  the full suite for survivors and every uncertain witness. Give cold
++  early-stop evidence a distinct execution mode from B106's prior-verdict
++  witness replay; specify its lane, verdict, and resume-state contract rather
++  than overloading B106's `witness-prefix` record.
++- Treat coverage-based test selection for survivors as a separate follow-up
++  design unless an independent proof establishes that its dependency closure
++  covers collection, imports, fixtures, test order, shared state, dynamic
++  dispatch, and subprocess effects. Unknown or incomplete impact evidence
++  always falls back to the full suite.
++
++### Acceptance
++
++- [ ] A deterministic pilot on a fixed source tree compares full execution
++      against the proposed mode over a predeclared sample of candidates and
++      failure positions. It reports per-bucket time saved, full-suite fallback
++      rate, and candidates for which the mode gives no speedup; it does not
++      substitute elapsed-time estimates for completed evidence.
++- [ ] Paired fixtures prove that a genuine test-call failure with both exit
++      statuses equal to 1 can certify a kill, while collection, import,
++      setup, teardown, hook, subprocess, malformed-receipt, and no-witness
++      cases fall back to a full run or remain incomplete.
++- [ ] An adversarial fixture where an early test fails but a later test hangs
++      or crashes demonstrates the selected outcome policy and cannot silently
++      produce a different bucket from the declared contract.
++- [ ] Resume and shard tests prove mode identity is bound to state, every
++      candidate remains represented exactly once, and no prefix receipt can
++      be mistaken for a B106 prior-verdict replay receipt.
++- [ ] `assay verify` independently validates the closed execution mode,
++      policy, witness, candidate inventory, and producer/session receipts; the
++      packaged schema and verifier agree on their locally expressible rules.
++- [ ] README plainly says that an early call-phase failure is enough to mark
++      an opted-in candidate `killed`, and that omitted later tests could have
++      hung or crashed under a full run. DESIGN-GUIDE records A-464, why the
++      existential kill is sound, and the rejected partitioning or coverage
++      shortcuts. CONSUMERS.md has a pasteable opt-in example and describes
++      full-suite execution for survivors and uncertain witnesses. Any schema
++      or public vocabulary change is reflected in all three documents before
++      merge.
+diff --git a/assay/nyxloom-trove/decisions.md b/assay/nyxloom-trove/decisions.md
+index 048f51bc..381208ac 100644
+--- a/assay/nyxloom-trove/decisions.md
++++ b/assay/nyxloom-trove/decisions.md
+@@ -940,3 +940,9 @@ resolved wrongly. The gap is the deliberate choice, not an accounting error.
+ | A-461 | **B106 is a verdict-schema v13 cut only; lane schema and `ReasonCode` stay unchanged.** Reuse the existing `mutation.candidate_ids` wire field as the candidate-scope inventory: a completed unsharded native run records the full discovered plan, a shard records its selected slice, and `[]` means an empty submitted scope (zero candidates or an empty shard). The pre-submission `MUTANT_LIMIT_EXCEEDED` sentinel omits this inventory, retains its existing `candidate_count = max_mutants + 1` / `total = 0` shape, and is never a reuse source. Every native outcome records `candidate_id`, `source_sha256`, `mutated_file_sha256`, and closed execution provenance (`full` or `witness-prefix`); ingested outcomes carry none of these B106 fields. A pure candidate-ID helper is shared by planning, execution and verify, while verify independently checks producer-dependent presence, field shape, uniqueness/disjointness, inventory equality, and execution-mode relationships. Witness receipts contain only bounded node IDs, call-phase failure, and pytest session/process exit statuses; both exits must be 1. A witness-prefix outcome also binds the exact prior verdict bytes by SHA-256 and records prior/current node IDs.** | GPT-6-Luna xhigh recommended verdict fields only and its follow-up design review confirmed candidate identity inputs, shard inventory scope, and agreement between receipt and ordinary pytest exit. The review found a v12 compatibility conflict: the current verifier hard-rejects every foreign schema version before reconstruction, so it cannot validate a v12 artifact after the v13 hard cut. Choose a bounded duplicate-key-rejecting parse of a v12 JSON object as a cold start, trust only `schema_version = 12`, consume no candidate fields, and run every current candidate fully. This keeps `assay verify`'s hard cut intact; shipping a second frozen v12 verifier would enlarge the legacy trust surface without making v12 candidate witnesses reusable. For v13, current-verifier acceptance precedes source inspection. The current baseline must pass before current inventory discovery and candidate replay; only the unique current witness node's call-phase failure plus session exit 1 and child process exit 1 can certify a replayed kill. Any uncertainty receives a fresh full execution from a new process and pristine candidate snapshot. |
+ | A-462 | **B105 adds a separately invoked, full-source R0-R3 `self-qualification` gate inside `tester-unified`; the ordinary `tester-unified` release lane stays R0-only.** The qualification lane names every production `src/assay/**/*.py` target, uses `whole_target` with required branch measurement and a 100% floor, runs every native Python operator serially and unsharded, executes an import-break canary, resumes from gitignored state and emits progress, and succeeds only when the complete verifier-accepted report is bound to the unchanged source commit/tree. A registered R0/R1 preflight uses the same source inventory and stops the full gate before R2 if baseline tests or coverage fail. | Putting full-source mutation on every release would add a large, unrelated cost to the ordinary release contract and repeat a campaign when no full qualification is required. A separately invoked lane makes the stronger claim available without changing release cadence. Its campaign has no total-budget success path: a sentinel, partial inventory, interrupted run, survivor, or invalid report cannot pass. Per-candidate liveness is a failure bound, not a source of positive evidence; scheduling may affect elapsed time, but never changes which complete candidate inventory must be judged. A-462 supersedes A-133's permanent R0-only claim only for this second lane, preserving A-133's ordinary release-gate policy. |
+ | A-463 | **B105 measures Protocol stub bodies and keeps four `TYPE_CHECKING` import blocks plus two narrow selector-cleanup race branches as exact, named coverage exclusions.** The self-qualification and preflight lanes set `allow_excluded = true`, but the test-session hook requires raw `excluded_lines` to equal `tests/fixtures/b105-coverage-exclusions.json` exactly; Coverage.py's default exclusion patterns are replaced with only `pragma: no cover`, and tests invoke each Protocol stub. The 100% whole-target line-and-branch floor remains unchanged for every executable path. | Coverage.py silently excludes Protocol bodies and `TYPE_CHECKING` blocks by default, which made an apparent 100% floor leave source paths outside measurement. Protocol stubs are runtime-invocable and are now exercised. The four remaining imports exist only for annotations and runtime importing would create cycles; the two selector branches handle descriptors the OS or selector has already removed during cleanup. Their exact file and line inventory has an explicit reason and is checked in both directions against raw gate evidence, so a new or moved exclusion cannot silently lower the measured scope. |
++
++## Decided — B109 cold mutation early-stop, 2026-09-27
++
++| id | Decision | Reason |
++|---|---|---|
++| A-464 | **An explicitly opted-in cold native mutation run may classify a candidate as `killed` after a verified, bounded witness proves a collected test's call phase failed and both pytest's session status and Assay's child-process exit status are 1. The candidate's remaining tests may be omitted; survivors and every uncertain case still run the full suite. Full-suite execution remains the default.** | A call-phase failure is existential evidence that this mutant breaks at least one test, so omitted later tests cannot undo that kill. They could otherwise hang or crash; under the opt-in policy that later behavior is not observed and does not replace the witnessed `killed` result. This changes observable R2 outcomes for candidates that would also hang or crash later, so the mode must be distinct in lane/verdict/resume evidence and this limitation must be stated plainly in README, DESIGN-GUIDE, and CONSUMERS.md before adoption. |
+diff --git a/assay/src/assay/analysis.py b/assay/src/assay/analysis.py
+index e9b6fed4..b41fd28e 100644
+--- a/assay/src/assay/analysis.py
++++ b/assay/src/assay/analysis.py
+@@ -1023,6 +1023,9 @@ def _write_new(path: Path, document: dict) -> None:
+ def build_analyze_parser(subparsers: argparse._SubParsersAction) -> None:
+     parser = subparsers.add_parser("analyze", help="collect and inspect existing review artifacts")
+     commands = parser.add_subparsers(dest="analysis_command", required=True)
++    from .campaign import build_campaign_parser
++
++    build_campaign_parser(commands)
+     archive = commands.add_parser("collect", help="create a fresh artifact archive and manifest")
+     archive.add_argument("--output", type=Path, required=True)
+     archive.add_argument("--artifact", metavar=("NAME", "FILE"), nargs=2, action="append", default=[])
+@@ -1064,6 +1067,10 @@ def build_analyze_parser(subparsers: argparse._SubParsersAction) -> None:
+ def cmd_analyze(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
+     code = 0
+     try:
++        if args.analysis_command == "campaign":
++            from .campaign import run_campaign_command
++
++            return run_campaign_command(args, stdout=stdout, stderr=stderr)
+         if args.analysis_command == "collect":
+             result = collect(args.output, args.artifact, args.receipt)
+         elif args.analysis_command == "check":

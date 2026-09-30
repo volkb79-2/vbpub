@@ -4,21 +4,13 @@
 # gate that already exists, and a package cannot bootstrap the gate that judges
 # it (open item A-O01, closed here).
 #
-# NOTE ON WHAT THIS GATE CLAIMS. `asserts` below is ["tests-pass"] and nothing
-# more, PERMANENTLY (A-133) -- not pending a future upgrade. assay's whole
-# subject matter is changed-line coverage, canaries and mutation applied to
-# OTHER projects' diffs; declaring `changed-line-coverage`/`canary-verified`/
-# `mutation` here would claim assay mechanically applies THAT rigor to its OWN
-# diff, which it does not and structurally cannot without a judge configured
-# against assay's own source -- exactly the lane-table-implies-capability
-# failure the project exists to remove, committed in assay's own config. P14's
-# self-hosting proof (below) changes HOW this gate runs (the built WHEEL now
-# genuinely executes assay's own tests, not a source-tree shortcut) without
-# changing WHAT it claims: still R0 only (A-046's own "a lane file declares
-# WHAT EXISTS" principle, unchanged by this package). An earlier version of
-# this note said "P11 upgrades this declaration when the capability is real" --
-# P11 was valid-mutant construction and never touched this file; that note was
-# simply stale, not a promise P11 kept. See docs/DESIGN-GUIDE.md 12.
+# NOTE ON WHAT THE ORDINARY RELEASE GATE CLAIMS. `tester-unified` below remains
+# the R0-only self-hosted release lane (A-133, superseded only by B105/A-462's
+# separate qualification gate). `self-qualification` is a separately invoked
+# full-source R0-R3 gate; it does not silently add mutation cost to releases.
+# P14's self-hosting proof still establishes that the ordinary release gate
+# runs the built wheel's own tests rather than importing a source-tree shortcut.
+# See docs/DESIGN-GUIDE.md §9.
 
 [project]
 id = "assay"
@@ -110,9 +102,10 @@ series       = "nyxloom-trove/handoffs/README.md"
 # `site.py` appends any path named this way to `sys.path` at interpreter
 # startup, which is exactly what `--system-site-packages` was meant to do
 # here and does not, in this image, achieve on its own.
-# `--override-ini=pythonpath=` on assay.toml's own declared argv (not
-# repeated here) cancels pyproject.toml's `[tool.pytest.ini_options]
-# pythonpath = ["src"]` for this run only -- confirmed empirically that this
+# `--override-ini=pythonpath=` on assay.toml's own declared `tester-unified`
+# argv (not repeated here) cancels pyproject.toml's `[tool.pytest.ini_options]
+# pythonpath = ["src", "analysis/src"]` for this run only (the B105 lanes carry
+# no override: they take that pyproject value as it stands) -- confirmed empirically that this
 # ini option inserts "src" at sys.path[0] regardless of PATH/PYTHONPATH,
 # which would otherwise silently re-shadow the installed wheel with the
 # source tree and defeat self-hosting's entire point even after
@@ -130,7 +123,7 @@ series       = "nyxloom-trove/handoffs/README.md"
 # the private clone) exactly as before; its own emitted `assay_version` is
 # then required to equal the version just installed into `run-venv`.
 #
-# A SEPARATE, second pytest invocation then runs `tests/test_self_hosting.py`
+# A SEPARATE, second pytest invocation then runs `gate/tests/test_self_hosting.py`
 # via tester-unified's OWN ambient `/opt/tester-venv/bin/python` (never
 # `run-venv`) -- this is O3's real, independent oracle, not `assay verify`.
 # `tests/conftest.py` itself does `from assay.config import ...` at module
@@ -139,10 +132,10 @@ series       = "nyxloom-trove/handoffs/README.md"
 # (the WHEEL's installed location, confirmed empirically to import the wheel
 # rather than re-shadowing with source) for this one invocation only, and the
 # SAME `--override-ini=pythonpath=` is needed again here for the identical
-# reason. `ASSAY_SELF_HOSTING_VERDICT` tells `tests/test_self_hosting.py`
+# reason. `ASSAY_SELF_HOSTING_VERDICT` tells `gate/tests/test_self_hosting.py`
 # where the first step's own real verdict landed; unset, that one check skips
 # (documented in the test itself) rather than failing a bare developer
-# `pytest` run that has no such artifact. `tests/test_self_hosting.py` is
+# `pytest` run that has no such artifact. `gate/tests/test_self_hosting.py` is
 # excluded from the FIRST (self-hosted) collection by assay.toml's own
 # `--ignore` flag, so this run is never recursive.
 #
@@ -153,10 +146,18 @@ series       = "nyxloom-trove/handoffs/README.md"
 # gate.sh`: it derives the host bind source from this devcontainer's Docker
 # mount (or reads the explicit ASSAY_GATE_HOST_REPO_ROOT override), uses
 # fail-loud `--mount` rather than Docker's directory-inventing `-v`, disables
-# the container's network entirely (`--network=none`), and emits four inner
+# the container's network entirely (`--network=none`), and emits seven inner
 # phase markers plus a final host-side marker only after Docker itself returns
 # zero. The controller preserves that log/digest; the disposable `--rm`
 # container is not evidence.
+#
+# B123 (S1): after a green container, and only if HEAD and its tree are
+# unchanged, the host script writes `assay/.assay/registered-gate/
+# tester-unified.json` and prints `ASSAY_REGISTERED_GATE_RECEIPT=<path>` before
+# the final marker. The receipt is removed at every launch, and the full
+# `self-qualification` lane refuses to start without one for its own commit and
+# tree. A host with another `run-gate-*` container running makes the gate exit 3
+# (`ASSAY_GATE_INCONCLUSIVE=host busy`), which always means "rerun".
 #
 # `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_GATES and verifies the
 # named unit against the host cgroup tree before Docker sees it. An unset
@@ -165,30 +166,39 @@ series       = "nyxloom-trove/handoffs/README.md"
 # before -- the single easiest thing to break while restructuring the rest of
 # this script (O4).
 #
-# P25 (A-202-A-206): between the self-hosted lane and the independent
-# witness, the gate now also runs `gate/python/qualify_topos.py` -- the
-# CURRENT run-venv wheel (the same one `run_self_hosted_lane` just proved)
-# against a disposable, pinned, prospective Topos tree, plus a separately
-# hash-installed clean-tagged 1.2.5 release wheel for a targeted release
-# smoke. This is qualification, not adoption: current Topos commits three
-# absolute `/etc/passwd` symlink fixtures A-186 correctly refuses for any R1+
-# lane, so the harness deletes exactly those three paths from its own
-# disposable baseline and proves the full 2,923-test answer is otherwise
-# unchanged (A-202/A-203). The harness never writes to the real Topos
-# checkout, never imports `assay` from source, and never launches Topos's own
-# outer Docker gate -- it prints `ASSAY_P25_TOPOS_QUALIFIED=1` exactly once on
-# success, and only then does the gate script print its own
-# `ASSAY_GATE_PHASE=topos-qualified` marker. `timeout_seconds` below widens
-# from 1800 to 3600 for exactly this addition: the primary scenario alone
-# runs the full 2,923-test Topos suite (a 900s hang failsafe per pytest
-# invocation, never the pass/fail oracle itself), on top of everything the
-# self-hosted lane and independent witness already do.
+# The Topos qualification phase is retired (A-475). `timeout_seconds` below is
+# unchanged and is pinned against the lane budget by `test_self_lane.py`.
 
 [gates.tester-unified]
 # SSOT pointer (D-110/D-111): the lane lives in assay/run-gate.toml (host lane
 # invoking tools/tester-unified-gate.sh, which owns its own container
 # mechanics — exact-OID clone, pinned build closure, detached run).
 argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} tester-unified"]
+phase = "implementation"
+asserts = ["tests-pass"]
+timeout_seconds = 3600
+environment = "tester-unified"
+
+[gates.self-qualification]
+# B105's deliberately invoked full-source R0-R3 campaign is separate from the
+# ordinary R0 release gate above. run-gate places it in tester-unified and the
+# inner driver verifies the exact verdict before reporting success.
+# The in-container B105 driver command has a 7h30m timeout, which excludes
+# run-gate/container startup and outer evidence collection. Assay's 5-hour
+# lane budget follows its separate 60-minute preflight. Nyxloom's 8-hour
+# controller timeout is an outer failsafe, not a campaign-wide deadline.
+# Expiry is incomplete, never a candidate outcome or qualification pass.
+argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} self-qualification"]
+phase = "implementation"
+asserts = ["tests-pass"]
+timeout_seconds = 28800
+environment = "tester-unified"
+
+[gates.self-qualification-preflight]
+# R0/R1-only diagnosis of the exact source inventory and branch floor. The
+# full B105 gate runs this first and does not begin native mutation if the
+# baseline suite or whole-source coverage is red.
+argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} self-qualification-preflight"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 3600

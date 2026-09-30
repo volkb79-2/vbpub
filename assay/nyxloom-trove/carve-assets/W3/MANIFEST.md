@@ -86,3 +86,5 @@ One trap worth recording, met while capturing these: writing the
 `--verdict-json` output **into the repository under test** makes the tree dirty
 and the run returns `NO_MEASUREMENT`/`DIRTY_TREE` before any mutant is
 attempted. That is the mechanism working. Write the verdict outside the tree.
+
+dstdns-sql-r2-v6-witness.json: retired by A-480; frozen at v13; no longer migrated

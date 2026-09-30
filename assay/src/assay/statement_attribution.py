@@ -70,7 +70,7 @@ decision A-393 and backlog B055.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from .records import record
 from types import MappingProxyType
 from typing import Mapping
 
@@ -80,7 +80,7 @@ from .coverage_parsers.model import CoverageBlock, CoverageProfile, FileCoverage
 __all__ = ["StatementBlock", "attribute_statements"]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class StatementBlock:
     """One block as a source-side oracle derives it: the extent the profile
     will report, and the lines on which that block's own statements begin.

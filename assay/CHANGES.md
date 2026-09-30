@@ -4,12 +4,97 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- feat(assay): `assay analyze plan-estimate`; `assay plan` JSON `commit`/`tree`
+  and a stderr hint; `candidate` progress `cpu_seconds`/`peak_rss_bytes`/
+  `phase_seconds`/`startup_seconds` and state `resources` (with the
+  `<events>.resources.json` sidecar); baseline `test` `setup_s`/`teardown_s`.
+  All additive; no schema version changes (B111)
+- feat(assay): `assay analyze campaign <lane>` (B108 phase 1), a read-only,
+  deterministic campaign closeout: `--file`, `--expected-commit`, `--progress`,
+  `--verdict`, `--command-exit`, `--state-dir`, `--request-base`, `--project`,
+  `--project-jobs`, `--coverage`, `--log`, `--outcome`, `--path-prefix`,
+  `--offset`, `--limit`, `--format`. Its JSON (schema
+  `analysis-campaign.schema.json`) carries `errors[].source`,
+  `complete_blockers`, `reclassified`, `state`, `adverse`, `unresolved`,
+  `projection` and `campaign.selected_total`; exit 0/1/2/3 (3 is `incomplete`,
+  unlike `analyze report`, where 3 is `running`). Additive judge surfaces it
+  needs: the `candidates` progress key `judge_sha256`; the `assay plan` row keys
+  `source_sha256` and `mutated_file_sha256`; the public `cli.plan_jobs` and
+  `mutation.candidate_identity_fields`; and the public aliases replacing the
+  private judge names the analysis package used to reach. No existing verdict,
+  progress or plan key changes meaning; no schema version changes
+
+### Changed
+- refactor(assay): repeated judge rules now live once: `assay.records` (the
+  frozen/keyword-only record decorators), `assay.guards` (strict-int, finite,
+  positive, at-least, sha256-hex and aware-datetime predicates), producer-side
+  claim/policy helpers in `verdict`, and same-side helpers in git, isolation,
+  liveness_resources, runner, mutation, cli, evaluate and coverage; the raw
+  verifier `assay.verify` keeps its own independent copies (A-182). Messages,
+  exception types and reason codes are unchanged, and `assay.verdict.__all__`
+  gains only `claim_for` and `claim_carries` (the runner uses both); mutation
+  candidates in `src/assay` fall from 3733 to 3367. Assay-internal: no
+  consumer-facing change (B129)
+- chore(assay): assay's own two B105 self-qualification lanes now use the
+  shallow snapshot (`snapshot_history = "shallow"`, the A-451 default) instead of
+  full history, since no collected judge test reads history; a new test proves a
+  shallow snapshot has no `HEAD~1`. Assay-internal: no consumer-facing change
+  (B128)
+- feat(assay): the registered gate has an explicit shared-host opt-in,
+  `ASSAY_GATE_ALLOW_SHARED_HOST=1` (and `qualify_sql.py --allow-shared-host`),
+  that runs alongside other projects' `run-gate-*` containers and prints
+  `ASSAY_GATE_SHARED_HOST=<names>`. Two scopes: the gate
+  (`ASSAY_GATE_ALLOW_SHARED_HOST=1`) still refuses any other `run-gate-assay-*`
+  container, and the harness (`--allow-shared-host`) still refuses only another
+  `run-gate-assay-sql-*` container; the default stays the exit-3 `host busy`
+  refusal (CD50). Assay-internal: no consumer-facing change
+- refactor(assay): judge tests (`tests/`) and tooling tests (`gate/tests/`, for
+  the gate script, checker, wheel and zipapp, packaging and lane-config drift)
+  are separate trees; `tester-unified` runs both, the B105 lanes collect
+  `tests/` only without `--override-ini`, and the full `self-qualification`
+  lane requires a same-commit `tester-unified` receipt
+  (`assay/.assay/registered-gate/tester-unified.json`, written by the gate
+  script after a green run); the gate exits 3 with
+  `ASSAY_GATE_INCONCLUSIVE=host busy` when another `run-gate-*` container is
+  running. Assay-internal: no consumer-facing change (B123, A-476)
+- chore(assay): the registered gate retires the Topos and CMRU qualification
+  harnesses and the historical schema phases; one refusal test per schema
+  remains (A-475/A-477, B124/B125). Nothing in the product changes.
+- refactor(assay): move `assay analyze` into a second top-level package,
+  `assay_analysis`, shipped in the same wheel and zipapp; `assay analyze`
+  behaviour, exit codes and schema paths are unchanged (a usage error for
+  unrecognized arguments now prints the `assay analyze` usage line and prefix),
+  the undocumented `import assay.analysis` is removed, an editable install
+  made before this change must be re-run so `assay analyze` finds the new
+  package, the package has its own R0+R1 lane, and the B105 report checker
+  now names its scope (`src/assay` only; analysis out of scope by A-478)
+  (B127)
+
 ### Fixed
+- fix(assay): liveness test leak; CONSUMERS 'upper bound' claim (the plan
+  estimate is declaration-derived, not an upper bound); the B105 report checker
+  refuses a partial, sharded or foreign R2 campaign against the plan (B111)
 - fix(assay): require time-aligned resource evidence and a CPU-quiet window
   before classifying an R2 candidate as hung (B107/RW-57)
 - fix(assay): restart the hung CPU window when an exiting descendant lowers
   the live process-tree CPU total, and reject cached hung traces that cannot
   prove their idle span or contain malformed counters (B107 final review)
+- fix(assay): single-operator mutants of the Go, JavaScript, SQL and go.mod
+  scanners, and of the git tree parser, now fail fast instead of spinning until
+  the per-candidate budget; the `git.py` pipe-drain loop's exit test
+  no longer offers a mutant that blocks forever (B113/A-466)
+
+### Testing
+- test(assay): characterization tests pin the accept/refuse verdict and exact
+  message of every judge rule that B129 consolidated, a dataclass-contract test
+  (resolved decorator objects plus a committed fixture), boundary-value tests
+  for the shared guard predicates, and `tests/core/test_trust_boundary.py`,
+  which keeps `assay.verify` free of `assay.guards`/`assay.records` and of the
+  producer-only verdict helpers (B129)
+- test(assay): G1–G5 snapshot invariant guards (B111)
+- test(assay): deterministic mutant-guard tests, one per component, under a
+  line-event budget (B113)
 
 <!-- cmru: release history -->
 

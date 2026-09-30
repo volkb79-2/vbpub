@@ -63,7 +63,12 @@ argv = ["bash", "-c",
 
 ## Read one live gate snapshot (B100)
 
-The same worktree-installed CLI includes `assay analyze report`. Use it when a
+The same worktree-installed CLI includes `assay analyze report` (its code is
+the separate `assay_analysis` package in the same wheel). An editable install
+made before B127 maps only `src/`: re-run `pip install --no-deps
+--no-build-isolation --editable assay` once, or `assay analyze` fails with
+`ModuleNotFoundError: No module named 'assay_analysis'` and exit 1, the code
+`report` otherwise uses for a failing lane. Use it when a
 registered gate is still running or its full output no longer fits the
 controller's terminal buffer. Set `WORKTREE` to the checkout, `REVIEW_HEAD` to
 the agreed full commit, and `GATE_LOG` to the retained output file. The command

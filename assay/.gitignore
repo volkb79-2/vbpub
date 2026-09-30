@@ -14,3 +14,8 @@ __pycache__/
 .coverage.*
 coverage.json
 htmlcov/
+
+# B130/W3: the vbpub root .gitignore ignores every path named `core` (core
+# dumps, root .gitignore:352), which hides the judge-test folder tests/core/
+# and every new file in it. Re-include that one directory.
+!/tests/core/

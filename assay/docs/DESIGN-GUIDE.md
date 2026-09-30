@@ -517,6 +517,27 @@ bounded at 1024 samples; once truncated, that idle interval cannot certify a
 hang, and a configured-budget expiry remains incomplete. Cached `hung`
 records without a structurally valid complete trace are refused and rerun.
 
+**Per-candidate resource, phase and startup evidence (B111).** Every candidate
+records `phase_seconds` (`materialize`, `command`, `integrity`, `teardown`, the
+worker's own monotonic split); a liveness candidate also records `cpu_seconds`
+and `peak_rss_bytes` of its process tree and `startup_seconds`
+(`to_session_start`, `to_first_test`). `cpu_seconds` is the maximum over 1 Hz
+samples of utime+stime+cutime+cstime summed over the live tree, a lower bound
+(the series is not monotone, and CPU after the last sample is missing);
+`peak_rss_bytes` is a 1 Hz lower bound on peak Σ RSS, and Σ RSS overcounts
+shared and copy-on-write pages, so it is not a bound on true peak memory use.
+All four describe the attempt that produced the bucket; a witness replay that
+did not kill counts only in `elapsed_seconds`. They ride on the `candidate`
+progress event and, as the
+identical object, in the state record's `resources`; the baseline `test` events
+carry the tests' own `setup_s`/`teardown_s`. The monitor writes a
+`<events>.resources.json` sidecar on every exit path (a `try/finally` around the
+poll loop), and the sampler runs after the B107 resource read, so it can never
+feed the CPU-growth or hang decision. The values are measured once, are
+`None` when unavailable, and never enter a classification, a verdict or the
+`judge_sha256` inputs; they exist so a campaign can be sized from measurement
+rather than from the declared budget.
+
 #### Liveness process-group cleanup
 
 Each native R2 candidate is launched in its own session/process group. The
@@ -709,7 +730,7 @@ default: a mutation candidate, whose whole signal is whether the suite fails
 control/transform outcome answers "did injecting this defect change the
 judgement" rather than "did the wrapped suite pass"; and the
 `environment_command` probe, which is not the lane command at all.
-`tests/test_result_report_wiring_sweep.py` pins that list mechanically —
+`tests/parsers/result_reports/test_result_report_wiring_sweep.py` pins that list mechanically —
 every call site either passes the argument or carries a written reason for
 not doing so.
 
@@ -1444,6 +1465,8 @@ equality (`canary.target` against `judgment.r3.target`), or temporal ordering
 (`ended >= started`): Draft 2020-12 has no `$data`, so saying "all three
 layers reject" would be another hollow contract. Those live in the Python
 model AND, independently worded, in `assay.verify`'s raw-document checks.
+`assay.verify` therefore imports neither `assay.guards` nor `assay.records`
+(`tests/core/test_trust_boundary.py`, B129).
 
 **The cap owns its discovery seam (A-180).** P21 cannot truthfully record
 `max_mutants` while an adapter first materializes an unbounded tuple containing
@@ -1960,7 +1983,7 @@ No circularity: the first establishes correctness, the second establishes
 coverage of a diff. assay's own lane argv *is* `pytest`, so the gate
 transitively re-runs its own independent oracle.
 
-**One gated lane: `tester-unified`.** A `local` bare-pytest lane was considered
+**Ordinary release lane: `tester-unified`, R0-only.** A `local` bare-pytest lane was considered
 and rejected — *"greens from the interactive cockpit are explicitly not a ship
 signal"*, and a cockpit lane manufactures exactly that pathway. The standalone
 claim is instead proven **inside** the gated suite: a test builds a clean venv,
@@ -1968,6 +1991,160 @@ installs only assay, and asserts `assay run` works against a fixture project.
 That is O1 discharged mechanically, with no cockpit-green pathway. Bare
 `pytest` remains a documented developer convenience and explicitly **not**
 evidence.
+
+**Two test trees (B123, A-476).** Judge tests (`tests/`, and the analysis
+package's own `analysis/tests/`) are tests whose outcome depends on `src/assay`
+running; they are what the B105 qualification lanes collect and mutate against.
+Tooling tests (`gate/tests/`) test the gate script, the B105 checker, the wheel
+and zipapp, packaging and the lane configuration itself; they run in the
+`tester-unified` lane, which names both trees (`pytest tests gate/tests`) and
+overrides `pythonpath` to test the installed wheel (A-130). `gate/tests` is a
+package (its `support.py` loads the judge `tests/conftest.py` on demand under
+the module name `assay_judge_conftest`), so its `from conftest import` never
+competes with the judge's; a judge test may not import from it, and a layout
+test enforces that.
+
+### Full-source self-qualification (B105)
+
+The separate `self-qualification` gate is deliberately invoked only when a
+complete R0-R3 qualification is intended. It runs inside the same dedicated
+`tester-unified` image as the release lane and does not turn each release into
+a full-source mutation campaign. `assay.toml` names every production Python
+file under `src/assay` literally, applies whole-target line and branch coverage
+with a 100% floor, currently runs all four native Python mutation operators
+unsharded and serially, and performs an import-break canary. A drift test fails
+if a new production file is absent from that declaration. Its gate builds the
+selected commit as a wheel from a private exact-OID clone using the committed
+hash-locked offline build closure. The installed wheel provides the outer
+Assay CLI and child `assay` commands with real `judge_provenance`; the pytest
+command separately imports `src/assay` from the isolated baseline or mutant
+snapshot, rather than from the wheel in the invoking worktree. Otherwise
+coverage could be empty and mutants would not be the code the suite loaded.
+The B105 lanes collect `tests/` only (B123), take their import paths from
+pyproject's own `pythonpath = ["src", "analysis/src"]` and carry no
+`--override-ini` (a `-o` token makes a lane ineligible for the mutation
+witness); `gate/tests/test_self_lane.py` pins the exact argv of every lane.
+For an R2 lane the driver runs `assay plan` first, writes
+`.assay/plan-<lane>.json`, and hands it to `tools/b105_report_check.py
+--plan-json`. The checker refuses (B111), in order and after its own
+argument, receipt, provenance and scope checks: a plan file that cannot be
+read or whose structure is invalid, a plan made at another commit or tree than
+`--expected-commit`/`--expected-tree`, a plan that is not `ok`, is sharded or
+disagrees with its own count, a report that is sharded, and a report whose R2
+candidate ids are not exactly the plan's. A partial or foreign R2 campaign can
+therefore never be accepted as the full one. No collected judge test
+reads history or tags (A-475), so both B105 lanes use the shallow snapshot
+default (`snapshot_history = "shallow"`, B128): the lanes declare no
+`judge.base`, so the seed carries only the judged commit, and
+`tests/core/test_snapshot_history_shallow.py` proves a shallow baseline
+snapshot cannot resolve `HEAD~1` (an R2 mutant or R3 canary child's `HEAD~1`
+is the judged commit itself). Snapshot refs and tags are intentionally not
+copied.
+
+**S1: the same-commit `tester-unified` receipt.** The full lane refuses to
+start unless the registered `tester-unified` gate passed at the very commit and
+tree it is about to judge. After a green container, and only if HEAD and its
+tree are unchanged, `tools/tester-unified-gate.sh` writes
+`assay/.assay/registered-gate/tester-unified.json` (exactly
+`{"schema_version": 1, "lane": "tester-unified", "commit": …, "tree": …}`) and
+prints `ASSAY_REGISTERED_GATE_RECEIPT=<path>`; it removes any old receipt at
+every launch and again on any non-zero exit after launch, so a red run leaves none,
+even one the container wrote itself. The full lane's driver checks it
+first (`b105_report_check.py --receipt-only`, phase
+`require-same-commit-tester-unified-pass`), and the checker refuses a full
+report without a matching receipt. The preflight lane needs none. Run
+`./run-gate.py tester-unified` before `./run-gate.py self-qualification`, in the same
+worktree and with no commit in between: any later commit, a docs-only or merge
+commit included, needs a fresh `tester-unified` run first. A
+gate started while another `run-gate-*` container runs exits 3 with
+`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1` (CD50) lets the gate run alongside other projects' `run-gate-*` containers, printing `ASSAY_GATE_SHARED_HOST=<names>` on stdout; the gate still refuses any other `run-gate-assay-*` container (the standalone harness's `--allow-shared-host` refuses only another `run-gate-assay-sql-*` one), any other value of the variable is an error, and the receipt is unchanged.
+
+The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
+after a separately bounded 60-minute R0/R1 preflight. This interim budget
+resets on a new invocation; do not use resume/retry to bypass the overall
+ceiling. B110 must persist one campaign deadline before another full attempt.
+The in-container driver command is wrapped with a 7h30m timeout; its clock
+starts only after run-gate/container startup and stops before outer evidence
+collection. Nyxloom applies a separate 8-hour outer failsafe. Neither is the
+campaign-wide deadline B110 requires. Expiry is incomplete, never a candidate
+outcome or qualification pass. Candidate classification remains independent
+of host load and scheduling. The gate records the exact source commit/tree,
+runs `assay verify` on the result, and prints a success marker only after both
+checks pass. Its report and captured gate log are retained with the source
+revision.
+
+The latest full-source attempt completed only 15 of 3,760 candidates before
+it was stopped; an earlier attempt stopped after 38 completions. Neither
+provides B105 qualification. B110 requires a structural
+rework and a bounded pilot before another full attempt: target completion
+within 6 hours, never exceed the 8-hour watchdog, and do not increase the
+approved RAM envelope. The cold-witness and distributed-shard behaviors are
+not shipped merely by this timeout change. B110 proposes an opt-in cold-witness
+policy: one verified call-phase test failure is an existential kill witness,
+but all tests after that failure are unrun and may independently fail, hang,
+or crash. Survivors and uncertain executions still run the complete declared
+suite. Until B110 is implemented and its
+full verifier-accepted result exists, this separate lane has no qualification
+claim and is not part of the ordinary R0 release gate.
+
+The registered `self-qualification-preflight` lane runs the same R0 test
+command and whole-source R1 coverage declaration without R2 or R3. The full
+gate runs it first and verifies its report; if R0 or R1 fails, the controller
+stops before launching the long mutation campaign. Operators can also invoke
+the preflight directly while bringing coverage to its required floor. The
+gate copies coverage.py's raw JSON arcs out of the disposable baseline
+snapshot into `.assay/coverage-self-qualification-preflight-snapshots/`, so
+each unvisited branch has a reviewable source/destination arc rather than only
+a line-level summary. Each attempt gets a reserved directory that remains in
+place across retries; its filename carries the captured source commit and tree.
+A corrected commit gets a separate archive, and a repeated attempt cannot
+replace evidence with different coverage data. Equivalence for one attempt
+ignores only coverage.py's generated timestamp. The full mutation lane does
+not export per-mutant coverage to this archive directory.
+
+Coverage.py's default exclusions are too broad for this claim: they silently
+remove Protocol method bodies and `TYPE_CHECKING` blocks from the denominator.
+The self-qualification suite replaces those defaults with the explicit
+`pragma: no cover` marker and executes every Protocol stub. Its reviewed map
+records four annotation-only import blocks plus two narrow selector-cleanup
+race branches in
+`tests/fixtures/b105-coverage-exclusions.json`. The gate compares the raw
+coverage report's complete `excluded_lines` map with that checked-in inventory
+before preserving it. A new exclusion, a removed one, or a moved line fails
+the gate until the map and its reason are reviewed together. The imports exist
+only for static type checking and would introduce runtime import cycles; the
+selector branches catch descriptors already removed by the OS or selector
+during process cleanup. The 100% floor remains in force for all executable
+source lines and branches.
+
+```bash
+cd assay
+./run-gate.py self-qualification
+```
+
+The invocation is failure-bounded, but the current B105 campaign is not yet
+qualified: do not treat a timeout, partial report, or resumed partial attempt
+as a pass. B110 must first make the complete R0–R3 run fit the measured budget.
+
+The [consumer guide](CONSUMERS.md#assays-own-full-source-self-qualification-b105)
+shows how to preserve the log and inspect the report. Decision A-462 records
+why this separate lane supersedes A-133's former permanent R0-only limit while
+leaving the ordinary release lane unchanged.
+
+Loop guards (B113, A-466). Time never classifies a candidate (A-464), so a
+mutant that spins must fail by itself: a CPU-spinning candidate keeps the
+liveness monitor's `cpu_growing` true and would otherwise burn its whole
+per-candidate budget. Scanner cursors therefore advance through
+`errors.require_advance`, one shared comparison that one test kills, and a
+stalled or rewound cursor raises `AssertionError`, an ordinary test failure and
+so an ordinary kill. The `git.py` pipe-drain loop's exit test deliberately has
+no mutable comparison (the overflow exit is a separate `if overflowed:` after
+the `for`), so no mutant of that exit test can make the drain block forever. The wait loop after it keeps its mutable test; the drain test refuses a wait on the overflowing child before its group is killed, so those mutants fail at once instead of idling into `hung`. The per-component
+`test_*_scanner_progress_guards.py` files also kill their own target mutants
+textually under R2 (the anchor stops matching), so those kills are not evidence
+that the guards work; their effect shows in the other scanner tests failing
+fast instead of spinning. The historical real-clock liveness tests a watchdog
+would have protected no longer exist (CD3).
 
 **Zero runtime dependencies** (stdlib only: `tomllib`, `json`,
 `xml.etree.ElementTree`, `ast`, `re`, `subprocess`, `pathlib`, `argparse`) makes
@@ -2135,6 +2312,52 @@ signature or function-level closing brace under the babel instrumenter, a
 comment under any of them — stays unclassified and takes rule 4. Measured:
 23 such non-comment lines in the original committed istanbul fixture,
 against 29 statement start lines and 54 lines classified after expansion.
+
+### Shared records and guard predicates (B129)
+
+The full-source mutation campaign pays for every repeated judge rule once per
+copy, so B129 collapses the repeats that are safe to share. `assay.records`
+holds the two record decorators (`record`, frozen and keyword-only;
+`positional_record`), so the frozen/`kw_only` flags exist once instead of at
+every dataclass. `assay.guards` holds the pure predicates that had been
+spelled out inline (strict int, finite/positive/at-least numbers, the
+lowercase sha256 hex test, the aware-datetime test). Both are core leaf
+modules with stdlib imports only, so adapters and parsers may use them; each
+has its own boundary-value test file (`tests/core/test_guards.py` kills every
+helper mutant alone). Producer-side helpers in `verdict.py`
+(`claim_for`, `claim_carries`, `_require_policy_iff_attempted`) and same-side
+clusters in git, isolation, liveness_resources, verdict, runner, mutation,
+cli, evaluate and coverage were factored the same way. A helper never raises
+where the inline code did not and never reorders evaluation; the
+characterization tests in `tests/core/test_w10_characterization_*.py` pin the
+accept/refuse verdict and the exact message of every rewritten site.
+
+**The verify boundary stays raw (A-182).** `assay.verify` re-derives every rule
+independently of the producer, so it imports nothing from `guards` or
+`records`, and it does not use the producer-only verdict helpers;
+`candidate_identity.py`, which `verify` imports, stays dependency-free.
+`tests/core/test_trust_boundary.py` pins the exact set of names `verify.py`
+imports, the defining module of every name bound in `vars(assay.verify)`
+(which catches a re-export through `verdict`), that the leaves import no
+`assay` module, and that no other module imports a `_`-prefixed name from
+`verify`. Cross-boundary twins (canary/verify, mutation_witness/verify, the
+two `_check_judgment_matches_claims`) stay written out on both sides.
+
+**Records are checked by object, not spelling.** `tests/core/test_dataclass_contract.py`
+resolves each class decorator to `dataclasses.dataclass`, `record` or
+`positional_record` and compares it with `tests/fixtures/dataclass-contract.json`;
+every `src/assay` dataclass is at module level with exactly one of the two
+decorators, and the `__dataclass_transform__` values are pinned. The fixture
+is regenerated with `cd assay && PYTHONPATH=src:tests python
+tests/core/test_dataclass_contract.py > tests/fixtures/dataclass-contract.json`,
+committed with the source change; a diff in it is a reviewed contract change,
+not a routine update.
+
+**Measured effect (`nyxloom-trove/reports/wave-a/W10-dry-LOG.md`, R11 scripts).**
+Mutation candidates in `src/assay` went from 3733 to 3367 (bool-const-flip
+493 to 339, boolop-swap 973 to 835, compare-swap 2128 to 2053, falsy-swap 139
+to 140), and the T1 removable union from 385 to 82. The two new modules add 28
+candidates (guards 22, records 6), which the two lanes' `targets` now list.
 
 ### Default-argument signature lines (B080, A-456)
 
@@ -2870,6 +3093,113 @@ for the worked shape, including how to make the companion `pg_dump`
 reproducibility obligation red-on-violation in your own gate rather than
 trusted silently.
 
+### How the SQL adapter is qualified against a real PostgreSQL (A-480, B126)
+
+The mask/lexer tests prove which bytes assay replaces; only a real catalog can
+say the replacement *means* something. The gate proves that with assay's own
+material and no consumer checkout. It runs as an **outer phase of the
+registered `tester-unified` gate**: the tester container has no Docker socket,
+so after it exits green the host script builds an exact-OID clone of the gated
+commit and runs `gate/python/qualify_sql.py` from it with the host `python3`
+(>= 3.11). A red tester ends the script first, so PostgreSQL never runs after a
+red tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified` between the
+tester and the receipt.
+
+**Inputs, all in the repository.** The schema is
+`tests/fixtures/mutation/sql/qualification/01-schema.sql` (sha256 pinned in
+`qualify_sql.py`); its `-- [Knn]` tags name the rows of
+`gate/python/fixtures/sql/matrix.json`, one row per mutation site (24 rows:
+`K01`-`K25`, `K12` unused). The image is
+`postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2`
+(PostgreSQL 18.6), pinned by digest and **never pulled**: an absent image is an
+inconclusive run. One container runs at a time, `--network none`, `--cpus 1`,
+`--memory 512m`, on a 256 MiB tmpfs data directory, in the gate's own cgroup
+slice, named `run-gate-assay-sql-<pid>-<epoch>` so a peer's `docker ps` sees
+it; it is removed by its exact name on every path, including SIGTERM. Before
+`docker run` the harness looks once at `docker ps`: any other `run-gate-*`
+container makes the run **inconclusive** (exit 3, `host busy`); it never polls. With `--allow-shared-host` (CD50; the gate passes it when `ASSAY_GATE_ALLOW_SHARED_HOST=1`) other projects' `run-gate-*` containers are tolerated and named on stderr as `ASSAY_SQL_SHARED_HOST=<names>`, but another `run-gate-assay-sql-*` container is still `host busy`.
+
+**Two derivations, no assertion of the consumer's.** Each row's mutant is
+applied to a fresh database and its bucket is *derived*, never trusted: the
+apply/dump/test command runs the row's probe files, and (1) no dump means
+`crashed`, (2) a dump equal to the baseline dump means `equivalent`, (3) exit 0
+means `survived`, (4) a failing probe run whose kill signal names the row means
+`killed`, (5) anything else is an error. The derived bucket must equal the
+matrix's `expected`. The same matrix is then checked again, row by row, against
+the verdict of a **real `assay run`** over a disposable repository whose lane
+runs the same probes (the witness), and the normalized verdict is compared with
+the committed `expected/sql-r2-witness.json`. An incomplete witness (hung or
+budget-exceeded entries, `LANE_TIMEOUT`) is inconclusive and is checked before
+the FAIL requirement.
+
+**The residue premise, now a loud failure.** The old premise was that a mutant
+re-applied onto a database that already carries the schema silently does
+nothing. The qualification schema is deliberately not idempotent (`CREATE DOMAIN
+posint` twice fails), so the harness records the opposite as a control
+(**O4-residue**): on one database the unmutated apply exits 0, then the `K01`
+mutant exits non-zero with no dump (`crashed`). A second control (**M11**) is a
+hand-built naive string widen of an integer `IN` list that PostgreSQL refuses
+(`crashed`). The `pg_dump` trap is a third (**O5**): two dumps without
+`--restrict-key` differ.
+
+**Which cases exist (the dedupe rule).** A case is kept only if it differs from
+every kept one in replacement form, span shape (recogniser branch; text after
+it), enclosing object, lexical context (top level, executed or inert `DO`),
+catalog effect (A-289) or bucket (one deliberate survivor per replacement
+branch). Names, types and trigger timing do not count. The rows are the
+representatives of the 13 classes into which the 171 sites of the former
+consumer corpus fall; the class map is
+`nyxloom-trove/reports/wave-a/W5-REPORT.md`. `K02` and `K25` survive by design
+(a `DEFAULT` hides the dropped `NOT NULL`; no realistic test inserts
+`__assay_widened__`), and `K09` is equivalent (an inert guard).
+
+**Exit codes.** 0 with `ASSAY_SQL_QUALIFIED=1` on stdout; 1 a failed premise;
+3 inconclusive (docker unavailable, image absent, host busy, a failing
+`docker ps`, readiness failsafe, a timeout, a name in use, docker
+environment lost mid-run, an incomplete witness), which the gate
+passes through as its own exit 3 with `ASSAY_GATE_INCONCLUSIVE=sql-qualification
+— rerun` and no receipt.
+
+### Component boundaries and test layout
+
+The judge (`src/assay`) is one package with named components, and
+`tests/core/test_import_contracts.py` enforces how they may import each other.
+It is a stdlib `ast` walk over every module (module level, function level and
+`TYPE_CHECKING` imports alike), not a linter dependency. The components are
+`core` (everything not listed below, including `assay.adapters` and
+`assay.adapters.base`), one `adapter.<lang>` per language adapter (`python`,
+`javascript`, `go`, `sql`, each with its helper modules), three parser families
+(`parsers.coverage`, `parsers.mutation`, `parsers.result_reports`), the `cli`
+composition root and the temporary `analysis` module. The rules:
+
+- `cli` may import anything; it is where adapters are registered.
+- An adapter may import only the core leaf modules `adapters.base`, `errors`,
+  `mutation`, `safeio`, `statement_attribution`, `records` and `guards`, plus
+  its own component. It never imports another adapter or the rest of core.
+- A parser family may import only `errors`, `vocabulary`, `records` and
+  `guards`, plus its own component.
+- Core imports parsers only through their model surface
+  (`coverage_parsers.model`, `mutation_parsers`, `mutation_parsers.model`,
+  `result_reports`); `assay.coverage` alone dispatches to the individual
+  coverage-format modules.
+- Core never imports an adapter.
+
+Test files live in the folder their name implies: `tests/adapters/<lang>/` for
+tests named `test_adapters_<lang>_*` or naming a language,
+`tests/parsers/coverage/`, `tests/parsers/mutation/` and
+`tests/parsers/result_reports/` for the parser tests, and `tests/core/` for
+everything else. The rule and its explicit exceptions are `expected_dir` in the
+same test file; it also requires unique test basenames and forbids extra
+`__init__.py` or `conftest.py` files (only `tests/conftest.py` exists).
+Fixtures stay in `tests/fixtures/`, and moved tests reach them through
+`TESTS_ROOT` and `PROJECT_ROOT` from `tests/conftest.py`, not through their own
+`__file__`. The `tests/` root holds only `conftest.py`, `fixtures/` and `__init__`-free
+`*_support.py` helpers shared across component folders (CD23): the
+tooling tests moved to `gate/tests/` (B123), and the same test file forbids a
+judge test from importing `gate` or requesting the wheel-building `standalone`
+fixture. The layout is organization only: it claims nothing about which tests
+kill which mutants.
+
 ## 12. Lane file structure = D7's three questions, literally
 
 The file's shape carries the boundary rather than asserting it in prose. Top
@@ -3012,32 +3342,15 @@ opacity being removed.
 
 ## 13. Adoption order, and what each consumer proves
 
-Before consumer migration, P25 qualifies the versioned installed wheel P24
-produces (§14) against a disposable current Topos tree and its independent
-changed-line gate (A-162). That is evidence that an existing Python project
-can obtain the same R1 answer, not a claim that Topos has adopted Assay. The
-real adoption package is carved later in Topos's own trove, after its active
-wave permits a stable input revision.
-
-**The qualification found a real adoption precondition rather than hiding it.**
-Pinned Topos commits three absolute `/etc/passwd` symlinks as security-test
-fixtures. Assay's A-186 committed-object boundary must refuse those paths for
-every higher-rigor lane; filtering them inside Assay would weaken the product's
-escape boundary. P25 therefore deletes exactly those three links only in its
-disposable prospective consumer baseline, retains all five contained relative
-links, and proves the full 2,923-test answer is unchanged. Actual adoption must
-make that Topos-owned change (prefer constructing the hostile links under
-`tmp_path`) before enabling Assay. Thus P25 proves Python/R1 and installed-wheel
-compatibility for the exact prospective state while explicitly proving that the
-unmodified current Topos tree is not directly adoptable (A-202).
-
-P25 also keeps two wheel roles separate (A-205): the gate's current P24-built
-run-venv wheel runs the full suite so later Assay changes remain externally
-qualified, while a reproducible clean-tagged `1.2.5` fixture exercises P24's
-release-manifest and pip hash path on a targeted smoke. The copied Topos
-evaluator receives the exact bounded coverage bytes Assay consumed inside its
-otherwise-ephemeral snapshot; it never consumes an expectation derived from
-Assay's verdict (A-204).
+Each consumer qualifies its own use of assay in its own gate, and assay's
+gate tests assay only (A-475). Assay's registered gate no longer runs any
+other project's tree: the Topos P25 harness and the CMRU B006(a) harness are
+retired, so nothing here claims that a consumer has adopted assay. Adoption
+packages live in each consumer's own trove, after its active wave permits a
+stable input revision. Pinned Topos still commits three absolute `/etc/passwd`
+symlinks as security-test fixtures, which the A-186 committed-object boundary
+refuses for every higher-rigor lane; that precondition is Topos-owned (prefer
+constructing the hostile links under `tmp_path`).
 
 | # | Consumer | Proves |
 |---|---|---|
@@ -3171,65 +3484,13 @@ is an explicit `find` file list, and the phase **refuses** an empty one:
 otherwise a renamed or absent `tests/` would silently shrink the scope back
 while still emitting the clean marker.
 
-## 15. Real Python-project qualification harness (P25)
+## 15. Cross-project qualification belongs to the consumer (A-475)
 
-§13 states the product claim (qualification, not adoption) and the exact
-three-symlink adoption precondition; this section is the mechanism that
-proves it. `gate/python/qualify_topos.py` runs inside the registered gate,
-between `run_self_hosted_lane` and `run_independent_witness`, against the
-CURRENT run-venv wheel `run_self_hosted_lane` already proved.
-
-**One disposable baseline, reconstructed per scenario, never the real
-checkout.** `git archive --format=tar` exports only the pinned commit's
-`.gitignore` and `topos/` tree into a fresh scratch directory; the exact
-three absolute `/etc/passwd` symlinks are verified present and deleted, the
-five relative contained symlinks are verified retained, and the exact
-966-minus-3 tracked set is `git add -f`'d (never ordinary `add`, which
-silently drops four tracked-but-ignored Docker fixtures under the carried
-root `.gitignore`) to a fixed-identity, fixed-date commit. That commit is
-`base`; the scenario's own probe/test/wrapper/`assay.toml` land in one more
-commit on top, which is `HEAD`. Same content plus the same fixed identity
-reproduces the identical baseline OID regardless of which scenario runs on
-top of it — a real, checked property, not an assumption.
-
-**Two Assay owners, never conflated.** The gate's own `current_assay`
-(`$scratch/run-venv/bin/assay`) runs the full 2,923-test suite plus every
-integrity negative, so future Assay changes stay externally qualified. A
-separate, hash-installed, clean-tagged `1.2.5` release venv — built the same
-way `install_locked_release` proves any consumer could — runs one targeted
-smoke. Neither route ever selects a wheel by glob, rebuilds one at runtime,
-or substitutes for the other.
-
-**Three independent witnesses per common-semantics scenario.** Installed
-Assay emits its own v4 verdict; a bounded, non-interpreting wrapper copies
-the exact coverage bytes Assay consumed inside its ephemeral snapshot to an
-external path *after* pytest exits zero (Assay's own snapshot is destroyed
-before an outside process could read it otherwise); and the unmodified,
-committed `topos/tools/coverage_gate.py` parses that same copy against the
-identical `base..HEAD` diff. That third witness is compared by its NUMBERS
-against the carver-owned hand manifest, never by its `passed` flag alone:
-Topos defines `pct = 100.0` whenever `changed_executable == 0`, so a scenario
-that measured nothing would "agree" with a truthful 5/5 run on the boolean —
-and the release smoke, which carries no complete-artifact template, is exactly
-where that would have gone unnoticed. `compare_complete_artifact` then does ONE
-whole-document equality check against a locked template, normalizing only
-the fields whose real value it already checked separately (version, commit,
-base, timestamps, the declared/effective environment, the witness/log
-paths) — never a status-only or field-by-field comparison a forged-but-
-self-consistent artifact could pass.
-
-**The integrity matrix runs for real, not as a checklist.** Each frozen
-terminal — a missing coverage profile, a dirty consumer, a symbolic base
-that resolves to HEAD, a lane command that leaves tracked dirt or commits
-inside its own snapshot, a wrong-but-existing source root, and a forged
-universal-PASS artifact — is exercised against the real pinned Topos tree
-and the real installed Assay, and each check is its own oracle: it raises
-unless the observed terminal (or comparator rejection) exactly matches the
-frozen expectation. One asymmetry is deliberately never treated as a
-mismatch: Topos cannot express exclusion provenance, so `allow_excluded =
-false` correctly produces Assay `FAIL/EXCLUDED_LINES` against a Topos
-`PASS` — recorded as the expected capability gap, not compared as a
-terminal.
+Consumers qualify their own use of assay in their own gates; assay's gate
+tests assay only (A-475). The P25 Topos harness, its 1.2.5 release-wheel
+smoke and the B006(a) CMRU harness are retired and no longer executed. Their
+historical carve assets stay in `nyxloom-trove/carve-assets/` as history
+(A-477), and nothing in the product changed.
 
 ---
 
@@ -3449,3 +3710,84 @@ Runtime checks remain stdlib domain checks; no JSON-Schema engine is injected
 into the runtime dependency closure.
 
 **Parser identity.** The root and subcommand parsers share one versioned diagnostic formatter. This ties copied help or refusal output to the metadata-backed Assay build without coupling Assay to another estate tool.
+
+### Package boundary (A-478)
+
+`assay analyze` lives in its own top-level package, `assay_analysis`
+(`analysis/src/assay_analysis/`: `cli.py`, `evidence.py`, `plan_estimate.py`), shipped in the same
+wheel and zipapp as `assay`. Analysis reads evidence and never judges: it
+never decides ACCEPT or REJECT, and it was 317 of the 3,760 B105 mutation
+candidates, so scoring it as judge code inflated the judge's own cost without
+protecting any verdict.
+
+- **Dependency is one way.** `assay_analysis` imports `assay` public names;
+  `assay` never imports `assay_analysis` except inside `cli._run_analyze`,
+  which loads it lazily when `argv` starts with `analyze`. Every other
+  `assay` command runs without the package loaded. A contract test pins that
+  `_run_analyze` is the only importer.
+- **Private-name rule.** Analysis may not use a private (underscore) judge
+  name. The allowlist, `ALLOWED_PRIVATE_JUDGE_NAMES`, exists and stays empty
+  (CD18): anything analysis needs becomes a public judge name.
+- **B105 scope is named.** `tools/b105_report_check.py::verify_scope`
+  refuses a report whose source roots are not exactly `src/assay`, whose
+  R1 (and R2) targets are not exactly the tracked `src/assay` sources, whose
+  R3 targets lie outside `src/assay/`, or that names an analysis target; an
+  accepted report says
+  `scope=src/assay out_of_scope=analysis/src/assay_analysis:A-478`.
+- **Own lane, no R2.** Analysis has an R0+R1 whole-target lane
+  (`analysis`, tests in `analysis/tests/`, 100% line and branch). R2 for
+  analysis is deliberately not claimed in this change; it is a follow-up
+  (B131).
+- **The measured plan estimate lives here (CD1, B111).** `assay plan` keeps
+  its declared-budget estimate and only prints a stderr hint; the measured
+  projection is `assay analyze plan-estimate`
+  (`analysis/src/assay_analysis/plan_estimate.py`). It reads the plan's JSON
+  (which now carries `commit` and `tree`) and one progress stream with a
+  completed baseline, binds them through the commit, and prints
+  `baseline_s`, `per_candidate_s` and the projected worker and wall hours.
+  It imports no judge name, never classifies a candidate, and exits `2` on
+  unusable input.
+- **Schemas** stay in `src/assay/schemas/`; documented paths do not move.
+- The undocumented `import assay.analysis` is removed. A source checkout
+  needs both `src` and `analysis/src` on `PYTHONPATH`.
+
+### Mutation campaign closeout (B108 phase 1)
+
+`assay analyze campaign <lane>` (`analysis/src/assay_analysis/campaign.py`,
+schema `analysis-campaign.schema.json`) is a read-only, deterministic reader
+over five inputs: the committed lane file, Assay's own plan reconstructed from
+it through the public `cli.plan_jobs`, one progress stream, an optional verified
+verdict, and an optional mutation state directory. It imports no private judge
+name (CD18), judges nothing, and every estimate it prints is diagnostic.
+
+- **Counting rule (CD20, CD40).** A candidate is counted once, as its latest
+  recorded bucket, however many appended runs (`--resume`, `--rejudge`,
+  B106 reuse) mention it. A bucket that changed between runs is listed under
+  `reclassified`, never counted twice and never hidden; a state record whose
+  bucket disagrees with the latest progress event is `reclassified` with
+  source `state_vs_progress`, and one that disagrees with the verdict is an
+  `evidence_error` naming the file. In every evidence mode the order is: shape
+  validation; the current-judge rule (a record written under another
+  `judge_sha256` is stale and counts nothing); removal of unverified `hung`
+  records from the store view; only then the verdict comparison and the
+  reconciliation. A removed record is never an `evidence_error` or
+  `reclassified`. A `hung` row shows B107's liveness decision and evidence
+  status read-only. With a verdict, the verdict's six buckets decide; without
+  one, the status is never `complete` (`no_verdict` is a blocker).
+- **Exit codes and why 3 diverges from A-460.** `0` complete PASS, `1`
+  complete and not PASS, `2` evidence error, `3` incomplete. A-460's `report`
+  uses `3` for `running`: a live, current, nonterminal progress run inside a
+  freshness window, a judgment about the clock. `campaign` has no clock rule and
+  no live state; its `3` is `incomplete`, a post-hoc property of the evidence
+  (no verdict, no `--command-exit`, an unexhausted inventory, an unreconciled
+  state store, a terminal event that disagrees, an unreverified coverage
+  artifact). The names of the reasons are `complete_blockers`. Both commands
+  keep `2` for evidence that cannot be trusted, and neither lets a log decide.
+- **`errors[].source` vocabulary.** `arguments`, `lane`, `verdict`, `plan`,
+  `progress`, `input`, `state`, `coverage`: the input that was refused, so a
+  controller can act without parsing the message. `--command-exit` without a
+  `--verdict` is an `arguments` evidence error (CD55).
+- **Shape.** JSON is closed and schema-validated; `--format text` prints a
+  summary whose `projection (diagnostic)` line appears only with `--project`.
+  Adverse candidates are paged (`--outcome`, `--path-prefix`, `--offset`,
+  `--limit`) and always carry `matching_total` and `next_offset`.

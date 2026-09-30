@@ -20,7 +20,7 @@ module's, so this module does no diff parsing of its own.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from .records import record
 from pathlib import Path
 from typing import Sequence
 
@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class ResolvedBase:
     """What clearing the ``BASE_IS_HEAD`` guard produces.
 

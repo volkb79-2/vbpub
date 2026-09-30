@@ -1,0 +1,10 @@
+BEGIN;
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO shipment VALUES (1,999);
+  EXCEPTION WHEN foreign_key_violation THEN RETURN;
+  END;
+  RAISE EXCEPTION 'K17';
+END $$;
+ROLLBACK;

@@ -159,7 +159,7 @@ import ast
 import hashlib
 import heapq
 import re
-from dataclasses import dataclass
+from ..records import positional_record, record
 from pathlib import Path
 from typing import Literal, NamedTuple, Sequence
 
@@ -689,7 +689,7 @@ def _falsy_swap_site(node: ast.Return, text_bytes: bytes) -> _Site | None:
 # produces them.
 
 
-@dataclass(frozen=True)
+@positional_record
 class _Worst:
     """Inverted ordering, so :mod:`heapq`'s min-heap behaves as a MAX-heap.
 
@@ -786,7 +786,7 @@ def _generate_python_sites(
     )
 
 
-@dataclass(frozen=True, kw_only=True)
+@record
 class PythonAdapter:
     """The Python union of dstdns/topos/nyxloom's changed-line coverage
     gates, implemented against the frozen :class:`~assay.adapters.base.
