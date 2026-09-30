@@ -10,7 +10,7 @@ Measured 2026-09-30 on `postgres:18-alpine@sha256:d3e1620b...65b2` (`select vers
 time, `--cgroup-parent=dev-gates.slice`, alongside another project's mutation gate (CD50 shared-host rules). Driver: a throwaway
 script in the session scratchpad using the committed harness (`ThrowawayPostgres`, `check_sites`, `derive_bucket`, `capture_witness`).
 
-**Result: BLOCKED (a probe fails unmutated).** With the committed, hash-pinned probes the unmutated baseline exits 1 with
+**First run: BLOCKED (a probe fails unmutated); resolved by CD53, see "Re-run with the CD53 probes" below.** With the committed, hash-pinned probes the unmutated baseline exits 1 with
 `ASSAY_SQL_FAILED=K18,K20` (the brief requires exit 0 and 21 passing probes).
 
 **Cause (measured).** PostgreSQL 18.6 reports a violated `ON DELETE RESTRICT` with SQLSTATE `23001` (`restrict_violation`,
@@ -36,9 +36,71 @@ K02`), and the witness capture ends `FAIL COMMAND_FAILED` instead of `MUTANTS_SU
 
 The tmpfs bound (max 50%) holds with a wide margin. Containers used: see `W5-LOG.md` (three starts, each removed by exact name by the harness's context manager).
 
-Not done (blocked on the probe decision, `W5-LOG.md` QUESTION 1): the committed witness `expected/sql-r2-witness.json`, the Work 5
-CLI runs (R1 rerun and R1 break), and the three witness tests. The probes are hash-pinned (`verify_fixture_hashes`; the 21 probes
-concatenated sha256 `12f564d9...0ce0`) and given verbatim by CD28, so changing them is the carver's call.
+### Re-run with the CD53 probes (2026-09-30, committed fixtures, no scratch copy)
+
+The carver decided QUESTION 1 as CD53: `K18.sql` and `K20.sql` now read `EXCEPTION WHEN foreign_key_violation OR restrict_violation THEN RETURN;`
+(nothing else changed); the 21 probes concatenated are 4717 bytes, sha256 `b5c4eb283dc01ec3d8b15f2441363d5bea9312a49e025bd9eaf318086fd41e10`
+(computed by the harness's own `_sha256` over the harness's own probe join, from a scratch script). Same driver, same image
+(`postgres:18-alpine@sha256:d3e1620b...65b2`, PostgreSQL 18.6), container `run-gate-assay-sql-1569099-1790733241`, one container,
+`--cgroup-parent=dev-gates.slice`, alongside another project's mutation gate.
+
+**Result: every bucket equals the matrix; not BLOCKED.**
+
+| Measurement | Expected (matrix / brief) | Measured |
+|---|---|---|
+| Baseline apply + probes | exit 0, dump present | **exit 0**, dump present, no signal |
+| O5 (dump without the restrict key) | dumps differ | dumps differ (control holds) |
+| 24 rows vs matrix | 21 `killed`, K02/K25 `survived`, K09 `equivalent` | **all 24 equal the matrix**: 21 `killed` (each signal names its own id; K05 also K24, K15 also K19, K16 also K18, K17 also K20), K02 and K25 `survived` (exit 0, dump different), K09 `equivalent` (exit 0, dump equal) |
+| O4 residue (re-apply on a database that has the schema) | first 0 (baseline), second exit non-zero (3), no dump | first 0, second exit 3, no dump |
+| M11 (naive string widen of the integer `IN`) | crashed (exit 3, no dump) | exit 3, no dump |
+| Witness (real `assay run`) | `FAIL MUTANTS_SURVIVED`; `check_witness_verdict` ok | `FAIL MUTANTS_SURVIVED`; `check_witness_verdict` ok |
+| Databases left | `postgres,template0,template1` | `postgres,template0,template1` |
+| tmpfs `/var/lib/postgresql` (262144 KiB), peak `df -Pk` (max allowed 50%) | <= 50% | 16% after the baseline; peak **22%** (58672 KiB); after the witness 21% |
+
+## Work 5 -- CLI runs and the committed witness (2026-09-30)
+
+All with `--allow-shared-host`, `--cgroup-parent dev-gates.slice`, `env -u FORCE_COLOR nice -n 19 ionice -c3 python3 -I`.
+
+1. **Witness capture** (`--witness-out gate/python/fixtures/sql/expected/sql-r2-witness.json`): exit 0, stdout `ASSAY_SQL_QUALIFIED=1`
+   (the 24 `ASSAY_SQL_ROW=` lines, controls and df go to stderr). The witness has schema_version 13, lane `sql_qualification`, `FAIL
+   MUTANTS_SURVIVED`, `judgment.r2.mode = changed_lines`, `source_roots = ["db/schema"]`, no host path or container name inside
+   (grep for `run-gate`, `/tmp/`, `/workspaces`, `vscode` = 0).
+2. **Row review (all 24, from the witness JSON via a scratch reader; line and operator matched to `matrix.json`):**
+
+| Row | Line | Operator | Bucket | Matrix | Kill signal |
+|---|---|---|---|---|---|
+| K01 | 9 | drop-not-null | killed | killed | `ASSAY_SQL_FAILED=K01` |
+| K02 | 10 | drop-not-null | survived | survived | none |
+| K03 | 27 | drop-not-null | killed | killed | `ASSAY_SQL_FAILED=K03` |
+| K04 | 5 | drop-not-null | killed | killed | `ASSAY_SQL_FAILED=K04` |
+| K05 | 13 | drop-check | killed | killed | `ASSAY_SQL_FAILED=K05,K24` |
+| K06 | 11 | drop-check | killed | killed | `ASSAY_SQL_FAILED=K06` |
+| K07 | 28 | drop-check | killed | killed | `ASSAY_SQL_FAILED=K07` |
+| K08 | 6 | drop-check | killed | killed | `ASSAY_SQL_FAILED=K08` |
+| K09 | 44 | drop-check | equivalent | equivalent | none (equal dump) |
+| K10 | 14 | drop-unique | killed | killed | `ASSAY_SQL_FAILED=K10` |
+| K11 | 23 | drop-unique | killed | killed | `ASSAY_SQL_FAILED=K11` |
+| K13 | 30 | drop-unique | killed | killed | `ASSAY_SQL_FAILED=K13` |
+| K14 | 31 | drop-unique | killed | killed | `ASSAY_SQL_FAILED=K14` |
+| K15 | 19 | drop-foreign-key | killed | killed | `ASSAY_SQL_FAILED=K15,K19` |
+| K16 | 24 | drop-foreign-key | killed | killed | `ASSAY_SQL_FAILED=K16,K18` |
+| K17 | 38 | drop-foreign-key | killed | killed | `ASSAY_SQL_FAILED=K17,K20` |
+| K18 | 25 | weaken-delete-action | killed | killed | `ASSAY_SQL_FAILED=K18` |
+| K19 | 19 | weaken-delete-action | killed | killed | `ASSAY_SQL_FAILED=K19` |
+| K20 | 38 | weaken-delete-action | killed | killed | `ASSAY_SQL_FAILED=K20` |
+| K21 | 57 | drop-trigger | killed | killed | `ASSAY_SQL_FAILED=K21` |
+| K22 | 64 | drop-trigger | killed | killed | `ASSAY_SQL_FAILED=K22` |
+| K23 | 72 | drop-trigger | killed | killed | `ASSAY_SQL_FAILED=K23` |
+| K24 | 13 | widen-check-in | killed | killed | `ASSAY_SQL_FAILED=K24` |
+| K25 | 11 | widen-check-in | survived | survived | none |
+
+   21 killed, 2 survived (K02, K25), 1 equivalent (K09), 0 crashed, 0 hung, 0 budget-exceeded, total 24; `candidate_count` 24.
+3. **R1 rerun** (same command without `--witness-out`, container `run-gate-assay-sql-1601018-1790733473`): stdout exactly
+   `ASSAY_SQL_QUALIFIED=1`, exit 0 (the rerun compares against the committed witness).
+4. **R1 break:** a copy of `gate/python/fixtures/sql` in the scratchpad, `tests/K05.sql` overwritten with `SELECT 1;` (Write tool in the copy),
+   `--fixture-root <copy>` (container `run-gate-assay-sql-1612472-1790733568`): exit **1**, stdout empty, stderr last line
+   `ASSAY_SQL_FAILED: K05: test failed without naming K05`; the run stopped after K04's row (no rows K06 onward, no marker).
+5. The three witness tests are re-added to `gate/tests/test_qualify_sql.py`; `gate/tests/test_qualify_sql.py` is 121 passed.
 
 ## dstdns classes (Work step 0b, recorded before the corpus was removed)
 
