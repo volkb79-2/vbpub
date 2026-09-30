@@ -251,6 +251,14 @@ overwritten by sync. Provide a template renderer for new/missing candidate
 records so adopters do not write serializer glue. TOML remains authored by the
 product team; a helper reports exactly which records to add or re-review.
 
+The argv sanity check recognizes options only at their declared parser depth,
+skips their declared values, and respects `--` at each parser level. It counts
+required options and their values in minimum cases only when the option token
+is active, and requires exactly one alternative from each required exclusive
+group. Parent positional lexing accounts for required values and remainder
+positionals before nested commands. The referenced product test remains the
+oracle for full parser acceptance and behavior.
+
 The generated manifest stores current grammar. The consumer's spec uses a
 pair of documented markers around the generated Markdown block. Sync writes
 the manifest and replaces only that block. Check recomputes the same bytes and
@@ -373,6 +381,10 @@ items, and consumer docs show the annotations to add.
   cases, invalid marked tests, and uninspectable parser syntax. Opaque custom
   value validators require linked semantic cases but do not make syntax
   incomplete.
+- Route sanity checks agree with argparse for scoped option values, `--`
+  terminators, required parent positionals, and a nested route after a
+  `REMAINDER` positional. They also recognize options on a single-command
+  entrypoint with an empty route path. They do not execute parser callbacks.
 - Marker parsing fails if either boundary is absent, duplicated, reversed, or
   nested; repeated sync is idempotent. TOML comments and all catalog fields
   remain unchanged during sync.

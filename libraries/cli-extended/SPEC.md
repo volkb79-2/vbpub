@@ -745,13 +745,20 @@ retirement reason; if that ID appears again, it requires explicit
 reactivation and review.
 
 Check mode structurally checks invocation argv against the declared route. It
-MUST account for recognized option arity and parser depth when locating command
-words, and for required parent positionals before nested commands. It MUST NOT
-call `RegisteredCli.run()`, `ArgumentParser.parse_args()`, custom converters,
-custom argparse actions, or command handlers. This check is not a full parser
-acceptance oracle: the referenced product test MUST run the real invocation
-and assert its outcome and effects. A marker proves only that the named test is
-collected and linked to the semantic case.
+MUST account for recognized option arity, option scope, parser depth, and
+parser-depth `--` terminators when locating command words. It MUST account for
+required parent positionals before nested commands, including a remainder
+positional yielding to a registered nested command. In a generated minimum
+case, a required option counts only when it is an active option token, its
+declared minimum values are supplied, and exactly one alternative is present
+for each required exclusive group. It MUST NOT call `RegisteredCli.run()`,
+`ArgumentParser.parse_args()`, custom converters, custom argparse actions, or
+command handlers. This check is not a full parser acceptance oracle: the
+referenced product test MUST run the real invocation and assert its outcome
+and effects. A marker proves only that the named test is collected and linked
+to the semantic case.
+For a single-command entrypoint, the empty route path denotes its one parser;
+the check MUST still recognize that parser's declared options.
 
 Candidate signatures cover the relevant route and parser shape, including
 aliases, defaults, choices, requiredness, action/nargs, scope/placement,

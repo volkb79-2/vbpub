@@ -266,12 +266,14 @@ names, help text, or an AI-drafted table without verifying it against the
 handler and tests.
 
 The checker sanity-checks that argv reaches the declared route, accounting for
-option values, parser depth, and required parent positionals before nested
-commands. It does not execute `parse_args`, custom converters/actions, or the
-handler. This avoids running adopter code during a documentation check and
-means route recognition is not proof that the whole invocation is accepted.
-The linked behavior test must run the real CLI invocation and prove the
-expected status, output, validation boundary, and effects.
+recognized option values, parser scope, parser-depth `--` terminators, and
+required parent positionals before nested commands. A generated minimum case
+must provide values for required options and choose one option from each
+required exclusive group. The checker does not execute `parse_args`, custom
+converters/actions, or the handler. Route recognition is not proof that the
+whole invocation is accepted. The linked behavior test must run the real CLI
+invocation and prove the expected status, output, validation boundary, and
+effects.
 Each generated file is replaced atomically; if sync stops between the manifest
 and spec replacements, `check` reports their mismatch.
 

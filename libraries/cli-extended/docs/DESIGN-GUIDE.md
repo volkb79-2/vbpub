@@ -230,8 +230,9 @@ collected node IDs carrying their `cli_case` markers. That check proves
 collection/linkage only. The product test must still invoke its real registered
 CLI and assert output, exit status, validation timing, and filesystem/state/
 network/credential effects; the normal gate proves that test passes.
-The catalog checker only sanity-checks argv structure, including route depth
-and consumed option values. It deliberately does not call `parse_args`, custom
+The catalog checker only sanity-checks argv structure, including recognized
+option arity and scope, parser-depth `--` terminators, and parent positionals
+before nested commands. It deliberately does not call `parse_args`, custom
 converters/actions, or handlers, because a documentation check must not execute
 consumer behavior. The linked test is the oracle for parser acceptance and
 product semantics. Each generated file is replaced atomically. A stop between

@@ -696,14 +696,16 @@ def test_review_findings_handles_route_prefixes_single_command_and_missing_minim
         "aliases": ["d"],
         "kind": "invocation",
         "actions": [
-            {"id": "required-flag", "kind": "option", "flags": ["--required"], "nargs": None, "minimum_values": 1, "required": True},
-            {"id": "exclusive-a", "kind": "option", "flags": ["--a"], "nargs": None, "required": False},
-            {"id": "exclusive-b", "kind": "option", "flags": ["--b"], "nargs": None, "required": False},
+            {"id": "required-flag", "kind": "option", "flags": ["--required"], "nargs": None, "minimum_values": 1, "required": True, "parser_path": ["inspect", "detail"]},
+            {"id": "exclusive-a", "kind": "option", "flags": ["--a"], "nargs": None, "required": False, "parser_path": ["inspect", "detail"]},
+            {"id": "exclusive-b", "kind": "option", "flags": ["--b"], "nargs": None, "required": False, "parser_path": ["inspect", "detail"]},
         ],
     }
     single = {"id": "route:entrypoint:audit-tool/single", "path": [], "aliases": [], "kind": "invocation", "actions": []}
     candidates = [
         {"id": "case:bad-minimum", "route_id": leaf["id"], "signature": "s", "kind": "minimum", "members": [], "shape": {"required_arguments": ["resource"], "required_argument_values": {"resource": 1}, "required_options": ["required-flag"], "required_exclusive_groups": {"source": ["exclusive-a", "exclusive-b"]}}},
+        {"id": "case:minimum-group-missing-value", "route_id": leaf["id"], "signature": "s", "kind": "minimum", "members": [], "shape": {"required_arguments": [], "required_options": ["required-flag"], "required_exclusive_groups": {"source": ["exclusive-a", "exclusive-b"]}}},
+        {"id": "case:bad-minimum-group-conflict", "route_id": leaf["id"], "signature": "s", "kind": "minimum", "members": [], "shape": {"required_arguments": [], "required_options": ["required-flag"], "required_exclusive_groups": {"source": ["exclusive-a", "exclusive-b"]}}},
         {"id": "case:missing-path", "route_id": leaf["id"], "signature": "s", "kind": "other", "members": [], "shape": {}},
         {"id": "case:alias-good", "route_id": leaf["id"], "signature": "s", "kind": "route-alias", "members": [], "shape": {"alias": "d"}},
         {"id": "case:choice-good", "route_id": leaf["id"], "signature": "s", "kind": "argument-choice", "members": [], "shape": {"choice": "alpha"}},
@@ -712,6 +714,8 @@ def test_review_findings_handles_route_prefixes_single_command_and_missing_minim
     ]
     invocations = {
         "case:bad-minimum": ["inspect", "d"],
+        "case:minimum-group-missing-value": ["inspect", "detail", "--required", "value", "--a"],
+        "case:bad-minimum-group-conflict": ["inspect", "detail", "--required", "value", "--a", "one", "--b", "two"],
         "case:missing-path": [],
         "case:alias-good": ["inspect", "d"],
         "case:choice-good": ["inspect", "detail", "alpha"],
@@ -732,9 +736,115 @@ def test_review_findings_handles_route_prefixes_single_command_and_missing_minim
     assert any("minimum invocation" in item and "positional" in item for item in findings)
     assert any("omits required option required-flag" in item for item in findings)
     assert any("omits required exclusive group source" in item for item in findings)
+    assert any("omits a value for its required exclusive group source" in item for item in findings)
+    assert any("supplies multiple options for required exclusive group source" in item for item in findings)
     assert any("omits its command path" in item for item in findings)
     assert not any("case:alias-good" in item for item in findings)
     assert not any("case:choice-good" in item for item in findings)
+
+
+def test_review_minimum_required_options_use_lexed_occurrences():
+    route = {
+        "id": "route:entrypoint:audit-tool/publish",
+        "path": ["publish"],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:profile",
+                "kind": "option",
+                "flags": ["--profile"],
+                "nargs": None,
+                "minimum_values": 1,
+                "required": True,
+                "parser_path": [],
+                "placement": {"before_verb": True},
+            },
+            {
+                "id": "option:force",
+                "kind": "option",
+                "flags": ["--force"],
+                "nargs": 0,
+                "minimum_values": 0,
+                "required": True,
+                "parser_path": [],
+                "placement": {"before_verb": True},
+            },
+        ],
+    }
+    candidates = [
+        {
+            "id": "case:separator-literal",
+            "route_id": route["id"],
+            "signature": "s",
+            "kind": "minimum",
+            "members": [],
+            "shape": {
+                "required_arguments": [],
+                "required_options": ["option:force"],
+            },
+        },
+        {
+            "id": "case:missing-option-value",
+            "route_id": route["id"],
+            "signature": "s",
+            "kind": "minimum",
+            "members": [],
+            "shape": {
+                "required_arguments": [],
+                "required_options": ["option:profile", "option:force"],
+            },
+        },
+    ]
+    cases = (
+        _case_for_candidate(candidates[0], ["publish", "--", "--force"]),
+        _case_for_candidate(candidates[1], ["--profile", "--force", "publish"]),
+    )
+    findings = _review_findings(
+        {"routes": [route], "candidates": candidates, "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), cases),
+    )
+    assert any("omits required option option:force" in item for item in findings)
+    assert any("omits a value for required option option:profile" in item for item in findings)
+
+
+def test_review_minimum_single_command_counts_declared_options():
+    route = {
+        "id": "route:entrypoint:audit-tool",
+        "path": [],
+        "aliases": [],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:profile",
+                "kind": "option",
+                "flags": ["--profile"],
+                "nargs": None,
+                "minimum_values": 1,
+                "required": True,
+                "parser_path": [],
+                "placement": {"before_verb": False, "after_verb": True},
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:single-minimum",
+        "route_id": route["id"],
+        "signature": "s",
+        "kind": "minimum",
+        "members": [],
+        "shape": {
+            "required_arguments": [],
+            "required_options": ["option:profile"],
+        },
+    }
+    case = _case_for_candidate(candidate, ["--profile", "settings.toml"])
+    findings = _review_findings(
+        {"routes": [route], "candidates": [candidate], "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    assert not any("omits required option" in item for item in findings)
+    assert not any("omits a value for required option" in item for item in findings)
 
 
 def test_review_findings_matches_nested_path_with_inherited_options():
@@ -805,12 +915,29 @@ def test_review_findings_matches_nested_path_with_inherited_options():
         ("?", ["inspect", "resource", "detail"], False),
         ("*", ["inspect", "resource", "detail"], False),
         ("+", ["inspect", "resource", "detail"], False),
-        ("...", ["inspect", "detail"], True),
+        ("...", ["inspect", "detail"], False),
     ),
 )
 def test_review_route_lexer_accounts_for_parent_positionals(
     nargs, invocation, command_path_missing
 ):
+    parser = argparse.ArgumentParser(prog="audit-tool")
+    root_commands = parser.add_subparsers(dest="command", required=True)
+    inspect_parser = root_commands.add_parser("inspect")
+    inspect_parser.add_argument(
+        "resource",
+        nargs=argparse.REMAINDER if nargs == "..." else nargs,
+    )
+    nested_commands = inspect_parser.add_subparsers(dest="action", required=True)
+    nested_commands.add_parser("detail")
+    try:
+        parser.parse_args(invocation)
+    except SystemExit:
+        parser_accepts_invocation = False
+    else:
+        parser_accepts_invocation = True
+    assert parser_accepts_invocation is not command_path_missing
+
     route_id = "route:entrypoint:audit-tool/inspect/detail"
     prefix = {
         "id": "route:entrypoint:audit-tool/inspect",
@@ -921,16 +1048,23 @@ def test_review_findings_does_not_match_command_names_consumed_as_option_values(
     ("nargs", "invocation", "has_route"),
     (
         (None, ["--value", "inspect", "detail", "d"], False),
+        (None, ["--value=inspect", "inspect", "detail", "d"], True),
+        (None, ["--value", "--unknown", "inspect", "d"], False),
+        (None, ["--value", "-3", "inspect", "d"], True),
+        (None, ["--value"], False),
         (0, ["--flag", "inspect", "d"], True),
         (2, ["--pair", "first", "second", "inspect", "d"], True),
         (2, ["--pair=first", "inspect", "detail", "d"], False),
         ("?", ["--maybe", "inspect", "detail", "d"], False),
+        ("?", ["--maybe=value", "inspect", "detail", "d"], True),
         ("*", ["--many", "inspect", "detail", "d"], False),
+        ("*", ["--many=value", "inspect", "detail", "d"], True),
         ("+", ["--some", "inspect", "detail", "d"], False),
         ("...", ["--rest", "inspect", "detail", "d"], False),
         ("A...", ["--parser", "inspect", "detail", "d"], False),
+        (None, ["--", "--", "inspect", "detail", "d"], False),
         ("odd", ["--odd", "inspect", "d"], True),
-        (None, ["--", "inspect", "detail", "d"], False),
+        (None, ["--", "inspect", "d"], True),
     ),
 )
 def test_review_route_lexer_skips_option_values_and_stops_at_delimiter(
@@ -1032,6 +1166,96 @@ def test_review_route_lexer_accepts_unambiguous_long_option_abbreviation():
     assert any("omits its command path" in item for item in findings)
 
 
+@pytest.mark.parametrize(
+    "invocation",
+    (["--", "inspect", "d"], ["inspect", "--", "d"]),
+)
+def test_review_route_lexer_honors_option_terminator_at_parser_depth(invocation):
+    parser = argparse.ArgumentParser(prog="audit-tool")
+    root_commands = parser.add_subparsers(dest="command", required=True)
+    inspect_parser = root_commands.add_parser("inspect")
+    nested_commands = inspect_parser.add_subparsers(dest="action", required=True)
+    nested_commands.add_parser("detail", aliases=["d"])
+    assert parser.parse_args(invocation)
+
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    route = {
+        "id": "route:entrypoint:audit-tool/inspect/detail",
+        "path": ["inspect", "detail"],
+        "aliases": ["d"],
+        "kind": "invocation",
+        "actions": [],
+    }
+    candidate = {
+        "id": "case:detail-alias",
+        "route_id": route["id"],
+        "signature": "s",
+        "kind": "route-alias",
+        "members": [],
+        "shape": {"alias": "d"},
+    }
+    case = _case_for_candidate(candidate, invocation)
+    findings = _review_findings(
+        {"routes": [prefix, route], "candidates": [candidate], "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    assert not any("omits its command path" in item for item in findings)
+    assert not any("omits its command alias" in item for item in findings)
+
+
+def test_review_minimum_option_before_terminator_reports_missing_value():
+    prefix = {
+        "id": "route:entrypoint:audit-tool/inspect",
+        "path": ["inspect"],
+        "aliases": [],
+        "kind": "route-prefix",
+        "actions": [],
+    }
+    route = {
+        "id": "route:entrypoint:audit-tool/inspect/detail",
+        "path": ["inspect", "detail"],
+        "aliases": ["d"],
+        "kind": "invocation",
+        "actions": [
+            {
+                "id": "option:value",
+                "kind": "option",
+                "flags": ["--value"],
+                "nargs": None,
+                "minimum_values": 1,
+                "required": True,
+                "parser_path": [],
+                "placement": {"before_verb": True},
+            }
+        ],
+    }
+    candidate = {
+        "id": "case:minimum-value",
+        "route_id": route["id"],
+        "signature": "s",
+        "kind": "minimum",
+        "members": [],
+        "shape": {
+            "required_arguments": [],
+            "required_options": ["option:value"],
+        },
+    }
+    invocation = ["--value", "--", "inspect", "d"]
+    case = _case_for_candidate(candidate, invocation)
+    findings = _review_findings(
+        {"routes": [prefix, route], "candidates": [candidate], "syntax_complete": True},
+        ReviewCatalog("audit-tool", 4, (), (case,)),
+    )
+    assert not any("omits its command path" in item for item in findings)
+    assert any("omits a value for required option option:value" in item for item in findings)
+
+
 def test_review_route_lexer_does_not_certify_ambiguous_long_option_abbreviation():
     prefix = {
         "id": "route:entrypoint:audit-tool/inspect",
@@ -1094,6 +1318,15 @@ def test_review_route_lexer_does_not_certify_ambiguous_long_option_abbreviation(
                 {"flags": ["--switch"], "nargs": 0, "parser_path": []},
             ),
             ["--maybe", "--switch", "inspect", "detail"],
+            False,
+            False,
+        ),
+        (
+            (
+                {"flags": ["--pair"], "nargs": 2, "parser_path": []},
+                {"flags": ["--next"], "nargs": 0, "parser_path": []},
+            ),
+            ["--pair", "first", "--next", "inspect", "detail"],
             False,
             False,
         ),

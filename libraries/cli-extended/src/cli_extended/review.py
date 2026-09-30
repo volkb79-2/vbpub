@@ -596,50 +596,164 @@ def _prepare(
 def _review_findings(
     surface: Mapping[str, Any], catalog: ReviewCatalog
 ) -> list[str]:
-    def has_option(argv: Sequence[str], flags: Sequence[str]) -> bool:
-        return any(
-            token == flag or token.startswith(flag + "=")
-            for token in argv
-            for flag in flags
-        )
+    def action_for_option(
+        route: Mapping[str, Any], option: str, depth: int
+    ) -> Mapping[str, Any] | None:
+        path = tuple(route.get("path", ()))
 
-    def option_values(
-        argv: Sequence[str], flags: Sequence[str], action: Mapping[str, Any]
-    ) -> tuple[bool, tuple[str, ...]]:
-        for index, token in enumerate(argv):
-            for flag in flags:
-                if token == flag:
-                    nargs = action.get("nargs")
-                    if nargs == 0:
-                        return True, ()
-                    if nargs is None:
-                        end = min(index + 2, len(argv))
-                        return True, tuple(argv[index + 1 : end])
-                    if isinstance(nargs, int):
-                        end = min(index + 1 + nargs, len(argv))
-                        return True, tuple(argv[index + 1 : end])
-                    if nargs == "?":
-                        if index + 1 < len(argv) and not argv[index + 1].startswith("-"):
-                            return True, (argv[index + 1],)
-                        return True, ()
-                    if nargs == "*" or nargs == "+":
-                        end = index + 1
-                        while end < len(argv) and not argv[end].startswith("-"):
-                            end += 1
-                        return True, tuple(argv[index + 1 : end])
-                    if nargs == argparse.REMAINDER or nargs == argparse.PARSER:
-                        return True, tuple(argv[index + 1 :])
-                    return True, ()
-                if token.startswith(flag + "="):
-                    value = token[len(flag) + 1 :]
-                    nargs = action.get("nargs")
-                    if nargs == 0:
-                        return False, ()
-                    if isinstance(nargs, int) and nargs > 1:
-                        end = min(index + nargs, len(argv))
-                        return True, (value, *argv[index + 1 : end])
-                    return True, (value,)
-        return False, ()
+        def option_is_available(action: Mapping[str, Any]) -> bool:
+            parser_path = tuple(action.get("parser_path", ()))
+            if depth == 0 and not path:
+                return not parser_path
+            if depth == 0:
+                return bool(action.get("placement", {}).get("before_verb", False))
+            return parser_path == path[:depth]
+
+        available: list[tuple[int, Mapping[str, Any]]] = []
+        for action in route.get("actions", ()):
+            if action.get("kind") != "option":
+                continue
+            parser_path = tuple(action.get("parser_path", ()))
+            if not option_is_available(action):
+                continue
+            flags = tuple(str(flag) for flag in action.get("flags", ()))
+            if option in flags:
+                available.append((len(parser_path), action))
+        if available:
+            return max(available, key=lambda pair: pair[0])[1]
+        if not surface.get("entrypoint", {}).get("allow_abbrev"):
+            return None
+        matches = [
+            (str(flag), action)
+            for action in route.get("actions", ())
+            if action.get("kind") == "option"
+            and option_is_available(action)
+            for flag in action.get("flags", ())
+            if str(flag).startswith("--") and str(flag).startswith(option)
+        ]
+        matched_flags = {flag for flag, _action in matches}
+        if len(matched_flags) != 1:
+            return None
+        return max(
+            (
+                (len(tuple(action.get("parser_path", ()))), action)
+                for _flag, action in matches
+            ),
+            key=lambda pair: pair[0],
+        )[1]
+
+    def option_end(
+        argv: Sequence[str],
+        index: int,
+        action: Mapping[str, Any],
+        inline: bool,
+        *,
+        route: Mapping[str, Any],
+        depth: int,
+    ) -> int:
+        def is_option_boundary(position: int) -> bool:
+            if position >= len(argv) or argv[position] == "--":
+                return True
+            token = argv[position]
+            option = token.partition("=")[0]
+            if not token.startswith("-") or token == "-":
+                return False
+            if action_for_option(route, option, depth) is not None:
+                return True
+            negative_number = token[1:].replace(".", "", 1).isdigit()
+            return not negative_number
+
+        nargs = action.get("nargs")
+        if nargs == 0:
+            return index + 1
+        if nargs in {"...", "A..."}:
+            return len(argv)
+        if nargs is None:
+            if inline:
+                return index + 1
+            return (
+                index + 2
+                if index + 1 < len(argv) and not is_option_boundary(index + 1)
+                else index + 1
+            )
+        if isinstance(nargs, int):
+            additional = max(nargs - 1, 0) if inline else nargs
+            end = index + 1
+            while end < len(argv) and end < index + 1 + additional:
+                if is_option_boundary(end):
+                    break
+                end += 1
+            return end
+        if nargs == "?":
+            if inline:
+                return index + 1
+            if index + 1 < len(argv) and not is_option_boundary(index + 1):
+                return index + 2
+            return index + 1
+        if nargs in {"*", "+"}:
+            if inline:
+                return index + 1
+            end = index + 1
+            while end < len(argv) and not is_option_boundary(end):
+                end += 1
+            return end
+        return index + 1
+
+    def invocation_parts(
+        argv: Sequence[str],
+        route: Mapping[str, Any],
+        command_positions: Sequence[int],
+    ) -> tuple[list[str], dict[str, list[tuple[str, tuple[str, ...]]]]]:
+        """Return positional values and recognized option occurrences by action ID."""
+
+        command_positions_set = set(command_positions)
+        path_depth = 0
+        options_enabled = {0: True}
+        positionals: list[str] = []
+        options: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+        index = 0
+        while index < len(argv):
+            if index in command_positions_set:
+                path_depth += 1
+                options_enabled[path_depth] = True
+                index += 1
+                continue
+            token = argv[index]
+            if token == "--" and options_enabled.get(path_depth, True):
+                options_enabled[path_depth] = False
+                index += 1
+                continue
+            option, separator, inline_value = token.partition("=")
+            action = (
+                action_for_option(route, option, path_depth)
+                if options_enabled.get(path_depth, True)
+                else None
+            )
+            if action is not None:
+                end = option_end(
+                    argv,
+                    index,
+                    action,
+                    bool(separator),
+                    route=route,
+                    depth=path_depth,
+                )
+                values: list[str] = []
+                if action.get("nargs") != 0:
+                    if separator:
+                        values.append(inline_value)
+                    values.extend(argv[index + 1 : end])
+                options.setdefault(str(action.get("id", "")), []).append(
+                    (option, tuple(values))
+                )
+                index = end
+                continue
+            if token.startswith("-") and options_enabled.get(path_depth, True):
+                index += 1
+                continue
+            positionals.append(token)
+            index += 1
+        return positionals, options
 
     def route_positions(
         argv: Sequence[str], route: Mapping[str, Any], all_routes: Sequence[Mapping[str, Any]]
@@ -658,71 +772,6 @@ def _review_findings(
             if prefix_route is not None:
                 accepted.update(str(alias) for alias in prefix_route.get("aliases", ()))
             accepted_by_position.append(accepted)
-
-        def action_for_option(option: str, depth: int) -> Mapping[str, Any] | None:
-            available: list[tuple[int, Mapping[str, Any]]] = []
-            for action in route.get("actions", ()):
-                if action.get("kind") != "option":
-                    continue
-                parser_path = tuple(action.get("parser_path", ()))
-                if depth == 0:
-                    accepted_here = bool(
-                        action.get("placement", {}).get("before_verb", False)
-                    )
-                else:
-                    accepted_here = parser_path == path[:depth]
-                if not accepted_here:
-                    continue
-                flags = tuple(str(flag) for flag in action.get("flags", ()))
-                if option in flags:
-                    available.append((len(parser_path), action))
-            if not available and surface.get("entrypoint", {}).get("allow_abbrev"):
-                matches = [
-                    (str(flag), action)
-                    for action in route.get("actions", ())
-                    if action.get("kind") == "option"
-                    and (
-                        action.get("placement", {}).get("before_verb", False)
-                        if depth == 0
-                        else tuple(action.get("parser_path", ())) == path[:depth]
-                    )
-                    for flag in action.get("flags", ())
-                    if str(flag).startswith("--") and str(flag).startswith(option)
-                ]
-                matched_flags = {flag for flag, _action in matches}
-                if len(matched_flags) == 1:
-                    available.extend(
-                        (len(tuple(action.get("parser_path", ()))), action)
-                        for _flag, action in matches
-                    )
-            if not available:
-                return None
-            return max(available, key=lambda pair: pair[0])[1]
-
-        def option_end(index: int, action: Mapping[str, Any], inline: bool) -> int:
-            if inline:
-                nargs = action.get("nargs")
-                additional = nargs - 1 if isinstance(nargs, int) and nargs > 1 else 0
-                return min(index + 1 + additional, len(argv))
-            nargs = action.get("nargs")
-            if nargs == 0:
-                return index + 1
-            if nargs is None:
-                return min(index + 2, len(argv))
-            if isinstance(nargs, int):
-                return min(index + 1 + nargs, len(argv))
-            if nargs == "?":
-                if index + 1 < len(argv) and not argv[index + 1].startswith("-"):
-                    return index + 2
-                return index + 1
-            if nargs in {"*", "+"}:
-                end = index + 1
-                while end < len(argv) and not argv[end].startswith("-"):
-                    end += 1
-                return end
-            if nargs in {"...", "A..."}:
-                return len(argv)
-            return index + 1
 
         positional_states = {
             depth: [
@@ -760,17 +809,22 @@ def _review_findings(
                 if nargs in {"*", "+"}:
                     return not is_command
                 if nargs in {"...", "A..."}:
-                    return True
+                    return not is_command
                 index += 1
                 positional_indexes[depth] = index
             return False
 
         positions: list[int] = []
         segment = 0
+        options_enabled = {0: True}
         index = 0
         while index < len(argv) and segment < len(accepted_by_position):
             token = argv[index]
             if token == "--":
+                if options_enabled.get(segment, True):
+                    options_enabled[segment] = False
+                    index += 1
+                    continue
                 return None
             if token in accepted_by_position[segment]:
                 if consumes_parent_positional(segment, True):
@@ -778,14 +832,26 @@ def _review_findings(
                     continue
                 positions.append(index)
                 segment += 1
+                options_enabled[segment] = True
                 index += 1
                 continue
             option, separator, _value = token.partition("=")
-            action = action_for_option(option, segment)
+            action = (
+                action_for_option(route, option, segment)
+                if options_enabled.get(segment, True)
+                else None
+            )
             if action is not None:
-                index = option_end(index, action, bool(separator))
+                index = option_end(
+                    argv,
+                    index,
+                    action,
+                    bool(separator),
+                    route=route,
+                    depth=segment,
+                )
                 continue
-            if token.startswith("-"):
+            if token.startswith("-") and options_enabled.get(segment, True):
                 return None
             if consumes_parent_positional(segment, False):
                 index += 1
@@ -794,69 +860,6 @@ def _review_findings(
         if segment == len(accepted_by_position):
             return tuple(positions)
         return None
-
-    def positional_tokens(
-        argv: Sequence[str],
-        route: Mapping[str, Any],
-        command_positions: Sequence[int],
-    ) -> list[str]:
-        """Lex the reviewed argv enough to exclude known option values."""
-
-        by_flag = {
-            flag: action
-            for action in route.get("actions", ())
-            if action.get("kind") == "option"
-            for flag in action.get("flags", ())
-        }
-        route_positions_set = set(command_positions)
-        result: list[str] = []
-        index = 0
-        while index < len(argv):
-            if index in route_positions_set:
-                index += 1
-                continue
-            token = argv[index]
-            if token == "--":
-                result.extend(
-                    item
-                    for position, item in enumerate(argv[index + 1 :], start=index + 1)
-                    if position not in route_positions_set
-                )
-                break
-            option, separator, _value = token.partition("=")
-            action = by_flag.get(option)
-            if action is None:
-                if not token.startswith("-"):
-                    result.append(token)
-                index += 1
-                continue
-            if separator:
-                index += 1
-                continue
-            nargs = action.get("nargs")
-            if nargs == 0:
-                index += 1
-                continue
-            if nargs is None:
-                index += 2
-                continue
-            if isinstance(nargs, int):
-                index += 1 + nargs
-                continue
-            if nargs == "?":
-                index += 1
-                if index < len(argv) and not argv[index].startswith("-"):
-                    index += 1
-                continue
-            if nargs in {"*", "+"}:
-                index += 1
-                while index < len(argv) and not argv[index].startswith("-"):
-                    index += 1
-                continue
-            if nargs in {"...", "A..."}:
-                break
-            index += 1
-        return result
 
     findings: list[str] = []
     candidates = {str(case["id"]): case for case in surface["candidates"]}
@@ -893,7 +896,7 @@ def _review_findings(
         command_positions = route_positions(case.invocation, route, surface["routes"])
         if command_positions is None:
             findings.append(f"invocation for {case_id} omits its command path")
-        non_command_positions = positional_tokens(
+        non_command_positions, option_occurrences = invocation_parts(
             case.invocation, route, command_positions or ()
         )
         candidate_kind = str(candidate.get("kind", ""))
@@ -929,9 +932,19 @@ def _review_findings(
                     ),
                     None,
                 )
-                if action is not None and not has_option(case.invocation, action["flags"]):
+                if action is not None and str(action.get("id", "")) not in option_occurrences:
                     findings.append(
                         f"minimum invocation for {case_id} omits required option {option_id}"
+                    )
+                elif action is not None and any(
+                    len(values) < _minimum_values(action.get("nargs"))
+                    for _spelling, values in option_occurrences[
+                        str(action.get("id", ""))
+                    ]
+                ):
+                    findings.append(
+                        f"minimum invocation for {case_id} omits a value for required "
+                        f"option {option_id}"
                     )
             for group_id, option_ids in candidate.get("shape", {}).get(
                 "required_exclusive_groups", {}
@@ -941,12 +954,31 @@ def _review_findings(
                     for action in route.get("actions", ())
                     if action.get("id") in option_ids and action.get("kind") == "option"
                 ]
-                if not any(
-                    has_option(case.invocation, action.get("flags", ()))
+                present_group_actions = [
+                    action
                     for action in group_actions
+                    if str(action.get("id", "")) in option_occurrences
+                ]
+                if not present_group_actions:
+                    findings.append(
+                        f"minimum invocation for {case_id} omits required exclusive "
+                        f"group {group_id}"
+                    )
+                elif len(present_group_actions) > 1:
+                    findings.append(
+                        f"minimum invocation for {case_id} supplies multiple options "
+                        f"for required exclusive group {group_id}"
+                    )
+                elif any(
+                    len(values)
+                    < _minimum_values(present_group_actions[0].get("nargs"))
+                    for _spelling, values in option_occurrences[
+                        str(present_group_actions[0].get("id", ""))
+                    ]
                 ):
                     findings.append(
-                        f"minimum invocation for {case_id} omits required exclusive group {group_id}"
+                        f"minimum invocation for {case_id} omits a value for its "
+                        f"required exclusive group {group_id}"
                     )
         if candidate_kind == "argument-choice":
             choice = candidate.get("shape", {}).get("choice")
@@ -972,13 +1004,24 @@ def _review_findings(
                     if expected_spelling is not None
                     else matched_action["flags"]
                 )
-                found, supplied_values = option_values(
-                    case.invocation, expected_spellings, matched_action
+                occurrences = option_occurrences.get(
+                    str(matched_action.get("id", "")), ()
                 )
-                if not found:
+                occurrence = next(
+                    (
+                        (spelling, values)
+                        for spelling, values in occurrences
+                        if spelling in expected_spellings
+                    ),
+                    None,
+                )
+                if occurrence is None:
                     findings.append(
                         f"invocation for {case_id} omits its reviewed option spelling"
                     )
+                    supplied_values: tuple[str, ...] = ()
+                else:
+                    _spelling, supplied_values = occurrence
                 if candidate_kind == "option-choice":
                     choice = candidate.get("shape", {}).get("choice")
                     if str(choice) not in supplied_values:
