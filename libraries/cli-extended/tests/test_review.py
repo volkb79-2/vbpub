@@ -371,6 +371,52 @@ def test_replace_generated_region_preserves_prefix_newlines_and_rejects_nested_m
         )
 
 
+def test_generated_text_writes_are_atomic_preserve_mode_and_clean_up_failures(
+    tmp_path, monkeypatch
+):
+    import stat
+
+    import cli_extended.review as review_module
+
+    target = tmp_path / "SPEC.md"
+    target.write_bytes(b"old\r\ntext\r\n")
+    target.chmod(0o640)
+    review_module._write_text_preserving_newlines(target, "new\r\ntext\r\n")
+    assert target.read_bytes() == b"new\r\ntext\r\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert list(tmp_path.glob(".SPEC.md.*")) == []
+
+    original = target.read_bytes()
+
+    def fail_replace(_temporary, _destination):
+        raise OSError("replace refused")
+
+    monkeypatch.setattr(review_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace refused"):
+        review_module._write_text_preserving_newlines(target, "partial\n")
+    assert target.read_bytes() == original
+    assert list(tmp_path.glob(".SPEC.md.*")) == []
+
+
+def test_generated_text_write_leaves_target_unchanged_if_temp_creation_fails(
+    tmp_path, monkeypatch
+):
+    import cli_extended.review as review_module
+
+    target = tmp_path / "cli-surface.json"
+    target.write_text("old\n", encoding="utf-8")
+    original = target.read_bytes()
+
+    def fail_mkstemp(**_kwargs):
+        raise OSError("temp creation refused")
+
+    monkeypatch.setattr(review_module.tempfile, "mkstemp", fail_mkstemp)
+    with pytest.raises(OSError, match="temp creation refused"):
+        review_module._atomic_write_text(target, "partial\n", newline="")
+    assert target.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [target]
+
+
 def test_surface_markdown_exposes_nested_routes_stale_rows_and_incomplete_inventory():
     candidate = {
         "id": "case:inspect/run",

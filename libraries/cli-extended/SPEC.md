@@ -689,6 +689,9 @@ while reporting pending decisions so a grammar change is reviewable; check is
 read-only and exits unsuccessfully on manifest/spec drift, missing or pending
 cases, changed signatures, stale cases without explicit retirement, or
 uninspectable syntax.
+Each output file MUST be replaced atomically so interruption cannot leave a
+partially-written manifest or spec. The two replacements are independently
+atomic; check mode detects a stop that leaves the pair at different revisions.
 
 The machine surface includes route paths and parser subcommand aliases,
 delegated paths, positional and option IDs/shapes, option aliases, defaults,

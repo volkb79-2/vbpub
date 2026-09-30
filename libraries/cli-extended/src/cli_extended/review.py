@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
+import stat
+import tempfile
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -531,8 +534,33 @@ def _read_text_preserving_newlines(path: str | Path) -> str:
 
 
 def _write_text_preserving_newlines(path: str | Path, text: str) -> None:
-    with Path(path).open("w", encoding="utf-8", newline="") as stream:
-        stream.write(text)
+    _atomic_write_text(path, text, newline="")
+
+
+def _atomic_write_text(path: str | Path, text: str, *, newline: str) -> None:
+    """Replace a generated text file without exposing a partially-written file."""
+
+    destination = Path(path).resolve()
+    try:
+        mode = stat.S_IMODE(destination.stat().st_mode)
+    except FileNotFoundError:
+        mode = 0o644
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(
+            descriptor, "w", encoding="utf-8", newline=newline
+        ) as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _prepare(
@@ -992,7 +1020,7 @@ def sync_cli_surface(
         spec_path=spec_path,
         max_candidates=max_candidates,
     )
-    Path(manifest_path).write_text(manifest_text, encoding="utf-8", newline="")
+    _atomic_write_text(manifest_path, manifest_text, newline="")
     _write_text_preserving_newlines(spec_path, spec_text)
     return SurfaceReport(tuple(findings))
 

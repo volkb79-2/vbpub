@@ -336,6 +336,8 @@ spec region. Candidates are review prompts, not guessed executable commands or
 predicted outcomes. The shared [consumer workflow](docs/CONSUMERS.md#adopt-the-generator)
 shows the catalog, pytest marker, and adoption lifecycle; the [design guide](docs/DESIGN-GUIDE.md#keep-a-generated-surface-and-a-human-semantic-record)
 explains why the Python registry remains the grammar source.
+Each generated file is replaced atomically; a stop between the manifest and
+spec updates leaves a detectable mismatch for `check`, not a half-written file.
 
 ## Test and gate
 

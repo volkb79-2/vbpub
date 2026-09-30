@@ -234,7 +234,8 @@ The catalog checker only sanity-checks argv structure, including route depth
 and consumed option values. It deliberately does not call `parse_args`, custom
 converters/actions, or handlers, because a documentation check must not execute
 consumer behavior. The linked test is the oracle for parser acceptance and
-product semantics.
+product semantics. Each generated file is replaced atomically. A stop between
+the two output replacements is visible as drift on the next check.
 This boundary makes semantic review auditable without asking a generic library
 to invent product truth.
 
