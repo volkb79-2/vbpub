@@ -5653,3 +5653,39 @@ attribution from the verified placed leaf after the original token root exits.
 The affected files now pass locally: 525 passed, 6 skipped in 40.52 s; this
 is not registered exact-tree evidence. Fresh `r0-r1` and `r3` on the committed
 tree are still required before the Sol final review.
+
+### RW-392 — 2026-09-30 22:28:14Z — disposition P6 round-7 blockers; retain charge-based memory semantics
+
+P6 round 7 (`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-REVIEW-round7.md`)
+is REJECT and is the review-series cap. Do not start a round 8. B1–B3 are
+implementation defects, not unsettled product questions; repair them and ask
+the same Sol reviewer session for fix verification.
+
+B1: a missing `/proc/cgroup.procs` result is not proof that a systemd scope is
+gone. Add a tri-state exact-unit verifier: only systemd's explicit
+`NoSuchUnit` response for the requested unit proves absence; manager/query
+failures remain indeterminate. Accept systemd auto-retirement only after the
+scope and leaf paths are absent and every journaled process identity is
+verified at its recorded origin or proven exited/reused; otherwise preserve
+recovery state. Apply the same exact-unit and path checks to restart recovery.
+B2: fail placement if any requested cap readback is missing/invalid, and
+verify exact leaf membership against same-start journaled processes before
+reporting placement success. B3: EOF before a newline is an incomplete
+JSON-lines request; close it without dispatch or response, then continue
+serving subsequent valid connections.
+
+The operator's RW-387 choice remains binding: keep cgroup-native memory
+accounting, describe it as charges attributed to the leaf since placement,
+and do not call it total RSS or a hard cap on pre-existing resident pages.
+
+P1 implementation was reconciled into the P6 worktree by merge commit
+`80e6d8d2b823fa5cb546883b9ba3256ba2198b70` (parents P6 review evidence tip
+`d1b2963e` and P1 repair tip `e8221c6b`). This is not a merge to `main`.
+The P6 fix and reconciliation tree still needs registered clean-tip gates,
+same-session Sol fix verification, and the required live cleanup acceptance
+probe before integration. Local focused evidence: placement/systemd and
+socket regression set 443 passed; serve/summary/docs 220 passed, 6 skipped;
+proc-stat/PID target tests 44 passed. `test_cgprofile.py` could not be
+collected in the cockpit interpreter because optional `numpy` is absent; the
+registered gate environment must supply the full report dependencies. None
+of this is registered exact-tree evidence.

@@ -1848,3 +1848,48 @@ That is targeted local evidence only; it does not substitute for a fresh
 registered gate. RW-391 records the ruling and receipt details. The user's
 selected memory semantics remain kernel-native, charge-based cgroup-leaf
 accounting; docs explicitly disclaim total RSS and a total-resident-memory cap.
+
+## Session 31 — 2026-09-30 22:28:14Z — reconcile P1 and repair P6 review blockers
+
+P6 round 7 is REJECT at `66d33e05`; the review series is capped, so the next
+review action is fix verification by the same Sol session, not a new round.
+Reconciled P1's current implementation branch into P6 with merge commit
+`80e6d8d2b823fa5cb546883b9ba3256ba2198b70` (P6 parent
+`d1b2963ef33b4b61fd458956e4ab18b640440efb`, P1 parent
+`e8221c6bc040516c25e750d286e3208b423efd95`). The product candidate now
+includes the current-main P1 target/proc-identity fixes as well as P6's
+carrier, placement, and liveness implementation. This is a worktree merge,
+not an integration to `main`.
+
+Implemented the round-7 blockers:
+
+* B1: systemd unit absence is now tri-state and only an exact
+  `org.freedesktop.systemd1.NoSuchUnit` for the requested unit counts as
+  absent. Normal release and restart recovery also require the exact owned
+  scope and leaf paths to be absent. If the scope auto-retires during cleanup,
+  release completes only after each original PID is proved at its recorded
+  origin or proved exited/reused; unknown process or manager state remains a
+  recovery refusal.
+* B2: an unreadable requested cap readback refuses placement. Before claiming
+  success the daemon re-reads leaf membership, verifies each PID's start-time
+  identity and exact leaf membership, and checks the membership set against
+  the journal.
+* B3: EOF before the newline now closes the request without dispatch. A real
+  AF_UNIX regression sends an unterminated state-changing `start`, verifies
+  no dispatch or session, then verifies a subsequent valid connection still
+  works. The older fake-connection EOF test was updated to assert no reply.
+
+Local focused evidence before this report update: the placement/systemd plus
+real-socket regression set passed **443 tests in 31.83 s**; the serve,
+summary, and docs suites passed **220 tests, 6 skipped in 15.67 s**; the
+proc-stat/PID target suite passed **44 tests in 2.36 s**. `git diff --check`
+passed and the root and mirrored interface contracts compare byte-identically.
+`tests/test_cgprofile.py` did not collect because the cockpit interpreter
+lacks optional `numpy`; no result is claimed for that file. These local runs
+are not the registered gate.
+
+Still required on the committed final report/evidence tip: registered
+`r0-r1`, `r3`, doctor, same-session Sol fix verification, a live stop probe
+covering transient-scope auto-retirement, then the current-tree R2 and full
+gate. P6 is not ready to merge or release. The charge-based memory decision
+and total-RSS/total-resident-cap disclosure are unchanged from RW-387.
