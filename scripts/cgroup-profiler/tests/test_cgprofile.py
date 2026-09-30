@@ -89,6 +89,15 @@ class FakePopen:
         self.returncode = -9
 
 
+class FakePersistentPopen(FakePopen):
+    """A Docker child that remains live until the launcher terminates it."""
+
+    def wait(self, timeout=None):
+        if not self.terminated:
+            raise subprocess.TimeoutExpired("docker", timeout)
+        return super().wait(timeout=timeout)
+
+
 def make_fake_sampler(script: List[tuple]):
     """A lib.sampler.Sampler replacement driven by a scripted action list.
 
@@ -1429,7 +1438,7 @@ class TestLaunchHelper:
         )
         monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
-        child = FakePopen(exit_code=None)
+        child = FakePersistentPopen(exit_code=None)
         monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
         calls = []
 
@@ -1457,7 +1466,7 @@ class TestLaunchHelper:
         )
         monkeypatch.setattr(access, "build_helper_spec", lambda *a, **k: spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
-        child = FakePopen(exit_code=None)
+        child = FakePersistentPopen(exit_code=None)
         monkeypatch.setattr(cg.subprocess, "Popen", lambda *a, **k: child)
 
         def fail_update(*args, **kwargs):
