@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator
 
 from analysis.tests.analysis_support import JUDGE_VERDICT_FIXTURES
@@ -178,27 +179,28 @@ def _write_progress(
 def _invoke(
     root: Path,
     head: str,
-    verdict: Path,
+    verdict: Path | None,
     progress: Path,
     *,
-    command_exit: int,
+    command_exit: int | None = None,
     output_format: str = "json",
+    lane: str = "package",
+    extra: tuple[str, ...] = (),
 ) -> tuple[int, str, str]:
     stdout, stderr = io.StringIO(), io.StringIO()
-    code = main(
-        [
-            "analyze", "campaign", "package",
-            "--worktree", str(root),
-            "--file", str(root / "assay.toml"),
-            "--expected-commit", head,
-            "--verdict", str(verdict),
-            "--progress", str(progress),
-            "--command-exit", str(command_exit),
-            "--format", output_format,
-        ],
-        stdout=stdout,
-        stderr=stderr,
-    )
+    arguments = [
+        "analyze", "campaign", lane,
+        "--worktree", str(root),
+        "--file", str(root / "assay.toml"),
+        "--expected-commit", head,
+        "--progress", str(progress),
+        "--format", output_format,
+    ]
+    if verdict is not None:
+        arguments += ["--verdict", str(verdict)]
+    if command_exit is not None:
+        arguments += ["--command-exit", str(command_exit)]
+    code = main([*arguments, *extra], stdout=stdout, stderr=stderr)
     return code, stdout.getvalue(), stderr.getvalue()
 
 
@@ -418,3 +420,70 @@ def test_an_evidence_error_document_is_json_even_for_the_text_format(tmp_path, m
     code, out, _err = _invoke(root, head, verdict, progress, command_exit=1, output_format="text")
     assert code == 2
     assert json.loads(out)["status"] == "evidence_error"
+
+
+def _rewrite_progress(progress: Path, change) -> None:
+    records = [json.loads(line) for line in progress.read_text().splitlines()]
+    change(records)
+    progress.write_text("".join(json.dumps(item) + "\n" for item in records))
+
+
+def _refuse_duplicate_plan_row(tmp_path, monkeypatch, root, head, verdict, progress):
+    document = _fixture_document("r2_pass")
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows + rows[:1])
+    return {}
+
+
+def _refuse_bad_limit(tmp_path, monkeypatch, root, head, verdict, progress):
+    return {"extra": ("--limit", "0")}
+
+
+def _refuse_unknown_lane(tmp_path, monkeypatch, root, head, verdict, progress):
+    return {"lane": "ghost"}
+
+
+def _refuse_missing_verdict(tmp_path, monkeypatch, root, head, verdict, progress):
+    return {"verdict": tmp_path / "absent-verdict.json"}
+
+
+def _refuse_garbage_progress(tmp_path, monkeypatch, root, head, verdict, progress):
+    progress.write_text("not json\n")
+    return {}
+
+
+def _refuse_terminal_disagreement(tmp_path, monkeypatch, root, head, verdict, progress):
+    def change(records):
+        records[-1]["outcome"] = "FAIL"
+
+    _rewrite_progress(progress, change)
+    return {}
+
+
+def _refuse_coverage_without_declaration(tmp_path, monkeypatch, root, head, verdict, progress):
+    return {"extra": ("--coverage", str(tmp_path / "coverage.json"))}
+
+
+SOURCE_CASES = (
+    ("arguments", _refuse_bad_limit),
+    ("lane", _refuse_unknown_lane),
+    ("verdict", _refuse_missing_verdict),
+    ("plan", _refuse_duplicate_plan_row),
+    ("progress", _refuse_garbage_progress),
+    ("input", _refuse_terminal_disagreement),
+    ("coverage", _refuse_coverage_without_declaration),
+)
+
+
+@pytest.mark.parametrize(("source", "mutate"), SOURCE_CASES, ids=[case[0] for case in SOURCE_CASES])
+def test_cd51_an_error_source_names_the_refused_input(tmp_path, monkeypatch, source, mutate):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    options = {"verdict": verdict, "command_exit": 0, **mutate(
+        tmp_path, monkeypatch, root, head, verdict, progress
+    )}
+    code, out, _err = _invoke(root, head, options.pop("verdict"), progress, **options)
+    assert code == 2
+    document = json.loads(out)
+    _validate(document)
+    assert [error["source"] for error in document["errors"]] == [source]
+    assert source in campaign_api.ERROR_SOURCES

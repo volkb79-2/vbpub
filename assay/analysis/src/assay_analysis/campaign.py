@@ -9,6 +9,7 @@ to zero when an input is absent or inconsistent.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import math
@@ -45,6 +46,34 @@ EXIT_EVIDENCE_ERROR = 2
 EXIT_INCOMPLETE = 3
 ERROR_DOCUMENT_KIND = "assay-campaign-analysis"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+# The fixed vocabulary of ``errors[].source`` (CD51 Q1): the refused input,
+# never an exception class. ``input`` is for a refusal no single input owns.
+ERROR_SOURCES = (
+    "arguments", "lane", "plan", "progress", "state", "verdict", "coverage", "input",
+)
+
+
+class _Stage:
+    """The input the analysis is loading; the decorator tags a refusal with it."""
+
+    def __init__(self) -> None:
+        self.name = "input"
+
+
+def _staged(function):
+    """Give ``function`` a leading ``stage`` argument and tag its refusals with it."""
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        stage = _Stage()
+        try:
+            return function(stage, *args, **kwargs)
+        except Exception as exc:
+            exc.source = stage.name
+            raise
+
+    return wrapper
 
 
 def _finite_number(value: Any, where: str) -> float:
@@ -805,7 +834,9 @@ def _details(
     }
 
 
+@_staged
 def campaign(
+    stage: _Stage,
     *,
     worktree: Path,
     lane_file_path: Path,
@@ -822,6 +853,7 @@ def campaign(
     limit: int = 100,
 ) -> dict:
     """Build one deterministic closeout; all paths are explicit inputs."""
+    stage.name = "arguments"
     evidence._report_commit(expected_commit)
     if command_exit is not None and (
         isinstance(command_exit, bool) or not isinstance(command_exit, int) or command_exit < 0
@@ -839,9 +871,11 @@ def campaign(
 
     root = git.repo_top(worktree)
     head, tree = evidence._identity(root, expected_commit)
+    stage.name = "lane"
     _bind_lane_file(lane_file_path, root=root, commit=head)
     lane_file = load_lane_file(lane_file_path)
     lane = lane_file.lane(lane_name)
+    stage.name = "verdict"
     verdict_result = _read_verified_verdict(verdict_path, expected=head)
     verdict = verdict_result["verdict"]
     if verdict.get("lane") != lane_name:
@@ -880,6 +914,7 @@ def campaign(
                 raise ValueError(
                     f"R2 verdict policy {key} differs from the named lane declaration"
                 )
+    stage.name = "plan"
     plan: dict[str, Any]
     if native_r2:
         resolved_base = ((verdict.get("judgment") or {}).get("resolved") or {}).get("base")
@@ -893,7 +928,9 @@ def campaign(
     else:
         plan = {"status": "not_applicable", "reason": "lane declares no R2 mutation judgment"}
 
+    stage.name = "verdict"
     buckets_in_verdict, verdict_by_id = _candidate_outcomes(verdict)
+    stage.name = "plan"
     plan_rows = plan.get("candidates", []) if isinstance(plan.get("candidates", []), list) else []
     plan_by_id = {
         row["id"]: row for row in plan_rows
@@ -905,6 +942,7 @@ def campaign(
     plan_id_set = set(plan_ids)
     plan_total = len(plan_ids) if plan.get("status") == "ok" else None
 
+    stage.name = "verdict"
     r2_claim = next(
         (claim for claim in verdict.get("claims", []) if claim.get("rigor") == "R2"),
         None,
@@ -936,6 +974,7 @@ def campaign(
     verdict_ids = set() if raw_verdict_ids is None else set(raw_verdict_ids)
     shard_index = r2_policy.get("shard_index")
     shard_count = r2_policy.get("shard_count")
+    stage.name = "input"
     if native_r2 and mutation_claim is not None:
         if pre_submission_limit:
             if verdict_by_id or any(buckets_in_verdict.values()):
@@ -967,6 +1006,7 @@ def campaign(
     else:
         expected_ids = verdict_ids
 
+    stage.name = "progress"
     progress_artifact, progress_runs = _read_progress(
         progress_path, expected=expected_commit, lane=lane_name
     )
@@ -981,6 +1021,7 @@ def campaign(
         for index, run in enumerate(progress_runs)
     ]
     latest = run_summaries[-1]
+    stage.name = "input"
     if latest["selected_ids"] and set(latest["selected_ids"]) != expected_ids:
         raise ValueError("latest progress selected inventory differs from the verified verdict")
     if not set(latest["candidate_ids"]) <= expected_ids:
@@ -994,6 +1035,7 @@ def campaign(
     if terminal is not None and not terminal_matches_verdict:
         raise ValueError("latest progress terminal disagrees with the verified verdict")
 
+    stage.name = "arguments"
     actual_exit_matches = command_exit is not None and command_exit == verdict.get("exit_code")
     if command_exit is not None and not actual_exit_matches:
         raise ValueError(
@@ -1004,13 +1046,16 @@ def campaign(
         "verdict": verdict_result["artifact"],
         "progress": progress_artifact,
     }
+    stage.name = "lane"
     _lane_bytes, artifacts["lane_file"] = _read_artifact(
         lane_file.path, limit=MAX_LANE_FILE_BYTES, label="lane file"
     )
+    stage.name = "input"
     if log_path is not None:
         _log_bytes, artifacts["log"] = _read_artifact(
             log_path, limit=MAX_LOG_BYTES, label="gate log"
         )
+    stage.name = "coverage"
     coverage_summary = _coverage_artifact_summary(
         lane_file=lane_file, lane=lane, verdict=verdict, root=root,
         path=coverage_path,
@@ -1260,7 +1305,7 @@ def _evidence_error_document(args: argparse.Namespace, exc: BaseException) -> di
         "status": "evidence_error",
         "lane": args.lane,
         "expected_commit": args.expected_commit,
-        "errors": [{"source": type(exc).__name__, "message": str(exc)}],
+        "errors": [{"source": getattr(exc, "source", "input"), "message": str(exc)}],
         "errors_truncated": False,
     }
 
