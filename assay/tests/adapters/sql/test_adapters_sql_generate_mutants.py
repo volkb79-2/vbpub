@@ -165,6 +165,73 @@ def test_drop_not_null_bare_form_replaces_not_null_with_null():
     assert site.replacement == b"NULL"
 
 
+def test_drop_not_null_at_the_very_start_of_the_text_is_a_bare_site():
+    """``NOT NULL`` with NOTHING before it (offset 0, or only whitespace
+    before it): there is no preceding word at all, so it is the bare form
+    (``NOT NULL -> NULL``), never a ``SET``/``IS``/``DROP`` form. Fixtures
+    are not valid DDL on purpose -- the scanner is lexical, and this pins the
+    no-preceding-word branch of the preceding-word lookup."""
+    source = "NOT NULL;\n"
+    site = _one_site(source, "sql:drop-not-null")
+    assert site.description == "NOT NULL -> NULL"
+    assert site.lineno == 1
+    assert (site.start_byte, site.end_byte) == (0, 8)
+    assert _span_text(source, site) == b"NOT NULL"
+    assert site.replacement == b"NULL"
+
+    # Only whitespace (a newline) before it: still no preceding word, and the
+    # site lands on line 2 with the span starting after the newline.
+    source = "\nNOT NULL;\n"
+    site = _one_site(source, "sql:drop-not-null")
+    assert site.description == "NOT NULL -> NULL"
+    assert site.lineno == 2
+    assert (site.start_byte, site.end_byte) == (1, 9)
+    assert _span_text(source, site) == b"NOT NULL"
+    assert site.replacement == b"NULL"
+
+
+def test_drop_not_null_directly_after_punctuation_is_a_bare_site():
+    """``NOT NULL`` whose preceding non-space run is punctuation (``(`` or
+    ``,``), with and without a space between: no preceding WORD, so the bare
+    ``NOT NULL -> NULL`` form, with the span starting at ``NOT`` itself."""
+    # "(" immediately before, no space: "(NOT NULL)" -> offsets 1..9.
+    source = "(NOT NULL)\n"
+    site = _one_site(source, "sql:drop-not-null")
+    assert site.description == "NOT NULL -> NULL"
+    assert site.lineno == 1
+    assert (site.start_byte, site.end_byte) == (1, 9)
+    assert _span_text(source, site) == b"NOT NULL"
+    assert site.replacement == b"NULL"
+
+    # "," immediately before, no space: 22 chars precede (``CREATE TABLE t (``
+    # is 16, ``a INT,`` is 6), so the span is 22..30.
+    source = "CREATE TABLE t (a INT,NOT NULL);\n"
+    site = _one_site(source, "sql:drop-not-null")
+    assert site.description == "NOT NULL -> NULL"
+    assert site.lineno == 1
+    assert (site.start_byte, site.end_byte) == (22, 30)
+    assert _span_text(source, site) == b"NOT NULL"
+    assert site.replacement == b"NULL"
+
+    # "," then a space: the span shifts right by one byte, 23..31.
+    source = "CREATE TABLE t (a INT, NOT NULL);\n"
+    site = _one_site(source, "sql:drop-not-null")
+    assert site.description == "NOT NULL -> NULL"
+    assert site.lineno == 1
+    assert (site.start_byte, site.end_byte) == (23, 31)
+    assert _span_text(source, site) == b"NOT NULL"
+    assert site.replacement == b"NULL"
+
+    # "(" then a space and a newline before it, on line 2.
+    source = "CREATE TABLE t (\n NOT NULL\n);\n"
+    site = _one_site(source, "sql:drop-not-null")
+    assert site.description == "NOT NULL -> NULL"
+    assert site.lineno == 2
+    assert (site.start_byte, site.end_byte) == (18, 26)
+    assert _span_text(source, site) == b"NOT NULL"
+    assert site.replacement == b"NULL"
+
+
 def test_drop_not_null_alter_form_replaces_set_not_null_with_drop_not_null():
     """The mirror of rule 2: this is BOTH the operator's own alter-form span
     AND the paired must-succeed control for rule 4's ``DROP``-preceded

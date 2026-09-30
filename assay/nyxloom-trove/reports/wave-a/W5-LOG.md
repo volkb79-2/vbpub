@@ -239,3 +239,26 @@ READY-FOR-GATE e1cd59cf
 
 CD50, CD53 and CD54 are implemented; Work 0 re-run and Work 5 (witness capture, 24-row review, R1 rerun, R1 break) are done; the witness
 tests are re-added; the three suites are as recorded above (only B134 red). No open QUESTIONS. See `W5-CONTINUATION.md`.
+
+## W5b coverage fix (stage-2 preflight)
+
+**Cause.** The stage-2 `self-qualification-preflight` gate on landing `2b12781f` failed `FAIL/UNCOVERED_LINES`; the only uncovered line in B105's whole-source
+R1 coverage was `src/assay/adapters/sql.py:157`, the `return None` in `_preceding_word` (the `j == end` case: `NOT NULL` at the start of the masked text, or
+right after punctuation/a masked boundary, with no bare word before it). W5 removed the dstdns-corpus adapter tests that used to reach it.
+
+**Tests added** (`tests/adapters/sql/test_adapters_sql_generate_mutants.py`, through the public `generate_mutation_sites` via `_one_site`; inline fixtures, no
+new files, `src/` untouched). Each asserts the one `sql:drop-not-null` site's description `NOT NULL -> NULL`, `lineno`, `(start_byte, end_byte)`, span text
+and replacement `NULL`:
+
+- `test_drop_not_null_at_the_very_start_of_the_text_is_a_bare_site`: `NOT NULL;` (span 0..8, line 1) and `\nNOT NULL;` (span 1..9, line 2).
+- `test_drop_not_null_directly_after_punctuation_is_a_bare_site`: `(NOT NULL)` (1..9), `...(a INT,NOT NULL)` (22..30), `...(a INT, NOT NULL)` (23..31),
+  and `(` + newline + space before it (line 2, 18..26).
+
+**Coverage.** Serial `pytest tests --cov=src/assay --cov-branch` (`env -u FORCE_COLOR nice -n 19 ionice -c3`): 5489 passed, 1 skipped, 1 failed (the known
+environmental B134 `test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused`). `sql.py:157` is now executed. The only other missing line in `src/assay`
+is `git.py:459` (the "no .git marker in any ancestor" raise), reached only by that same B134 test, which cannot raise in this environment (a `.git` exists above
+the tmp dir); it is a consequence of the environmental failure, not a new gap, and is not in `b105-coverage-exclusions.json`. Every declared exclusion is
+already absent from the missing set. `.coverage` deleted afterwards.
+
+**Controlled break.** Temporarily changed the expected description to `NOT NULL -> BROKEN` and one expected end offset from 30 to 31: RED (2 failed, 2 passed
+of the `drop_not_null` selection, with the exact assertion diffs); both reverted with Edit (diff is pure additions), nothing committed broken.
