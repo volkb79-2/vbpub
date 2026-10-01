@@ -162,7 +162,7 @@ def _systemd_unit_is_absent(
     *,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> Optional[bool]:
-    """Return true only for systemd's explicit NoSuchUnit response.
+    """Return true only for systemd's explicit exact-unit absence response.
 
     A failed GetUnit can also mean that the manager or bus is unavailable, so
     a nonzero status is not evidence that the unit retired. Keep that case
@@ -182,11 +182,15 @@ def _systemd_unit_is_absent(
         return None
     if completed.returncode == 0:
         return False
-    expected = f"Unit {unit_name} not loaded."
-    error = completed.stderr or ""
-    if (
-        "org.freedesktop.systemd1.NoSuchUnit:" in error
-        and expected in error
+    # `busctl call` on the deployed host renders NoSuchUnit as only
+    # "Call failed: Unit <name> not loaded."; other versions include the
+    # D-Bus error name. Require either complete line for this exact unit,
+    # never a substring or a generic failed GetUnit.
+    message = f"Unit {unit_name} not loaded."
+    error = (completed.stderr or "").strip()
+    if error in (
+        f"Call failed: {message}",
+        f"Call failed: org.freedesktop.systemd1.NoSuchUnit: {message}",
     ):
         return True
     return None
@@ -1651,6 +1655,17 @@ class LanePlacement:
         self._persist(state="recovery-required")
         self._log_unrestored_survivor(target)
 
+    def _accept_retirement_during_restore(self) -> bool:
+        """Systemd may remove the empty scope during the last PID move back."""
+        if self.scope_cgroup is None or not self._scope_retired_after_restore(
+            abs_path(self.cgroup_root, self.scope_cgroup)
+        ):
+            return False
+        if not self._persist(state="restoring"):
+            self.error = REFUSED_STATE_UNAVAILABLE
+            return False
+        return True
+
     def _restore_owned_processes(self) -> bool:
         """Restore only journaled, same-start-time processes in our exact tree."""
         if self.scope_cgroup is None or self.scope_unit is None:
@@ -1666,6 +1681,8 @@ class LanePlacement:
                     continue
                 pids = self._owned_cgroup_pids(source_cgroup)
                 if pids is None:
+                    if self._accept_retirement_during_restore():
+                        return True
                     self._cleanup_failure(source_cgroup)
                     return False
                 for pid in pids:
@@ -1754,6 +1771,8 @@ class LanePlacement:
                         return False
             remaining = [self._owned_cgroup_pids(path) for path in sources if path is not None]
             if any(pids is None for pids in remaining):
+                if self._accept_retirement_during_restore():
+                    return True
                 self._cleanup_failure(self.scope_cgroup)
                 return False
             if not any(remaining):

@@ -2400,6 +2400,55 @@ class TestPlacementCleanupEdges:
         assert not (root / SCOPE_UNIT_CGROUP).exists()
         assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
 
+    def test_release_accepts_scope_auto_retirement_during_last_restore(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        writes = []
+        lane = _placement(
+            root, writes=writes,
+            unit_absence_verifier=lambda unit: (
+                unit == SCOPE_UNIT and not (root / SCOPE_UNIT_CGROUP).exists()
+            ),
+        )
+        lane.apply([101])
+        assert lane.placed
+        attach = lane._systemd_attach
+
+        def restore_and_retire(unit, subgroup, pid):
+            accepted = attach(unit, subgroup, pid)
+            if accepted and unit != SCOPE_UNIT:
+                shutil.rmtree(root / SCOPE_UNIT_CGROUP)
+            return accepted
+
+        lane._systemd_attach = restore_and_retire
+        lane.release()
+
+        assert lane.released and lane.error is None
+        assert lane._journal["state"] == "complete"
+        assert lane.pid_records[101]["state"] == "restored"
+        assert not (root / SCOPE_UNIT_CGROUP).exists()
+        assert any(path.endswith("/cgroup.procs") and value == "101"
+                   for path, value in writes)
+
+    def test_retirement_during_restore_refuses_unknown_unit_state(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        lane = _placement(root, unit_absence_verifier=lambda _unit: None)
+        lane.apply([101])
+        assert lane.placed
+        attach = lane._systemd_attach
+
+        def restore_and_retire(unit, subgroup, pid):
+            accepted = attach(unit, subgroup, pid)
+            if accepted and unit != SCOPE_UNIT:
+                shutil.rmtree(root / SCOPE_UNIT_CGROUP)
+            return accepted
+
+        lane._systemd_attach = restore_and_retire
+        lane.release()
+
+        assert not lane.released
+        assert lane.error == placement.write_failed(f"{SCOPE_UNIT_CGROUP}/cgroup.procs")
+        assert lane._journal["state"] == "recovery-required"
+
     @pytest.mark.parametrize(
         ("condition", "expected", "expected_state"),
         [

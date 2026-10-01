@@ -48,6 +48,9 @@ def test_unit_path_accepts_only_a_successful_object_path_reply(
             "Unit rg-profile-test.scope not loaded.\n",
             1, None, True,
         ),
+        ("", "Call failed: Unit rg-profile-test.scope not loaded.\n", 1, None, True),
+        ("", "Call failed: Unit another.scope not loaded.\n", 1, None, None),
+        ("", "Call failed: Unit rg-profile-test.scope not loaded.\nextra", 1, None, None),
         (
             "",
             "Call failed: org.freedesktop.systemd1.NoSuchUnit: "
@@ -60,7 +63,7 @@ def test_unit_path_accepts_only_a_successful_object_path_reply(
         ("", "", 0, subprocess.TimeoutExpired("busctl", 5), None),
     ],
 )
-def test_unit_absence_requires_exact_systemd_nosuchunit(
+def test_unit_absence_requires_exact_systemd_response(
     stdout, stderr, code, raises, expected,
 ):
     def run(*_args, **_kwargs):

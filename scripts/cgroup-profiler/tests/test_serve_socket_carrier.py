@@ -909,6 +909,57 @@ class TestPeerCredentials:
             server.request_shutdown()
             thread.join(timeout=5.0)
 
+    def test_refused_peer_gets_json_after_sending_and_half_closing(self, tmp_path):
+        socket_path = str(tmp_path / "ctl.sock")
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+            accept_timeout=0.05, allow_uids=[0],
+        )
+        server._peer_uid = lambda _conn: 1000
+        thread = threading.Thread(target=server._accept_loop, daemon=True)
+        thread.start()
+        try:
+            _wait_for_socket(socket_path)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2.0)
+                client.connect(socket_path)
+                client.sendall((json.dumps(_wire("version", padding="x" * 65536)) + "\n").encode())
+                client.shutdown(socket.SHUT_WR)
+                response = client.recv(65536)
+            assert json.loads(response)["error"]["code"] == "peer-refused"
+        finally:
+            server.request_shutdown()
+            thread.join(timeout=5.0)
+
+    def test_refused_peer_reply_survives_client_write_after_accept(self, tmp_path):
+        socket_path = str(tmp_path / "ctl.sock")
+        server = serve.SessionServer(
+            sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+            accept_timeout=0.05, allow_uids=[0],
+        )
+        accepted = threading.Event()
+
+        def denied_uid(_conn):
+            accepted.set()
+            return 1000
+
+        server._peer_uid = denied_uid
+        thread = threading.Thread(target=server._accept_loop, daemon=True)
+        thread.start()
+        try:
+            _wait_for_socket(socket_path)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2.0)
+                client.connect(socket_path)
+                assert accepted.wait(timeout=2.0)
+                time.sleep(0.05)
+                client.sendall((json.dumps(_wire("version")) + "\n").encode())
+                response = client.recv(65536)
+            assert json.loads(response)["error"]["code"] == "peer-refused"
+        finally:
+            server.request_shutdown()
+            thread.join(timeout=5.0)
+
 
 class TestServeCliAllowUids:
     def _serve_argv(self, tmp_path):

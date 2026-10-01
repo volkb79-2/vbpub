@@ -2325,14 +2325,7 @@ class SessionServer:
         handed_off = False
         try:
             uid = self._peer_uid(conn)
-            if not self._peer_allowed(uid):
-                named = "unavailable" if uid is None else str(uid)
-                resp = self._error_response(
-                    "peer-refused",
-                    f"peer uid {named} is not in {ALLOW_UIDS_ENV}",
-                )
-                conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
-                return
+            peer_allowed = self._peer_allowed(uid)
             data = bytearray()
             deadline = self.request_clock() + self.request_line_timeout
             while True:
@@ -2371,6 +2364,18 @@ class SessionServer:
                     # dispatched operation.
                     return
                 data.extend(chunk)
+            if not peer_allowed:
+                # Wait for the bounded request line before replying. Closing
+                # with the peer's write still in flight can reset AF_UNIX and
+                # discard the promised peer-refused JSON. No denied request
+                # is parsed or dispatched; incomplete lines still time out.
+                named = "unavailable" if uid is None else str(uid)
+                resp = self._error_response(
+                    "peer-refused",
+                    f"peer uid {named} is not in {ALLOW_UIDS_ENV}",
+                )
+                conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
+                return
             if not data.strip():
                 return
             try:
