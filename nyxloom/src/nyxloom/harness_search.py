@@ -8,6 +8,7 @@ import re
 import sqlite3
 import stat
 from collections import Counter
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -340,26 +341,23 @@ def _opencode_term_counts(store: Path) -> dict[str, Counter[str]]:
         raise SearchError(f"not an OpenCode session store: {store}")
 
     counts_by_session: dict[str, Counter[str]] = {}
-    connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
-        rows = connection.execute(
-            "SELECT session_id, data FROM message "
-            "UNION ALL "
-            "SELECT m.session_id, p.data FROM part AS p "
-            "JOIN message AS m ON m.id = p.message_id "
-        )
-        for session_id, raw_data in rows:
-            try:
-                record = json.loads(raw_data)
-            except (TypeError, json.JSONDecodeError):
-                continue
-            _add_text(counts_by_session.setdefault(session_id, Counter()), record)
+        with closing(connection):
+            rows = connection.execute(
+                "SELECT session_id, data FROM message "
+                "UNION ALL "
+                "SELECT m.session_id, p.data FROM part AS p "
+                "JOIN message AS m ON m.id = p.message_id "
+            )
+            for session_id, raw_data in rows:
+                try:
+                    record = json.loads(raw_data)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                _add_text(counts_by_session.setdefault(session_id, Counter()), record)
     except sqlite3.Error as exc:
         raise SearchError(f"could not search OpenCode store {store}: {exc}") from exc
-    finally:
-        if connection is not None:
-            connection.close()
     return counts_by_session
 
 

@@ -422,17 +422,6 @@ def test_opencode_connect_error_is_wrapped_before_a_connection_exists(tmp_path, 
         search._opencode_term_counts(database)
 
 
-def test_opencode_interruption_before_connect_skips_connection_cleanup(tmp_path, monkeypatch):
-    database = _opencode_db(tmp_path / "interrupted.db")
-
-    def interrupt_connect(*_args, **_kwargs):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(search.sqlite3, "connect", interrupt_connect)
-    with pytest.raises(KeyboardInterrupt):
-        search._opencode_term_counts(database)
-
-
 def test_documents_deduplicates_file_sources_and_uses_transcript_timestamp(tmp_path, monkeypatch):
     path = _write_jsonl(
         tmp_path / "claude.jsonl",
