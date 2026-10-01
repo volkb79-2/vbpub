@@ -154,10 +154,11 @@ The corrected implementation passes registered R0/R1 on `f49fdc13` with
 registered R3 canary also passes on that revision; its expected message is
 `canary rejected: JSON redaction test fails when its guard is disabled`.
 The final-source R2 campaign is running against `f49fdc13`, with a fresh state
-store, `--resume`, and a progress log. Its first progress check showed 22 of
-958 candidates after 225 seconds, projecting about 142 minutes overall at the
-observed rate. That early estimate is close to the 150-minute hard budget; the
-campaign began before this status-only documentation update.
+store, `--resume`, and a progress log. At the 44-minute progress check, 330 of
+958 mutants had completed, all killed. The observed rate projects about 129
+minutes overall, with roughly 85 minutes remaining against the 150-minute
+budget. There is no verdict yet; the campaign began before these status-only
+documentation updates.
 
 At the next permitted check, 169 of 958 candidates had completed after about
 29 minutes (roughly 5.8 candidates per minute), projecting about 166 minutes
