@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -26,10 +27,44 @@ from .surface import SurfaceError, export_cli_surface
 
 
 def _load_factory(specification: str):
-    module_name, separator, attribute_name = specification.partition(":")
-    if not separator or not module_name or not attribute_name:
-        raise ValueError("factory must use the form 'python.module:callable'")
-    module = importlib.import_module(module_name)
+    target, separator, attribute_name = specification.partition(":")
+    if not separator or not target or not attribute_name:
+        raise ValueError(
+            "factory must use the form 'python.module:callable' or 'path/to/file.py:callable'"
+        )
+    if target.endswith(".py") or "/" in target or "\\" in target:
+        path = Path(target).expanduser().resolve(strict=True)
+        if not path.is_file():
+            raise ValueError(f"factory path {str(path)!r} is not a file")
+        stable_stem = "".join(
+            character if character.isalnum() or character == "_" else "_"
+            for character in path.stem
+        )
+        module_name = f"_cli_extended_surface_{stable_stem}"
+        module_spec = importlib.util.spec_from_file_location(module_name, path)
+        if module_spec is None or module_spec.loader is None:
+            raise ImportError(f"cannot load factory module from {str(path)!r}")
+        module = importlib.util.module_from_spec(module_spec)
+        # Match `python path/to/script.py` for sibling imports. Keep the script
+        # directory on sys.path because a registered handler may import a
+        # sibling lazily when the CLI is eventually run.
+        script_directory = str(path.parent)
+        if script_directory in sys.path:
+            sys.path.remove(script_directory)
+        sys.path.insert(0, script_directory)
+        missing = object()
+        previous_module = sys.modules.get(module_name, missing)
+        sys.modules[module_name] = module
+        try:
+            module_spec.loader.exec_module(module)
+        except BaseException:
+            if previous_module is missing:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = previous_module
+            raise
+    else:
+        module = importlib.import_module(target)
     factory = getattr(module, attribute_name)
     if not callable(factory):
         raise TypeError(f"factory target {specification!r} is not callable")
@@ -49,7 +84,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--factory",
         required=True,
-        help="consumer registry builder as 'python.module:callable'",
+        help="consumer registry builder as 'python.module:callable' or 'path/to/file.py:callable'",
     )
     parser.add_argument("--review", required=True, type=Path, help="semantic TOML catalog")
     parser.add_argument("--manifest", type=Path, help="generated JSON manifest")

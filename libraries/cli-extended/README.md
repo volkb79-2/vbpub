@@ -401,8 +401,12 @@ for examples and limits. If an interaction's route or option ID becomes stale,
 sync still regenerates the current grammar and keeps its semantic case visible
 as stale; it reports the broken catalog reference without editing the TOML.
 
-Expose an import-safe function such as `example.cli:build_cli` that returns the
-consumer's `RegisteredCli`, then run:
+Expose an import-safe function that returns the consumer's `RegisteredCli`.
+Use `python.module:build_cli` for an importable module, or
+`path/to/hyphenated-script.py:build_cli` when the registry lives in a
+single-file script. The path loader imports the file for the workflow and adds
+its parent directory for sibling imports, so consumers do not need an adapter
+module just to expose the registry. Then run:
 
 ```bash
 python -m cli_extended.surface_cli \

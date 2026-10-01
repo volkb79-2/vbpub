@@ -488,8 +488,23 @@ def _argument(name, description, *, metavar=None, **kwargs):
     return ArgumentSpec(name, description, metavar=metavar, parser_kwargs=kwargs)
 
 
-def _option(flags, description, *, group, metavar=None, **kwargs):
-    return OptionSpec(tuple(flags), description, group=group, metavar=metavar, parser_kwargs=kwargs)
+def _option(
+    flags,
+    description,
+    *,
+    group,
+    metavar=None,
+    mutually_exclusive_group=None,
+    **kwargs,
+):
+    return OptionSpec(
+        tuple(flags),
+        description,
+        group=group,
+        metavar=metavar,
+        parser_kwargs=kwargs,
+        mutually_exclusive_group=mutually_exclusive_group,
+    )
 
 
 def _workflow_options(*, target_picker: bool, monitor: bool):
@@ -516,10 +531,22 @@ def _workflow_options(*, target_picker: bool, monitor: bool):
         )
     if monitor:
         options.append(
-            _option(("--monitor",), "explicitly poll the task after wizard installation", group="MONITORING", action="store_true")
+            _option(
+                ("--monitor",),
+                "explicitly poll the task after wizard installation",
+                group="MONITORING",
+                mutually_exclusive_group="task-monitor-mode",
+                action="store_true",
+            )
         )
     options.append(
-        _option(("--no-monitor",), "return after task creation instead of following it", group="MONITORING", action="store_true")
+        _option(
+            ("--no-monitor",),
+            "return after task creation instead of following it",
+            group="MONITORING",
+            mutually_exclusive_group="task-monitor-mode" if monitor else None,
+            action="store_true",
+        )
     )
     return tuple(options)
 
@@ -2044,12 +2071,6 @@ def _prepare_runtime_arguments(cli_args, runtime):
     if cli_args.config_path and cli_args.server_id is not None and cli_args.command not in {"wizard", "configure"}:
         raise CliFailure(
             "--config/--payload supplies its own target; do not combine it with --server-id",
-            exit_code=2,
-            show_help=True,
-        )
-    if cli_args.no_monitor and cli_args.monitor:
-        raise CliFailure(
-            "--monitor and --no-monitor cannot be combined",
             exit_code=2,
             show_help=True,
         )

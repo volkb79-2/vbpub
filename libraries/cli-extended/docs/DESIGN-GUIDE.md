@@ -77,8 +77,9 @@ positional/option help, groups, and argparse attributes. A command marked
 `confirmation_required` can state whether that acknowledgement is required
 without changing the mutation label. Its default preserves current behavior;
 the legacy `include_confirmation` spelling remains accepted for existing
-consumers. `OptionSpec.hidden` keeps internal options parseable without
-advertising them in user help or generated Markdown.
+consumers. `OptionSpec.hidden` keeps internal options parseable while hiding
+them from operator help. The generated semantic surface still includes and
+labels hidden options so the product review can account for them.
 
 The shared handler boundary treats `None` as success and returns process
 status `0`. Consumers can use that default instead of repeating `return 0` in
@@ -224,6 +225,17 @@ cannot erase rationale, expected effects, or test links.
 Sync and check also require the catalog, manifest, and spec to resolve to
 distinct files, preventing a destination typo from overwriting the decision
 source.
+
+Some consumers declare their registry in a hyphenated, single-file script
+instead of an importable package module. Let `surface_cli` load that file
+directly, add its parent directory so sibling imports work as they do for a
+direct script invocation, and expose the resulting `build_cli()` without an
+adapter module. The generated module name must depend on the script name, not
+the checkout's absolute path: custom converter labels are part of the manifest
+and should not change when a worktree moves. Register the module before
+execution so `dataclasses` and other runtime introspection see a normal module.
+This is a factory-loading convenience; the Python registry remains the one
+grammar definition.
 
 The Markdown view must expose the parser facts a reviewer needs without
 opening implementation code: the entrypoint's empty-argv result and each

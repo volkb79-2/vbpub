@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Correctness follow-up in progress. Registered R0/R1 and R3 passed on `4d303f7b` on 2026-10-01. Its R2 campaign failed with 1,005 killed and 11 survivors out of 1,016. The survivor follow-up commit `0b0dbecd` passed R0/R1 (100% statement and branch coverage; 3,378 statements and 1,640 branches) and R3, but its 1,007-candidate R2 campaign ended with one candidate budget-exceeded. The bounded-scan follow-up now passes R0/R1 (100% statement and branch coverage; 3,378 statements and 1,642 branches); fresh R2 and R3 gates remain required.
+**Status:** Netcup consumer pilot and correctness follow-up in progress. In the CIU worktree `cli-extended-review`, the current R0/R1 gate passes with 100% statement and branch coverage (3,404 statements; 1,650 branches), Netcup's registered suite passes all 228 tests, and the generated Netcup CLI surface check passes. A fresh R2 mutation campaign started at 2026-10-01 17:42 UTC; R3 will run after its final result. The source loader, library, pilot, and consumer documentation changes are in this worktree and remain uncommitted.
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners

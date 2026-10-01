@@ -159,12 +159,35 @@ regeneration repeatable while keeping product decisions durable.
 
 The library exposes a stable machine-readable CLI manifest and a merge-aware
 specification generator alongside Markdown help. Generated help is not a
-substitute for the semantic audit. CMRU's
+substitute for the semantic audit. The live catalog pilot is Netcup's
+[`monitor-task.py` CLI spec](../../../scripts/netcup/CLI-SPEC.md), with its
+[`cli-review.toml`](../../../scripts/netcup/cli-review.toml), generated JSON
+manifest, and pytest collection hook. It demonstrates regeneration and test
+linkage on a real hyphenated script. CMRU's
 [`S-CLI.9`](../../../cmru/docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit)
 grammar and semantic tables remain hand-authored, with gate checks that
-compare the documented grammar to the live registered parsers. The shared
-catalog/generator workflow is now available for consumer adoption; existing
-product specs remain canonical until their owners migrate them deliberately.
+compare the documented grammar to the live registered parsers. Its owner can
+adopt the shared catalog/generator separately after assessing the generated
+surface against the full CMRU interface.
+
+The first-party pilot uses the script-path factory form directly:
+
+```bash
+PYTHONPATH=libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} \
+python -m cli_extended.surface_cli \
+  --factory scripts/netcup/monitor-task.py:build_cli \
+  --review scripts/netcup/cli-review.toml \
+  --manifest scripts/netcup/cli-surface.json \
+  --spec scripts/netcup/CLI-SPEC.md check
+```
+
+When a registry changes, run `template` to discover new or stale review rows,
+review their invocations and effects, and edit the TOML decisions. Run `sync`
+to refresh only the manifest and marked Markdown region, then link collected
+behavior tests with `cli_case` markers. The consumer's gate checks both catalog
+coverage at collection and behavior by executing the tests. Finish with
+read-only `check` and review its diff. The marker proves linkage only; each
+referenced test must assert the promised output, status, and effects.
 
 Surface export and test helpers start from the built registry and
 publish a stable interface for verbs, delegated command paths, positional
@@ -197,8 +220,12 @@ specification:
 ```
 
 Expose an import-safe factory that returns the normal `RegisteredCli`; it must
-not call `app.run()` while being imported. Then use the shared command from the
-project root:
+not call `app.run()` while being imported. A dotted `python.module:callable`
+factory works for importable modules. For a single-file command that is not an
+importable Python module (for example a hyphenated script), use
+`path/to/command.py:callable`; the loader makes the script's sibling directory
+available for imports, matching direct script execution. Then use the shared
+command from the project root:
 
 ```bash
 python -m cli_extended.surface_cli \

@@ -171,6 +171,7 @@ def test_cli_guides_have_resolving_local_markdown_links():
     guide_paths = (
         NETCUP_DIR / "README.md",
         NETCUP_DIR / "DESIGN-GUIDE.md",
+        NETCUP_DIR / "CLI-SPEC.md",
         REPO_ROOT / "docs" / "CONSUMERS.md",
         REPO_ROOT / "libraries" / "cli-extended" / "SPEC.md",
         REPO_ROOT / "libraries" / "cli-extended" / "README.md",

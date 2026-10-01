@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Correctness follow-up in progress. On 2026-10-01, registered R0/R1 and R3 passed on `4d303f7b`; its registered R2 campaign failed with 1,005 killed and 11 surviving mutants out of 1,016. The exact verdict and progress artifacts are preserved under `libraries/cli-extended/.assay/archive/r2-4d303f7b-before-survivor-fixes-20261001/`. The survivor follow-up passed registered R0/R1 and R3 on `0b0dbecd`, but its fresh R2 campaign ended with 1,006 killed and one candidate budget-exceeded out of 1,007. That candidate exposed an unbounded scan under a mutated EOF boundary; the scan is now finite and fresh R0/R1 passed with 100% statement and branch coverage (3,378 statements and 1,642 branches). Fresh R2 and R3 gates remain required.
+**Status:** Consumer pilot and correctness follow-up in progress. On the reviewed snapshot `bf8a0e43` (2026-10-01), registered R0/R1 passed, R3 passed with its expected canary rejection, and R2 failed with 1,004 killed plus one surviving `GtE->Gt` candidate out of 1,005. Inspection showed that at `position == len(argv)` the mutation moves the internal cursor past EOF, but the consumed slice and all review findings remain identical; this was an observationally equivalent comparison. The current work replaces that redundant length comparison with sequence indexing and an `IndexError` EOF boundary. Fresh gates for this follow-up are required before closure.
 
 Self-review found false certifications in typed-choice checking and choice
 surface export. The correction models exact built-in conversions, marks
@@ -123,7 +123,7 @@ rendering refuses missing route invocation flags instead of defaulting them to
 first converted token, and it converts `argparse.REMAINDER` values without
 claiming ignored `choices` are enforced; remainder choices mark the surface
 incomplete.
-The corrections are in the CIU-managed integration worktree. Before the
+The earlier corrections are in the CIU-managed integration worktree. Before the
 survivor follow-up, clean R0/R1 passed on `4d303f7b` at 05:08 UTC with 100%
 statement and branch coverage (3,371 statements and 1,634 branches). R3 passed
 on that revision with its expected canary rejection. An earlier committed
@@ -132,8 +132,9 @@ now selects the target argument by ID. The first survivor follow-up passed
 registered R0/R1 with 100% statement and branch coverage (3,378 statements and
 1,640 branches), and R3 passed. The bounded-scan follow-up passed registered
 R0/R1 with 100% statement and branch coverage (3,378 statements and 1,642
-branches). CLI-EXT-04 remains incomplete until fresh R2 and R3 gates pass
-against the bounded-scan follow-up source.
+branches). That gate evidence is historical and does not cover the current
+consumer-pilot changes. Fresh gates for the current review worktree are still
+required.
 
 **Type:** Feature
 
@@ -202,5 +203,45 @@ remains open because that is a separate evidence-gated question.
 semantic result table. Independent review of the plan clarified that Python
 registrations should stay authoritative and generated Markdown should be a
 view over retained semantic decisions, not a replacement for them.
+
+### Independent review disposition — 2026-10-01
+
+The Sol xhigh review found that no consumer had adopted the CLI-EXT-04 catalog
+lifecycle yet, even though CMRU and Netcup already use the registry/parser
+layer. This follow-up pilots the complete lifecycle on Netcup's real,
+hyphenated `monitor-task.py`: its canonical `CLI-SPEC.md`, editable
+`cli-review.toml`, generated `cli-surface.json`, collection-time case linkage,
+and behavioral tests are checked together. The pilot explicitly records
+cross-verb refusals, opaque UUID validation, JSON redaction and its raw opt-out,
+poll value constraints, and repeated-option behavior. The shared marker helper
+only proves exact collection/linkage; the Netcup gate still runs the tests that
+assert effects and output.
+
+The pilot exposed a consumer-side adoption seam: a hyphenated script cannot be
+named as `python.module:callable`. `surface_cli --factory` now also accepts
+`path/to/file.py:callable`, loads sibling imports as direct script execution
+does, registers the module before execution for dataclass introspection, and
+uses a stable module name so checkout-root paths do not churn manifest
+signatures. No consumer adapter or second grammar DSL was introduced.
+
+The review also found and this follow-up corrects a contradictory design-guide
+sentence about hidden options: operator help omits them, while the generated
+semantic surface inventories and labels them. Netcup's `install-host.py`
+`--monitor`/`--no-monitor` pair now uses existing `OptionSpec` mutex metadata,
+so argparse refuses the combination before `.env` or runtime configuration is
+loaded; the later duplicate handler check was removed.
+
+Remaining evidence gap: CMRU's `S-CLI.9` and the other consumers have not yet
+migrated to the catalog lifecycle. A broad migration should follow the Netcup
+pilot. Decide a published-wheel and version-pinning contract only if CLI-EXT-04
+is intended for consumers outside this monorepo; current first-party adoption
+uses the source-backed same-repository boundary.
+
+Current pilot gate evidence in `cli-extended-review` (2026-10-01): registered
+library R0/R1 passes with 100% statement and branch coverage (3,404 statements,
+1,650 branches); the Netcup registered `suite` lane passes all 228 tests; and
+`surface_cli check` reports no drift for the generated manifest or canonical
+spec. A fresh R2 campaign is running against this follow-up with resume state
+and progress artifacts under `.assay/`; R3 is pending its final verdict.
 
 **Related:** CLI-EXT-02 — declarative conditional option constraints.

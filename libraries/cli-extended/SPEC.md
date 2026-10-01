@@ -681,6 +681,17 @@ embeds generated Markdown between exactly one pair of these standalone lines:
 <!-- cli-extended-surface:end -->
 ```
 
+The `surface_cli --factory` argument MUST accept either
+`python.module:callable` or `path/to/file.py:callable`. For a filesystem
+factory, the loader MUST resolve the file path, import the module through its
+loader, and make the containing directory available for sibling imports,
+matching direct script execution. It MUST register the module in
+`sys.modules` before executing its code so dataclasses and other runtime
+introspection can resolve the declared module. The generated module name MUST
+be stable across checkout roots; it MUST NOT include the resolved absolute
+path. Importing a factory MUST construct and return a `RegisteredCli` without
+calling `app.run()`.
+
 The generator MUST update only the manifest and the text between those
 markers. It MUST preserve all text and line endings outside the marked region,
 and MUST NOT write or reserialize the TOML catalog. Missing, duplicated,

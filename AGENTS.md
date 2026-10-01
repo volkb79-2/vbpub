@@ -41,6 +41,42 @@ The caller records the route evidence and corrects or relaunches a mismatched
 invocation before assigning repository work; an agent's self-report is not the
 route evidence.
 
+### Nested Codex reviews when the read-only sandbox cannot start
+
+In this devcontainer, nested `codex exec --sandbox read-only` reviews have
+repeatedly failed before running even `git` or `rg` with:
+`bwrap: Can't mount proc on /proc: Operation not permitted`. This is a sandbox
+startup failure, not evidence that the repository is unavailable. Do not mark
+the review BLOCKED or repeat the same invocation indefinitely. First confirm
+the error occurred before any repository command ran. For a strictly read-only
+review, retry the same prompt, model, reasoning effort, worktree, and explicit
+Codex environment with `--sandbox danger-full-access` only when the outer
+runtime is already authorized for full filesystem access. The review prompt
+must explicitly forbid edits, commits, tests, and gates; use `--ephemeral` and
+write the final response outside the checkout. Record `git rev-parse HEAD` and
+`git status --short` before and after to bind the findings to one revision and
+confirm no files changed. If the review requires mutations or executing tests,
+this fallback is not appropriate: use an approved runner where its sandbox can
+start instead.
+
+Example, from the review worktree, after a read-only invocation fails at
+sandbox startup:
+
+```bash
+export CODEX_SQLITE_HOME="$HOME/.codex/sqlite-shared"
+# Use "$HOME/.codex2" instead only when the operator directs.
+export CODEX_HOME="$HOME/.codex"
+git rev-parse HEAD
+git status --short
+printf '%s' "$PROMPT" |
+  codex exec -m gpt-6-sol \
+    -c 'model_reasoning_effort="xhigh"' \
+    --sandbox danger-full-access --ephemeral \
+    -C "$PWD" -o /tmp/codex-review.md -
+git rev-parse HEAD
+git status --short
+```
+
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
 > **A default is legitimate only when it is a policy choice that is correct in

@@ -1039,15 +1039,16 @@ def _review_findings(
         depth: int,
     ) -> int:
         def is_option_boundary(position: int) -> bool:
-            if position < len(argv):
+            try:
                 token = argv[position]
-                option = token.partition("=")[0]
-                if not token.startswith("-") or token == "-":
-                    return False
-                if action_for_option(route, option, depth) is not None:
-                    return True
-                return not is_negative_number(token, route, depth)
-            return position >= len(argv)
+            except IndexError:
+                return True
+            option = token.partition("=")[0]
+            if not token.startswith("-") or token == "-":
+                return False
+            if action_for_option(route, option, depth) is not None:
+                return True
+            return not is_negative_number(token, route, depth)
 
         nargs = action.get("nargs")
         if nargs == 0:
