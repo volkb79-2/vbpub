@@ -1379,9 +1379,10 @@ not become repository-wide Git credentials.
 
 **Resolution.** CMRU now supplies the resolved repository credential through a temporary askpass
 helper, refuses prompts for other hosts, and disables local Git hooks for credential-bearing
-calls so the token cannot be inherited by a hook. Behavioral coverage is in
-`tests/test_git_auth.py`; README, DESIGN-GUIDE, CONSUMERS, and SPEC document the transport
-boundary. Included in the pending CMRU release.
+calls so the token cannot be inherited by a hook. The first release bootstrap caught invalid
+quoting in the generated helper; its test now compiles the generated Python before invoking it.
+Behavioral coverage is in `tests/test_git_auth.py`; README, DESIGN-GUIDE, CONSUMERS, and SPEC
+document the transport boundary. Included in the pending CMRU release.
 
 ### KI-37 — Cleanup could widen beyond the confirmed target list — *fixed in source, pending release*
 
