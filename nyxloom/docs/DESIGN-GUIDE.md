@@ -64,6 +64,9 @@ The three user CLIs follow who is working and which files the command targets:
   It is not a remote API client. The dashboard remains the HTTP/SSE client.
 - `nyxloomd` is a service-manager executable that starts the existing daemon
   lifecycle in the current container; it is not another interactive CLI.
+  Its only arguments are side-effect-free `--help` and `--version`; unknown
+  options fail before registry or daemon initialization, so a diagnostic typo
+  cannot accidentally start service work.
 
 The split keeps common skill entrypoints dependable when the daemon is down,
 while making host-wide actions visibly distinct from project-local authoring.
@@ -156,6 +159,26 @@ Malformed envelopes remain visible as the original operator text rather than
 being partially decoded. If the user answers through ordinary chat instead,
 that text remains operator prose; nyxloom does not infer a question link where
 the source record has no question ID.
+
+### Claude Code question replies
+
+Claude Code records each `AskUserQuestion` UI request as an assistant
+`tool_use`. Nyxloom emits every question and its offered choices at that
+source position as `INTERVIEW:` prose, including its header, option
+descriptions, and multi-select behavior, whether or not the request has a
+matching answer record or tool-use ID. When a recognized result arrives, its
+position carries a second marked question/answer block so the operator's choice
+or free text remains attached to the question it answers. This keeps a pending
+prompt visible in an extract and keeps an answer understandable when an extract
+starts after the prompt.
+
+The usual tool result flattens rows as `"question"="answer"`. A rejected
+question batch can instead contain a `Questions asked:` section with per-row
+`Answer:` or `(No answer provided)` entries. Nyxloom uses the original tool
+request to match those rows and renders both answered and explicitly
+unanswered rows with `INTERVIEW:` and `OPERATOR:` labels. If the rows do not
+match the original prompt batch, the source text stays intact; partial parsing
+could otherwise drop an answer or attach it to the wrong question.
 
 Profiles carry use-case policy for selection and gap reporting. Explicit
 selection or gap flags override the corresponding profile values. Timestamp

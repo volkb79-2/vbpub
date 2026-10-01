@@ -100,7 +100,7 @@ pasteable workflows are in [CONSUMERS.md](docs/CONSUMERS.md).
 | `nyxloom` | Project-local authoring: `init`, `onboard`, local `lint`, and managed `backlog` files. It works from an unregistered project checkout and does not need the daemon. |
 | `nyxloom-harness` | Session search, discovery, and extraction from supported AI harnesses. It reads harness files/stores and does not initialize Nyxloom host state. |
 | `nyxloomctl` | Local host control, administration, and developer diagnostics, including the project registry, workflow state, routes, models, auth, host-wide lint, and `daemon`. These commands operate locally; remote administration is future work. |
-| `nyxloomd` | Service-manager entrypoint for the daemon container. It is installed with the same wheel and is not a human command interface. |
+| `nyxloomd` | Service-manager entrypoint for the daemon container. Bare `nyxloomd` starts the foreground service; `--help` and `--version` exit without starting it. |
 
 The dashboard remains the daemon's HTTP/SSE client. The wheel does not add a
 remote `nyxloomctl` API client. Project-local authoring and harness extraction
@@ -173,11 +173,15 @@ safe to compact. Use `--epochs N|A:B|all`, `--max-compactions N`, or
 `--max-time-minutes N` to shape a bounded review. See the
 [selection and rendering rationale](docs/DESIGN-GUIDE.md#session-extraction-selection-and-boundaries)
 and [worked operator examples](docs/CONSUMERS.md#extract-a-session-log).
-Every Codex interactive question is rendered with an `INTERVIEW:` marker and
-its offered choices, including prompts that have no assistant-prose copy.
-Structured replies use `OPERATOR:` and retain both selected choices and
-free-text answers, even when the user replies after later session activity.
-See the [Q&A design](docs/DESIGN-GUIDE.md#codex-question-replies).
+Claude Code `AskUserQuestion` prompts and every Codex interactive question
+are rendered with an `INTERVIEW:` marker and their offered choices, including
+unanswered prompts and prompts without assistant-prose copies. Claude headers,
+option descriptions, and multi-select behavior are preserved. Recognized
+structured replies use `OPERATOR:` and retain selected choices and free-text
+answers; a rejected Claude question batch also labels explicit
+`(No answer provided)` rows.
+See the [Claude Code](docs/DESIGN-GUIDE.md#claude-code-question-replies) and
+[Codex](docs/DESIGN-GUIDE.md#codex-question-replies) Q&A designs.
 Saved extracts carry source cursors for `--since-file`; Codex prompts in
 ordinal-less rollouts use a `response_item-<position>` cursor while legacy
 event cursors keep their numeric form. See the
