@@ -203,9 +203,9 @@ reject valid built-in conversions. The correction models only exact built-in
 `str`, `int`, `float`, and `bool` conversions, leaves consumer converters to
 linked behavior tests, and marks non-scalar choice objects incomplete rather
 than flattening their equality semantics. Regression cases compare review
-findings with the real CLI. The correction is being prepared in an isolated
-worktree; its R0/R1, R3, and fresh R2 gates have not run. The current R2
-campaign remains evidence for the earlier source only.
+findings with the real CLI. The correction is committed as `40922255` in an
+isolated worktree; its R0/R1, R3, and fresh R2 gates have not run. The current
+R2 campaign remains evidence for the earlier source only.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes

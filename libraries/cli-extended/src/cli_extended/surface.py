@@ -291,8 +291,7 @@ def _safe_choice_values(
     normalized: list[Any] = []
     for index, item in enumerate(values):
         if type(item) not in (str, int, float, bool):
-            # Flattening an Enum or scalar subclass to its JSON value can
-            # change argparse's equality checks against the runtime choice.
+            # A non-builtin value can compare differently from its JSON value.
             opaque.append(path)
             return {"opaque": "choice-value"}
         before = len(opaque)
