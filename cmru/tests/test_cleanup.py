@@ -333,8 +333,8 @@ class TestRunCleanupVerb:
             calls_record["local_tag_deletes"].append(tag)
 
         def fake_cleanup_project_step(repo_root, project, version, dry_run=False):
-            # Mirror real behaviour: return False when dry_run=True.
-            if dry_run:
+            # Mirror real behaviour: no step runs when dry-run or absent.
+            if dry_run or "clean" not in project.steps:
                 return False
             calls_record["clean_steps"].append(project.name)
             return True
