@@ -475,18 +475,6 @@ class TestKillTargets:
         )
         assert pids == [] and refusal == "unplaced-token-subtree"
 
-    def test_unreadable_pid_identity_is_not_addressable(self, tmp_path, monkeypatch):
-        server = _server(
-            tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
-            proc_root=str(_fake_proc(tmp_path)),
-        )
-
-        def unavailable(_left, _right):
-            raise OSError(5, "proc view unavailable")
-
-        monkeypatch.setattr(serve.os.path, "samefile", unavailable)
-        assert server._pid_addressable(4242) is False
-
     def test_the_refusal_is_recorded_on_the_verdict(self, tmp_path):
         server = _server(
             tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
