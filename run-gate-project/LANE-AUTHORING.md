@@ -381,7 +381,7 @@ Filed items carry their id; unfiled ones say where they would go.
 
 | item | where | state |
 |---|---|---|
-| RG-63 transport/watch/placement/admission seam | run-gate `KNOWN_ISSUES_TODO_BACKLOG.md` | P5 implementation and documentation in progress; close with the P5 R1/R2/R3 evidence and release |
+| RG-72 transport/watch/placement/admission seam | run-gate `KNOWN_ISSUES_TODO_BACKLOG.md` | P5 implementation and documentation in progress; close with the P5 R1/R2/R3 evidence and release |
 | `stall_timeout` for container COMMAND lanes, judged from log-stream silence | run-gate RG-40 | OPEN, E-3 candidate (23.5.0) |
 | `coverage_gate.py` line offsets under `--allow-dirty` | run-gate RG-39 | OPEN, first item of E-3 |
 | Re-attach / follow a running lane after the client dies | run-gate RG-35 → 23.4.0 | in review |

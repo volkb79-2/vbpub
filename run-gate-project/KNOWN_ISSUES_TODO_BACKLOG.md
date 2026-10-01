@@ -4989,7 +4989,7 @@ neither touches code this package's diff modified, and both were
 confirmed non-deterministic (pass on a retry) before being recorded here
 rather than "fixed" by silently retrying past them without a trace.
 
-## RG-63 — run-gate v1.1 transport, watch, placement, and admission seams (RG-55 P5)
+## RG-72 — run-gate v1.1 transport, watch, placement, and admission seams (RG-55 P5)
 
 **Provenance:** RG-55 plan D-6 and D-17..D-30; controller rulings RW-29..
 RW-35; interface contract v1.1 §8. This row is the implementation record for

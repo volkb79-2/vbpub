@@ -9,7 +9,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself. This block covers the RG-55 P5 client package and mainline integrations through rev 47; every RG-specific entry below names its own RG id. -->
 
-- **RG-63 / P5 transport and watch client.** Add the v1.1 `auto`/`exec`/
+- **RG-72 / P5 transport and watch client.** Add the v1.1 `auto`/`exec`/
   `socket` profiler carriers with one shared request/response parser, a
   single streaming watch reader, and nullable watch/placement fields in
   history and inflight records. Daemon `killed` follows the declared stall

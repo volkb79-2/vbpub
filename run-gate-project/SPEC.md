@@ -1647,7 +1647,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     judging the lane — "its progress file" or "its own log output" — so an
     operator never has to guess which of the two mechanisms a given
     `stall_timeout` bounds.
-  - **`R-40g` Calibrated no-daemon fallback (RG-63/C5).** When the daemon or
+  - **`R-40g` Calibrated no-daemon fallback (RG-72/C5).** When the daemon or
     its watch transport is unavailable, an assay lane's in-process fallback
     may apply an automatic idle bound only after it has read the judge's
     `plan` event. The bound is `max(300s, 3 ×
@@ -1893,7 +1893,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `--dry-run` rehearses the plan (`container-shared`) and attempts
     nothing for real.
 
-- **`R-43j` Transport and request parity (RG-63/C2).** The project-level
+- **`R-43j` Transport and request parity (RG-72/C2).** The project-level
   `[profile]` table's `transport` is `"auto"`, `"exec"`, or `"socket"`.
   `"socket"` uses `socket_path`; `"exec"` uses the daemon container's
   `docker exec` carrier; `"auto"` probes the configured socket with
@@ -1902,14 +1902,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   same v1.1 request object and pass through the same response parser. A
   carrier, daemon, or parser failure is profiling state unknown and follows
   `R-36h`; it never changes the lane's verdict.
-- **`R-43k` Streaming watch (RG-63/C5).** After a successful profile
+- **`R-43k` Streaming watch (RG-72/C5).** After a successful profile
   `start`, run-gate creates one `ctl watch` reader for that session. `reading`
   and `verdict` events update the inflight/history watch field. A daemon
   `killed` verdict is the declared stall path; `reported` emits one warning
   and does not fail the lane. A closed or failed watch is disclosed and the
   client reattaches once before using the in-process fallback. A watch that
   ends without a verdict is not itself a verdict.
-- **`R-43l` Placement and parent (RG-63/C3/C6).** A daemon-backed exec or
+- **`R-43l` Placement and parent (RG-72/C3/C6).** A daemon-backed exec or
   bare-host lane with a declared `resources.memory`, or with a committed
   manifest median from which one can be derived, sends a placement request.
   The request uses the declaration when present, otherwise `ceil(median ×
@@ -1922,7 +1922,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   The selected source is required; absence is a hard configuration error,
   never an unconfined Docker launch. The inherited tester environment binds
   `cgroup_slice_env` to the host-provided gates value.
-- **`R-45` Bounded admission (RG-63/C7).** Before a daemon-backed lane starts,
+- **`R-45` Bounded admission (RG-72/C7).** Before a daemon-backed lane starts,
   run-gate reads the profiler's host document. If the verified gates slice's
   current memory plus the lane request exceeds 90% of its maximum, the client
   checks again every 30 seconds, prints a waiting notice at most once per

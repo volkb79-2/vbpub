@@ -9305,7 +9305,7 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "              judge.mutation.budget_per_candidate + this key. R0/R1:",
         "              the command's own bound is all there is",
         "",
-        "profiling (RG-55/RG-63) — optional resource telemetry, never judgment:",
+        "profiling (RG-55/RG-72) — optional resource telemetry, never judgment:",
         "  [profile]   enabled, daemon, interval, damon, transport (auto|exec|socket),",
         "              socket_path, and bounded admission_wait (default 10m);",
         "              auto selects the socket only after a valid version probe",
