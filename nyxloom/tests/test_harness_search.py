@@ -145,13 +145,27 @@ def test_walk_files_refuses_unreadable_entries_and_symlink_targets(tmp_path, mon
         list(search._walk_files(root))
 
 
+def test_walk_files_translates_directory_scan_errors(tmp_path, monkeypatch):
+    root = tmp_path / "tree"
+    root.mkdir()
+
+    def fail_scan(_directory):
+        raise LocateError("directory scan failed")
+
+    monkeypatch.setattr(search, "_scan_directory", fail_scan)
+    with pytest.raises(search.SearchError, match="directory scan failed"):
+        list(search._walk_files(root))
+
+
 def test_claude_discovery_filters_transcripts_and_names_subagents(tmp_path):
     root = tmp_path / "projects"
     session = _write_jsonl(
         root / "project" / "session-1.jsonl",
         {"sessionId": "session-1", "parentUuid": None, "message": "needle"},
     )
-    _write_jsonl(root / "project" / "not-a-session.jsonl", {"type": "message"})
+    (root / "project" / "not-a-session.jsonl").write_text(
+        "malformed json\n{\"type\": \"message\"}\n", encoding="utf-8",
+    )
     (root / "project" / "notes.txt").write_text("ignore", encoding="utf-8")
     agent = _write_jsonl(
         root / "project" / "session-1" / "subagents" / "agent-worker-7.jsonl",
@@ -163,6 +177,15 @@ def test_claude_discovery_filters_transcripts_and_names_subagents(tmp_path):
         ("session-1", str(session)), ("worker-7", str(agent)),
     ]
     assert search._claude_sessions(root / "absent") == []
+
+
+def test_claude_signature_scan_stops_at_its_fifty_line_bound(tmp_path):
+    path = tmp_path / "large.jsonl"
+    path.write_text(
+        "{}\n" * 50 + json.dumps({"sessionId": "late", "parentUuid": None}) + "\n",
+        encoding="utf-8",
+    )
+    assert search._is_claude_transcript(path) is False
 
 
 def test_claude_transcript_read_error_is_indeterminate(tmp_path, monkeypatch):
@@ -215,6 +238,20 @@ def test_codex_discovery_scans_each_existing_root_once_and_requires_metadata(tmp
     assert search._codex_metadata(unsupported) is None
 
 
+def test_store_sessions_dispatches_to_successful_codex_discovery(tmp_path, monkeypatch):
+    root = tmp_path / "codex-sessions"
+    path = _write_jsonl(
+        root / "rollout.jsonl",
+        {"type": "session_meta", "payload": {
+            "id": "session-id", "session_id": "thread-id", "cli_version": "1",
+        }},
+    )
+    monkeypatch.setattr(search, "_codex_sessions_roots", lambda: [root])
+    assert search._store_sessions("codex") == [
+        search._DiscoveredSession("codex", "session-id", str(path)),
+    ]
+
+
 def test_codex_metadata_uses_first_session_payload_but_detects_later_support(tmp_path):
     path = _write_jsonl(
         tmp_path / "rollout-first.jsonl",
@@ -242,6 +279,19 @@ def test_codex_metadata_handles_bad_records_and_refuses_read_errors(tmp_path, mo
     monkeypatch.setattr(Path, "open", fail_open)
     with pytest.raises(search.SearchError, match="could not inspect Codex session"):
         search._codex_metadata(path)
+
+
+def test_codex_metadata_stops_at_the_adapter_scan_limit(tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        "{}\n" * search.codex._SNIFF_SCAN_LINES
+        + json.dumps({"type": "session_meta", "payload": {
+            "session_id": "too-late", "cli_version": "1",
+        }})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert search._codex_metadata(path) is None
 
 
 def test_store_sessions_translates_codex_root_discovery_errors(monkeypatch):
@@ -359,6 +409,17 @@ def test_opencode_term_counts_rejects_non_store_and_database_errors(tmp_path):
     malformed.touch()
     with pytest.raises(search.SearchError, match="could not search OpenCode store"):
         search._opencode_term_counts(malformed)
+
+
+def test_opencode_connect_error_is_wrapped_before_a_connection_exists(tmp_path, monkeypatch):
+    database = _opencode_db(tmp_path / "connect-error.db")
+
+    def fail_connect(*_args, **_kwargs):
+        raise sqlite3.OperationalError("forced connect failure")
+
+    monkeypatch.setattr(search.sqlite3, "connect", fail_connect)
+    with pytest.raises(search.SearchError, match="forced connect failure"):
+        search._opencode_term_counts(database)
 
 
 def test_documents_deduplicates_file_sources_and_uses_transcript_timestamp(tmp_path, monkeypatch):
@@ -498,4 +559,3 @@ def test_search_cli_routes_query_options_and_prints_only_result_metadata(
     assert calls == [("cli-extended gate backlog", "codex", "date")]
     assert expected_text in output
     assert "confidential transcript body" not in output
-
