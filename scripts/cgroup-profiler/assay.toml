@@ -18,12 +18,12 @@ enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q", "-x"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-# Controller ruling RW-438 (2026-10-01): P6 now inventories 1,040 candidates.
-# A prior exact-tree campaign reached its 4h lane deadline after 306 results;
-# the remaining 734 were explicitly budget_exceeded, not classified as
-# killed/survived/hung. A 24h window is based on observed campaign throughput
-# with headroom. If it still expires, resume the same exact tree; time and
-# host pressure remain incomplete-run conditions, never mutant outcomes.
+# Controller ruling RW-438 (2026-10-01): the prior P6 tree planned 1,040
+# candidates; its exact-tree 4h campaign completed 306 and left 734 explicitly
+# budget_exceeded. This current tree plans 973 candidates; 24h gives headroom
+# over the roughly 12.7h extrapolation from the measured prior-tree rate (not
+# a guarantee). If it still expires, resume the same exact tree; time and host
+# pressure remain incomplete-run conditions, never mutant outcomes.
 budget = "24h"
 allow_argv_append = false
 

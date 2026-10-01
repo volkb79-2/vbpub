@@ -63,12 +63,12 @@ argv = [
     "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
-# Controller ruling RW-438 (2026-10-01): the P6 inventory is now 1,040
-# candidates. Its prior 4h run completed 306 candidates, then correctly
-# remained incomplete with 734 budget_exceeded placeholders; this was a
-# lane-deadline result, not a mutant verdict. Allow a 24h continuous campaign
-# window, matching assay.toml's enforced lane budget with headroom. This
-# run-gate command budget is advisory; assay's budget_s is the enforcement.
+# Controller ruling RW-438 (2026-10-01): the prior P6 tree planned 1,040
+# candidates; its 4h run completed 306 and left 734 budget_exceeded
+# placeholders. This current tree plans 973 candidates. A 24h window gives
+# headroom over the roughly 12.7h extrapolation from the observed prior-tree
+# rate; this estimate is advisory, not a guarantee. Expiry remains incomplete,
+# never a mutant verdict. run-gate's budget is advisory; assay enforces it.
 budget = "24h"
 artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
 [lanes.r2.resources]
