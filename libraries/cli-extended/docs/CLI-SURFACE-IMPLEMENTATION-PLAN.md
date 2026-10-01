@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Correctness follow-up in progress. Registered R0/R1 and R3 passed on `4d303f7b` on 2026-10-01. Its R2 campaign failed with 1,005 killed and 11 survivors out of 1,016; the artifacts are archived and survivor follow-up changes are in the worktree. After the follow-up, registered R0/R1 passed with 100% statement and branch coverage (3,378 statements and 1,640 branches); fresh R2 and R3 gates remain required.
+**Status:** Correctness follow-up in progress. Registered R0/R1 and R3 passed on `4d303f7b` on 2026-10-01. Its R2 campaign failed with 1,005 killed and 11 survivors out of 1,016. The survivor follow-up commit `0b0dbecd` passed R0/R1 (100% statement and branch coverage; 3,378 statements and 1,640 branches) and R3, but its 1,007-candidate R2 campaign ended with one candidate budget-exceeded. The bounded-scan follow-up now passes R0/R1 (100% statement and branch coverage; 3,378 statements and 1,642 branches); fresh R2 and R3 gates remain required.
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -287,7 +287,7 @@ The surviving mutations were reviewed and grouped as follows:
 
 | Survivor group | Review finding | Follow-up in the worktree |
 | --- | --- | --- |
-| `review.py:1069` | The explicit `end < len(argv)` check duplicated the EOF behavior of `is_option_boundary(end)`, so removing it preserved behavior. | Removed the redundant bound check; added end-of-argv cases for `nargs="*"` and `nargs="+"`. |
+| `review.py:1069` | The explicit `end < len(argv)` check duplicated the EOF behavior of `is_option_boundary(end)`, so removing it preserved behavior. | Replaced the boundary-driven unbounded loop with a finite range; added end-of-argv cases for `nargs="*"` and `nargs="+"`. |
 | `review.py:1488,1492` (four candidates) | Count and shortage diagnostics repeated overlapping predicates after parser positioning had already constrained the values. | Added `_value_count_problem()` to classify shortage, wrong count, or valid count once; tests assert each classification and the existing invocation diagnostics retain shortage-specific messages. |
 | `review.py:1602` | The unknown-required-option check had a negative test but no valid required-option reference, so an inverted kind comparison survived. | Made the fixture option required and added a positive known-required-option case beside unknown references. |
 | `surface.py:72` | `add_help=False` on a disposable parser was irrelevant to `_get_values()`. | Removed the no-op setting. |
@@ -296,10 +296,35 @@ The surviving mutations were reviewed and grouped as follows:
 | `surface.py:1257` | The fallback surface test checked global incompleteness but not that every route was incomplete without retained registrations. | Asserted incompleteness for every fallback route. |
 | `surface.py` non-callable type path | No test showed that a non-callable type reference is preserved while refusing to certify syntax. | Added coverage for a numeric type reference; it remains visible in the surface and marks syntax incomplete. |
 
-The follow-up source passed registered R0/R1 with 100% statement and branch
-coverage (3,378 statements and 1,640 branches). Fresh R2 and R3 gates must run
-against the committed follow-up source before CLI-EXT-04 is called complete.
-Do not treat the earlier R2 result as a pass.
+The first survivor follow-up passed registered R0/R1 and R3, but its fresh R2
+campaign exposed a further termination issue, described below. Do not treat
+either earlier R2 result as a pass.
+
+### R2 campaign on `0b0dbecd` and bounded-scan correction
+
+The registered R2 campaign on commit `0b0dbecde671d04884c3d74f8314eb42777f6d9f`
+ran from 2026-10-01 13:08:51 UTC to 14:18:35 UTC. It inventoried all 1,007
+candidates: 1,006 were killed and one was budget-exceeded; none survived,
+crashed, or were classified equivalent. The verdict is
+`BUDGET_EXCEEDED` with reason `LANE_TIMEOUT`; the run-gate container completed
+the campaign and saved its receipt and progress stream under
+`libraries/cli-extended/.assay/`.
+
+The sole budget-exceeded candidate was `True->False` at `review.py:1043`
+(`candidate_id` `8f577cd36549b95b56053a55c3d2d9e8f8861ae425908776ef7f98b58b2c9`).
+It changed the EOF/terminator branch in `is_option_boundary()`. With the
+boolean literal flipped, the `nargs="*"` scan kept incrementing after argv
+ended, so the test process stayed CPU-active and exceeded Assay's derived
+66.018798-second per-candidate budget. The process was not idle; this is why
+Assay recorded `budget_exceeded`, not `hung`.
+
+The current follow-up derives EOF-boundary truth from `position >= len(argv)`
+and scans `nargs="*"`/`nargs="+"` with a finite `range` ending at `len(argv)`.
+The delimiter lexer case also covers `--` inside a greedy option scan. These
+changes prevent a false boundary result from making the checker run forever.
+The bounded-scan source passed fresh registered R0/R1 with 100% statement and
+branch coverage (3,378 statements and 1,642 branches). Fresh R2 and R3 gates
+must pass before CLI-EXT-04 is complete.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes

@@ -1039,15 +1039,15 @@ def _review_findings(
         depth: int,
     ) -> int:
         def is_option_boundary(position: int) -> bool:
-            if position >= len(argv) or argv[position] == "--":
-                return True
-            token = argv[position]
-            option = token.partition("=")[0]
-            if not token.startswith("-") or token == "-":
-                return False
-            if action_for_option(route, option, depth) is not None:
-                return True
-            return not is_negative_number(token, route, depth)
+            if position < len(argv):
+                token = argv[position]
+                option = token.partition("=")[0]
+                if not token.startswith("-") or token == "-":
+                    return False
+                if action_for_option(route, option, depth) is not None:
+                    return True
+                return not is_negative_number(token, route, depth)
+            return position >= len(argv)
 
         nargs = action.get("nargs")
         if nargs == 0:
@@ -1075,10 +1075,10 @@ def _review_findings(
         if nargs in {"*", "+"}:
             if inline:
                 return index + 1
-            end = index + 1
-            while not is_option_boundary(end):
-                end += 1
-            return end
+            for end in range(index + 1, len(argv)):
+                if is_option_boundary(end):
+                    return end
+            return len(argv)
         return index + 1
 
     def invocation_parts(

@@ -3638,6 +3638,7 @@ def test_review_invocation_lexer_handles_option_arities_and_delimiters():
         ("maybe", "--maybe", "?", 0, ["--maybe", "--zero"]),
         ("many", "--many", "*", 0, ["--many", "a", "b", "--zero"]),
         ("many-end", "--many-end", "*", 0, ["--many-end", "a", "b"]),
+        ("many-delimiter", "--many-delimiter", "*", 0, ["--many-delimiter", "a", "--", "--zero"]),
         ("some", "--some", "+", 1, ["--some", "a", "b", "--zero"]),
         ("some-end", "--some-end", "+", 1, ["--some-end", "a", "b"]),
         ("rest", "--rest", argparse.REMAINDER, 0, ["--rest", "tail", "--zero"]),
@@ -3688,6 +3689,11 @@ def test_review_invocation_lexer_handles_option_arities_and_delimiters():
     )
     assert any("case:eq-zero" in item and "omits its reviewed option spelling" in item for item in findings)
     assert not any("case:zero" in item for item in findings)
+    assert any(
+        "case:many-delimiter" in item
+        and "unassigned positional token '--zero'" in item
+        for item in findings
+    )
 
 
 def test_review_argument_shape_and_choice_are_checked_at_their_registered_position():

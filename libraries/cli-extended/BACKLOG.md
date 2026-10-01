@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Correctness follow-up in progress. On 2026-10-01, registered R0/R1 and R3 passed on `4d303f7b`; its registered R2 campaign failed with 1,005 killed and 11 surviving mutants out of 1,016. The exact verdict and progress artifacts are preserved under `libraries/cli-extended/.assay/archive/r2-4d303f7b-before-survivor-fixes-20261001/`. After the survivor follow-up, registered R0/R1 passed again with 100% statement and branch coverage (3,378 statements and 1,640 branches); a fresh R2 campaign and R3 run against the follow-up source remain required.
+**Status:** Correctness follow-up in progress. On 2026-10-01, registered R0/R1 and R3 passed on `4d303f7b`; its registered R2 campaign failed with 1,005 killed and 11 surviving mutants out of 1,016. The exact verdict and progress artifacts are preserved under `libraries/cli-extended/.assay/archive/r2-4d303f7b-before-survivor-fixes-20261001/`. The survivor follow-up passed registered R0/R1 and R3 on `0b0dbecd`, but its fresh R2 campaign ended with 1,006 killed and one candidate budget-exceeded out of 1,007. That candidate exposed an unbounded scan under a mutated EOF boundary; the scan is now finite and fresh R0/R1 passed with 100% statement and branch coverage (3,378 statements and 1,642 branches). Fresh R2 and R3 gates remain required.
 
 Self-review found false certifications in typed-choice checking and choice
 surface export. The correction models exact built-in conversions, marks
@@ -109,10 +109,12 @@ signatures. It keeps positional omission on the
 separate default-value path. The checker reports failures from modeled
 built-in conversions even when choices are absent. An earlier R2 run on
 `f49fdc13` ended with 909 killed, 48 survived, and one budget-exceeded
-candidate; those results are not for the current source. The current source's
-most recent complete campaign on `4d303f7b` killed 1,005 mutants and left 11
-survivors. Their follow-up changes are described in
-`docs/CLI-SURFACE-IMPLEMENTATION-PLAN.md`; they still need a fresh R2 campaign.
+candidate; those results are not for the current source. The `4d303f7b`
+campaign killed 1,005 mutants and left 11 survivors. Its follow-up commit
+`0b0dbecd` passed R0/R1 and R3, then ran all 1,007 R2 candidates: 1,006 were
+killed and one budget-exceeded after a greedy scan continued past EOF under a
+mutated predicate. That code now uses a finite range. Details and the next
+required gates are in `docs/CLI-SURFACE-IMPLEMENTATION-PLAN.md`.
 The same review found that a string-only `const` probe could not safely model
 numeric or `None` constants on runtimes that treat those values differently.
 The surface now probes each supported built-in const type, and Markdown
@@ -126,10 +128,12 @@ survivor follow-up, clean R0/R1 passed on `4d303f7b` at 05:08 UTC with 100%
 statement and branch coverage (3,371 statements and 1,634 branches). R3 passed
 on that revision with its expected canary rejection. An earlier committed
 R0/R1 attempt revealed a parser-case test that selected the wrong argument; it
-now selects the target argument by ID. The survivor follow-up source passed
+now selects the target argument by ID. The first survivor follow-up passed
 registered R0/R1 with 100% statement and branch coverage (3,378 statements and
-1,640 branches). CLI-EXT-04 remains incomplete until fresh R2 and R3 gates
-pass against the committed follow-up source.
+1,640 branches), and R3 passed. The bounded-scan follow-up passed registered
+R0/R1 with 100% statement and branch coverage (3,378 statements and 1,642
+branches). CLI-EXT-04 remains incomplete until fresh R2 and R3 gates pass
+against the bounded-scan follow-up source.
 
 **Type:** Feature
 
