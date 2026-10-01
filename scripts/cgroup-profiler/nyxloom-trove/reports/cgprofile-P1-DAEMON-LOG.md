@@ -1488,3 +1488,25 @@ P6 its requested current `cgprofile.slice` fact. These parent-unit values do
 not prove P6's delegated transient-scope/owned-leaf lifecycle, nor do they
 substitute for P1's reviewer-owned daemon/placement/restoration probes. No
 host namespace, host-escape, cockpit bus mount, or host mutation was used.
+
+### 36. Port direct behavioral oracles for isolated R2 survivors (2026-10-01)
+
+The exact isolated R2 tree `450fe53d0baca81ec5d32432c6c47117862fa992`
+failed with all 121 candidates accounted for: 109 killed and 12 survived,
+with no other buckets. The twelve were genuine oracle gaps in
+`lib/targets.py`'s proc-identity parsers, not equivalents. A later isolated
+run on `1080ac2f` passed 125/125, but neither result transfers to this release
+candidate.
+
+The current P1 implementation already rejects those malformed facts; the
+direct parser tests from the isolated repair were missing in this branch.
+Added behavioral coverage for missing/empty/malformed/non-positive `NSpid`,
+valid namespace numbers, missing/empty/truncated/non-numeric stat, wrong PID
+or delimiter, the malformed delimiter-at-record-start case, and valid zero
+start-time handling in both the parser and helper resolver. The helper
+combined-axis test keeps all other proc identity facts matching while the
+stat record is malformed. On content committed as
+`01912a917d7a6f0a417550f9c4319557a4c165ed`, serial focused
+`test_targets.py` + `test_helper_pid_target.py` passed: **167 passed in 6.50
+s**. This is focused evidence only; new exact-tip R0/R1, R3, R2, full gate,
+and final Sol review are still required.

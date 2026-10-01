@@ -1909,3 +1909,15 @@ growth measurement or bounded-memory claim is made here. The fresh adversarial
 review must assess whether this representation has sufficient headroom for
 the supported workload and state the evidence/limitation; do not equate
 discarding raw sample objects with bounded memory.
+
+### Isolated R2 survivor-oracle backport (2026-10-01)
+
+The prior exact-tree campaign on `450fe53d0baca81ec5d32432c6c47117862fa992`
+failed with 12 genuine proc-identity test-oracle gaps (109/121 killed, 12
+survived). A later independent campaign on `1080ac2f` passed 125/125, but
+neither receipt applies to this candidate. The candidate implementation
+already has the relevant fail-closed parsing behavior; the missing direct
+parser/helper oracles have now been ported and committed as
+`01912a917d7a6f0a417550f9c4319557a4c165ed`. The focused target/helper suite
+passed 167 tests. Exact-tip R2 must still be rerun; the old survivor set has
+not been declared equivalent.

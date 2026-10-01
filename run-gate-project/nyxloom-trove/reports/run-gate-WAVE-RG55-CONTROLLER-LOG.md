@@ -5560,3 +5560,23 @@ records are integrated, preserve the P6 assignments and renumber the six P1
 entries without changing their timestamps or substance: old P1 RW-385..RW-390
 are now RW-393..RW-398. Cross-references in the P1 and P6 reports/handoffs
 were updated. No product decision or code behavior changes.
+
+### RW-400 — 2026-10-01 01:22:22Z — port direct oracles for P1 R2 survivors
+
+The completed isolated R2 on exact tree
+`450fe53d0baca81ec5d32432c6c47117862fa992` remains a FAIL: 121/121
+accounted, 109 killed, 12 survived, no other buckets. The survivors were
+genuine parser-oracle gaps in `lib/targets.py`, not accepted as equivalent.
+The isolated worktree later recorded a separate PASS on `1080ac2f` (125/125
+killed), but that result does not judge this P1 release candidate.
+
+The P1 candidate already has the fail-closed parser behavior. I ported the
+missing direct behavioral tests to `tests/test_targets.py`, including absent,
+malformed and non-positive `NSpid`; absent, truncated, non-numeric, and
+misidentified `/proc/<pid>/stat`; malformed close-delimiter placement; and
+the valid zero start-time boundary at both parser and helper resolution.
+Focused `tests/test_targets.py` plus `tests/test_helper_pid_target.py` passed
+167 tests in 6.50 s on content committed as `01912a917d7a6f0a417550f9c4319557a4c165ed`.
+This closes the known oracle gaps locally but is not replacement R2 evidence.
+Fresh exact-tip registered gates, review, and a new R2/full-gate campaign
+remain required; do not transfer either isolated receipt to the release tip.
