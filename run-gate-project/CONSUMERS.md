@@ -162,7 +162,7 @@ schema_version = 1
 [environments.tester-unified]
 image = "tester-unified:local"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
-forward_env = ["SCHEMA_GATE_PW"]
+forward_env = ["SCHEMA_GATE_PW", "CGROUP_PARENT_DEV_BACKGROUND"]
 
 [lanes.suite]
 kind = "command"
@@ -195,41 +195,33 @@ cpus = "2"                          # RG-48: docker run --cpus (decimal string, 
                                     # FALLBACK for lanes that declare none of their own
                                     # (this lane's own value wins when both are set) --
                                     # the only resources key an environment accepts.
-# `memory_max` is an optional daemon placement ceiling for exec/bare-host
-# requests; it is not a second Docker limit. If omitted, the client derives the
-# placement ceiling from the verified gates slice and the lane request.
 
-# command kind:
-argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
+[lanes.assay_internal]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "gate"
+clean_tree = false
 
-# assay kind: assay_lane is required. Internal source mode omits both
-# assay_command and pins; run-gate installs the selected worktree's assay/.
-assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
+[lanes.assay_external]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "gate"
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-7.2.0.pyz"]
 
-# External/copy-consumer mode may instead supply both an explicit command and
-# its immutable pin:
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz"]
-[lanes.<name>.pins.assay]
-version = "<version>"               # checked against the command's --version
-sha256 = "tools/assay/assay-<version>.pyz.sha256"   # verified from its own directory
-# ...and NOTHING else. A pin table takes these two keys; any other is
-# refused at load (RG-32, rev 34). In particular `budget` here was never
-# enforced and is now a refusal: a kind = "assay" lane's real budget lives
-# in the TARGET assay.toml's [lanes.<assay_lane>], and run-gate's own
-# lane-level `budget` (one level up, no `pins` in the path) stays advisory.
-# A pin key that is itself a legal LANE key is named as one — "'clean_tree'
-# is a lane key; it belongs one level up in [lanes.<n>], where it is
-# load-bearing — move it, do not delete it". MOVE it: under a pin table it
-# never did anything, so the lane has been running with the default.
-# `budget` is the one exception and keeps its own message: its value belongs
-# in the target assay.toml, so there really is nothing to move.
+[lanes.assay_external.pins.assay]
+version = "7.2.0"
+sha256 = "tools/assay/assay-7.2.0.pyz.sha256"
 ```
 
-For an `assay` lane, replace `kind`/`argv` with `kind = "assay"` and
-`assay_lane = "<name declared in assay.toml>"`. Internal source mode omits
-`assay_command` and pins. External immutable mode supplies both, plus the
-`[lanes.<name>.pins.assay]` version and SHA-256 table; the target assay lane,
-not the pin table, owns its mutation budget.
+The `assay_internal` lane demonstrates source-backed mode: it omits
+`assay_command` and pins, so run-gate installs the selected worktree's
+`assay/`. The `assay_external` lane demonstrates immutable artifact mode; its
+pin table accepts only `version` and `sha256`. Lane options belong on the lane
+itself, and the target `assay.toml` owns the mutation budget.
+
+For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
+optional placement ceiling, not a second Docker memory limit. Without it,
+run-gate derives the ceiling from the verified gates-slice cap and request.
 
 Environment facts resolution order (no silent fallbacks anywhere):
 `cgroup_slice` declared on the environment → the variable named by
@@ -1106,8 +1098,11 @@ would silently drop every other lane's committed data).
   bounded `admission_wait` (10 minutes by default) with one warning. It never
   refuses a lane or changes its verdict because of host load; `--dry-run`
   reports the decision without waiting. Ephemeral lanes are admitted before
-  Docker starts, and use `$CGROUP_PARENT_DEV_GATES` when that verified sibling
-  slice is available.
+  Docker starts and use the parent resolved by their declared cgroup policy:
+  `cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
+  The selected source is required; absence fails closed instead of launching
+  under Docker's unconfined default. Long-running application stacks receive
+  `$CGROUP_PARENT_DEV_BACKGROUND` separately through declared `forward_env`.
 
 ## Per-project-type recipes
 

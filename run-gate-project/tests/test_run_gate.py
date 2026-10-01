@@ -3690,6 +3690,14 @@ class TestResourceAdmission:
         assert resources["memory_swap"] == "16g"
         repo = make_repo(tmp_path)
         project = make_project(repo, example)
+        import hashlib
+        artifact = project / "tools/assay/assay-7.2.0.pyz"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"documented external assay artifact")
+        sidecar = project / "tools/assay/assay-7.2.0.pyz.sha256"
+        sidecar.write_text(
+            f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}\n",
+            encoding="utf-8")
         proc = run_tool(project, "--list")
         assert proc.returncode == 0, proc.stderr
         assert "suite" in proc.stdout

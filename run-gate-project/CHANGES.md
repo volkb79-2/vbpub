@@ -7,7 +7,7 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself. This block covers the RG-55 P5 client package, the P4 follow-ups, and the source-backed Assay integration (rev 42 -> 43); every RG-specific entry below names its own RG id. -->
+<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself. This block covers the RG-55 P5 client package and mainline integrations through rev 47; every RG-specific entry below names its own RG id. -->
 
 - **RG-63 / P5 transport and watch client.** Add the v1.1 `auto`/`exec`/
   `socket` profiler carriers with one shared request/response parser, a
@@ -18,7 +18,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   bound is derived from the plan and pauses during high host memory PSI.
 - **RG-56 admission and placement.** Daemon-backed exec/bare-host lanes send
   declared or manifest-derived placement requests; ephemeral lanes use the
-  verified `CGROUP_PARENT_DEV_GATES` parent when available. Before a lane
+  parent resolved by their declared cgroup policy, whose inherited tester
+  default is the verified `CGROUP_PARENT_DEV_GATES` value. A missing selected
+  source is a hard startup error. Before a lane
   starts, a gates-slice request over the 90% headroom threshold waits at
   30-second checks for bounded `admission_wait` (10 minutes by default), then
   proceeds with one warning. Host load, daemon reachability, transport

@@ -5,7 +5,7 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "37fe63aa9a726acb57e58ded510b83c6e2fdec90"
+input_revision: "bb7e21b73a171e1b08ffa9e716ff5aa02ae80d84"
 depends_on: []
 session: fresh
 source:
@@ -216,11 +216,11 @@ shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 
 ## Target packets and current state
 
-### `P5`: run-gate v1.1 client, revision 43
+### `P5`: run-gate v1.1 client, revision 47
 
-Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, product
-implementation tip `37fe63aa9a726acb57e58ded510b83c6e2fdec90` (the packet is a
-tracked report in the same worktree). Read:
+Worktree: `.worktrees/rg55-p5-assay63-reconcile`, branch
+`rg55-p5-assay63-reconcile`; the controller supplies the exact final HEAD
+when dispatching review. Read:
 
 ```
 run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-HANDOFF.md
@@ -242,10 +242,15 @@ admission, schema-2 nullable watch/placement history, and synchronized
 adopter-facing documentation. This is the final source-backed reconciliation
 tree before the required quiet-tree gates; all prior P5 evidence is
 provisional because the Assay judge and mainline source integration changed.
-Review the full diff and run the real `selftest`, `assay-r1`, `assay-r2`,
-`assay-r3`, and `gate-full` gates as appropriate. P1/P6 mutation jobs may be
-running in their separate worktrees; do not edit, switch, or invalidate them.
-The P5 branch itself must be quiet while its mutation evidence is collected.
+Review the full diff and require green `selftest`, `assay-r1`, `assay-r3`,
+`doctor`, changed-line branch coverage, and live acceptance probes before
+review. The operator authorizes a provisional merge after those checks and a
+fresh Sol ACCEPT; run exact-tree `assay-r2` and `gate-full` asynchronously in
+attached CIU worktrees after that merge, without mutating the judged tree.
+Those two long-run results remain release blockers. Any repair changes the
+judged tree and requires fresh exact-tree short gates/review plus resumed or
+restarted long-run evidence before release. P1/P6 mutation jobs may be running
+in their separate worktrees; do not edit, switch, or invalidate them.
 Check the new request shape against both contract mirrors, run live acceptance
 probes for socket and Docker-exec carriers where the installed daemon permits,
 and disclose the cockpit's known `place-refused:no-gates-slice` condition if
@@ -401,13 +406,15 @@ review.
    smallest correct repair yourself, add a contract-level regression oracle,
    update all three user-facing documents when the capability/config/vocabulary
    changed, and commit in the isolated worktree.
-5. After any commit, treat prior mutation evidence for that tree as void. Run
-   the affected mutation lane again from the new exact tree with resume state
-   that belongs to that tree, plus the package's selftest, assay-r1, assay-r3,
-   and required live probes. Use the real `tester-unified` gate where the
-   package declares it; run run-gate-project's own bare-host selftest/r1/r2/r3
-   lanes exactly as declared. Read each verdict separately and record exit
-   markers, tree hashes, container names, PSI, and CPU caps.
+5. After any commit, treat prior mutation evidence for that tree as void.
+   Before provisional merge, require the affected package's selftest, assay-r1,
+   assay-r3, changed-line line+branch coverage, and required live probes on the
+   exact quiet tree. The controller may then run exact-tree assay-r2 and
+   gate-full asynchronously in attached CIU worktrees while integration
+   continues; their results are mandatory before release. Use the real
+   `tester-unified` gate where the package declares it; run run-gate-project's
+   own bare-host lanes exactly as declared. Read each verdict separately and
+   record exit markers, tree hashes, container names, PSI, and CPU caps.
 6. Review the final changed tree again. Return `ACCEPT` only when the reviewed
    code's 100% line+branch changed-line coverage and short package gates,
    docs, live probes, R-36h, and D-15 safety all support the claim. Use
@@ -507,8 +514,9 @@ perform those operations after your ACCEPT and the required post-review gates.
    with no shadowing or empty-default path? RW-319 already authorizes up to
    three current RG-55 mutation lanes under the verified five-CPU
    `dev-gates.slice`; that operational ruling does not approve RG56 changes.
-6. Which exact post-review release order is still valid: run-gate 23.8.0,
-   cgprofile 1.0.0, cgprofile 1.1.0, then run-gate 23.9.0 after P4/P6? Identify
+6. Which exact post-review release order is still valid: cgprofile 1.0.0
+   from the P1-only main snapshot, cgprofile 1.1.0 after P6, then run-gate
+   23.10.0 / revision 47 after P5's current-main integration? Identify
    any dependency that makes a sequence unsafe, but do not release it yourself.
 7. Can the final P3 probes use both the docker-exec and host socket carriers
    against the real daemon after it is installed from main? If the cockpit is

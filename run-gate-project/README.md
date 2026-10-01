@@ -59,7 +59,12 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `admission_wait`; `auto` uses the mounted Unix socket only after a
    successful version probe and otherwise uses the Docker-exec carrier.
    Daemon-backed exec and bare-host lanes may request measured memory
-   placement; ephemeral lanes use `CGROUP_PARENT_DEV_GATES` when configured.
+   placement; ephemeral lanes use the selected, verified gate cgroup parent.
+   The inherited tester environment resolves it from `cgroup_slice`, then
+   `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`; a missing selected
+   value is a hard error, never an unconfined Docker launch. Long-running
+   application stacks receive `$CGROUP_PARENT_DEV_BACKGROUND` separately
+   through the environment's declared `forward_env`.
    A daemon watch is one reader per session and records readings/verdicts;
    `killed` follows the declared stall path and `reported` is one warning,
    never a profiling verdict. When the daemon/watch is unavailable, the

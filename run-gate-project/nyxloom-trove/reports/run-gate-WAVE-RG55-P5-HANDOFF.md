@@ -1,12 +1,27 @@
 # run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-63 transport/watch/placement, RG-56 admission)
 
-**Implementer:** FRESH Sonnet session, checkpoint clause on (HARD).
+**Historical implementer contract:** FRESH Sonnet session, checkpoint clause on (HARD).
 Fourth run-gate package of the RG-55 wave (rulings RW-29..RW-35). Records:
 `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-{LOG,REPORT,BRIEF-n}.md`.
-Release after review: run-gate **23.9.0**, `__revision__ = 43` (the
-controller runs `cmru release` and installs the wheel).
 
-## Where you work
+## Controller continuation — 2026-10-01
+
+The P5 implementation is integrated with current main in
+`.worktrees/rg55-p5-assay63-reconcile`, branch
+`rg55-p5-assay63-reconcile`. The mainline integration commit is `bb7e21b7`;
+candidate source identity is `__revision__ = 47`, targeting run-gate 23.10.0
+(23.9.1 is already released). The controller supplies the exact final HEAD to
+the fresh Sol reviewer after the target documentation and gates are final.
+
+Mainline rev 44 supersedes the older optional gates-parent wording in C3
+below: gate/lane containers resolve their required parent through
+`cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
+Absence of the selected source is a hard error. A lane that deliberately
+starts a long-running application stack receives
+`$CGROUP_PARENT_DEV_BACKGROUND` separately through declared `forward_env`.
+Do not restore the former silent/default-parent behavior.
+
+## Original implementation dispatch (historical; current checkout above)
 
 ```
 git -C /workspaces/vbpub worktree add .worktrees/rg55-client-v11 -b rg55-client-v11 <base>
@@ -66,14 +81,15 @@ absent / permission denied / no answer / docker exec failed). `--dry-run`
 discloses the carrier. Goldens `fixtures/rg55/socket/*-request.json` are
 asserted byte-for-byte against what your builder emits for each verb.
 
-**C3 — gates slice default (D-19, D-24).** Ephemeral lane containers get
-`--cgroup-parent "$CGROUP_PARENT_DEV_GATES"` when that variable is set and
-non-empty (unset → today's behaviour, disclosed once by `doctor` as "gates
-slice: not configured — lanes run under the default parent"); a docker
-`run` failure whose stderr names the cgroup parent is reported with a
-WARNING naming mdt host-setup (`dev-gates.slice` not installed) and the
-lane FAILS as any other docker failure (never silently re-run elsewhere).
-SPEC R-30 amended; CONSUMERS names the variable; `doctor` shows it.
+**C3 — gates parent (D-19, D-24; updated for mainline rev 44).** Ephemeral
+lane containers use the parent resolved from the environment's declared
+`cgroup_slice`, then its `cgroup_slice_env`, then the required
+`$CGROUP_PARENT_DEV_GATES`. A missing selected source is a hard error, never
+an unconfined Docker launch. The same resolved parent is forwarded to the
+child as `CGROUP_PARENT_DEV_GATES`; `$CGROUP_PARENT_DEV_BACKGROUND` is a
+separate declared `forward_env` fact for a deliberately started long-running
+application stack. A Docker `run` failure naming the cgroup parent remains a
+failure; never retry silently under another parent.
 
 **C4 — policy author (D-27, §8.4).** At `ctl start` run-gate passes:
 `--progress-stream <path as the lane sees it>` for lanes that have one

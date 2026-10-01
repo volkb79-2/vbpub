@@ -1917,9 +1917,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   derives a ceiling from the request and verified gates-slice cap. Applied
   placement is recorded as nullable history/inflight data. Refusal or lack of
   a placement fact warns and runs unplaced. Ephemeral lanes retain their
-  Docker memory/CPU controls and are placed in the verified
-  `$CGROUP_PARENT_DEV_GATES` parent when configured; an unset/unverifiable
-  gates parent is disclosed rather than invented.
+  Docker memory/CPU controls and resolve their parent from the environment's
+  `cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
+  The selected source is required; absence is a hard configuration error,
+  never an unconfined Docker launch. The inherited tester environment binds
+  `cgroup_slice_env` to the host-provided gates value.
 - **`R-45` Bounded admission (RG-63/C7).** Before a daemon-backed lane starts,
   run-gate reads the profiler's host document. If the verified gates slice's
   current memory plus the lane request exceeds 90% of its maximum, the client
