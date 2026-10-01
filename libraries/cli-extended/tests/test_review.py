@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from cli_extended import (
+    ArgumentSpec,
     CliIdentity,
     CliRegistry,
     OptionSpec,
@@ -110,6 +111,22 @@ def _choice_value(action, preferred=None):
     return "VALUE"
 
 
+def _option_argv(action, spelling=None):
+    nargs = action.get("nargs")
+    minimum = action.get("minimum_values")
+    if minimum is None:
+        if nargs is None or nargs == "+":
+            minimum = 1
+        elif isinstance(nargs, int):
+            minimum = max(0, nargs)
+        else:
+            minimum = 0
+    argv = [spelling or action["flags"][0]]
+    if nargs != 0:
+        argv.extend(_choice_value(action) for _ in range(int(minimum)))
+    return argv
+
+
 def _candidate_argv(candidate, surface):
     route = next(route for route in surface["routes"] if route["id"] == candidate["route_id"])
     actions = {action["id"]: action for action in route["actions"]}
@@ -118,37 +135,87 @@ def _candidate_argv(candidate, surface):
     if kind == "route-alias":
         argv[-1] = candidate["shape"]["alias"]
     elif kind == "minimum":
-        for _argument in candidate["shape"]["required_arguments"]:
-            argv.append("RESOURCE")
+        for argument_id in candidate["shape"]["required_arguments"]:
+            count = int(
+                candidate["shape"].get("required_argument_values", {}).get(
+                    argument_id, 1
+                )
+            )
+            argv.extend("RESOURCE" for _ in range(count))
         required_options = list(candidate["shape"]["required_options"])
         for _group_id, option_ids in candidate["shape"]["required_exclusive_groups"].items():
             required_options.append(option_ids[0])
         for option_id in required_options:
-            action = actions[option_id]
-            flag = action["flags"][0]
-            argv.append(flag)
-            if action.get("nargs") != 0:
-                argv.append(_choice_value(action))
+            argv.extend(_option_argv(actions[option_id]))
     elif kind in {"argument-shape", "argument-choice"}:
+        action = actions[candidate["shape"]["argument_id"]]
         if kind == "argument-choice":
-            argv.append(str(candidate["shape"]["choice"]))
+            value = str(candidate["shape"]["choice"])
         else:
-            argv.append("RESOURCE")
+            value = "RESOURCE"
+        count = max(1, int(action.get("minimum_values", 0)))
+        argv.extend(value for _ in range(count))
     elif kind == "option-spelling":
         spelling = candidate["shape"]["spelling"]
         action = actions[candidate["shape"]["option_id"]]
-        argv.append(spelling)
-        if action.get("nargs") != 0:
-            argv.append(_choice_value(action))
+        argv.extend(_option_argv(action, spelling))
     elif kind == "option-choice":
         action = actions[candidate["shape"]["option_id"]]
-        argv.extend((action["flags"][0], str(candidate["shape"]["choice"])))
+        option_argv = _option_argv(action)
+        if action.get("nargs") != 0:
+            if len(option_argv) == 1:
+                option_argv.append(str(candidate["shape"]["choice"]))
+            else:
+                option_argv[1] = str(candidate["shape"]["choice"])
+        argv.extend(option_argv)
     elif kind in {"exclusive-member", "exclusive-conflict", "interaction"}:
-        for member_id in candidate["members"]:
-            action = actions[member_id]
-            argv.append(action["flags"][0])
-            if action.get("nargs") != 0:
-                argv.append(_choice_value(action))
+        member_ids = list(candidate["members"])
+        if kind == "interaction":
+            for _argument_id in candidate["shape"].get("required_arguments", ()):
+                count = int(
+                    candidate["shape"].get("required_argument_values", {}).get(
+                        _argument_id, 1
+                    )
+                )
+                argv.extend("RESOURCE" for _ in range(count))
+            member_ids.extend(candidate["shape"].get("required_options", ()))
+            for option_ids in candidate["shape"].get(
+                "required_exclusive_groups", {}
+            ).values():
+                if option_ids:
+                    member_ids.append(option_ids[0])
+        for member_id in dict.fromkeys(member_ids):
+            action = actions.get(member_id)
+            if action is None:
+                continue
+            argv.extend(_option_argv(action))
+        if kind == "interaction":
+            for external_option in candidate["shape"].get("external_options", ()):
+                owner_route = next(
+                    (
+                        item
+                        for item in surface["routes"]
+                        if item["id"] == external_option["route_id"]
+                    ),
+                    None,
+                )
+                if owner_route is None:
+                    raise AssertionError(
+                        f"missing route for external option {external_option['id']}"
+                    )
+                external_action = next(
+                    (
+                        action
+                        for action in owner_route["actions"]
+                        if action["id"] == external_option["id"]
+                    ),
+                    None,
+                )
+                if external_action is None:
+                    raise AssertionError(
+                        f"missing action for external option {external_option['id']}"
+                    )
+                argv.extend(_option_argv(external_action))
     return argv
 
 
@@ -434,6 +501,317 @@ def test_catalog_interaction_parser_rejects_unrepresentable_shapes():
     for value, message in invalid:
         with pytest.raises(ReviewCatalogError, match=message):
             _parse_interaction_groups(value)
+
+
+def test_interaction_requires_each_local_option_with_a_valid_value_shape():
+    app = _build_cli()
+    surface = export_cli_surface(app, interaction_groups=INTERACTIONS)
+    candidate = next(
+        item for item in surface["candidates"] if item["kind"] == "interaction"
+    )
+    invocation = _candidate_argv(candidate, surface)
+
+    def findings(argv):
+        case = _case_for_candidate(candidate, argv)
+        return _review_findings(
+            {**surface, "candidates": [candidate]},
+            ReviewCatalog("audit-tool", 128, (), (case,)),
+        )
+
+    assert findings(invocation) == []
+
+    without_mode = list(invocation)
+    mode_index = without_mode.index("--mode")
+    del without_mode[mode_index : mode_index + 2]
+    assert any(
+        "does not supply participating option" in finding
+        for finding in findings(without_mode)
+    )
+
+    without_mode_value = list(invocation)
+    mode_index = without_mode_value.index("--mode")
+    del without_mode_value[mode_index + 1]
+    assert any(
+        "valid value shape for participating option" in finding
+        for finding in findings(without_mode_value)
+    )
+
+    invalid_mode = list(invocation)
+    mode_index = invalid_mode.index("--mode")
+    invalid_mode[mode_index + 1] = "unexpected"
+    assert any(
+        "valid value shape for participating option" in finding
+        for finding in findings(invalid_mode)
+    )
+
+    inline_flag = list(invocation)
+    dry_run_index = inline_flag.index("--dry-run")
+    inline_flag[dry_run_index] = "--dry-run=true"
+    assert any(
+        "inline value to flag-only option" in finding
+        for finding in findings(inline_flag)
+    )
+
+
+def test_cross_route_interaction_requires_the_foreign_option_and_valid_target_arguments():
+    identity = CliIdentity("MONITOR", "1.0", "Task Monitor", command="monitor-task")
+    registry = CliRegistry(identity, prog="monitor-task", description="Monitor tasks.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="fetch one task snapshot",
+            arguments=(ArgumentSpec("task_uuid", "task UUID"),),
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "watch",
+            description="poll until the task is terminal",
+            arguments=(ArgumentSpec("task_uuid", "task UUID"),),
+            options=(
+                OptionSpec(("--poll",), "poll interval", parser_kwargs={"type": int}),
+                OptionSpec(
+                    ("--dry-run",),
+                    "preview only",
+                    parser_kwargs={"action": "store_true"},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    base_surface = export_cli_surface(app)
+    routes = {tuple(route["path"]): route for route in base_surface["routes"]}
+    show_route = routes[("show",)]
+    watch_route = routes[("watch",)]
+    poll_option = next(
+        action for action in watch_route["actions"] if action.get("flags") == ["--poll"]
+    )
+    dry_run_option = next(
+        action
+        for action in watch_route["actions"]
+        if action.get("flags") == ["--dry-run"]
+    )
+    interaction = {
+        "id": "watch-option-on-show",
+        "route_id": show_route["id"],
+        "option_ids": (poll_option["id"], dry_run_option["id"]),
+    }
+    surface = export_cli_surface(app, interaction_groups=(interaction,))
+    candidate = next(
+        candidate
+        for candidate in surface["candidates"]
+        if candidate["kind"] == "interaction"
+    )
+    assert candidate["shape"]["external_options"] == [
+        {
+            "id": dry_run_option["id"],
+            "route_id": watch_route["id"],
+            "path": ["watch"],
+            "flags": ["--dry-run"],
+            "nargs": 0,
+            "minimum_values": 0,
+            "choices": None,
+            "action": dry_run_option["action"],
+        },
+        {
+            "id": poll_option["id"],
+            "route_id": watch_route["id"],
+            "path": ["watch"],
+            "flags": ["--poll"],
+            "nargs": None,
+            "minimum_values": 1,
+            "choices": None,
+            "action": poll_option["action"],
+        },
+    ]
+
+    def findings(invocation):
+        case = _case_for_candidate(candidate, invocation)
+        return _review_findings(
+            {
+                **surface,
+                "candidates": [candidate],
+            },
+            ReviewCatalog("monitor-task", 8, (), (case,)),
+        )
+
+    assert findings(
+        ("show", "TASK-UUID", "--poll", "5", "--dry-run")
+    ) == []
+    assert any(
+        "does not supply the out-of-route option" in finding
+        for finding in findings(("show", "TASK-UUID"))
+    )
+    assert any(
+        "does not provide a valid value shape for out-of-route option" in finding
+        for finding in findings(("show", "TASK-UUID", "--poll"))
+    )
+    assert any(
+        "inline value to flag-only out-of-route option" in finding
+        for finding in findings(
+            ("show", "TASK-UUID", "--poll=5", "--dry-run=true")
+        )
+    )
+    assert any(
+        "omits required positional argument" in finding
+        for finding in findings(("show", "--poll", "5"))
+    )
+    assert any(
+        "does not provide a valid value shape for out-of-route option" in finding
+        for finding in findings(("show", "TASK-UUID", "--poll", "--dry-run"))
+    )
+    assert any(
+        "at the target route's parser depth" in finding
+        for finding in findings(("--poll", "5", "show", "TASK-UUID", "--dry-run"))
+    )
+    assert any(
+        "does not supply the out-of-route option" in finding
+        for finding in findings(
+            ("show", "TASK-UUID", "--", "--poll", "5", "--dry-run")
+        )
+    )
+    unknown_required = {
+        **candidate,
+        "shape": {**candidate["shape"], "required_options": ["missing-option"]},
+    }
+    unknown_case = _case_for_candidate(
+        unknown_required, ("show", "TASK-UUID", "--poll=5")
+    )
+    unknown_findings = _review_findings(
+        {**surface, "candidates": [unknown_required]},
+        ReviewCatalog("monitor-task", 8, (), (unknown_case,)),
+    )
+    assert any(
+        "references unknown required option missing-option" in item
+        for item in unknown_findings
+    )
+
+
+def test_interaction_invocation_must_satisfy_target_route_requirements():
+    identity = CliIdentity("MONITOR", "1.0", "Task Monitor", command="monitor-task")
+    registry = CliRegistry(identity, prog="monitor-task", description="Monitor tasks.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="fetch one task snapshot",
+            arguments=(ArgumentSpec("task_uuid", "task UUID"),),
+            options=(
+                OptionSpec(
+                    ("--config",),
+                    "configuration file",
+                    parser_kwargs={
+                        "required": True,
+                        "choices": ("file", "inline"),
+                    },
+                ),
+                OptionSpec(
+                    ("--from-file",),
+                    "read config from file",
+                    mutually_exclusive_group="source",
+                    mutually_exclusive_required=True,
+                ),
+                OptionSpec(
+                    ("--from-inline",),
+                    "read inline config",
+                    mutually_exclusive_group="source",
+                    mutually_exclusive_required=True,
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            "watch",
+            description="poll until the task is terminal",
+            options=(OptionSpec(("--poll",), "poll interval"),),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    base_surface = export_cli_surface(app)
+    routes = {tuple(route["path"]): route for route in base_surface["routes"]}
+    show_route = routes[("show",)]
+    watch_route = routes[("watch",)]
+    poll_option = next(
+        action for action in watch_route["actions"] if action.get("flags") == ["--poll"]
+    )
+    interaction = {
+        "id": "watch-option-on-show",
+        "route_id": show_route["id"],
+        "option_ids": (poll_option["id"],),
+    }
+    surface = export_cli_surface(app, interaction_groups=(interaction,))
+    candidate = next(
+        candidate
+        for candidate in surface["candidates"]
+        if candidate["kind"] == "interaction"
+    )
+
+    def findings(invocation):
+        case = _case_for_candidate(candidate, invocation)
+        return _review_findings(
+            {**surface, "candidates": [candidate]},
+            ReviewCatalog("monitor-task", 8, (), (case,)),
+        )
+
+    valid = (
+        "show", "TASK-UUID", "--config", "file", "--from-file", "PATH", "--poll=5"
+    )
+    assert findings(valid) == []
+    assert any(
+        "omits required option" in finding
+        for finding in findings(
+            ("show", "TASK-UUID", "--from-file", "PATH", "--poll=5")
+        )
+    )
+    assert any(
+        "omits a value for required option" in finding
+        for finding in findings(
+            ("show", "TASK-UUID", "--config", "--from-file", "PATH", "--poll=5")
+        )
+    )
+    assert any(
+        "exactly one option from required group" in finding
+        for finding in findings(
+            ("show", "TASK-UUID", "--config", "file", "--poll=5")
+        )
+    )
+    assert any(
+        "exactly one option from required group" in finding
+        for finding in findings(
+            (
+                "show", "TASK-UUID", "--config", "file", "--from-file", "PATH",
+                "--from-inline", "VALUE", "--poll=5",
+            )
+        )
+    )
+    assert any(
+        "omits a value for required group" in finding
+        for finding in findings(
+            ("show", "TASK-UUID", "--config", "file", "--from-file", "--poll=5")
+        )
+    )
+    assert any(
+        "does not provide a valid value shape for out-of-route option" in finding
+        for finding in findings(
+            (
+                "show", "TASK-UUID", "--config", "file", "--from-file", "PATH",
+                "--poll", "--from-inline", "VALUE",
+            )
+        )
+    )
+    assert any(
+        "outside the choices for required option" in finding
+        for finding in findings(
+            (
+                "show", "TASK-UUID", "--config", "other", "--from-file", "PATH",
+                "--poll=5",
+            )
+            )
+        )
 
 
 def test_catalog_loader_rejects_unrepresentable_toml_shapes(tmp_path, monkeypatch):
@@ -842,7 +1220,7 @@ def test_surface_markdown_lists_delegated_group_children():
     group_id = "route:entrypoint:audit-tool/plugins"
     child_id = f"{group_id}/inspect"
     surface = {
-        "schema_version": 3,
+        "schema_version": 4,
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -1088,7 +1466,7 @@ def test_render_route_invocation_modes_describe_the_parser_receiving_argv():
         },
     ]
     surface = {
-        "schema_version": 3,
+        "schema_version": 4,
         "entrypoint": {
             "command": "audit-tool",
             "prog": "audit-tool",
@@ -2967,7 +3345,7 @@ def test_sync_is_idempotent_preserves_outside_bytes_and_never_rewrites_catalog(t
     assert synced.endswith(suffix)
     assert b"\r\nAfter\r\n" in synced
     assert review.read_bytes() == original_review
-    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 3
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schema_version"] == 4
     assert SURFACE_START_MARKER.encode() in synced
     assert SURFACE_END_MARKER.encode() in synced
 

@@ -203,7 +203,13 @@ force adopters to prove that the registry and external file stay synchronized.
 Keep `CliRegistry` as the source for parser registration, help, and dispatch.
 Export its built argparse tree after callbacks have run so callback-added
 syntax is visible, and mark fields the exporter cannot enumerate as
-incomplete.
+incomplete. An ordinary callback can add inspectable argparse actions. A
+callback or parser subclass that replaces token-parsing methods, changes
+parser-level defaults that are not represented by built actions, or corrupts the option to
+action lookup makes the surface incomplete because an action listing alone
+would no longer describe what the parser accepts. Delegated global options are
+checked against the parent action's parsing and value shape; a spelling match
+alone cannot establish that two parser layers handle the token the same way.
 
 Syntax alone does not say whether `--dry-run` without a selector is meaningful,
 what a command will read or change, or whether an output mode is valid during a
@@ -255,6 +261,25 @@ predict acceptance, or try every subset of every option. Option names and help
 copy are not evidence for behavior. Relevant syntax changes alter candidate
 signatures and request a new decision; removed records stay stale until an
 owner explicitly retires them with a reason.
+
+An interaction may name an option owned by a different route. This lets the
+consumer record both the target command and the foreign option shape in one
+stable case, such as passing watch-only `--poll` to `show`. The checker requires
+that option to remain unknown on the target parser and checks the target's
+required baseline syntax. It also checks required value tokens for a
+value-taking foreign option, using options on the target parser as token
+boundaries, and refuses inline values for a flag-only option. It still does not
+invoke argparse or a handler. The consumer's behavior test remains responsible
+for proving the actual refusal.
+
+The generator does not guess whether a product cares about an optional value
+being present or about an option being repeated. Consumers declare separate
+named interactions for distinct forms such as `--color` versus
+`--color VALUE`, or one `--tag` versus two `--tag` occurrences. The catalog and
+generated spec retain those exact argv examples and test links; check mode
+validates route and option presence, while the behavior test asserts the
+specific value-count rule. This keeps generic enumeration bounded and makes
+the product's reason for testing each form explicit.
 
 The shared sync/check/template command means adopters do not implement parser
 walkers, a candidate enumerator, a Markdown table renderer, or merge logic.

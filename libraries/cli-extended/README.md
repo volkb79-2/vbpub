@@ -305,9 +305,9 @@ follow-ups.
 
 `RegisteredCli` can export its built parser tree as stable JSON and generate a
 bounded semantic-review checklist. Its generated Markdown shows each route's
-invocation mode, the entrypoint's empty-argv behavior, and how each route handles
-its remaining tokens (including delegated groups and single-command routes),
-behavior and confirmation policy,
+invocation mode, help summary and description, the entrypoint's empty-argv
+behavior, and how each route handles its remaining tokens (including delegated
+groups and single-command routes), behavior and confirmation policy,
 parser settings (including how negative-number tokens are parsed) and callbacks,
 delegated metadata, and opaque fields. Its argument and option rows include descriptions,
 grammar shape, argparse action and converter, choices, defaults, const values,
@@ -330,7 +330,23 @@ Minimum cases must supply required option values and exactly one alternative
 from each required exclusive group. A flag-only option cannot use `--flag=value`.
 The checker does not invoke parser converters or command handlers. The linked
 test must still run the real invocation and assert its behavior and effects;
-the marker proves test collection and linkage only.
+the marker proves test collection and linkage only. Catalog interactions may
+refer to an option owned by another route, so a consumer can record a misuse
+such as `show --poll` and link the real refusal test. The structural check
+requires the target route's required arguments and options and confirms the
+foreign spelling appears as an unrecognized option at the target route's
+parser depth. It consumes a value-taking foreign option using its owner action's
+arity and the target parser's option boundaries, so that value cannot satisfy a
+required target positional. It checks minimum/fixed arity and enumerable
+choices; flag-only options cannot carry an inline value.
+Parser callbacks that add ordinary argparse actions are inventoried; callbacks
+that replace argparse parsing methods, set uncaptured parser-level defaults, or leave
+the option lookup table inconsistent make the surface incomplete. For
+optional-arity, variadic, or repeatable options with distinct behavior, declare
+separate named interactions for each reviewed invocation shape; the generator
+does not guess every repetition or value count. See the
+[consumer workflow](docs/CONSUMERS.md#review-cross-route-and-arity-interactions)
+for examples and limits.
 
 Expose an import-safe function such as `example.cli:build_cli` that returns the
 consumer's `RegisteredCli`, then run:

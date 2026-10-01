@@ -705,7 +705,7 @@ delegated paths, positional and option IDs/shapes, option aliases, defaults,
 choices, requiredness, scope/placement, exclusive groups, synopsis, behavior
 and confirmation policy, parser-scoped `allow_abbrev`, argparse's
 negative-number matcher and whether that parser registers negative-number-like
-options, and actions added by parser callbacks. The JSON surface schema version is `3`; each route records
+options, and actions added by parser callbacks. The JSON surface schema version is `4`; each route records
 `single_command` and `no_args_action`, and those values participate in
 candidate signatures so a change to empty-invocation behavior requires review.
 Each route also records
@@ -721,8 +721,8 @@ action IDs are unique within their route. Single-command entrypoints MUST NOT
 claim the `help <verb>` builtin. Help wording is not identity.
 
 The generated Markdown route table MUST show the route's invocation mode and
-empty-argv result, mutation/behavior labels, confirmation availability,
-synopsis and usage overrides, delegated
+empty-argv result, help summary and description, mutation/behavior labels,
+confirmation availability, synopsis and usage overrides, delegated
 metadata, parser settings including negative-number token handling, whether a
 parser callback ran, opaque fields, and
 whether syntax is complete. Its argument and option table MUST show each
@@ -750,14 +750,33 @@ delegation chain and for the final delegated command. The Markdown shows these
 contracts separately, and their behavior/confirmation fields affect candidate
 signatures. Wrapper-local arguments/options/callback syntax that
 the delegate runtime does not apply, and inherited global options absent from
-the delegated parser, MUST mark the surface incomplete.
+the delegated parser, MUST mark the surface incomplete. A delegated parser's
+inherited global actions MUST preserve the parent action's flags, destination,
+action type, `nargs`, converter, choices, constant, default, requiredness, and
+metavar; a mismatch makes every route under that delegate incomplete because
+the wrapper and child can split or interpret the same leading tokens
+differently.
 
 The generated checklist is a bounded set of review dimensions, not a set of
 invented executable examples or inferred outcomes. It covers minimum valid
 invocation syntax,
 each positional shape and enumerable choice, each product-owned option
 spelling and choice, exclusive alternatives/conflicting pairs, parser route
-aliases, and catalog-declared option interactions. It MUST NOT enumerate the
+aliases, and catalog-declared option interactions, including a target route
+combined with an option registered only on another route. Such a case's
+signature MUST include the foreign option's owning route and action shape.
+Check mode MUST require the foreign spelling as an unrecognized option token
+on the target route, and MUST require that route's required positionals,
+required options, and required-exclusive selections so the case isolates the
+intended interaction. For a value-taking foreign option, it MUST check the
+owner action's minimum value count while treating options recognized by the
+target route as value boundaries; a flag-only foreign option MUST reject an
+inline value. If an option ID is ambiguous across routes and does not
+resolve uniquely on the target route, surface generation MUST refuse it.
+The generator does not automatically enumerate every value count or repeated
+occurrence for optional-arity, variadic, or repeatable options; consumers MUST
+declare distinct named interactions when those invocation shapes carry
+different product meaning. It MUST NOT enumerate the
 full power set of switches. The default cap is 512 candidates; a product may
 raise the cap explicitly. The exporter MUST fail on overflow instead of
 truncating. The standard library owns its common controls such as verbosity,
@@ -772,6 +791,11 @@ syntax incomplete; product cases and tests still own its accepted values and
 failure boundary. An unenumerable parser field or missing parser route MUST
 make the surface incomplete and fail check. The exporter MUST never discard a
 field or serialize an unstable object representation to imply completeness.
+Ordinary parser callbacks that add inspectable argparse actions are supported.
+A callback or parser subclass that replaces an argparse token-parsing method,
+sets uncaptured parser-level defaults, or leaves `_option_string_actions`
+inconsistent with the parser's actions MUST make the surface incomplete; an
+action inventory alone cannot describe that parser's accepted syntax.
 
 The TOML catalog has `schema_version = 1`, `cli_id`, optional
 `max_candidates`, `interaction_groups`, and `[[cases]]` records. Each active
@@ -797,7 +821,11 @@ not satisfy the candidate. A flag-only option with an inline value is not a
 valid occurrence. It MUST resolve long-option abbreviations using the
 `allow_abbrev` setting of the parser at that depth. A non-default `prefix_chars`
 or enabled `fromfile_prefix_chars` MUST make the surface incomplete until the
-checker can represent those token rules. In a generated minimum case, a
+checker can represent those token rules. A callback that replaces an argparse
+token-parsing method, sets uncaptured parser-level defaults, or leaves the
+parser's option-action lookup inconsistent MUST also make the surface
+incomplete. Ordinary callbacks that add inspectable argparse actions remain
+supported. In a generated minimum or interaction case, a
 required option counts only
 when it is an active option token, its declared minimum values are supplied,
 and exactly one alternative is present for each required exclusive group. It

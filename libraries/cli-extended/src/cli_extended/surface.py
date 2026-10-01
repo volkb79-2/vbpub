@@ -28,13 +28,32 @@ from .parser import (
     _common_option_specs,
 )
 
-SURFACE_SCHEMA_VERSION = 3
+SURFACE_SCHEMA_VERSION = 4
 DEFAULT_MAX_CANDIDATES = 512
 _LIBRARY_OWNED_COMMON_OPTIONS = {
     "--help", "--version", "--log-level", "--quiet", "--debug", "--verbose",
     "--color", "--no-color", "--progress",
 }
 _DEFAULT_NEGATIVE_NUMBER_MATCHER = argparse.ArgumentParser(add_help=False)._negative_number_matcher
+_PARSER_SYNTAX_METHODS = (
+    "parse_args",
+    "parse_known_args",
+    "_parse_known_args",
+    "_parse_optional",
+    "_get_option_tuples",
+    "_match_argument",
+    "_match_arguments_partial",
+    "_read_args_from_files",
+    "convert_arg_line_to_args",
+    "_get_values",
+    "_get_value",
+    "_check_value",
+    "_get_nargs_pattern",
+)
+_ARGPARSE_SYNTAX_METHODS = {
+    name: getattr(argparse.ArgumentParser, name)
+    for name in _PARSER_SYNTAX_METHODS
+}
 
 
 class SurfaceError(ValueError):
@@ -517,6 +536,120 @@ def _negative_number_settings(
     )
 
 
+def _parser_syntax_issues(
+    parser: argparse.ArgumentParser, *, route_id: str
+) -> list[str]:
+    """Find parser behavior changes that an action inventory cannot describe."""
+
+    issues: list[str] = []
+    for name, expected in _ARGPARSE_SYNTAX_METHODS.items():
+        implementation = getattr(type(parser), name, None)
+        instance_implementation = parser.__dict__.get(name)
+        instance_overrides = (
+            name in parser.__dict__
+            and getattr(instance_implementation, "__func__", None) is not expected
+        )
+        if implementation is not expected or instance_overrides:
+            issues.append(
+                f"{route_id}: parser overrides argparse syntax method {name}"
+            )
+
+    parser_defaults = getattr(parser, "_defaults", {})
+    if parser_defaults:
+        actions_by_dest: dict[str, list[argparse.Action]] = {}
+        for action in parser._actions:
+            if action.dest != argparse.SUPPRESS:
+                actions_by_dest.setdefault(str(action.dest), []).append(action)
+
+        def normalized_default(value: Any) -> str | None:
+            opaque: list[str] = []
+            normalized = _normalize(value, path="parser_default", opaque=opaque)
+            if opaque:
+                return None
+            return json.dumps(
+                normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            )
+
+        uncaptured: list[str] = []
+        for destination, default in parser_defaults.items():
+            matching_actions = actions_by_dest.get(str(destination), ())
+            parser_default = normalized_default(default)
+            if not matching_actions or parser_default is None or any(
+                normalized_default(action.default) != parser_default
+                for action in matching_actions
+            ):
+                uncaptured.append(str(destination))
+        if uncaptured:
+            issues.append(
+                f"{route_id}: parser has uncaptured parser-level defaults: "
+                + ", ".join(sorted(set(uncaptured)))
+            )
+
+    actions = {id(action) for action in parser._actions}
+    for flag, action in parser._option_string_actions.items():
+        if id(action) not in actions or flag not in action.option_strings:
+            issues.append(
+                f"{route_id}: parser option lookup for {flag!r} does not match its action"
+            )
+    for action in parser._actions:
+        for flag in action.option_strings:
+            if parser._option_string_actions.get(flag) is not action:
+                issues.append(
+                    f"{route_id}: parser action lookup for {flag!r} does not match"
+                )
+    return issues
+
+
+def _delegated_option_shape(action: argparse.Action) -> dict[str, Any]:
+    """Return the syntax and value contract that a delegated parser must inherit."""
+
+    opaque: list[str] = []
+    return {
+        "flags": sorted(action.option_strings),
+        "dest": action.dest,
+        "action": f"{type(action).__module__}.{type(action).__qualname__}",
+        "nargs": _normalize(action.nargs, path="delegated.nargs", opaque=opaque),
+        "type": _normalize(
+            action.type, path="delegated.type", opaque=opaque
+        ),
+        "choices": _safe_choice_values(
+            action.choices, path="delegated.choices", opaque=opaque
+        ),
+        "const": _normalize(action.const, path="delegated.const", opaque=opaque),
+        "default": _normalize(
+            action.default, path="delegated.default", opaque=opaque
+        ),
+        "required": bool(action.required),
+        "metavar": _normalize(
+            action.metavar, path="delegated.metavar", opaque=opaque
+        ),
+    }
+
+
+def _registered_global_shapes(
+    parser: argparse.ArgumentParser,
+    options: Sequence[OptionSpec],
+) -> dict[str, dict[str, Any]]:
+    """Capture the built parser's syntax for globals forwarded to delegates."""
+
+    shapes: dict[str, dict[str, Any]] = {}
+    for option in options:
+        action = next(
+            (
+                parser._option_string_actions[flag]
+                for flag in option.flags
+                if flag in parser._option_string_actions
+            ),
+            None,
+        )
+        if action is None:
+            continue
+        shape = _delegated_option_shape(action)
+        for flag in option.flags:
+            shapes[flag] = shape
+    return shapes
+
+
 def _route_id(entrypoint_id: str, spec: VerbSpec | None, path: Sequence[str]) -> str:
     if spec is not None and spec.surface_id is not None:
         return spec.surface_id
@@ -584,6 +717,7 @@ def _describe_parser(
     local_actions: list[argparse.Action] = []
     subparser_actions: list[argparse._SubParsersAction] = []
     local_incomplete: list[str] = []
+    local_incomplete.extend(_parser_syntax_issues(parser, route_id=route_id))
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
             subparser_actions.append(action)
@@ -797,27 +931,47 @@ def _walk_registered_cli(
     path_prefix: tuple[str, ...],
     inherited_specs: tuple[VerbSpec, ...] = (),
     inherited_globals: tuple[OptionSpec, ...] = (),
+    inherited_global_shapes: Mapping[str, Mapping[str, Any]] | None = None,
     inherited_parser_settings: tuple[Mapping[str, Any], ...] = (),
     single_command_route: str | None = None,
     incomplete: list[str],
 ) -> list[dict[str, Any]]:
+    inherited_global_shapes = inherited_global_shapes or {}
     globals_here = (*app.global_options, *inherited_globals)
     local_incomplete: list[str] = []
     if inherited_globals:
-        registered_global_flags = set(app.parser._option_string_actions)
-        missing_inherited = sorted(
-            flag
-            for option in inherited_globals
-            for flag in option.flags
-            if flag not in registered_global_flags
-        )
+        missing_inherited: list[str] = []
+        mismatched_inherited: list[str] = []
+        for option in inherited_globals:
+            for flag in option.flags:
+                action = app.parser._option_string_actions.get(flag)
+                if action is None:
+                    missing_inherited.append(flag)
+                    continue
+                expected_shape = inherited_global_shapes.get(flag)
+                if expected_shape is None or _delegated_option_shape(action) != dict(
+                    expected_shape
+                ):
+                    mismatched_inherited.append(flag)
         if missing_inherited:
             reason = (
                 f"{app.parser.prog}: delegated parser does not register inherited "
-                "global option(s): " + ", ".join(missing_inherited)
+                "global option(s): " + ", ".join(sorted(set(missing_inherited)))
             )
             local_incomplete.append(reason)
             incomplete.append(reason)
+        if mismatched_inherited:
+            reason = (
+                f"{app.parser.prog}: delegated parser changes inherited global "
+                "option semantics: "
+                + ", ".join(sorted(set(mismatched_inherited)))
+            )
+            local_incomplete.append(reason)
+            incomplete.append(reason)
+    forwarded_global_shapes = dict(inherited_global_shapes)
+    forwarded_global_shapes.update(
+        _registered_global_shapes(app.parser, app.global_options)
+    )
     if app.single_command:
         if not app.registered_verbs:
             reason = f"{app.parser.prog}: registry declarations were not retained"
@@ -890,6 +1044,12 @@ def _walk_registered_cli(
         return records
 
     records: list[dict[str, Any]] = []
+    root_route_id = _route_id(entrypoint_id, None, path_prefix)
+    root_syntax_issues = _parser_syntax_issues(
+        app.parser, route_id=root_route_id
+    )
+    local_incomplete.extend(root_syntax_issues)
+    incomplete.extend(root_syntax_issues)
     (
         root_negative_number_matcher,
         root_has_negative_number_optionals,
@@ -918,6 +1078,7 @@ def _walk_registered_cli(
                         path_prefix=path,
                         inherited_specs=(*inherited_specs, spec),
                         inherited_globals=globals_here,
+                        inherited_global_shapes=forwarded_global_shapes,
                         inherited_parser_settings=parser_settings_for_children,
                         single_command_route=route_id,
                         incomplete=incomplete,
@@ -957,6 +1118,7 @@ def _walk_registered_cli(
                     path_prefix=path,
                     inherited_specs=(*inherited_specs, spec),
                     inherited_globals=globals_here,
+                    inherited_global_shapes=forwarded_global_shapes,
                     inherited_parser_settings=parser_settings_for_children,
                     incomplete=incomplete,
                 )
@@ -1064,6 +1226,13 @@ def _generate_candidates(
             )
 
     route_index = {str(route["id"]): route for route in routes}
+    option_index: dict[str, list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
+    for owner_route in routes:
+        for action in owner_route.get("actions", ()):
+            if action.get("kind") == "option":
+                option_index.setdefault(str(action["id"]), []).append(
+                    (owner_route, action)
+                )
 
     def add_for_route(
         route: Mapping[str, Any],
@@ -1072,6 +1241,9 @@ def _generate_candidates(
         kind: str,
         members: Sequence[str],
         payload: Mapping[str, Any],
+        external_members: Mapping[
+            str, tuple[Mapping[str, Any], Mapping[str, Any]]
+        ] | None = None,
     ) -> None:
         actions_by_id = {
             str(action["id"]): action for action in route.get("actions", [])
@@ -1105,17 +1277,25 @@ def _generate_candidates(
         }
         member_shapes = []
         for member_id in sorted(set(members)):
-            action = actions_by_id[member_id]
+            action = actions_by_id.get(member_id)
+            owner_route = route
+            if action is None:
+                owner_route, action = (external_members or {})[member_id]
+            action_shape = {
+                key: action.get(key)
+                for key in (
+                    "id", "kind", "flags", "canonical", "name", "dest",
+                    "action", "type", "nargs", "minimum_values", "required", "choices",
+                    "default", "default_present", "effective_default", "const", "metavar",
+                    "exclusive_group", "exclusive_required", "scope", "placement",
+                    "parser_path", "before_nested_subcommand", "hidden",
+                )
+            }
             member_shapes.append(
                 {
-                    key: action.get(key)
-                    for key in (
-                    "id", "kind", "flags", "canonical", "name", "dest",
-                        "action", "type", "nargs", "minimum_values", "required", "choices",
-                        "default", "default_present", "effective_default", "const", "metavar",
-                        "exclusive_group", "exclusive_required", "scope", "placement",
-                        "hidden",
-                    )
+                    "owner_route_id": owner_route["id"],
+                    "owner_path": owner_route.get("path", []),
+                    **action_shape,
                 }
             )
         add(
@@ -1284,11 +1464,6 @@ def _generate_candidates(
             raise SurfaceError(
                 f"interaction group {interaction_id!r} names a non-invocable route"
             )
-        known = {
-            str(action["id"])
-            for action in route.get("actions", [])
-            if action.get("kind") == "option"
-        }
         if (
             not isinstance(option_ids, (list, tuple))
             or not option_ids
@@ -1302,18 +1477,126 @@ def _generate_candidates(
                 f"interaction group {interaction_id!r} repeats an option ID"
             )
         normalized_ids = tuple(sorted(option_ids))
-        missing = [option_id for option_id in normalized_ids if option_id not in known]
+        missing = [
+            option_id
+            for option_id in normalized_ids
+            if option_id not in option_index
+        ]
         if missing:
             raise SurfaceError(
                 f"interaction group {interaction_id!r} names unknown options: "
                 + ", ".join(missing)
             )
+        selected_option_locations: dict[
+            str, tuple[Mapping[str, Any], Mapping[str, Any]]
+        ] = {}
+        ambiguous: list[str] = []
+        for option_id in normalized_ids:
+            locations = option_index[option_id]
+            local_locations = [
+                location
+                for location in locations
+                if str(location[0]["id"]) == route_id
+            ]
+            if len(local_locations) == 1:
+                selected_option_locations[option_id] = local_locations[0]
+            elif len(locations) == 1:
+                selected_option_locations[option_id] = locations[0]
+            else:
+                ambiguous.append(option_id)
+        if ambiguous:
+            raise SurfaceError(
+                f"interaction group {interaction_id!r} names ambiguous option IDs: "
+                + ", ".join(ambiguous)
+            )
+        external_options = [
+            {
+                "id": option_id,
+                "route_id": selected_option_locations[option_id][0]["id"],
+                "path": selected_option_locations[option_id][0].get("path", []),
+                "flags": selected_option_locations[option_id][1].get("flags", []),
+                "nargs": selected_option_locations[option_id][1].get("nargs"),
+                "minimum_values": selected_option_locations[option_id][1].get(
+                    "minimum_values",
+                    _minimum_values(selected_option_locations[option_id][1].get("nargs")),
+                ),
+                "choices": selected_option_locations[option_id][1].get("choices"),
+                "action": selected_option_locations[option_id][1].get("action"),
+            }
+            for option_id in normalized_ids
+            if str(selected_option_locations[option_id][0]["id"]) != route_id
+        ]
+        target_flags = {
+            str(flag)
+            for action in route.get("actions", ())
+            if action.get("kind") == "option"
+            for flag in action.get("flags", ())
+        }
+        external_flag_owners: dict[str, str] = {}
+        for external_option in external_options:
+            for flag in external_option["flags"]:
+                if flag in target_flags:
+                    raise SurfaceError(
+                        f"interaction group {interaction_id!r} selects out-of-route "
+                        f"option {external_option['id']!r}, but {flag!r} is also "
+                        "registered on the target route"
+                    )
+                previous_owner = external_flag_owners.get(str(flag))
+                if previous_owner is not None and previous_owner != external_option["id"]:
+                    raise SurfaceError(
+                        f"interaction group {interaction_id!r} selects out-of-route "
+                        f"options {previous_owner!r} and {external_option['id']!r} "
+                        f"with the same spelling {flag!r}"
+                    )
+                external_flag_owners[str(flag)] = str(external_option["id"])
+        external_members = {
+            option_id: selected_option_locations[option_id]
+            for option_id in normalized_ids
+            if str(selected_option_locations[option_id][0]["id"]) != route_id
+        }
+        required_arguments = [
+            str(action["id"])
+            for action in route.get("actions", ())
+            if action.get("kind") == "argument" and action.get("required")
+        ]
+        required_argument_values = {
+            str(action["id"]): int(action.get("minimum_values", 1))
+            for action in route.get("actions", ())
+            if action.get("kind") == "argument" and action.get("required")
+        }
+        target_options = [
+            action
+            for action in route.get("actions", ())
+            if action.get("kind") == "option"
+        ]
+        required_options = [
+            str(action["id"])
+            for action in target_options
+            if action.get("required")
+        ]
+        required_groups: dict[str, list[str]] = {}
+        for action in target_options:
+            group_id = action.get("exclusive_group")
+            if group_id is not None and action.get("exclusive_required"):
+                required_groups.setdefault(str(group_id), []).append(str(action["id"]))
         add_for_route(
             route,
             case_id=f"case:{route_id}/interaction:{interaction_id}",
             kind="interaction",
             members=normalized_ids,
-            payload={"interaction_id": interaction_id, "option_ids": list(normalized_ids)},
+            external_members=external_members,
+            payload={
+                "interaction_id": interaction_id,
+                "option_ids": list(normalized_ids),
+                "external_options": external_options,
+                "required_arguments": required_arguments,
+                "required_argument_values": required_argument_values,
+                "required_options": required_options,
+                "required_exclusive_groups": {
+                    group_id: sorted(option_ids)
+                    for group_id, option_ids in sorted(required_groups.items())
+                },
+            },
         )
     candidates.sort(key=lambda candidate: str(candidate["id"]))
     candidate_ids = [str(candidate["id"]) for candidate in candidates]

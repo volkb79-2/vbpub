@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Implemented; final registered R2/R3 gate evidence pending
+**Status:** Implemented; final registered R0/R1/R2/R3 gate evidence pending
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04  
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -117,8 +117,10 @@ opaque-field status, and delegated metadata. The Markdown view now includes
 those facts so reviewers can judge them from the product spec. A delegated
 route records every wrapper in a nested delegation chain and the final
 delegated command; wrapper-only parser declarations and inherited globals
-absent from the delegate are marked incomplete. The surface schema is now version `3`,
-and delegated behavior/confirmation changes participate in review signatures.
+absent from the delegate are marked incomplete. The surface schema was raised
+to version `3` for route invocation and delegated metadata, and to version
+`4` for parser integrity and cross-route interaction metadata. Delegated
+behavior/confirmation changes participate in review signatures.
 The final route audit also exposed empty-argv behavior: a single-command
 registry can either show help before parsing or pass empty argv into its
 parser. Required syntax can still make that parse fail. The route table now
@@ -139,6 +141,26 @@ so a supported Python version's matcher is not assumed to equal another
 version's pattern. The checker ignores a custom matcher rather than executing
 consumer-supplied regex syntax; that surface remains incomplete and cannot pass
 check mode.
+
+The independent implementation review found three additional completeness
+gaps, now closed. Inherited delegate globals are compared by their built action
+shape, not just spelling, because the wrapper splits leading tokens before the
+child parses them. Catalog interactions can now reference an option on another
+route; the foreign route and action shape participate in the signature, and
+the checker requires both the foreign unknown option and the target route's
+required baseline syntax. It checks the foreign action's minimum value count
+using the target parser's options as token boundaries. Parser callbacks remain supported when they add
+inspectable argparse actions, while replaced token-parsing methods,
+uncaptured parser-level defaults, or inconsistent option-action maps mark the surface
+incomplete. Incompleteness stays within the affected delegate subtree. These
+interaction fields change the exported surface contract, so the JSON surface
+schema is version `4`; the TOML decision catalog remains schema version `1`.
+
+The generator deliberately does not enumerate every optional value count or
+repeat count. Consumers declare separate named interactions for token shapes
+that have distinct product meaning, and their behavior tests assert exact
+cardinality. This keeps candidate generation bounded and makes each added
+semantic case explicit in the consumer's catalog and canonical spec.
 
 ## Consumer workflows this should support
 

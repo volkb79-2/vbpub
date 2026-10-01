@@ -108,6 +108,15 @@ read-only drift checking, review templates, and pytest node/marker linkage.
 It includes delegated registries and callback-added argparse actions. Nested
 routes carry parent-parser actions forward and identify parser-depth placement;
 required-subcommand prefixes do not produce false executable candidates.
+Inherited globals on delegated CLIs are compared by built action shape,
+including arity and value rules, so matching spelling cannot hide a wrapper and
+child parser mismatch. A delegated mismatch marks that subtree incomplete
+without making unrelated sibling routes incomplete. Ordinary callback-added
+argparse actions are inventoried; parser-method overrides, uncaptured
+parser-level defaults, or inconsistent option lookup maps make the surface
+incomplete rather than claiming the inventory is complete. Parser defaults
+already represented by built action defaults remain part of the manifest and
+do not make the surface incomplete.
 Parser-scoped `allow_abbrev` is exported, included in candidate signatures, and
 used when checking the invocation at each parser depth. Entrypoint
 empty-argv behavior and single-command route behavior are visible and
@@ -124,8 +133,12 @@ custom `prefix_chars` and `fromfile_prefix_chars` do too.
 
 The generated checklist includes minimum valid syntax, positional shapes and
 enumerable values, option spellings and choices, exclusive alternatives and
-conflicts, nested aliases, and each explicitly declared option interaction.
-It is symbolic: adopters supply real invocation argv, outcomes, effects,
+conflicts, nested aliases, and each explicitly declared option interaction,
+including options registered on another route. Cross-route signatures include
+the foreign route and action shape, and the invocation check requires both that
+foreign option with its minimum value count and valid required syntax for the
+target route. It is symbolic:
+adopters supply real invocation argv, outcomes, effects,
 rationale, and test node IDs. Generation never rewrites the TOML catalog or
 deletes stale decisions. Sync owns only a marked region in the canonical CLI
 spec and a JSON manifest; check detects changed signatures, stale files,
@@ -134,6 +147,11 @@ shared pytest helper checks exact collection and marker linkage; the consumer's
 gate still proves test behavior. Sync/check reject paths that alias the review
 catalog, manifest, or spec so a destination typo cannot overwrite the semantic
 source.
+
+Optional-value counts and option repetition are not automatically enumerated.
+Consumers declare separate named interactions for such forms when they have
+distinct meaning, and their behavioral tests assert exact values and counts.
+This keeps the candidate list bounded and the product decision visible.
 
 No second grammar DSL or conditional-option runtime API was added. CLI-EXT-02
 remains open because that is a separate evidence-gated question.

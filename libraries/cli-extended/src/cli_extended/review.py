@@ -888,17 +888,35 @@ def _review_findings(
         argv: Sequence[str],
         route: Mapping[str, Any],
         command_positions: Sequence[int],
+        external_options: Sequence[Mapping[str, Any]] = (),
     ) -> tuple[
         list[tuple[int, str]],
         dict[str, list[tuple[str, tuple[str, ...], bool]]],
+        list[tuple[int, str, int, tuple[str, ...], bool]],
     ]:
-        """Return parser-depth positionals and recognized options by action ID."""
+        """Return positional and option tokens, consuming expected foreign values."""
 
         command_positions_set = set(command_positions)
+        external_by_flag: dict[str, Mapping[str, Any]] = {}
+        for external_option in external_options:
+            owner_route = routes_by_id.get(str(external_option.get("route_id")))
+            external_action = next(
+                (
+                    action
+                    for action in (owner_route or {}).get("actions", ())
+                    if action.get("id") == external_option.get("id")
+                    and action.get("kind") == "option"
+                ),
+                None,
+            )
+            if external_action is not None:
+                for flag in external_option.get("flags", ()):
+                    external_by_flag[str(flag)] = external_action
         path_depth = 0
         options_enabled = {0: True}
         positionals: list[tuple[int, str]] = []
         options: dict[str, list[tuple[str, tuple[str, ...], bool]]] = {}
+        unknown_options: list[tuple[int, str, int, tuple[str, ...], bool]] = []
         index = 0
         while index < len(argv):
             if index in command_positions_set:
@@ -942,11 +960,32 @@ def _review_findings(
                 and options_enabled[path_depth]
                 and not is_negative_number(token, route, path_depth)
             ):
-                index += 1
+                external_action = external_by_flag.get(option)
+                if external_action is None:
+                    unknown_options.append((index, option, path_depth, (), bool(separator)))
+                    index += 1
+                    continue
+                end = option_end(
+                    argv,
+                    index,
+                    external_action,
+                    bool(separator),
+                    route=route,
+                    depth=path_depth,
+                )
+                values: list[str] = []
+                if external_action.get("nargs") != 0:
+                    if separator:
+                        values.append(inline_value)
+                    values.extend(argv[index + 1 : end])
+                unknown_options.append(
+                    (index, option, path_depth, tuple(values), bool(separator))
+                )
+                index = end
                 continue
             positionals.append((path_depth, token))
             index += 1
-        return positionals, options
+        return positionals, options, unknown_options
 
     def positional_values_by_action(
         route: Mapping[str, Any], positionals: Sequence[tuple[int, str]]
@@ -1149,8 +1188,18 @@ def _review_findings(
         command_positions = route_positions(case.invocation, route, surface["routes"])
         if command_positions is None:
             findings.append(f"invocation for {case_id} omits its command path")
-        non_command_positions, option_occurrences = invocation_parts(
-            case.invocation, route, command_positions or ()
+        candidate_kind = str(candidate.get("kind", ""))
+        candidate_shape = candidate.get("shape", {})
+        external_options = (
+            candidate_shape.get("external_options", ())
+            if candidate_kind == "interaction"
+            else ()
+        )
+        non_command_positions, option_occurrences, unknown_options = invocation_parts(
+            case.invocation,
+            route,
+            command_positions or (),
+            external_options,
         )
         positional_occurrences = positional_values_by_action(
             route, non_command_positions
@@ -1173,7 +1222,247 @@ def _review_findings(
                 )
             )
 
-        candidate_kind = str(candidate.get("kind", ""))
+        def choices_accept(action: Mapping[str, Any], values: Sequence[str]) -> bool:
+            choices = action.get("choices")
+            if not isinstance(choices, list):
+                return True
+            allowed = {str(choice) for choice in choices}
+            return all(value in allowed for value in values)
+
+        if candidate_kind == "interaction":
+            shape = candidate_shape
+            for argument_id in shape.get("required_arguments", ()):
+                required_values = int(
+                    shape.get("required_argument_values", {}).get(argument_id, 1)
+                )
+                supplied_values = positional_occurrences.get(str(argument_id), ())
+                if len(supplied_values) < required_values:
+                    findings.append(
+                        f"interaction invocation for {case_id} omits required "
+                        f"positional argument {argument_id}"
+                    )
+                    continue
+                argument = next(
+                    (
+                        item
+                        for item in route.get("actions", ())
+                        if item.get("id") == argument_id
+                        and item.get("kind") == "argument"
+                    ),
+                    None,
+                )
+                if argument is not None and not choices_accept(
+                    argument, supplied_values
+                ):
+                    findings.append(
+                        f"interaction invocation for {case_id} supplies a value "
+                        f"outside the choices for required argument {argument_id}"
+                    )
+            for option_id in shape.get("required_options", ()):
+                action = next(
+                    (
+                        item
+                        for item in route.get("actions", ())
+                        if item.get("id") == option_id
+                        and item.get("kind") == "option"
+                    ),
+                    None,
+                )
+                if action is None:
+                    findings.append(
+                        f"interaction candidate {case_id} references unknown "
+                        f"required option {option_id}"
+                    )
+                    continue
+                present = active_option_occurrences(action)
+                if not present:
+                    findings.append(
+                        f"interaction invocation for {case_id} omits required "
+                        f"option {option_id}"
+                    )
+                elif not any(
+                    len(values) >= _minimum_values(action.get("nargs"))
+                    for _spelling, values, _inline in present
+                ):
+                    findings.append(
+                        f"interaction invocation for {case_id} omits a value for "
+                        f"required option {option_id}"
+                    )
+                elif not choices_accept(
+                    action,
+                    tuple(
+                        value
+                        for _spelling, values, _inline in present
+                        for value in values
+                    ),
+                ):
+                    findings.append(
+                        f"interaction invocation for {case_id} supplies a value "
+                        f"outside the choices for required option {option_id}"
+                    )
+            for group_id, option_ids in shape.get(
+                "required_exclusive_groups", {}
+            ).items():
+                group_actions = [
+                    action
+                    for action in route.get("actions", ())
+                    if action.get("id") in option_ids
+                    and action.get("kind") == "option"
+                ]
+                present_group_actions = [
+                    action
+                    for action in group_actions
+                    if active_option_occurrences(action)
+                ]
+                if len(present_group_actions) != 1:
+                    findings.append(
+                        f"interaction invocation for {case_id} must supply exactly "
+                        f"one option from required group {group_id}"
+                    )
+                elif not any(
+                    len(values) >= _minimum_values(present_group_actions[0].get("nargs"))
+                    for _spelling, values, _inline in active_option_occurrences(
+                        present_group_actions[0]
+                    )
+                ):
+                    findings.append(
+                        f"interaction invocation for {case_id} omits a value for "
+                        f"required group {group_id}"
+                    )
+                elif not choices_accept(
+                    present_group_actions[0],
+                    tuple(
+                        value
+                        for _spelling, values, _inline in active_option_occurrences(
+                            present_group_actions[0]
+                        )
+                        for value in values
+                    ),
+                ):
+                    findings.append(
+                        f"interaction invocation for {case_id} supplies a value "
+                        f"outside the choices for required group {group_id}"
+                    )
+            external_ids = {
+                str(option.get("id"))
+                for option in shape.get("external_options", ())
+            }
+            for option_id in shape.get("option_ids", ()):
+                option_id = str(option_id)
+                if option_id in external_ids:
+                    continue
+                action = next(
+                    (
+                        item
+                        for item in route.get("actions", ())
+                        if item.get("id") == option_id
+                        and item.get("kind") == "option"
+                    ),
+                    None,
+                )
+                if action is None:
+                    findings.append(
+                        f"interaction candidate {case_id} references unknown "
+                        f"option {option_id}"
+                    )
+                    continue
+                occurrences = option_occurrences.get(option_id, ())
+                if not occurrences:
+                    findings.append(
+                        f"interaction invocation for {case_id} does not supply "
+                        f"participating option {option_id}"
+                    )
+                    continue
+                if has_invalid_flag_value(action):
+                    findings.append(
+                        f"interaction invocation for {case_id} supplies an inline "
+                        f"value to flag-only option {option_id}"
+                    )
+                    continue
+                if action.get("nargs") == 0:
+                    continue
+                nargs = action.get("nargs")
+                minimum_values = _minimum_values(nargs)
+                has_valid_values = any(
+                    len(values) >= minimum_values
+                    and (not isinstance(nargs, int) or len(values) == nargs)
+                    and choices_accept(action, values)
+                    for _spelling, values, _inline in occurrences
+                )
+                if not has_valid_values:
+                    findings.append(
+                        f"interaction invocation for {case_id} does not provide a "
+                        f"valid value shape for participating option {option_id}"
+                    )
+            for external_option in shape.get("external_options", ()):
+                flags = set(external_option.get("flags", ()))
+                matching_occurrences = [
+                    occurrence
+                    for occurrence in unknown_options
+                    if occurrence[1] in flags
+                ]
+                target_depth = len(tuple(route.get("path", ())))
+                scoped_occurrences = [
+                    occurrence
+                    for occurrence in matching_occurrences
+                    if occurrence[2] == target_depth
+                ]
+                if not scoped_occurrences:
+                    findings.append(
+                        f"interaction invocation for {case_id} does not supply the "
+                        f"out-of-route option {external_option.get('id')} at the "
+                        "target route's parser depth"
+                    )
+                    continue
+                owner_route = routes_by_id.get(str(external_option.get("route_id")))
+                external_action = next(
+                    (
+                        action
+                        for action in (owner_route or {}).get("actions", ())
+                        if action.get("id") == external_option.get("id")
+                        and action.get("kind") == "option"
+                    ),
+                    None,
+                )
+                if external_action is None:
+                    findings.append(
+                        f"interaction candidate {case_id} references unknown "
+                        f"out-of-route option {external_option.get('id')}"
+                    )
+                    continue
+                if external_action.get("nargs") == 0:
+                    if any(
+                        inline
+                        for _position, _spelling, _depth, _values, inline
+                        in scoped_occurrences
+                    ):
+                        findings.append(
+                            f"interaction invocation for {case_id} supplies an "
+                            f"inline value to flag-only out-of-route option "
+                            f"{external_option.get('id')}"
+                        )
+                    continue
+                minimum_values = _minimum_values(external_action.get("nargs"))
+                has_value = False
+                nargs = external_action.get("nargs")
+                choices = external_action.get("choices")
+                for _position, _spelling, _depth, values, _inline in scoped_occurrences:
+                    if len(values) >= minimum_values:
+                        if isinstance(nargs, int) and len(values) != nargs:
+                            continue
+                        if choices is not None and any(
+                            value not in {str(choice) for choice in choices}
+                            for value in values
+                        ):
+                            continue
+                        has_value = True
+                        break
+                if not has_value:
+                    findings.append(
+                        f"interaction invocation for {case_id} does not provide a "
+                        f"valid value shape for out-of-route option "
+                        f"{external_option.get('id')}"
+                    )
         if candidate_kind == "route-alias":
             alias = str(candidate.get("shape", {}).get("alias", ""))
             if (

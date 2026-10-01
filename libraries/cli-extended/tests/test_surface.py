@@ -30,6 +30,7 @@ from cli_extended.surface import (
     _mutex_groups,
     _normalize,
     _ParserActionContext,
+    _parser_syntax_issues,
     _route_id,
     _safe_choice_values,
     _scope,
@@ -644,6 +645,160 @@ def test_surface_marks_custom_or_uninspectable_negative_number_matchers_incomple
     assert any("negative-number matcher" in finding for finding in surface["incomplete"])
 
 
+def test_surface_marks_callbacks_that_replace_parser_behavior_incomplete():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+
+    def configure(parser):
+        parser.add_argument("--visible", action="store_true")
+        parser.parse_known_args = lambda args=None, namespace=None: (  # type: ignore[method-assign]
+            argparse.Namespace(),
+            [],
+        )
+
+    registry.register(
+        VerbSpec("inspect", description="inspect", configure=configure, handler=lambda *_: 0)
+    )
+    surface = export_cli_surface(registry.build())
+    route = next(route for route in surface["routes"] if route["path"] == ["inspect"])
+
+    assert route["syntax_complete"] is False
+    assert any(
+        "overrides argparse syntax method parse_known_args" in finding
+        for finding in surface["incomplete"]
+    )
+    assert any(
+        action.get("flags") == ["--visible"] for action in route["actions"]
+    )
+
+
+def test_surface_marks_inconsistent_option_lookup_maps_incomplete():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+
+    def configure(parser):
+        action = parser.add_argument("--known", action="store_true")
+        parser._option_string_actions["--ghost"] = action
+        action.option_strings.append("--lost")
+
+    registry.register(
+        VerbSpec("inspect", description="inspect", configure=configure, handler=lambda *_: 0)
+    )
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any("lookup for '--ghost' does not match" in item for item in surface["incomplete"])
+    assert any("action lookup for '--lost' does not match" in item for item in surface["incomplete"])
+
+
+def test_surface_global_capture_handles_unregistered_global_action():
+    registry = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="Inspect.",
+        global_options=(OptionSpec(("--scope",), "scope"),),
+    )
+    registry.register(VerbSpec("inspect", description="inspect", handler=lambda *_: 0))
+    app = registry.build()
+    app.parser._option_string_actions.pop("--scope")
+
+    surface = export_cli_surface(app)
+
+    assert surface["syntax_complete"] is False
+    assert any("parser action lookup for '--scope' does not match" in item for item in surface["incomplete"])
+
+
+def test_surface_marks_uncaptured_parser_level_defaults_incomplete():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect",
+            configure=lambda parser: parser.set_defaults(mode="hidden-default"),
+            handler=lambda *_: 0,
+        )
+    )
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is False
+    assert any(
+        "uncaptured parser-level defaults: mode" in finding
+        for finding in surface["incomplete"]
+    )
+
+
+def test_surface_captures_parser_defaults_applied_to_declared_actions():
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect",
+            options=(OptionSpec(("--mode",), "mode"),),
+            configure=lambda parser: parser.set_defaults(mode="fast"),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+
+    assert surface["syntax_complete"] is True
+    mode = next(
+        action
+        for route in surface["routes"]
+        for action in route["actions"]
+        if action.get("flags") == ["--mode"]
+    )
+    assert mode["effective_default"] == "fast"
+    assert not any("uncaptured parser-level defaults" in item for item in surface["incomplete"])
+
+
+def test_surface_checks_the_multi_command_entrypoint_parser(monkeypatch):
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="Inspect.")
+    registry.register(VerbSpec("inspect", description="inspect", handler=lambda *_: 0))
+    app = registry.build()
+    app.parser.parse_args = lambda args=None, namespace=None: (  # type: ignore[method-assign]
+        argparse.Namespace(),
+    )
+
+    surface = export_cli_surface(app)
+    route = next(route for route in surface["routes"] if route["path"] == ["inspect"])
+
+    assert surface["syntax_complete"] is False
+    assert route["syntax_complete"] is False
+    assert any(
+        "route:entrypoint:surface-demo: parser overrides argparse syntax method parse_args"
+        in reason
+        for reason in surface["incomplete"]
+    )
+
+    parser_type = type(app.parser)
+
+    def altered_optional(self, token):
+        return None
+
+    monkeypatch.setattr(parser_type, "_parse_optional", altered_optional)
+    overridden = export_cli_surface(registry.build())
+    assert overridden["syntax_complete"] is False
+    assert any(
+        "overrides argparse syntax method _parse_optional" in reason
+        for reason in overridden["incomplete"]
+    )
+
+
+def test_parser_syntax_issues_detect_inconsistent_option_lookups():
+    parser = argparse.ArgumentParser(add_help=False)
+    action = parser.add_argument("--known")
+    parser._option_string_actions["--alias"] = action
+    parser._option_string_actions["--orphan"] = argparse.Action(
+        option_strings=["--orphan"], dest="orphan"
+    )
+    del parser._option_string_actions["--known"]
+
+    issues = _parser_syntax_issues(parser, route_id="route:test")
+
+    assert any("option lookup for '--orphan'" in issue for issue in issues)
+    assert any("option lookup for '--alias'" in issue for issue in issues)
+    assert any("action lookup for '--known'" in issue for issue in issues)
+
+
 def test_surface_marks_inherited_uninspectable_negative_number_matcher_incomplete():
     parser = argparse.ArgumentParser(prog="surface-demo")
     incomplete = []
@@ -683,14 +838,14 @@ def test_surface_signatures_are_canonical_for_unicode_payloads():
     reversed_payload = {"a": "café", "z": "last"}
     expected = "sha256:" + hashlib.sha256(
         json.dumps(
-            {"schema_version": 3, "payload": payload},
+            {"schema_version": 4, "payload": payload},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
-    assert _signature(3, payload) == expected
-    assert _signature(3, payload) == _signature(3, reversed_payload)
+    assert _signature(4, payload) == expected
+    assert _signature(4, payload) == _signature(4, reversed_payload)
 
 
 def test_candidate_choice_ids_hash_unicode_values_without_ascii_escaping():
@@ -1265,6 +1420,87 @@ def test_surface_ids_delegates_missing_registry_metadata_and_parser_routes():
     )
     assert export_cli_surface(parent_with_global.build())["syntax_complete"] is True
 
+    child_with_mismatched_global = CliRegistry(
+        child_identity,
+        prog="child-tool",
+        description="Incompatible inherited global option.",
+        single_command=True,
+        global_options=(
+            OptionSpec(("--scope",), "scope", parser_kwargs={"action": "store"}),
+        ),
+    )
+    child_with_mismatched_global.register(
+        VerbSpec("run", description="run", handler=lambda *_: 0)
+    )
+    parent_with_boolean_global = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="Boolean inherited global option.",
+        global_options=(
+            OptionSpec(("--scope",), "scope", parser_kwargs={"action": "store_true"}),
+        ),
+    )
+    parent_with_boolean_global.register(
+        VerbSpec(
+            "adapter",
+            description="run adapter",
+            delegate=child_with_mismatched_global.build(),
+        )
+    )
+    parent_with_boolean_global.register(
+        VerbSpec("status", description="show status", handler=lambda *_: 0)
+    )
+    mismatched_surface = export_cli_surface(parent_with_boolean_global.build())
+    assert mismatched_surface["syntax_complete"] is False
+    assert any(
+        "changes inherited global option semantics: --scope" in reason
+        for reason in mismatched_surface["incomplete"]
+    )
+    assert all(
+        not route["syntax_complete"]
+        for route in mismatched_surface["routes"]
+        if route["path"][:1] == ["adapter"]
+    )
+    assert next(
+        route["syntax_complete"]
+        for route in mismatched_surface["routes"]
+        if route["path"] == ["status"]
+    )
+
+    child_with_different_default = CliRegistry(
+        child_identity,
+        prog="child-tool",
+        description="Incompatible inherited global default.",
+        single_command=True,
+        global_options=(
+            OptionSpec(("--scope",), "scope", parser_kwargs={"default": "child"}),
+        ),
+    )
+    child_with_different_default.register(
+        VerbSpec("run", description="run", handler=lambda *_: 0)
+    )
+    parent_with_default = CliRegistry(
+        IDENTITY,
+        prog="surface-demo",
+        description="Inherited global default.",
+        global_options=(
+            OptionSpec(("--scope",), "scope", parser_kwargs={"default": "parent"}),
+        ),
+    )
+    parent_with_default.register(
+        VerbSpec(
+            "adapter",
+            description="run adapter",
+            delegate=child_with_different_default.build(),
+        )
+    )
+    default_mismatch = export_cli_surface(parent_with_default.build())
+    assert default_mismatch["syntax_complete"] is False
+    assert any(
+        "changes inherited global option semantics: --scope" in reason
+        for reason in default_mismatch["incomplete"]
+    )
+
     middle_identity = CliIdentity("MIDDLE", "1.0", "Middle", command="middle-tool")
 
     def nested_surface(*, outer_mutating: bool):
@@ -1434,6 +1670,36 @@ def test_surface_rejects_malformed_and_duplicate_interaction_dimensions():
         export_cli_surface(app, interaction_groups=({**valid, "option_ids": ["format-id", "format-id"]},))
     with pytest.raises(SurfaceError, match="duplicate IDs"):
         export_cli_surface(app, interaction_groups=(valid, valid))
+
+    ambiguous = CliRegistry(IDENTITY, prog="surface-demo", description="Ambiguous options.")
+    ambiguous.register(VerbSpec("show", description="show", handler=lambda *_: 0))
+    ambiguous.register(
+        VerbSpec(
+            "watch-one",
+            description="watch one",
+            options=(OptionSpec(("--poll-one",), "poll", surface_id="shared-poll"),),
+            handler=lambda *_: 0,
+        )
+    )
+    ambiguous.register(
+        VerbSpec(
+            "watch-two",
+            description="watch two",
+            options=(OptionSpec(("--poll-two",), "poll", surface_id="shared-poll"),),
+            handler=lambda *_: 0,
+        )
+    )
+    with pytest.raises(SurfaceError, match="ambiguous option IDs: shared-poll"):
+        export_cli_surface(
+            ambiguous.build(),
+            interaction_groups=(
+                {
+                    "id": "foreign-option",
+                    "route_id": "route:entrypoint:surface-demo/show",
+                    "option_ids": ["shared-poll"],
+                },
+            ),
+        )
 
 
 @pytest.mark.parametrize("surface_id", (1, "", "contains whitespace"))

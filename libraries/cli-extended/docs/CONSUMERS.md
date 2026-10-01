@@ -290,15 +290,27 @@ option is hidden from operator help. A change to abbreviation policy changes
 case signatures. For nested delegated CLIs, every wrapper and the final
 single-command's behavior/confirmation metadata are shown and signed;
 wrapper-local parser declarations and inherited global options missing from
-the delegated parser make the surface incomplete. The checker uses the policy
+the delegated parser make the surface incomplete. A delegated parser must
+preserve each inherited global's flags, destination, action type, `nargs`,
+converter, choices, constant, default, requiredness, and metavar. A mismatch
+marks its routes incomplete because the wrapper and child can split or interpret
+leading tokens differently. The checker uses the policy
 for the parser that owns each option, including when a callback
 configures a nested parser. Custom `prefix_chars` and argparse argument-file
 expansion (`fromfile_prefix_chars`) make the surface incomplete because the
 structural checker does not model their token syntax. A custom value converter
 is marked opaque while the parser syntax remains inventoried; an unenumerable
-grammar field makes the surface incomplete. Set `surface_id` on a declaration
+grammar field makes the surface incomplete. Parser callbacks may add ordinary
+argparse actions, which the exporter inventories. A callback or parser subclass
+that replaces token-parsing methods, sets uncaptured parser-level defaults, or
+leaves `_option_string_actions` inconsistent with the parser's actions makes
+the surface incomplete; check mode will not certify that grammar. Set
+`surface_id` on a declaration
 to preserve its semantic identity through a rename. IDs are unique within a
-route; descriptions and help wording are not identifiers.
+route; descriptions and help wording are not identifiers. For an interaction
+that references an option on another route, that option ID must resolve
+unambiguously across the CLI; use a globally unique `surface_id` if the
+route-derived ID is not convenient.
 
 The generated checklist is symbolic. It covers minimum executable syntax, positional
 shapes and enumerated choices, option spellings and choices, exclusive
@@ -309,6 +321,50 @@ Library-owned common controls such as `--quiet`, `--debug`, `--color`, and
 `--progress` stay in the grammar table and rely on the library's normative
 contract. `--json`, `--yes`, and `--debug-raw` are also consumer review cases;
 declare an interaction when any common option participates in a product rule.
+
+## Review cross-route and arity interactions
+
+An interaction can describe a command with an option that belongs to a
+different route. This records parser-level scope rules such as
+`monitor-task show TASK_UUID --poll`, where `--poll` belongs to `watch` and
+`show` must refuse it. The interaction's `route_id` names the command being
+invoked; `option_ids` name the participating options wherever they are
+registered:
+
+```toml
+schema_version = 1
+cli_id = "monitor-task"
+
+[[interaction_groups]]
+id = "show-rejects-watch-only-options"
+route_id = "route:entrypoint:monitor-task/show"
+
+[[interaction_groups.combinations]]
+id = "watch-poll-is-not-show"
+option_ids = ["option:route:entrypoint:monitor-task/watch/--poll"]
+```
+
+The generated case signature includes the foreign option's owner route and
+action shape. Check mode requires the foreign spelling to appear as an
+unrecognized option on the target route and requires the target command's
+required arguments, options, and exclusive selections. For a value-taking
+foreign option, it checks the owner's minimum value count while treating the
+target parser's own options as token boundaries; a flag-only foreign option
+cannot carry an inline value. It still does not call the parser or prove the
+refusal; the linked test invokes the real CLI and checks the expected status
+and effects. Reused option IDs on multiple foreign routes are ambiguous and
+cause generation to refuse the catalog.
+
+The generator bounds option interactions by the named groups in the catalog;
+it does not infer which combinations have product meaning. It also does not
+automatically enumerate every token count for optional-arity, variadic, or
+repeatable options. If `--color` without a value and `--color VALUE`, or one
+`--tag` and repeated `--tag` occurrences, have different meaning, declare
+separate named combinations and write their exact argv in the semantic rows.
+The structural checker confirms the route, option presence, and required
+baseline syntax; the behavior tests assert the exact value and repetition
+rules. Those distinctions belong in the consumer's canonical CLI spec and
+should be re-reviewed whenever their signatures change.
 
 An active `[[cases]]` record must contain a stable generated `id`,
 `decision = "accept"` or `"refuse"`, the current `reviewed_signature`, a
