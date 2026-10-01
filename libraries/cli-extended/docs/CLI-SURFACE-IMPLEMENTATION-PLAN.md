@@ -159,6 +159,16 @@ store, `--resume`, and a progress log. Its first progress check showed 22 of
 observed rate. That early estimate is close to the 150-minute hard budget; the
 campaign began before this status-only documentation update.
 
+At the next permitted check, 169 of 958 candidates had completed after about
+29 minutes (roughly 5.8 candidates per minute), projecting about 166 minutes
+for the full campaign. That exceeds the 150-minute Assay budget. If this
+invocation ends `BUDGET_EXCEEDED`, resume the remaining candidates against the
+same `f49fdc13` commit, in this same worktree and with the same command, so the
+whole-tree judge identity accepts its completed-candidate records. Preserve
+the later documentation commits separately while restoring that exact tree
+for the retry; a retry from the documentation-updated tip would reject the
+records because Assay hashes the complete judged tree.
+
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
 shape, not just spelling, because the wrapper splits leading tokens before the
