@@ -162,17 +162,19 @@ passed; the fresh final-source R2 verdict remains pending.
 One R2 survivor changes the interaction occurrence check from `or` to `and`.
 A focused regression now supplies every named conflicting option while
 repeating one member, so a count mismatch remains visible even when the set of
-present IDs is correct. This case has not run yet. The remaining survivors and
-the budget-exceeded candidate still need review against the final source.
+present IDs is correct, and the regression passes in the current-worktree
+R0/R1 gate. The earlier 48 survivors and budget-exceeded candidate remain
+diagnostic evidence only; the fresh final-source campaign must be triaged on
+its own results.
 
 Correction to the timeout analysis: source inspection shows the caller checks
 that the option token's index is in range, then passes `index + 1` to the value
 boundary helper. A value-taking option at the end of argv therefore reaches
 the `position == len(argv)` guard in `review.py`. The earlier claim that the
-caller checks the same bound is incorrect. The current WIP's optional-const
-behavior test places `nargs="?"` at the end of argv and exercises this guard;
-the final registered R2 run must classify the earlier timeout against current
-source.
+caller checks the same bound is incorrect. The optional-const behavior test
+places `nargs="?"` at the end of argv and exercises this guard; it now passes
+in the current-worktree R0/R1 gate. The fresh registered R2 run must classify
+the earlier timeout against current source.
 
 The prior `f49fdc13` R2 artifact is schema v13, native, unsharded, and has a
 complete 958-candidate inventory. Inspection found that its 909 killed records

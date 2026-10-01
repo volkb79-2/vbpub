@@ -2393,7 +2393,7 @@ def test_review_rejects_unassigned_positional_tokens():
     assert any("unassigned positional token 'stray-value'" in item for item in findings)
 
 
-def test_argument_shape_case_reports_values_outside_positional_choices():
+def test_argument_choice_case_reports_values_outside_reviewed_choice():
     registry = CliRegistry(IDENTITY, prog="audit-tool", description="choice shape")
     registry.register(
         VerbSpec(
@@ -2411,13 +2411,13 @@ def test_argument_shape_case_reports_values_outside_positional_choices():
     )
     surface = export_cli_surface(registry.build())
     candidate = next(
-        case for case in surface["candidates"] if case["kind"] == "argument-shape"
+        case for case in surface["candidates"] if case["kind"] == "argument-choice"
     )
     route = next(route for route in surface["routes"] if route["id"] == candidate["route_id"])
 
     findings = _findings_for_invocation(candidate, route, ["inspect", "other"])
 
-    assert any("supplies an invalid positional value" in item for item in findings)
+    assert any("omits its positional choice" in item for item in findings)
 
 
 def test_argument_shape_case_rejects_unknown_arguments_and_short_fixed_arity():
@@ -2574,7 +2574,11 @@ def test_required_group_exemptions_only_apply_to_declared_interactions():
     )
     surface = export_cli_surface(registry.build())
     route = next(route for route in surface["routes"] if route["kind"] == "invocation")
-    options = [action for action in route["actions"] if action["kind"] == "option"]
+    options = [
+        action
+        for action in route["actions"]
+        if action.get("flags") in (["--from-file"], ["--from-inline"])
+    ]
     option_ids = [action["id"] for action in options]
     conflict = next(
         candidate
@@ -2950,6 +2954,73 @@ def test_review_optional_option_const_can_satisfy_its_choice_case():
 
 
 @pytest.mark.parametrize(
+    "const, choices, expected",
+    (
+        pytest.param("allowed", ["allowed"], True, id="string-const-member"),
+        pytest.param("rejected", ["allowed"], False, id="string-const-not-member"),
+        pytest.param(1, [1], True, id="numeric-const-member"),
+        pytest.param(2, [1], False, id="numeric-const-not-member"),
+    ),
+)
+def test_review_optional_const_choice_rule_uses_the_recorded_probe(
+    const, choices, expected
+):
+    action = {
+        "id": "option:mode",
+        "kind": "option",
+        "action": "argparse._StoreAction",
+        "nargs": "?",
+        "type": None,
+        "const": const,
+        "const_choice_check_on_omission": True,
+        "choices": choices,
+    }
+
+    assert _values_satisfy_action(action, ()) is expected
+
+
+def test_review_non_string_optional_const_choice_candidate_uses_original_value():
+    registry = CliRegistry(
+        IDENTITY, prog="audit-tool", description="numeric const choice"
+    )
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs={
+                        "nargs": "?",
+                        "const": 1,
+                        "type": bool,
+                        "choices": (1,),
+                    },
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "option-choice" and case["shape"]["choice"] == 1
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", "--mode"]
+
+    assert app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0
+    assert _findings_for_invocation(candidate, route, invocation) == []
+
+
+@pytest.mark.parametrize(
     "nargs, values, accepted",
     (
         pytest.param(
@@ -3004,7 +3075,11 @@ def test_review_positional_choice_validation_matches_argparse_nargs(
         argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
     ) == (0 if accepted else 2)
     findings = _findings_for_invocation(candidate, route, invocation)
-    assert any("invalid value" in finding for finding in findings) is (not accepted)
+    assert any(
+        "invalid positional value shape" in finding
+        or "omits its positional choice" in finding
+        for finding in findings
+    ) is (not accepted)
 
 
 @pytest.mark.parametrize(
