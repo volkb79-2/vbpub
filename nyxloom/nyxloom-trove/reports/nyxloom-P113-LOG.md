@@ -249,6 +249,22 @@ approved 45-candidate campaign.
 
 This log update is a single-parent commit on top of `6ee297a4`; the next
 session-extract run must confirm the verdict resolves to
-`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` via `merge-base` and selects 45
-candidates before its result is accepted as final. The updated worktree remains
-subject to the full run-gate result and final review; P113 is not closed yet.
+`126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1` via `merge-base` and selects the
+full current 43-candidate inventory (within the approved 45-candidate cap)
+before its result is accepted as final. The updated worktree remains subject
+to the full run-gate result and final review; P113 is not closed yet.
+
+## Final source-backed inventory — 2026-10-01
+
+On single-parent commit `5e8b7f8137fc9d23ce8c3a69e1556eab1af6afdd`,
+`assay plan session-extract --file assay.toml` found 43 candidates in
+`claude_code.py` under the configured current-main boundary. The operator
+counts were 1 boolean-constant, 13 boolean-operator, 17 comparison, and 12
+falsy-swap candidates. With `jobs = 2` and a 120-second per-candidate budget,
+the plan estimated 5,160 serial seconds / 2,580 wall seconds (43 minutes).
+This is within the approved cap of 45; no tests or mutants ran during planning.
+The stale lane comments have been corrected to say 43 candidates under the 45
+cap. My immediate repeat of the plan while `assay.toml` was modified refused
+`NO_MEASUREMENT/DIRTY_TREE`; that refusal executed no lane. Re-run the plan
+after this commit, then require the final verdict itself to record the
+configured base and all 43 selected candidates before accepting the campaign.

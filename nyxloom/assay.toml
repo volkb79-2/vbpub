@@ -145,10 +145,10 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "-n", "4", "--maxfail=1", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# The current-main package-scoped campaign has 45 candidates. With two
-# mutation jobs and four pytest workers per candidate, the declared 120s
-# per-candidate failsafe gives a 45m planned wall bound; allow 2h for baseline,
-# scheduling, and verdict overhead.
+# The final current-main diff has 43 eligible candidates, within the approved
+# 45-candidate cap. The source-backed plan estimates a 43m wall bound with two
+# mutation jobs and the declared 120s per-candidate failsafe; allow 2h for
+# baseline, scheduling, and verdict overhead.
 budget = "2h"
 allow_argv_append = false
 
@@ -173,8 +173,8 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # under the session-extract source root, not the whole package. jobs=2 with
 # pytest -n 4 bounds total xdist fan-out to eight workers on this shared
 # 8-core host. The authoritative source-backed Assay plan at this selected
-# boundary found exactly 45 candidates; this finite cap prevents an unbounded
-# campaign.
+# boundary found 43 candidates under the cap of 45; this finite cap prevents an
+# unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 2
