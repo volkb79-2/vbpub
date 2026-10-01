@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Implemented — final-source R2/R3 evidence pending
+**Status:** Implemented — final-source R0/R1/R3 pass; R2 pending
 
 **Type:** Feature
 
