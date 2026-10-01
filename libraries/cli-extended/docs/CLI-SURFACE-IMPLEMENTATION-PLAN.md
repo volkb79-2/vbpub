@@ -540,10 +540,13 @@ items, and consumer docs show the annotations to add.
    the public colour API and current parser-constraint limits. Keep this plan
    as the review/implementation record and link to the stable design-guide
    section.
-7. **Run the library's registered gates.** Use `./run-gate.py gate`; the gate
-   includes 100% statement/branch coverage, the assay R2 campaign, and R3
-   canary. Preserve assay progress/resume artifacts under `.assay/`. Do not
-   treat a local venv result as gate evidence.
+7. **Run the library's registered gates.** This package has no root
+   `run-gate.py`, so launch each `run-gate.toml` lane command through
+   `cmru tester-gate` with `--cwd libraries/cli-extended`, the lane's declared
+   image/resources, and the orchestration-provided gates cgroup. Use the
+   source-backed Assay path and preserve its resume/progress files under
+   `.assay/`. Do not use the sibling `run-gate-project` runner for this
+   package or treat a local venv result as gate evidence.
 
 ## Required behavioral oracles
 
