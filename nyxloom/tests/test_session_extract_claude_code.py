@@ -989,6 +989,21 @@ def test_askuserquestion_prose_preserves_header_option_descriptions_and_multisel
     ) == expected + "\n\nOPERATOR: Labeled prose"
 
 
+def test_askuserquestion_prompt_omits_empty_header_and_non_string_labels():
+    question = {
+        "question": "Which option?",
+        "header": "",
+        "options": [
+            {"label": 7},
+            {"label": ""},
+            {"label": "Keep this label"},
+        ],
+    }
+    assert claude_code._format_askuserquestion_prompt(question) == (
+        "INTERVIEW: Which option?\n- Keep this label"
+    )
+
+
 @pytest.mark.parametrize("question", [None, "not a question object", {}, {"question": ""}, {"question": 7}])
 def test_askuserquestion_prompt_formatter_omits_malformed_questions(question):
     assert claude_code._format_askuserquestion_prompt(question) is None
@@ -1005,6 +1020,11 @@ def test_malformed_askuserquestion_tool_inputs_do_not_emit_empty_prompts(tmp_pat
              message={"role": "assistant", "content": [{
                  "type": "tool_use", "id": "bad-question", "name": "AskUserQuestion",
                  "input": {"questions": [{"question": ""}]},
+             }]}),
+        _rec(type="assistant", uuid="bad-input-type", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "bad-input-type", "name": "AskUserQuestion",
+                 "input": ["questions are not an object"],
              }]}),
     ]
     fp = tmp_path / "session.jsonl"
@@ -1078,6 +1098,16 @@ def test_format_qa_pairs_rejected_envelope_falls_back_on_extra_answer_row():
         ('Questions asked:\n- "Pick?"\n  Answer:', [_q("Pick?", "A")]),
         ('Questions asked:\n- "Pick?"\n  Answer: yes', [None]),
         ('Questions asked:\n- "Pick?"\n  Answer: yes', [{"question": ""}]),
+        ('Questions asked:\n- "Pick?\n  Answer: yes', [_q("Pick?", "A")]),
+        ('Questions asked:\n- ""\n  Answer: yes', [{"question": ""}]),
+        (
+            'Questions asked:\nAnswer: orphan\n- "Pick?"\n  Answer: yes',
+            [_q("Pick?", "A")],
+        ),
+        (
+            'Questions asked:\n(No answer provided)\n- "Pick?"\n  Answer: yes',
+            [_q("Pick?", "A")],
+        ),
     ],
 )
 def test_malformed_rejected_question_envelopes_preserve_raw_text(text, questions):
@@ -1332,6 +1362,21 @@ def test_prime_stream_state_skips_a_non_conversation_dict_before_remembering(
     assert remembered == []
 
 
+def test_prime_stream_state_tolerates_non_object_askuserquestion_input(tmp_path):
+    fp = tmp_path / "prefix.jsonl"
+    fp.write_text(json.dumps(_rec(type="assistant", message={
+        "content": [{
+            "type": "tool_use", "id": "bad-input", "name": "AskUserQuestion",
+            "input": ["not an object"],
+        }],
+    })) + "\n", encoding="utf-8")
+    state = claude_code.StreamState()
+
+    claude_code.prime_stream_state(fp, state, fp.stat().st_size)
+
+    assert state.askuserquestion_inputs == {"bad-input": []}
+
+
 def test_parse_record_covers_empty_and_non_conversation_shapes():
     config = ExtractConfig(include_thinking=True)
     state = claude_code.StreamState()
@@ -1376,3 +1421,15 @@ def test_update_interview_pending_requires_user_type_for_tool_results():
         pending,
     ) is None
     assert pending == {"old": "old question"}
+
+
+def test_update_interview_pending_tolerates_non_object_question_input():
+    pending = {}
+    assert claude_code.update_interview_pending(
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "bad", "name": "AskUserQuestion",
+             "input": ["not an object"]},
+        ]}},
+        pending,
+    ) == "(question)"
+    assert pending == {"bad": "(question)"}

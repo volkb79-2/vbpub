@@ -265,11 +265,12 @@ def _split_rejected_qa_pairs(
                     or lines[index].strip() == "(No answer provided)"):
                 return None
             index += 1
-        if index >= len(lines):
+        # The matching question row and its answer row must both exist. This
+        # single boundary check handles both an absent question and a final
+        # question with no following answer.
+        if index + 1 >= len(lines):
             return None
         index += 1
-        if index >= len(lines):
-            return None
 
         answer_line = lines[index].strip()
         if answer_line == "(No answer provided)":
@@ -596,7 +597,10 @@ def _remember_askuserquestion(rec: dict[str, Any], state: StreamState) -> None:
     for block in rec.get("message", {}).get("content", []) or []:
         if (isinstance(block, dict) and block.get("type") == "tool_use"
                 and block.get("name") == "AskUserQuestion" and block.get("id")):
-            questions = block.get("input", {}).get("questions")
+            tool_input = block.get("input")
+            questions = (
+                tool_input.get("questions") if isinstance(tool_input, dict) else None
+            )
             state.askuserquestion_inputs[block["id"]] = (
                 questions if isinstance(questions, list) else []
             )
@@ -663,7 +667,11 @@ def update_interview_pending(rec: dict[str, Any], pending: dict[str, str]) -> st
         for block in content or []:
             if (isinstance(block, dict) and block.get("type") == "tool_use"
                     and block.get("name") == "AskUserQuestion" and block.get("id")):
-                questions = block.get("input", {}).get("questions")
+                tool_input = block.get("input")
+                questions = (
+                    tool_input.get("questions")
+                    if isinstance(tool_input, dict) else None
+                )
                 first = questions[0] if isinstance(questions, list) and questions else None
                 text = first.get("question") if isinstance(first, dict) else None
                 pending[block["id"]] = text or "(question)"
@@ -905,7 +913,11 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
                 tid = block.get("id")
                 if tid:
-                    questions = block.get("input", {}).get("questions")
+                    tool_input = block.get("input")
+                    questions = (
+                        tool_input.get("questions")
+                        if isinstance(tool_input, dict) else None
+                    )
                     askuserquestion_inputs[tid] = questions if isinstance(questions, list) else []
 
     since_idx = None
