@@ -132,7 +132,7 @@ from .verdict import (
 
 __all__ = ["build_verify_parser", "cmd_verify", "verify_document", "verify_text"]
 
-#: The ten-field lane-resolved group, exactly `verdict.LANE_RESOLVED_FIELDS`
+#: The eleven-field lane-resolved group, exactly `verdict.LANE_RESOLVED_FIELDS`
 #: minus the derived `argv_modified` — transcribed by hand rather than
 #: imported, the same independence `tests/core/test_errors.py` already applies to
 #: the outcome/reason_code tables (A-092's house style).
@@ -144,6 +144,7 @@ _LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "argv_effective",
     "env_declared",
     "env_effective",
+    "env_passthrough",
     "scope",
     "enforcement",
 )
@@ -242,6 +243,21 @@ def _check_lane_resolved_group(document: dict, failures: list[str]) -> None:
             f"argv_effective {effective!r} is not argv_declared + "
             f"argv_appended {expected_effective!r}"
         )
+    fixed_env = document["env_declared"]
+    passthrough = document["env_passthrough"]
+    # Malformed values are the schema/model layer's concern. Keep this raw
+    # cross-field check total over untrusted JSON: a list-valued name, for
+    # example, must be reported as invalid input rather than raising here.
+    if (
+        isinstance(fixed_env, dict)
+        and isinstance(passthrough, list)
+        and all(isinstance(name, str) for name in passthrough)
+    ):
+        collisions = sorted(set(fixed_env) & set(passthrough))
+        if collisions:
+            failures.append(
+                f"env_passthrough names {collisions!r} collide with env_declared"
+            )
 
     expected_modified = bool(appended)
     if "argv_modified" not in document:
@@ -2339,6 +2355,7 @@ def _reconstruct_verdict(document: dict) -> Verdict:
             argv_effective=tuple(document["argv_effective"]),
             env_declared=MappingProxyType(dict(document["env_declared"])),
             env_effective=MappingProxyType(dict(document["env_effective"])),
+            env_passthrough=tuple(document["env_passthrough"]),
             scope=document["scope"],
             enforcement=document["enforcement"],
         )

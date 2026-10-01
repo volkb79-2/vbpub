@@ -4,7 +4,7 @@ The hole this closes was measured, not theorised. `resolve_command_plan` copies
 a passthrough name only ``if name in source``, so an absent one is silently
 dropped:
 
-    for name in lane.env_passthrough:
+    for name in lane.effective_env_passthrough:
         if name in source:
             env_effective[name] = source[name]
 
@@ -77,6 +77,34 @@ def test_a_lane_without_env_required_loads_and_declares_none(tmp_path: Path):
         "an empty env_required must not appear in the reconstructed table, or "
         "as_declared() stops round-tripping the file it was loaded from"
     )
+
+
+def test_project_passthrough_default_can_satisfy_env_required(tmp_path: Path):
+    path = tmp_path / "assay.toml"
+    path.write_text(
+        """\
+schema_version = 2
+
+[defaults]
+env_passthrough = ["PATH", "CIU_INSTANCE_ID"]
+
+[lanes.real]
+scope = "S3"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+env_required = ["CIU_INSTANCE_ID"]
+budget = "1m"
+allow_argv_append = false
+""",
+        encoding="utf-8",
+    )
+
+    lane = load_lane_file(path).lane("real")
+
+    assert lane.env_required == ("CIU_INSTANCE_ID",)
+    assert lane.effective_env_passthrough == ("PATH", "CIU_INSTANCE_ID")
 
 
 def test_a_declared_env_required_round_trips_through_as_declared(tmp_path: Path):
@@ -204,6 +232,39 @@ def test_satisfied_requirements_pass_and_record_both_values_verbatim(
     assert document["outcome"] == "PASS"
     assert document["env_effective"]["CIU_IMAGE_REVISION"] == "1b369e23"
     assert document["env_effective"]["CIU_INSTANCE_ID"] == "dstdns-pkgP96"
+    assert document["env_passthrough"] == [
+        "PATH", "CIU_IMAGE_REVISION", "CIU_INSTANCE_ID"
+    ]
+    assert verify_document(document) == []
+
+
+def test_a_project_default_is_recorded_in_the_run_verdict(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    git_repo.write(".gitignore", "*.json\n")
+    git_repo.write("src/m.py", "x = 1\n")
+    lane_file = _write_lane(git_repo.path, passthrough=["PATH"], required=None)
+    lane_file.write_text(
+        lane_file.read_text(encoding="utf-8").replace(
+            "schema_version = 2\n",
+            'schema_version = 2\n\n[defaults]\nenv_passthrough = '
+            '["BUILD_VERSION", "PATH"]\n',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    git_repo.commit_all("lane with explicit project passthrough default")
+
+    code, document = _run(
+        git_repo,
+        tmp_path / "v.json",
+        {"BUILD_VERSION": "release-42"},
+        monkeypatch,
+    )
+
+    assert code == 0
+    assert document["env_passthrough"] == ["BUILD_VERSION", "PATH"]
+    assert document["env_effective"]["BUILD_VERSION"] == "release-42"
     assert verify_document(document) == []
 
 

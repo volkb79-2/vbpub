@@ -528,6 +528,30 @@ def test_verify_rejects_a_partially_present_lane_resolved_group(
     )
 
 
+def test_verify_rejects_passthrough_environment_names_that_collide_with_fixed_env(
+    validator: Draft202012Validator,
+):
+    document = _load("r0_pass.json")
+    document["env_declared"] = {"BUILD_MODE": "release"}
+    document["env_effective"] = {"BUILD_MODE": "release"}
+    document["env_passthrough"] = ["BUILD_MODE"]
+    assert why_invalid(validator, document) == [], (
+        "the fixed/passthrough collision is a cross-field relation, so the raw "
+        "verifier owns it"
+    )
+    failures = verify_document(document)
+    assert any("env_passthrough names ['BUILD_MODE'] collide with env_declared" in item
+               for item in failures)
+
+
+def test_verify_reports_malformed_passthrough_names_without_raising():
+    document = _load("r0_pass.json")
+    document["env_passthrough"] = [[]]
+    failures = verify_document(document)
+    assert failures
+    assert any("schema:" in item for item in failures)
+
+
 def test_verify_rejects_argv_effective_that_does_not_equal_declared_plus_appended(
     validator: Draft202012Validator,
 ):
@@ -1206,7 +1230,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-            "schema_version": 13,
+            "schema_version": 14,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1223,6 +1247,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
         "argv_modified": False,
         "env_declared": {},
         "env_effective": {},
+        "env_passthrough": [],
         "scope": "S1",
         "enforcement": "gate",
         "snapshot_policy": {"selection": "repository"},
@@ -1318,9 +1343,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 13: a verdict "
+        "schema_version 2 is not this verifier's version 14: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 13"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 14"
     ]
 
 
@@ -1348,9 +1373,9 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: version. An edit to `verdict.schema.json` without a VERDICT_SCHEMA_VERSION
 #: bump fails here; a bump fails with a KeyError until its digest is added.
 #: Carries forward the retired W9 gate phase's
-#: `test_shipped_schema_is_byte_identical_to_the_locked_v13_asset`.
+#: `test_shipped_schema_is_byte_identical_to_the_locked_v14_asset`.
 _VERDICT_SCHEMA_SHA256 = {
-    13: "ade21cf0313d798b6b0ba9e41871bdcb310a33101c1b66317d1dbfc569e68734",
+    14: "eb725bbd87be7fac77436d59c3588dc37b9761c7930ffe744939fb2b9cdfa3d3",
 }
 
 

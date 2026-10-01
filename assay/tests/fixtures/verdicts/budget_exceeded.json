@@ -1,5 +1,5 @@
 {
-  "schema_version": 13,
+  "schema_version": 14,
   "assay_version": "0.1.0",
   "lane": "integration",
   "commit": "5555555555555555555555555555555555555555",
@@ -30,6 +30,7 @@
   "env_effective": {
     "MOCK_MODE": "false"
   },
+  "env_passthrough": [],
   "scope": "S1",
   "enforcement": "gate",
   "claims": [

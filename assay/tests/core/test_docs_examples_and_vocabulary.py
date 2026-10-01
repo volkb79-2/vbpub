@@ -124,7 +124,7 @@ _SKIPPED_EXAMPLES = [ex for ex in _ALL_EXAMPLES if ex.skip_reason is not None]
 
 def _materialize_lane_dependencies(project_root: Path, document: dict) -> None:
     """Pre-create exactly what :func:`assay.config.load_lane_file` checks for
-    on disk at load time: a declared ``source_roots`` directory, and a
+    on disk at load time: a declared ``source_roots`` directory or file, and a
     declared ``canary.target`` file. ``judge.targets`` (B005) is deliberately
     left absent -- the loader itself never checks it, precisely so a
     whole-target lane stays judgeable from any commit (``_load_targets``'s
@@ -139,7 +139,13 @@ def _materialize_lane_dependencies(project_root: Path, document: dict) -> None:
         if not isinstance(judge, dict):
             continue
         for root in judge.get("source_roots", ()):
-            (project_root / root).mkdir(parents=True, exist_ok=True)
+            root_path = project_root / root
+            if root_path.suffix:
+                root_path.parent.mkdir(parents=True, exist_ok=True)
+                if not root_path.exists():
+                    root_path.write_text("# assay-doc-example source root\n", encoding="utf-8")
+            else:
+                root_path.mkdir(parents=True, exist_ok=True)
         canary = judge.get("canary")
         if isinstance(canary, dict) and "target" in canary:
             target_path = project_root / canary["target"]
@@ -277,6 +283,13 @@ def test_materialize_lane_dependencies_creates_declared_source_roots(tmp_path: P
         tmp_path, {"lanes": {"x": {"judge": {"source_roots": ["a/b"]}}}}
     )
     assert (tmp_path / "a" / "b").is_dir()
+
+
+def test_materialize_lane_dependencies_creates_a_file_source_root(tmp_path: Path):
+    _materialize_lane_dependencies(
+        tmp_path, {"lanes": {"x": {"judge": {"source_roots": ["src/owned.py"]}}}}
+    )
+    assert (tmp_path / "src" / "owned.py").is_file()
 
 
 def test_materialize_lane_dependencies_creates_a_declared_canary_target_only_if_missing(

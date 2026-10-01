@@ -108,7 +108,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         claim["reason_code"] = reason
     outcome = Outcome(status)
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -124,6 +124,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         "argv_modified": False,
         "env_declared": {},
         "env_effective": {},
+        "env_passthrough": [],
         "scope": "S1",
         "enforcement": "gate",
         "snapshot_policy": {"selection": "repository"},
@@ -512,7 +513,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         }
     )
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -528,6 +529,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         "argv_modified": False,
         "env_declared": {},
         "env_effective": {},
+        "env_passthrough": [],
         "scope": "S1",
         "enforcement": "gate",
         "snapshot_policy": {"selection": "repository"},

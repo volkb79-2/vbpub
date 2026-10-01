@@ -60,7 +60,8 @@ def check_dirty_tree(
     would mean "the diff cannot see what is actually being tested", not
     "nothing changed" (DESIGN-GUIDE §6).
 
-    *source_roots* must already be resolved, existing, absolute directories —
+    *source_roots* must already be resolved, existing absolute directories or
+    regular files —
     :attr:`assay.config.JudgeConfig.source_root_paths`'s own contract. This
     function trusts that and does no filesystem validation of its own.
 

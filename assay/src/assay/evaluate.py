@@ -465,7 +465,8 @@ def evaluate_coverage(
     function ever compares a profile key against *added.by_file* — see that
     function's own docstring for the adapter-STRIP-vs-core-PREPEND split
     (DESIGN-GUIDE §11). *source_root_paths* are RESOLVED, ABSOLUTE,
-    existing directories (:attr:`assay.config.JudgeConfig.source_root_paths`'s
+    existing directories or regular files
+    (:attr:`assay.config.JudgeConfig.source_root_paths`'s
     own contract); boundary membership is decided by
     :meth:`pathlib.Path.is_relative_to` on the resolved absolute path, never
     by string prefix — the same discipline

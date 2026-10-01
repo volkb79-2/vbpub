@@ -69,6 +69,7 @@ LANE_RESOLVED_KEYS = (
     "argv_modified",
     "env_declared",
     "env_effective",
+    "env_passthrough",
     "scope",
     "enforcement",
 )

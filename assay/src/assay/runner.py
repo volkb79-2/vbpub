@@ -784,13 +784,13 @@ def resolve_command_plan(
 ) -> CommandPlan:
     """Resolve what will run. Never launches anything.
 
-    *passthrough_source* is the ambient environment to read
-    ``lane.env_passthrough`` names FROM -- ``os.environ`` by default, but
-    injectable so a test proves "no ambient leak" without mutating real
-    process-global state (AUTHORING.md §3b.B). Only names the lane actually
-    declared in ``env_passthrough`` AND that are present in the source are
-    carried into ``env_effective``; everything else in the source is invisible
-    to the child, matching A-019's "declared-only" env contract.
+    *passthrough_source* is the ambient environment to read the effective
+    allowlist FROM -- ``os.environ`` by default, but injectable so a test
+    proves "no ambient leak" without mutating real process-global state
+    (AUTHORING.md §3b.B). Only names in the explicit project/lane
+    ``env_passthrough`` policy AND present in the source are carried into
+    ``env_effective``; everything else in the source is invisible to the child,
+    matching A-019's "declared-only" env contract.
 
     **B013:** when *lane* declares ``infrastructure``, those facts are resolved
     HERE, in the invoking process, before any snapshot or command exists.
@@ -874,7 +874,7 @@ def resolve_command_plan(
                     reason_code=ReasonCode.BAD_LANE_CONFIG,
                 )
             env_effective[name] = value
-    for name in lane.env_passthrough:
+    for name in lane.effective_env_passthrough:
         if name not in source:
             continue
         if name in env_effective:
@@ -901,7 +901,7 @@ def resolve_command_plan(
         argv_effective=argv_declared + argv_appended,
         env_declared=lane.env,
         env_effective=MappingProxyType(env_effective),
-        env_passthrough=tuple(lane.env_passthrough),
+        env_passthrough=lane.effective_env_passthrough,
         allow_argv_append=lane.allow_argv_append,
         budget_seconds=lane.budget_seconds,
         project_prefix=project_prefix,
@@ -2228,6 +2228,7 @@ def assemble_verdict(
         argv_effective=plan.argv_effective,
         env_declared=plan.env_declared,
         env_effective=plan.env_effective,
+        env_passthrough=plan.env_passthrough,
         env_effective_incomplete=env_effective_incomplete,
         scope=lane.scope,
         enforcement=lane.enforcement,
@@ -2359,7 +2360,7 @@ def refuse_lane(
             argv_effective=argv_effective,
             env_declared=MappingProxyType(dict(lane.env)),
             env_effective=MappingProxyType(dict(lane.env)),
-            env_passthrough=tuple(lane.env_passthrough),
+            env_passthrough=lane.effective_env_passthrough,
             allow_argv_append=lane.allow_argv_append,
             budget_seconds=lane.budget_seconds,
             project_prefix=project_prefix,
@@ -2731,8 +2732,8 @@ def _relocate_source_roots(
     :mod:`assay.canary`'s control/transform halves, rather than two
     independently drifting copies.
 
-    ``source_root_paths`` are RESOLVED, ABSOLUTE directories under the
-    CONSUMER's own project root; every judgement made inside a snapshot
+    ``source_root_paths`` are RESOLVED, ABSOLUTE directories or regular files
+    under the CONSUMER's own project root; every judgement made inside a snapshot
     compares them against paths under THAT snapshot's own project root.
     Only ``source_root_paths`` needs respelling: every other path-bearing
     field a snapshot is judged through is already project-relative and
@@ -5814,7 +5815,7 @@ def run_lane(
             argv_effective=tuple(lane.environment_command),
             env_declared=MappingProxyType(dict(lane.env)),
             env_effective=probe_env_effective,
-            env_passthrough=lane.env_passthrough,
+            env_passthrough=lane.effective_env_passthrough,
             allow_argv_append=False,
             budget_seconds=probe_timeout,
             project_prefix=None,
@@ -6031,7 +6032,8 @@ def run_lane(
         if diagnostics is not None:
             if reuse_source.cold_start:
                 print(
-                    f"assay: --reuse-from {str(reuse_from)!r} is a v12 cold "
+                    f"assay: --reuse-from {str(reuse_from)!r} is a "
+                    f"v{reuse_source.schema_version} cold "
                     "start; no prior candidates are reusable, so every "
                     "current candidate will run fully after baseline PASS",
                     file=diagnostics,

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:13",
+  "$id": "urn:assay:schema:verdict:14",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
@@ -20,7 +20,7 @@
     "schema_version": {
       "description": "The verdict schema version, independent of assay.toml's lane schema version. Exactly one schema is active in a released build (A-170): no negotiation, no default upgrade, no compatibility writer.",
       "type": "integer",
-      "const": 13
+      "const": 14
     },
     "assay_version": {
       "type": "string",
@@ -85,6 +85,15 @@
     },
     "env_effective": {
       "$ref": "#/$defs/env"
+    },
+    "env_passthrough": {
+      "description": "B140/schema v14: the effective, ordered and deduplicated allowlist of ambient names for a resolved lane, including names absent from the runtime environment.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "env_effective_incomplete": {
       "description": "(B025) True exactly when env_effective is NOT the real resolved environment -- a refusal whose own infrastructure declaration was itself unresolvable falls back to the lane's fixed env alone rather than leaving the whole refusal an uncaught exception with no artifact. Omitted (never false) in every other case, matching how every other optional field in this document is represented.",
@@ -194,6 +203,7 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
       "enforcement"
     ],
@@ -205,6 +215,7 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
       "enforcement"
     ],
@@ -216,6 +227,7 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
       "enforcement"
     ],
@@ -227,6 +239,7 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
       "enforcement"
     ],
@@ -238,6 +251,7 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
       "enforcement"
     ],
@@ -249,6 +263,7 @@
       "argv_effective",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
       "enforcement"
     ],
@@ -260,6 +275,7 @@
       "argv_effective",
       "argv_modified",
       "env_effective",
+      "env_passthrough",
       "scope",
       "enforcement"
     ],
@@ -271,6 +287,7 @@
       "argv_effective",
       "argv_modified",
       "env_declared",
+      "env_passthrough",
       "scope",
       "enforcement"
     ],
@@ -283,6 +300,7 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "enforcement"
     ],
     "enforcement": [
@@ -294,9 +312,23 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope"
     ],
     "env_effective_incomplete": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "env_passthrough",
+      "scope",
+      "enforcement"
+    ],
+    "env_passthrough": [
       "declared_rigor",
       "declared_evidence",
       "argv_declared",

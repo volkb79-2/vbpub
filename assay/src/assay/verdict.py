@@ -356,9 +356,16 @@ __all__ = [
 #: mutant-limit sentinel and ingested reports omit the inventory. A killed
 #: outcome may record a bounded call-phase failure witness; a witness-prefix
 #: result additionally names the exact prior verdict digest and matching prior
-#: and current node IDs. ``assay verify`` still refuses v12. ``--reuse-from``
-#: recognizes a v12 envelope only as an unproven full-run cold start.
-VERDICT_SCHEMA_VERSION = 13
+#: and current node IDs. ``assay verify`` refuses v12 and v13. ``--reuse-from``
+#: recognizes those envelopes only as unproven full-run cold starts.
+#:
+#: **Bumped 13 -> 14 (B140, effective environment passthrough provenance).**
+#: Every resolved lane now records the effective, stable union of explicit
+#: project-level `[defaults].env_passthrough` and its lane-level list. This is
+#: separate from `env_effective`, which records values actually present in the
+#: invoking environment: the new list also preserves allowed names that were
+#: absent at run time. Producers emit v14, and `assay verify` refuses v13.
+VERDICT_SCHEMA_VERSION = 14
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -489,6 +496,7 @@ LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "argv_modified",
     "env_declared",
     "env_effective",
+    "env_passthrough",
     "scope",
     "enforcement",
 )
@@ -4374,6 +4382,10 @@ class Verdict:
     argv_effective: tuple[str, ...] | None = None
     env_declared: Mapping[str, str] | None = None
     env_effective: Mapping[str, str] | None = None
+    #: (B140/schema v14) The stable, deduplicated allowlist after combining
+    #: explicit project defaults with this lane's own declaration. Empty is
+    #: known-and-empty; absent means no lane resolved.
+    env_passthrough: tuple[str, ...] | None = None
     #: (B025) True exactly when `env_effective` above is NOT the real
     #: resolved environment -- a refusal whose own infrastructure
     #: declaration was itself unresolvable falls back to `lane.env` alone
@@ -4479,6 +4491,20 @@ class Verdict:
                 "env_effective_incomplete requires the lane-resolved group "
                 "(declared_rigor and friends) to be present"
             )
+        if self.env_passthrough is not None:
+            if not isinstance(self.env_passthrough, tuple):
+                raise ValueError("env_passthrough must be a tuple when present")
+            for index, name in enumerate(self.env_passthrough):
+                _check_nonempty(name, f"env_passthrough[{index}]")
+            if len(set(self.env_passthrough)) != len(self.env_passthrough):
+                raise ValueError("env_passthrough must be unique and ordered")
+            fixed_names = set(self.env_declared or {})
+            collisions = sorted(fixed_names & set(self.env_passthrough))
+            if collisions:
+                raise ValueError(
+                    f"env_passthrough names {collisions} collide with fixed "
+                    f"env_declared names"
+                )
         if self.scope is not None and self.scope not in SCOPES:
             raise ValueError(f"scope must be one of {sorted(SCOPES)}, got {self.scope!r}")
         if self.enforcement is not None and self.enforcement not in ENFORCEMENTS:
@@ -5436,6 +5462,7 @@ class Verdict:
             payload["argv_modified"] = bool(self.argv_modified)
             payload["env_declared"] = dict(self.env_declared or {})
             payload["env_effective"] = dict(self.env_effective or {})
+            payload["env_passthrough"] = list(self.env_passthrough or ())
             if self.env_effective_incomplete:
                 payload["env_effective_incomplete"] = True
             payload["scope"] = self.scope

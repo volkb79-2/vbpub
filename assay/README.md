@@ -56,9 +56,13 @@ needs nothing extra:
   including historical runs, at its explicitly expected commit.
 - `plan-estimate` projects a campaign's hours from an `assay plan` JSON file
   and a progress stream that holds a completed baseline (a preflight or an R0/R1
-  run at the same commit). It is a measured, advisory projection: it never
+  run at the same commit and lane). Its JSON names that lane, and it refuses a
+  plan/progress lane mismatch. It is a measured, advisory projection: it never
   classifies a candidate, and `assay plan` itself keeps its declared-budget
-  estimate and prints a stderr line pointing here.
+  estimate and prints a stderr line pointing here. Ingested R2 reports such as
+  Stryker's cannot be enumerated by `assay plan`; see the [first-run sizing
+  procedure](docs/CONSUMERS.md#size-an-ingested-javascript-r2-campaign-b137)
+  and [design rule](docs/DESIGN-GUIDE.md#plan-estimates-bind-lane-and-commit).
 - `campaign` closes out one declared mutation lane from its committed lane
   file, its progress stream and, when you have it, its verified verdict. It is
   read-only: it never judges, never runs a test and never writes a file. It
@@ -91,7 +95,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v13 verdict schema; a receipt
+Receipt verdicts are checked against the current v14 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -185,8 +189,8 @@ assay exists to close that gap mechanically, not by policy:
   baseline.** `assay plan --reuse-from` previews candidate classifications;
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
-  runs the candidate's full suite. A v12 verdict is a cold start, and `assay
-  verify` still rejects it. See the
+  runs the candidate's full suite. A v12 or v13 verdict is a cold start under
+  v14, and `assay verify` rejects both. See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
@@ -208,14 +212,20 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 13` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-Both are hard cuts: `assay verify` refuses a v12 verdict exactly as it refuses
-v11 (no dual-version verifier, no upgrade-in-place), and a v2 assay
+`VERDICT_SCHEMA_VERSION = 14` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+The verdict is a hard cut: `assay verify` refuses v13 and earlier verdicts
+(no dual-version verifier, no upgrade-in-place). Lane schema stays at v2;
+this release extends it with the explicit project-level
+`[defaults].env_passthrough` option. Existing v2 lane files still load, and a
+lane may omit its own `env_passthrough` only when that project table is
+present. A v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
+For the verdict-field addition and the effect on old verdicts and reuse, see
+the [v13-to-v14 migration notes](docs/CONSUMERS.md#migration-notes-v13-to-v14).
 
 ## What assay is, and is not
 
@@ -868,8 +878,13 @@ answer.
    - `[lanes.<name>.judge]` — HOW: coverage format, `source_roots`,
      `fail_under`, mutation operators/budget, canary mechanism — only for
      the rigor levels actually declared.
-   - `where` facts (env, env_passthrough) — WHERE this specific lane
-     legitimately differs from the ambient environment.
+   - `where` facts (`env`, lane-level `env_passthrough`) — WHERE this specific
+     lane legitimately differs from the ambient environment. The optional
+     top-level `[defaults].env_passthrough` names project-wide allowed inputs;
+     see the [default policy](docs/DESIGN-GUIDE.md#5-defaults-doctrine-dstdns-agents-42a-applied).
+     A `source_roots` entry may name a directory or one exact file; see
+     [the design rule](docs/DESIGN-GUIDE.md#file-scoped-source-roots) and
+     [worked lane](docs/CONSUMERS.md#scope-a-changed-lines-lane-to-one-file-b141).
 2. `assay run <lane>` executes the lane's declared command exactly once,
    measures the result against every declared rigor level, and writes one
    verdict artifact — a JSON document validated against a shipped JSON
@@ -882,6 +897,10 @@ answer.
 ```toml
 # assay.toml
 schema_version = 2
+
+# Explicit project-wide allowlist defaults. No names are built in.
+[defaults]
+env_passthrough = ["PATH"]
 
 # Optional project-top-relative paths whose pre-existing dirt is recorded.
 [isolation]
@@ -898,7 +917,6 @@ rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["pytest", "--cov=mypkg", "--cov-branch", "--cov-report=json:cov.json"]
 env = {}
-env_passthrough = ["PATH"]
 budget = "20m"
 allow_argv_append = false
 
@@ -939,9 +957,12 @@ Two more CLI verbs round out the surface:
   useful for auditing what a project claims before trusting its gate.
 - `assay plan <mutation-lane>` discovers candidates through a private commit
   snapshot, reports total/per-file/per-operator counts and deterministic IDs,
-  and estimates runtime without running the lane command or any mutant. Its
-  JSON carries the `commit` and `tree` it was made at, and the estimate is the
-  declared budget (a placeholder when none is numeric), not a measurement; save
+  and estimates runtime without running the lane command or any mutant. Native
+  candidate discovery is required; an ingested R2 lane returns an `unsupported`
+  result with a reason because the foreign report does not expose Assay's
+  candidate inventory. Its JSON carries the lane, `commit` and `tree` it was
+  made at, and the estimate is the declared budget (a placeholder when none is
+  numeric), not a measurement; save
   the JSON and pass it to `assay analyze plan-estimate` for a measured
   projection. The B105 R2 driver plans first and its checker refuses a report
   whose campaign is not exactly that complete, unsharded plan at the expected

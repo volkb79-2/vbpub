@@ -340,7 +340,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 13,
+        "schema_version": 14,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -353,6 +353,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
         "argv_modified": False,
         "env_declared": {"PYTHONDONTWRITEBYTECODE": "1"},
         "env_effective": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "env_passthrough": [],
         "scope": "S1",
         "enforcement": "gate",
         "judgment": {
@@ -699,7 +700,7 @@ def _expected_r2_artifact(
                 )
             ]
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -716,6 +717,7 @@ def _expected_r2_artifact(
         "argv_modified": False,
         "env_declared": {"PATH": "/usr/bin:/bin"},
         "env_effective": {"PATH": "/usr/bin:/bin"},
+        "env_passthrough": [],
         "scope": "S1",
         "enforcement": "gate",
         # wave-1 §6 (A-269): declared_rigor names R2, a higher-rigor level,
@@ -1228,7 +1230,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1241,6 +1243,7 @@ def _expected_r3_artifact(
         "argv_modified": False,
         "env_declared": env,
         "env_effective": env,
+        "env_passthrough": [],
         "scope": "S1",
         "enforcement": "gate",
         # P33/V5-1 + A-223a: an R0,R3 lane records language and source roots
@@ -1597,7 +1600,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1610,6 +1613,7 @@ def _r1_r3_expected(
         "argv_modified": False,
         "env_declared": env,
         "env_effective": env,
+        "env_passthrough": [],
         "scope": "S1",
         "enforcement": "gate",
         "judgment": {

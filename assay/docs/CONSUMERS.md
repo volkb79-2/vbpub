@@ -224,6 +224,12 @@ Adopt R2 and R3 deliberately: mutation and canary runs execute isolated snapshot
 valuable on changed high-risk code, but cost materially more time and scratch disk. Set a small
 `max_mutants` and a lane budget first; expand only after observing real runs.
 
+When lanes share allowed environment names, declare an explicit project table
+`[defaults].env_passthrough` and omit the lane-level key where it adds nothing.
+The list is policy you write down: Assay has no built-in passthrough names, and
+fixed `env` values may not overlap the effective allowlist. See the
+[design rule](DESIGN-GUIDE.md#5-defaults-doctrine-dstdns-agents-42a-applied).
+
 ## Declare your snapshot selection
 
 Every lane that claims R1, R2 or R3 must add an `[isolation]` table — there is no default and no
@@ -272,6 +278,9 @@ copy and adapt:
 ```toml
 schema_version = 2
 
+[defaults]
+env_passthrough = ["PATH"]
+
 [isolation]
 dirty_ignore = ["nyxloom-trove/**", ".assay/**"]
 
@@ -284,7 +293,6 @@ rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["pytest", "-q", "--cov=src", "--cov-report=json:cov.json"]
 env = {}
-env_passthrough = ["PATH"]
 budget = "5m"
 allow_argv_append = false
 
@@ -309,8 +317,11 @@ positive integer; `*_bytes` values are uncompressed logical bytes,
 `max_total_tree_blob_bytes` counts unique blobs in the judged tree, and it
 cannot exceed `max_total_object_bytes`. Limits are project-wide so `assay
 plan` and `assay run` cannot silently choose different transfer policy. The
-lane schema remains `2`, but an older assay rejects these new keys: repin the
-consumer before committing them.
+lane schema remains `2`, but an older assay rejects these new keys, including
+`[defaults]`: repin the consumer before committing them. Project defaults are
+the first entries in the effective list; lane entries follow, with duplicates
+removed in first-occurrence order. The verdict's `env_passthrough` records that
+effective list, even when an allowed name was absent at runtime.
 
 `dirty_ignore` uses repo-top-relative POSIX globs, shared with native R2's
 `identity_exclude`. It records matching pre-existing dirt on the verdict; it
@@ -327,6 +338,46 @@ The flag applies only to R1+ snapshot lanes; R0 remains strict. The verdict's
 warning, by `assay verify` but is refused by `assay analyze receipt` by
 default. `run-gate.py --allow-dirty` is a separate outer clean-tree policy;
 run-gate does not forward or reinterpret it as assay's flag.
+
+## Scope a changed-lines lane to one file (B141)
+
+In a monorepo, a lane can own a single file when a neighboring package's
+changed lines need different tests. `source_roots` is relative to the
+directory containing `assay.toml`; an existing file selects only that exact
+path, so siblings stay out of this lane's changed-line measurement.
+
+```toml
+schema_version = 2
+
+[lanes.dns_zone]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["pytest", "tests/dns/test_zone.py", "-q", "--cov-report=json:coverage.json"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.dns_zone.isolation]
+snapshot_selection = "repository"
+
+[lanes.dns_zone.judge]
+language = "python"
+source_roots = ["packages/dns/src/zone.py"]
+fail_under = 100.0
+allow_excluded = false
+base = "origin/main"
+
+[lanes.dns_zone.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+```
+
+The gate refuses a missing file, an absolute path, or a path resolving outside
+the project root. A directory continues to select its descendants as before.
+See the [design rule](DESIGN-GUIDE.md#file-scoped-source-roots) for exact
+membership and containment behavior.
 
 If a disposable or vendored Go module root is where `assay.toml` must live,
 the lane file itself must be tracked in that checkout, or matched by a
@@ -2325,10 +2376,10 @@ A lane file that fails to load exits `2` with the loader's own message on
 stderr and **no JSON on stdout** — never a partial document — exactly like
 the text form of `assay lanes`.
 
-## Size a mutation lane before running it
+## Size a native mutation lane before running it
 
-For any R2 mutation lane, inspect the workload without executing its command or creating mutant
-snapshots:
+For a native R2 mutation lane, inspect the workload without executing its
+command or creating mutant snapshots:
 
 ```bash
 assay plan worker_lane --file assay.toml
@@ -2347,21 +2398,24 @@ plan` never executes anything at all). They are **not an upper bound**: a candid
 suite can take longer than the declared bound or the placeholder. Treat them as a sizing input for the
 optional per-candidate bound, never as a forecast.
 
-The plan JSON also carries `commit` and `tree` (the full object ids of the source it was made at),
-and `assay plan` prints a one-line hint on stderr (stdout stays one JSON document) naming the measured
-projection. To project the campaign from a measured baseline, save the plan and give it a progress
-file that holds a completed baseline (a preflight or an R0/R1 run at the same commit):
+The plan JSON also carries `lane`, `commit` and `tree` (the full object ids of
+the source it was made at), and `assay plan` prints a one-line hint on stderr
+(stdout stays one JSON document) naming the measured projection. To project
+the campaign from a measured baseline, save the plan and give it a progress
+file that holds a completed baseline (a preflight or an R0/R1 run at the same
+lane and commit):
 
 ```bash
 assay plan worker_lane --file assay.toml > plan.json
 assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-self-qualification-preflight.jsonl --workers 3
 ```
 
-It prints one JSON object (`schema_version`, `commit`, `tree`, `candidates`, `baseline_s`,
+It prints one JSON object (`schema_version`, `lane`, `commit`, `tree`, `candidates`, `baseline_s`,
 `per_candidate_s`, `workers`, `projected_worker_hours`, `projected_wall_hours`) and exits `0`, or exits
-`2` with one stderr line and empty stdout when the input is unusable (no completed baseline, a commit
-mismatch between plan and progress, an unreadable file). It is advisory: it never classifies a
-candidate. Use the plan's facts to choose an optional per-candidate bound:
+`2` with one stderr line and empty stdout when the input is unusable (no
+completed baseline, a lane or commit mismatch between plan and progress, an
+unreadable file). It is advisory: it never classifies a candidate. Use the
+plan's facts to choose an optional per-candidate bound:
 
 <!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
 ```toml
@@ -2371,6 +2425,41 @@ max_mutants = 100
 operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
 ```
+
+### Size an ingested JavaScript R2 campaign (B137)
+
+`assay plan` enumerates Assay's native candidate inventory. An ingested lane
+such as the Stryker lane above has no such inventory: the foreign report does
+not provide the execution facts Assay needs for candidate-count estimates.
+`assay plan ui_mutation --file assay.toml` therefore returns JSON with
+`status = "unsupported"`, the lane, `reason_code = "MUTATION_UNSUPPORTED"`,
+and a named reason. Passing that result to `assay analyze plan-estimate`
+forwards the reason and exits `2`; it does not return a fabricated zero or
+projection.
+
+For the first run, set the lane's `budget` to the maximum per-job duration
+already allowed by your CI policy. Keep that ceiling within the job's actual
+timeout and configure Stryker's own per-mutant timeout below it. Then run the
+campaign under the normal gate so Assay records its verdict and progress:
+
+```bash
+if assay run ui_mutation --resume \
+  --progress .assay/progress-ui_mutation.jsonl \
+  --verdict-json .assay/verdict-ui_mutation.json; then
+  assay_exit=0
+else
+  assay_exit=$?
+fi
+assay analyze campaign ui_mutation --file assay.toml \
+  --expected-commit "$REVIEW_HEAD" \
+  --progress .assay/progress-ui_mutation.jsonl \
+  --verdict .assay/verdict-ui_mutation.json --command-exit "$assay_exit"
+```
+
+Review the recorded elapsed time after a complete run. Use it as an observation
+when adjusting the next run's budget, still bounded by CI policy and the
+consumer's own timeout. This first-run procedure produces no candidate count
+or forecast; the CI ceiling is the source for the initial budget.
 
 ### `budget_per_candidate = "auto"` (the default, B091/D-23)
 
@@ -2835,11 +2924,12 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 - **The ids `--rejudge` takes are `candidate_id` digests, not
   `MutantOutcome.identity`.** Since verdict schema v13, every native outcome
   carries its digest and `mutation.candidate_ids` lists the complete submitted
-  scope. To rejudge the survivors in a v13 verdict, select the `candidate_id`
+  scope. To rejudge the survivors in a v14 verdict, select the `candidate_id`
   values from its `survived` array. The older tuple-shaped
   `MutantOutcome.identity` (path, span, replacement hash, operator) remains a
   separate identity and cannot be passed as an ID. A v12 verdict has no
-  candidate inventory and remains a cold start for `--reuse-from`.
+  candidate inventory; v12 and v13 verdicts both start cold for `--reuse-from`
+  under the v14 verifier.
 - **`resume`'s own progress event gains `rejudged_total`** (above): the count
   of records dropped by either selection on this run, `0` when neither flag
   is given.
@@ -2849,7 +2939,7 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 `--reuse-from` is for a new source or test tree when ordinary `--resume` would
 correctly reject the old judge identity. A first full, native R2 run over a
 direct sequential pytest command records the first call-phase failing node for
-each killed candidate. Keep that v13 verdict. On a later commit, Assay always
+each killed candidate. Keep that v14 verdict. On a later commit, Assay always
 runs the current R0 baseline and rediscovers the current candidates before it
 uses the prior verdict. A prior kill only chooses a point to test: the current
 suite is collected in full and must fail at that same node with pytest and the
@@ -2880,9 +2970,9 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12 verdict is a cold start: `assay plan` marks its evidence
-unproven and `assay run` runs every candidate fully after the baseline;
-`assay verify` still refuses v12. Wrapped commands, xdist, custom test loops,
+that candidate. A v12 or v13 verdict is a cold start under v14: `assay plan`
+marks its evidence unproven and `assay run` runs every candidate fully after
+the baseline; `assay verify` refuses both versions. Wrapped commands, xdist, custom test loops,
 or uncertain pytest hooks also use full runs. `--reuse-from` cannot be combined
 with `--shard`, because the feature returns a complete unsharded campaign.
 The [B106 design](DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
@@ -2972,15 +3062,17 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-Verdict schema v13 and lane schema v2 are both hard cuts (no dual-version
-verifier, no compatibility shim, no upgrade-in-place — see
+The current verdict schema is v14, a hard cut from v13. Lane schema v2 was a
+hard cut from v1 and remains current (no dual-version verifier, no compatibility
+shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` also rejects v12
-verdicts on the schema version alone.
+table at all — it is simply an unknown key. `assay verify` rejects v13 and
+earlier verdicts on the schema version alone; see the [v13-to-v14 migration
+notes](#migration-notes-v13-to-v14).
 
 So the two moves are **one atomic, consumer-owned commit, never two**:
 
@@ -2994,6 +3086,25 @@ has nothing to do with your product: land the pin one commit and the schema bump
 commit in between either runs a v1 assay against a v2 file (rejected as an unknown key) or a v2
 assay against your still-v1 file (rejected as a missing `[isolation]` table) — a self-inflicted
 outage with a one-line fix that is obvious only once you already know why the gate went red.
+
+## Migration notes (v13 to v14)
+
+Verdict schema v14 is a **hard cut**. `assay verify` refuses a v13 verdict on
+the version field alone; there is no dual-version verifier or upgrade-in-place.
+Repin Assay and regenerate archived verdicts that still need verification.
+`--reuse-from` recognizes v13 and v12 artifacts only as cold starts, so no
+mutation witnesses are reused from them.
+
+Lane schema stays at v2. Existing v2 lane files continue to load unchanged, but
+this release adds the explicit top-level `[defaults].env_passthrough` key. An
+older Assay release treats `[defaults]` as unknown, so repin before adding it.
+When adopting it, write the project allowlist and the Assay pin together;
+project names precede lane names in the effective ordered, deduplicated list.
+
+Each resolved verdict now carries `env_passthrough`, the effective list of
+allowed names, even when a name was absent from the invoking environment.
+`env_effective` still contains only values that were present. This preserves
+the difference between permission to inherit a name and an observed value.
 
 ## Migration notes (v11 → v12)
 

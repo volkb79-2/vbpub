@@ -15,9 +15,13 @@ Every test is a load, i.e. before the lane's command can run.
 
 from __future__ import annotations
 
+import io
+import json
+
 import pytest
 from conftest import Project
 
+from assay import cli, mutation
 from assay.config import load_lane_file
 from assay.errors import LaneConfigError, Outcome, ReasonCode
 from assay.mutation_parsers import MUTATION_FORMAT_REGISTRY
@@ -314,3 +318,36 @@ def test_a_sql_lane_cannot_ingest(app_project: Project):
         INGESTED_LANE.replace('language = "javascript"', 'language = "sql"'),
     )
     assert "cannot ingest a mutation report" in str(error)
+
+
+def test_assay_plan_names_why_an_ingested_lane_cannot_be_planned(
+    app_project: Project, monkeypatch
+):
+    lane_file = app_project.write(INGESTED_LANE)
+    monkeypatch.setattr(
+        cli,
+        "_discover_plan_jobs",
+        lambda *_args, **_kwargs: cli._PlanDiscovery(
+            commit="a" * 40,
+            tree="b" * 40,
+            jobs=mutation.UNSUPPORTED,
+            worktree_integrity=None,
+            reuse_command_plan=None,
+            reuse_command_cwd=None,
+        ),
+    )
+    out, err = io.StringIO(), io.StringIO()
+
+    code = cli.main(
+        ["plan", "ui_mutation", "--file", str(lane_file)],
+        stdout=out,
+        stderr=err,
+    )
+
+    payload = json.loads(out.getvalue())
+    assert code == 0 and err.getvalue() == ""
+    assert payload["status"] == "unsupported"
+    assert payload["lane"] == "ui_mutation"
+    assert "ingests R2 evidence" in payload["reason"]
+    assert "mutation-report-json" in payload["reason"]
+    assert "cannot enumerate candidates" in payload["reason"]

@@ -459,6 +459,7 @@
   "env_effective": {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   },
+  "env_passthrough": [],
   "evidence": [],
   "exit_code": 1,
   "judgment": {
@@ -497,7 +498,7 @@
   "lane": "sql_qualification",
   "outcome": "FAIL",
   "reason_code": "MUTANTS_SURVIVED",
-  "schema_version": 13,
+  "schema_version": 14,
   "scope": "S1",
   "snapshot_policy": {
     "selection": "repository"

@@ -697,6 +697,7 @@ def test_reuse_execution_reports_the_loaded_prior_campaign_state(
 
     head, lane = _seed_r2_lane(git_repo, argv=("python", "-m", "pytest", "-q"))
     source = SimpleNamespace(
+        schema_version=12,
         cold_start=cold_start,
         complete_unsharded_native=complete,
     )

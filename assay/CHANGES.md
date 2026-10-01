@@ -5,6 +5,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- feat(assay): explicit project-level `[defaults].env_passthrough`, ordered
+  union with lane lists, and exact-file `source_roots`; verdict schema v14
+  records the effective allowlist (B140, B141)
+- feat(assay): `assay plan` names its lane and reports why ingested R2
+  candidate enumeration is unsupported; first-run budget sizing for Stryker
+  is documented without inventing an estimate (B137)
 - feat(assay): `assay analyze plan-estimate`; `assay plan` JSON `commit`/`tree`
   and a stderr hint; `candidate` progress `cpu_seconds`/`peak_rss_bytes`/
   `phase_seconds`/`startup_seconds` and state `resources` (with the
@@ -72,6 +78,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   (B127)
 
 ### Fixed
+- fix(assay): `plan-estimate` binds its baseline to both the plan's lane and
+  commit, validates lane identity on every progress run header, and returns
+  the lane in its JSON result (B136)
 - fix(assay): liveness test leak; CONSUMERS 'upper bound' claim (the plan
   estimate is declaration-derived, not an upper bound); the B105 report checker
   refuses a partial, sharded or foreign R2 campaign against the plan (B111)

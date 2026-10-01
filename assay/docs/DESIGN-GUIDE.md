@@ -266,10 +266,15 @@ project's layout: `default="src/nyxloom"`, `default="topos/src/topos"`,
 `-source internal -module srdm`. If any is wrong it measures the wrong tree and
 **passes**. A library cannot ship any of them; it must read them.
 
-**Nonexistent `source_roots` fail at load time.** Apply the §4.2a test — *if
-this is wrong, does anything fail loudly?* A typo'd source root matches no
-changed file, so the gate returns 0/0 PASS forever. That is a laundering gate,
-and none of the four copies guards it.
+### File-scoped source roots
+
+**A nonexistent `source_roots` path fails at load time.** Apply the §4.2a test
+— *if this is wrong, does anything fail loudly?* A typo'd source root matches
+no changed file, so the gate returns 0/0 PASS forever. That is a laundering
+gate, and none of the four copies guards it. Each entry may name an existing
+directory or one existing regular file. A file entry selects exactly that
+path; its sibling files are outside scope. Both forms resolve under the project
+root, and an absent path or a path escaping through `..` or a symlink refuses.
 
 **Coverage format is READ and cross-checked by DERIVATION.** The lane declares
 it (it is a fact of the lane's own argv: `--cov-report=json` vs `lcov`), and
@@ -295,6 +300,18 @@ value assay invents. A bare `argv[0]` is accepted only when `PATH` appears
 explicitly in `env` or `env_passthrough`; otherwise the lane fails to load with
 `BAD_LANE_CONFIG`. This prevents Python/libc's implementation-default executable
 search from becoming an undeclared input. An argv containing `/` needs no PATH.
+
+**Project-wide passthrough defaults are explicit policy (B140).** A lane file
+may declare `[defaults].env_passthrough` once to list common allowed names. The
+effective lane list is the defaults followed by the lane's own list, with
+duplicates removed while preserving first occurrence. A lane may omit its own
+`env_passthrough` key only when `[defaults]` is present; a missing project
+table never causes Assay to invent names. Names in the effective list must not
+also appear in that lane's fixed `env`. No built-in passthrough list exists.
+The verdict records the effective names as `env_passthrough`, including names
+that were allowed but absent from the invoking environment; `env_effective`
+continues to record only values that were actually present. This wire addition
+is verdict schema v14.
 
 **`env_required` is the subset whose ABSENCE refuses the lane (A-254).** A
 passthrough name that is not set is silently dropped — `env_effective` copies a
@@ -1081,7 +1098,7 @@ costly case where source and tests changed: it uses a prior result only to
 choose a test node worth replaying, never to carry an old kill into the new
 verdict.
 
-The prior artifact must be a current-verifier-accepted v13, complete,
+The prior artifact must be a current-verifier-accepted v14, complete,
 unsharded native campaign. Each candidate ID commits to the canonical path,
 operator, source-file digest, byte span, and full mutated-file digest. On the
 new run Assay passes the current R0 baseline first, rediscovers the complete
@@ -3210,13 +3227,15 @@ adopting only assay writes no `where`; one adopting only ciu writes no `judge`.
 ```toml
 schema_version = 2
 
+[defaults]
+env_passthrough = ["PATH"]
+
 [lanes.package]
 scope = "S1"
 rigor = ["R0","R1","R2","R3"]
 enforcement = "gate"
 argv = ["pytest", "tests/unit", "-q", "--cov-report=json:cov.json"]
 env = { MOCK_MODE = "true" }
-env_passthrough = ["PATH"]
 budget = "5m"
 allow_argv_append = false
 
@@ -3320,9 +3339,12 @@ flag* — it does not mean "at the lane's top level".
 | `budget` | a duration string, **parsed at load**, not merely present — a malformed budget discovered at run time is a failure the config layer could have caught |
 
 **`source_roots` are relative to the directory containing `assay.toml`** — the
-project root, not the repo root. The lane file must not need to know where it
-sits inside a monorepo, and a project that gets vendored one level deeper should
-not silently start measuring nothing. Reconciling that against git's own
+project root, not the repo root. Each root can be an existing directory or a
+single existing file. When a file is named, membership means that exact path;
+neighboring packages and files do not enter the lane's scope. The lane file
+must not need to know where it sits inside a monorepo, and a project that gets
+vendored one level deeper should not silently start measuring nothing.
+Reconciling that against git's own
 spellings (`git diff --relative` is cwd-relative; `git status --porcelain` is
 always repo-top-relative) is exactly what the core's prefix-boundary normaliser
 is for — see §11, and note that nyxloom's copy routes status paths through the
@@ -3738,18 +3760,26 @@ protecting any verdict.
   (`analysis`, tests in `analysis/tests/`, 100% line and branch). R2 for
   analysis is deliberately not claimed in this change; it is a follow-up
   (B131).
-- **The measured plan estimate lives here (CD1, B111).** `assay plan` keeps
-  its declared-budget estimate and only prints a stderr hint; the measured
-  projection is `assay analyze plan-estimate`
-  (`analysis/src/assay_analysis/plan_estimate.py`). It reads the plan's JSON
-  (which now carries `commit` and `tree`) and one progress stream with a
-  completed baseline, binds them through the commit, and prints
-  `baseline_s`, `per_candidate_s` and the projected worker and wall hours.
-  It imports no judge name, never classifies a candidate, and exits `2` on
-  unusable input.
 - **Schemas** stay in `src/assay/schemas/`; documented paths do not move.
 - The undocumented `import assay.analysis` is removed. A source checkout
   needs both `src` and `analysis/src` on `PYTHONPATH`.
+
+### Plan estimates bind lane and commit
+
+`assay plan` keeps its declared-budget estimate and only prints a stderr hint;
+the measured projection is `assay analyze plan-estimate`
+(`analysis/src/assay_analysis/plan_estimate.py`). It reads the plan's JSON
+(which carries `lane`, `commit` and `tree`) and one progress stream with a
+completed baseline, binds them through lane and commit, and prints `baseline_s`,
+`per_candidate_s` and the projected worker and wall hours. It imports no judge
+name, never classifies a candidate, and exits `2` on unusable input. A selected
+progress run from another lane is refused even when it shares the same commit;
+the result repeats the matched lane. Ingested R2 reports do not expose Assay's
+candidate inventory, so `assay plan` returns a named unsupported result and
+`plan-estimate` forwards that reason instead of manufacturing a count or a
+forecast. Consumers size the first ingested run from their existing CI job
+ceiling, then use observed elapsed time when revisiting that policy (see the
+[consumer procedure](CONSUMERS.md#size-an-ingested-javascript-r2-campaign-b137)).
 
 ### Mutation campaign closeout (B108 phase 1)
 

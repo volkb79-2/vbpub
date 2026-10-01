@@ -280,7 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "for snapshot lanes only, admit unignored dirty paths and record "
-            "them in the v12 verdict; project isolation.dirty_ignore paths "
+            "them in the v14 verdict; project isolation.dirty_ignore paths "
             "are recorded separately. R0 lanes remain strict. This flag is "
             "independent of run-gate's own --allow-dirty policy."
         ),
@@ -294,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERDICT",
         help=(
             "reuse only current pytest kill witnesses from a verified complete "
-            "native v13 verdict; v12 starts cold, and every uncertain candidate "
+            "native v14 verdict; v12/v13 start cold, and every uncertain candidate "
             "runs fully. Cannot be combined with --shard."
         ),
     )
@@ -1896,9 +1896,23 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
     reuse_command_cwd = discovered.reuse_command_cwd
 
     if jobs == mutation.UNSUPPORTED:
+        mutation_format = lane.judge.mutation.format
+        if mutation_format is not None:
+            unsupported_reason = (
+                f"lane {lane.name!r} ingests R2 evidence in format "
+                f"{mutation_format!r}; assay plan cannot enumerate candidates "
+                f"from a foreign mutation report"
+            )
+        else:
+            unsupported_reason = (
+                f"lane {lane.name!r} uses an R2 adapter that cannot enumerate "
+                f"native mutation candidates"
+            )
         payload: dict[str, Any] = {
             "status": "unsupported",
+            "lane": lane.name,
             "reason_code": "MUTATION_UNSUPPORTED",
+            "reason": unsupported_reason,
             "worktree_integrity": (
                 None if worktree_integrity is None else worktree_integrity.to_dict()
             ),
@@ -1963,6 +1977,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
                 }
         payload = {
             "status": "ok",
+            "lane": lane.name,
             "commit": commit,
             "tree": tree,
             "candidate_count": len(jobs),

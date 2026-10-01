@@ -42,6 +42,7 @@ RESOLVED = {
     "argv_effective": ("pytest", "-q"),
     "env_declared": {"TZ": "UTC"},
     "env_effective": {"TZ": "UTC"},
+    "env_passthrough": (),
     "scope": "S2",
     "enforcement": "gate",
 }
@@ -67,6 +68,30 @@ def test_what_ran_is_recorded_on_every_outcome_where_a_lane_resolved(outcome: st
     document = verdict_fixture(outcome)
     for field in LANE_RESOLVED_FIELDS:
         assert field in document, f"{outcome} does not record {field}"
+
+
+def test_the_verdict_records_the_effective_passthrough_union_even_when_a_name_is_absent():
+    verdict = Verdict(
+        **{
+            **RESOLVED,
+            "env_effective": {"TZ": "UTC", "PATH": "/usr/bin"},
+            "env_passthrough": ("PATH", "BUILD_VERSION"),
+        },
+        claims=a_claim(),
+    )
+
+    document = json.loads(verdict.to_json())
+
+    assert document["env_passthrough"] == ["PATH", "BUILD_VERSION"]
+    assert "BUILD_VERSION" not in document["env_effective"]
+
+
+def test_the_model_rejects_a_passthrough_name_that_collides_with_fixed_env():
+    with pytest.raises(ValueError, match="env_passthrough names.*env_declared"):
+        Verdict(
+            **{**RESOLVED, "env_passthrough": ("TZ",)},
+            claims=a_claim(),
+        )
 
 
 def test_a_verdict_for_a_lane_that_never_loaded_omits_them_rather_than_emptying():

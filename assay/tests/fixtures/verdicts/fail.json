@@ -1,5 +1,5 @@
 {
-  "schema_version": 13,
+  "schema_version": 14,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "2222222222222222222222222222222222222222",
@@ -42,6 +42,7 @@
     "TZ": "UTC",
     "PATH": "/usr/bin"
   },
+  "env_passthrough": ["PATH"],
   "scope": "S1",
   "enforcement": "gate",
   "judgment": {
