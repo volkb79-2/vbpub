@@ -4,12 +4,13 @@
 implementer or controller. The caller selects and verifies the route from the
 invocation/session metadata; do not ask the reviewer to attest its own route.
 **Your job is to BREAK this before provisional merge.** This is a new review
-cycle: historical rounds 1–3 reviewed earlier trees. Record new rounds as
-round4, round5, and round6 (three-round cap). Fix-verification resumes the
-same live reviewer; if it is gone, the controller seeds a fresh reviewer with
-all prior review records. The operator authorizes scoped fixes on this
-isolated branch. You may not merge, release, tag, publish, install, or
-start/stop the main daemon. Records:
+cycle: historical rounds 1–3 reviewed earlier trees; round 4 has already
+rejected the candidate and its fixes are now committed. Continue at round 5;
+rounds 4–6 are the three-round cap. Fix-verification resumes the same live
+reviewer; if it is gone, the controller seeds a fresh reviewer with all prior
+review records. The operator authorizes scoped fixes on this isolated branch.
+You may not merge, release, tag, publish, install, or start/stop the main
+daemon. Records:
 `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round<n>.md`.
 
 ### Controller status after round 4
@@ -17,12 +18,16 @@ start/stop the main daemon. Records:
 Round 4 rejected tree `148481e4af504fc416679ed2fd8dffe380709de6`; preserve
 its report. B1's stop-time rescan was replaced by ingestion-time summary
 reducers and exact order-statistic trees, committed as `2e130da3`. The
-focused local `test_summary.py` + `test_serve.py` suite passed on that commit
-(205 passed, 1 skipped), but that receipt predates the DAMON rank-tree
-optimization committed as `c81b2837`. Main was then reconciled at `56c617d8`;
-the single-tree optimization was then tested on exact tree
-`db044d4d37f017162976c78f624885ee5f595923`: 205 passed, 1 skipped in 15.70
-s. The operator also supplied direct-host, read-only evidence that
+single-tree DAMON percentile optimization is committed as `c81b2837`; focused
+`test_summary.py` + `test_serve.py` passed on exact tree
+`db044d4d37f017162976c78f624885ee5f595923` (205 passed, 1 skipped in 15.70
+s). The old isolated R2 on `450fe53d` failed with 12 genuine proc-identity
+oracle gaps. Direct parser/helper tests are now present in commit `01912a91`
+and passed 167 focused target/helper tests. The separate isolated PASS on
+`1080ac2f` is not transferable to this release candidate. Main was reconciled
+at `56c617d8`; current product/evidence tip before this handoff refresh is
+`902a6f5f6e1201eed4ab2e7f1cf831ecc6c96d17`. The operator also supplied
+direct-host, read-only evidence that
 `dev-interactive.slice` and `dev-gates.slice` are loaded at their authored
 `/dev.slice/...` paths, both with `Delegate=no` and five-CPU quotas. The same
 query also confirms `cgprofile.slice` loaded at `/cgprofile.slice`,
@@ -31,10 +36,13 @@ provenance are in controller rulings RW-397/RW-398 and P1 LOG/REPORT. This
 closes the missing unit-state observable in B2, pending reviewer confirmation
 and the required reviewer-owned live probes. B3 remains open because old
 short-gate receipts predate the repair. The controller must run registered
-R0/R1, R3 and doctor on the final documentation checkpoint, then dispatch a
-fresh round-5 reviewer seeded with rounds 1–4. Do not claim acceptance or
-merge until the reviewer verifies the preflight and live probes. Current-tree
-R2 and full gate remain release holds.
+R0/R1, R3 and doctor on the final clean candidate, complete the required
+reviewer-owned live probes, then dispatch round 5 seeded with rounds 1–4. Do
+not claim acceptance or merge until the reviewer verifies the preflight and
+live probes. Current-tree R2 and full gate remain release holds and may run
+asynchronously in a separate attached CIU worktree after provisional merge,
+under RW-381; no release or daemon activation before both are green and the
+survivors are dispositioned.
 
 Branch `rg55-p1-release-review-20260930`, worktree
 `/workspaces/vbpub/.worktrees/rg55-p1-release-review-20260930`, project dir
