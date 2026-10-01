@@ -131,24 +131,28 @@ def _wire_bytes(verb: str, **args: Any) -> bytes:
 # ── the deterministic daemon the goldens and the parity diff share ──────
 
 class _TickBarrier:
-    """`sampler_sleep` for the scenario server: mark that THIS session has
-    taken its first sample, then block until that same session is stopped.
+    """Fence initial sampler sleep until start returned, then hold sample-zero.
 
-    The sampler calls this on the session's own thread, whose name carries
-    the session id (`handle_start` names it), so one callable serves every
-    session without the server needing a test seam of its own. Net effect:
-    exactly one sample per session, no wall-clock sleeping, and `status`
-    can be issued at a point where the sample count is known.
+    The sampler calls this on the session thread, whose name carries its id.
+    The start-returned event prevents a scheduling race with `thread.start()`
+    and registry publication. This sleep precedes `Sampler.run`, so holding
+    it leaves the synchronous sample-zero record stable for `status`.
     """
 
     def __init__(self) -> None:
         self.server: Optional[serve.SessionServer] = None
         self._events: Dict[str, threading.Event] = {}
+        self._start_returned: Dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     def event_for(self, session_id: str) -> threading.Event:
         with self._lock:
             return self._events.setdefault(session_id, threading.Event())
+
+    def release_start(self, session_id: str) -> None:
+        with self._lock:
+            event = self._start_returned.setdefault(session_id, threading.Event())
+        event.set()
 
     def __call__(self, _seconds: float) -> None:
         name = threading.current_thread().name
@@ -156,13 +160,17 @@ class _TickBarrier:
         if not name.startswith(prefix):  # pragma: no cover - defensive
             return
         session_id = name[len(prefix):]
-        self.event_for(session_id).set()
+        with self._lock:
+            start_returned = self._start_returned.setdefault(session_id, threading.Event())
+        if not start_returned.wait(timeout=10.0):
+            raise AssertionError(f"start did not return for {session_id}")
         server = self.server
         if server is None:  # pragma: no cover - defensive
             return
         sess = server._sessions.get(session_id)
-        if sess is not None:
-            sess.stop_event.wait(timeout=10.0)
+        assert sess is not None, f"session was not registered after start returned: {session_id}"
+        self.event_for(session_id).set()
+        sess.stop_event.wait(timeout=10.0)
 
 
 def _per_thread_counting_clock() -> Callable[[], float]:
@@ -394,6 +402,7 @@ class _Scenario:
 
         started = self._over_socket("start", token=TOKEN_A)
         assert started["ok"] is True and started["session"] == SESSION_ID, started
+        self.barrier.release_start(SESSION_ID)
         assert self.barrier.event_for(SESSION_ID).wait(timeout=10.0)
 
         # Exactly one session live, one sample taken: both carriers must see
@@ -417,6 +426,7 @@ class _Scenario:
 
         started_b = self._over_exec("start", token=TOKEN_B)
         assert started_b["session"] == SESSION_ID_2, started_b
+        self.barrier.release_start(SESSION_ID_2)
         assert self.barrier.event_for(SESSION_ID_2).wait(timeout=10.0)
 
         # §8.2: the streaming verb, answering the request golden that C6

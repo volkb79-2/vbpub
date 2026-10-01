@@ -131,17 +131,24 @@ RG-55 added a second, always-on mode: a host daemon that run-gate (or anyone
 else) talks to over a Unix socket instead of spawning a collector per lane.
 It keeps PID/cgroup namespaces private and receives a read-only host `/proc`
 view plus an explicitly writable host cgroup-v2 view for opt-in P6 placement.
-`CgroupWriteGuard` limits cgroup writes to the placement whitelist; the
-daemon uses the read-only host system bus only for systemd's narrow
-`AttachProcessesToUnit` PID move when private PID translation makes a direct
-`cgroup.procs` write impossible. It uses that bridge both to place a lane into
-its gates leaf and, at `stop`, to return survivors to their original systemd
-scope. Each move is verified through `/hostproc`; if survivors cannot be
-enumerated or restored, the daemon reports the exact cgroup path and leaves
-the lane leaf in place rather than hiding the stranded processes.
-The one-shot helper keeps its cgroup view read-only. It is
+The v1.1 daemon also mounts the host system-bus socket read-only; that mount
+does not make systemd RPCs read-only. It uses the manager's
+`AttachProcessesToUnit` operation for identity-checked placement and survivor
+restoration because host PIDs cannot be written directly from its private PID
+namespace. `CgroupWriteGuard` limits intended cgroupfs writes to the placement
+whitelist, and each move is verified through `/hostproc`. If survivors cannot
+be enumerated or restored, the daemon reports the exact cgroup path and leaves
+the lane leaf in place rather than hiding stranded processes. The one-shot
+helper keeps its cgroup view read-only. The daemon also writes session storage
+and DAMON sysfs during normal operation. These application checks and private
+namespaces do not contain arbitrary code execution in this privileged daemon;
+see the [trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). It is
 `scripts/cgroup-profiler/`'s own **standalone ciu root** —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
+The default stack uses the local development image; to deploy a versioned GHCR
+release, pin the complete image coordinate in `ciu.toml.j2` and verify the
+daemon identity as shown in the
+[consumer guide](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 
 ```bash
 python3 build-push.py --build      # -> local-only cgprofile:local (needs buildx)
@@ -332,6 +339,11 @@ The daemon's version response is contract major 1:
   operational authority path, not a sandbox against daemon compromise; the
   rationale and deferred broker option are in the
   [RG-55 placement design](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+  Version 1.0.0 was the read-only observer release; v1.1.0 adds the writable
+  cgroup view and system-bus manager bridge needed for opt-in placement. These
+  are operational authority paths, not kernel-enforced containment. The
+  daemon and helper keep private PID/cgroup namespaces, and `ciu up` remains
+  the managed lifecycle with no host-namespace fallback.
 
 ## Relationship to the neighbours
 

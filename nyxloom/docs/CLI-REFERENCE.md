@@ -9,9 +9,9 @@ This is the canonical contract for the four entrypoints shipped in the Nyxloom w
 | Executable | User and data target | Daemon / registration boundary |
 |---|---|---|
 | `nyxloom` | Project authoring: `init`, `onboard`, project-local `lint`, and managed `backlog` files in the current project checkout. | Works without project registration or a running daemon. |
-| `nyxloom-harness` | Harness skill/user extracting Claude Code, Codex, OpenCode, and Reasonix session files or stores. | Reads the selected harness source; does not initialize Nyxloom host state or require registration/daemon availability. |
+| `nyxloom-harness` | Searches, discovers, and extracts Claude Code, Codex, OpenCode, and Reasonix session files or stores. | Reads the selected harness source; does not initialize Nyxloom host state or require registration/daemon availability. |
 | `nyxloomctl` | Local host operator, administrator, or developer: registry, workflow state, local daemon operation, routes/models, credentials, migrations, and diagnostics. | Calls local Nyxloom modules and state; it is not an HTTP client for remote admin. Most commands work without the daemon. |
-| `nyxloomd` | Service manager starting the resident daemon in the existing container. | Direct installed entrypoint; does not route service startup through a human CLI parser. |
+| `nyxloomd` | Service manager starting the resident daemon in the existing container. | Bare invocation starts the foreground daemon. `--help` and `--version` exit before service initialization; unknown arguments are rejected. |
 
 The dashboard remains the existing HTTP/SSE client. `nyxloom lint` checks the current project or explicit handoff paths; `nyxloomctl lint` scans every registered project. Neither path requires the daemon.
 
@@ -51,11 +51,12 @@ Options and choices named here are detailed in the option table below. Effects d
 | `nyxloom backlog list [--project-id ID] [--status STATUS]` | List managed entries, optionally filtered by status. | Read-only. Renders from entries in memory if INDEX.md is absent; does not regenerate it. |
 | `nyxloom backlog show ENTRY_ID [--project-id ID]` | Display one managed entry. | Read-only; unknown entry returns a failure. |
 | `nyxloom backlog index [--project-id ID]` | Generate the managed backlog index. | Writes INDEX.md; this is the explicit index writer. |
-| `nyxloom-harness extract SESSION_LOG [options]` | Select and render a resumable, structured session extract. | Reads a supported session file/store. Defaults to operator-review; `--follow`, hook, bell, and notify options add long-running or external effects. |
+| `nyxloom-harness extract SESSION_LOG [options]` | Select and render a resumable, structured session extract. | Reads a supported session file/store. Defaults to operator-review; generated help groups controls by source, window selection, content, output, redaction/task, and following. `--follow`, hook, bell, and notify options add long-running or external effects. |
 | `nyxloom-harness extract-lossless SESSION_LOG [options]` | Render recovered source prose/thinking without selection/windowing. | Read-only source path. `--redact-pattern` is unsupported because this output promises verbatim content. |
 | `nyxloom-harness extract-debug SESSION_LOG [options]` | Inspect extraction selection, classification, and gap decisions. | Read-only source path; defaults to operator-review. Output controls do not change the session. |
 | `nyxloom-harness extract-report SESSION_LOG [options]` | Report session tool calls, costs, and timeline. | Read-only. Supports report-sheet by default, report-detailed, CSV, or JSON; report formats exclude Reasonix. |
 | `nyxloom-harness extract-sessions FAMILY_OR_PATH [options]` | Discover sessions in the requested harness family or store. | Read-only filesystem/database discovery. Recursion defaults to true; `--recurse false` narrows traversal. |
+| `nyxloom-harness search WORD... [--sort-by best|date] [--client codex|claude|opencode]` | Find local sessions by transcript words and rank matching session IDs. | Read-only local transcript search. Defaults to best-match order across all three clients; prints identifiers and metadata, never transcript text. |
 | `nyxloomctl project add PROJECT_ID PROJECT_ROOT` | Register one project path in local host state. | Writes registry. Duplicate IDs and invalid roots refuse. |
 | `nyxloomctl project list` | List registered projects. | Read-only; does not require a daemon. |
 | `nyxloomctl lint` | Run the original all-registered-project handoff scan. | Read-only host-wide scan. This scope is distinct from project-local `nyxloom lint`. |
@@ -234,6 +235,8 @@ The executable name is included in every valid command path. Each row is a comma
 | `nyxloom-harness extract-sessions` | `--format` | string; choices: claude-code, codex, opencode; 1 value; repeat accepted; the last supplied value wins | omitted: detect the source adapter from the session path | Select the harness source adapter; omission uses family/path inference. | After the complete leaf path; may appear before or after leaf positionals. Effect: reads session files/stores and displays discovery results. |
 | `nyxloom-harness extract-sessions` | `--recurse` | string; choices: true, false; 0 or 1 value; repeat accepted; the last supplied value wins | `true`; recurse into nested session directories (bare `--recurse` also means true) | Recurse into nested session folders; `false` keeps discovery to the selected directory level. | After the complete leaf path; may appear before or after leaf positionals. Effect: reads session files/stores and displays discovery results. |
 | `nyxloom-harness extract-sessions` | `--json` | boolean flag; 0 values | false; render the discovered session tree as text | Emit structured JSON output | After the complete leaf path; may appear before or after leaf positionals. Effect: changes output encoding only; reads stores and displays JSON without state writes. |
+| `nyxloom-harness search` | `--sort-by` | string; choices: best, date; 1 value; repeat accepted; the last supplied value wins | `best` (more matched words, then relevance; recent activity breaks ties) | Choose whether matching sessions rank by relevance or most recent activity. | After the complete leaf path; may appear before or after query words. Effect: reads local session stores and prints matching session IDs and metadata, never transcript text. |
+| `nyxloom-harness search` | `--client` | string; choices: codex, claude, opencode; 1 value; repeat accepted; the last supplied value wins | omitted: search all three supported clients | Limit the search to one harness client. | After the complete leaf path; may appear before or after query words. Effect: reads that client's local session store and prints matching session IDs and metadata, never transcript text. |
 | `nyxloomctl doctor` | `--project-id` | string; 1 value; repeat accepted; the last supplied value wins | omitted: check all registered projects | Limit health checks to one registered project; omission checks all registered projects. | After the complete leaf path; may appear before or after leaf positionals. Effect: reads health and replay state, then displays results. |
 | `nyxloomctl doctor` | `--rebuild` | boolean flag; 0 values | false; doctor does not compute replay differences | Compute and print differences between event replay and stored state. | After the complete leaf path; may appear before or after leaf positionals. Effect: reads health and replay state, then displays results. |
 | `nyxloomctl doctor` | `--write` | boolean flag; 0 values | false; doctor does not persist replay output | Persist replayed state files; requires `--rebuild` and conflicts with `--liveness`. | After the complete leaf path; may appear before or after leaf positionals. Effect: writes replayed state files; requires --rebuild and conflicts with --liveness. |
@@ -407,7 +410,7 @@ aliases in a second registry.
 | Installed command | Command families after adoption |
 |---|---|
 | `nyxloom` | `init`, `onboard`, project-local `lint`, and `backlog`; each operates on project-local trove files and does not require daemon availability. `lint` with no paths discovers the current project and checks its handoffs. |
-| `nyxloom-harness` | `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`; each operates on AI-harness session stores/files. |
+| `nyxloom-harness` | `search`, `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`; each operates on AI-harness session stores/files. |
 | `nyxloomctl` | All other currently dispatched host-control commands, including `project`, `status`, `doctor`, `resync`, host-wide `lint`, `tick`, workflow/intake/finding actions, `auth`, route/model/catalog commands, `migrate-store`, and `daemon`. No-argument `lint` preserves the existing all-registered-project scan. |
 | `nyxloomd` | Service-manager entrypoint for the existing daemon container; not a user-facing admin CLI. |
 
@@ -495,6 +498,7 @@ argparse; * means zero or more, ? is optional, and 1 means one value.
 | resync | project_id | Required string. | Registered project to inspect/rebaseline. |
 | extract, extract-lossless, extract-debug, extract-report | path | Required string. | Session file/store/path or resolvable session ID; not a registered project ID. |
 | extract-sessions | path | Required string. | Session family or search path. |
+| search | words | One or more required strings. | Case-insensitive query words; punctuation such as a hyphen separates words. |
 | migrate-store | project_id | Required string. | Registered project to migrate. |
 | decide, discuss | project_id, decision_id | Both required strings. | Project and decision ledger ID. |
 | intake | project_id, intake_id, message | All required strings. | Project, intake record, submitted message. |
@@ -572,6 +576,8 @@ cross-document assessment below.
 
 | Accepted path(s) | Option / destination | Parser value contract | Parser default / omission source | Declared help text | Handler effect / interaction / documentation accuracy |
 |---|---|---|---|---|---|
+| `nyxloom-harness search` | `--sort-by` / `sort_by` | string; choices: best, date; 1 value | `best` | Result order | Reads local session stores and prints matching session IDs and metadata; date orders by recorded activity, best prioritizes relevance. |
+| `nyxloom-harness search` | `--client` / `client` | string; choices: codex, claude, opencode; 1 value | omitted: search all supported local clients | Limit search to one harness client | Reads only the selected client's discovered store and prints matching session IDs and metadata. |
 
 <!-- P111_OPTION_MATRIX_BEGIN -->
 | every parser path | -h, --help / help | flag; arity 0 | argparse SUPPRESS; exits 0 on help path | Show usage/help at this parser depth. | Side-effect defect: main bootstraps logging before display. cli-extended migration requires --help and help [verb]; removal of `-h` is approved (D-001), not yet implemented. |

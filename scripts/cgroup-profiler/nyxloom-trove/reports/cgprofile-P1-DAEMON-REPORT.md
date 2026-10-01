@@ -1792,3 +1792,150 @@ Per the operator's revised process, a fresh review and these short gates may
 authorize a provisional merge while R2/full-gate judging continues in a
 separate attached CIU worktree. Release/shipping remains blocked until that
 exact-tree campaign and full gate pass, with all fixes backported and rejudged.
+
+## Controller addendum — current P1 candidate checkpoint (2026-09-30)
+
+The current P1 review candidate is branch
+`rg55-p1-release-review-20260930`, worktree
+`.worktrees/rg55-p1-release-review-20260930`, based on main
+`8730098d0a8205bb398e60028e799b4ef7b18835`. Before this handoff/evidence
+refresh, exact clean tree `80263df66ad989e9b6f621758d7fb328d07a7a4c` passed
+registered R0/R1 in 75.020 s and R3 in 11.337 s. Separate run-gate history
+records both exact-tree outcomes as PASS/exit 0. R0/R1 reported 1,391 tests
+passed with 100% line and branch coverage (5,040 statements and 1,744 branch
+arcs); R3 rejected all seven canaries. The daemon was down, so profiler-backed
+metrics were unavailable and did not affect the functional gate verdict.
+
+This checkpoint changes review instructions/evidence, so those receipts are
+not claimed for the resulting commit. R0/R1, R3, and doctor must be read/run
+again on the final review candidate before dispatch. The final review cycle is
+new: rounds 1–3 cover an earlier tree; use round4–round6 for this candidate.
+
+The old P1 R2 PASS on `4e5ff2d2a28d153195995df4c1e5a03a813af802` accounted
+for 125/125 candidates, all killed, but it is not evidence for this candidate.
+No exact-tree R2 or registered full gate has completed for `80263df6` or the
+resulting review checkpoint. Under RW-381, after short gates and Sol review
+are accepted, provisional merge may precede those long gates; R2 and the full
+gate then run asynchronously on an attached CIU worktree whose branch remains
+pinned to the judged commit. No release or daemon activation until both pass
+and any repairs are backported and rejudged.
+
+## Controller addendum — latest-main reconciliation (2026-10-01)
+
+Main advanced to `126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1`; its only change
+since the prior P1 base is two backlog lines. The P1 candidate contains that
+tip through merge commit `56c617d8c7762f6fb6d7a1a2b326285f7592941c`. The
+candidate's new full-diff base is therefore `126ccc39`, not the historical
+`8730098d` used for the round-4 report. No implementation code changed in
+this reconciliation.
+
+The follow-up simplifies DAMON percentile state to one exact
+order-statistic multiset per class, used for both p50 and p90, committed as
+`c81b2837`; the earlier focused test result predates this optimization and is
+not claimed for it. The
+latest observed memory PSI (`full avg10=8.67` at 00:41:21Z) prevented starting
+more containers or registered gates. No current-tree registered gate or
+round-5 review is claimed.
+
+## Controller addendum — round-4 summary correction (2026-10-01)
+
+Round 4 rejected tree `148481e4af504fc416679ed2fd8dffe380709de6`. Its B1
+finding showed that the original accumulator retained raw samples and
+recomputed summary metrics during `finalize()`, violating interface-contract
+§1.5. The controller has replaced this with ingestion-time scalar reducers
+and exact AVL order-statistic multisets for nearest-rank percentiles. Normal
+stop no longer holds or scans raw sample objects; the raw series remains the
+separate durable input for reports and restart-orphan recovery. Percentile
+state is exact but grows with distinct observed values, not a constant-memory
+sketch.
+
+The 3,601-sample regression mutates all input objects immediately after each
+`add_sample()` and verifies the final output. Focused `test_summary.py` and
+`test_serve.py` passed on the initial repair commit `2e130da3`: 205 passed,
+1 skipped in 19.24 s. This predates the single-tree DAMON optimization and
+main reconciliation; it is not a registered gate receipt for the current
+candidate.
+
+Round-4 B2 is still unresolved: the current loaded host state for both
+authored cgroup parents has not yet been read through a permitted
+host-namespace-free path. The cockpit has no host system-bus socket mounted;
+previous private-container `systemctl` attempts did not connect. No host
+namespace or host-escape was used. B3 is also open; rerun registered R0/R1,
+R3 and doctor on the final committed tree. A fresh Sol round-5 review is
+required after these steps, with rounds 1–4 supplied. Current-tree R2/full
+gate and the other live daemon probes remain separate mandatory release
+holds under RW-381.
+
+## Controller addendum — current host-unit preflight and focused retest (2026-10-01)
+
+The operator directly ran the read-only host command
+`systemctl show dev-interactive.slice dev-gates.slice --property=LoadState,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax --no-pager`.
+Both authored units are currently loaded with `Delegate=no`, at
+`/dev.slice/dev-interactive.slice` and `/dev.slice/dev-gates.slice`; each has
+`CPUQuotaPerSecUSec=5s`. The interactive unit has an 8 GiB `MemoryMax`; the
+gates unit has a 1.5 GiB `MemoryMax`. This supplies round-4 B2's missing
+current unit-state observable without host namespace access. It does not
+substitute for the reviewer-owned live probes.
+
+After commit `c81b2837` and latest-main reconciliation, focused serial
+`test_summary.py` + `test_serve.py` passed on exact tree
+`db044d4d37f017162976c78f624885ee5f595923` (205 passed, 1 skipped in 15.70
+s). This is local evidence only; registered R0/R1, R3, doctor, Sol review,
+current-tree R2 and full gate remain pending. Current `cgprofile.slice`
+state is separately needed for P6.
+
+### Controller addendum — current `cgprofile.slice` preflight (2026-10-01)
+
+The operator subsequently supplied the output of the same direct-host,
+read-only `systemctl show` query with `cgprofile.slice` included. It is
+loaded at `/cgprofile.slice`, `Delegate=no`, has an unlimited CPU quota, and
+`MemoryMax=1073741824`. The query reconfirmed both `dev-interactive.slice`
+and `dev-gates.slice` as loaded, `Delegate=no`, with five-CPU quotas and
+their authored `/dev.slice/...` paths. This current unit-state evidence
+closes the specific round-4 B2 observable; reviewer-owned live daemon and
+placement/restoration probes remain required. Full values and provenance
+are recorded in controller ruling RW-398 and P1 LOG §35.
+
+### Exact percentile-state growth to scrutinize (2026-10-01)
+
+The online exact-rank implementation retains one AVL node per distinct
+observed value (and a multiplicity count for repeats) in the `memory.current`
+stream and each DAMON class. Inserts and rank selection are logarithmic in
+the number of distinct values, and `finalize()` no longer scans the on-disk
+series; the retained percentile state is nevertheless O(unique values), not
+constant-memory. The service has a 1 GiB memory limit and allows up to 16 live
+sessions, while the contract sets no maximum session duration. No memory
+growth measurement or bounded-memory claim is made here. The fresh adversarial
+review must assess whether this representation has sufficient headroom for
+the supported workload and state the evidence/limitation; do not equate
+discarding raw sample objects with bounded memory.
+
+### Isolated R2 survivor-oracle backport (2026-10-01)
+
+The prior exact-tree campaign on `450fe53d0baca81ec5d32432c6c47117862fa992`
+failed with 12 genuine proc-identity test-oracle gaps (109/121 killed, 12
+survived). A later independent campaign on `1080ac2f` passed 125/125, but
+neither receipt applies to this candidate. The candidate implementation
+already has the relevant fail-closed parsing behavior; the missing direct
+parser/helper oracles have now been ported and committed as
+`01912a917d7a6f0a417550f9c4319557a4c165ed`. The focused target/helper suite
+passed 167 tests. Exact-tip R2 must still be rerun; the old survivor set has
+not been declared equivalent.
+
+### Current integration and gate status (2026-10-01)
+
+Main advanced from `6617c44e117ee1ceab222ce4c51ff82f30f3d0d0` to
+`8df26ed143925c882e65a1fe673d1447055bd754`; the intervening commit modifies
+only Nyxloom's P113 report and Claude Code adapter test. The P1 branch
+reconciled without conflict in merge
+`0485d82e475930fcbf74040a0138268b437b30b6`.
+
+On the immediately preceding candidate `bd915d7f98929ef584deb8d65c0d00a8480e4193`,
+registered R0/R1 passed with 1,421 tests, 5,140/5,140 statements, and
+1,780/1,780 branch arcs; R3 rejected 7/7 canaries; doctor reported zero
+failures and two warnings. These receipts predate the latest-main merge and
+are not exact-tip evidence. The daemon was down; coarse `rusage-maxrss` and
+basic in-lane sampling were used under R-36h without changing verdicts. Rerun
+R0/R1, R3, and doctor on the exact post-checkpoint candidate. Current-tree
+R2/full gate and reviewer-owned live probes remain open; no review acceptance,
+merge, release, or daemon activation is claimed.

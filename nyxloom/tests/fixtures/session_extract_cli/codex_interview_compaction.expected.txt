@@ -1,0 +1,29 @@
+[10:00:01] INTERVIEW: Which output should the CLI test compare?
+- JSON: Compare the normalized event stream.
+- Markdown: Compare rendered text.
+---
+[10:00:03] I will inspect the tradeoffs before reading the answer.
+---
+[10:00:04] [tool call: exec_command] Inspect the fixture without exposing its command payload
+---
+[10:00:05] INTERVIEW: What should a custom answer preserve?
+- Short answer
+- Complete wording
+---
+[10:00:07] The operator deliberately compacted the session; preserve the pending question links.
+---
+[10:00:08] INTERVIEW: Which output should the CLI test compare?
+- JSON: Compare the normalized event stream.
+- Markdown: Compare rendered text.
+
+OPERATOR: JSON
+
+INTERVIEW: What should a custom answer preserve?
+- Short answer
+- Complete wording
+
+OPERATOR: Keep the complete wording exactly as entered.
+---
+[10:00:09] INTERVIEW: Should the suite mention skipped formats?
+- Yes
+- No

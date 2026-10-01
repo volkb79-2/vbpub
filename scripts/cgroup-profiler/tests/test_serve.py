@@ -404,8 +404,10 @@ class TestStartRegistry:
         sess.stop_event.set()
         sess.thread.join(timeout=5.0)
         simple_server._dispatch(_wire("stop", session=first["session"]))
+        simple_server._session_id_fn = lambda: "s-20260912T101500Z-9f02"
         second = simple_server._dispatch(_start_req(token="a-finished-token1"))
         assert second["reused"] is False
+        assert second["session"] != first["session"]
         second_sess = simple_server._sessions[second["session"]]
         second_sess.stop_event.set()
         second_sess.thread.join(timeout=5.0)
@@ -1831,6 +1833,100 @@ def test_serve_forever_installs_signal_handlers_that_request_shutdown(tmp_path, 
 
 # ── _create_session_locked edge cases (slice/DAMON branches) ────────────
 
+@pytest.mark.parametrize("failure", ["manifest", "thread"])
+@pytest.mark.parametrize("damon_choice", ["off", "on"])
+def test_failed_start_releases_owned_damon_and_permits_clean_retry(
+    simple_server, monkeypatch, failure, damon_choice,
+):
+    owned: set[int] = set()
+
+    class OwnedDamonSession:
+        kdamond_idx = 7
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
+        last_class_bytes = {"hot": 0, "warm": 0, "cold": 0, "idle": 0}
+
+        def __init__(self, targets, **kwargs):
+            self.targets = targets
+
+        def __enter__(self):
+            if owned:
+                raise AssertionError("previous DAMON owner was not released")
+            owned.add(self.kdamond_idx)
+            return self
+
+        def __exit__(self, *exc):
+            owned.remove(self.kdamond_idx)
+
+        def collect(self):
+            return None
+
+        def recommit_targets(self, pids):
+            return None
+
+    monkeypatch.setattr(targets_mod, "pids_in_cgroup", lambda *_args: [123])
+    monkeypatch.setattr(damon_mod, "DamonSession", OwnedDamonSession)
+
+    if failure == "manifest":
+        original = store.RunDir.write_manifest
+
+        def fail_once(rundir, document):
+            monkeypatch.setattr(store.RunDir, "write_manifest", original)
+            raise OSError("sessions volume full")
+
+        monkeypatch.setattr(store.RunDir, "write_manifest", fail_once)
+    else:
+        original = threading.Thread.start
+
+        def fail_once(thread):
+            monkeypatch.setattr(threading.Thread, "start", original)
+            raise OSError("thread launch failed")
+
+        monkeypatch.setattr(threading.Thread, "start", fail_once)
+
+    with pytest.raises(OSError):
+        simple_server._dispatch(_start_req(damon=damon_choice))
+    assert not owned
+    assert simple_server._sessions == {}
+    assert not (Path(simple_server.sessions_dir) / SESSION_ID).exists()
+
+    # The same generated ID must now be safe to use: failure did not leave
+    # a hidden DAMON owner, partial series, or registry entry behind.
+    started = simple_server._dispatch(_start_req(damon=damon_choice))
+    assert started["ok"] is True
+    assert started["session"] == SESSION_ID
+    if damon_choice == "on":
+        assert owned == {7}
+    stopped = simple_server._dispatch(_wire("stop", session=SESSION_ID))
+    assert stopped["ok"] is True
+    assert not owned
+
+
+def test_session_id_collision_preserves_first_live_session_and_its_series(simple_server):
+    first = simple_server._dispatch(_start_req())
+    assert first["ok"] is True
+    owner = simple_server._sessions[SESSION_ID]
+    with pytest.raises(OSError, match="session id collision"):
+        simple_server._dispatch(_start_req())
+    assert simple_server._sessions[SESSION_ID] is owner
+    assert len(list(owner.rundir.read("samples"))) == 1
+    stopped = simple_server._dispatch(_wire("stop", session=SESSION_ID))
+    assert stopped["ok"] is True
+    assert stopped["summary"]["samples"] == 1
+
+
+def test_session_id_collision_with_retained_disk_record_does_not_mix_series(simple_server):
+    retained = Path(simple_server.sessions_dir) / SESSION_ID
+    retained.mkdir()
+    (retained / "manifest.json").write_text('{"status":"finished"}\n')
+
+    with pytest.raises(OSError, match="session id collision"):
+        simple_server._dispatch(_start_req())
+
+    assert (retained / "manifest.json").read_text() == '{"status":"finished"}\n'
+    assert simple_server._sessions == {}
+
+
 def test_create_session_with_no_slice_ancestor_leaves_slice_cgroup_none(simple_server):
     with simple_server._lock:
         sess = simple_server._create_session_locked(
@@ -2625,20 +2721,30 @@ def test_real_socket_round_trip_version_and_bad_request(tmp_path):
         assert not os.path.exists(socket_path)
 
 
+def _start_ready_socket_server(server):
+    """Start the real accept loop after publishing its bind as a sync point."""
+    ready = threading.Event()
+    bind = server._bind
+
+    def bind_and_signal():
+        bind()
+        ready.set()
+
+    server._bind = bind_and_signal
+    thread = threading.Thread(target=server._accept_loop, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=60.0)  # failsafe if bind itself cannot complete
+    return thread
+
+
 def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
     socket_path = str(tmp_path / "ctl.sock")
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
         accept_timeout=0.05,
     )
-    thread = threading.Thread(target=server._accept_loop, daemon=True)
-    thread.start()
+    thread = _start_ready_socket_server(server)
     try:
-        deadline = time.monotonic() + 5.0
-        while not os.path.exists(socket_path) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert os.path.exists(socket_path)
-
         malformed = [
             [],
             None,
@@ -2658,7 +2764,7 @@ def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
         ]
         for request in malformed:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(2.0)
+                client.settimeout(60.0)
                 client.connect(socket_path)
                 client.sendall((json.dumps(request) + "\n").encode("utf-8"))
                 response = json.loads(client.recv(65536).decode("utf-8"))
@@ -2668,7 +2774,7 @@ def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
 
             # A malformed peer must not consume the accept loop.
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(2.0)
+                client.settimeout(60.0)
                 client.connect(socket_path)
                 client.sendall(b'{"verb":"version"}\n')
                 version = json.loads(client.recv(65536).decode("utf-8"))
@@ -2676,7 +2782,7 @@ def test_real_socket_rejects_wrong_json_shapes_without_losing_daemon(tmp_path):
             assert version["contract"] == 1
     finally:
         server.request_shutdown()
-        thread.join(timeout=5.0)
+        thread.join(timeout=60.0)
         assert not thread.is_alive()
 
 
@@ -2749,14 +2855,8 @@ def test_ctl_start_optional_damon_round_trips_over_real_socket(
         "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
         "--scope", "container", *damon_option, "--meta", "{}",
     ]
-    thread = threading.Thread(target=simple_server._accept_loop, daemon=True)
-    thread.start()
+    thread = _start_ready_socket_server(simple_server)
     try:
-        deadline = time.monotonic() + 5.0  # suite failsafe, not a product deadline
-        while not os.path.exists(socket_path) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert os.path.exists(socket_path)
-
         assert cg.main(argv) == 0
         output = capsys.readouterr().out.splitlines()
         assert len(output) == 1
@@ -2768,7 +2868,7 @@ def test_ctl_start_optional_damon_round_trips_over_real_socket(
         assert cg.main(["ctl", "stop", response["session"], "--socket", socket_path]) == 0
     finally:
         simple_server.request_shutdown()
-        thread.join(timeout=5.0)
+        thread.join(timeout=60.0)
         assert not thread.is_alive()
 
 
@@ -2788,14 +2888,8 @@ def test_real_socket_distinguishes_absent_target_from_unreadable_cgroup_tree(
         "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
         "--scope", "container", "--meta", "{}",
     ]
-    thread = threading.Thread(target=server._accept_loop, daemon=True)
-    thread.start()
+    thread = _start_ready_socket_server(server)
     try:
-        deadline = time.monotonic() + 5.0  # suite failsafe
-        while not os.path.exists(socket_path) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert os.path.exists(socket_path)
-
         assert cg.main(argv) == 2
         absent = capsys.readouterr()
         absent_response = json.loads(absent.out)
@@ -2814,7 +2908,7 @@ def test_real_socket_distinguishes_absent_target_from_unreadable_cgroup_tree(
         assert json.loads(healthy.out)["contract"] == 1
     finally:
         server.request_shutdown()
-        thread.join(timeout=5.0)
+        thread.join(timeout=60.0)
         assert not thread.is_alive()
 
 

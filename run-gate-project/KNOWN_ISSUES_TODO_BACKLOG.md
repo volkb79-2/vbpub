@@ -5060,6 +5060,8 @@ reproduction of the SAME underlying defect goes here, not a new entry).
 
 **Spec owner:** SPEC R-41 (exec lock).
 
+**Consumer evidence (dstdns 2026-10-01, `dstdns@5cf2ed55`, decisions D-619/D-620):** the operator authorised two concurrent gates on the shared `dstdns-98535c-test-runner`: the container ceiling is 3000M, a mock suite peaks at about 1.3–1.5 GB and uses about 0.9 cores, the host has 8 cores, and CPU PSI was about 5–8%. Six gates were queued behind N=1. A caller-side two-slot semaphore did nothing alone, because R-41's exec lock kept the second run "waiting for container". The working consumer workaround, `scripts/gate-slot.sh`, gives slot 2 its own `RUN_GATE_LOCK_DIR`. That is safe there only because the project declares no RG-20 shared-infra locks; under a project that declares them, the knob would also silently split the shared-infra mutex. This hazard is the strongest argument for (a): `max_concurrent` keyed per container, which leaves the shared-infra locks single. A second gap belongs with (a): with N>1, the per-invocation resource profile (RG-27 history, `footprint`) measures a container cgroup shared by both runs. Either record `concurrent_with` in the history entry, or refuse `footprint --write` from a run that overlapped another.
+
 ## RG-68 — `footprint` ignores completed FAIL runs
 
 **Provenance:** found in dstdns 2026-09-30 (first-run budget calibration for new R2 lanes, D-572 section 3).

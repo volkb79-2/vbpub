@@ -1,0 +1,58 @@
+OPERATOR: [10:00:00] Please ask about these extraction decisions.
+---
+[10:00:01] INTERVIEW: Which prompt label should be used?
+Header: Prompt
+- Labeled prose: Mark the displayed question.
+- Plain prose: Keep the bare question.
+---
+[10:00:01] INTERVIEW: Should an unanswered row be explicit?
+Header: Missing answer
+- Yes: Show that the operator did not answer.
+- No: Leave the answer area blank.
+Multiple selections are allowed.
+---
+[10:00:01] [tool call: AskUserQuestion]
+---
+[10:00:02] INTERVIEW: Which prompt label should be used?
+Header: Prompt
+- Labeled prose: Mark the displayed question.
+- Plain prose: Keep the bare question.
+
+OPERATOR: Something else
+
+INTERVIEW: Should an unanswered row be explicit?
+Header: Missing answer
+- Yes: Show that the operator did not answer.
+- No: Leave the answer area blank.
+Multiple selections are allowed.
+
+OPERATOR: (No answer provided)
+---
+[10:00:03] INTERVIEW: Which word should label the answer?
+Header: Answer label
+- OPERATOR: Label the user's answer.
+- USER: Use a shorter label.
+---
+[10:00:03] [tool call: AskUserQuestion]
+---
+[10:00:04] INTERVIEW: Which word should label the answer?
+Header: Answer label
+- OPERATOR: Label the user's answer.
+- USER: Use a shorter label.
+
+OPERATOR: OPERATOR
+---
+[10:00:05] [tool call: Bash] Inspect the sanitized test fixture
+---
+[10:00:07] [/compact]
+---
+[10:00:08] [compaction: steered happened, 305,120→14,154 tok, 143.8s]
+---
+[10:00:09] Continue with the same extraction decisions after compaction.
+---
+[10:00:10] INTERVIEW: What should the extract show if the operator has not replied yet?
+Header: Pending question
+- Show the prompt: Keep the pending question visible.
+- Hide the prompt: Omit the interaction.
+---
+[10:00:10] [tool call: AskUserQuestion]

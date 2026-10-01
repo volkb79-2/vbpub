@@ -11,8 +11,9 @@ land every ``interval_seconds`` with no gaps, which a caller reading
 cgroup, its slice, and the host, and feeds :class:`lib.summary.SummaryAccumulator`
 and :class:`lib.store.RunDir` so that ``ctl stop`` can answer within the
 contract's 30 s budget without ever recomputing from the on-disk series
-(§1.5 — the accumulator is already incremental; ``finalize()`` is O(1) in
-wall time).
+(§1.5 — each sample updates the accumulator; ``finalize()`` builds the
+fixed-size response and performs only a fixed number of O(log n) percentile
+lookups).
 
 **Two safety properties this module owns, both restated from the handoff:**
 
@@ -885,16 +886,26 @@ class SessionServer:
                 interval=interval, damon_req=damon_req, meta=meta, policy=policy,
                 place_request=place_request,
             )
+            try:
+                thread = threading.Thread(
+                    target=self._session_loop, args=(sess,), daemon=True,
+                    name=f"cgprofile-session-{sess.session_id}",
+                )
+                sess.thread = thread
+                thread.start()
+            except BaseException:
+                # A failed thread launch has not published a usable session.
+                # In particular, do not strand the kdamond acquired at start.
+                try:
+                    if sess.damon_session is not None:
+                        sess.damon_session.__exit__(None, None, None)
+                finally:
+                    self._remove_session_dir(sess.session_id)
+                raise
+
             self._sessions[sess.session_id] = sess
             if token is not None:
                 self._by_target[(container_id, token)] = sess.session_id
-
-            thread = threading.Thread(
-                target=self._session_loop, args=(sess,), daemon=True,
-                name=f"cgprofile-session-{sess.session_id}",
-            )
-            sess.thread = thread
-            thread.start()
 
             return self._start_response(sess, reused=False)
 
@@ -905,6 +916,10 @@ class SessionServer:
         place_request: Optional["placement_mod.PlacementRequest"] = None,
     ) -> _Session:
         session_id = self._session_id_fn()
+        if session_id in self._sessions or os.path.lexists(
+            os.path.join(self.sessions_dir, session_id)
+        ):
+            raise OSError(f"session id collision: {session_id}")
         started_at = self._iso(self.clock())
         abs_target = os.path.join(self.cgroup_root, cgroup.lstrip("/"))
         # The token resolver below will resolve direct target-cgroup PIDs;
@@ -1066,79 +1081,86 @@ class SessionServer:
                         damon_session_obj = candidate
                         damon_status = "on"
 
-        acc = summary.SummaryAccumulator(
-            session=session_id, daemon_name=self.daemon_name, daemon_version=CGPROFILE_VERSION,
-            scope=scope, started_at=started_at, interval_seconds=interval,
-            container_id=container_id, cgroup=cgroup, token=token, slice_name=slice_name,
-            damon_enabled=damon_requested_on,
-            damon_kdamond=damon_session_obj.kdamond_idx if damon_session_obj else None,
-            damon_thresholds=damon_session_obj.thresholds if damon_session_obj else None,
-        )
-        if damon_unavailable_reason is not None:
-            acc.mark_damon_unavailable(damon_unavailable_reason)
+        try:
+            acc = summary.SummaryAccumulator(
+                session=session_id, daemon_name=self.daemon_name, daemon_version=CGPROFILE_VERSION,
+                scope=scope, started_at=started_at, interval_seconds=interval,
+                container_id=container_id, cgroup=cgroup, token=token, slice_name=slice_name,
+                damon_enabled=damon_requested_on,
+                damon_kdamond=damon_session_obj.kdamond_idx if damon_session_obj else None,
+                damon_thresholds=damon_session_obj.thresholds if damon_session_obj else None,
+            )
+            if damon_unavailable_reason is not None:
+                acc.mark_damon_unavailable(damon_unavailable_reason)
 
-        initial_damon_bytes: Optional[Dict[str, int]] = None
-        if damon_session_obj is not None:
-            initial_damon_bytes = damon_session_obj.last_class_bytes
+            initial_damon_bytes: Optional[Dict[str, int]] = None
+            if damon_session_obj is not None:
+                initial_damon_bytes = damon_session_obj.last_class_bytes
 
-        sess = _Session(
-            session_id=session_id, scope=scope, container_id=container_id, cgroup=cgroup,
-            slice_name=slice_name, slice_cgroup=slice_cgroup, token=token, interval=interval,
-            meta=meta, started_at=started_at, baseline_memory_bytes=baseline,
-            pids_at_start=pids_at_start, host_snapshot=host_snapshot, rundir=rundir,
-            summary_acc=acc, subtree_resolver=subtree_resolver, damon_session=damon_session_obj,
-            damon_status=damon_status, damon_requested_on=damon_requested_on,
-            damon_unavailable_reason=damon_unavailable_reason,
-            detector=detector, last_effective_limits=initial_effective_limits,
-            watch=liveness_mod.LivenessTracker(
-                policy if policy is not None else liveness_mod.Policy(),
-                started_at=started_at,
-                expected_duration_seconds=_expected_duration_seconds(meta),
-            ),
-            placement=placement_obj,
-            sampler_origin_mono=sampler_origin_mono,
-        )
-        # The synchronous sample-zero read is also the liveness baseline.
-        # Summary accounting already records it below; feeding the same
-        # snapshot to the tracker keeps the two views aligned, so an
-        # immediate status reports the real initial reading and the first
-        # later tick measures CPU/IO deltas from that same point.
-        self._observe_liveness(
-            sess, mono=0.0,
-            record={
+            sess = _Session(
+                session_id=session_id, scope=scope, container_id=container_id, cgroup=cgroup,
+                slice_name=slice_name, slice_cgroup=slice_cgroup, token=token, interval=interval,
+                meta=meta, started_at=started_at, baseline_memory_bytes=baseline,
+                pids_at_start=pids_at_start, host_snapshot=host_snapshot, rundir=rundir,
+                summary_acc=acc, subtree_resolver=subtree_resolver, damon_session=damon_session_obj,
+                damon_status=damon_status, damon_requested_on=damon_requested_on,
+                damon_unavailable_reason=damon_unavailable_reason,
+                detector=detector, last_effective_limits=initial_effective_limits,
+                watch=liveness_mod.LivenessTracker(
+                    policy if policy is not None else liveness_mod.Policy(),
+                    started_at=started_at,
+                    expected_duration_seconds=_expected_duration_seconds(meta),
+                ),
+                placement=placement_obj,
+                sampler_origin_mono=sampler_origin_mono,
+            )
+            # Sample zero is the liveness baseline as well as the summary's
+            # initial sample, so status and later deltas share one observation.
+            self._observe_liveness(
+                sess, mono=0.0,
+                record={
+                    "seq": 0, "t": self._parse_iso_epoch(started_at), "mono": 0.0,
+                    "cg": {cgroup: initial_target_metrics}, "host": host_snapshot,
+                },
+                abs_target=initial_sample_target_abs, target_metrics=initial_target_metrics,
+                host_metrics=host_snapshot, pids=initial_pids,
+            )
+            # Sample zero is recorded as part of start, from the target/host/slice
+            # and PID reads that already established this session's baseline.
+            # Therefore an immediate stop has a populated, honest one-sample
+            # summary instead of taking a later replacement read.
+            acc.add_sample(
+                cgroup=initial_target_metrics, host=host_snapshot,
+                slice_cgroup=initial_slice_metrics, damon=initial_damon_bytes,
+                pids=initial_pids, mono=0.0,
+            )
+            sess.live_samples = 1
+            sess.last_mono = 0.0
+            sess.no_token_pids = list(pids_now)
+            target_mem = initial_target_metrics.get("mem") or {}
+            sess.live_memory_current_bytes = target_mem.get("current")
+            sess.live_memory_peak_bytes = target_mem.get("peak")
+            target_cpu = initial_target_metrics.get("cpu") or {}
+            sess._prev_cpu_usage_usec = target_cpu.get("usage_usec")
+            sess._prev_mono = 0.0
+            sess.rundir.append("samples", {
                 "seq": 0, "t": self._parse_iso_epoch(started_at), "mono": 0.0,
-                "cg": {cgroup: initial_target_metrics}, "host": host_snapshot,
-            },
-            abs_target=initial_sample_target_abs, target_metrics=initial_target_metrics,
-            host_metrics=host_snapshot, pids=initial_pids,
-        )
-        # Sample zero is recorded as part of start, from the target/host/slice
-        # and PID reads that already established this session's baseline.
-        # Therefore an immediate stop has a populated, honest one-sample
-        # summary instead of taking a later replacement read.
-        acc.add_sample(
-            cgroup=initial_target_metrics, host=host_snapshot,
-            slice_cgroup=initial_slice_metrics, damon=initial_damon_bytes,
-            pids=initial_pids, mono=0.0,
-        )
-        sess.live_samples = 1
-        sess.last_mono = 0.0
-        sess.no_token_pids = list(pids_now)
-        target_mem = initial_target_metrics.get("mem") or {}
-        sess.live_memory_current_bytes = target_mem.get("current")
-        sess.live_memory_peak_bytes = target_mem.get("peak")
-        target_cpu = initial_target_metrics.get("cpu") or {}
-        sess._prev_cpu_usage_usec = target_cpu.get("usage_usec")
-        sess._prev_mono = 0.0
-        sess.rundir.append("samples", {
-            "seq": 0, "t": self._parse_iso_epoch(started_at), "mono": 0.0,
-            "cg": {sess.cgroup: initial_target_metrics}, "pids": initial_pids,
-        })
-        sess.rundir.append("host", {"host": host_snapshot, "slice": initial_slice_metrics})
-        if initial_damon_bytes is not None:
-            sess.rundir.append("damon", {"_seq": 0, **initial_damon_bytes})
-        rundir.write_manifest(self._manifest_for(sess, status="live"))
-        return sess
+                "cg": {sess.cgroup: initial_target_metrics}, "pids": initial_pids,
+            })
+            sess.rundir.append("host", {"host": host_snapshot, "slice": initial_slice_metrics})
+            if initial_damon_bytes is not None:
+                sess.rundir.append("damon", {"_seq": 0, **initial_damon_bytes})
+            rundir.write_manifest(self._manifest_for(sess, status="live"))
+            return sess
+        except BaseException:
+            # The session is not yet published. Release any owned kdamond
+            # even when storage or summary assembly fails after acquisition.
+            try:
+                if damon_session_obj is not None:
+                    damon_session_obj.__exit__(None, None, None)
+            finally:
+                self._remove_session_dir(session_id)
+            raise
 
     def _make_placement(
         self, *, token: Optional[str], origin_cgroup: str,

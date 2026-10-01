@@ -32,22 +32,22 @@ def test_new_run_id_uses_given_prefix():
     assert run_id.startswith("attach-")
 
 
-def test_new_run_id_is_unique_even_for_the_same_instant():
-    """RG-55 CP-4: this was a genuine, measured flake before the suffix was
-    widened 4 -> 8 hex chars. With a 4-char suffix (16**4 = 65536 values),
-    the birthday-paradox collision probability across 50 draws in the same
-    fixed instant was ``1 - exp(-50*49 / (2*65536)) ~= 1.8%`` -- comfortably
-    likely to fire in a large test-suite history, and it did (CP-4 backlog
-    row). With the current 8-char suffix (16**8 = 4294967296 values) that
-    same exact-birthday-paradox formula gives
-    ``50*49 / (2*16**8) ~= 2.85e-7``, i.e. under 1e-6 -- the width this test
-    asserts uniqueness at is chosen so a flake here is no longer a plausible
-    outcome of running this suite for years, not because exact uniqueness
-    across 50 draws stopped being probabilistic in principle.
-    """
+def test_new_run_id_suffix_reflects_distinct_entropy_at_the_same_instant(monkeypatch):
+    """CP-4: prove distinct deterministic entropy without a probabilistic oracle."""
     when = 1_754_325_600.0
-    ids = {store.new_run_id(when=when) for _ in range(50)}
-    assert len(ids) == 50
+    values = iter((b"\x00\x00\x00\x01", b"\x00\x00\xfe\xff"))
+
+    def fixed_entropy(size):
+        assert size == 4
+        return next(values)
+
+    monkeypatch.setattr(store.os, "urandom", fixed_entropy)
+    first = store.new_run_id(when=when)
+    second = store.new_run_id(when=when)
+    assert first[:-8] == second[:-8]
+    assert first.endswith("00000001")
+    assert second.endswith("0000feff")
+    assert first != second
 
 
 def test_new_run_id_embeds_the_given_time():

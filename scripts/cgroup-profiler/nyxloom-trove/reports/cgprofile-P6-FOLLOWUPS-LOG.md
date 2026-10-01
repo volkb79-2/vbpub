@@ -1753,3 +1753,28 @@ tests/test_placement_systemd_helpers.py tests/test_serve_placement.py
 tests/test_serve_socket_carrier.py -q`: **523 passed in 31.02 s**. This is
 targeted local evidence only; no registered gate, current-tree R2, live
 scope-restoration probe, or fix-verification review is claimed.
+
+## Session 39 — 2026-10-01 12:30:49Z — reconcile P1/main and stabilize the carrier fixture
+
+The P6 worktree is reconciling current local `main` at `a63d8cc7`. The merge
+preserves P6's delegated-scope placement and release docs alongside P1's
+summary/session-cleanup changes. The first broader local regression run
+reported 906 passed, 6 skipped, and 6 failures: five newly merged stop tests
+used a pre-contract request shape, and the carrier fixture's sampler barrier
+could run before `handle_start` published the session registry entry. The
+first issue was corrected to use the contract `_wire` envelope. The second
+was a test-harness scheduling race: a missing registry entry made the barrier
+fall through, so a post-start tick could race the asserted sample-zero state.
+
+Added a start-returned synchronization fence to the fixture. It now holds the
+initial sampler sleep until the start response has returned and the session
+is registered, then signals the test and remains blocked until stop. This
+keeps the one-sample baseline expectation independent of thread scheduling;
+the product sampler and service ordering were not changed. The complete
+focused set passed on the reconciled, pre-commit tree: 912 passed, 6 skipped
+in 56.61 s. The command covered placement-systemd helpers, placement, socket
+carrier, build/push, serve, store, targets, and summary tests. This is local
+focused evidence only, not a registered exact-tree lane. The contract copies
+remain byte-identical and `git diff --check` is clean. Exact R0/R1, R3,
+doctor, R2, full gate, live delegated-scope probes, and same-session Sol
+fix-verification remain outstanding.

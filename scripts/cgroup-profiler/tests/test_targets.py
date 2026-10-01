@@ -40,6 +40,145 @@ def test_proc_start_time_ticks_rejects_stat_without_comm_closing_delimiter(tmp_p
     assert t.proc_start_time_ticks(42, str(proc)) is None
 
 
+def test_proc_start_time_ticks_rejects_stat_for_a_different_pid(tmp_path):
+    proc = tmp_path / "proc"
+    stat_path = proc / "42" / "stat"
+    stat_path.parent.mkdir(parents=True)
+    stat_path.write_text(
+        "999 (worker) " + " ".join(["S", *("0" for _ in range(18)), "98765"]) + "\n"
+    )
+
+    assert t.proc_start_time_ticks(42, str(proc)) is None
+
+
+class TestProcIdentityParsing:
+    @pytest.mark.parametrize(
+        "status_contents",
+        [
+            pytest.param(None, id="missing-status"),
+            pytest.param("", id="empty-status"),
+            pytest.param("Name:\tworker\n", id="missing-nspid"),
+            pytest.param("Name:\tworker\nNSpid:\t4242 x\n", id="malformed-nspid"),
+            pytest.param("Name:\tworker\nNSpid:\t4242 0\n", id="non-positive-nspid"),
+        ],
+    )
+    def test_namespace_numbers_refuse_missing_malformed_or_non_positive_facts(
+        self, tmp_path: Path, status_contents: str | None,
+    ):
+        process = tmp_path / "proc" / "4242"
+        process.mkdir(parents=True)
+        if status_contents is not None:
+            (process / "status").write_text(status_contents)
+
+        assert t.proc_namespace_numbers(4242, str(tmp_path / "proc")) is None
+
+    def test_namespace_numbers_accept_valid_positive_facts(self, tmp_path: Path):
+        process = tmp_path / "proc" / "4242"
+        process.mkdir(parents=True)
+        (process / "status").write_text("Name:\tworker\nNSpid:\t4242 17\n")
+
+        assert t.proc_namespace_numbers(4242, str(tmp_path / "proc")) == (4242, 17)
+
+    @pytest.mark.parametrize(
+        "stat_contents",
+        [
+            pytest.param(None, id="missing-stat"),
+            pytest.param("", id="empty-stat"),
+            pytest.param("123 (worker S 0\n", id="missing-close-delimiter"),
+            pytest.param(") S " + " ".join(["0"] * 19) + "\n", id="close-at-record-start"),
+            pytest.param(
+                "junk) " + " ".join(["S", *("0" for _ in range(18)), "77"]) + "\n",
+                id="missing-open-delimiter",
+            ),
+            pytest.param(
+                "999 (worker) " + " ".join(["S", *("0" for _ in range(18)), "77"]) + "\n",
+                id="wrong-pid",
+            ),
+            pytest.param("123 (worker) S\n", id="truncated-stat"),
+            pytest.param(
+                "123 (worker) " + " ".join(["S", *("0" for _ in range(18)), "invalid"]) + "\n",
+                id="invalid-start-time",
+            ),
+        ],
+    )
+    def test_start_time_refuses_missing_or_malformed_stat(
+        self, tmp_path: Path, stat_contents: str | None,
+    ):
+        process = tmp_path / "proc" / "123"
+        process.mkdir(parents=True)
+        if stat_contents is not None:
+            (process / "stat").write_text(stat_contents)
+
+        assert t.proc_start_time_ticks(123, str(tmp_path / "proc")) is None
+
+    def test_start_time_accepts_zero_as_a_non_negative_kernel_value(self, tmp_path: Path):
+        process = tmp_path / "proc" / "123"
+        process.mkdir(parents=True)
+        fields = ["S", *("0" for _ in range(18)), "0"]
+        (process / "stat").write_text(f"123 (worker) {' '.join(fields)}\n")
+
+        assert t.proc_start_time_ticks(123, str(tmp_path / "proc")) == 0
+
+    def test_helper_identity_accepts_zero_start_time(self, monkeypatch):
+        cgroup = "/target.scope"
+        monkeypatch.setattr(t, "pids_in_cgroup", lambda *_args: [51001])
+        monkeypatch.setattr(t, "proc_start_time_ticks", lambda *_args: 0)
+        monkeypatch.setattr(
+            t.access,
+            "namespace_inode",
+            lambda _pid, namespace, _proc_root: 11 if namespace == "pid" else 22,
+        )
+        monkeypatch.setattr(t, "pid_namespace_number", lambda *_args: 4242)
+        monkeypatch.setattr(t, "cgroup_of_pid", lambda *_args: cgroup)
+
+        resolved = t._resolve_helper_pid(
+            "a" * 64,
+            cgroup,
+            "11:4242:0:22",
+            {},
+            "containerid:test",
+            False,
+            None,
+            "subject",
+            "/sys/fs/cgroup",
+            "/proc",
+        )
+
+        assert resolved.pid == 51001
+
+    @pytest.mark.parametrize(
+        "stat_contents",
+        [
+            pytest.param(
+                "junk) " + " ".join(["S", *("0" for _ in range(18)), "77"]) + "\n",
+                id="missing-open-delimiter",
+            ),
+            pytest.param(
+                "999 (worker) " + " ".join(["S", *("0" for _ in range(18)), "77"]) + "\n",
+                id="wrong-pid",
+            ),
+        ],
+    )
+    def test_helper_identity_refuses_malformed_stat_with_matching_other_facts(
+        self, tmp_path: Path, monkeypatch, stat_contents: str,
+    ):
+        proc_root = tmp_path / "proc"
+        process = proc_root / "51001"
+        process.mkdir(parents=True)
+        (process / "stat").write_text(stat_contents)
+        cgroup = "/target.scope"
+        monkeypatch.setattr(t, "pids_in_cgroup", lambda *_args: [51001])
+        monkeypatch.setattr(t.access, "namespace_inode", lambda *_args: 11)
+        monkeypatch.setattr(t, "pid_namespace_number", lambda *_args: 4242)
+        monkeypatch.setattr(t, "cgroup_of_pid", lambda *_args: cgroup)
+
+        with pytest.raises(t.TargetError, match="mapping not found"):
+            t._resolve_helper_pid(
+                "a" * 64, cgroup, "11:4242:77:11", {}, "containerid:test",
+                False, None, "subject", "/sys/fs/cgroup", str(proc_root),
+            )
+
+
 class TestSliceNaming:
     def test_nested_slice_expands_to_every_ancestor(self):
         # systemd encodes the hierarchy in the unit name; every '-' prefix is a

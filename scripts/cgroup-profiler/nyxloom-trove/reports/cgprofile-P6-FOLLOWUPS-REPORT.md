@@ -1984,3 +1984,36 @@ load-niced placement/systemd/socket regression set passed **523 tests in
 not current-tree evidence. Current-main reconciliation, exact registered
 gates, a live delegated-scope start/stop restoration probe, fix-verification
 review, and a fresh R2/full gate remain open.
+
+### Reconciled P1/main focused integration run (2026-10-01)
+
+After reconciling current local `main` at `a63d8cc7`, the first broader
+focused run reported 906 passed, 6 skipped, and 6 failures. Five failures
+were test-request-envelope drift in the newly merged stop cleanup tests; the
+contract requires `_wire("stop", session=...)`, not a top-level `session`
+key. The remaining intermittent carrier/golden mismatch came from the test
+barrier running in the sampler thread before the start handler had published
+the session in its registry. In that scheduling order the barrier fell
+through and a later sampler tick raced assertions that intended to observe
+only synchronous sample zero. This was a test synchronization defect, not a
+production sampling-performance threshold or a reason to accept
+load-dependent results.
+
+The request fixtures now use the contract envelope. The sampler fixture uses
+an explicit start-returned event: after the `start` response reaches the
+caller, the test releases the initial sampler sleep; the barrier then
+confirms registry publication, signals the test, and waits for `stop`. The
+sampler cannot advance before the stable sample-zero assertions. This fixes
+the scheduling race without changing daemon implementation or treating host
+load as acceptable test variance.
+
+On the reconciled pre-commit tree, the serial low-priority focused command
+covering `test_placement_systemd_helpers.py`, `test_serve_placement.py`,
+`test_serve_socket_carrier.py`, `test_build_push.py`, `test_serve.py`,
+`test_store.py`, `test_targets.py`, and `test_summary.py` passed **912 tests,
+with 6 skipped, in 56.61 s**. `git diff --check` passed and the root and
+`docs/` interface contract copies compare byte-identically. This is local
+focused evidence only: it does not replace a registered exact-tree R0/R1,
+R3, doctor, R2, full gate, reviewer-owned live delegated-scope start/stop
+and restoration probes, or Sol fix-verification. No final review or merge is
+claimed here.

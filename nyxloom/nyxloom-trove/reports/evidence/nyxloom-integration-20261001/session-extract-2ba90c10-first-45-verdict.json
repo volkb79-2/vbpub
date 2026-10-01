@@ -1,0 +1,961 @@
+{
+  "argv_appended": [
+    "-p",
+    "assay_liveness_plugin"
+  ],
+  "argv_declared": [
+    "/opt/tester-venv/bin/python",
+    "-m",
+    "pytest",
+    "tests/test_session_extract_adapters_registry.py",
+    "tests/test_session_extract_reasonix.py",
+    "tests/test_session_extract_classifier.py",
+    "tests/test_session_extract_claude_code.py",
+    "tests/test_session_extract_cli_acceptance.py",
+    "tests/test_session_extract_codex.py",
+    "tests/test_session_extract_config_validation.py",
+    "tests/test_session_extract_debug_diff.py",
+    "tests/test_session_extract_edge_contracts.py",
+    "tests/test_session_extract_init.py",
+    "tests/test_session_extract_ledger.py",
+    "tests/test_session_extract_mangle.py",
+    "tests/test_session_extract_lossless_codex.py",
+    "tests/test_session_extract_lossless_opencode.py",
+    "tests/test_session_extract_lossless.py",
+    "tests/test_session_extract_opencode.py",
+    "tests/test_session_extract_render.py",
+    "tests/test_session_extract_select.py",
+    "tests/test_session_extract_stats_codex.py",
+    "tests/test_session_extract_stats_opencode.py",
+    "tests/test_session_extract_stats.py",
+    "tests/test_cli_extract.py",
+    "tests/test_session_extract_follow.py",
+    "tests/test_session_extract_locate.py",
+    "tests/test_cli_help.py",
+    "tests/test_cli.py::test_tick",
+    "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
+    "-n",
+    "4",
+    "--maxfail=1",
+    "-q",
+    "--cov=src/nyxloom",
+    "--cov-branch",
+    "--cov-report=json:coverage-session-extract.json"
+  ],
+  "argv_effective": [
+    "/opt/tester-venv/bin/python",
+    "-m",
+    "pytest",
+    "tests/test_session_extract_adapters_registry.py",
+    "tests/test_session_extract_reasonix.py",
+    "tests/test_session_extract_classifier.py",
+    "tests/test_session_extract_claude_code.py",
+    "tests/test_session_extract_cli_acceptance.py",
+    "tests/test_session_extract_codex.py",
+    "tests/test_session_extract_config_validation.py",
+    "tests/test_session_extract_debug_diff.py",
+    "tests/test_session_extract_edge_contracts.py",
+    "tests/test_session_extract_init.py",
+    "tests/test_session_extract_ledger.py",
+    "tests/test_session_extract_mangle.py",
+    "tests/test_session_extract_lossless_codex.py",
+    "tests/test_session_extract_lossless_opencode.py",
+    "tests/test_session_extract_lossless.py",
+    "tests/test_session_extract_opencode.py",
+    "tests/test_session_extract_render.py",
+    "tests/test_session_extract_select.py",
+    "tests/test_session_extract_stats_codex.py",
+    "tests/test_session_extract_stats_opencode.py",
+    "tests/test_session_extract_stats.py",
+    "tests/test_cli_extract.py",
+    "tests/test_session_extract_follow.py",
+    "tests/test_session_extract_locate.py",
+    "tests/test_cli_help.py",
+    "tests/test_cli.py::test_tick",
+    "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
+    "-n",
+    "4",
+    "--maxfail=1",
+    "-q",
+    "--cov=src/nyxloom",
+    "--cov-branch",
+    "--cov-report=json:coverage-session-extract.json",
+    "-p",
+    "assay_liveness_plugin"
+  ],
+  "argv_modified": true,
+  "assay_version": "7.2.1.dev54+g2ba90c10f",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "coverage": {
+        "branch_capability": "reported",
+        "branches_covered": 62,
+        "branches_total": 62,
+        "considered": 1,
+        "covered": 105,
+        "excluded_lines": {},
+        "exclusion_capability": "reported",
+        "executable": 105,
+        "files_missing_coverage": [],
+        "files_with_excluded_lines": [],
+        "files_with_missing_branch_lines": [],
+        "files_with_unclassified_lines": [],
+        "missing_branch_lines": {},
+        "missing_lines": {},
+        "pct": 100.0,
+        "unclassified_lines": {}
+      },
+      "rigor": "R1",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "mutation": {
+        "budget_exceeded": [],
+        "candidate_count": 45,
+        "candidate_ids": [
+          "7ce8471b3d3572f88c5946791e4836586c12ba305f907b5fccde8beed0da4751",
+          "8e854efe4352a64c05895b9871089783ea5584f8b7f5ea7a394063993547fd89",
+          "bafd0e5ebac329067518c289e5d2630745539c9ec6b36424f1a0cd2e5bd961eb",
+          "69353b2b257ba100845a5b67f826ac7fceec5ae85349dfe77c559ba13a2747b9",
+          "9884355c8045d2f4bf7b1d4eea03f852505957633aa9a6f21f0557b4beadf538",
+          "16d8f860c5efed2f3b551ca468bab76a34b30e9a3fee4b8fbcbd19e9d826cc5f",
+          "acfdf313cbd741173438747581b2ebec4d3d5db4a334c49837cf5ff9551c3e13",
+          "4f2607a67cff9218082e0a536b9f4e9fd1d3d644834e6bc8cc5abe0bd2a0679d",
+          "81c7a7763759aa815d318e874f411fb3ca4a10a8a920da254557299ca7c0e475",
+          "21f110ba9797a19977c3aa9cfeced2296800c408dd1588f9b4859eeefb91c2fe",
+          "9255ae49006d70ff8a4c25e97539dcfbf821a8ca99595d0cbc010563f286eeda",
+          "4357985eadf43e5b113b415b57c91c45c36a0e0583b2c42be6ba8a42a34eb34c",
+          "928e45082d5b619ab647850a768273ddafef33d6f7063009acd07378b803935e",
+          "62dfb045d1389509570e70adb6cd5cf757c066d0467188248c616600f430578c",
+          "19ba796648479e1eb2f6dfc6c0874f00f4bc91ad69d2ade11ce72548f3e8e62f",
+          "78b09777504ce504f370f1f855c9a7a798bb5b67cc326db4c5491481f7d7d59d",
+          "9642a2e08a225667f89588d7e2bbe50238f423412f6d1e5af8dfb3c75edf1657",
+          "782419ea9e59185589c30cf7550f1d2b200e5bf31b76c9639facbabcb265495f",
+          "297f31083ee36f02dfede8d3698b9567f961b1a7c5bcdb4f120472fe54a85bcb",
+          "69153e3bdc627257a16226c09273d87e70969d180c302ce5b772c6f07df5046c",
+          "059f195d099b7dd6632f7df75928dd870ada8678b1e26d3de9e638b197de89d9",
+          "9dc30b9e5f12a0eef9bdbcc8a471c82472047065c635ad6d00c871f0fad88d77",
+          "868b3884f7d9edb2c8a47633a81a84b698faded3dbb806d3230690fb04534385",
+          "1574c07fa35032b6f9f1b9e010f581a863738ee0e9c7abedda10bcde2b78f8d2",
+          "20ae821aa6249a4e2da6aef5e35808af9f447b118de4e38cbd63cd0ab22bc9e9",
+          "855968e91da509392c080fc200554cbbddcf98138d1bdf09673c9617a2d859c9",
+          "7404856173e5becd73a4de60432a492b94c72231efe1209529e0cfee9d4510e0",
+          "a5639546479932b9b9dec0e147c383deefc0aaa4fef2ff635af818274997d8f4",
+          "670517a332e444b76900e310e3d21db0de4177ffb441f73b9e67a598d3b04aa2",
+          "e8994d310d3a5ded401577b1fe12bb419edb18cf8b097f2ae75f8a8de8042703",
+          "32639fdb9eb405370ef29044545cb7e1410c57b406abd1fc19d40387072f4e68",
+          "e8927dd6f4f7045cd6f5ded8847e3aeeaa335db22c020d5aaec8d95e26ddac12",
+          "82bc58e38964d7fbb65d6b2b96662822fe964c6b44525acc133fca6628ac96c8",
+          "a2b00bd0850eed5f872f2866e98055901b96637a602bd8e3462e896753de5fe5",
+          "a90c4a93622ac15f7fefeefb7815cb218ca04e3ea8cb7069972b931d89afa996",
+          "d8c748d99c6cfc0aa00f61ad266299e9d418513b2d2c98395c24dc3528821ad4",
+          "68d481618886c4ef86fc8801e258adb169985d14d88546bbf7db022860c9f347",
+          "5626f4a072edc9e3db82e2aec2cfc17f734f164787b3a0a3bd5ac3ed38691bac",
+          "bacff6efc2e53c5667e9711e494ccbc9b69ebf473890be95da4cccbbcf488b3c",
+          "3ad24a8b5f975e38e9b95e63866e5f89bf3ff39c335a5011909cf9135443374a",
+          "f131457bdcd83bd275490297f64d5c859b856e534013222c5c4f82df78db8e35",
+          "c277605db52aec1e1033060626766dd4e056eeb6241647580a8d146692d09166",
+          "b41e47e02eca730794c34d2ac5a643552d347c1e182f0a039d62b8ca398541f8",
+          "d6296a221e19f5ee733555ea113239ed79e75514d9e28c8c51bc3817f98fdcab",
+          "e7d752627ada67cbd2e41a613f3f009ef3498b8003adb6e276ceaa7d01ce33d0"
+        ],
+        "crashed": [],
+        "equivalent": [],
+        "hung": [],
+        "killed": [
+          {
+            "candidate_id": "7ce8471b3d3572f88c5946791e4836586c12ba305f907b5fccde8beed0da4751",
+            "description": "None->[]",
+            "end_byte": 13231,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 229,
+            "mutated_file_sha256": "0da39edb527da3e12e9b15c54dfec3ce3540643158cda0a0942853bd6d77901b",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 13227
+          },
+          {
+            "candidate_id": "bafd0e5ebac329067518c289e5d2630745539c9ec6b36424f1a0cd2e5bd961eb",
+            "description": "Lt->LtE",
+            "end_byte": 14127,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 252,
+            "mutated_file_sha256": "961a3ead9eefe16d510eb565ea360ab7c85b2ab884b43891a4c64237c28c3ea1",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14126
+          },
+          {
+            "candidate_id": "69353b2b257ba100845a5b67f826ac7fceec5ae85349dfe77c559ba13a2747b9",
+            "description": "None->[]",
+            "end_byte": 14150,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 253,
+            "mutated_file_sha256": "845fd7f591a13756a34f8825f31eaddd1c3aacfd9af55a973607cb094d3d75af",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14146
+          },
+          {
+            "candidate_id": "16d8f860c5efed2f3b551ca468bab76a34b30e9a3fee4b8fbcbd19e9d826cc5f",
+            "description": "None->[]",
+            "end_byte": 14456,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 261,
+            "mutated_file_sha256": "ed7792ad185f034d57d05ad8c747b8897b8fefae7c5ddf8eab17fa83c5b52941",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14452
+          },
+          {
+            "candidate_id": "acfdf313cbd741173438747581b2ebec4d3d5db4a334c49837cf5ff9551c3e13",
+            "description": "Lt->LtE",
+            "end_byte": 14478,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 262,
+            "mutated_file_sha256": "9d4c1c9ddd7ad2c5fedd454e196f3e519e6d6cad5022ad8091cf9f30f6d30b68",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14477
+          },
+          {
+            "candidate_id": "4f2607a67cff9218082e0a536b9f4e9fd1d3d644834e6bc8cc5abe0bd2a0679d",
+            "description": "And->Or",
+            "end_byte": 14493,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 262,
+            "mutated_file_sha256": "8f46126127bd7b5b6e901b1f96b06357a12d6f8601cde84dc6742e0d1dc41827",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14490
+          },
+          {
+            "candidate_id": "81c7a7763759aa815d318e874f411fb3ca4a10a8a920da254557299ca7c0e475",
+            "description": "NotEq->Eq",
+            "end_byte": 14537,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 262,
+            "mutated_file_sha256": "4a093e9333b25436e2d1b159ae12bb29e347020e046d0e5d98f185602771ab0d",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "f16474a9900a44186e87098f5fcb153a1fab2e401e1a6db587168b204761b276",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14535
+          },
+          {
+            "candidate_id": "4357985eadf43e5b113b415b57c91c45c36a0e0583b2c42be6ba8a42a34eb34c",
+            "description": "Eq->NotEq",
+            "end_byte": 14711,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 265,
+            "mutated_file_sha256": "52f844cc361d29a5c6581b27f4ed797d8141c1c8515c8c5d2ddf5ca26bdc379d",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14709
+          },
+          {
+            "candidate_id": "928e45082d5b619ab647850a768273ddafef33d6f7063009acd07378b803935e",
+            "description": "None->[]",
+            "end_byte": 14764,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 266,
+            "mutated_file_sha256": "4012da1c42653b8f916668c0e142f6fbfbffea370d4e6a11386f096cc84f9b97",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14760
+          },
+          {
+            "candidate_id": "19ba796648479e1eb2f6dfc6c0874f00f4bc91ad69d2ade11ce72548f3e8e62f",
+            "description": "None->[]",
+            "end_byte": 14843,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 269,
+            "mutated_file_sha256": "092a4112dfbfecb92ac85b93ac0129e35a4f64403ba55e1348c59063ce905628",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14839
+          },
+          {
+            "candidate_id": "78b09777504ce504f370f1f855c9a7a798bb5b67cc326db4c5491481f7d7d59d",
+            "description": "GtE->Gt",
+            "end_byte": 14882,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 271,
+            "mutated_file_sha256": "d7a783447c123fb41f4adec331c5b664ca604f7e4a1dbe79f72ae0ee76cbf8a1",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "62b67e1f685b7fef51102005dddd27774be3fee38c42965c53aab035d0b6b221",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14880
+          },
+          {
+            "candidate_id": "9642a2e08a225667f89588d7e2bbe50238f423412f6d1e5af8dfb3c75edf1657",
+            "description": "None->[]",
+            "end_byte": 14918,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 272,
+            "mutated_file_sha256": "79e733849f5b940cad7575e0e6e0f18404e4540b4fad2a89b5ec188eb36706ce",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14914
+          },
+          {
+            "candidate_id": "782419ea9e59185589c30cf7550f1d2b200e5bf31b76c9639facbabcb265495f",
+            "description": "Eq->NotEq",
+            "end_byte": 14988,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 275,
+            "mutated_file_sha256": "5603582256077d1c7af048a038965584143109bc9a4fe06c3853acb48aa4b66b",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14986
+          },
+          {
+            "candidate_id": "297f31083ee36f02dfede8d3698b9567f961b1a7c5bcdb4f120472fe54a85bcb",
+            "description": "None->[]",
+            "end_byte": 15170,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 280,
+            "mutated_file_sha256": "e7233e6637e4866ba85cdab1b50742a295959a663122d619569e7eacc2dbd7ba",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 15166
+          },
+          {
+            "candidate_id": "69153e3bdc627257a16226c09273d87e70969d180c302ce5b772c6f07df5046c",
+            "description": "Lt->LtE",
+            "end_byte": 15330,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 285,
+            "mutated_file_sha256": "7fbffb1e7c0204370d3b091a02919e5fdc724f3bd11ac1871ae5179b62d9db92",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 15329
+          },
+          {
+            "candidate_id": "059f195d099b7dd6632f7df75928dd870ada8678b1e26d3de9e638b197de89d9",
+            "description": "IsNot->Is",
+            "end_byte": 15466,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 288,
+            "mutated_file_sha256": "3724b68059a690a738004ae88a41e66b2816e73d32d9f2c20580577fd70f94d1",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "fa51fd49abf67705d6a35d18218c115ff5633aec1f9ebfdc9d5d4956416f57f6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 15460
+          },
+          {
+            "candidate_id": "9dc30b9e5f12a0eef9bdbcc8a471c82472047065c635ad6d00c871f0fad88d77",
+            "description": "Or->And",
+            "end_byte": 15494,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 289,
+            "mutated_file_sha256": "6c9c18d6761d05beacc8ab9d96b2ecac1f2391a3fb3c47b2eaaf8d6c059ff938",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "6201111b83a0cb5b0922cb37cc442b9a40e24e3b1ce100a4bb204f4c63fd2ac0",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 15492
+          },
+          {
+            "candidate_id": "868b3884f7d9edb2c8a47633a81a84b698faded3dbb806d3230690fb04534385",
+            "description": "Eq->NotEq",
+            "end_byte": 15506,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 289,
+            "mutated_file_sha256": "5d29c84ad421d8084b71518e9270fe32797aa893b7886edc77b2b2e658feee9d",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 15504
+          },
+          {
+            "candidate_id": "1574c07fa35032b6f9f1b9e010f581a863738ee0e9c7abedda10bcde2b78f8d2",
+            "description": "None->[]",
+            "end_byte": 15636,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 292,
+            "mutated_file_sha256": "51186546d7ea2deddec01379434b79ec97cff62b2c8e5fa7b4c4f37a4822c7d3",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 15632
+          },
+          {
+            "candidate_id": "20ae821aa6249a4e2da6aef5e35808af9f447b118de4e38cbd63cd0ab22bc9e9",
+            "description": "None->[]",
+            "end_byte": 15797,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 297,
+            "mutated_file_sha256": "a36be64fc4f850f759cdf38111452ed73041b8e3458e029b399fc781430adeb6",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 15793
+          },
+          {
+            "candidate_id": "855968e91da509392c080fc200554cbbddcf98138d1bdf09673c9617a2d859c9",
+            "description": "None->[]",
+            "end_byte": 15908,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 301,
+            "mutated_file_sha256": "39a584e0b6d3d1e94dfe6c6b3379d32346b61be419daa7e713657120d05dd424",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 15904
+          },
+          {
+            "candidate_id": "7404856173e5becd73a4de60432a492b94c72231efe1209529e0cfee9d4510e0",
+            "description": "Or->And",
+            "end_byte": 15928,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 302,
+            "mutated_file_sha256": "c637c8775eabac10510c9df840c9fe8ddc237f798b0721860beef440f37b030b",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "6201111b83a0cb5b0922cb37cc442b9a40e24e3b1ce100a4bb204f4c63fd2ac0",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 15926
+          },
+          {
+            "candidate_id": "a5639546479932b9b9dec0e147c383deefc0aaa4fef2ff635af818274997d8f4",
+            "description": "Is->IsNot",
+            "end_byte": 16957,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 323,
+            "mutated_file_sha256": "7c4c19d7871d3776f5e6f5033845cfa05cd7cbccef39d7a719e5f054634a5345",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "e1bf1560b1c243362a27812b338fbb98bb4b23c4c1f39ee86feb80645dc1deaf",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 16955
+          },
+          {
+            "candidate_id": "670517a332e444b76900e310e3d21db0de4177ffb441f73b9e67a598d3b04aa2",
+            "description": "IsNot->Is",
+            "end_byte": 17236,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 330,
+            "mutated_file_sha256": "399c93a48802726b00364a762caf03adb0c02fd30c85b18f5ccd78f8274e91dd",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "fa51fd49abf67705d6a35d18218c115ff5633aec1f9ebfdc9d5d4956416f57f6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 17230
+          },
+          {
+            "candidate_id": "e8994d310d3a5ded401577b1fe12bb419edb18cf8b097f2ae75f8a8de8042703",
+            "description": "IsNot->Is",
+            "end_byte": 17353,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 332,
+            "mutated_file_sha256": "d8a5cd447ed96570a50a5b2f4457855aafa20a9e632f4fc6a36a4a6938824f86",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "fa51fd49abf67705d6a35d18218c115ff5633aec1f9ebfdc9d5d4956416f57f6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 17347
+          },
+          {
+            "candidate_id": "32639fdb9eb405370ef29044545cb7e1410c57b406abd1fc19d40387072f4e68",
+            "description": "None->[]",
+            "end_byte": 17665,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 340,
+            "mutated_file_sha256": "ecc47f1fe36432dacb70f52f7eb8e657193dac895f774660fc457eed32132e7d",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 17661
+          },
+          {
+            "candidate_id": "e8927dd6f4f7045cd6f5ded8847e3aeeaa335db22c020d5aaec8d95e26ddac12",
+            "description": "Or->And",
+            "end_byte": 17739,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 342,
+            "mutated_file_sha256": "79223e4b8e2ab8fbf2f263b92d217ca826a6c38d2034958ded5b0cefd431f2f0",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "6201111b83a0cb5b0922cb37cc442b9a40e24e3b1ce100a4bb204f4c63fd2ac0",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 17737
+          },
+          {
+            "candidate_id": "82bc58e38964d7fbb65d6b2b96662822fe964c6b44525acc133fca6628ac96c8",
+            "description": "None->[]",
+            "end_byte": 17770,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 343,
+            "mutated_file_sha256": "195fda18b27a838614f2bdc5ce3eaca1c4c203a8dd79f57f3c600d2cdb8fcc14",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 17766
+          },
+          {
+            "candidate_id": "d8c748d99c6cfc0aa00f61ad266299e9d418513b2d2c98395c24dc3528821ad4",
+            "description": "And->Or",
+            "end_byte": 18266,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 354,
+            "mutated_file_sha256": "0b22ae5f15add4b9ed2132a75ed84aa1b33b7fbd80a226139c5e620ae6f9748f",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 18263
+          },
+          {
+            "candidate_id": "68d481618886c4ef86fc8801e258adb169985d14d88546bbf7db022860c9f347",
+            "description": "And->Or",
+            "end_byte": 18306,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 355,
+            "mutated_file_sha256": "a14005c2c9e14b8a0b1a2abd7e6a0bf8a80bcde49d3ca02a1825bc359def6f38",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 18303
+          },
+          {
+            "candidate_id": "5626f4a072edc9e3db82e2aec2cfc17f734f164787b3a0a3bd5ac3ed38691bac",
+            "description": "NotEq->Eq",
+            "end_byte": 18321,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 355,
+            "mutated_file_sha256": "d7d2b86c6488186521b089db864c28134eaf0be5212dd7909004b196b5a9a607",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "f16474a9900a44186e87098f5fcb153a1fab2e401e1a6db587168b204761b276",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 18319
+          },
+          {
+            "candidate_id": "bacff6efc2e53c5667e9711e494ccbc9b69ebf473890be95da4cccbbcf488b3c",
+            "description": "Is->IsNot",
+            "end_byte": 18498,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 359,
+            "mutated_file_sha256": "972b1f2d9fa63a0d6b583f73c90eb6a6006073cfc60b666434411c60fd87c8c7",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "e1bf1560b1c243362a27812b338fbb98bb4b23c4c1f39ee86feb80645dc1deaf",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 18496
+          },
+          {
+            "candidate_id": "3ad24a8b5f975e38e9b95e63866e5f89bf3ff39c335a5011909cf9135443374a",
+            "description": "True->False",
+            "end_byte": 18503,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 359,
+            "mutated_file_sha256": "45bed76cf8a0d358a61b65bfa6abf5025b19a78e11b263fe3cfb272431303665",
+            "operator": "python:bool-const-flip",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "60a33e6cf5151f2d52eddae9685cfa270426aa89d8dbc7dfb854606f1d1a40fe",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 18499
+          },
+          {
+            "candidate_id": "f131457bdcd83bd275490297f64d5c859b856e534013222c5c4f82df78db8e35",
+            "description": "Eq->NotEq",
+            "end_byte": 36664,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 760,
+            "mutated_file_sha256": "fe6c23e317f06d5f654bd0c811188bf8f2a0d49e5dbdc5a6e731515f7c761712",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 36662
+          },
+          {
+            "candidate_id": "c277605db52aec1e1033060626766dd4e056eeb6241647580a8d146692d09166",
+            "description": "Eq->NotEq",
+            "end_byte": 36810,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 763,
+            "mutated_file_sha256": "b8fc99baf6e173be2f2b3a7e02621c7809d4089a84f791dde4bb349e3f23f0cb",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 36808
+          },
+          {
+            "candidate_id": "d6296a221e19f5ee733555ea113239ed79e75514d9e28c8c51bc3817f98fdcab",
+            "description": "IsNot->Is",
+            "end_byte": 37148,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 768,
+            "mutated_file_sha256": "f024bf19941800ab6fcb1818dbc2cbab21978badea5767cea3005d2d1db0772d",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "fa51fd49abf67705d6a35d18218c115ff5633aec1f9ebfdc9d5d4956416f57f6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 37142
+          },
+          {
+            "candidate_id": "e7d752627ada67cbd2e41a613f3f009ef3498b8003adb6e276ceaa7d01ce33d0",
+            "description": "And->Or",
+            "end_byte": 37461,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 774,
+            "mutated_file_sha256": "e9fe6996019e4c38a0bcb63ac3c7be7ded6b5a6f2b8622200dd1d2fe47683474",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 37458
+          }
+        ],
+        "survived": [
+          {
+            "candidate_id": "8e854efe4352a64c05895b9871089783ea5584f8b7f5ea7a394063993547fd89",
+            "description": "None->[]",
+            "end_byte": 13334,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 233,
+            "mutated_file_sha256": "e6bb2708775fa0120aec3bd5afa5b149c79275328d74f19581adadef76c17e35",
+            "operator": "python:falsy-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 13330
+          },
+          {
+            "candidate_id": "9884355c8045d2f4bf7b1d4eea03f852505957633aa9a6f21f0557b4beadf538",
+            "description": "Or->And",
+            "end_byte": 14421,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 260,
+            "mutated_file_sha256": "590ad7555c6c19ff84a07e6392af149ec2a3c4ead60e6cf9134a9dc5a4365528",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "6201111b83a0cb5b0922cb37cc442b9a40e24e3b1ce100a4bb204f4c63fd2ac0",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14419
+          },
+          {
+            "candidate_id": "21f110ba9797a19977c3aa9cfeced2296800c408dd1588f9b4859eeefb91c2fe",
+            "description": "Or->And",
+            "end_byte": 14621,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 264,
+            "mutated_file_sha256": "df83b84e2bec187604c598ac34bb5efc9d8666ab5c54c6aff5b2afee08c13ef9",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "6201111b83a0cb5b0922cb37cc442b9a40e24e3b1ce100a4bb204f4c63fd2ac0",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14619
+          },
+          {
+            "candidate_id": "9255ae49006d70ff8a4c25e97539dcfbf821a8ca99595d0cbc010563f286eeda",
+            "description": "Or->And",
+            "end_byte": 14687,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 265,
+            "mutated_file_sha256": "477ed33c20b03a982a88d01b87ab8114a3a2568060a04982ec07c75e27ac3bfc",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "6201111b83a0cb5b0922cb37cc442b9a40e24e3b1ce100a4bb204f4c63fd2ac0",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14685
+          },
+          {
+            "candidate_id": "62dfb045d1389509570e70adb6cd5cf757c066d0467188248c616600f430578c",
+            "description": "GtE->Gt",
+            "end_byte": 14807,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 268,
+            "mutated_file_sha256": "d2399736373362d911f640d6637269af8c989bd7813ff5e5ceac8df0f780b33d",
+            "operator": "python:compare-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "62b67e1f685b7fef51102005dddd27774be3fee38c42965c53aab035d0b6b221",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 14805
+          },
+          {
+            "candidate_id": "a2b00bd0850eed5f872f2866e98055901b96637a602bd8e3462e896753de5fe5",
+            "description": "And->Or",
+            "end_byte": 17877,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 346,
+            "mutated_file_sha256": "a1b2ea36601e9c0405c02b8c79bde21235e024509d89ae4b5376124e07a56aaf",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 17874
+          },
+          {
+            "candidate_id": "a90c4a93622ac15f7fefeefb7815cb218ca04e3ea8cb7069972b931d89afa996",
+            "description": "And->Or",
+            "end_byte": 18150,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 352,
+            "mutated_file_sha256": "30d58cf61f266d171fd9f9d20d95d65c9e6dfede998a524d11a6aea53f5a39d8",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 18147
+          },
+          {
+            "candidate_id": "b41e47e02eca730794c34d2ac5a643552d347c1e182f0a039d62b8ca398541f8",
+            "description": "And->Or",
+            "end_byte": 36832,
+            "execution": {
+              "mode": "full"
+            },
+            "lineno": 763,
+            "mutated_file_sha256": "9c046ab134452f7e08a0d2bcc758b0c270666ab56dfd3e1334a7ac02c08a8677",
+            "operator": "python:boolop-swap",
+            "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+            "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+            "source_sha256": "777f36881237d40f9599b2b2da00cad81b80eccd3814db13514da843f4900e1c",
+            "start_byte": 36829
+          }
+        ],
+        "total": 45
+      },
+      "reason_code": "MUTANTS_SURVIVED",
+      "rigor": "R2",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true
+    },
+    {
+      "canary": {
+        "attempts": [
+          {
+            "control_outcome": "PASS",
+            "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file",
+            "disposition": "attempted",
+            "expected_reason_code": "UNCOVERED_LINES",
+            "observed_reason_code": "UNCOVERED_LINES",
+            "target": "src/nyxloom/session_extract/classifier.py",
+            "transformed_outcome": "FAIL"
+          }
+        ],
+        "mechanism": "uncovered-line"
+      },
+      "rigor": "R3",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "2ba90c10f00c67f7786ed0f63747c284867ba0be",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R1",
+    "R2",
+    "R3"
+  ],
+  "ended": "2026-10-01T01:33:27.100654+00:00",
+  "enforcement": "gate",
+  "env_declared": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "src:../libraries/cli-extended/src"
+  },
+  "env_effective": {
+    "ASSAY_LIVENESS_EVENTS": "/tmp/assay-liveness-5tfbz37l/baseline.ndjson",
+    "HOME": "/home/tester",
+    "LANG": "en_US.UTF-8",
+    "PATH": "/home/vscode/.venv/bin:/home/vscode/.local/bin:/usr/local/python/current/bin:/usr/local/py-utils/bin:/usr/local/jupyter:/usr/local/share/nvm/current/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/tmp/assay-liveness-5tfbz37l:src:../libraries/cli-extended/src"
+  },
+  "evidence": [],
+  "exit_code": 1,
+  "judgment": {
+    "r1": {
+      "allow_excluded": false,
+      "coverage_artifact": "coverage-session-extract.json",
+      "coverage_format": "coverage-py-json",
+      "fail_under": 100.0,
+      "mode": "changed_lines",
+      "require_branch": true
+    },
+    "r2": {
+      "jobs": 2,
+      "kill_attribution": "unattributed",
+      "liveness": {
+        "active": true,
+        "plugin": "/tmp/assay-liveness-5tfbz37l/assay_liveness_plugin.py",
+        "reason": "auto-pytest-argv"
+      },
+      "max_mutants": 45,
+      "mode": "changed_lines",
+      "operators": [
+        "python:compare-swap",
+        "python:boolop-swap",
+        "python:bool-const-flip",
+        "python:falsy-swap"
+      ],
+      "producer": "native"
+    },
+    "r3": {
+      "mechanism": "uncovered-line",
+      "targets": [
+        "src/nyxloom/session_extract/classifier.py"
+      ]
+    },
+    "resolved": {
+      "base": "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1",
+      "base_resolution": "first-parent",
+      "language": "python",
+      "source_roots": [
+        "src/nyxloom/session_extract"
+      ]
+    }
+  },
+  "lane": "session-extract",
+  "outcome": "FAIL",
+  "reason_code": "MUTANTS_SURVIVED",
+  "schema_version": 13,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository-minus-unsafe-symlinks",
+    "unsafe_symlink_omissions": [
+      "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+      "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+      "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"
+    ]
+  },
+  "started": "2026-10-01T01:20:58.348165+00:00"
+}

@@ -38,6 +38,35 @@ The local `cgprofile:local` tag is a build-only alias. CMRU's publish step
 selects the separate `cgprofile-release` Bake target, which contains only the
 versioned `ghcr.io/volkb79-2/cgprofile:<version>` tag; it does not publish the
 unqualified local alias to Docker Hub.
+
+## Deploy a published daemon image with CIU
+
+The default CIU image coordinates intentionally select the local development
+image. To deploy the RG-55 v1.1.0 daemon release, put this complete
+override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
+
+```toml
+[cgprofile.image]
+registry = "ghcr.io"
+namespace = "volkb79-2"
+name = "cgprofile"
+tag = "1.1.0"
+```
+
+The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.1.0`;
+changing only `tag` while leaving the default empty registry and namespace
+would still select a local image. Use the normal CIU bring-up and verify the
+runtime identity before attaching consumers:
+
+```bash
+ciu up --dir .
+docker exec cgprofile-host-daemon cgprofile ctl version --json
+```
+
+The version in the response must match the pinned image. For local development,
+leave the sparse override empty and use `python3 build-push.py --build`; that
+path loads only `cgprofile:local` and does not publish it.
+
 ## Daemon adoption
 
 This is the adoption guide: commands here are intended to be copied by an
@@ -82,7 +111,11 @@ sessions resolve direct PIDs in that target cgroup, match the exact token in
 host `/proc`, then walk those owners' process trees.
 The daemon has no Docker socket and does not accept `--cap`; it writes session
 data under `/var/lib/cgprofile/sessions` and its own DAMON kdamonds under
-sysfs.
+sysfs during normal operation. Grant daemon control only to operators already
+trusted with host-administrator Docker access. The privileged container's
+mounts and Python checks do not confine a compromised daemon; see the
+[trust boundary](DESIGN-GUIDE.md#daemon-safety-and-placement). Keep any v1.1
+host system-bus mount daemon-side, never in the cockpit.
 
 Before relying on `host.gates_slice` or requesting `start --place`, install
 the host's authored `dev-gates.slice` unit. The daemon verifies the loaded,

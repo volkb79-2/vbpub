@@ -87,7 +87,12 @@ The detailed metric-source and disclosure rules are in the
 
 The daemon's host system bus is separate from the consumer control socket. The
 cockpit receives only the cgprofile ctl surface; it does not need the system
-bus. The deployed design deliberately has no broker: cgprofile calls systemd
+bus. Version 1.0.0 did not mount the system bus or a writable host cgroup
+tree; v1.1.0 adds both for explicit placement. An operator with unrestricted
+Docker access already has host-administrator authority, but that does not
+make these daemon mounts irrelevant: a compromised daemon process can exercise
+the mounted cgroupfs and systemd manager authority directly, beyond normal
+Python request checks. The deployed design deliberately has no broker: cgprofile calls systemd
 directly, and the daemon's path checks, PID validation, and RPC allowlist
 constrain normal behavior but do not contain arbitrary code execution in the
 daemon. A read-only bind of a D-Bus socket is not read-only RPC authority.
@@ -151,6 +156,15 @@ be matched against `cgroup.procs` from the private PID namespace: the kernel
 translates host tasks to PID 0 there. Accordingly, container names, labels,
 and helper-mode `self` are resolved on the Docker-aware caller to full
 container IDs; the daemon locates those IDs in its explicit host cgroup view.
+The daemon is not a general capability-changing tool: it has no capability
+mutation option, imports no `TempCaps`, and has no Docker socket. It writes its
+session volume and the DAMON admin sysfs state required for observation, in
+addition to the v1.1 placement authority described above. A consumer that
+needs another cap change must use a separate, explicitly authorized tool;
+adding a hidden fallback here would make the observer change the workload it
+is measuring. These code and deployment choices are not kernel-enforced
+containment of a compromised privileged daemon, and the private namespaces do
+not make this a least-privilege service.
 Token-scoped sessions find the exact token in host `/proc` and walk its
 process descendants there, rather than treating a namespace-local PID as a
 host PID. Token roots remain constrained to the selected target cgroup; only
@@ -213,6 +227,19 @@ sample timestamps are retained; `cores_max` uses each positive adjacent
 timestamp delta and becomes null when a needed timestamp or delta is not
 usable.
 
+The daemon updates the summary as each tick arrives: cumulative-counter
+references, extrema, limit-drift count, host/slice endpoints, PID union, and
+CPU rate validity are maintained directly. Exact nearest-rank percentiles use
+AVL order-statistic multisets, so insertion and final rank selection are
+O(log n); normal `ctl stop` never scans the raw series or recomputes summary
+blocks from it. The full sample, host, and DAMON series are persisted separately
+for reports and crash recovery. The exact percentile state still grows with
+the number of distinct observed values; it is smaller than retaining every
+raw sample object, but it is not a constant-memory sketch. If the daemon
+restarts, orphan recovery deliberately replays the durable series because the
+in-memory accumulator was lost. That recovery path is distinct from normal
+stop-time finalization.
+
 ## Contract boundary
 
 The wire contract is major version 1 and summary documents use schema 1. A
@@ -266,6 +293,14 @@ metadata and live probes on one release fact rather than asking operators to
 type a second version. Untagged local images are marked `0.0.0-dev`; publish
 without an exact tag or explicit manual version refuses. No version lookup
 depends on network access at runtime.
+
+The local `cgprofile:local` alias is not a release coordinate: because it has
+no registry hostname, Docker resolves it to Docker Hub when used as a publish
+output. The Bake file therefore separates a local-only target from the
+versioned GHCR release target, and CMRU's push step selects only the latter.
+This keeps developer convenience from widening the release's external writes.
+The pasteable CIU pin and verification command live in
+[`CONSUMERS.md`](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 
 ## Decisions intentionally left outside this repair
 

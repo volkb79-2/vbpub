@@ -38,6 +38,7 @@ budget = "30m"                       # advisory; consumers may enforce
 kind = "assay"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
-# session-extract's serial R2 campaign currently has 599 candidates; this is
-# the outer/advisory mirror of assay.toml's 22-hour complete-campaign budget.
-budget = "22h"
+# session-extract's selected current-main R2 boundary has 45 candidates, run
+# two-at-a-time with four pytest workers per candidate. This is the
+# outer/advisory mirror of assay.toml's two-hour campaign budget.
+budget = "2h"
