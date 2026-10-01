@@ -733,6 +733,11 @@ remain present in the semantic surface, labelled hidden; hiding an option
 removes it from operator help, not from the audit. Callable converters and
 custom actions MUST be visible by stable import label in the generated table
 and manifest.
+The exporter may enumerate a choice only when its runtime member is an exact
+built-in string, integer, finite float, or boolean. An `Enum` member, custom
+scalar subclass, or other non-scalar choice MUST be marked opaque and make
+that parser surface incomplete; serializing its display text or `.value`
+could change the runtime equality rule used by argparse.
 
 Nested parser routes carry forward every action from their parent parser that
 is accepted before the nested command word. Each action records its parser
@@ -784,10 +789,15 @@ MUST be tokenized using the owner's action arity while using option-like target
 tokens as value boundaries; its value tokens MUST NOT be assigned to a target
 positional. Check mode MUST enforce the declared arity and enumerable choices
 for every occurrence of each participating option; a valid first occurrence
-MUST NOT hide a malformed repeat. A flag-only foreign option MUST reject an
-inline value. It MUST NOT run
-converters or handlers. If an option ID is ambiguous across routes and does not
-resolve uniquely on the target route, surface generation MUST refuse it.
+MUST NOT hide a malformed repeat. For choices, check mode MUST apply the exact
+`builtins.str`, `builtins.int`, `builtins.float`, or `builtins.bool` conversion
+recorded in the surface before checking membership and whether an invocation
+supplies its reviewed choice. With no converter, it MUST compare the raw argv
+string to the serialized choice value. It MUST NOT execute consumer-defined
+converters, custom actions, or handlers; those remain behavior-test oracles.
+A flag-only foreign option MUST reject an inline value. If an option ID is
+ambiguous across routes and does not resolve uniquely on the target route,
+surface generation MUST refuse it.
 The catalog owns the expected decision and status, including for cross-route
 interactions; check mode MUST NOT infer product semantics from route ownership.
 For the `show --poll` example above, the consumer records a refusal because

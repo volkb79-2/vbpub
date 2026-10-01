@@ -243,6 +243,18 @@ hidden status. This keeps the canonical spec useful to an operator reviewing
 the whole call surface while the JSON manifest remains the stable input for
 diffs and tools.
 
+Argparse converts a token before comparing it with an action's choices. The
+review checker models only the exact built-in `str`, `int`, `float`, and
+`bool` converters recorded in the surface; it never executes consumer-defined
+converter code. This keeps ordinary typed choices mechanically checkable
+without running arbitrary product code during a static review. Custom
+converters remain opaque and their accepted values must be proven by linked
+tests that call the real CLI. The exporter also marks non-scalar choice
+objects incomplete instead of replacing them with their `.value` or display
+text, because that flattening can change argparse's equality result. Consumers
+can expose the actual command-line scalar choices when their handler maps
+those strings to richer internal types.
+
 Whether the top-level executable shows help before parsing or passes empty
 argv to the single-command parser is part of the call contract. Parsing may
 still reject required syntax; the surface records the mode without claiming
@@ -280,10 +292,11 @@ requires the foreign option to remain unknown on the target parser. It checks
 declared value counts and enumerable choices on every occurrence; a valid first
 `--tag` cannot hide a malformed second occurrence. For a foreign option,
 option-like tokens mark value boundaries, and a flag-only option cannot carry
-an inline value. It does not call converters or handlers. The consumer's behavior test
-remains responsible for proving the declared outcome and exact value or
-repetition rules. The consumer owns that outcome; the checker does not infer it
-from route ownership. For example, `show --poll` should be recorded as a
+an inline value. Choice checks model exact built-in conversions; custom
+converters and handlers remain the consumer behavior test's responsibility.
+That test proves the declared outcome and exact value or repetition rules.
+The consumer owns the outcome; the checker does not infer it from route
+ownership. For example, `show --poll` should be recorded as a
 refusal when the product's `show` route rejects the watch-only option. The
 checker also refuses undeclared unknown options so a typo cannot be folded into
 the same reviewed case.

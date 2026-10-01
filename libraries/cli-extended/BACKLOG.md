@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Implementation complete; R0/R1 and R3 pass on `f49fdc13`; final-source R2 running
+**Status:** WIP correctness follow-up; baseline R0/R1 and R3 pass on `f49fdc13`; baseline R2 is active; final-source gates pending
 
 **Type:** Feature
 

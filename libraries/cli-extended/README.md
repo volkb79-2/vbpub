@@ -333,13 +333,17 @@ baseline requires one selected member per required exclusive group; repeating
 that same member remains valid when the built parser accepts it. Consumers use
 explicit interaction cases to review any meaning attached to repetition. The
 checker verifies each option occurrence's declared arity and enumerable
-choices, so a valid first occurrence cannot hide a malformed repeat. A
-flag-only option cannot use `--flag=value`. Delegated global options must also
-keep their mutually exclusive group membership and requiredness in sync with
-the parent parser.
-The checker does not invoke parser converters or command handlers. The linked
-test must still run the real invocation and assert its behavior and effects;
-the marker proves test collection and linkage only. Catalog interactions may
+choices, so a valid first occurrence cannot hide a malformed repeat. For
+choices, it models argparse's exact `str`, `int`, `float`, and `bool` built-in
+conversions before checking membership. Consumer-defined converters remain
+opaque and are never invoked by the checker. Choice values must be plain
+strings, integers, finite floats, or booleans; other choice objects make the
+surface incomplete rather than being flattened into a possibly different
+equality value. A flag-only option cannot use `--flag=value`. Delegated global
+options must also keep their mutually exclusive group membership and
+requiredness in sync with the parent parser.
+The linked test must still run the real invocation and assert its behavior and
+effects; the marker proves test collection and linkage only. Catalog interactions may
 refer to an option owned by another route, so a consumer can record a misuse
 such as `show --poll` and link the real refusal test. The structural check
 requires every named local option and the target route's required arguments,
@@ -348,13 +352,15 @@ an unrecognized option at the target route's parser depth. It consumes a
 value-taking foreign option using its owner action's arity and target option
 boundaries, so those tokens cannot satisfy required target positionals in the
 checklist. It
-checks minimum/fixed arity and enumerable choices; flag-only options cannot
-carry an inline value. The consumer catalog owns the expected decision and
-status; check mode does not infer semantics from the option's route. A command
+checks minimum/fixed arity and enumerable choices using the same built-in
+conversion rules; a custom converter's choice behavior belongs to its linked
+real-CLI test. Flag-only options cannot carry an inline value. The consumer
+catalog owns the expected decision and status; check mode does not infer
+semantics from the option's route. A command
 that intentionally forwards such tokens can record acceptance when its
 behavior test proves that contract. Any other unrecognized option must be
 declared in the interaction or check mode rejects the invocation. The check
-does not call converters or handlers.
+does not call consumer-defined converters or handlers.
 Parser callbacks that add ordinary argparse actions are inventoried; callbacks
 that replace argparse parsing methods, set uncaptured parser-level defaults,
 or leave the option lookup table inconsistent make the surface incomplete. For

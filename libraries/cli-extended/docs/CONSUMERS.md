@@ -354,9 +354,18 @@ command's required arguments, options, and exclusive selections. For a
 value-taking foreign option, it consumes values according to the owner's
 declared arity while treating option-like target tokens as boundaries. Those
 tokens do not satisfy target positionals in the structural check. It validates
-fixed/minimum arity and enumerable choices, but it does not run converters or
-prove the outcome; the linked test invokes the real CLI and checks the expected
-status and effects. For this `show --poll` example, record
+fixed/minimum arity and enumerable choices. For choices registered with
+`type=str`, `type=int`, `type=float`, or `type=bool`, it applies that exact
+built-in conversion to argv values before comparing them to declared choices.
+For example, `type=int, choices=(1, 2)` accepts `--count 1`, while
+`choices=(1, 2)` without a converter does not: argparse receives the raw string
+`"1"` in that case. A custom converter remains opaque; its acceptance and
+failure behavior belongs in the linked test, which invokes the real CLI and
+checks status and effects. Choice members must be plain strings, integers,
+finite floats, or booleans. Other choice objects make the surface incomplete
+because their runtime equality cannot safely be represented as JSON scalars.
+The structural check does not prove product outcomes. For this `show --poll`
+example, record
 `decision = "refuse"` and a non-zero `expected_exit_status` because `show`
 rejects the watch-only option. Check mode preserves the catalog's decision; it
 does not infer the outcome from route ownership. The only unrecognized options
@@ -380,9 +389,9 @@ option, and required-exclusive-group baseline in its signature. Check mode
 requires that baseline for every candidate kind and validates the declared
 arity and choices on every option occurrence; a valid first occurrence cannot
 hide a malformed repeat. The structural checker confirms the route, named
-option presence, declared value counts, enumerable choices, and required
-baseline syntax; behavior tests assert converter behavior and exact value and
-repetition rules. Any bare token left after assigning declared positional
+option presence, declared value counts, enumerable choices it can model, and
+required baseline syntax; behavior tests assert custom converter behavior and
+exact value and repetition rules. Any bare token left after assigning declared positional
 arguments is reported, so an unrelated extra value cannot be mistaken for a
 valid option case. Those
 distinctions belong in the consumer's canonical CLI spec and

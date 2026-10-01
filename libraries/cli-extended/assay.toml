@@ -11,7 +11,7 @@ argv = [
 ]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-budget = "150m"
+budget = "180m"
 allow_argv_append = false
 
 [lanes.cli-extended.isolation]

@@ -31,6 +31,13 @@ _REVIEW_DECISIONS = ("accept", "refuse")
 SURFACE_START_MARKER = "<!-- cli-extended-surface:start -->"
 SURFACE_END_MARKER = "<!-- cli-extended-surface:end -->"
 
+_BUILTIN_CHOICE_CONVERTERS = {
+    "builtins.bool": bool,
+    "builtins.float": float,
+    "builtins.int": int,
+    "builtins.str": str,
+}
+
 
 class ReviewCatalogError(ValueError):
     """A semantic review catalog is malformed or belongs to another CLI."""
@@ -82,12 +89,57 @@ class SurfaceReport:
         return "\n".join(self.findings)
 
 
+def _choice_values(
+    action: Mapping[str, Any], values: Sequence[str]
+) -> tuple[str, tuple[Any, ...]]:
+    """Model only argparse's exact, safe built-in conversions for choices.
+
+    Consumer converters are deliberately opaque here. Their behavior belongs
+    in the linked test that invokes the real CLI.
+    """
+
+    type_spec = action.get("type")
+    if type_spec is None:
+        return "modeled", tuple(values)
+    converter_label = (
+        type_spec.get("callable") if isinstance(type_spec, Mapping) else None
+    )
+    if not isinstance(converter_label, str):
+        return "opaque", ()
+    converter = _BUILTIN_CHOICE_CONVERTERS.get(converter_label)
+    if converter is None:
+        return "opaque", ()
+    try:
+        return "modeled", tuple(converter(value) for value in values)
+    except (OverflowError, TypeError, ValueError):
+        return "invalid", ()
+
+
+def _choice_values_accept(
+    action: Mapping[str, Any], values: Sequence[str], choice: Any
+) -> bool:
+    """Return whether an argv value resolves to a reviewed choice.
+
+    Opaque consumer converters cannot be evaluated from the manifest. Their
+    linked behavior tests are the acceptance oracle.
+    """
+
+    status, converted = _choice_values(action, values)
+    if status == "opaque":
+        return True
+    return status == "modeled" and any(value == choice for value in converted)
+
+
 def _choices_accept(action: Mapping[str, Any], values: Sequence[str]) -> bool:
     choices = action.get("choices")
     if not isinstance(choices, list):
         return True
-    allowed = {str(choice) for choice in choices}
-    return all(value in allowed for value in values)
+    status, converted = _choice_values(action, values)
+    if status == "opaque":
+        return True
+    if status == "invalid":
+        return False
+    return all(value in choices for value in converted)
 
 
 def _minimum_action_values(action: Mapping[str, Any]) -> int:
@@ -1653,7 +1705,9 @@ def _review_findings(
                 findings.append(
                     f"invocation for {case_id} has an invalid positional value shape"
                 )
-            if str(choice) not in supplied_values:
+            if argument is not None and not _choice_values_accept(
+                argument, supplied_values, choice
+            ):
                 findings.append(f"invocation for {case_id} omits its positional choice")
         if candidate_kind == "argument-shape":
             argument_id = candidate.get("shape", {}).get("argument_id")
@@ -1774,7 +1828,9 @@ def _review_findings(
                         )
                 if candidate_kind == "option-choice":
                     choice = candidate.get("shape", {}).get("choice")
-                    if str(choice) not in supplied_values:
+                    if not _choice_values_accept(
+                        matched_action, supplied_values, choice
+                    ):
                         findings.append(
                             f"invocation for {case_id} does not supply its reviewed option choice"
                         )

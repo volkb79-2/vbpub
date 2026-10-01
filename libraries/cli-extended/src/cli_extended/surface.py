@@ -273,7 +273,11 @@ def _effective_default(
 def _safe_choice_values(
     value: Any, *, path: str, opaque: list[str]
 ) -> Any:
-    """Normalize finite argparse choices or mark an unenumerable set opaque."""
+    """Normalize exact scalar choices or mark the field opaque.
+
+    A custom scalar object's equality may differ from its JSON value, so
+    flattening it would make the exported parser surface inaccurate.
+    """
 
     if value is None:
         return None
@@ -286,13 +290,14 @@ def _safe_choice_values(
         return {"opaque": _callable_label(value)}
     normalized: list[Any] = []
     for index, item in enumerate(values):
+        if type(item) not in (str, int, float, bool):
+            # Flattening an Enum or scalar subclass to its JSON value can
+            # change argparse's equality checks against the runtime choice.
+            opaque.append(path)
+            return {"opaque": "choice-value"}
         before = len(opaque)
         normalized_item = _normalize(item, path=f"{path}[{index}]", opaque=opaque)
-        if len(opaque) != before or not isinstance(
-            normalized_item, (str, int, float, bool)
-        ):
-            if len(opaque) == before:
-                opaque.append(path)
+        if len(opaque) != before:
             return {"opaque": "choice-value"}
         normalized.append(normalized_item)
     if isinstance(value, (set, frozenset)):

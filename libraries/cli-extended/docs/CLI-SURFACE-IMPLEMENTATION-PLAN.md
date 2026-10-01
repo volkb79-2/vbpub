@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Implementation complete; R0/R1 and R3 pass on `f49fdc13`; final-source R2 running
+**Status:** WIP correctness follow-up; baseline R0/R1 and R3 pass on `f49fdc13`; baseline R2 active; final-source gates pending
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -149,15 +149,17 @@ a mutation verdict for the corrected source. At the observed rate, the full
 campaign needs about 113 minutes before overhead, so the hard Assay and
 run-gate budgets are 150 minutes and the combined gate budget is 180 minutes.
 
-The corrected implementation passes registered R0/R1 on `f49fdc13` with
+The pre-follow-up implementation passes registered R0/R1 on `f49fdc13` with
 100% statement and branch coverage (3,236 statements and 1,548 branches). The
 registered R3 canary also passes on that revision; its expected message is
 `canary rejected: JSON redaction test fails when its guard is disabled`.
-The final-source R2 campaign is running against `f49fdc13`, with a fresh state
-store, `--resume`, and a progress log. Its first progress check showed 22 of
-958 candidates after 225 seconds, projecting about 142 minutes overall at the
-observed rate. That early estimate is close to the 150-minute hard budget; the
-campaign began before this status-only documentation update.
+The R2 campaign is running against `f49fdc13`, with a fresh state store,
+`--resume`, and a progress log. At the 2026-10-01 02:35 UTC check it had killed
+193 of 958 candidates after about 31 minutes, with no verdict yet. The observed
+rate projects about 154 minutes overall, close to the campaign's 150-minute
+budget. This run predates the correctness follow-up below and is not final
+source evidence. The prepared final-source lane uses a separate Assay state
+directory with a 180-minute campaign budget and a 210-minute outer gate budget.
 
 The implementation review found three additional completeness
 gaps, now closed. Inherited delegate globals are compared by their built action
@@ -191,8 +193,19 @@ made sync abort before it could regenerate the grammar or show the old semantic
 row. Direct export remains strict; sync records the broken reference, emits the
 current grammar, and keeps the catalog case visible for repair or explicit
 retirement. It never rewrites the TOML catalog. Regression coverage was added
-for these cases; registered R0/R1 and R3 evidence for the corrected source is
-recorded above, with the final-source R2 campaign still running.
+for these cases.
+
+A later self-review found a typed-choice false certification: stringifying
+choice values could accept `--mode 1` when argparse receives a string but the
+registered choices are integers. It also found that option and positional
+choice candidates compared their reviewed choice as display text, which could
+reject valid built-in conversions. The correction models only exact built-in
+`str`, `int`, `float`, and `bool` conversions, leaves consumer converters to
+linked behavior tests, and marks non-scalar choice objects incomplete rather
+than flattening their equality semantics. Regression cases compare review
+findings with the real CLI. The correction is being prepared in an isolated
+worktree; its R0/R1, R3, and fresh R2 gates have not run. The current R2
+campaign remains evidence for the earlier source only.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes

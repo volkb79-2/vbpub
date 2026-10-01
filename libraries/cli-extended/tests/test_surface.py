@@ -1013,6 +1013,40 @@ def test_surface_normalization_handles_supported_and_opaque_values_deterministic
     assert opaque == ["x", "x", "x", "x"]
 
 
+def test_non_scalar_choice_objects_make_the_surface_incomplete():
+    class State(Enum):
+        READY = "ready"
+
+    registry = CliRegistry(IDENTITY, prog="surface-demo", description="State choices.")
+    registry.register(
+        VerbSpec(
+            "show",
+            description="show one state",
+            options=(
+                OptionSpec(
+                    ("--state",),
+                    "select a state",
+                    parser_kwargs={"choices": (State.READY,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+
+    surface = export_cli_surface(registry.build())
+    route = next(route for route in surface["routes"] if route["path"] == ["show"])
+    state_action = next(
+        action for action in route["actions"] if action.get("flags") == ["--state"]
+    )
+
+    assert state_action["choices"] == {"opaque": "choice-value"}
+    assert route["syntax_complete"] is False
+    assert any(
+        "cannot enumerate parser field" in issue
+        for issue in surface["incomplete"]
+    )
+
+
 def test_surface_minimum_value_and_choice_helpers_cover_nargs_shapes():
     assert _minimum_values(None) == 1
     assert _minimum_values(2) == 2
@@ -1030,6 +1064,9 @@ def test_surface_minimum_value_and_choice_helpers_cover_nargs_shapes():
     assert _safe_choice_values(("a", "b"), path="x.choices", opaque=opaque) == ["a", "b"]
     assert _safe_choice_values({"b", "a"}, path="x.choices", opaque=opaque) == ["a", "b"]
     assert _safe_choice_values({"é", "zz"}, path="x.choices", opaque=opaque) == ["zz", "é"]
+    assert _safe_choice_values((float("inf"),), path="x.choices", opaque=opaque) == {
+        "opaque": "choice-value"
+    }
     assert _safe_choice_values(range(2), path="x.choices", opaque=opaque) == {
         "opaque": "builtins.range"
     }

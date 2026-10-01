@@ -30,6 +30,7 @@ from cli_extended.review import (
     SURFACE_START_MARKER,
     SurfaceReport,
     _case_status,
+    _choice_values,
     _markdown_cell,
     _option_occurrences_accept,
     _parse_interaction_groups,
@@ -2780,6 +2781,153 @@ def test_review_rejects_bad_choice_in_a_repeated_option_occurrence():
 
     assert any("outside the choices for option" in finding for finding in findings)
     assert not any("invalid value shape for option" in finding for finding in findings)
+
+
+@pytest.mark.parametrize(
+    "parser_kwargs, value, accepted",
+    (
+        pytest.param(
+            {"choices": (1, 2)}, "1", False, id="raw-string-vs-integer-choice"
+        ),
+        pytest.param(
+            {"type": int, "choices": (1, 2)}, "1", True, id="integer-converter"
+        ),
+        pytest.param(
+            {"type": int, "choices": (1, 2)},
+            "not-an-integer",
+            False,
+            id="invalid-integer-conversion",
+        ),
+        pytest.param(
+            {"type": str, "choices": (1,)}, "1", False, id="string-converter"
+        ),
+        pytest.param(
+            {"type": int, "choices": ("1",)}, "1", False, id="mismatched-choice-type"
+        ),
+        pytest.param(
+            {"type": float, "choices": (1.0,)}, "1", True, id="float-equivalent"
+        ),
+        pytest.param(
+            {"type": bool, "choices": (False,)}, "", True, id="false-boolean-choice"
+        ),
+    ),
+)
+def test_review_choice_validation_matches_argparse_builtin_converters(
+    parser_kwargs, value, accepted
+):
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="typed choices")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs=parser_kwargs,
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "option-choice"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", "--mode", value]
+
+    findings = _findings_for_invocation(candidate, route, invocation)
+    actual_status = app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    )
+
+    assert actual_status == (0 if accepted else 2)
+    if accepted:
+        assert findings == []
+    else:
+        assert any("outside the choices for option" in item for item in findings)
+
+
+def test_review_positional_choice_uses_the_built_in_converter_value():
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="typed positional")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect one numeric resource",
+            arguments=(
+                ArgumentSpec(
+                    "number",
+                    "numeric resource identifier",
+                    parser_kwargs={"type": float, "choices": (1.0,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "argument-choice"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+    invocation = ["inspect", "1"]
+
+    assert app.run(
+        argv=invocation, stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0
+    assert _findings_for_invocation(candidate, route, invocation) == []
+
+
+def test_review_does_not_execute_custom_choice_converters():
+    calls = []
+
+    def custom_converter(value):
+        calls.append(value)
+        return int(value)
+
+    registry = CliRegistry(IDENTITY, prog="audit-tool", description="custom choices")
+    registry.register(
+        VerbSpec(
+            "inspect",
+            description="inspect a numeric resource",
+            options=(
+                OptionSpec(
+                    ("--mode",),
+                    "select a mode",
+                    parser_kwargs={"type": custom_converter, "choices": (1,)},
+                ),
+            ),
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    surface = export_cli_surface(app)
+    candidate = next(
+        case
+        for case in surface["candidates"]
+        if case["kind"] == "option-choice"
+    )
+    route = next(
+        route for route in surface["routes"] if route["id"] == candidate["route_id"]
+    )
+
+    findings = _findings_for_invocation(
+        candidate, route, ["inspect", "--mode", "anything"]
+    )
+
+    assert findings == []
+    assert calls == []
+    assert _choice_values({"type": {"callable": []}}, ("1",)) == ("opaque", ())
 
 
 def test_review_allows_repeated_occurrences_of_one_required_group_option():
