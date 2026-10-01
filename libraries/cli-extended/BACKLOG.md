@@ -95,7 +95,7 @@ handling; see
 
 ## CLI-EXT-04 — export a stable CLI surface and semantic-review checklist
 
-**Status:** Correctness follow-up in progress; current-worktree R0/R1 and R3 passed on 2026-10-01; final R2 mutation verdict remains pending. The earlier `f49fdc13` R2 run returned `BUDGET_EXCEEDED`.
+**Status:** Correctness follow-up in progress; clean registered R0/R1 and R3 passed on `9f7099ef` on 2026-10-01. The fresh R2 mutation verdict remains pending; the earlier `f49fdc13` R2 run returned `BUDGET_EXCEEDED`.
 
 Self-review found false certifications in typed-choice checking and choice
 surface export. The correction models exact built-in conversions, marks
@@ -119,10 +119,13 @@ rendering refuses missing route invocation flags instead of defaulting them to
 first converted token, and it converts `argparse.REMAINDER` values without
 claiming ignored `choices` are enforced; remainder choices mark the surface
 incomplete.
-The corrections are in the CIU-managed integration worktree. R0/R1 passed with
-100% statement and branch coverage, and R3 passed with its expected canary
-rejection. CLI-EXT-04 is not complete or merge-ready until the fresh R2
-campaign returns a verdict and any survivors are resolved.
+The corrections are in the CIU-managed integration worktree. Clean R0/R1
+passed on `9f7099ef` at 05:06 UTC with 100% statement and branch coverage
+(3,371 statements and 1,634 branches). R3 passed at 05:06 UTC with its expected
+canary rejection. An earlier committed R0/R1 attempt revealed a parser-case
+test that selected the wrong argument; it now selects the target argument by
+ID. CLI-EXT-04 is not complete or merge-ready until a fresh R2 verdict is
+triaged and all final-source gates pass.
 
 **Type:** Feature
 

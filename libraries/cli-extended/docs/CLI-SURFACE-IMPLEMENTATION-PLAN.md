@@ -1,6 +1,6 @@
 # CLI surface and semantic review tooling plan
 
-**Status:** Correctness follow-up in progress; current-worktree R0/R1 and R3 passed on 2026-10-01; final R2 mutation verdict remains pending. The earlier `f49fdc13` R2 run returned `BUDGET_EXCEEDED`.
+**Status:** Correctness follow-up in progress; clean registered R0/R1 and R3 passed on `9f7099ef` on 2026-10-01. The fresh R2 mutation verdict remains pending; the earlier `f49fdc13` R2 run returned `BUDGET_EXCEEDED`.
 
 **Scope:** CLI-EXT-01, CLI-EXT-03 disposition, and CLI-EXT-04
 **Decision owner:** cli-extended maintainers and adopting product owners
@@ -157,8 +157,11 @@ The first registered R2 run against that snapshot ended at 2026-10-01 03:45 UTC 
 `BUDGET_EXCEEDED` (`LANE_TIMEOUT`, Assay exit 4): 909 killed, 48 survived, and
 one budget-exceeded candidate out of 958. Its verified R0/R1 results remain
 valid for `f49fdc13`, but the R2 outcome is not a pass and predates the current
-correctness changes. The current worktree's R0/R1 and R3 gates have since
-passed; the fresh final-source R2 verdict remains pending.
+correctness changes. An initial committed-tree R0/R1 run found that one new
+parser case selected a root-level positional candidate instead of the tested
+`values` argument; candidate selection now matches by argument ID. Clean
+R0/R1 and R3 subsequently passed on `9f7099ef`; the fresh final-source R2
+verdict remains pending.
 One R2 survivor changes the interaction occurrence check from `or` to `and`.
 A focused regression now supplies every named conflicting option while
 repeating one member, so a count mismatch remains visible even when the set of
@@ -266,10 +269,11 @@ treated as opaque.
 Regression cases compare review findings with the real CLI. The typed-choice
 and surface-completeness corrections are now in the CIU-managed integration
 worktree. Current-worktree R0/R1 passed with 100% statement and branch
-coverage (3,371 statements and 1,634 branches). R3 also passed; the canary
-reported the expected rejection after disabling the JSON redaction guard. The
-baseline R2 result above remains evidence for the earlier source only; the
-fresh current-worktree R2 campaign remains to be completed.
+coverage (3,371 statements and 1,634 branches) at 05:06 UTC. R3 passed on the
+same clean revision at 05:06 UTC; the canary reported the expected rejection
+after disabling the JSON redaction guard. The baseline R2 result above remains
+evidence for the earlier source only; the fresh current-source R2 campaign
+remains to be completed.
 
 The generator deliberately does not enumerate every optional value count or
 repeat count. Consumers declare separate named interactions for token shapes
